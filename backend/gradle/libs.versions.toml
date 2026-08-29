@@ -1,0 +1,39 @@
+[versions]
+kotlin = "2.3.21"
+springBoot = "4.1.1"
+coroutines = "1.11.0"
+testcontainers = "1.21.4"
+archunit = "1.5.0"
+karate = "1.5.2"
+kotest = "6.2.4"
+subethasmtp = "7.2.2"
+angusMail = "2.0.3"
+jakartaMailApi = "2.1.5"
+jsoup = "1.23.2"
+awsSdk = "2.54.7"
+spotless = "8.10.1"
+awaitility = "4.3.0"
+
+[libraries]
+spring-boot-dependencies = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "springBoot" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
+subethasmtp = { module = "com.github.davidmoten:subethasmtp", version.ref = "subethasmtp" }
+angus-mail = { module = "org.eclipse.angus:angus-mail", version.ref = "angusMail" }
+jakarta-mail-api = { module = "jakarta.mail:jakarta.mail-api", version.ref = "jakartaMailApi" }
+aws-s3 = { module = "software.amazon.awssdk:s3", version.ref = "awsSdk" }
+archunit-junit5 = { module = "com.tngtech.archunit:archunit-junit5", version.ref = "archunit" }
+karate-junit5 = { module = "io.karatelabs:karate-junit5", version.ref = "karate" }
+kotest-runner = { module = "io.kotest:kotest-runner-junit5", version.ref = "kotest" }
+kotest-property = { module = "io.kotest:kotest-property", version.ref = "kotest" }
+kotest-assertions = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }
+testcontainers-postgresql = { module = "org.testcontainers:postgresql", version.ref = "testcontainers" }
+testcontainers-minio = { module = "org.testcontainers:minio", version.ref = "testcontainers" }
+testcontainers-junit = { module = "org.testcontainers:junit-jupiter", version.ref = "testcontainers" }
+awaitility = { module = "org.awaitility:awaitility", version.ref = "awaitility" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-spring = { id = "org.jetbrains.kotlin.plugin.spring", version.ref = "kotlin" }
+spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

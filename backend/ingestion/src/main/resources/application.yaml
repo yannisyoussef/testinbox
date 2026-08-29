@@ -1,0 +1,31 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: testinbox-ingestion
+  datasource:
+    url: ${TESTINBOX_DB_URL:jdbc:postgresql://localhost:5432/testinbox}
+    username: ${TESTINBOX_DB_USER:testinbox}
+    password: ${TESTINBOX_DB_PASSWORD:testinbox}
+  flyway:
+    enabled: true
+
+testinbox:
+  mail-domain: ${TESTINBOX_MAIL_DOMAIN:testinbox.local}
+  smtp:
+    port: ${TESTINBOX_SMTP_PORT:2525}
+  storage:
+    endpoint: ${TESTINBOX_S3_ENDPOINT:http://localhost:9000}
+    access-key: ${TESTINBOX_S3_ACCESS_KEY:testinbox}
+    secret-key: ${TESTINBOX_S3_SECRET_KEY:testinbox123}
+    bucket: testinbox-mime
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: always

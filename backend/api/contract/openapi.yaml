@@ -1,0 +1,406 @@
+openapi: 3.1.0
+info:
+  title: TestInbox API
+  version: 1.0.0-experimental
+  description: |
+    TestInbox v1 REST contract — hand-authored and committed (ADR-022);
+    this document is the source of truth for the REST surface. Changes
+    within v1 must be additive only (ADR-015). Errors use RFC 7807
+    (`application/problem+json`) with stable `type` URIs under
+    `https://testinbox.email/problems/`.
+
+    Pre-v1 stability is signalled via the `X-API-Stability: experimental`
+    response header rather than by breaking silently.
+servers:
+  - url: /v1
+security:
+  - apiKey: []
+components:
+  securitySchemes:
+    apiKey:
+      type: http
+      scheme: bearer
+      description: Opaque workspace/project-scoped API key (ADR-010).
+  parameters:
+    inboxId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    messageId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    attachmentId:
+      name: attachmentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  headers:
+    correlationId:
+      description: Correlation id echoed in logs/traces and RFC 7807 bodies.
+      schema: { type: string }
+  responses:
+    Problem:
+      description: RFC 7807 problem.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+  schemas:
+    Problem:
+      type: object
+      description: RFC 7807 problem details.
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        correlationId: { type: string }
+        retryAfterSeconds:
+          type: integer
+          description: Present on address-already-reserved conflicts still in cooldown (ADR-021).
+      required: [type, title, status]
+    AddressMode:
+      type: string
+      description: >
+        Addressing mode (ADR-021). Clients must tolerate unknown future
+        values.
+      enum: [GENERATED, EXACT]
+    InboxState:
+      type: string
+      description: Clients must tolerate unknown future values.
+      enum: [ACTIVE, EXPIRING, EXPIRED, DELETED]
+    ParseStatus:
+      type: string
+      enum: [OK, FAILED]
+    CreateInboxRequest:
+      type: object
+      properties:
+        addressMode:
+          allOf: [{ $ref: "#/components/schemas/AddressMode" }]
+          default: GENERATED
+        ttlSeconds:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Defaults to the deployment default TTL; capped at the deployment maximum.
+        aliasHint:
+          type: string
+          description: GENERATED mode only — human-readable prefix; the address always carries a random token.
+        localPart:
+          type: string
+          description: EXACT mode only — the exact local-part to reserve (409 on conflict, ADR-021).
+    Inbox:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        address: { type: string }
+        addressMode: { $ref: "#/components/schemas/AddressMode" }
+        state: { $ref: "#/components/schemas/InboxState" }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+      required: [id, address, addressMode, state, createdAt, expiresAt]
+    EmailHeader:
+      type: object
+      properties:
+        name: { type: string }
+        value: { type: string }
+      required: [name, value]
+    EmailLink:
+      type: object
+      properties:
+        href: { type: string }
+        text: { type: string }
+      required: [href]
+    AttachmentMeta:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        fileName:
+          type: string
+          description: Sender-supplied, unsanitized display metadata — never a storage path.
+        contentType: { type: string }
+        sizeBytes: { type: integer, format: int64 }
+      required: [id, sizeBytes]
+    Message:
+      type: object
+      description: >
+        A received message. Parsed fields are absent when parseStatus is
+        FAILED; the raw MIME remains at `/v1/messages/{id}/raw` (ADR-005).
+      properties:
+        id: { type: string, format: uuid }
+        inboxId: { type: string, format: uuid }
+        receivedAt: { type: string, format: date-time }
+        envelopeFrom: { type: string }
+        envelopeTo: { type: string }
+        parseStatus: { $ref: "#/components/schemas/ParseStatus" }
+        parseError: { type: string }
+        from:
+          type: string
+          description: Parsed From address (address part only).
+        fromHeader:
+          type: string
+          description: Raw From header value.
+        toHeader: { type: string }
+        subject: { type: string }
+        textBody: { type: string }
+        htmlBody:
+          type: string
+          description: >
+            Untrusted sender-controlled HTML. Never render on a primary
+            origin; sandboxed isolated rendering only (ADR-011).
+        headers:
+          type: array
+          items: { $ref: "#/components/schemas/EmailHeader" }
+        links:
+          type: array
+          description: Extracted links — data only; TestInbox never fetches them.
+          items: { $ref: "#/components/schemas/EmailLink" }
+        attachments:
+          type: array
+          items: { $ref: "#/components/schemas/AttachmentMeta" }
+        contentFingerprint:
+          type: string
+          description: SHA-256 of raw MIME — informational annotation, never a dedup key (ADR-019).
+        possibleDuplicateOfMessageId:
+          type: string
+          format: uuid
+          description: Earliest message in this inbox sharing the fingerprint (ADR-019 annotation).
+        rawSizeBytes: { type: integer, format: int64 }
+      required: [id, inboxId, receivedAt, envelopeTo, parseStatus, contentFingerprint, rawSizeBytes]
+    MessagePage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Message" }
+        nextCursor:
+          type: string
+          description: Opaque cursor; absent when no further page exists.
+      required: [items]
+    MessageMatcher:
+      type: object
+      description: A message matches iff ALL specified fields match. ParseFailed messages never match.
+      properties:
+        from:
+          type: string
+          description: Case-insensitive exact match on the parsed From address (or the raw From header).
+        subjectContains: { type: string }
+        subjectEquals: { type: string }
+        headers:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              value:
+                type: string
+                description: Omit to match on header presence alone.
+            required: [name]
+    WaitRequest:
+      type: object
+      properties:
+        matcher:
+          allOf: [{ $ref: "#/components/schemas/MessageMatcher" }]
+          description: Empty/omitted matcher matches the first parsed message.
+        timeoutSeconds:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 30
+          description: >
+            Requested wait window; the server caps a single call (default
+            cap 60s). SDKs chain calls for longer caller timeouts
+            (ADR-012/020).
+      required: [timeoutSeconds]
+    WaitResult:
+      type: object
+      description: >
+        Wait outcome (ADR-020). `status: TIMEOUT` is a successful query
+        with a negative answer — never an HTTP error. Clients must
+        tolerate unknown future status values.
+      properties:
+        status:
+          type: string
+          enum: [MATCHED, TIMEOUT]
+        message:
+          allOf: [{ $ref: "#/components/schemas/Message" }]
+          description: Present iff status is MATCHED.
+        elapsedMs: { type: integer, format: int64 }
+        arrivedButUnmatchedCount:
+          type: integer
+          description: Messages that became visible during the window but did not satisfy the matcher.
+        parseFailedCount:
+          type: integer
+          description: Messages that became visible during the window with parseStatus FAILED.
+      required: [status, elapsedMs]
+paths:
+  /inboxes:
+    post:
+      operationId: createInbox
+      summary: Create an inbox (GENERATED or EXACT addressing, ADR-021).
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string }
+          description: Reserved for replay-safe creation; accepted but not yet honored (walking skeleton).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateInboxRequest" }
+      responses:
+        "201":
+          description: Inbox created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Inbox" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409":
+          description: >
+            EXACT local-part already reserved or in cooldown
+            (`type: https://testinbox.email/problems/address-already-reserved`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+  /inboxes/{id}:
+    get:
+      operationId: getInbox
+      parameters:
+        - $ref: "#/components/parameters/inboxId"
+      responses:
+        "200":
+          description: The inbox.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Inbox" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteInbox
+      summary: Explicit early teardown; cascades to messages/attachments via the lifecycle sweep.
+      parameters:
+        - $ref: "#/components/parameters/inboxId"
+      responses:
+        "204":
+          description: Inbox marked deleted; data removal completes asynchronously but boundedly.
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /inboxes/{id}/messages:
+    get:
+      operationId: listMessages
+      summary: Cursor-paginated message list, receipt order.
+      parameters:
+        - $ref: "#/components/parameters/inboxId"
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: One page of messages.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessagePage" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /inboxes/{id}/messages/wait:
+    post:
+      operationId: waitForMessage
+      summary: >
+        Deterministic long-poll wait (check → subscribe → recheck → park).
+        Non-consuming; earliest matching message wins.
+      parameters:
+        - $ref: "#/components/parameters/inboxId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WaitRequest" }
+      responses:
+        "200":
+          description: MATCHED with the message, or TIMEOUT with diagnostics (never 408 — ADR-020).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WaitResult" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "410":
+          description: >
+            Inbox is no longer ACTIVE
+            (`type: https://testinbox.email/problems/inbox-gone`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+  /messages/{id}:
+    get:
+      operationId: getMessage
+      parameters:
+        - $ref: "#/components/parameters/messageId"
+      responses:
+        "200":
+          description: Parsed message (fields absent when parseStatus is FAILED).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404":
+          description: Not found — also returned for cross-workspace ids (no existence leakage).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+  /messages/{id}/raw:
+    get:
+      operationId: getRawMime
+      summary: Raw MIME bytes as accepted on the wire (ADR-005).
+      parameters:
+        - $ref: "#/components/parameters/messageId"
+      responses:
+        "200":
+          description: Raw MIME.
+          content:
+            message/rfc822:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /messages/{id}/attachments:
+    get:
+      operationId: listAttachments
+      parameters:
+        - $ref: "#/components/parameters/messageId"
+      responses:
+        "200":
+          description: Attachment metadata only.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AttachmentMeta" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /messages/{id}/attachments/{attachmentId}:
+    get:
+      operationId: getAttachment
+      summary: >
+        Attachment bytes, served as an opaque download
+        (`Content-Disposition: attachment`, `nosniff`, restrictive CSP).
+      parameters:
+        - $ref: "#/components/parameters/messageId"
+        - $ref: "#/components/parameters/attachmentId"
+      responses:
+        "200":
+          description: Attachment bytes.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }

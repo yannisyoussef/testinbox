@@ -1,0 +1,42 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: testinbox-api
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${TESTINBOX_DB_URL:jdbc:postgresql://localhost:5432/testinbox}
+    username: ${TESTINBOX_DB_USER:testinbox}
+    password: ${TESTINBOX_DB_PASSWORD:testinbox}
+  flyway:
+    enabled: true
+
+testinbox:
+  mail-domain: ${TESTINBOX_MAIL_DOMAIN:testinbox.local}
+  default-ttl: 15m
+  max-ttl: 24h
+  expiry-grace: 30s
+  exact-cooldown: 24h
+  wait-window-cap: 60s
+  sweep-interval: 5s
+  orphan-sweep-interval: 30m
+  orphan-min-age: 1h
+  storage:
+    endpoint: ${TESTINBOX_S3_ENDPOINT:http://localhost:9000}
+    access-key: ${TESTINBOX_S3_ACCESS_KEY:testinbox}
+    secret-key: ${TESTINBOX_S3_SECRET_KEY:testinbox123}
+    bucket: testinbox-mime
+  bootstrap:
+    api-key: ${TESTINBOX_BOOTSTRAP_API_KEY:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: always
