@@ -12,10 +12,16 @@ import email.testinbox.domain.WorkspaceId
  * one inbox's prefix can never touch another inbox's blobs.
  */
 object ObjectKeys {
-    fun inboxPrefix(workspaceId: WorkspaceId, inboxId: InboxId): String = "$workspaceId/$inboxId/"
+    fun inboxPrefix(
+        workspaceId: WorkspaceId,
+        inboxId: InboxId,
+    ): String = "$workspaceId/$inboxId/"
 
-    fun raw(workspaceId: WorkspaceId, inboxId: InboxId, messageId: MessageId): String =
-        "$workspaceId/$inboxId/$messageId/raw.eml"
+    fun raw(
+        workspaceId: WorkspaceId,
+        inboxId: InboxId,
+        messageId: MessageId,
+    ): String = "$workspaceId/$inboxId/$messageId/raw.eml"
 
     fun attachment(
         workspaceId: WorkspaceId,

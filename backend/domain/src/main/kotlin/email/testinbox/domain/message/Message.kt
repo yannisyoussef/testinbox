@@ -8,9 +8,15 @@ import java.time.Instant
 
 enum class ParseStatus { OK, FAILED }
 
-data class EmailHeader(val name: String, val value: String)
+data class EmailHeader(
+    val name: String,
+    val value: String,
+)
 
-data class EmailLink(val href: String, val text: String?)
+data class EmailLink(
+    val href: String,
+    val text: String?,
+)
 
 data class Attachment(
     val id: AttachmentId,

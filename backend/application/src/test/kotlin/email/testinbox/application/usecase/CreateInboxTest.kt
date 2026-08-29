@@ -13,11 +13,11 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldEndWith
 import io.kotest.matchers.string.shouldStartWith
 import io.kotest.matchers.types.shouldBeInstanceOf
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
 
 class CreateInboxTest {
     private val workspaceId = WorkspaceId(UUID.randomUUID())
@@ -71,7 +71,8 @@ class CreateInboxTest {
     @Test
     fun `ttl is validated against the configured cap`() {
         useCase.execute(command(ttlSeconds = 0)).shouldBeInstanceOf<CreateInbox.Result.InvalidRequest>()
-        useCase.execute(command(ttlSeconds = Duration.ofHours(25).seconds))
+        useCase
+            .execute(command(ttlSeconds = Duration.ofHours(25).seconds))
             .shouldBeInstanceOf<CreateInbox.Result.InvalidRequest>()
         val created = useCase.execute(command(ttlSeconds = 600))
         created.shouldBeInstanceOf<CreateInbox.Result.Created>().inbox.expiresAt shouldBe
@@ -89,17 +90,21 @@ class CreateInboxTest {
 
     @Test
     fun `exact mode rejects invalid, reserved and missing local parts`() {
-        useCase.execute(command(mode = AddressMode.EXACT, localPart = null))
+        useCase
+            .execute(command(mode = AddressMode.EXACT, localPart = null))
             .shouldBeInstanceOf<CreateInbox.Result.InvalidRequest>()
-        useCase.execute(command(mode = AddressMode.EXACT, localPart = "two..dots"))
+        useCase
+            .execute(command(mode = AddressMode.EXACT, localPart = "two..dots"))
             .shouldBeInstanceOf<CreateInbox.Result.InvalidRequest>()
-        useCase.execute(command(mode = AddressMode.EXACT, localPart = "postmaster"))
+        useCase
+            .execute(command(mode = AddressMode.EXACT, localPart = "postmaster"))
             .shouldBeInstanceOf<CreateInbox.Result.InvalidRequest>()
     }
 
     @Test
     fun `second exact reservation for the same local part conflicts`() {
-        useCase.execute(command(mode = AddressMode.EXACT, localPart = "qa"))
+        useCase
+            .execute(command(mode = AddressMode.EXACT, localPart = "qa"))
             .shouldBeInstanceOf<CreateInbox.Result.Created>()
         val second = useCase.execute(command(mode = AddressMode.EXACT, localPart = "QA"))
         second.shouldBeInstanceOf<CreateInbox.Result.AddressConflict>().localPart shouldBe "qa"
@@ -107,9 +112,11 @@ class CreateInboxTest {
 
     @Test
     fun `mode-specific fields are rejected on the other mode`() {
-        useCase.execute(command(mode = AddressMode.GENERATED, localPart = "x"))
+        useCase
+            .execute(command(mode = AddressMode.GENERATED, localPart = "x"))
             .shouldBeInstanceOf<CreateInbox.Result.InvalidRequest>()
-        useCase.execute(command(mode = AddressMode.EXACT, localPart = "x", aliasHint = "y"))
+        useCase
+            .execute(command(mode = AddressMode.EXACT, localPart = "x", aliasHint = "y"))
             .shouldBeInstanceOf<CreateInbox.Result.InvalidRequest>()
     }
 }

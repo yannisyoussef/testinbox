@@ -15,7 +15,10 @@ sealed interface InsertInboxOutcome {
 interface InboxRepository {
     fun insert(inbox: Inbox): InsertInboxOutcome
 
-    fun findById(workspaceId: WorkspaceId, id: InboxId): Inbox?
+    fun findById(
+        workspaceId: WorkspaceId,
+        id: InboxId,
+    ): Inbox?
 
     /**
      * Resolves a recipient address to its routable inbox (state ACTIVE or
@@ -24,14 +27,27 @@ interface InboxRepository {
     fun findReceivableByAddress(address: String): Inbox?
 
     /** Marks the inbox DELETED; returns the prior state's inbox, or null when absent in this workspace. */
-    fun markDeleted(workspaceId: WorkspaceId, id: InboxId, now: Instant): Inbox?
+    fun markDeleted(
+        workspaceId: WorkspaceId,
+        id: InboxId,
+        now: Instant,
+    ): Inbox?
 
     // Lifecycle sweep (ADR-009). Guarded transitions return false when the state moved concurrently.
-    fun findExpiredActive(now: Instant, limit: Int): List<Inbox>
+    fun findExpiredActive(
+        now: Instant,
+        limit: Int,
+    ): List<Inbox>
 
-    fun transitionToExpiring(id: InboxId, graceUntil: Instant): Boolean
+    fun transitionToExpiring(
+        id: InboxId,
+        graceUntil: Instant,
+    ): Boolean
 
-    fun findExpiringPastGrace(now: Instant, limit: Int): List<Inbox>
+    fun findExpiringPastGrace(
+        now: Instant,
+        limit: Int,
+    ): List<Inbox>
 
     fun transitionToExpired(id: InboxId): Boolean
 

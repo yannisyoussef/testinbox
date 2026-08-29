@@ -8,7 +8,9 @@ sealed interface ReserveOutcome {
     data object Reserved : ReserveOutcome
 
     /** Lost to an existing ACTIVE/COOLDOWN reservation. [availableAt] is set when in cooldown. */
-    data class Conflict(val availableAt: Instant?) : ReserveOutcome
+    data class Conflict(
+        val availableAt: Instant?,
+    ) : ReserveOutcome
 }
 
 /**
@@ -24,8 +26,14 @@ interface ExactAddressReservations {
      * transaction as the inbox insert so a reservation never exists without
      * its inbox. [now] drives cooldown reclaim.
      */
-    fun reserve(reservation: ExactReservation, now: Instant): ReserveOutcome
+    fun reserve(
+        reservation: ExactReservation,
+        now: Instant,
+    ): ReserveOutcome
 
     /** Moves the ACTIVE reservation held by [inboxId] into COOLDOWN until [availableAt]. */
-    fun startCooldown(inboxId: InboxId, availableAt: Instant)
+    fun startCooldown(
+        inboxId: InboxId,
+        availableAt: Instant,
+    )
 }

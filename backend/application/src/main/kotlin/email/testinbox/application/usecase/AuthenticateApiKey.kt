@@ -9,7 +9,9 @@ import email.testinbox.domain.tenant.ApiKey
  * hashed (SHA-256) and looked up; plaintext keys are never stored or
  * logged. Workspace/project context always derives from the key.
  */
-class AuthenticateApiKey(private val apiKeys: ApiKeyRepository) {
+class AuthenticateApiKey(
+    private val apiKeys: ApiKeyRepository,
+) {
     fun authenticate(presentedKey: String): ApiKey? {
         if (presentedKey.isBlank()) return null
         return apiKeys.findActiveByHash(Sha256.hex(presentedKey))?.takeIf { it.isUsable() }

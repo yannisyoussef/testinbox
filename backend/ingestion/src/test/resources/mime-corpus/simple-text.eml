@@ -1,0 +1,12 @@
+From: SUT <no-reply@example.com>
+To: someone@testinbox.local
+Subject: Verify your email
+Date: Sat, 29 Aug 2026 12:00:00 +0000
+Message-ID: <simple-1@example.com>
+Content-Type: text/plain; charset=utf-8
+
+Hello,
+
+please verify your account at https://app.example.com/verify?token=abc123.
+
+Thanks!

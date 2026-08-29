@@ -19,11 +19,11 @@ import email.testinbox.domain.message.ParseStatus
 import email.testinbox.domain.message.ParsedContent
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
 
 class WaitForMessageTest {
     private val workspaceId = WorkspaceId(UUID.randomUUID())
@@ -56,11 +56,12 @@ class WaitForMessageTest {
         inboxes.insert(inbox)
     }
 
-    private fun useCase(): WaitForMessage =
-        WaitForMessage(inboxes, messages, notifier, clock, config, hook)
+    private fun useCase(): WaitForMessage = WaitForMessage(inboxes, messages, notifier, clock, config, hook)
 
-    private fun command(matcher: MessageMatcher = MessageMatcher(), timeoutSeconds: Long = 10) =
-        WaitForMessage.Command(workspaceId, inbox.id, matcher, timeoutSeconds)
+    private fun command(
+        matcher: MessageMatcher = MessageMatcher(),
+        timeoutSeconds: Long = 10,
+    ) = WaitForMessage.Command(workspaceId, inbox.id, matcher, timeoutSeconds)
 
     private fun visibleMessage(
         subject: String = "hello",
@@ -134,8 +135,10 @@ class WaitForMessageTest {
         val result = useCase().execute(command())
         result.shouldBeInstanceOf<WaitForMessage.Result.Matched>().message.id shouldBe first.id
         // Non-consuming: a second wait sees the same message.
-        useCase().execute(command())
-            .shouldBeInstanceOf<WaitForMessage.Result.Matched>().message.id shouldBe first.id
+        useCase()
+            .execute(command())
+            .shouldBeInstanceOf<WaitForMessage.Result.Matched>()
+            .message.id shouldBe first.id
     }
 
     @Test
@@ -183,13 +186,15 @@ class WaitForMessageTest {
     fun `non-active inbox yields Gone and unknown inbox NotFound`() {
         inboxes.inboxes[inbox.id] = inbox.copy(state = InboxState.EXPIRING, graceUntil = clock.now.plusSeconds(30))
         useCase().execute(command()).shouldBeInstanceOf<WaitForMessage.Result.InboxGone>()
-        useCase().execute(command().copy(inboxId = InboxId(UUID.randomUUID())))
+        useCase()
+            .execute(command().copy(inboxId = InboxId(UUID.randomUUID())))
             .shouldBeInstanceOf<WaitForMessage.Result.InboxNotFound>()
     }
 
     @Test
     fun `cross-workspace wait is NotFound, not Gone (no existence leakage)`() {
-        useCase().execute(command().copy(workspaceId = WorkspaceId(UUID.randomUUID())))
+        useCase()
+            .execute(command().copy(workspaceId = WorkspaceId(UUID.randomUUID())))
             .shouldBeInstanceOf<WaitForMessage.Result.InboxNotFound>()
     }
 

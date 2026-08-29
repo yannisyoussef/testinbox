@@ -1,0 +1,20 @@
+From: billing@example.com
+To: someone@testinbox.local
+Subject: Invoice attached
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_mixed_boundary"
+
+--=_mixed_boundary
+Content-Type: text/plain; charset=utf-8
+
+Your invoice is attached.
+
+--=_mixed_boundary
+Content-Type: application/pdf; name="invoice.pdf"
+Content-Disposition: attachment; filename="invoice.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJSBmYWtlIHBkZiBmb3IgdGVzdHMKMSAwIG9iago8PC9UeXBlL0NhdGFsb2c+
+PgplbmRvYmoKdHJhaWxlcgo8PC9Sb290IDEgMCBSPj4KJSVFT0YK
+
+--=_mixed_boundary--

@@ -14,9 +14,12 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
-    implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
+    implementation("tools.jackson.module:jackson-module-kotlin")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation("org.springframework.boot:spring-boot-testcontainers")
+    testImplementation("com.fasterxml.jackson.module:jackson-module-kotlin")
+    testImplementation(libs.kotest.assertions)
     testImplementation(libs.testcontainers.postgresql)
     testImplementation(libs.testcontainers.minio)
     testImplementation(libs.testcontainers.junit)

@@ -13,8 +13,6 @@ import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiScope
 import email.testinbox.domain.tenant.Project
 import email.testinbox.domain.tenant.Workspace
-import java.time.Clock
-import java.util.UUID
 import org.slf4j.LoggerFactory
 import org.springframework.boot.ApplicationArguments
 import org.springframework.boot.ApplicationRunner
@@ -22,6 +20,8 @@ import org.springframework.boot.health.contributor.Health
 import org.springframework.boot.health.contributor.HealthIndicator
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
+import java.time.Clock
+import java.util.UUID
 
 /** Bounded lifecycle sweep scheduler (ADR-009). */
 @Component
@@ -51,7 +51,9 @@ class SweepScheduler(
 
 /** ADR-020: LISTEN connection health participates in node readiness. */
 @Component("waitNotifier")
-class NotifierHealthIndicator(private val notifier: MessageNotifier) : HealthIndicator {
+class NotifierHealthIndicator(
+    private val notifier: MessageNotifier,
+) : HealthIndicator {
     override fun health(): Health {
         val health = notifier.health()
         val builder = if (health.listening) Health.up() else Health.down()

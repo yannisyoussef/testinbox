@@ -3,19 +3,18 @@ package email.testinbox.api.web
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
-import java.util.UUID
 import org.slf4j.MDC
 import org.springframework.core.Ordered
 import org.springframework.core.annotation.Order
 import org.springframework.stereotype.Component
 import org.springframework.web.filter.OncePerRequestFilter
+import java.util.UUID
 
 object Correlation {
     const val HEADER = "X-Correlation-Id"
     const val ATTRIBUTE = "testinbox.correlationId"
 
-    fun of(request: HttpServletRequest): String =
-        request.getAttribute(ATTRIBUTE) as? String ?: "unknown"
+    fun of(request: HttpServletRequest): String = request.getAttribute(ATTRIBUTE) as? String ?: "unknown"
 }
 
 /**

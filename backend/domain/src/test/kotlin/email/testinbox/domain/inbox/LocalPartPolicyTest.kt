@@ -44,10 +44,12 @@ class LocalPartPolicyTest {
                         normalized shouldBe normalized.lowercase()
                         (normalized.length <= 64) shouldBe true
                         // Idempotent: validating the normalized form yields the same value.
-                        LocalPartPolicy.validate(normalized)
+                        LocalPartPolicy
+                            .validate(normalized)
                             .shouldBeInstanceOf<LocalPartPolicy.Result.Valid>()
                             .normalized shouldBe normalized
                     }
+
                     else -> {} // rejected inputs (e.g. "..", denylist) are fine here
                 }
             }

@@ -9,15 +9,15 @@ import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
-import java.sql.Connection
-import java.time.Instant
-import java.time.temporal.ChronoUnit
-import java.util.UUID
 import org.awaitility.Awaitility.await
 import org.junit.jupiter.api.Test
 import org.postgresql.PGConnection
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.jdbc.core.simple.JdbcClient
+import java.sql.Connection
+import java.time.Instant
+import java.time.temporal.ChronoUnit
+import java.util.UUID
 
 class JdbcMessageRepositoryTest : PersistenceIntegrationTest() {
     @Autowired lateinit var messages: JdbcMessageRepository
@@ -49,10 +49,15 @@ class JdbcMessageRepositoryTest : PersistenceIntegrationTest() {
                 it.copy(
                     parsed =
                         it.parsed!!.copy(
-                            headers = listOf(email.testinbox.domain.message.EmailHeader("X-Run", "1")),
+                            headers =
+                                listOf(
+                                    email.testinbox.domain.message
+                                        .EmailHeader("X-Run", "1"),
+                                ),
                             links =
                                 listOf(
-                                    email.testinbox.domain.message.EmailLink("https://x.test/verify", "Verify"),
+                                    email.testinbox.domain.message
+                                        .EmailLink("https://x.test/verify", "Verify"),
                                 ),
                         ),
                     attachments =
@@ -71,8 +76,14 @@ class JdbcMessageRepositoryTest : PersistenceIntegrationTest() {
         messages.appendVisible(message) shouldBe AppendOutcome.Appended
         val loaded = messages.findById(workspaceId, message.id).shouldNotBeNull()
         loaded.parsed!!.subject shouldBe "hello"
-        loaded.parsed!!.headers.single().name shouldBe "X-Run"
-        loaded.parsed!!.links.single().href shouldBe "https://x.test/verify"
+        loaded.parsed!!
+            .headers
+            .single()
+            .name shouldBe "X-Run"
+        loaded.parsed!!
+            .links
+            .single()
+            .href shouldBe "https://x.test/verify"
         loaded.attachments.single().fileName shouldBe "invoice.pdf"
         loaded.contentFingerprint shouldBe message.contentFingerprint
     }

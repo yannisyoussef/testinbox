@@ -27,7 +27,10 @@ class DeleteInbox(
         data object NotFound : Result
     }
 
-    fun execute(workspaceId: WorkspaceId, inboxId: InboxId): Result {
+    fun execute(
+        workspaceId: WorkspaceId,
+        inboxId: InboxId,
+    ): Result {
         val now = clock.instant()
         return tx.required {
             val inbox = inboxes.markDeleted(workspaceId, inboxId, now) ?: return@required Result.NotFound

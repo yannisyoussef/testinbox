@@ -1,0 +1,18 @@
+From: no-reply@example.com
+To: someone@testinbox.local
+Subject: Your weekly report
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="=_alt_boundary"
+
+--=_alt_boundary
+Content-Type: text/plain; charset=utf-8
+
+Plain text version of the report.
+
+--=_alt_boundary
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>HTML version of the <b>report</b>.</p>
+<a href="https://app.example.com/report/42">Open report</a></body></html>
+
+--=_alt_boundary--

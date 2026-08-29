@@ -5,11 +5,11 @@ import email.testinbox.domain.inbox.InboxState
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
-import java.time.Instant
-import java.time.temporal.ChronoUnit
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.jdbc.core.simple.JdbcClient
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 class JdbcInboxRepositoryTest : PersistenceIntegrationTest() {
     @Autowired lateinit var inboxes: JdbcInboxRepository
@@ -79,20 +79,21 @@ class JdbcInboxRepositoryTest : PersistenceIntegrationTest() {
         val (workspaceId, projectId) = Fixtures.provisionTenant(jdbc)
         val inbox = Fixtures.inbox(workspaceId, projectId, state = InboxState.ACTIVE)
         inboxes.insert(inbox)
-        jdbc.sql(
-            """
-            INSERT INTO message (id, workspace_id, inbox_id, received_at, provider, envelope_to,
-                                 raw_object_key, raw_size_bytes, content_fingerprint, parse_status)
-            VALUES (:id, :ws, :inbox, now(), 'local-smtp', 'x@y', 'k', 1, 'f', 'FAILED')
-            """.trimIndent(),
-        )
-            .param("id", java.util.UUID.randomUUID())
+        jdbc
+            .sql(
+                """
+                INSERT INTO message (id, workspace_id, inbox_id, received_at, provider, envelope_to,
+                                     raw_object_key, raw_size_bytes, content_fingerprint, parse_status)
+                VALUES (:id, :ws, :inbox, now(), 'local-smtp', 'x@y', 'k', 1, 'f', 'FAILED')
+                """.trimIndent(),
+            ).param("id", java.util.UUID.randomUUID())
             .param("ws", workspaceId.value)
             .param("inbox", inbox.id.value)
             .update()
         inboxes.hardDelete(inbox.id)
         val count =
-            jdbc.sql("SELECT count(*) AS c FROM message WHERE inbox_id = :inbox")
+            jdbc
+                .sql("SELECT count(*) AS c FROM message WHERE inbox_id = :inbox")
                 .param("inbox", inbox.id.value)
                 .query { rs, _ -> rs.getLong("c") }
                 .single()

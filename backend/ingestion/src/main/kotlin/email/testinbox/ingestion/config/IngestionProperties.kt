@@ -1,8 +1,8 @@
 package email.testinbox.ingestion.config
 
 import email.testinbox.application.TestInboxConfig
-import java.time.Duration
 import org.springframework.boot.context.properties.ConfigurationProperties
+import java.time.Duration
 
 @ConfigurationProperties("testinbox")
 data class IngestionProperties(
@@ -16,7 +16,9 @@ data class IngestionProperties(
     val smtp: Smtp = Smtp(),
     val storage: Storage = Storage(),
 ) {
-    data class Smtp(val port: Int = 2525)
+    data class Smtp(
+        val port: Int = 2525,
+    )
 
     data class Storage(
         val endpoint: String = "http://localhost:9000",

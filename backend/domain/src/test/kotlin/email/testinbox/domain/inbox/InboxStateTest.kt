@@ -4,14 +4,17 @@ import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
 import io.kotest.matchers.shouldBe
+import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.util.UUID
-import org.junit.jupiter.api.Test
 
 class InboxStateTest {
     private val now = Instant.parse("2026-08-29T12:00:00Z")
 
-    private fun inbox(state: InboxState, graceUntil: Instant? = null): Inbox =
+    private fun inbox(
+        state: InboxState,
+        graceUntil: Instant? = null,
+    ): Inbox =
         Inbox(
             id = InboxId(UUID.randomUUID()),
             workspaceId = WorkspaceId(UUID.randomUUID()),

@@ -32,23 +32,26 @@ class DependencyRuleTest {
     @Test
     fun `domain depends on nothing but itself and the platform`() {
         classes()
-            .that().resideInAPackage("email.testinbox.domain..")
-            .should().onlyDependOnClassesThat(
+            .that()
+            .resideInAPackage("email.testinbox.domain..")
+            .should()
+            .onlyDependOnClassesThat(
                 describe("are domain, JDK, or Kotlin stdlib classes") { target: JavaClass ->
                     target.packageName.startsWith("email.testinbox.domain") ||
                         target.packageName.startsWith("java") ||
                         target.packageName.startsWith("kotlin") ||
                         target.packageName.startsWith("org.jetbrains.annotations")
                 },
-            )
-            .check(allClasses)
+            ).check(allClasses)
     }
 
     @Test
     fun `application depends only on domain, slf4j, JDK and Kotlin`() {
         classes()
-            .that().resideInAPackage("email.testinbox.application..")
-            .should().onlyDependOnClassesThat(
+            .that()
+            .resideInAPackage("email.testinbox.application..")
+            .should()
+            .onlyDependOnClassesThat(
                 describe("are application, domain, slf4j, JDK, or Kotlin classes") { target: JavaClass ->
                     target.packageName.startsWith("email.testinbox.application") ||
                         target.packageName.startsWith("email.testinbox.domain") ||
@@ -57,25 +60,34 @@ class DependencyRuleTest {
                         target.packageName.startsWith("kotlin") ||
                         target.packageName.startsWith("org.jetbrains.annotations")
                 },
-            )
-            .check(allClasses)
+            ).check(allClasses)
     }
 
     @Test
     fun `domain and application are free of Spring, JPA, SQL and provider types`() {
         noClasses()
-            .that().resideInAPackage("email.testinbox.domain..")
-            .or().resideInAPackage("email.testinbox.application..")
-            .should().dependOnClassesThat(
+            .that()
+            .resideInAPackage("email.testinbox.domain..")
+            .or()
+            .resideInAPackage("email.testinbox.application..")
+            .should()
+            .dependOnClassesThat(
                 describe("are framework/provider classes") { target: JavaClass ->
                     listOf(
-                        "org.springframework", "jakarta.persistence", "jakarta.servlet", "java.sql",
-                        "javax.sql", "org.postgresql", "software.amazon", "org.subethamail",
-                        "jakarta.mail", "org.flywaydb", "com.fasterxml.jackson",
+                        "org.springframework",
+                        "jakarta.persistence",
+                        "jakarta.servlet",
+                        "java.sql",
+                        "javax.sql",
+                        "org.postgresql",
+                        "software.amazon",
+                        "org.subethamail",
+                        "jakarta.mail",
+                        "org.flywaydb",
+                        "com.fasterxml.jackson",
                     ).any { target.packageName.startsWith(it) }
                 },
-            )
-            .check(allClasses)
+            ).check(allClasses)
     }
 
     @Test
@@ -89,8 +101,11 @@ class DependencyRuleTest {
         for ((name, pkg) in adapterPackages) {
             val others = adapterPackages.filterKeys { it != name }.values.toTypedArray()
             noClasses()
-                .that().resideInAPackage(pkg)
-                .should().dependOnClassesThat().resideInAnyPackage(*others)
+                .that()
+                .resideInAPackage(pkg)
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(*others)
                 .because("infrastructure adapters depend inward only (ADR-024)")
                 .check(allClasses)
         }
@@ -99,12 +114,18 @@ class DependencyRuleTest {
     @Test
     fun `entry-point adapters do not depend on each other`() {
         noClasses()
-            .that().resideInAPackage("email.testinbox.api..")
-            .should().dependOnClassesThat().resideInAPackage("email.testinbox.ingestion..")
+            .that()
+            .resideInAPackage("email.testinbox.api..")
+            .should()
+            .dependOnClassesThat()
+            .resideInAPackage("email.testinbox.ingestion..")
             .check(allClasses)
         noClasses()
-            .that().resideInAPackage("email.testinbox.ingestion..")
-            .should().dependOnClassesThat().resideInAPackage("email.testinbox.api..")
+            .that()
+            .resideInAPackage("email.testinbox.ingestion..")
+            .should()
+            .dependOnClassesThat()
+            .resideInAPackage("email.testinbox.api..")
             .check(allClasses)
     }
 
@@ -113,26 +134,30 @@ class DependencyRuleTest {
         // The gateway invokes application use cases (ADR-024); its only legal
         // references to persistence/storage are the wiring of port implementations.
         noClasses()
-            .that().resideInAPackage("email.testinbox.ingestion..")
-            .and().resideOutsideOfPackage("email.testinbox.ingestion.config..")
-            .should().dependOnClassesThat().resideInAnyPackage(
+            .that()
+            .resideInAPackage("email.testinbox.ingestion..")
+            .and()
+            .resideOutsideOfPackage("email.testinbox.ingestion.config..")
+            .should()
+            .dependOnClassesThat()
+            .resideInAnyPackage(
                 "email.testinbox.persistence..",
                 "email.testinbox.storage..",
-            )
-            .check(allClasses)
+            ).check(allClasses)
     }
 
     @Test
     fun `no content-based dedup types leak into domain (ADR-019 guard)`() {
         // The only provider fingerprint retained is providerMessageId as an opaque string.
         noClasses()
-            .that().resideInAPackage("email.testinbox.domain..")
-            .should().dependOnClassesThat(
+            .that()
+            .resideInAPackage("email.testinbox.domain..")
+            .should()
+            .dependOnClassesThat(
                 describe("are provider SDK types") { target: JavaClass ->
                     target.packageName.startsWith("software.amazon") ||
                         target.packageName.startsWith("org.subethamail")
                 },
-            )
-            .check(allClasses)
+            ).check(allClasses)
     }
 }

@@ -9,9 +9,9 @@ import email.testinbox.application.usecase.ReceiveInboundMessage
 import email.testinbox.ingestion.mime.JakartaMimeParser
 import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
-import java.time.Clock
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import java.time.Clock
 
 @Configuration
 class IngestionWiring {

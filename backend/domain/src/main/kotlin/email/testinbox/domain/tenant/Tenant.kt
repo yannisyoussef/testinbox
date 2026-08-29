@@ -5,12 +5,23 @@ import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
 import java.time.Instant
 
-data class Workspace(val id: WorkspaceId, val name: String, val createdAt: Instant)
+data class Workspace(
+    val id: WorkspaceId,
+    val name: String,
+    val createdAt: Instant,
+)
 
-data class Project(val id: ProjectId, val workspaceId: WorkspaceId, val name: String, val createdAt: Instant)
+data class Project(
+    val id: ProjectId,
+    val workspaceId: WorkspaceId,
+    val name: String,
+    val createdAt: Instant,
+)
 
 /** Permission scopes carried by an API key (ADR-010). */
-enum class ApiScope(val wire: String) {
+enum class ApiScope(
+    val wire: String,
+) {
     INBOXES_WRITE("inboxes:write"),
     MESSAGES_READ("messages:read"),
     ;

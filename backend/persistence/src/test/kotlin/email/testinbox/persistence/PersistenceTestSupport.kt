@@ -10,9 +10,6 @@ import email.testinbox.domain.inbox.InboxState
 import email.testinbox.domain.message.Message
 import email.testinbox.domain.message.ParseStatus
 import email.testinbox.domain.message.ParsedContent
-import java.time.Instant
-import java.time.temporal.ChronoUnit
-import java.util.UUID
 import org.springframework.boot.SpringBootConfiguration
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration
 import org.springframework.boot.test.context.SpringBootTest
@@ -22,6 +19,9 @@ import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.testcontainers.containers.PostgreSQLContainer
+import java.time.Instant
+import java.time.temporal.ChronoUnit
+import java.util.UUID
 
 @SpringBootConfiguration
 @EnableAutoConfiguration
@@ -49,10 +49,15 @@ object Fixtures {
     fun provisionTenant(jdbc: JdbcClient): Pair<WorkspaceId, ProjectId> {
         val workspaceId = WorkspaceId(UUID.randomUUID())
         val projectId = ProjectId(UUID.randomUUID())
-        jdbc.sql("INSERT INTO workspace (id, name, created_at) VALUES (:id, 'w', now())")
-            .param("id", workspaceId.value).update()
-        jdbc.sql("INSERT INTO project (id, workspace_id, name, created_at) VALUES (:id, :ws, 'p', now())")
-            .param("id", projectId.value).param("ws", workspaceId.value).update()
+        jdbc
+            .sql("INSERT INTO workspace (id, name, created_at) VALUES (:id, 'w', now())")
+            .param("id", workspaceId.value)
+            .update()
+        jdbc
+            .sql("INSERT INTO project (id, workspace_id, name, created_at) VALUES (:id, :ws, 'p', now())")
+            .param("id", projectId.value)
+            .param("ws", workspaceId.value)
+            .update()
         return workspaceId to projectId
     }
 

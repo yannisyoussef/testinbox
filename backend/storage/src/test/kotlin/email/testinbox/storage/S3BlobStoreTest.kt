@@ -3,11 +3,11 @@ package email.testinbox.storage
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
-import java.time.Instant
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.testcontainers.containers.MinIOContainer
+import java.time.Instant
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class S3BlobStoreTest {
@@ -56,7 +56,8 @@ class S3BlobStoreTest {
     @Test
     fun `listKeysOlderThan supports the orphan sweep`() {
         store.put("ws3/in/m/raw.eml", byteArrayOf(1), "x")
-        store.listKeysOlderThan("ws3/", Instant.now().plusSeconds(60))
+        store
+            .listKeysOlderThan("ws3/", Instant.now().plusSeconds(60))
             .shouldContainExactly("ws3/in/m/raw.eml")
         store.listKeysOlderThan("ws3/", Instant.now().minusSeconds(3600)) shouldBe emptyList()
     }

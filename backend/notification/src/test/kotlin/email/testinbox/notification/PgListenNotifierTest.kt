@@ -3,8 +3,14 @@ package email.testinbox.notification
 import email.testinbox.application.port.NOTIFICATION_CHANNEL
 import email.testinbox.application.port.WakeOutcome
 import email.testinbox.domain.InboxId
-import io.kotest.matchers.shouldBe
 import io.kotest.matchers.longs.shouldBeGreaterThan
+import io.kotest.matchers.shouldBe
+import org.awaitility.Awaitility.await
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestInstance
+import org.testcontainers.containers.PostgreSQLContainer
 import java.sql.Connection
 import java.sql.DriverManager
 import java.time.Duration
@@ -12,12 +18,6 @@ import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import org.awaitility.Awaitility.await
-import org.junit.jupiter.api.AfterAll
-import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.TestInstance
-import org.testcontainers.containers.PostgreSQLContainer
 
 /**
  * ADR-020 recovery contract for the LISTEN adapter: wake on notify, wake
@@ -53,8 +53,7 @@ class PgListenNotifierTest {
         postgres.stop()
     }
 
-    private fun connect(): Connection =
-        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password)
+    private fun connect(): Connection = DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password)
 
     private fun notify(inboxId: InboxId) {
         connect().use { connection ->
@@ -97,7 +96,9 @@ class PgListenNotifierTest {
         val inboxId = InboxId(UUID.randomUUID())
         val epochBefore = notifier.health().epoch
         notifier.subscribe(inboxId).use { handle ->
-            val outcome = java.util.concurrent.atomic.AtomicReference<WakeOutcome>()
+            val outcome =
+                java.util.concurrent.atomic
+                    .AtomicReference<WakeOutcome>()
             val done = CountDownLatch(1)
             Thread {
                 outcome.set(handle.awaitWake(Instant.now().plusSeconds(20)))

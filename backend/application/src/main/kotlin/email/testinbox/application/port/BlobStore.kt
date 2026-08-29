@@ -8,7 +8,11 @@ import java.time.Instant
  * content-addressed.
  */
 interface BlobStore {
-    fun put(key: String, bytes: ByteArray, contentType: String)
+    fun put(
+        key: String,
+        bytes: ByteArray,
+        contentType: String,
+    )
 
     fun get(key: String): ByteArray?
 
@@ -18,5 +22,8 @@ interface BlobStore {
     fun deletePrefix(prefix: String)
 
     /** Keys under [prefix] last modified before [olderThan] — orphan sweep support. */
-    fun listKeysOlderThan(prefix: String, olderThan: Instant): List<String>
+    fun listKeysOlderThan(
+        prefix: String,
+        olderThan: Instant,
+    ): List<String>
 }

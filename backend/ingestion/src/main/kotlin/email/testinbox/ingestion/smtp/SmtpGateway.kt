@@ -3,7 +3,6 @@ package email.testinbox.ingestion.smtp
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.usecase.ReceiveInboundMessage
 import email.testinbox.ingestion.config.IngestionProperties
-import java.io.InputStream
 import org.slf4j.LoggerFactory
 import org.springframework.context.SmartLifecycle
 import org.springframework.stereotype.Component
@@ -11,6 +10,7 @@ import org.subethamail.smtp.MessageContext
 import org.subethamail.smtp.MessageHandler
 import org.subethamail.smtp.RejectException
 import org.subethamail.smtp.server.SMTPServer
+import java.io.InputStream
 
 const val LOCAL_SMTP_PROVIDER = "local-smtp"
 
@@ -37,7 +37,8 @@ class SmtpGateway(
 
     override fun start() {
         val smtpServer =
-            SMTPServer.port(properties.smtp.port)
+            SMTPServer
+                .port(properties.smtp.port)
                 .messageHandlerFactory { context: MessageContext -> Handler() }
                 .maxMessageSize(config.maxRawSizeBytes.toInt())
                 .softwareName("TestInbox")

@@ -6,7 +6,10 @@ package email.testinbox.domain.message
  * fields match. Only parsed messages (`parseStatus == OK`) can satisfy a
  * matcher; ParseFailed messages never match (ADR-012).
  */
-data class HeaderMatcher(val name: String, val value: String? = null)
+data class HeaderMatcher(
+    val name: String,
+    val value: String? = null,
+)
 
 data class MessageMatcher(
     /** Case-insensitive exact match against the parsed From address (or raw From header fallback). */

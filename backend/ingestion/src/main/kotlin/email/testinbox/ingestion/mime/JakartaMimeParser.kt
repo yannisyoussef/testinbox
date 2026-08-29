@@ -13,9 +13,9 @@ import jakarta.mail.internet.InternetAddress
 import jakarta.mail.internet.MimeMessage
 import jakarta.mail.internet.MimeMultipart
 import jakarta.mail.internet.MimeUtility
+import org.jsoup.Jsoup
 import java.io.ByteArrayInputStream
 import java.util.Properties
-import org.jsoup.Jsoup
 
 /**
  * Total MIME parsing over Jakarta Mail (email-mime-expert rules): any byte
@@ -40,7 +40,9 @@ class JakartaMimeParser(
             MimeParseResult.Failed("${e.javaClass.simpleName}: ${e.message ?: "unparseable MIME"}")
         }
 
-    private class ParseAbort(message: String) : RuntimeException(message)
+    private class ParseAbort(
+        message: String,
+    ) : RuntimeException(message)
 
     private class Collector {
         var text: String? = null
@@ -59,7 +61,10 @@ class JakartaMimeParser(
                     add(EmailHeader(header.name, header.value ?: ""))
                 }
             }
-        if (headers.isEmpty()) throw ParseAbort("no RFC 5322 headers found")
+        // Jakarta Mail is lenient about garbage: require at least one
+        // plausible RFC 5322 header (field name without whitespace/control chars).
+        val plausibleHeader = headers.any { HEADER_NAME.matches(it.name) }
+        if (!plausibleHeader) throw ParseAbort("no RFC 5322 headers found")
 
         val collector = Collector()
         walk(mime, collector, depth = 0)
@@ -86,7 +91,11 @@ class JakartaMimeParser(
         )
     }
 
-    private fun walk(part: Part, collector: Collector, depth: Int) {
+    private fun walk(
+        part: Part,
+        collector: Collector,
+        depth: Int,
+    ) {
         if (depth > maxDepth) throw ParseAbort("MIME nesting exceeds depth limit of $maxDepth")
         if (++collector.parts > maxParts) throw ParseAbort("MIME part count exceeds limit of $maxParts")
 
@@ -130,8 +139,12 @@ class JakartaMimeParser(
             // Fallback for broken/unknown charsets: keep the bytes readable rather than failing the message.
             ?: String(part.inputStream.readAllBytes(), Charsets.ISO_8859_1)
 
-    private fun extractLinks(html: String?, text: String?): List<EmailLink> {
+    private fun extractLinks(
+        html: String?,
+        text: String?,
+    ): List<EmailLink> {
         val links = LinkedHashMap<String, EmailLink>()
+        var htmlVisibleText: String? = null
         if (html != null) {
             val document = Jsoup.parse(html)
             for (anchor in document.select("a[href]")) {
@@ -140,9 +153,10 @@ class JakartaMimeParser(
                 if (href.isEmpty()) continue
                 links.putIfAbsent(href, EmailLink(href, anchor.text().ifBlank { null }))
             }
+            htmlVisibleText = document.text()
         }
-        if (text != null) {
-            for (match in URL_PATTERN.findAll(text)) {
+        for (candidate in listOfNotNull(text, htmlVisibleText)) {
+            for (match in URL_PATTERN.findAll(candidate)) {
                 if (links.size >= maxLinks) break
                 val href = match.value.trimEnd('.', ',', ';', ')')
                 links.putIfAbsent(href, EmailLink(href, null))
@@ -153,5 +167,6 @@ class JakartaMimeParser(
 
     private companion object {
         val URL_PATTERN = Regex("""https?://[^\s<>"'\[\]]+""")
+        val HEADER_NAME = Regex("""[!-9;-~]+""")
     }
 }

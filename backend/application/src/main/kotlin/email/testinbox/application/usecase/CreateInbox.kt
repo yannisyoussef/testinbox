@@ -43,23 +43,40 @@ class CreateInbox(
     )
 
     sealed interface Result {
-        data class Created(val inbox: Inbox) : Result
+        data class Created(
+            val inbox: Inbox,
+        ) : Result
 
         /** EXACT local-part already reserved or in cooldown — maps to 409 (ADR-021). */
-        data class AddressConflict(val localPart: String, val availableAt: Instant?) : Result
+        data class AddressConflict(
+            val localPart: String,
+            val availableAt: Instant?,
+        ) : Result
 
-        data class InvalidRequest(val reason: String) : Result
+        data class InvalidRequest(
+            val reason: String,
+        ) : Result
     }
 
     fun execute(command: Command): Result {
         val now = clock.instant()
         val ttl =
             when {
-                command.ttlSeconds == null -> config.defaultTtl
-                command.ttlSeconds <= 0 -> return Result.InvalidRequest("ttlSeconds must be positive")
-                command.ttlSeconds > config.maxTtl.seconds ->
+                command.ttlSeconds == null -> {
+                    config.defaultTtl
+                }
+
+                command.ttlSeconds <= 0 -> {
+                    return Result.InvalidRequest("ttlSeconds must be positive")
+                }
+
+                command.ttlSeconds > config.maxTtl.seconds -> {
                     return Result.InvalidRequest("ttlSeconds exceeds the maximum of ${config.maxTtl.seconds}")
-                else -> Duration.ofSeconds(command.ttlSeconds)
+                }
+
+                else -> {
+                    Duration.ofSeconds(command.ttlSeconds)
+                }
             }
         return when (command.addressMode) {
             AddressMode.GENERATED -> createGenerated(command, now, ttl)
@@ -67,7 +84,11 @@ class CreateInbox(
         }
     }
 
-    private fun createGenerated(command: Command, now: Instant, ttl: Duration): Result {
+    private fun createGenerated(
+        command: Command,
+        now: Instant,
+        ttl: Duration,
+    ): Result {
         if (command.localPart != null) {
             return Result.InvalidRequest("localPart is only valid with addressMode EXACT")
         }
@@ -75,7 +96,10 @@ class CreateInbox(
             val inbox =
                 newInbox(command, now, ttl, AddressMode.GENERATED, GeneratedAddress.localPart(command.aliasHint))
             when (inboxes.insert(inbox)) {
-                InsertInboxOutcome.Inserted -> return Result.Created(inbox)
+                InsertInboxOutcome.Inserted -> {
+                    return Result.Created(inbox)
+                }
+
                 // Statistically negligible token collision: regenerate and retry (ADR-021).
                 InsertInboxOutcome.AddressTaken -> {}
             }
@@ -83,7 +107,11 @@ class CreateInbox(
         error("Generated-address collision persisted across $MAX_TOKEN_RETRIES retries")
     }
 
-    private fun createExact(command: Command, now: Instant, ttl: Duration): Result {
+    private fun createExact(
+        command: Command,
+        now: Instant,
+        ttl: Duration,
+    ): Result {
         if (command.aliasHint != null) {
             return Result.InvalidRequest("aliasHint is only valid with addressMode GENERATED")
         }
@@ -91,10 +119,17 @@ class CreateInbox(
             command.localPart ?: return Result.InvalidRequest("localPart is required with addressMode EXACT")
         val localPart =
             when (val validation = LocalPartPolicy.validate(requested)) {
-                is LocalPartPolicy.Result.Invalid -> return Result.InvalidRequest(validation.reason)
-                is LocalPartPolicy.Result.Denied ->
+                is LocalPartPolicy.Result.Invalid -> {
+                    return Result.InvalidRequest(validation.reason)
+                }
+
+                is LocalPartPolicy.Result.Denied -> {
                     return Result.InvalidRequest("localPart '${validation.localPart}' is reserved")
-                is LocalPartPolicy.Result.Valid -> validation.normalized
+                }
+
+                is LocalPartPolicy.Result.Valid -> {
+                    validation.normalized
+                }
             }
         val inbox = newInbox(command, now, ttl, AddressMode.EXACT, localPart)
         return tx.required {
@@ -109,12 +144,16 @@ class CreateInbox(
                     availableAt = null,
                 )
             when (val outcome = reservations.reserve(reservation, now)) {
-                is ReserveOutcome.Conflict -> Result.AddressConflict(localPart, outcome.availableAt)
-                ReserveOutcome.Reserved ->
+                is ReserveOutcome.Conflict -> {
+                    Result.AddressConflict(localPart, outcome.availableAt)
+                }
+
+                ReserveOutcome.Reserved -> {
                     when (inboxes.insert(inbox)) {
                         InsertInboxOutcome.Inserted -> Result.Created(inbox)
                         InsertInboxOutcome.AddressTaken -> Result.AddressConflict(localPart, null)
                     }
+                }
             }
         }
     }

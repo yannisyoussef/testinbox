@@ -24,7 +24,9 @@ object GeneratedAddress {
     fun normalizeHint(aliasHint: String?): String? {
         if (aliasHint == null) return null
         val cleaned =
-            aliasHint.trim().lowercase()
+            aliasHint
+                .trim()
+                .lowercase()
                 .replace(Regex("[^a-z0-9._-]"), "-")
                 .trim('.', '-', '_')
                 .take(MAX_HINT_LENGTH)

@@ -1,8 +1,6 @@
 package email.testinbox.storage
 
 import email.testinbox.application.port.BlobStore
-import java.net.URI
-import java.time.Instant
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.core.sync.RequestBody
@@ -19,6 +17,8 @@ import software.amazon.awssdk.services.s3.model.NoSuchBucketException
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
+import java.net.URI
+import java.time.Instant
 
 data class S3BlobStoreConfig(
     val endpoint: String,
@@ -34,17 +34,20 @@ data class S3BlobStoreConfig(
  * S3-compatible blob adapter (ADR-005): MinIO locally, any S3 provider in
  * production. Path-style access for MinIO compatibility.
  */
-class S3BlobStore(private val config: S3BlobStoreConfig) : BlobStore, AutoCloseable {
+class S3BlobStore(
+    private val config: S3BlobStoreConfig,
+) : BlobStore,
+    AutoCloseable {
     private val s3: S3Client =
-        S3Client.builder()
+        S3Client
+            .builder()
             .endpointOverride(URI.create(config.endpoint))
             .region(Region.of(config.region))
             .credentialsProvider(
                 StaticCredentialsProvider.create(
                     AwsBasicCredentials.create(config.accessKey, config.secretKey),
                 ),
-            )
-            .forcePathStyle(true)
+            ).forcePathStyle(true)
             .build()
 
     init {
@@ -59,22 +62,44 @@ class S3BlobStore(private val config: S3BlobStoreConfig) : BlobStore, AutoClosea
         }
     }
 
-    override fun put(key: String, bytes: ByteArray, contentType: String) {
+    override fun put(
+        key: String,
+        bytes: ByteArray,
+        contentType: String,
+    ) {
         s3.putObject(
-            PutObjectRequest.builder().bucket(config.bucket).key(key).contentType(contentType).build(),
+            PutObjectRequest
+                .builder()
+                .bucket(config.bucket)
+                .key(key)
+                .contentType(contentType)
+                .build(),
             RequestBody.fromBytes(bytes),
         )
     }
 
     override fun get(key: String): ByteArray? =
         try {
-            s3.getObjectAsBytes(GetObjectRequest.builder().bucket(config.bucket).key(key).build()).asByteArray()
+            s3
+                .getObjectAsBytes(
+                    GetObjectRequest
+                        .builder()
+                        .bucket(config.bucket)
+                        .key(key)
+                        .build(),
+                ).asByteArray()
         } catch (_: NoSuchKeyException) {
             null
         }
 
     override fun delete(key: String) {
-        s3.deleteObject(DeleteObjectRequest.builder().bucket(config.bucket).key(key).build())
+        s3.deleteObject(
+            DeleteObjectRequest
+                .builder()
+                .bucket(config.bucket)
+                .key(key)
+                .build(),
+        )
     }
 
     override fun deletePrefix(prefix: String) {
@@ -82,7 +107,8 @@ class S3BlobStore(private val config: S3BlobStoreConfig) : BlobStore, AutoClosea
         do {
             val listing =
                 s3.listObjectsV2(
-                    ListObjectsV2Request.builder()
+                    ListObjectsV2Request
+                        .builder()
                         .bucket(config.bucket)
                         .prefix(prefix)
                         .continuationToken(continuation)
@@ -91,7 +117,8 @@ class S3BlobStore(private val config: S3BlobStoreConfig) : BlobStore, AutoClosea
             val keys = listing.contents().map { ObjectIdentifier.builder().key(it.key()).build() }
             if (keys.isNotEmpty()) {
                 s3.deleteObjects(
-                    DeleteObjectsRequest.builder()
+                    DeleteObjectsRequest
+                        .builder()
                         .bucket(config.bucket)
                         .delete(Delete.builder().objects(keys).build())
                         .build(),
@@ -101,19 +128,24 @@ class S3BlobStore(private val config: S3BlobStoreConfig) : BlobStore, AutoClosea
         } while (continuation != null)
     }
 
-    override fun listKeysOlderThan(prefix: String, olderThan: Instant): List<String> {
+    override fun listKeysOlderThan(
+        prefix: String,
+        olderThan: Instant,
+    ): List<String> {
         val result = mutableListOf<String>()
         var continuation: String? = null
         do {
             val listing =
                 s3.listObjectsV2(
-                    ListObjectsV2Request.builder()
+                    ListObjectsV2Request
+                        .builder()
                         .bucket(config.bucket)
                         .prefix(prefix)
                         .continuationToken(continuation)
                         .build(),
                 )
-            listing.contents()
+            listing
+                .contents()
                 .filter { it.lastModified().isBefore(olderThan) }
                 .forEach { result += it.key() }
             continuation = listing.nextContinuationToken()

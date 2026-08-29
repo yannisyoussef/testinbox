@@ -6,6 +6,8 @@ import email.testinbox.application.port.NotifierHealth
 import email.testinbox.application.port.WaitHandle
 import email.testinbox.application.port.WakeOutcome
 import email.testinbox.domain.InboxId
+import org.postgresql.PGConnection
+import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.DriverManager
 import java.time.Duration
@@ -16,8 +18,6 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import org.postgresql.PGConnection
-import org.slf4j.LoggerFactory
 
 data class PgListenNotifierConfig(
     val jdbcUrl: String,
@@ -42,7 +42,10 @@ data class PgListenNotifierConfig(
  *  - health (listening/epoch/reconnects) is surfaced for readiness.
  * Notification payloads are wake-up hints only; waiters always re-query.
  */
-class PgListenNotifier(private val config: PgListenNotifierConfig) : MessageNotifier, AutoCloseable {
+class PgListenNotifier(
+    private val config: PgListenNotifierConfig,
+) : MessageNotifier,
+    AutoCloseable {
     private val waiters = ConcurrentHashMap<String, MutableSet<Waiter>>()
     private val listening = AtomicBoolean(false)
     private val epoch = AtomicLong(0)
@@ -139,7 +142,9 @@ class PgListenNotifier(private val config: PgListenNotifierConfig) : MessageNoti
         degradedThread?.join(2000)
     }
 
-    private inner class Waiter(val inboxKey: String) : WaitHandle {
+    private inner class Waiter(
+        val inboxKey: String,
+    ) : WaitHandle {
         private val signal = Semaphore(0)
 
         fun wake() {

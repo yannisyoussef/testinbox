@@ -1,0 +1,7 @@
+From: legacy@example.com
+To: someone@testinbox.local
+Subject: Legacy encoding
+MIME-Version: 1.0
+Content-Type: text/plain; charset=x-no-such-charset
+
+Content in an unknown charset that must not fail the whole message.

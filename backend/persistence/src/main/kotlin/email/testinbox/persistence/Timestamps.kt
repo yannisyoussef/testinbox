@@ -8,6 +8,8 @@ import java.time.ZoneOffset
 internal object Timestamps {
     fun toDb(instant: Instant): OffsetDateTime = instant.atOffset(ZoneOffset.UTC)
 
-    fun fromDb(rs: ResultSet, column: String): Instant? =
-        rs.getObject(column, OffsetDateTime::class.java)?.toInstant()
+    fun fromDb(
+        rs: ResultSet,
+        column: String,
+    ): Instant? = rs.getObject(column, OffsetDateTime::class.java)?.toInstant()
 }

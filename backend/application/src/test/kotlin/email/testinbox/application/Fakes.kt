@@ -23,10 +23,12 @@ import email.testinbox.domain.inbox.ReservationStatus
 import email.testinbox.domain.message.Message
 import java.time.Clock
 import java.time.Instant
-import java.time.ZoneOffset
 import java.time.ZoneId
+import java.time.ZoneOffset
 
-class MutableClock(var now: Instant) : Clock() {
+class MutableClock(
+    var now: Instant,
+) : Clock() {
     override fun instant(): Instant = now
 
     override fun getZone(): ZoneId = ZoneOffset.UTC
@@ -60,30 +62,44 @@ class InMemoryInboxRepository : InboxRepository {
         return InsertInboxOutcome.Inserted
     }
 
-    override fun findById(workspaceId: WorkspaceId, id: InboxId): Inbox? =
-        inboxes[id]?.takeIf { it.workspaceId == workspaceId }
+    override fun findById(
+        workspaceId: WorkspaceId,
+        id: InboxId,
+    ): Inbox? = inboxes[id]?.takeIf { it.workspaceId == workspaceId }
 
     override fun findReceivableByAddress(address: String): Inbox? =
         inboxes.values.firstOrNull {
             it.address == address && it.state in setOf(InboxState.ACTIVE, InboxState.EXPIRING)
         }
 
-    override fun markDeleted(workspaceId: WorkspaceId, id: InboxId, now: Instant): Inbox? {
+    override fun markDeleted(
+        workspaceId: WorkspaceId,
+        id: InboxId,
+        now: Instant,
+    ): Inbox? {
         val existing = findById(workspaceId, id) ?: return null
         inboxes[id] = existing.copy(state = InboxState.DELETED)
         return existing
     }
 
-    override fun findExpiredActive(now: Instant, limit: Int): List<Inbox> =
-        inboxes.values.filter { it.state == InboxState.ACTIVE && !it.expiresAt.isAfter(now) }.take(limit)
+    override fun findExpiredActive(
+        now: Instant,
+        limit: Int,
+    ): List<Inbox> = inboxes.values.filter { it.state == InboxState.ACTIVE && !it.expiresAt.isAfter(now) }.take(limit)
 
-    override fun transitionToExpiring(id: InboxId, graceUntil: Instant): Boolean {
+    override fun transitionToExpiring(
+        id: InboxId,
+        graceUntil: Instant,
+    ): Boolean {
         val inbox = inboxes[id]?.takeIf { it.state == InboxState.ACTIVE } ?: return false
         inboxes[id] = inbox.copy(state = InboxState.EXPIRING, graceUntil = graceUntil)
         return true
     }
 
-    override fun findExpiringPastGrace(now: Instant, limit: Int): List<Inbox> =
+    override fun findExpiringPastGrace(
+        now: Instant,
+        limit: Int,
+    ): List<Inbox> =
         inboxes.values
             .filter { it.state == InboxState.EXPIRING && it.graceUntil?.isAfter(now) == false }
             .take(limit)
@@ -107,7 +123,10 @@ class InMemoryInboxRepository : InboxRepository {
 class InMemoryReservations : ExactAddressReservations {
     val byLocalPart = LinkedHashMap<String, ExactReservation>()
 
-    override fun reserve(reservation: ExactReservation, now: Instant): ReserveOutcome {
+    override fun reserve(
+        reservation: ExactReservation,
+        now: Instant,
+    ): ReserveOutcome {
         val existing = byLocalPart[reservation.localPart]
         if (existing != null &&
             existing.status == ReservationStatus.COOLDOWN &&
@@ -121,7 +140,10 @@ class InMemoryReservations : ExactAddressReservations {
         return ReserveOutcome.Reserved
     }
 
-    override fun startCooldown(inboxId: InboxId, availableAt: Instant) {
+    override fun startCooldown(
+        inboxId: InboxId,
+        availableAt: Instant,
+    ) {
         val entry =
             byLocalPart.values.firstOrNull {
                 it.inboxId == inboxId && it.status == ReservationStatus.ACTIVE
@@ -148,14 +170,16 @@ class InMemoryMessageRepository : MessageRepository {
         return AppendOutcome.Appended
     }
 
-    override fun findEarliestIdByFingerprint(inboxId: InboxId, fingerprint: String): MessageId? =
+    override fun findEarliestIdByFingerprint(
+        inboxId: InboxId,
+        fingerprint: String,
+    ): MessageId? =
         messages
             .filter { it.inboxId == inboxId && it.contentFingerprint == fingerprint }
             .minByOrNull { it.receivedAt }
             ?.id
 
-    override fun listVisible(inboxId: InboxId): List<Message> =
-        messages.filter { it.inboxId == inboxId }.sortedBy { it.receivedAt }
+    override fun listVisible(inboxId: InboxId): List<Message> = messages.filter { it.inboxId == inboxId }.sortedBy { it.receivedAt }
 
     override fun listPage(
         workspaceId: WorkspaceId,
@@ -169,20 +193,30 @@ class InMemoryMessageRepository : MessageRepository {
             .filter { after == null || it.receivedAt.isAfter(after.receivedAt) }
             .take(limit)
 
-    override fun findById(workspaceId: WorkspaceId, id: MessageId): Message? =
-        messages.firstOrNull { it.id == id && it.workspaceId == workspaceId }
+    override fun findById(
+        workspaceId: WorkspaceId,
+        id: MessageId,
+    ): Message? = messages.firstOrNull { it.id == id && it.workspaceId == workspaceId }
 
     override fun exists(id: MessageId): Boolean = messages.any { it.id == id }
 }
 
 class InMemoryBlobStore : BlobStore {
-    data class Entry(val bytes: ByteArray, val contentType: String, val storedAt: Instant)
+    data class Entry(
+        val bytes: ByteArray,
+        val contentType: String,
+        val storedAt: Instant,
+    )
 
     val blobs = LinkedHashMap<String, Entry>()
     var storedAtClock: Clock = Clock.systemUTC()
     val putOrder = mutableListOf<String>()
 
-    override fun put(key: String, bytes: ByteArray, contentType: String) {
+    override fun put(
+        key: String,
+        bytes: ByteArray,
+        contentType: String,
+    ) {
         blobs[key] = Entry(bytes, contentType, storedAtClock.instant())
         putOrder += key
     }
@@ -197,8 +231,10 @@ class InMemoryBlobStore : BlobStore {
         blobs.keys.removeAll { it.startsWith(prefix) }
     }
 
-    override fun listKeysOlderThan(prefix: String, olderThan: Instant): List<String> =
-        blobs.filter { it.key.startsWith(prefix) && it.value.storedAt.isBefore(olderThan) }.keys.toList()
+    override fun listKeysOlderThan(
+        prefix: String,
+        olderThan: Instant,
+    ): List<String> = blobs.filter { it.key.startsWith(prefix) && it.value.storedAt.isBefore(olderThan) }.keys.toList()
 }
 
 /** Manually-driven notifier: tests signal wakes and observe subscriptions. */
@@ -206,7 +242,9 @@ class FakeNotifier : MessageNotifier {
     val handles = mutableListOf<FakeHandle>()
     var onAwait: (FakeHandle) -> WakeOutcome = { WakeOutcome.DEADLINE }
 
-    inner class FakeHandle(val inboxId: InboxId) : WaitHandle {
+    inner class FakeHandle(
+        val inboxId: InboxId,
+    ) : WaitHandle {
         var closed = false
         var awaitCount = 0
 

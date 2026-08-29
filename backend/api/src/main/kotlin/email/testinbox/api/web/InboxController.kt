@@ -13,9 +13,6 @@ import email.testinbox.domain.message.HeaderMatcher
 import email.testinbox.domain.message.MessageMatcher
 import email.testinbox.domain.tenant.ApiScope
 import jakarta.servlet.http.HttpServletRequest
-import java.time.Duration
-import java.time.Instant
-import java.util.UUID
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.DeleteMapping
@@ -26,6 +23,9 @@ import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
+import java.time.Duration
+import java.time.Instant
+import java.util.UUID
 
 @RestController
 @RequestMapping("/v1/inboxes")
@@ -45,9 +45,15 @@ class InboxController(
         key.requireScope(ApiScope.INBOXES_WRITE)
         val mode =
             when (body.addressMode) {
-                null, "GENERATED" -> AddressMode.GENERATED
-                "EXACT" -> AddressMode.EXACT
-                else ->
+                null, "GENERATED" -> {
+                    AddressMode.GENERATED
+                }
+
+                "EXACT" -> {
+                    AddressMode.EXACT
+                }
+
+                else -> {
                     return Problems.respond(
                         Problems.of(
                             HttpStatus.BAD_REQUEST,
@@ -57,6 +63,7 @@ class InboxController(
                             request,
                         ),
                     )
+                }
             }
         val result =
             createInbox.execute(
@@ -70,9 +77,11 @@ class InboxController(
                 ),
             )
         return when (result) {
-            is CreateInbox.Result.Created ->
+            is CreateInbox.Result.Created -> {
                 ResponseEntity.status(HttpStatus.CREATED).body(InboxDto.from(result.inbox))
-            is CreateInbox.Result.InvalidRequest ->
+            }
+
+            is CreateInbox.Result.InvalidRequest -> {
                 Problems.respond(
                     Problems.of(
                         HttpStatus.BAD_REQUEST,
@@ -82,6 +91,8 @@ class InboxController(
                         request,
                     ),
                 )
+            }
+
             is CreateInbox.Result.AddressConflict -> {
                 val problem =
                     Problems.of(
@@ -211,7 +222,7 @@ class InboxController(
                 ),
             )
         return when (result) {
-            is WaitForMessage.Result.Matched ->
+            is WaitForMessage.Result.Matched -> {
                 ResponseEntity.ok(
                     WaitResultDto(
                         status = "MATCHED",
@@ -221,7 +232,9 @@ class InboxController(
                         parseFailedCount = null,
                     ),
                 )
-            is WaitForMessage.Result.Timeout ->
+            }
+
+            is WaitForMessage.Result.Timeout -> {
                 // ADR-020: window expiry is a successful query with a negative answer — never 408.
                 ResponseEntity.ok(
                     WaitResultDto(
@@ -232,7 +245,9 @@ class InboxController(
                         parseFailedCount = result.parseFailedCount,
                     ),
                 )
-            WaitForMessage.Result.InboxGone ->
+            }
+
+            WaitForMessage.Result.InboxGone -> {
                 Problems.respond(
                     Problems.of(
                         HttpStatus.GONE,
@@ -242,8 +257,13 @@ class InboxController(
                         request,
                     ),
                 )
-            WaitForMessage.Result.InboxNotFound -> inboxNotFound(request)
-            is WaitForMessage.Result.InvalidRequest ->
+            }
+
+            WaitForMessage.Result.InboxNotFound -> {
+                inboxNotFound(request)
+            }
+
+            is WaitForMessage.Result.InvalidRequest -> {
                 Problems.respond(
                     Problems.of(
                         HttpStatus.BAD_REQUEST,
@@ -253,6 +273,7 @@ class InboxController(
                         request,
                     ),
                 )
+            }
         }
     }
 

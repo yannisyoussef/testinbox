@@ -11,21 +11,48 @@ object LocalPartPolicy {
     /** RFC 2142 role addresses and operationally sensitive names — never reservable by a tenant. */
     val DENYLIST: Set<String> =
         setOf(
-            "postmaster", "abuse", "hostmaster", "webmaster", "security",
-            "usenet", "news", "uucp", "ftp", "www", "noc",
-            "admin", "administrator", "root", "support", "billing",
-            "noreply", "no-reply", "info", "sales", "help", "contact",
-            "legal", "privacy", "mailer-daemon", "marketing",
+            "postmaster",
+            "abuse",
+            "hostmaster",
+            "webmaster",
+            "security",
+            "usenet",
+            "news",
+            "uucp",
+            "ftp",
+            "www",
+            "noc",
+            "admin",
+            "administrator",
+            "root",
+            "support",
+            "billing",
+            "noreply",
+            "no-reply",
+            "info",
+            "sales",
+            "help",
+            "contact",
+            "legal",
+            "privacy",
+            "mailer-daemon",
+            "marketing",
         )
 
     private val VALID = Regex("^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$")
 
     sealed interface Result {
-        data class Valid(val normalized: String) : Result
+        data class Valid(
+            val normalized: String,
+        ) : Result
 
-        data class Invalid(val reason: String) : Result
+        data class Invalid(
+            val reason: String,
+        ) : Result
 
-        data class Denied(val localPart: String) : Result
+        data class Denied(
+            val localPart: String,
+        ) : Result
     }
 
     fun validate(raw: String): Result {

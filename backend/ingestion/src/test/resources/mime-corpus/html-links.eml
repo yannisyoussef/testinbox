@@ -1,0 +1,12 @@
+From: no-reply@example.com
+To: someone@testinbox.local
+Subject: Reset your password
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body>
+<p>Click <a href="https://app.example.com/reset?token=xyz">here</a> to reset.</p>
+<p>Or copy this link: https://app.example.com/reset-alt?token=xyz</p>
+<img src="https://tracker.example.com/pixel.gif">
+<script>alert('never-executed')</script>
+</body></html>

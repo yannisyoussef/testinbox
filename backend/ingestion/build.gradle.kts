@@ -20,6 +20,9 @@ dependencies {
     implementation(libs.jsoup)
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation("org.springframework.boot:spring-boot-testcontainers")
+    testImplementation("org.springframework.boot:spring-boot-starter-jdbc")
+    testImplementation(libs.kotest.assertions)
     testImplementation(libs.testcontainers.postgresql)
     testImplementation(libs.testcontainers.minio)
     testImplementation(libs.testcontainers.junit)

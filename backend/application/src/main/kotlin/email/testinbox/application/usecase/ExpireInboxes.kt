@@ -7,8 +7,8 @@ import email.testinbox.application.port.ExactAddressReservations
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.domain.inbox.AddressMode
-import java.time.Clock
 import org.slf4j.LoggerFactory
+import java.time.Clock
 
 /**
  * TTL lifecycle sweep (ADR-009): ACTIVE → EXPIRING (grace window honoring
@@ -25,7 +25,11 @@ class ExpireInboxes(
     private val clock: Clock,
     private val config: TestInboxConfig,
 ) {
-    data class SweepReport(val markedExpiring: Int, val markedExpired: Int, val hardDeleted: Int)
+    data class SweepReport(
+        val markedExpiring: Int,
+        val markedExpired: Int,
+        val hardDeleted: Int,
+    )
 
     fun sweep(): SweepReport {
         val now = clock.instant()

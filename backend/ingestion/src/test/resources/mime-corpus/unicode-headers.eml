@@ -1,0 +1,8 @@
+From: =?UTF-8?B?U8O8c3RlbSDDnG5kZXIgVGVzdA==?= <system@example.com>
+To: someone@testinbox.local
+Subject: =?UTF-8?B?VsOpcmlmaWV6IHZvdHJlIGFkcmVzc2Ugw6ltYWls?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Bonjour — voici un contenu accentué: éàüö.

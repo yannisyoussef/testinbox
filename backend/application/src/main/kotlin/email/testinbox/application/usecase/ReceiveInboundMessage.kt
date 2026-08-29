@@ -15,9 +15,9 @@ import email.testinbox.domain.message.Attachment
 import email.testinbox.domain.message.Message
 import email.testinbox.domain.message.ParseStatus
 import email.testinbox.domain.message.ParsedContent
+import org.slf4j.LoggerFactory
 import java.time.Clock
 import java.util.UUID
-import org.slf4j.LoggerFactory
 
 /**
  * The single inbound write path (ADR-024), upholding:
@@ -50,7 +50,9 @@ class ReceiveInboundMessage(
     )
 
     sealed interface Result {
-        data class Accepted(val messageId: MessageId) : Result
+        data class Accepted(
+            val messageId: MessageId,
+        ) : Result
 
         /** Unknown/expired recipient — content already discarded, only metadata logged (ADR-025). */
         data object Discarded : Result
@@ -117,6 +119,7 @@ class ReceiveInboundMessage(
                         links = parseResult.content.links,
                     )
             }
+
             is MimeParseResult.Failed -> {
                 parseStatus = ParseStatus.FAILED
                 parseError = parseResult.reason
@@ -145,7 +148,10 @@ class ReceiveInboundMessage(
             )
 
         return when (messages.appendVisible(message)) {
-            AppendOutcome.Appended -> Result.Accepted(messageId)
+            AppendOutcome.Appended -> {
+                Result.Accepted(messageId)
+            }
+
             AppendOutcome.DuplicateProviderEvent -> {
                 // Same provider event reprocessed: clean up the blobs we just wrote for the no-op.
                 blobs.delete(rawKey)

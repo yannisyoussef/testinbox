@@ -1,11 +1,11 @@
 package email.testinbox.api.web
 
 import jakarta.servlet.http.HttpServletRequest
-import java.net.URI
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.http.ProblemDetail
 import org.springframework.http.ResponseEntity
+import java.net.URI
 
 /**
  * RFC 7807 problems with stable type URIs under
@@ -30,7 +30,8 @@ object Problems {
     }
 
     fun respond(problem: ProblemDetail): ResponseEntity<ProblemDetail> =
-        ResponseEntity.status(problem.status)
+        ResponseEntity
+            .status(problem.status)
             .contentType(MediaType.APPLICATION_PROBLEM_JSON)
             .body(problem)
 }

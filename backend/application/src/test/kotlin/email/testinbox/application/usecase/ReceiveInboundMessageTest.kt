@@ -20,10 +20,10 @@ import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
-import java.time.Instant
-import java.util.UUID
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.time.Instant
+import java.util.UUID
 
 class ReceiveInboundMessageTest {
     private val workspaceId = WorkspaceId(UUID.randomUUID())
@@ -60,7 +60,12 @@ class ReceiveInboundMessageTest {
         clock = MutableClock(Instant.parse("2026-08-29T12:00:00Z"))
         useCase =
             ReceiveInboundMessage(
-                inboxes, messages, blobs, parser, clock, TestInboxConfig(mailDomain = "testinbox.local"),
+                inboxes,
+                messages,
+                blobs,
+                parser,
+                clock,
+                TestInboxConfig(mailDomain = "testinbox.local"),
             )
         inbox =
             Inbox(
@@ -132,8 +137,10 @@ class ReceiveInboundMessageTest {
     @Test
     fun `identical content twice yields two messages with duplicate annotation, never suppression (ADR-019)`() {
         val raw = "identical".toByteArray()
-        val first = useCase.execute(command(raw = raw))
-            .shouldBeInstanceOf<ReceiveInboundMessage.Result.Accepted>()
+        val first =
+            useCase
+                .execute(command(raw = raw))
+                .shouldBeInstanceOf<ReceiveInboundMessage.Result.Accepted>()
         clock.advanceSeconds(1)
         useCase.execute(command(raw = raw)).shouldBeInstanceOf<ReceiveInboundMessage.Result.Accepted>()
         messages.messages.size shouldBe 2
@@ -144,10 +151,12 @@ class ReceiveInboundMessageTest {
 
     @Test
     fun `same provider delivery event is a no-op and its blobs are cleaned up`() {
-        useCase.execute(command(providerMessageId = "evt-1"))
+        useCase
+            .execute(command(providerMessageId = "evt-1"))
             .shouldBeInstanceOf<ReceiveInboundMessage.Result.Accepted>()
         val blobCount = blobs.blobs.size
-        useCase.execute(command(providerMessageId = "evt-1"))
+        useCase
+            .execute(command(providerMessageId = "evt-1"))
             .shouldBeInstanceOf<ReceiveInboundMessage.Result.DuplicateEvent>()
         messages.messages.size shouldBe 1
         blobs.blobs.size shouldBe blobCount

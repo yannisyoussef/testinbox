@@ -20,10 +20,10 @@ import email.testinbox.notification.PgListenNotifier
 import email.testinbox.notification.PgListenNotifierConfig
 import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
-import java.time.Clock
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import java.time.Clock
 
 @Configuration
 class ApiWiring {
@@ -107,6 +107,8 @@ class ApiWiring {
     fun inboxQueries(inboxes: InboxRepository): InboxQueries = InboxQueries(inboxes)
 
     @Bean
-    fun messageQueries(messages: MessageRepository, blobs: BlobStore): MessageQueries =
-        MessageQueries(messages, blobs)
+    fun messageQueries(
+        messages: MessageRepository,
+        blobs: BlobStore,
+    ): MessageQueries = MessageQueries(messages, blobs)
 }

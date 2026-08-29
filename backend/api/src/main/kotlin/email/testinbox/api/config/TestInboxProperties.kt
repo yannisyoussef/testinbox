@@ -1,9 +1,9 @@
 package email.testinbox.api.config
 
 import email.testinbox.application.TestInboxConfig
+import org.springframework.boot.context.properties.ConfigurationProperties
 import java.time.Duration
 import java.util.UUID
-import org.springframework.boot.context.properties.ConfigurationProperties
 
 @ConfigurationProperties("testinbox")
 data class TestInboxProperties(

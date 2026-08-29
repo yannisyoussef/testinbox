@@ -4,10 +4,10 @@ import email.testinbox.application.ObjectKeys
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.domain.MessageId
+import org.slf4j.LoggerFactory
 import java.time.Clock
 import java.time.Duration
 import java.util.UUID
-import org.slf4j.LoggerFactory
 
 /**
  * Deterministic orphan cleanup (ADR-005 / data-ownership.md): the write
@@ -35,8 +35,7 @@ class OrphanBlobSweep(
         return removed
     }
 
-    private fun parseUuid(value: String): UUID? =
-        runCatching { UUID.fromString(value) }.getOrNull()
+    private fun parseUuid(value: String): UUID? = runCatching { UUID.fromString(value) }.getOrNull()
 
     private companion object {
         val log = LoggerFactory.getLogger(OrphanBlobSweep::class.java)

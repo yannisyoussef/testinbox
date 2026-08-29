@@ -37,9 +37,15 @@ data class InboxDto(
     }
 }
 
-data class EmailHeaderDto(val name: String, val value: String)
+data class EmailHeaderDto(
+    val name: String,
+    val value: String,
+)
 
-data class EmailLinkDto(val href: String, val text: String?)
+data class EmailLinkDto(
+    val href: String,
+    val text: String?,
+)
 
 data class AttachmentMetaDto(
     val id: UUID,
@@ -87,13 +93,19 @@ data class MessageDto(
                 htmlBody = message.parsed?.htmlBody,
                 headers =
                     if (message.parseStatus == ParseStatus.OK) {
-                        message.parsed?.headers.orEmpty().map { EmailHeaderDto(it.name, it.value) }
+                        message.parsed
+                            ?.headers
+                            .orEmpty()
+                            .map { EmailHeaderDto(it.name, it.value) }
                     } else {
                         null
                     },
                 links =
                     if (message.parseStatus == ParseStatus.OK) {
-                        message.parsed?.links.orEmpty().map { EmailLinkDto(it.href, it.text) }
+                        message.parsed
+                            ?.links
+                            .orEmpty()
+                            .map { EmailLinkDto(it.href, it.text) }
                     } else {
                         null
                     },
@@ -108,9 +120,15 @@ data class MessageDto(
     }
 }
 
-data class MessagePageDto(val items: List<MessageDto>, val nextCursor: String?)
+data class MessagePageDto(
+    val items: List<MessageDto>,
+    val nextCursor: String?,
+)
 
-data class HeaderMatcherDto(val name: String? = null, val value: String? = null)
+data class HeaderMatcherDto(
+    val name: String? = null,
+    val value: String? = null,
+)
 
 data class MessageMatcherDto(
     val from: String? = null,
@@ -134,7 +152,10 @@ data class WaitResultDto(
 
 /** Opaque cursor: base64url of `<epochMicros>:<messageId>`. */
 object Cursors {
-    fun encode(receivedAt: Instant, id: UUID): String {
+    fun encode(
+        receivedAt: Instant,
+        id: UUID,
+    ): String {
         val micros = receivedAt.epochSecond * 1_000_000 + receivedAt.nano / 1_000
         return Base64.getUrlEncoder().withoutPadding().encodeToString("$micros:$id".toByteArray())
     }

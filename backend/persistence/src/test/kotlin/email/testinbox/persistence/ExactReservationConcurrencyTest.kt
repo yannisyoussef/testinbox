@@ -8,15 +8,15 @@ import email.testinbox.domain.inbox.ExactReservation
 import email.testinbox.domain.inbox.ReservationStatus
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.jdbc.core.simple.JdbcClient
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import org.junit.jupiter.api.Test
-import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.jdbc.core.simple.JdbcClient
 
 /**
  * ADR-021: concurrent EXACT reservations are decided solely by the
@@ -30,7 +30,10 @@ class ExactReservationConcurrencyTest : PersistenceIntegrationTest() {
 
     @Autowired lateinit var jdbc: JdbcClient
 
-    private fun reservation(localPart: String, workspaceId: WorkspaceId): ExactReservation =
+    private fun reservation(
+        localPart: String,
+        workspaceId: WorkspaceId,
+    ): ExactReservation =
         ExactReservation(
             id = UUID.randomUUID(),
             workspaceId = workspaceId,
@@ -64,9 +67,12 @@ class ExactReservationConcurrencyTest : PersistenceIntegrationTest() {
             executor.shutdownNow()
         }
         val rows =
-            jdbc.sql(
-                "SELECT count(*) AS c FROM exact_address_reservation WHERE local_part = :lp AND status = 'ACTIVE'",
-            ).param("lp", localPart).query { rs, _ -> rs.getLong("c") }.single()
+            jdbc
+                .sql(
+                    "SELECT count(*) AS c FROM exact_address_reservation WHERE local_part = :lp AND status = 'ACTIVE'",
+                ).param("lp", localPart)
+                .query { rs, _ -> rs.getLong("c") }
+                .single()
         rows shouldBe 1L
     }
 
@@ -126,9 +132,12 @@ class ExactReservationConcurrencyTest : PersistenceIntegrationTest() {
             }
         afterCooldown shouldBe ReserveOutcome.Reserved
         val released =
-            jdbc.sql(
-                "SELECT count(*) AS c FROM exact_address_reservation WHERE local_part = :lp AND status = 'RELEASED'",
-            ).param("lp", localPart).query { rs, _ -> rs.getLong("c") }.single()
+            jdbc
+                .sql(
+                    "SELECT count(*) AS c FROM exact_address_reservation WHERE local_part = :lp AND status = 'RELEASED'",
+                ).param("lp", localPart)
+                .query { rs, _ -> rs.getLong("c") }
+                .single()
         released shouldBe 1L
     }
 }

@@ -50,7 +50,10 @@ class WaitForMessage(
     )
 
     sealed interface Result {
-        data class Matched(val message: Message, val elapsedMs: Long) : Result
+        data class Matched(
+            val message: Message,
+            val elapsedMs: Long,
+        ) : Result
 
         data class Timeout(
             val elapsedMs: Long,
@@ -63,7 +66,9 @@ class WaitForMessage(
 
         data object InboxNotFound : Result
 
-        data class InvalidRequest(val reason: String) : Result
+        data class InvalidRequest(
+            val reason: String,
+        ) : Result
     }
 
     fun execute(command: Command): Result {
@@ -100,8 +105,7 @@ class WaitForMessage(
         )
     }
 
-    private fun firstMatch(command: Command): Message? =
-        messages.listVisible(command.inboxId).firstOrNull { command.matcher.matches(it) }
+    private fun firstMatch(command: Command): Message? = messages.listVisible(command.inboxId).firstOrNull { command.matcher.matches(it) }
 
     private fun elapsedMs(start: Instant): Long = Duration.between(start, clock.instant()).toMillis()
 }

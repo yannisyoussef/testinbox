@@ -1,8 +1,6 @@
 package email.testinbox.api.auth
 
-import com.fasterxml.jackson.databind.ObjectMapper
 import email.testinbox.api.web.Correlation
-import email.testinbox.api.web.Problems
 import email.testinbox.application.usecase.AuthenticateApiKey
 import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiScope
@@ -30,10 +28,8 @@ object AuthAttributes {
 @Component
 class ApiKeyAuthFilter(
     private val authenticate: AuthenticateApiKey,
-    private val objectMapper: ObjectMapper,
 ) : OncePerRequestFilter() {
-    override fun shouldNotFilter(request: HttpServletRequest): Boolean =
-        !request.requestURI.startsWith("/v1/")
+    override fun shouldNotFilter(request: HttpServletRequest): Boolean = !request.requestURI.startsWith("/v1/")
 
     override fun doFilterInternal(
         request: HttpServletRequest,
@@ -51,24 +47,28 @@ class ApiKeyAuthFilter(
         filterChain.doFilter(request, response)
     }
 
-    private fun writeProblem(request: HttpServletRequest, response: HttpServletResponse) {
-        val problem =
-            Problems.of(
-                HttpStatus.UNAUTHORIZED,
-                "unauthorized",
-                "Unauthorized",
-                "A valid API key is required (Authorization: Bearer <key>)",
-                request,
-            )
+    private fun writeProblem(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+    ) {
         response.status = HttpStatus.UNAUTHORIZED.value()
         response.contentType = MediaType.APPLICATION_PROBLEM_JSON_VALUE
         response.setHeader(Correlation.HEADER, Correlation.of(request))
-        objectMapper.writeValue(response.outputStream, problem)
+        // Static, fixed-shape RFC 7807 body — no serializer needed in the filter.
+        response.writer.write(
+            """
+            {"type":"https://testinbox.email/problems/unauthorized","title":"Unauthorized","status":401,
+            "detail":"A valid API key is required (Authorization: Bearer <key>)",
+            "correlationId":"${Correlation.of(request)}"}
+            """.trimIndent(),
+        )
     }
 }
 
 /** Scope check helper (ADR-010: least-privilege scopes per endpoint). */
-class MissingScopeException(val scope: ApiScope) : RuntimeException("missing scope ${scope.wire}")
+class MissingScopeException(
+    val scope: ApiScope,
+) : RuntimeException("missing scope ${scope.wire}")
 
 fun ApiKey.requireScope(scope: ApiScope) {
     if (!hasScope(scope)) throw MissingScopeException(scope)

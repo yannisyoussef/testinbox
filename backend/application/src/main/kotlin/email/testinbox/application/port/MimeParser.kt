@@ -22,10 +22,14 @@ data class ParsedMime(
 )
 
 sealed interface MimeParseResult {
-    data class Parsed(val content: ParsedMime) : MimeParseResult
+    data class Parsed(
+        val content: ParsedMime,
+    ) : MimeParseResult
 
     /** Classified failure — the message is persisted as ParseFailed, raw MIME retained (ADR-005). */
-    data class Failed(val reason: String) : MimeParseResult
+    data class Failed(
+        val reason: String,
+    ) : MimeParseResult
 }
 
 /**

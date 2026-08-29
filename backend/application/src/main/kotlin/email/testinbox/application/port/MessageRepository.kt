@@ -13,7 +13,10 @@ sealed interface AppendOutcome {
     data object DuplicateProviderEvent : AppendOutcome
 }
 
-data class MessageCursor(val receivedAt: Instant, val id: MessageId)
+data class MessageCursor(
+    val receivedAt: Instant,
+    val id: MessageId,
+)
 
 interface MessageRepository {
     /**
@@ -25,14 +28,25 @@ interface MessageRepository {
     fun appendVisible(message: Message): AppendOutcome
 
     /** Earliest message in the inbox sharing [fingerprint], for the ADR-019 duplicate annotation. */
-    fun findEarliestIdByFingerprint(inboxId: InboxId, fingerprint: String): MessageId?
+    fun findEarliestIdByFingerprint(
+        inboxId: InboxId,
+        fingerprint: String,
+    ): MessageId?
 
     /** All visible messages of the inbox, earliest first (receipt order). */
     fun listVisible(inboxId: InboxId): List<Message>
 
-    fun listPage(workspaceId: WorkspaceId, inboxId: InboxId, after: MessageCursor?, limit: Int): List<Message>
+    fun listPage(
+        workspaceId: WorkspaceId,
+        inboxId: InboxId,
+        after: MessageCursor?,
+        limit: Int,
+    ): List<Message>
 
-    fun findById(workspaceId: WorkspaceId, id: MessageId): Message?
+    fun findById(
+        workspaceId: WorkspaceId,
+        id: MessageId,
+    ): Message?
 
     /** Existence check across workspaces — used only by the orphan blob sweep. */
     fun exists(id: MessageId): Boolean

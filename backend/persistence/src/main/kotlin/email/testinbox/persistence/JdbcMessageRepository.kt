@@ -17,14 +17,16 @@ import email.testinbox.domain.message.EmailLink
 import email.testinbox.domain.message.Message
 import email.testinbox.domain.message.ParseStatus
 import email.testinbox.domain.message.ParsedContent
-import java.sql.ResultSet
-import java.util.UUID
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
+import java.sql.ResultSet
+import java.util.UUID
 
 @Repository
-class JdbcMessageRepository(private val jdbc: JdbcClient) : MessageRepository {
+class JdbcMessageRepository(
+    private val jdbc: JdbcClient,
+) : MessageRepository {
     private val json: ObjectMapper = jacksonObjectMapper()
 
     /**
@@ -36,22 +38,22 @@ class JdbcMessageRepository(private val jdbc: JdbcClient) : MessageRepository {
     @Transactional
     override fun appendVisible(message: Message): AppendOutcome {
         val inserted =
-            jdbc.sql(
-                """
-                INSERT INTO message (id, workspace_id, inbox_id, received_at, provider, provider_message_id,
-                                     envelope_from, envelope_to, raw_object_key, raw_size_bytes,
-                                     content_fingerprint, possible_duplicate_of_message_id,
-                                     parse_status, parse_error, from_address, from_header, to_header,
-                                     subject, text_body, html_body, headers, links)
-                VALUES (:id, :workspaceId, :inboxId, :receivedAt, :provider, :providerMessageId,
-                        :envelopeFrom, :envelopeTo, :rawObjectKey, :rawSizeBytes,
-                        :contentFingerprint, :possibleDuplicateOf,
-                        :parseStatus, :parseError, :fromAddress, :fromHeader, :toHeader,
-                        :subject, :textBody, :htmlBody, :headers::jsonb, :links::jsonb)
-                ON CONFLICT (provider, provider_message_id) WHERE provider_message_id IS NOT NULL DO NOTHING
-                """.trimIndent(),
-            )
-                .param("id", message.id.value)
+            jdbc
+                .sql(
+                    """
+                    INSERT INTO message (id, workspace_id, inbox_id, received_at, provider, provider_message_id,
+                                         envelope_from, envelope_to, raw_object_key, raw_size_bytes,
+                                         content_fingerprint, possible_duplicate_of_message_id,
+                                         parse_status, parse_error, from_address, from_header, to_header,
+                                         subject, text_body, html_body, headers, links)
+                    VALUES (:id, :workspaceId, :inboxId, :receivedAt, :provider, :providerMessageId,
+                            :envelopeFrom, :envelopeTo, :rawObjectKey, :rawSizeBytes,
+                            :contentFingerprint, :possibleDuplicateOf,
+                            :parseStatus, :parseError, :fromAddress, :fromHeader, :toHeader,
+                            :subject, :textBody, :htmlBody, :headers::jsonb, :links::jsonb)
+                    ON CONFLICT (provider, provider_message_id) WHERE provider_message_id IS NOT NULL DO NOTHING
+                    """.trimIndent(),
+                ).param("id", message.id.value)
                 .param("workspaceId", message.workspaceId.value)
                 .param("inboxId", message.inboxId.value)
                 .param("receivedAt", Timestamps.toDb(message.receivedAt))
@@ -77,13 +79,13 @@ class JdbcMessageRepository(private val jdbc: JdbcClient) : MessageRepository {
         if (inserted == 0) return AppendOutcome.DuplicateProviderEvent
 
         for (attachment in message.attachments) {
-            jdbc.sql(
-                """
-                INSERT INTO attachment (id, workspace_id, message_id, file_name, content_type, size_bytes, object_key)
-                VALUES (:id, :workspaceId, :messageId, :fileName, :contentType, :sizeBytes, :objectKey)
-                """.trimIndent(),
-            )
-                .param("id", attachment.id.value)
+            jdbc
+                .sql(
+                    """
+                    INSERT INTO attachment (id, workspace_id, message_id, file_name, content_type, size_bytes, object_key)
+                    VALUES (:id, :workspaceId, :messageId, :fileName, :contentType, :sizeBytes, :objectKey)
+                    """.trimIndent(),
+                ).param("id", attachment.id.value)
                 .param("workspaceId", message.workspaceId.value)
                 .param("messageId", message.id.value)
                 .param("fileName", attachment.fileName)
@@ -94,7 +96,8 @@ class JdbcMessageRepository(private val jdbc: JdbcClient) : MessageRepository {
         }
 
         // Same transaction as the insert — never notify-after-commit from here.
-        jdbc.sql("SELECT pg_notify(:channel, :payload)")
+        jdbc
+            .sql("SELECT pg_notify(:channel, :payload)")
             .param("channel", NOTIFICATION_CHANNEL)
             .param("payload", message.inboxId.value.toString())
             .query()
@@ -102,15 +105,18 @@ class JdbcMessageRepository(private val jdbc: JdbcClient) : MessageRepository {
         return AppendOutcome.Appended
     }
 
-    override fun findEarliestIdByFingerprint(inboxId: InboxId, fingerprint: String): MessageId? =
-        jdbc.sql(
-            """
-            SELECT id FROM message
-             WHERE inbox_id = :inboxId AND content_fingerprint = :fingerprint
-             ORDER BY received_at, id LIMIT 1
-            """.trimIndent(),
-        )
-            .param("inboxId", inboxId.value)
+    override fun findEarliestIdByFingerprint(
+        inboxId: InboxId,
+        fingerprint: String,
+    ): MessageId? =
+        jdbc
+            .sql(
+                """
+                SELECT id FROM message
+                 WHERE inbox_id = :inboxId AND content_fingerprint = :fingerprint
+                 ORDER BY received_at, id LIMIT 1
+                """.trimIndent(),
+            ).param("inboxId", inboxId.value)
             .param("fingerprint", fingerprint)
             .query { rs, _ -> MessageId(rs.getObject("id", UUID::class.java)) }
             .optional()
@@ -118,7 +124,8 @@ class JdbcMessageRepository(private val jdbc: JdbcClient) : MessageRepository {
 
     override fun listVisible(inboxId: InboxId): List<Message> {
         val messages =
-            jdbc.sql("SELECT * FROM message WHERE inbox_id = :inboxId ORDER BY received_at, id")
+            jdbc
+                .sql("SELECT * FROM message WHERE inbox_id = :inboxId ORDER BY received_at, id")
                 .param("inboxId", inboxId.value)
                 .query { rs, _ -> mapMessage(rs) }
                 .list()
@@ -133,26 +140,26 @@ class JdbcMessageRepository(private val jdbc: JdbcClient) : MessageRepository {
     ): List<Message> {
         val messages =
             if (after == null) {
-                jdbc.sql(
-                    """
-                    SELECT * FROM message WHERE workspace_id = :workspaceId AND inbox_id = :inboxId
-                     ORDER BY received_at, id LIMIT :limit
-                    """.trimIndent(),
-                )
-                    .param("workspaceId", workspaceId.value)
+                jdbc
+                    .sql(
+                        """
+                        SELECT * FROM message WHERE workspace_id = :workspaceId AND inbox_id = :inboxId
+                         ORDER BY received_at, id LIMIT :limit
+                        """.trimIndent(),
+                    ).param("workspaceId", workspaceId.value)
                     .param("inboxId", inboxId.value)
                     .param("limit", limit)
                     .query { rs, _ -> mapMessage(rs) }
                     .list()
             } else {
-                jdbc.sql(
-                    """
-                    SELECT * FROM message WHERE workspace_id = :workspaceId AND inbox_id = :inboxId
-                       AND (received_at, id) > (:afterReceivedAt, :afterId)
-                     ORDER BY received_at, id LIMIT :limit
-                    """.trimIndent(),
-                )
-                    .param("workspaceId", workspaceId.value)
+                jdbc
+                    .sql(
+                        """
+                        SELECT * FROM message WHERE workspace_id = :workspaceId AND inbox_id = :inboxId
+                           AND (received_at, id) > (:afterReceivedAt, :afterId)
+                         ORDER BY received_at, id LIMIT :limit
+                        """.trimIndent(),
+                    ).param("workspaceId", workspaceId.value)
                     .param("inboxId", inboxId.value)
                     .param("afterReceivedAt", Timestamps.toDb(after.receivedAt))
                     .param("afterId", after.id.value)
@@ -163,9 +170,13 @@ class JdbcMessageRepository(private val jdbc: JdbcClient) : MessageRepository {
         return withAttachments(messages)
     }
 
-    override fun findById(workspaceId: WorkspaceId, id: MessageId): Message? {
+    override fun findById(
+        workspaceId: WorkspaceId,
+        id: MessageId,
+    ): Message? {
         val message =
-            jdbc.sql("SELECT * FROM message WHERE id = :id AND workspace_id = :workspaceId")
+            jdbc
+                .sql("SELECT * FROM message WHERE id = :id AND workspace_id = :workspaceId")
                 .param("id", id.value)
                 .param("workspaceId", workspaceId.value)
                 .query { rs, _ -> mapMessage(rs) }
@@ -175,7 +186,8 @@ class JdbcMessageRepository(private val jdbc: JdbcClient) : MessageRepository {
     }
 
     override fun exists(id: MessageId): Boolean =
-        jdbc.sql("SELECT 1 FROM message WHERE id = :id")
+        jdbc
+            .sql("SELECT 1 FROM message WHERE id = :id")
             .param("id", id.value)
             .query()
             .listOfRows()
@@ -184,7 +196,8 @@ class JdbcMessageRepository(private val jdbc: JdbcClient) : MessageRepository {
     private fun withAttachments(messages: List<Message>): List<Message> {
         if (messages.isEmpty()) return messages
         val byMessage =
-            jdbc.sql("SELECT * FROM attachment WHERE message_id IN (:ids) ORDER BY id")
+            jdbc
+                .sql("SELECT * FROM attachment WHERE message_id IN (:ids) ORDER BY id")
                 .param("ids", messages.map { it.id.value })
                 .query { rs, _ -> mapAttachment(rs) }
                 .list()

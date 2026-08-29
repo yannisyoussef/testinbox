@@ -25,11 +25,11 @@ import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiScope
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
 
 class LifecycleTest {
     private val workspaceId = WorkspaceId(UUID.randomUUID())
@@ -53,7 +53,10 @@ class LifecycleTest {
         clock = MutableClock(Instant.parse("2026-08-29T12:00:00Z"))
     }
 
-    private fun inbox(mode: AddressMode = AddressMode.GENERATED, ttlSeconds: Long = 600): Inbox {
+    private fun inbox(
+        mode: AddressMode = AddressMode.GENERATED,
+        ttlSeconds: Long = 600,
+    ): Inbox {
         val inbox =
             Inbox(
                 id = InboxId(UUID.randomUUID()),
@@ -69,8 +72,13 @@ class LifecycleTest {
         if (mode == AddressMode.EXACT) {
             reservations.reserve(
                 ExactReservation(
-                    UUID.randomUUID(), workspaceId, inbox.localPart, inbox.id,
-                    ReservationStatus.ACTIVE, clock.now, null,
+                    UUID.randomUUID(),
+                    workspaceId,
+                    inbox.localPart,
+                    inbox.id,
+                    ReservationStatus.ACTIVE,
+                    clock.now,
+                    null,
                 ),
                 clock.now,
             )
@@ -78,8 +86,7 @@ class LifecycleTest {
         return inbox
     }
 
-    private fun sweeper(): ExpireInboxes =
-        ExpireInboxes(inboxes, reservations, blobs, NoopTx, clock, config)
+    private fun sweeper(): ExpireInboxes = ExpireInboxes(inboxes, reservations, blobs, NoopTx, clock, config)
 
     @Test
     fun `full lifecycle - active to expiring to expired to hard-deleted with blob cleanup`() {
@@ -130,11 +137,17 @@ class LifecycleTest {
     fun `cooldown blocks re-reservation until elapsed, then reclaim succeeds`() {
         val target = inbox(mode = AddressMode.EXACT)
         DeleteInbox(inboxes, reservations, NoopTx, clock, config).execute(workspaceId, target.id)
+
         fun tryReserve(): ReserveOutcome =
             reservations.reserve(
                 ExactReservation(
-                    UUID.randomUUID(), workspaceId, target.localPart, InboxId(UUID.randomUUID()),
-                    ReservationStatus.ACTIVE, clock.now, null,
+                    UUID.randomUUID(),
+                    workspaceId,
+                    target.localPart,
+                    InboxId(UUID.randomUUID()),
+                    ReservationStatus.ACTIVE,
+                    clock.now,
+                    null,
                 ),
                 clock.now,
             )
@@ -184,8 +197,7 @@ class LifecycleTest {
         var stored: ApiKey? = record
         val repo =
             object : ApiKeyRepository {
-                override fun findActiveByHash(keyHash: String): ApiKey? =
-                    stored?.takeIf { it.keyHash == keyHash && it.revokedAt == null }
+                override fun findActiveByHash(keyHash: String): ApiKey? = stored?.takeIf { it.keyHash == keyHash && it.revokedAt == null }
             }
         val auth = AuthenticateApiKey(repo)
         auth.authenticate(plaintext)?.workspaceId shouldBe workspaceId
