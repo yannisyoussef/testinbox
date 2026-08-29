@@ -1,0 +1,35 @@
+# API Design Principles
+
+1. **REST is authoritative.** All SDKs are clients of this API; no
+   SDK-only capability may exist that isn't also expressible via REST
+   (SDKs may add ergonomics/DX, not exclusive functionality).
+2. **Resource-oriented, versioned by URI**: `/v1/...`. See
+   [`versioning.md`](versioning.md) and
+   [ADR-015](../adr/0015-rest-compatibility-versioning.md).
+3. **Errors follow RFC 7807** (`application/problem+json`) with a stable
+   `type` per error category, human-readable `detail`, and a `correlationId`
+   for support/debugging.
+4. **Authentication**: `Authorization: Bearer <api-key>` on every call except
+   health checks. No cookie-based auth for the API surface (dashboard may use
+   session cookies against its own backend-for-frontend, out of scope here).
+5. **Authorization**: API keys carry scopes (e.g., `inboxes:write`,
+   `messages:read`) plus an implicit workspace/project binding; every
+   resource fetch is authorized against the caller's workspace, never by
+   trusting a path parameter alone (see
+   [ADR-010](../adr/0010-authentication-api-keys.md)).
+6. **Pagination**: cursor-based (`?cursor=...&limit=...`), never offset-based,
+   for `GET /v1/inboxes/{id}/messages` and similar list endpoints — offset
+   pagination is unstable under concurrent inserts, which is the common case
+   here (mail arriving while a test paginates).
+7. **Idempotency**: mutating POSTs that create a resource with side effects
+   (`POST /v1/inboxes`, `POST /v1/test-runs`) accept an optional
+   `Idempotency-Key` header; replays with the same key return the original
+   result rather than creating a duplicate.
+8. **Correlation IDs**: every response includes a `correlationId` (also
+   present in error bodies), propagated into logs/traces — see
+   [`docs/architecture/observability.md`](../architecture/observability.md).
+9. **Rate limits**: surfaced via standard `RateLimit-*` response headers;
+   exceeding a limit returns `429` with an RFC 7807 body, not a silent drop.
+10. **No breaking changes within a major version.** Additive changes
+    (new optional fields, new endpoints) are always safe; anything else
+    requires a new version per [ADR-015](../adr/0015-rest-compatibility-versioning.md).
