@@ -1,6 +1,9 @@
 # ADR-007: Event/Coordination Strategy
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-020](0020-wait-reliability-and-timeout-semantics.md):
+`NOTIFY` must be issued via `pg_notify()` inside the transaction that
+makes the message visible, and `LISTEN` connection loss requires the
+reconnect/re-query recovery defined there)
 
 ## Context
 

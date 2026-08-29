@@ -1,6 +1,9 @@
 # ADR-013: Repository/Module Architecture
 
-**Status:** Accepted
+**Status:** Accepted (module list amended by
+[ADR-024](0024-application-layer-and-dependency-rule.md): an `application`
+module is added to the backend Gradle build; the monorepo decision itself
+is unchanged)
 
 ## Context
 

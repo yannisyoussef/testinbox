@@ -22,36 +22,53 @@ different profile from the rest of the system:
 
 ## Modules (single deployable "core" backend, Gradle multi-module)
 
+Dependency model: ports-and-adapters (see
+[ADR-024](../adr/0024-application-layer-and-dependency-rule.md)) — the
+dependency rule is `domain` ← `application` ← adapters. Both entry points
+(HTTP API and ingestion gateway) invoke the same application use cases, so
+business invariants (inbox lifecycle, dedup, visibility+notify atomicity)
+exist exactly once.
+
 ```mermaid
 flowchart TB
     subgraph Core[Backend — modular monolith]
-        APIm[api] --> Domain[domain]
-        Wait[wait/notify] --> Domain
-        Domain --> Persistence[persistence]
-        Domain --> Storage[storage]
-        Auth[auth] --> Domain
+        APIm[api adapter\nSpring HTTP] --> App[application\nuse cases + ports]
+        Auth[auth] --> App
+        App --> Domain[domain]
+        Persistence[persistence adapter] -. implements ports .-> App
+        Storage[storage adapter] -. implements ports .-> App
+        Wait[wait/notify adapter] -. implements ports .-> App
     end
-    Ingestion[ingestion-gateway\n(separately deployable)] --> Persistence
-    Ingestion --> Storage
-    Ingestion -->|notify| Wait
+    Ingestion[ingestion-gateway adapter\n(separately deployable; embeds\napplication/domain/adapters as libraries)] --> App
 ```
 
 - **domain**: framework-free core model (Inbox, Message, Attachment,
-  Workspace, Project, ApiKey…) and domain services. No Spring, no JPA, no
-  provider-specific types. Enforced by ArchUnit rule (see quality strategy).
-- **api**: Spring Boot HTTP layer, OpenAPI contract, request/response DTOs,
-  auth filter, RFC 7807 error mapping.
-- **wait/notify**: implements the wait-for-message primitive
-  (`docs/architecture/wait-semantics.md`) — subscribes to persistence-layer
-  change notifications and resolves matching long-poll requests.
-- **persistence**: Postgres access (repositories), workspace-scoped queries.
+  Workspace, Project, ApiKey…) and domain services. Depends on nothing —
+  no Spring, no JPA, no provider-specific types. Enforced by ArchUnit rule
+  (see quality strategy).
+- **application**: use cases (`CreateInbox`, `ReserveExactAddress`,
+  `ReceiveInboundMessage`, `WaitForMessage`, `ExpireInboxes`) and the port
+  interfaces they need (`InboxRepository`, `MessageRepository`,
+  `BlobStore`, `MessageNotifier`, `Clock`). All invariant-bearing writes
+  live here, once. Depends only on `domain`.
+- **api**: Spring Boot HTTP adapter implementing the contract-first
+  OpenAPI interfaces (ADR-022), auth filter, RFC 7807 error mapping.
+- **wait/notify**: infrastructure adapter for the wait primitive
+  (`docs/architecture/wait-semantics.md`) — maintains the `LISTEN`
+  connection (with ADR-020 reconnect/re-query recovery) and resolves
+  parked long-poll requests.
+- **persistence**: Postgres adapter implementing repository ports,
+  workspace-scoped queries.
 - **storage**: S3-compatible object storage adapter for raw MIME/attachments.
 - **auth**: API key issuance/validation, scope enforcement.
-- **ingestion-gateway**: a separate deployable process/module implementing
-  `InboundMailProvider` adapters (local SMTP, future SES/Postfix), MIME
-  parsing, and initial persistence of received messages. Talks to the same
-  Postgres/object storage, so it is "independently deployable," not
-  "independently owns data."
+- **ingestion-gateway**: a separate deployable process implementing
+  `InboundMailProvider` adapters (local SMTP, future SES/Postfix) and MIME
+  parsing, then invoking the shared `ReceiveInboundMessage` use case —
+  never writing through persistence directly. It embeds
+  `application`/`domain` and the infrastructure adapters as libraries and
+  talks to the same Postgres/object storage, so it is "independently
+  deployable," not "independently owns data" (and not "independently
+  reimplements invariants").
 
 ## Why not split further
 

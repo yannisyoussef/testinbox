@@ -1,6 +1,8 @@
 # ADR-014: SDK Architecture
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-022](0022-openapi-contract-first.md):
+the OpenAPI contract is authored contract-first and drives server-side
+generation — it is not generated from the Spring Boot backend)
 
 ## Context
 

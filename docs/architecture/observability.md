@@ -22,7 +22,9 @@ HTTP request, correlation is via a **message correlation ID** propagated as:
 - `message_parse_duration_seconds`
 - `wait_request_duration_seconds` (tagged by outcome: matched/timeout/cancelled)
 - `wait_requests_active` (gauge, to catch connection-leak regressions)
-- `smtp_accept_total` / `smtp_reject_total` / `smtp_quarantine_discard_total`
+- `smtp_accept_total` / `smtp_reject_total` / `smtp_unknown_recipient_discard_total`
+- `message_duplicate_event_noop_total` (same provider event reprocessed, ADR-019)
+- `wait_listen_reconnect_total` / `wait_listen_degraded_polling` (gauge; ADR-020)
 - `object_storage_operation_duration_seconds`
 
 ## Logging

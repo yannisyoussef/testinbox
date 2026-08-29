@@ -1,7 +1,13 @@
 # ADR-008: Inbox Addressing/Reservation
 
-**Status:** Accepted (for MVP scope only — exact-match aliasing and custom
-domains remain open, see Human Decisions Required in `VISION.md`)
+**Status:** Superseded by [ADR-021](0021-exact-address-reservation.md)
+
+> Superseded 2026-08-29: the rejection of exact-match addressing below
+> rested on the incorrect premise that it requires a global locking
+> scheme; a Postgres unique constraint suffices. ADR-021 defines a
+> two-mode design (generated + exact) and addresses reuse/cooldown and
+> namespace risks. The generated-address behavior described here carries
+> forward unchanged as ADR-021's `GENERATED` mode.
 
 ## Context
 

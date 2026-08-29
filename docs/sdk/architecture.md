@@ -10,9 +10,11 @@ flowchart LR
     Public --> Consumer[Test code]
 ```
 
-- The **OpenAPI contract** is the single source of truth for request/response
-  shapes, generated from the Spring Boot backend (springdoc or equivalent),
-  not hand-maintained separately.
+- The **OpenAPI 3.1 contract** is the single source of truth for
+  request/response shapes: a committed, hand-authored spec that drives
+  server-side interface/model generation, both SDK internal transports,
+  and CI compatibility checks — it is **not** generated from the Spring
+  Boot backend (see [ADR-022](../adr/0022-openapi-contract-first.md)).
 - The **generated transport** (e.g., via `openapi-generator` in whatever
   language) lives in an internal, non-exported package/module per SDK
   (`internal.transport` in Kotlin, an unexported `src/internal/` in
@@ -26,8 +28,12 @@ flowchart LR
 
 ## Per-language specifics
 
-### JVM (`testinbox-client`, Kotlin, Java 25 target)
+### JVM (`testinbox-client`, Kotlin, Java 17 bytecode baseline)
 
+- **Bytecode/API baseline: Java 17** — the backend's Java 25 runtime is a
+  deployment choice and does not constrain the public SDK; consumer test
+  suites on Java 17, 21, and 25 are all supported and CI-tested (see
+  [ADR-023](../adr/0023-sdk-runtime-baselines.md)).
 - Written in Kotlin, published with a Java-friendly API (no
   Kotlin-only constructs leaking into the public surface where avoidable —
   e.g., avoid default-parameter-only overloads that are unusable from Java
@@ -39,6 +45,10 @@ flowchart LR
 
 ### TypeScript/JavaScript (`@testinbox/client`)
 
+- **Minimum supported consumer runtime: Node ≥ 20** (`engines` field);
+  built/published on the current active Node LTS in CI, which is a
+  toolchain choice invisible to consumers (see
+  [ADR-023](../adr/0023-sdk-runtime-baselines.md)).
 - Async/await only; no callback-style API.
 - Dual ESM/CJS build (needed since Node test runners and bundlers vary in
   module support); type definitions shipped alongside.

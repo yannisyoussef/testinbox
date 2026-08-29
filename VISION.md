@@ -52,10 +52,13 @@ locally (no cloud dependency required):
 8. The web UI can safely display a received message (sandboxed HTML render)
    — nothing more.
 
-Explicitly deferred past MVP: exact-match custom aliases, custom/customer
-domains, AWS SES adapter, webhooks, `TestRun` as a tracked entity, attachment
-malware/archive-bomb scanning, multi-workspace RBAC beyond a single API key
-per workspace, all framework integrations, CLI, Python/.NET SDKs.
+Explicitly deferred past MVP: `EXACT` address-mode *implementation* (the
+API contract defines both modes per ADR-021; whether exact mode ships in
+the walking skeleton or immediately after is a scheduling decision, see
+below), custom/customer domains, AWS SES adapter, webhooks, `TestRun` as a
+tracked entity, attachment malware/archive-bomb scanning, multi-workspace
+RBAC beyond a single API key per workspace, all framework integrations,
+CLI, Python/.NET SDKs.
 
 Rationale for cuts: each deferred item is either (a) not required to prove the
 core deterministic-wait value proposition, or (b) requires infrastructure
@@ -84,13 +87,18 @@ survives contact with real usage.
 These require explicit human sign-off before implementation work starts;
 they are not resolvable by further internal analysis alone.
 
-1. **Exact-match custom inbox aliases**: is a guaranteed exact address ever a
-   real requirement, or is "generated address with a human-readable prefix"
-   acceptable indefinitely? This materially changes the addressing/reservation
-   design (ADR-008).
+1. **Exact-match inbox addresses — scheduling and cooldown only.** The
+   design question is settled by ADR-021 (two modes: `GENERATED` default,
+   `EXACT` via Postgres unique-constraint reservation with `409` on
+   conflict); what still needs sign-off is (a) whether `EXACT` mode is
+   implemented in the walking skeleton or immediately after, and (b) the
+   cooldown-window default for exact-address reuse (proposed 24h, with
+   the documented residual risk that MTA retry horizons can exceed it).
 2. **Legal/compliance posture for receiving arbitrary third-party email**
    (data retention law, GDPR/CCPA for message content, abuse/CSAM reporting
    obligations for an inbound-mail service open to any authenticated user).
+   Narrowed by ADR-025: unknown-recipient content is never stored, so this
+   decision now covers only mail attributed to a tenant's inbox.
 3. **Which inbound provider to build first in production** (self-hosted
    Postfix vs. AWS SES) — affects deployment/ops investment ordering
    (ADR-004).

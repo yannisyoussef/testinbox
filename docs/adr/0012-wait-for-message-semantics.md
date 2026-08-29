@@ -1,6 +1,9 @@
 # ADR-012: Wait-for-Message Semantics
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-020](0020-wait-reliability-and-timeout-semantics.md):
+wait-window expiry returns `200` with an explicit `TIMEOUT` result — not
+`408` — and the visibility/notification atomicity and `LISTEN` recovery
+requirements defined there are part of the normative contract)
 
 ## Context
 

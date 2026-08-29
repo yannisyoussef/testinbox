@@ -11,20 +11,20 @@ sequenceDiagram
     Sender->>GW: MAIL FROM / RCPT TO / DATA
     GW->>GW: resolve recipient token -> inbox (or unknown)
     alt unknown / expired inbox
-        GW->>GW: accept at SMTP level, quarantine briefly, discard
+        GW->>GW: accept at SMTP level, discard immediately (metadata-only log, ADR-025)
+        GW-->>Sender: 250 OK
     else known active inbox
-        GW->>Obj: store raw MIME (content-addressed key)
-        GW->>DB: idempotency check (provider msg-id / content hash)
-        alt duplicate
-            GW-->>Sender: 250 OK (already recorded, no-op)
-        else new
+        GW->>Obj: store raw MIME (per-message key)
+        alt same provider event already recorded (providerMessageId, ADR-019)
+            GW-->>Sender: 250 OK (reprocessing, no-op)
+        else new delivery
             GW->>GW: parse MIME (headers, text, HTML, links, attachments)
             alt parse failure
-                GW->>DB: persist Message(parseStatus=FAILED, raw pointer)
+                GW->>DB: persist Message(parseStatus=FAILED, raw pointer) + pg_notify (one tx)
             else parse success
-                GW->>DB: persist Message(parseStatus=OK, parsed fields)
+                GW->>DB: persist Message(parseStatus=OK, parsed fields) + pg_notify (one tx)
             end
-            GW->>Notify: publish "message available" for inbox_id
+            Note over DB,Notify: NOTIFY delivered to listeners after commit (ADR-020)
             GW-->>Sender: 250 OK
         end
     end
@@ -39,18 +39,28 @@ sequenceDiagram
 2. **Recipient resolution**: the address token is looked up against active
    inbox reservations. No match (unknown, expired, or already-deleted) →
    message is still accepted (SMTP-level 250) to avoid backscatter/NDN abuse,
-   but is discarded after a short quarantine window rather than attributed to
-   any inbox. This is a deliberate tradeoff: silently accepting-and-dropping
-   avoids TestInbox being used as a bounce oracle, at the cost of not
-   surfacing "why didn't my email arrive" directly to the sender (it is
-   surfaced via gateway logs/metrics for operators).
-3. **Idempotency / deduplication**: SMTP delivery is at-least-once (retries
-   from sender MTAs, and SES may redeliver). Deduplication key = provider
-   message-id when available, else a hash of (envelope-from, envelope-to,
-   raw MIME bytes). A duplicate within the retry window is a no-op, not a
-   second `Message` row — this is what makes delivery *effectively-once* as
-   observed by the API, even though inbound acceptance itself is
-   at-least-once. See [`message-lifecycle.md`](message-lifecycle.md).
+   but its content is **discarded immediately and never stored** — no
+   quarantine area, no object-storage write (see
+   [ADR-025](../adr/0025-unknown-recipient-handling.md)). Only operational
+   metadata (timestamp, hashed recipient token, sender domain, size) is
+   logged/metered. Silently accepting-and-dropping avoids TestInbox being
+   used as a bounce oracle, at the cost of not surfacing "why didn't my
+   email arrive" directly to the sender (operators see it via
+   gateway logs/metrics).
+3. **Deduplication — faithful observation** (see
+   [ADR-019](../adr/0019-inbound-deduplication-semantics.md)): TestInbox
+   never suppresses a message based on its content. Deduplication applies
+   **only** to reprocessing of the *same provider delivery event*
+   (unique constraint on `(provider, providerMessageId)`, e.g., an SES
+   notification redelivered by SNS). Every completed SMTP `DATA`
+   transaction produces its own `Message` row — including two genuinely
+   separate but byte-identical sends, which are exactly the
+   duplicate-send defects a QA tool must expose. The gateway persists
+   before returning `250`, so the only at-least-once residue is a sender
+   retry after a crash in that narrow window; such a message appears as a
+   second row annotated `possibleDuplicateOfMessageId` (shared content
+   fingerprint), never silently collapsed. See
+   [`message-lifecycle.md`](message-lifecycle.md).
 4. **Storage before parsing**: raw MIME is written to object storage before
    parsing is attempted, so a parser crash or poison-message never loses the
    original bytes.
@@ -65,10 +75,13 @@ sequenceDiagram
    receipt order per inbox; cross-connection strict ordering is *not*
    guaranteed (two concurrent SMTP sessions delivering to different inboxes,
    or even the same inbox from different sender MTAs, may interleave).
-7. **Notification**: once persisted, a "message available for inbox X" event
-   is published for the wait primitive (see
-   [`wait-semantics.md`](wait-semantics.md)) — never before persistence, so a
-   waiter can never be notified of a message it can't yet read.
+7. **Notification**: the message insert and `pg_notify()` happen in the
+   **same PostgreSQL transaction**; Postgres delivers the notification to
+   listeners only after (and only if) that transaction commits (see
+   [ADR-020](../adr/0020-wait-reliability-and-timeout-semantics.md)). A
+   waiter therefore can never be notified of a message it can't yet read:
+   notification observed ⇒ message queryable as `Visible`. The payload is
+   a wake-up hint (inbox ID) only — waiters always re-query.
 
 ## Near-expiration race
 

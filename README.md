@@ -45,10 +45,11 @@ val verificationUrl = message.links.first().href
 
 ```
 backend/            # Kotlin/Spring Boot modular monolith (Gradle multi-module)
-  api/               # HTTP layer, OpenAPI contract
-  ingestion/         # Inbound mail gateway (separately deployable)
+  api/               # HTTP adapter; implements the contract-first OpenAPI spec
+  ingestion/         # Inbound mail gateway adapter (separately deployable)
+  application/       # Use cases + ports (ADR-024); all invariant-bearing writes
   domain/            # Core domain model, framework-free
-  persistence/       # Postgres/JPA or exposed adapters
+  persistence/       # Postgres adapter implementing repository ports
   storage/           # S3/MinIO object storage adapter
 sdk/
   kotlin/            # email.testinbox:testinbox-client (JVM)

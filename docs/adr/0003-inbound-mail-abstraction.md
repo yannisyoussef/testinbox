@@ -1,6 +1,8 @@
 # ADR-003: Inbound Mail Abstraction
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-019](0019-inbound-deduplication-semantics.md):
+`providerMessageId` deduplication is scoped to reprocessing of the *same
+provider delivery event* only — never content-based suppression)
 
 ## Context
 

@@ -21,9 +21,11 @@
    legitimate CI parallelism but not unbounded.
 5. **No reply/threading UI or API.** Even the debugging dashboard only
    displays received mail; it cannot be used to carry on a conversation.
-6. **Unknown-recipient mail is discarded, not stored indefinitely** — no
-   incentive to probe/enumerate addresses for a persistent-storage side
-   effect (`docs/architecture/inbound-mail-flow.md`).
+6. **Unknown-recipient mail is discarded immediately and never stored**
+   (metadata-only logging, [ADR-025](../adr/0025-unknown-recipient-handling.md))
+   — no unauthenticated write path into storage, and no incentive to
+   probe/enumerate addresses for a persistent-storage side effect
+   (`docs/architecture/inbound-mail-flow.md`).
 
 ## Residual risks and how they're bounded, not eliminated
 
@@ -38,7 +40,13 @@
   that guessing an active address is infeasible; SMTP-level responses are
   designed not to distinguish "unknown recipient" from "known recipient,
   message discarded for another reason" (`inbound-mail-flow.md`) to avoid
-  turning TestInbox into an oracle for address validity.
+  turning TestInbox into an oracle for address validity. `EXACT`-mode
+  addresses ([ADR-021](../adr/0021-exact-address-reservation.md)) are
+  guessable by construction; that residual exposure is bounded by
+  ingestion rate limits, storage quotas, a reserved-local-part denylist
+  (RFC 2142 role addresses are never reservable), and a per-workspace cap
+  on concurrent exact reservations — with `GENERATED` remaining the
+  recommended default for automation.
 - **Storage-cost abuse via large attachments**: per-message and per-attachment
   size caps, plus per-workspace storage quotas, bound worst-case cost even
   under a compromised/malicious API key, until revoked.

@@ -1,6 +1,9 @@
 # ADR-001: Architecture Style
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-024](0024-application-layer-and-dependency-rule.md):
+the ingestion gateway remains independently deployable, but invokes the
+shared `application` use-case layer rather than writing to persistence
+directly)
 
 ## Context
 

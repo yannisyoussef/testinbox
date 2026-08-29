@@ -24,32 +24,45 @@ stateDiagram-v2
   associated messages/attachments metadata, and issues object-storage
   deletes by prefix. Hard delete is asynchronous but bounded (target: within
   minutes, not immediately, to keep the cleanup job cheap and batchable).
-- **Reuse**: an expired/deleted inbox's address token is **never** reused.
-  A new `createInbox()` call always allocates a fresh token, even if the
-  requested alias/prefix matches a previous inbox. This avoids a subtle class
-  of test flakiness/security issue where a new test could receive a
-  straggling message intended for a previous test's inbox.
+- **Reuse**: a **generated** address token (`GENERATED` mode) is **never**
+  reused after expiry/deletion. A new `createInbox()` call always
+  allocates a fresh token, even if the requested alias/prefix matches a
+  previous inbox. This avoids a subtle class of test flakiness/security
+  issue where a new test could receive a straggling message intended for
+  a previous test's inbox. **Exact** addresses (`EXACT` mode,
+  [ADR-021](../adr/0021-exact-address-reservation.md)) are reusable by
+  design after a cooldown window; the straggler-mail residual risk of
+  that mode is documented there.
 
 ## Message states
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Receiving: raw MIME stored
-    Receiving --> Parsed: parse succeeded
-    Receiving --> ParseFailed: parse failed
-    Parsed --> Visible: notify published
-    ParseFailed --> Visible: notify published (metadata-only)
+    [*] --> Receiving: raw MIME stored (object storage)
+    Receiving --> Visible: DB commit (parseStatus=OK, pg_notify in same tx)
+    Receiving --> Visible: DB commit (parseStatus=FAILED, pg_notify in same tx)
     Visible --> Deleted: inbox hard delete
 ```
 
-- A message is **Visible** (queryable via `GET /v1/inboxes/{id}/messages`
-  and retrievable via `GET /v1/messages/{id}`) only once persisted;
-  `ParseFailed` messages are visible with raw MIME accessible but without
+- A message becomes **Visible** (queryable via
+  `GET /v1/inboxes/{id}/messages` and retrievable via
+  `GET /v1/messages/{id}`) at the **commit of the single transaction**
+  that inserts its row and issues `pg_notify()` — there is no observable
+  state between "committed" and "visible", and no notification can be
+  observed before the message is queryable (the atomicity invariant in
+  [ADR-020](../adr/0020-wait-reliability-and-timeout-semantics.md)).
+  `Receiving` is internal to the ingestion gateway (raw MIME durably
+  stored, row not yet committed) and is not API-observable.
+- `ParseFailed` messages are visible with raw MIME accessible but without
   parsed fields (from/subject/text/html/links are null/absent), and they do
   **not** satisfy `waitForMessage` matchers that reference parsed fields.
-- Delivery, as observed through the API, is **effectively-once**: inbound
-  SMTP acceptance is at-least-once, but deduplication at ingestion
-  (`inbound-mail-flow.md`) collapses retried/duplicate deliveries into a
-  single `Message` row before it ever becomes `Visible`.
+- Delivery, as observed through the API, is **faithful to what was
+  accepted**: every completed inbound transaction produces its own
+  `Message` row — including genuinely duplicate sends by the system under
+  test, which are deliberately *not* collapsed (see
+  [ADR-019](../adr/0019-inbound-deduplication-semantics.md)). Only
+  reprocessing of the same provider delivery event is a no-op. In the
+  rare sender-retry-after-crash window a single send may appear as two
+  rows annotated `possibleDuplicateOfMessageId`.
 - Deleting an inbox deletes its messages and attachments (cascade); there is
   no independent message retention beyond its parent inbox in MVP.

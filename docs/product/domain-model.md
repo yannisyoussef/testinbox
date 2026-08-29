@@ -38,6 +38,8 @@ erDiagram
 
 No provider-specific concepts (e.g., "SES message ID," "Postfix queue ID")
 appear in the domain layer. Provider identifiers are captured only as opaque
-metadata on `Message` (e.g., `providerMessageId: String?`) for deduplication,
-never as a typed domain concept — see
-[ADR-003](../adr/0003-inbound-mail-abstraction.md).
+metadata on `Message` (e.g., `providerMessageId: String?`), used solely to
+deduplicate reprocessing of the same provider delivery event — never for
+content-based deduplication, and never as a typed domain concept — see
+[ADR-003](../adr/0003-inbound-mail-abstraction.md) and
+[ADR-019](../adr/0019-inbound-deduplication-semantics.md).

@@ -31,6 +31,19 @@ s3://testinbox-mime/{workspace_id}/{inbox_id}/{message_id}/attachments/{attachme
 Workspace-prefixed keys make bulk lifecycle deletion (TTL expiry, workspace
 offboarding) a prefix operation rather than a per-object lookup.
 
+Object keys are **per-message ownership keys, never content-addressed**:
+every message owns its own `raw.eml` object even if byte-identical to
+another message's (consistent with ADR-019 — content identity is metadata,
+not storage identity). This keeps deletion semantics trivially correct:
+deleting an inbox's prefix can never remove data referenced by another
+inbox, and retention deletion is a deterministic prefix delete. Global
+content deduplication (shared blobs + reference counting) is deliberately
+rejected absent a demonstrated storage-cost need — it would couple every
+delete to a refcount that must be transactionally consistent with the DB.
+An orphan sweep reclaims blobs whose DB write never committed
+(storage-first write order, ADR-005): objects older than a threshold with
+no referencing `Message` row are deleted.
+
 ## Why Postgres is the sole system of record
 
 Redis is explicitly *not* a system of record (ADR-006): it is used only for

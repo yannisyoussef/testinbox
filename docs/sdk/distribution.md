@@ -39,11 +39,15 @@ ownership).
 
 ## Cross-cutting
 
+- **Runtime baselines** (see [ADR-023](../adr/0023-sdk-runtime-baselines.md)):
+  JVM artifact targets Java 17 bytecode (tested on 17/21/25) regardless of
+  the backend's Java 25 runtime; npm package declares `engines: ">=20"`
+  (tested on 20/22/24) regardless of the Node LTS used to build/publish.
 - **Dependency policy**: minimize runtime dependencies in both SDKs (a test
   library that drags in a large dependency tree is a real adoption cost);
   prefer the platform's built-in HTTP client (`java.net.http` on JVM,
-  `fetch` on Node ≥18/browsers) over adding an HTTP library dependency,
-  revisited only if a concrete gap is found.
+  global `fetch` on Node ≥20/browsers) over adding an HTTP library
+  dependency, revisited only if a concrete gap is found.
 - **Reproducible builds / supply chain**: dependency lockfiles committed
   (`package-lock.json`/`gradle.lockfile` or verification metadata),
   dependency and vulnerability scanning in CI (see

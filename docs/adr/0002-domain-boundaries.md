@@ -1,6 +1,8 @@
 # ADR-002: Domain Boundaries
 
-**Status:** Accepted
+**Status:** Accepted (amended by [ADR-024](0024-application-layer-and-dependency-rule.md):
+an `application` use-case layer sits between adapters and the domain, and
+the dependency rule is domain ← application ← adapters)
 
 ## Context
 
