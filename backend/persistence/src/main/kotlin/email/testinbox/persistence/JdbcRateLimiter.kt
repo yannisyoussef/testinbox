@@ -131,6 +131,18 @@ class JdbcRateLimiter(
         )
     }
 
-    private fun atLeastOneSecond(duration: Duration): Duration =
-        if (duration <= Duration.ofSeconds(1)) Duration.ofSeconds(1) else Duration.ofSeconds(duration.toSeconds() + 1)
+    /**
+     * Whole seconds, rounded up, never zero. RFC 9110 grants Retry-After only
+     * integer seconds; truncating a sub-second wait to 0 would invite a hot
+     * retry loop, and truncating 1.6s to 1s would advertise a retry that is
+     * still too early.
+     */
+    private fun atLeastOneSecond(duration: Duration): Duration {
+        val seconds = Math.ceilDiv(duration.toNanos(), NANOS_PER_SECOND)
+        return Duration.ofSeconds(maxOf(1L, seconds))
+    }
+
+    private companion object {
+        const val NANOS_PER_SECOND = 1_000_000_000L
+    }
 }
