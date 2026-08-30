@@ -126,6 +126,19 @@ on a Java 25 runtime, so `./gradlew detekt` must be invoked with `JAVA_HOME`
 pointing at a Java 21 JDK (the CI static-analysis job does exactly this).
 Everything else builds and runs on Java 25.
 
+The CI gates are scripts, runnable from the repo root on macOS and Linux —
+run them before pushing rather than discovering a red pipeline:
+
+```
+./scripts/verify-test-results.sh --scope backend|e2e|all   # suites really ran
+./scripts/verify-test-results.test.sh                      # self-test of that gate
+./scripts/openapi-breaking-check.sh <base-spec> <revision>  # ADR-015 compatibility
+./scripts/openapi-breaking-check.test.sh                    # self-test of that gate
+```
+
+Both gates have self-tests because a gate that cannot fail is not a gate;
+keep them passing when changing either script.
+
 Local dependencies: `docker compose up -d` from the repo root (Postgres 16 +
 MinIO). SDKs: `sdk/kotlin` has its own `./gradlew build`; `sdk/typescript`
 and `web` use `npm ci && npm test` / `npm run build`. Full local setup:
