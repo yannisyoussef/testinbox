@@ -15,11 +15,16 @@ enum class RateCategory {
     /** Holds server resources over time; concurrency is governed separately. */
     WAIT,
 
-    /** Cheap metadata reads. */
-    READ,
-
     /** Bandwidth and storage-read intensive. */
     DOWNLOAD,
+
+    /**
+     * Inbound deliveries accepted for a workspace. Promised by
+     * `abuse-model.md` §4 and load-bearing for ADR-021: EXACT addresses are
+     * guessable by construction, so this is what bounds spam against them.
+     * Charged only after a recipient resolves, which keeps ADR-025 intact.
+     */
+    INGEST,
 }
 
 /**

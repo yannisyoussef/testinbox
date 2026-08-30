@@ -12,7 +12,6 @@ class QuotaPolicyTest {
         QuotaPolicy(
             maxActiveInboxes = 2,
             maxStoredBytes = 1_000,
-            maxMessages = 10,
             maxConcurrentWaits = 3,
         )
 
@@ -50,7 +49,6 @@ class QuotaPolicyTest {
     fun `limitFor reports the configured allowance for every dimension`() {
         policy.limitFor(QuotaDimension.ACTIVE_INBOXES) shouldBe 2L
         policy.limitFor(QuotaDimension.STORED_BYTES) shouldBe 1_000L
-        policy.limitFor(QuotaDimension.MESSAGES) shouldBe 10L
         policy.limitFor(QuotaDimension.CONCURRENT_WAITS) shouldBe 3L
         // Every dimension must be covered — a new one cannot be silently unlimited.
         QuotaDimension.entries.forEach { (policy.limitFor(it) > 0) shouldBe true }
@@ -61,7 +59,6 @@ class QuotaPolicyTest {
         listOf(
             { policy.copy(maxActiveInboxes = 0) },
             { policy.copy(maxStoredBytes = -1) },
-            { policy.copy(maxMessages = 0) },
             { policy.copy(maxConcurrentWaits = -5) },
         ).forEach { build -> runCatching { build() }.isFailure shouldBe true }
     }

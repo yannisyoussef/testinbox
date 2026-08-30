@@ -9,10 +9,15 @@ import email.testinbox.application.port.MessageCursor
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.NotifierHealth
+import email.testinbox.application.port.RateDecision
+import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.ReserveOutcome
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.WaitHandle
+import email.testinbox.application.port.WaitSlot
+import email.testinbox.application.port.WaitSlots
 import email.testinbox.application.port.WakeOutcome
+import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.WorkspaceId
@@ -20,6 +25,7 @@ import email.testinbox.domain.inbox.ExactReservation
 import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.inbox.InboxState
 import email.testinbox.domain.inbox.ReservationStatus
+import email.testinbox.domain.limits.RateCategory
 import email.testinbox.domain.message.Message
 import java.time.Clock
 import java.time.Instant
@@ -291,4 +297,74 @@ class FakeNotifier : MessageNotifier {
     override fun subscribe(inboxId: InboxId): WaitHandle = FakeHandle(inboxId).also { handles += it }
 
     override fun health(): NotifierHealth = NotifierHealth(listening = true, epoch = 1, reconnectCount = 0)
+}
+
+/** In-memory quota state; counts derive from the fake repositories, as production derives from SQL. */
+class InMemoryQuotaState(
+    private val inboxes: InMemoryInboxRepository,
+    private val messages: InMemoryMessageRepository,
+) : WorkspaceQuotaState {
+    var guardedWorkspaces = mutableListOf<WorkspaceId>()
+
+    override fun guardAdmission(workspaceId: WorkspaceId) {
+        guardedWorkspaces += workspaceId
+    }
+
+    override fun activeInboxCount(workspaceId: WorkspaceId): Long =
+        inboxes.inboxes.values
+            .count {
+                it.workspaceId == workspaceId &&
+                    it.state in setOf(InboxState.ACTIVE, InboxState.EXPIRING)
+            }.toLong()
+
+    override fun storedBytes(workspaceId: WorkspaceId): Long =
+        messages.messages
+            .filter { it.workspaceId == workspaceId }
+            .sumOf { it.rawSizeBytes + it.attachments.sumOf { a -> a.sizeBytes } }
+}
+
+/** Rate limiter fake: allows everything until a category is explicitly exhausted. */
+class FakeRateLimiter : RateLimiter {
+    val exhausted = mutableSetOf<RateCategory>()
+    val exhaustedInboxes = mutableSetOf<InboxId>()
+    val calls = mutableListOf<Pair<RateCategory, InboxId?>>()
+
+    override fun tryConsume(
+        workspaceId: WorkspaceId,
+        category: RateCategory,
+        inboxId: InboxId?,
+    ): RateDecision {
+        calls += category to inboxId
+        val allowed = category !in exhausted && (inboxId == null || inboxId !in exhaustedInboxes)
+        return RateDecision(
+            category = category,
+            allowed = allowed,
+            limit = 10,
+            remaining = if (allowed) 9 else 0,
+            retryAfter = if (allowed) null else java.time.Duration.ofSeconds(1),
+        )
+    }
+}
+
+/** Wait-slot fake with a fixed ceiling, mirroring the constraint-claimed production slots. */
+class FakeWaitSlots : WaitSlots {
+    var held = 0
+    var peakHeld = 0
+
+    override fun acquire(
+        workspaceId: WorkspaceId,
+        maxConcurrent: Long,
+        expiresAt: Instant,
+    ): WaitSlot? {
+        if (held >= maxConcurrent) return null
+        held++
+        peakHeld = maxOf(peakHeld, held)
+        return object : WaitSlot {
+            override fun close() {
+                held--
+            }
+        }
+    }
+
+    override fun reapExpired(now: Instant): Int = 0
 }

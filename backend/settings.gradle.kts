@@ -6,6 +6,7 @@ include(
     "persistence",
     "storage",
     "notification",
+    "observability",
     "api",
     "ingestion",
     "architecture",

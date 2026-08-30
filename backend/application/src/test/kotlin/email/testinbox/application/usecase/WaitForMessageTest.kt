@@ -1,6 +1,7 @@
 package email.testinbox.application.usecase
 
 import email.testinbox.application.FakeNotifier
+import email.testinbox.application.FakeWaitSlots
 import email.testinbox.application.InMemoryInboxRepository
 import email.testinbox.application.InMemoryMessageRepository
 import email.testinbox.application.MutableClock
@@ -33,6 +34,8 @@ class WaitForMessageTest {
     private lateinit var clock: MutableClock
     private lateinit var inbox: Inbox
     private var hook: WaitSyncHook = WaitSyncHook.NOOP
+    private var waitSlots = FakeWaitSlots()
+    private var maxConcurrentWaits: Long = 10
 
     private val config = TestInboxConfig(mailDomain = "testinbox.local", waitWindowCap = Duration.ofSeconds(60))
 
@@ -56,7 +59,7 @@ class WaitForMessageTest {
         inboxes.insert(inbox)
     }
 
-    private fun useCase(): WaitForMessage = WaitForMessage(inboxes, messages, notifier, clock, config, hook)
+    private fun useCase(): WaitForMessage = WaitForMessage(inboxes, messages, notifier, waitSlots, maxConcurrentWaits, clock, config, hook)
 
     private fun command(
         matcher: MessageMatcher = MessageMatcher(),

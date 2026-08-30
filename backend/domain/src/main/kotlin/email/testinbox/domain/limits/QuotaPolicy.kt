@@ -7,8 +7,14 @@ package email.testinbox.domain.limits
  */
 enum class QuotaDimension {
     ACTIVE_INBOXES,
+
+    /**
+     * Raw MIME plus extracted attachment objects. Attachment bytes are
+     * counted twice on purpose — once inside `raw.eml` and once as the
+     * extracted object — because under the ADR-005 per-message key layout
+     * both objects physically exist.
+     */
     STORED_BYTES,
-    MESSAGES,
     CONCURRENT_WAITS,
 }
 
@@ -20,13 +26,11 @@ enum class QuotaDimension {
 data class QuotaPolicy(
     val maxActiveInboxes: Long,
     val maxStoredBytes: Long,
-    val maxMessages: Long,
     val maxConcurrentWaits: Long,
 ) {
     init {
         require(maxActiveInboxes > 0) { "maxActiveInboxes must be positive, was $maxActiveInboxes" }
         require(maxStoredBytes > 0) { "maxStoredBytes must be positive, was $maxStoredBytes" }
-        require(maxMessages > 0) { "maxMessages must be positive, was $maxMessages" }
         require(maxConcurrentWaits > 0) { "maxConcurrentWaits must be positive, was $maxConcurrentWaits" }
     }
 
@@ -34,7 +38,6 @@ data class QuotaPolicy(
         when (dimension) {
             QuotaDimension.ACTIVE_INBOXES -> maxActiveInboxes
             QuotaDimension.STORED_BYTES -> maxStoredBytes
-            QuotaDimension.MESSAGES -> maxMessages
             QuotaDimension.CONCURRENT_WAITS -> maxConcurrentWaits
         }
 

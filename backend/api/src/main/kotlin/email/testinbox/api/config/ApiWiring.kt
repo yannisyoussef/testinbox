@@ -1,13 +1,18 @@
 package email.testinbox.api.config
 
+import email.testinbox.application.LimitsConfig
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.ApiKeyRepository
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.ExactAddressReservations
 import email.testinbox.application.port.InboxRepository
+import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
+import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.TransactionRunner
+import email.testinbox.application.port.WaitSlots
+import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.application.query.InboxQueries
 import email.testinbox.application.query.MessageQueries
 import email.testinbox.application.usecase.AuthenticateApiKey
@@ -18,11 +23,16 @@ import email.testinbox.application.usecase.OrphanBlobSweep
 import email.testinbox.application.usecase.WaitForMessage
 import email.testinbox.notification.PgListenNotifier
 import email.testinbox.notification.PgListenNotifierConfig
+import email.testinbox.observability.MicrometerLimitMetrics
+import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
+import org.slf4j.LoggerFactory
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.jdbc.core.simple.JdbcClient
+import org.springframework.transaction.PlatformTransactionManager
 import java.time.Clock
 
 @Configuration
@@ -32,6 +42,26 @@ class ApiWiring {
 
     @Bean
     fun testInboxConfig(properties: TestInboxProperties): TestInboxConfig = properties.toConfig()
+
+    @Bean
+    fun limitsConfig(properties: TestInboxProperties): LimitsConfig =
+        properties.limits.toConfig().also {
+            if (!it.enabled) {
+                LoggerFactory
+                    .getLogger(ApiWiring::class.java)
+                    .warn("testinbox.limits.enabled=false — rate limits and quotas are NOT enforced")
+            }
+        }
+
+    @Bean
+    fun limitMetrics(registry: io.micrometer.core.instrument.MeterRegistry): LimitMetrics = MicrometerLimitMetrics(registry)
+
+    @Bean
+    fun rateLimiter(
+        jdbc: JdbcClient,
+        transactionManager: PlatformTransactionManager,
+        limits: LimitsConfig,
+    ): RateLimiter = JdbcRateLimiter(jdbc, transactionManager) { limits.rateFor(it) }
 
     @Bean(destroyMethod = "close")
     fun blobStore(properties: TestInboxProperties): BlobStore =
@@ -60,9 +90,11 @@ class ApiWiring {
         inboxes: InboxRepository,
         reservations: ExactAddressReservations,
         tx: TransactionRunner,
+        quotas: WorkspaceQuotaState,
+        limits: LimitsConfig,
         clock: Clock,
         config: TestInboxConfig,
-    ): CreateInbox = CreateInbox(inboxes, reservations, tx, clock, config)
+    ): CreateInbox = CreateInbox(inboxes, reservations, tx, quotas, limits.quotas, clock, config)
 
     @Bean
     fun deleteInbox(
@@ -78,9 +110,11 @@ class ApiWiring {
         inboxes: InboxRepository,
         messages: MessageRepository,
         notifier: MessageNotifier,
+        waitSlots: WaitSlots,
+        limits: LimitsConfig,
         clock: Clock,
         config: TestInboxConfig,
-    ): WaitForMessage = WaitForMessage(inboxes, messages, notifier, clock, config)
+    ): WaitForMessage = WaitForMessage(inboxes, messages, notifier, waitSlots, limits.quotas.maxConcurrentWaits, clock, config)
 
     @Bean
     fun expireInboxes(

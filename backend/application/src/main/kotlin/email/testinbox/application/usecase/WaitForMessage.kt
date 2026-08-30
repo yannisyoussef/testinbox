@@ -4,6 +4,7 @@ import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
+import email.testinbox.application.port.WaitSlots
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.message.Message
@@ -38,6 +39,8 @@ class WaitForMessage(
     private val inboxes: InboxRepository,
     private val messages: MessageRepository,
     private val notifier: MessageNotifier,
+    private val waitSlots: WaitSlots,
+    private val maxConcurrentWaits: Long,
     private val clock: Clock,
     private val config: TestInboxConfig,
     private val hook: WaitSyncHook = WaitSyncHook.NOOP,
@@ -66,6 +69,15 @@ class WaitForMessage(
 
         data object InboxNotFound : Result
 
+        /**
+         * The workspace already holds every concurrent-wait slot. Rate-shaped,
+         * not state-shaped: a slot frees with time, so this maps to 429 with a
+         * Retry-After rather than 409 (ADR-027 §8).
+         */
+        data class ConcurrentWaitLimitExceeded(
+            val limit: Long,
+        ) : Result
+
         data class InvalidRequest(
             val reason: String,
         ) : Result
@@ -88,10 +100,26 @@ class WaitForMessage(
         // (b) subscribe before anything else observable, then (c) re-check, then (d) park.
         notifier.subscribe(command.inboxId).use { handle ->
             hook.afterSubscribe(command.inboxId)
-            while (true) {
-                firstMatch(command)?.let { return Result.Matched(it, elapsedMs(start)) }
-                if (!clock.instant().isBefore(deadline)) break
-                handle.awaitWake(deadline)
+            firstMatch(command)?.let { return Result.Matched(it, elapsedMs(start)) }
+            if (clock.instant().isBefore(deadline)) {
+                // The slot is claimed only now, once this call is genuinely going
+                // to park (ADR-027 §7). A wait already satisfiable consumes no
+                // concurrency and must not be refused for capacity it never used.
+                val slot =
+                    waitSlots.acquire(
+                        workspaceId = command.workspaceId,
+                        maxConcurrent = maxConcurrentWaits,
+                        // Outlive the window so a crashed node cannot leak the slot,
+                        // but not so far that recovery is slow.
+                        expiresAt = deadline.plus(config.waitWindowCap),
+                    ) ?: return Result.ConcurrentWaitLimitExceeded(maxConcurrentWaits)
+                slot.use {
+                    while (true) {
+                        firstMatch(command)?.let { return Result.Matched(it, elapsedMs(start)) }
+                        if (!clock.instant().isBefore(deadline)) break
+                        handle.awaitWake(deadline)
+                    }
+                }
             }
         }
 

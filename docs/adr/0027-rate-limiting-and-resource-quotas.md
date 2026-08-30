@@ -10,213 +10,300 @@ unlimited stored MIME. `docs/security/abuse-model.md` §4 already *asserts*
 that inbox creation rate, ingestion rate, storage volume and concurrent waits
 are "all bounded, surfaced via `RateLimit-*` headers", and
 `docs/api/principles.md` §9 promises `429` with an RFC 7807 body. Neither is
-implemented. Before a shared staging environment can host more than one
-tenant, that gap has to close, or one workspace can degrade service for every
-other one.
+implemented, and ADR-021 leans on the same non-existent ingestion limit as
+the mitigation that makes guessable `EXACT` addresses acceptable. Before a
+shared staging environment can host more than one tenant, that gap has to
+close, or one workspace can degrade service for every other one.
 
 Two distinct controls are needed and must not be conflated:
 
-- a **rate limit** bounds action *frequency over time* (ephemeral);
-- a **quota** bounds *retained resource consumption* (durable).
+- a **rate limit** bounds action *frequency over time*;
+- a **quota** bounds *retained resource consumption*.
 
 Constraints that shape the design:
 
 - ADR-006 keeps PostgreSQL as the sole system of record and explicitly does
-  **not** introduce Redis for MVP; Redis is reserved for a future scale need.
-  Rate limiting conventionally reaches for Redis, which is not a reason to
-  adopt it here.
-- Enforcement must be correct across multiple API nodes. Per-node in-memory
+  **not** introduce Redis. Rate limiting conventionally reaches for Redis,
+  which is not by itself a reason to adopt it.
+- Enforcement must be correct across multiple API nodes; per-node in-memory
   counters cannot express a tenant-facing limit.
-- ADR-025 fixes unknown-recipient SMTP semantics; nothing here may weaken
-  them.
-- ADR-005 writes raw MIME to object storage *before* the message row commits,
-  so a storage quota cannot be enforced solely at blob-write time.
+- ADR-025 fixes uniform SMTP responses so recipient existence is never
+  disclosed. ADR-026 makes one inbound *event* — which may name recipients in
+  several workspaces — the atomic unit of work.
+- ADR-005 writes raw MIME to object storage *before* the message row commits.
+- ADR-009 hard-deletes expired inboxes through an `ON DELETE CASCADE`, which
+  runs no application code.
 
 ## Decision
 
-### 1. Rate limits: token bucket, one row per (workspace, category)
+### 1. Quota is never visible in an SMTP answer
 
-Requests are classified into four categories by cost profile rather than
-counted against one global requests-per-minute number:
+This is the decision the rest of the inbound design follows from.
 
-| Category | Covers | Cost profile |
-|---|---|---|
-| `INBOX_CREATE` | `POST /v1/inboxes` (both address modes) | creates durable state |
-| `WAIT` | `POST /v1/inboxes/{id}/messages/wait` | holds server resources over time |
-| `READ` | message list/get, attachment metadata, inbox get | cheap |
-| `DOWNLOAD` | `/raw`, attachment bytes | bandwidth/storage-read intensive |
+A first draft deferred inbound mail with `452` when the recipient's workspace
+was over its storage quota, on the grounds that silently discarding mail for
+a *live* inbox makes the system under test look like it never sent — the
+exact false negative TestInbox exists to prevent. That reasoning about
+discard is right, but the mechanism was wrong, for two reasons that only
+appear when it meets the rest of the system:
 
-Each `(workspace, category)` pair owns exactly one `rate_bucket` row holding
-`tokens` and `updated_at`. A request performs one atomic
-`UPDATE … RETURNING` that lazily refills by elapsed time and, if a token is
-available, spends it. Rejection is deterministic and `Retry-After` is exact:
-the time for one token to refill.
+- **It recreates the enumeration oracle ADR-025 removed.** Unknown recipients
+  answer `250`; a live recipient in an over-quota workspace would answer
+  `452`. Since inbound consumption is attacker-supplied, a third party who
+  knows *one* address in a workspace — guessable by construction in `EXACT`
+  mode (ADR-021) — can drive that workspace over quota and then use the
+  differing replies to test whether *other* candidate addresses belong to it.
+  The capability is workspace-membership correlation, which generated-token
+  entropy does not bound, because the attacker never had to guess the second
+  address.
+- **It is a cross-tenant denial of service.** One `DATA` transaction may name
+  recipients in several workspaces, and ADR-026 requires all-or-nothing over
+  the event. Deferring the event because *one* workspace is over quota
+  defers delivery for every other tenant in the same envelope; committing
+  only the in-quota recipients is the partial commit ADR-026 exists to
+  forbid.
 
-Token bucket is chosen over the alternatives because:
+Therefore: **any syntactically valid recipient continues to receive a uniform
+`250` (ADR-025, unchanged), and no quota state may alter the SMTP reply.**
+Enforcement moves to surfaces where refusing leaks nothing.
 
-- **Fixed window** admits a 2× burst across the window boundary and needs a
-  row per window, growing rows with time.
-- **Sliding-window log** writes a row per request — rejected outright by the
-  "no row per harmless GET" constraint.
-- **Sliding-window counter** removes the boundary burst but still keys rows
-  by window and reads two rows per decision.
-- **Token bucket** keeps a *bounded* row set (tenants × 4, never growing with
-  time), expresses burst allowance and sustained rate as two numbers — which
-  matches bursty-but-bounded CI parallelism, the legitimate workload — and
-  yields an exact retry time.
+### 2. Where each limit is enforced
 
-Refill is computed from an injected `Clock`, so boundary behaviour is
-deterministically testable without sleeps.
+| Control | Bound | Enforced at | Refusal |
+|---|---|---|---|
+| `INBOX_CREATE` rate | per workspace | `POST /v1/inboxes` | `429` + `Retry-After` |
+| `WAIT` rate | per workspace | wait endpoint | `429` + `Retry-After` |
+| `DOWNLOAD` rate | per workspace | `/raw`, attachment bytes | `429` + `Retry-After` |
+| `INGEST` rate | per workspace **and** per inbox | inbound delivery | none — see §4 |
+| `maxActiveInboxes` | per workspace | `CreateInbox` use case | `409 quota-exceeded` |
+| `maxStoredBytes` | per workspace | `CreateInbox` use case | `409 quota-exceeded` |
+| `maxConcurrentWaits` | per workspace | `WaitForMessage` use case | `429` + `Retry-After` |
 
-**Contention.** Concurrent requests for the same `(workspace, category)`
-serialize on that row's lock. Each holds it for one short `UPDATE`. This is
-the deliberate cost of multi-node correctness: a per-node counter would be
-cheaper and wrong. If a single workspace ever saturates one row, the
-mitigation is to shard the bucket by a small key suffix; that is not
-warranted at shared-staging scale and is not built.
+**Storage quota is admission control on tenant-initiated growth, not on
+inbound mail.** A workspace at or over `maxStoredBytes` cannot create new
+inboxes — it cannot enlarge its own footprint — but mail addressed to the
+inboxes it already holds is still accepted and stored. That keeps the hard
+stop on the authenticated surface, where the caller is known, the answer
+leaks nothing, and "waiting does not help" is literally true.
 
-`READ` costs one `UPDATE` per cheap GET. That is accepted for correctness,
-with a generous default so the limit is a safety net rather than a throttle.
+The resulting bound on storage is therefore *`maxStoredBytes` plus a bounded
+overshoot*, where the overshoot is capped by the `INGEST` rate multiplied by
+the ADR-009 TTL ceiling — not unbounded. `docs/architecture/failure-modes.md`
+already accepts bounded, self-healing residue of this shape; ADR-005's
+raw-first ordering makes the same trade for orphan blobs. A hard ceiling
+would require evicting a tenant's older messages on arrival, which adds a
+volume-triggered lifecycle transition to ADR-009 and can destroy a message a
+test is about to assert on. That is recorded as the named follow-up if a
+strict ceiling is ever required; it is not built here.
 
-### 2. Quotas: transactional accounting, enforced inside the write transaction
+### 3. Layer placement
 
-A `workspace_usage` row per workspace holds `stored_bytes` and
-`message_count`, maintained **inside the same transaction** that inserts or
-deletes messages. Because ADR-026 already commits every recipient row of an
-inbound event plus its `pg_notify` in one transaction, the usage update joins
-that existing transaction rather than adding a new one.
+Every limit is enforced in the **application layer**, behind ports
+(`RateLimiter`, `WorkspaceQuotaState`, `WaitSlots`), because each is an
+invariant-bearing decision about shared tenant state and ADR-024 puts those
+in exactly one use case. Concretely: `maxActiveInboxes`/`maxStoredBytes`
+inside `CreateInbox`, `maxConcurrentWaits` inside `WaitForMessage`, `INGEST`
+inside `ReceiveInboundDelivery`.
 
-Enforced quotas:
+The `api` adapter may only map an endpoint to a `RateCategory` and render
+`RateLimit-*`/`429`. A limiter that lived in an HTTP filter could not protect
+the independently deployed ingestion gateway at all, and a quota check
+duplicated in an adapter would drift across two deployables with independent
+release cadence — the failure ADR-024 was written to prevent. An ArchUnit
+rule asserts no limit type resides in `email.testinbox.api..` or
+`email.testinbox.ingestion..`.
 
-| Quota | Source of truth | Enforcement point |
-|---|---|---|
-| `maxActiveInboxes` | **derived** — `COUNT` of `ACTIVE`/`EXPIRING` inboxes | inbox creation |
-| `maxStoredBytes` | `workspace_usage.stored_bytes` | inbound delivery commit |
-| `maxMessages` | `workspace_usage.message_count` | inbound delivery commit |
-| `maxConcurrentWaits` | `wait_lease` rows | wait admission |
+**The limiter runs after authentication.** Workspace identity always derives
+from the authenticated API key, never from a path parameter, a body field, or
+any header. Unauthenticated and failed-authentication traffic is therefore
+*not* limited by this ADR; bounding it is an edge/proxy responsibility and is
+stated here as explicitly out of scope rather than left to look covered.
 
-Active inbox count is **derived from the inbox table, not counted**, so it
-cannot drift from reality. Storage cannot be derived cheaply on every
-delivery, so it is accounted — and the accounting is reconciliable by
-construction (§4).
+### 4. Rate limits: token bucket, one row per (workspace, category)
 
-The §7 overshoot hazard — two concurrent deliveries both observe free space,
-both write, both commit — is closed by making the authoritative check happen
-*inside* the transaction, against the row-locked usage row. The pre-write
-check is an early-out for the common case only. Overshoot is therefore zero
-for committed state; the residual cost is that a rejected delivery may have
-already written its blob, which the existing ADR-005 orphan sweep reclaims.
-Losing raw bytes would be worse than transiently storing unreferenced ones.
+Requests are classified by cost profile rather than counted against one
+global requests-per-minute number. Each `(workspace, category)` pair owns one
+`rate_bucket` row holding `tokens` and `updated_at`; a decision is one atomic
+`UPDATE … RETURNING` that lazily refills by elapsed time and spends a token
+when available.
 
-### 3. Concurrent waits: leases, not counters
+Token bucket is chosen because a **fixed window** admits a 2× burst across
+the boundary and needs a row per window (growing with time); a
+**sliding-window log** writes a row per request; a **sliding-window counter**
+still keys rows by window. Token bucket keeps a *bounded* row set — tenants ×
+categories, never growing with time — expresses burst and sustained rate as
+two numbers, which matches bursty-but-bounded CI parallelism, and yields an
+exact retry time.
 
-A wait acquires a `wait_lease` row for its duration and releases it on
-completion. Leases carry `expires_at` (server wait cap plus margin) so a node
-crash cannot leak slots permanently. Acquisition serializes on the
-workspace's `workspace_usage` row, making "count then insert" atomic without
-a distributed lock service; the lock is held for the acquire only, never for
-the wait itself.
+Normative details that close specific bypasses:
 
-A row per wait is proportionate — a wait is inherently long-lived and
-expensive, unlike a GET.
+- **Time comes from PostgreSQL** (`now()` inside the updating statement), not
+  from an API node's wall clock. Node clock skew would otherwise be the same
+  defect as a per-node counter one layer down: a fast node grants extra
+  tokens, a slow node writes a past `updated_at` for the next node to refill
+  against. An injected `Clock` remains only as a test override. Elapsed time
+  is clamped non-negative, and the refilled value is clamped to capacity, so
+  neither a backwards clock nor a long-idle row can fabricate a burst or
+  overflow the arithmetic.
+- **The spend commits independently of the request it governs.** A spend that
+  rolled back with a failing handler would make every request that can be
+  made to fail free of charge.
+- **`Retry-After` is `max(1s, …)`** — RFC 9110 grants integer seconds, and a
+  sub-second value rounds to `0`, inviting a hot retry loop.
+- **Classification is default-deny.** A `/v1` route with no explicit category
+  is charged the most restrictive one, and a test enumerates the controller
+  route table so a future endpoint cannot be silently unlimited.
 
-A node-local ceiling may also exist as an operational circuit breaker. It is
-explicitly **not** a tenant quota and is reported separately, so an
-operational safeguard can never masquerade as the customer's allowance.
+**`INGEST` is the one category whose refusal cannot be seen.** By §1 the
+reply stays `250`; an over-rate delivery is discarded in-process and recorded
+as a metric and a metadata-only log line — mechanically the same discard
+ADR-025 already performs for unknown recipients, and the reason storage
+overshoot in §2 is bounded. It is keyed per workspace *and* per inbox so that
+a flood against one guessed address cannot consume the whole workspace's
+budget. This is the one place mail addressed to a live inbox is dropped; it
+happens only under a sustained flood, never merely because a workspace sits
+at its storage quota.
 
-### 4. Reconciliation
+### 5. Quota usage is derived, never accounted
 
-`workspace_usage` is reconciliable against the actual `message`/`attachment`
-rows at any time, and hard deletion decrements it inside the deleting
-transaction. Counters are constrained non-negative in the schema, so an
-accounting bug fails loudly at the database rather than silently underflowing
-into free capacity.
+`maxActiveInboxes` and `maxStoredBytes` are computed from the rows that
+actually exist, under the admission guard of §6.
 
-### 5. HTTP semantics: rate and quota are different answers
+A maintained counter was rejected: ADR-009 hard-deletes through an
+`ON DELETE CASCADE`, which fires no application code, so nothing can observe
+the deleted rows to decrement them. The drift is one-directional — usage only
+ever grows — so a non-negative constraint catches nothing, and every
+workspace eventually wedges at `409` with no self-service recovery. Worse,
+a tenant following the `409`'s own advice to delete an inbox would free
+nothing, because `DeleteInbox` only marks the row `DELETED`. Derived usage
+cannot drift by construction: it *is* the state.
+
+`stored_bytes` is `SUM(message.raw_size_bytes) + SUM(attachment.size_bytes)`
+for the workspace. Attachment bytes count twice on purpose — once inside
+`raw.eml` and once as the extracted object — because under ADR-005's
+per-message key layout both objects physically exist. Migration `V3` adds the
+`message(workspace_id)`, `attachment(workspace_id)` and
+`inbox(workspace_id, state)` indexes that make the derivation affordable; V1
+indexed none of them by workspace.
+
+Because a tenant's quota frees on `DELETE` only once the retention sweep
+runs, `DeleteInbox` transitioning an inbox to `DELETED` immediately removes
+it from the `ACTIVE`/`EXPIRING` count — so the `409`'s advertised remedy
+takes effect at once for `maxActiveInboxes`, and within one sweep for
+`maxStoredBytes`.
+
+### 6. Admission serialization and lock order
+
+Deriving a count and then inserting is check-then-act, so two concurrent
+creates can both observe free capacity. `CreateInbox` therefore takes a
+per-workspace `pg_advisory_xact_lock` as the **first statement** of its
+transaction, before the count and before any `inbox` write.
+
+The ordering is normative, not incidental. `INSERT INTO message` takes a
+`FOR KEY SHARE` lock on the referenced `inbox` row, while the retention
+sweep's `DELETE FROM inbox` needs a conflicting exclusive lock; a transaction
+that touched those rows *before* acquiring the workspace guard would close a
+lock-order cycle and deadlock into 500s. Advisory-lock-first makes the cycle
+impossible. An advisory key collision between two workspaces costs a little
+extra serialization and never correctness.
+
+Wait admission deliberately uses **no lock at all**: slots are claimed by
+database constraint, the pattern ADR-021 already uses for exact addresses, so
+it never contends with the inbound write path.
+
+### 7. Concurrent waits: constraint-claimed slots
+
+A wait claims one of `maxConcurrentWaits` numbered slots in `wait_lease`,
+guarded by a unique index on `(workspace_id, slot_index)`. A claim either
+wins or conflicts; exhausting the slots yields `429`. Row growth is bounded
+by construction — a slot index at or beyond the ceiling is never inserted —
+so the limiter's own storage cannot be used to exhaust the database.
+
+`expires_at` bounds a claim so a crashed node cannot leak a slot forever, and
+is deliberately **not** part of any index predicate: per ADR-021 a
+`now()`-dependent predicate makes uniqueness non-deterministic. Expiry is
+applied in the reclaim query, and a reaper folded into the existing sweep
+deletes expired rows, metered so that a rising reap count is a visible
+crash-leak signal.
+
+**The slot is claimed only immediately before parking**, after the
+check-then-subscribe-then-recheck sequence of ADR-012/020 has failed to find
+a match. A wait that is already satisfiable does no waiting and must not be
+refused for concurrency it never consumes.
+
+### 8. HTTP semantics: rate and quota are different answers
 
 - **Rate limit exceeded** → `429` + `Retry-After` +
-  `https://testinbox.email/problems/rate-limit-exceeded`. Waiting helps.
+  `…/problems/rate-limit-exceeded`. Waiting helps.
 - **Concurrent wait limit exceeded** → `429` + `Retry-After` +
-  `…/problems/concurrent-wait-limit-exceeded`. A slot frees with time, so
-  this is genuinely rate-shaped.
+  `…/problems/concurrent-wait-limit-exceeded`. A slot frees with time.
 - **Quota exhausted** → `409` + `…/problems/quota-exceeded`. Waiting does
   **not** help; the caller must delete an inbox or let TTL reclaim capacity.
-  Returning `429` here would invite SDKs and CI scripts to retry a request
-  that cannot succeed. `409` (conflict with current state, RFC 9110) states
-  the truth. `507` is rejected: it describes the *server* being out of space,
-  not a tenant exceeding its allowance.
+  `429` would invite SDKs and CI scripts to retry a request that cannot
+  succeed. `507` is rejected: it describes the *server* being out of space,
+  not a tenant exceeding an allowance.
+
+`POST /v1/inboxes` now carries two distinct `409` meanings
+(`address-already-reserved` from ADR-021 and `quota-exceeded`); SDKs must
+discriminate on the problem `type`, never on the status code.
 
 Successful responses carry `RateLimit-Limit`, `RateLimit-Remaining` and
-`RateLimit-Reset` for the category that governed them, so a client can pace
-itself without provoking a rejection. Headers expose only the caller's own
-limits — never another tenant's state, and never whether a *different*
-workspace exists.
+`RateLimit-Reset` for the governing category, so a client can pace itself
+without provoking a rejection. Headers describe only the caller's own
+workspace and never reveal whether another workspace exists.
 
-### 6. SMTP under quota exhaustion: temporary failure, never silent discard
+### 9. Configuration
 
-When a recipient resolves to an active inbox whose workspace has exhausted
-its storage or message quota, the gateway returns a **`452` temporary
-failure** for the DATA transaction. It does not accept-and-drop.
-
-Silently discarding mail addressed to a *live* inbox would make the system
-under test appear not to have sent it — manufacturing a false negative in the
-exact assertion TestInbox exists to make. A temporary failure preserves
-diagnostic truth: the sender's MTA retries, the mail survives if capacity is
-reclaimed within the retry horizon, and the operator sees the cause in
-metrics and logs.
-
-**Unknown-recipient handling is unchanged (ADR-025):** resolution failure
-still yields a uniform `250` with in-process discard. The quota decision
-happens only *after* a recipient resolves, so it cannot turn the unknown
-path into an oracle.
-
-Residual risk, accepted and documented: while a workspace is over quota, its
-addresses answer differently (`452`) from unknown addresses (`250`), so an
-attacker who can both observe responses and drive that workspace over quota
-can distinguish its live addresses. Closing it would require discarding mail
-for live inboxes, which trades a narrow, precondition-heavy enumeration
-signal for a systematic loss of diagnostic truth. Diagnostic truth wins.
-`GENERATED` addresses remain infeasible to guess, which is what bounds the
-exposure in practice.
-
-### 7. Configuration
-
-All limits are configuration-driven under `testinbox.limits.*`, with defaults
-generous enough that local development and the existing test suites are
-unaffected, and a global `enabled` switch. Tests override with very small
-values so boundaries are exercised in milliseconds.
+All limits live under `testinbox.limits.*` with defaults generous enough that
+local development and the existing suites are unaffected; tests override with
+very small values so boundaries are exercised in milliseconds. Enforcement
+defaults to **on**, and a deployment that disables it logs a startup warning —
+a silently disabled limiter is indistinguishable from a working one.
 
 ## Alternatives considered
 
 - **Redis token buckets**: rejected — ADR-006 keeps Redis out until a
-  concrete scale need exists, and adopting it here would add an operational
-  dependency and a second system holding tenant-visible state, to solve a
-  problem one PostgreSQL row per tenant already solves correctly.
+  concrete scale need exists; one PostgreSQL row per tenant per category
+  already gives multi-node correctness.
 - **Per-node in-memory counters**: rejected for tenant-facing limits — a
-  tenant alternating between two API nodes would get N× its allowance. Kept
-  only as an optional node-local circuit breaker, reported as such.
-- **Deriving stored bytes with `SUM()` per delivery**: rejected — it is
-  correct but pays a full aggregate on the hot inbound path, and still needs
-  in-transaction locking to stop concurrent overshoot, so it costs more for
-  no additional guarantee.
-- **`429` for quota exhaustion**: rejected — it advertises "retry later" for
-  a condition that time does not fix.
-- **Accept-and-drop on quota exhaustion**: rejected — see §6.
+  tenant alternating between nodes would get N× its allowance.
+- **Per-API-key buckets**: rejected — a workspace could mint N keys for N×
+  allowance, and key *rotation* would reset the bucket, turning a security
+  operation into a limit-evasion primitive. Buckets key on `workspaceId`;
+  rotation is deliberately a no-op for limits.
+- **Source-IP keying**: rejected — no trusted-proxy configuration exists, so
+  `X-Forwarded-For` is caller-appendable; IP keying would be forgeable, would
+  make `rate_bucket` growth caller-controlled rather than bounded, and is
+  wrong for CI behind shared NAT.
+- **`452` deferral on quota exhaustion** (the first draft): rejected — §1.
+- **Accept-and-drop on quota exhaustion**: rejected — it manufactures the
+  false negative the product exists to prevent.
+- **Evicting a workspace's oldest messages on arrival** to hold a hard
+  ceiling: rejected *for this increment* — it adds a volume-triggered
+  lifecycle transition to ADR-009 and can destroy a message a test is about
+  to assert on. Recorded as the follow-up if a strict ceiling is required.
+- **Maintained usage counters**: rejected — §5.
 - **A dynamic policy engine / plan tiers**: rejected as out of scope; the
-  policy shape (`maxActiveInboxes`, `maxStoredBytes`, `maxConcurrentWaits`,
-  per-category rates) is generic enough for future plans to map onto without
-  building plan machinery now.
+  policy shape is generic enough for future plans to map onto.
 
 ## Consequences
 
-- Two new tables (`rate_bucket`, `wait_lease`) and one accounting table
-  (`workspace_usage`), all workspace-scoped.
-- The inbound write path gains an in-transaction quota check, and the
-  hard-delete path gains a decrement — these must stay together or accounting
-  drifts; a reconciliation check exists to prove they have not.
-- Every API node performs one small `UPDATE` per rate-limited request; the
-  contention profile above is the accepted cost of multi-node correctness.
-- `docs/api/principles.md` §9's promise becomes true rather than aspirational,
-  and `docs/security/abuse-model.md` §4's claimed bounds become enforced.
-- A new SMTP response path (`452`) exists for a live-but-over-quota
-  recipient; the ADR-025 unknown-recipient path is untouched.
+- Two new tables (`rate_bucket`, `wait_lease`), both with row counts bounded
+  by tenant count rather than traffic, and three indexes supporting derived
+  usage. No usage table.
+- `docs/api/principles.md` §9 becomes true rather than aspirational.
+- `docs/security/abuse-model.md` §4's claimed bounds become enforced, and its
+  anti-enumeration statement is **preserved intact** — §1 exists precisely so
+  that sentence stays true.
+- ADR-021's cited mitigation ("bounded by the existing per-workspace
+  ingestion rate limits and storage quotas") becomes real.
+- ADR-025 and ADR-009 are untouched: no SMTP semantics change, no new
+  lifecycle transition.
+- Storage is bounded by `maxStoredBytes` plus an `INGEST`-rate-bounded
+  overshoot rather than a hard ceiling; the follow-up above names the change
+  if that is ever insufficient.
+- Limits do not apply to unauthenticated traffic, by construction.
+- Every workspace-scoped limit is bypassable by creating a second workspace.
+  That is acceptable while workspace provisioning is manual; if workspace
+  creation ever becomes self-serve, an organization-level ceiling is required
+  before it does.
