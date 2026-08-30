@@ -24,6 +24,6 @@ dependencies {
     testImplementation(libs.testcontainers.minio)
     testImplementation(libs.testcontainers.junit)
     testImplementation(libs.awaitility)
-    testImplementation("io.swagger.parser.v3:swagger-parser:2.1.31")
+    testImplementation("io.swagger.parser.v3:swagger-parser:2.1.47")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
