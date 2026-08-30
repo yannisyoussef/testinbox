@@ -48,10 +48,13 @@ resolve_oasdiff() {
 }
 
 OASDIFF="$(resolve_oasdiff)"
-FORMAT=text
-[[ -n "${GITHUB_ACTIONS:-}" ]] && FORMAT=githubactions
+
+# githubactions format renders findings as inline annotations on the PR; it
+# rejects --color, which is only meaningful for the text formats.
+FORMAT_ARGS=(--format text --color never)
+[[ -n "${GITHUB_ACTIONS:-}" ]] && FORMAT_ARGS=(--format githubactions)
 
 echo "$("$OASDIFF" --version) — comparing:"
 echo "  base:     $BASE"
 echo "  revision: $REVISION"
-"$OASDIFF" breaking "$BASE" "$REVISION" --fail-on ERR --format "$FORMAT" --color never
+"$OASDIFF" breaking "$BASE" "$REVISION" --fail-on ERR "${FORMAT_ARGS[@]}"
