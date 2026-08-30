@@ -78,11 +78,26 @@ Enforcement moves to surfaces where refusing leaks nothing.
 |---|---|---|---|
 | `INBOX_CREATE` rate | per workspace | `POST /v1/inboxes` | `429` + `Retry-After` |
 | `WAIT` rate | per workspace | wait endpoint | `429` + `Retry-After` |
+| `READ` rate | per workspace | inbox/message metadata reads | `429` + `Retry-After` |
 | `DOWNLOAD` rate | per workspace | `/raw`, attachment bytes | `429` + `Retry-After` |
 | `INGEST` rate | per workspace **and** per inbox | inbound delivery | none — see §4 |
 | `maxActiveInboxes` | per workspace | `CreateInbox` use case | `409 quota-exceeded` |
 | `maxStoredBytes` | per workspace | `CreateInbox` use case | `409 quota-exceeded` |
 | `maxConcurrentWaits` | per workspace | `WaitForMessage` use case | `429` + `Retry-After` |
+
+Metadata reads are charged despite being cheap. Leaving them free would let a
+caller refused a `WAIT` hot-poll the message list instead, so the wait
+controls would bound only the well-behaved client; `READ` simply carries a
+generous budget. Every `/v1` route is charged something, and an unclassified
+route falls back to the most restrictive category — a test enumerates the
+controller route table so a new endpoint cannot ship unlimited.
+
+The inbound budget is charged **narrow scope first**: the per-inbox bucket is
+consulted before the workspace one and short-circuits on refusal. Spending
+both unconditionally would let a flood against a single guessed address keep
+draining the workspace token after its own bucket emptied — starving every
+other inbox in that workspace, which is the outcome the per-inbox key exists
+to prevent.
 
 **Storage quota is admission control on tenant-initiated growth, not on
 inbound mail.** A workspace at or over `maxStoredBytes` cannot create new

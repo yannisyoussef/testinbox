@@ -94,6 +94,13 @@ carries `RateLimit-Limit`/`-Remaining`/`-Reset`.
 Setting `testinbox.limits.enabled=false` disables enforcement and logs a
 startup warning — useful for load experiments, never for a shared deployment.
 
+Both deployables configure limits independently (`testinbox.limits.*` is read
+by the API and by the ingestion gateway separately), so a shared environment
+must set them consistently in both. The inbound `INGEST` budget only exists in
+the gateway's configuration, and an over-rate delivery is invisible to the
+sender by design — `testinbox_rate_decision_total{category="INGEST",
+outcome="rejected"}` is the signal that a workspace is losing mail.
+
 ## 6. Web UI (debugging dashboard)
 
 ```bash
