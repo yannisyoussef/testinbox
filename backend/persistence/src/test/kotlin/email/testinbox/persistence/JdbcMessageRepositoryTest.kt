@@ -111,7 +111,7 @@ class JdbcMessageRepositoryTest : PersistenceIntegrationTest() {
     }
 
     @Test
-    fun `same provider delivery event is a no-op enforced by the partial unique index (ADR-019)`() {
+    fun `same provider event and same recipient is a no-op enforced by the partial unique index (ADR-026)`() {
         val (workspaceId, projectId) = Fixtures.provisionTenant(jdbc)
         val inbox = Fixtures.inbox(workspaceId, projectId)
         inboxes.insert(inbox)
@@ -120,6 +120,37 @@ class JdbcMessageRepositoryTest : PersistenceIntegrationTest() {
         val replay = Fixtures.message(inbox, providerMessageId = "ses-evt-1")
         messages.appendVisible(replay) shouldBe AppendOutcome.DuplicateProviderEvent
         messages.listVisible(inbox.id).size shouldBe 1
+    }
+
+    @Test
+    fun `same provider event fanning out to different recipients persists both (ADR-026)`() {
+        val (workspaceId, projectId) = Fixtures.provisionTenant(jdbc)
+        val first = Fixtures.inbox(workspaceId, projectId)
+        val second = Fixtures.inbox(workspaceId, projectId)
+        inboxes.insert(first)
+        inboxes.insert(second)
+        // One SES-style event, two envelope recipients: neither may suppress the other.
+        messages.appendVisible(Fixtures.message(first, providerMessageId = "ses-evt-multi")) shouldBe
+            AppendOutcome.Appended
+        messages.appendVisible(Fixtures.message(second, providerMessageId = "ses-evt-multi")) shouldBe
+            AppendOutcome.Appended
+        messages.listVisible(first.id).size shouldBe 1
+        messages.listVisible(second.id).size shouldBe 1
+    }
+
+    @Test
+    fun `distinct provider events with identical content are both observable (ADR-019)`() {
+        val (workspaceId, projectId) = Fixtures.provisionTenant(jdbc)
+        val inbox = Fixtures.inbox(workspaceId, projectId)
+        inboxes.insert(inbox)
+        val fingerprint = "identical-bytes"
+        messages.appendVisible(
+            Fixtures.message(inbox, providerMessageId = "ses-evt-1", fingerprint = fingerprint),
+        ) shouldBe AppendOutcome.Appended
+        messages.appendVisible(
+            Fixtures.message(inbox, providerMessageId = "ses-evt-2", fingerprint = fingerprint),
+        ) shouldBe AppendOutcome.Appended
+        messages.listVisible(inbox.id).size shouldBe 2
     }
 
     @Test

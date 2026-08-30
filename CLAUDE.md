@@ -33,13 +33,16 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
   **Every invariant-bearing write goes through exactly one use case** —
   the ingestion gateway and the API both call the same use cases.
 - Adapters depend inward and implement application ports. `ingestion` never
-  writes to Postgres/MinIO directly — it invokes `ReceiveInboundMessage`.
+  writes to Postgres/MinIO directly — it invokes `ReceiveInboundDelivery`
+  **once per inbound event** (ADR-026), never once per recipient.
 
 ## Non-negotiable invariants (each is tested; keep the tests honest)
 
 1. **No content-based dedup (ADR-019).** Two SMTP `DATA` transactions with
    identical bytes ⇒ two `Message` rows. Dedup only on
-   `(provider, providerMessageId)` for reprocessed provider events.
+   `(provider, providerMessageId, envelope recipient)` for reprocessed
+   provider events (ADR-026: one provider event may fan out to several
+   recipients, and all of its rows commit in ONE transaction).
    Fingerprint is annotation metadata, never a suppression key.
 2. **Visibility+notify atomicity (ADR-020).** Message insert and
    `pg_notify()` happen in the same Postgres transaction. Never
@@ -95,9 +98,14 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
 - Hostile/malformed MIME corpus lives in
   `backend/ingestion/src/test/resources/mime-corpus/` and is a first-class,
   growing asset — add a corpus entry with every parser bug fix.
-- CI must verify suites actually produced results (see
-  `scripts/verify-test-results.sh`); a green build with skipped suites is a
-  failure.
+- CI must verify suites actually produced results:
+  `VERIFY_SCOPE=backend|e2e|all scripts/verify-test-results.sh`. The scope is
+  mandatory context — CI jobs run disjoint suites, so verifying "everything"
+  from a job that ran a subset is a false failure. The verifier and the
+  OpenAPI compatibility gate have their own tests (`scripts/*.test.sh`); keep
+  them passing, a gate that cannot fail is not a gate.
+- Which gates fail CI and which are informational is documented in
+  `docs/quality/strategy.md` — do not silently promote or demote one.
 
 ## Commands
 
@@ -110,7 +118,13 @@ All backend commands run from `backend/` (Gradle wrapper committed there):
 ./gradlew :e2e:test              # black-box acceptance (needs Docker)
 ./gradlew :api:bootRun           # run REST API      (needs compose deps up)
 ./gradlew :ingestion:bootRun     # run SMTP gateway  (needs compose deps up)
+./gradlew detekt                 # static analysis — run Gradle on Java 21
 ```
+
+Detekt is detached from `check` on purpose: its current stable line cannot run
+on a Java 25 runtime, so `./gradlew detekt` must be invoked with `JAVA_HOME`
+pointing at a Java 21 JDK (the CI static-analysis job does exactly this).
+Everything else builds and runs on Java 25.
 
 Local dependencies: `docker compose up -d` from the repo root (Postgres 16 +
 MinIO). SDKs: `sdk/kotlin` has its own `./gradlew build`; `sdk/typescript`

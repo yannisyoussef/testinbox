@@ -47,7 +47,7 @@ flowchart TB
   no Spring, no JPA, no provider-specific types. Enforced by ArchUnit rule
   (see quality strategy).
 - **application**: use cases (`CreateInbox`, `ReserveExactAddress`,
-  `ReceiveInboundMessage`, `WaitForMessage`, `ExpireInboxes`) and the port
+  `ReceiveInboundDelivery`, `WaitForMessage`, `ExpireInboxes`) and the port
   interfaces they need (`InboxRepository`, `MessageRepository`,
   `BlobStore`, `MessageNotifier`, `Clock`). All invariant-bearing writes
   live here, once. Depends only on `domain`.
@@ -63,7 +63,8 @@ flowchart TB
 - **auth**: API key issuance/validation, scope enforcement.
 - **ingestion-gateway**: a separate deployable process implementing
   `InboundMailProvider` adapters (local SMTP, future SES/Postfix) and MIME
-  parsing, then invoking the shared `ReceiveInboundMessage` use case —
+  parsing, then invoking the shared `ReceiveInboundDelivery` use case once per
+  inbound event (ADR-026) —
   never writing through persistence directly. It embeds
   `application`/`domain` and the infrastructure adapters as libraries and
   talks to the same Postgres/object storage, so it is "independently

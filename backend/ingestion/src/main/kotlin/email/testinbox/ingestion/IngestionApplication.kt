@@ -8,7 +8,7 @@ import org.springframework.boot.runApplication
 /**
  * The independently deployable inbound mail gateway (ADR-001). It embeds
  * application/domain and the infrastructure adapters as libraries and
- * invokes the shared ReceiveInboundMessage use case — never writing to
+ * invokes the shared ReceiveInboundDelivery use case — never writing to
  * Postgres/object storage directly (ADR-024).
  */
 @SpringBootApplication(scanBasePackages = ["email.testinbox.ingestion", "email.testinbox.persistence"])

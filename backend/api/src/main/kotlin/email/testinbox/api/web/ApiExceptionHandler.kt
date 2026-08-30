@@ -29,7 +29,8 @@ class ApiExceptionHandler {
 
     @ExceptionHandler(HttpMessageNotReadableException::class)
     fun unreadable(
-        e: HttpMessageNotReadableException,
+        // Deliberately unused: parser detail must never reach the client.
+        ignored: HttpMessageNotReadableException,
         request: HttpServletRequest,
     ): ResponseEntity<ProblemDetail> =
         Problems.respond(
@@ -44,7 +45,8 @@ class ApiExceptionHandler {
 
     @ExceptionHandler(MethodArgumentTypeMismatchException::class)
     fun typeMismatch(
-        e: MethodArgumentTypeMismatchException,
+        // Deliberately unused: an unparseable id is reported as a plain 404.
+        ignored: MethodArgumentTypeMismatchException,
         request: HttpServletRequest,
     ): ResponseEntity<ProblemDetail> =
         Problems.respond(

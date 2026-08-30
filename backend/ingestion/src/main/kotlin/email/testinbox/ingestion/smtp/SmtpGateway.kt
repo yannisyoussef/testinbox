@@ -1,7 +1,7 @@
 package email.testinbox.ingestion.smtp
 
 import email.testinbox.application.TestInboxConfig
-import email.testinbox.application.usecase.ReceiveInboundMessage
+import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.ingestion.config.IngestionProperties
 import org.slf4j.LoggerFactory
 import org.springframework.context.SmartLifecycle
@@ -26,10 +26,13 @@ const val LOCAL_SMTP_PROVIDER = "local-smtp"
  * Each completed DATA transaction is a distinct delivery: the local
  * provider supplies NO providerMessageId, so nothing is ever deduplicated
  * (ADR-019).
+ * The whole DATA transaction — every envelope recipient — is handed to the
+ * application exactly once and committed atomically (ADR-026), so a 451
+ * never leaves some recipients persisted and others not.
  */
 @Component
 class SmtpGateway(
-    private val receive: ReceiveInboundMessage,
+    private val receive: ReceiveInboundDelivery,
     private val properties: IngestionProperties,
     private val config: TestInboxConfig,
 ) : SmartLifecycle {
@@ -75,23 +78,21 @@ class SmtpGateway(
 
         override fun data(data: InputStream): String? {
             val raw = readBounded(data)
-            for (recipient in recipients) {
-                try {
-                    receive.execute(
-                        ReceiveInboundMessage.Command(
-                            recipientAddress = recipient,
-                            envelopeFrom = envelopeFrom,
-                            envelopeTo = recipient,
-                            raw = raw,
-                            provider = LOCAL_SMTP_PROVIDER,
-                            providerMessageId = null,
-                        ),
-                    )
-                } catch (e: Exception) {
-                    // Persistence/storage unavailable: soft-fail so the sender retries (failure-modes.md).
-                    log.error("inbound delivery failed for hashed recipient; soft-failing", e)
-                    throw RejectException(451, "Requested action aborted: local error in processing")
-                }
+            try {
+                receive.execute(
+                    ReceiveInboundDelivery.Command(
+                        envelopeFrom = envelopeFrom,
+                        recipients = recipients.toList(),
+                        raw = raw,
+                        provider = LOCAL_SMTP_PROVIDER,
+                        providerMessageId = null,
+                    ),
+                )
+            } catch (e: Exception) {
+                // Persistence/storage unavailable: soft-fail the whole transaction so the
+                // sender retries it as a unit — nothing was committed (failure-modes.md).
+                log.error("inbound delivery failed; soft-failing the DATA transaction", e)
+                throw RejectException(451, "Requested action aborted: local error in processing")
             }
             // Uniform success regardless of recipient resolution (ADR-025).
             return null

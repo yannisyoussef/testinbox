@@ -5,7 +5,8 @@ import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.MimeParser
-import email.testinbox.application.usecase.ReceiveInboundMessage
+import email.testinbox.application.port.TransactionRunner
+import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.ingestion.mime.JakartaMimeParser
 import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
@@ -37,12 +38,12 @@ class IngestionWiring {
     fun mimeParser(): MimeParser = JakartaMimeParser()
 
     @Bean
-    fun receiveInboundMessage(
+    fun receiveInboundDelivery(
         inboxes: InboxRepository,
         messages: MessageRepository,
         blobs: BlobStore,
         parser: MimeParser,
+        transactions: TransactionRunner,
         clock: Clock,
-        config: TestInboxConfig,
-    ): ReceiveInboundMessage = ReceiveInboundMessage(inboxes, messages, blobs, parser, clock, config)
+    ): ReceiveInboundDelivery = ReceiveInboundDelivery(inboxes, messages, blobs, parser, transactions, clock)
 }

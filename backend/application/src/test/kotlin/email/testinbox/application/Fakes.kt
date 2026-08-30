@@ -44,6 +44,28 @@ object NoopTx : TransactionRunner {
     override fun <T> required(block: () -> T): T = block()
 }
 
+/**
+ * Transaction runner with in-memory rollback, so all-or-nothing behaviour of a
+ * multi-recipient inbound event (ADR-026) is testable without a database.
+ */
+class RollbackTx(
+    private val messages: InMemoryMessageRepository,
+) : TransactionRunner {
+    override fun <T> required(block: () -> T): T {
+        val messageSnapshot = messages.messages.toList()
+        val notifySnapshot = messages.notifiedInboxes.toList()
+        return try {
+            block()
+        } catch (e: Throwable) {
+            messages.messages.clear()
+            messages.messages += messageSnapshot
+            messages.notifiedInboxes.clear()
+            messages.notifiedInboxes += notifySnapshot
+            throw e
+        }
+    }
+}
+
 class InMemoryInboxRepository : InboxRepository {
     val inboxes = LinkedHashMap<InboxId, Inbox>()
     var forcedAddressTakenCount = 0
@@ -157,17 +179,25 @@ class InMemoryMessageRepository : MessageRepository {
     val messages = mutableListOf<Message>()
     val notifiedInboxes = mutableListOf<InboxId>()
 
+    /** Envelope recipient whose append throws, simulating a mid-event persistence failure. */
+    var failAppendForRecipient: String? = null
+
     override fun appendVisible(message: Message): AppendOutcome {
-        if (message.providerMessageId != null &&
-            messages.any {
-                it.provider == message.provider && it.providerMessageId == message.providerMessageId
-            }
-        ) {
-            return AppendOutcome.DuplicateProviderEvent
+        if (message.envelopeTo == failAppendForRecipient) {
+            error("injected persistence failure for ${message.envelopeTo}")
         }
+        if (isProviderEventReplay(message)) return AppendOutcome.DuplicateProviderEvent
         messages += message
         notifiedInboxes += message.inboxId
         return AppendOutcome.Appended
+    }
+
+    /** ADR-026: provider-event identity is recipient-scoped. */
+    private fun isProviderEventReplay(message: Message): Boolean {
+        val eventId = message.providerMessageId ?: return false
+        return messages.any {
+            it.provider == message.provider && it.providerMessageId == eventId && it.envelopeTo == message.envelopeTo
+        }
     }
 
     override fun findEarliestIdByFingerprint(
