@@ -58,6 +58,9 @@ import java.util.UUID
         "testinbox.limits.download.refill-per-second=10000",
         "testinbox.limits.ingest.capacity=100000",
         "testinbox.limits.ingest.refill-per-second=10000",
+        // Here rather than in @DynamicPropertySource so a subclass can override
+        // it: a dynamic property source outranks @TestPropertySource.
+        "testinbox.wait-window-cap=5s",
     ],
 )
 abstract class ApiIntegrationTestBase {
@@ -83,7 +86,6 @@ abstract class ApiIntegrationTestBase {
             registry.add("testinbox.storage.secret-key") { "testinbox123" }
             registry.add("testinbox.bootstrap.api-key") { BOOTSTRAP_KEY }
             registry.add("testinbox.mail-domain") { "testinbox.local" }
-            registry.add("testinbox.wait-window-cap") { "5s" }
             registry.add("testinbox.sweep-interval") { "1s" }
             registry.add("testinbox.expiry-grace") { "1s" }
         }

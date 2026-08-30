@@ -18,6 +18,7 @@ import email.testinbox.domain.message.Message
 import email.testinbox.domain.message.MessageMatcher
 import email.testinbox.domain.message.ParseStatus
 import email.testinbox.domain.message.ParsedContent
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import org.junit.jupiter.api.BeforeEach
@@ -199,6 +200,51 @@ class WaitForMessageTest {
         useCase()
             .execute(command().copy(workspaceId = WorkspaceId(UUID.randomUUID())))
             .shouldBeInstanceOf<WaitForMessage.Result.InboxNotFound>()
+    }
+
+    @Test
+    fun `an immediately satisfiable wait claims no concurrency slot`() {
+        maxConcurrentWaits = 1
+        messages.appendVisible(visibleMessage())
+        useCase().execute(command()).shouldBeInstanceOf<WaitForMessage.Result.Matched>()
+        // Never parked, so never charged: the slot is claimed only just before
+        // parking (ADR-027 §7).
+        waitSlots.peakHeld shouldBe 0
+        waitSlots.held shouldBe 0
+    }
+
+    @Test
+    fun `a waiter that must park is refused when the workspace holds every slot`() {
+        maxConcurrentWaits = 1
+        // Someone else already holds the workspace's only slot.
+        waitSlots.acquire(workspaceId, 1, java.time.Duration.ofSeconds(60))!!
+        notifier.onAwait = { error("must not park: the slot was unavailable") }
+        val result = useCase().execute(command())
+        result.shouldBeInstanceOf<WaitForMessage.Result.ConcurrentWaitLimitExceeded>().limit shouldBe 1L
+    }
+
+    @Test
+    fun `a slot is released even when the wait fails part-way`() {
+        maxConcurrentWaits = 1
+        notifier.onAwait = { error("boom") }
+        runCatching { useCase().execute(command()) }.isFailure shouldBe true
+        // Released on the exception path too, or one crash would permanently
+        // shrink the tenant's allowance.
+        waitSlots.held shouldBe 0
+        // And the next waiter can still claim it.
+        waitSlots.acquire(workspaceId, 1, java.time.Duration.ofSeconds(60)).shouldNotBeNull()
+    }
+
+    @Test
+    fun `a slot is released after a normal timeout`() {
+        maxConcurrentWaits = 1
+        notifier.onAwait = { _ ->
+            clock.advanceSeconds(11)
+            WakeOutcome.DEADLINE
+        }
+        useCase().execute(command()).shouldBeInstanceOf<WaitForMessage.Result.Timeout>()
+        waitSlots.held shouldBe 0
+        waitSlots.peakHeld shouldBe 1
     }
 
     @Test

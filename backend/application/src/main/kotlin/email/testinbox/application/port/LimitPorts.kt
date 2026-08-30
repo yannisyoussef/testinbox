@@ -81,17 +81,18 @@ interface WaitSlot : AutoCloseable {
 interface WaitSlots {
     /**
      * Claims one of [maxConcurrent] slots for [workspaceId], or returns null
-     * when the tenant already holds them all. [expiresAt] bounds the claim so
-     * a node crash cannot leak a slot permanently.
+     * when the tenant already holds them all. [leaseFor] bounds the claim so a
+     * node crash cannot leak a slot permanently; the deadline is computed by
+     * the database, not by a node clock, so skew cannot free a live slot.
      */
     fun acquire(
         workspaceId: WorkspaceId,
         maxConcurrent: Long,
-        expiresAt: Instant,
+        leaseFor: Duration,
     ): WaitSlot?
 
     /** Reclaims slots whose holder died; returns how many were freed. */
-    fun reapExpired(now: Instant): Int
+    fun reapExpired(): Int
 }
 
 /**

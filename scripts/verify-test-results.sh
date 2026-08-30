@@ -51,6 +51,7 @@ BACKEND_MODULES=(
   "backend/persistence:25"
   "backend/storage:3"
   "backend/notification:5"
+  "backend/observability:5"
   "backend/ingestion:20"
   "backend/api:28"
 )

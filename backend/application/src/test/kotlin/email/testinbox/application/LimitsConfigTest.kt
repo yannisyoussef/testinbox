@@ -53,8 +53,13 @@ class LimitsConfigTest {
         // so a disabled deployment cannot diverge from an enforcing one.
         RateCategory.entries.forEach { (disabled.rateFor(it).capacity > 0) shouldBe true }
         QuotaDimension.entries.forEach {
-            disabled.quotas.admits(it, current = Long.MAX_VALUE / 4) shouldBe true
+            disabled.quotas.admits(it, current = 100_000) shouldBe true
         }
+        // "Unlimited" must stay finite: the wait-slot allocator enumerates
+        // candidate indexes, so a Long.MAX_VALUE ceiling would turn a disabled
+        // limiter into a hung endpoint rather than an unrestricted one.
+        (disabled.quotas.maxConcurrentWaits < Long.MAX_VALUE) shouldBe true
+        disabled.quotas.maxConcurrentWaits shouldBe LimitsConfig.EFFECTIVELY_UNLIMITED
     }
 
     @Test

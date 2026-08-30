@@ -185,6 +185,15 @@ class QuotaApiTest : ApiIntegrationTestBase() {
 class ConcurrentWaitLimitApiTest : ApiIntegrationTestBase() {
     private val json = jacksonObjectMapper()
 
+    @org.springframework.beans.factory.annotation.Autowired
+    lateinit var jdbc: org.springframework.jdbc.core.simple.JdbcClient
+
+    private fun heldWaitSlots(): Long =
+        jdbc
+            .sql("SELECT count(*) AS c FROM wait_lease")
+            .query { rs, _ -> rs.getLong("c") }
+            .single()
+
     @Test
     fun `a second concurrent waiter is refused with 429 while the first parks`() {
         val key = provisionIsolatedWorkspace("wait-limit").apiKey
@@ -197,8 +206,13 @@ class ConcurrentWaitLimitApiTest : ApiIntegrationTestBase() {
                         .statusCode
                         .value()
                 }
-            // Let the first request get past check/subscribe/recheck and park.
-            Thread.sleep(700)
+            // Wait for the slot to actually be claimed rather than guessing at a
+            // duration: a sleep loses this race under load and fails as a
+            // confusing "expected 429 but was 200".
+            org.awaitility.Awaitility
+                .await()
+                .atMost(java.time.Duration.ofSeconds(10))
+                .until { heldWaitSlots() == 1L }
             val refused = post("/v1/inboxes/$id/messages/wait", """{"timeoutSeconds":2}""", key = key)
             refused.statusCode.value() shouldBe 429
             val problem = json.readTree(refused.body)

@@ -30,6 +30,9 @@ data class LimitsConfig(
         require(perInboxIngest.capacity <= rates.getValue(RateCategory.INGEST).capacity) {
             "per-inbox INGEST capacity must not exceed the workspace-wide one"
         }
+        require(perInboxIngest.refillPerSecond <= rates.getValue(RateCategory.INGEST).refillPerSecond) {
+            "per-inbox INGEST refill must not exceed the workspace-wide one"
+        }
     }
 
     fun rateFor(
@@ -38,6 +41,9 @@ data class LimitsConfig(
     ): RatePolicy = if (perInbox && category == RateCategory.INGEST) perInboxIngest else rates.getValue(category)
 
     companion object {
+        /** Large enough never to bind in practice, small enough to enumerate. */
+        const val EFFECTIVELY_UNLIMITED: Long = 1_000_000
+
         /**
          * Used when `testinbox.limits.enabled=false`. Enforcement code paths
          * still run — so the disabled mode cannot diverge from the enforced one
@@ -48,9 +54,12 @@ data class LimitsConfig(
                 enabled = false,
                 quotas =
                     QuotaPolicy(
-                        maxActiveInboxes = Long.MAX_VALUE,
+                        maxActiveInboxes = EFFECTIVELY_UNLIMITED,
                         maxStoredBytes = Long.MAX_VALUE,
-                        maxConcurrentWaits = Long.MAX_VALUE,
+                        // NOT Long.MAX_VALUE: the wait-slot allocator enumerates
+                        // candidate slot indexes, so an astronomically large
+                        // ceiling turns "unlimited" into a hung endpoint.
+                        maxConcurrentWaits = EFFECTIVELY_UNLIMITED,
                     ),
                 rates =
                     RateCategory.entries.associateWith {

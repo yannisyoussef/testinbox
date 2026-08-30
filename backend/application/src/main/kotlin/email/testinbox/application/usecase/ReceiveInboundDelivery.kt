@@ -5,6 +5,7 @@ import email.testinbox.application.Sha256
 import email.testinbox.application.port.AppendOutcome
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.InboxRepository
+import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.MimeParseResult
 import email.testinbox.application.port.MimeParser
@@ -52,6 +53,7 @@ class ReceiveInboundDelivery(
     private val transactions: TransactionRunner,
     private val rateLimiter: RateLimiter,
     private val clock: Clock,
+    private val metrics: LimitMetrics = LimitMetrics.NOOP,
 ) {
     data class Command(
         val envelopeFrom: String?,
@@ -106,13 +108,23 @@ class ReceiveInboundDelivery(
             // inbox, so a flood against one guessed EXACT address cannot consume
             // the whole workspace's allowance. Charged only after the recipient
             // resolves, so the ADR-025 unknown path never reaches the limiter.
-            val workspaceBudget = rateLimiter.tryConsume(inbox.workspaceId, RateCategory.INGEST)
+            // Narrow scope FIRST, and short-circuit. Spending both unconditionally
+            // would let a flood against one guessed address keep draining the
+            // workspace token after its own bucket is empty — starving every
+            // other inbox in that workspace, which is precisely what the
+            // per-inbox key exists to prevent.
             val inboxBudget = rateLimiter.tryConsume(inbox.workspaceId, RateCategory.INGEST, inbox.id)
-            if (!workspaceBudget.allowed || !inboxBudget.allowed) {
+            val workspaceBudget =
+                if (inboxBudget.allowed) rateLimiter.tryConsume(inbox.workspaceId, RateCategory.INGEST) else null
+            if (!inboxBudget.allowed || workspaceBudget?.allowed != true) {
                 // Discarded in-process, exactly as ADR-025 discards unknown
                 // recipients. The SMTP reply is unchanged (ADR-027 §1): making a
                 // refusal visible here would rebuild the enumeration oracle.
                 logDiscard(recipient, command, "ingest_rate_limited")
+                // The only signal that a live inbox is losing mail: the SMTP
+                // reply stays uniform by design (ADR-027 §1), so this counter and
+                // the log line above are what make it observable at all.
+                metrics.rateDecision(RateCategory.INGEST, allowed = false)
                 rateLimited++
                 continue
             }

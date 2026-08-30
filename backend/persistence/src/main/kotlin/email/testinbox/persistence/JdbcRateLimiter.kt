@@ -32,7 +32,15 @@ import java.time.Instant
  * The arithmetic itself lives in the framework-free domain [TokenBucket] and
  * is exercised by its own property tests; this adapter owns only atomicity
  * and the time source.
+ *
+ * Suppression note: `jdbc` and `Snapshot` are both used, in `consume` below.
+ * Detekt runs here without type resolution and does not follow usages reached
+ * only through a private function invoked from inside a lambda (the
+ * TransactionTemplate callback), so it reports them as dead. Narrowly
+ * suppressed rather than reshaping working code for the analyser; drop this if
+ * the Detekt task ever gains type resolution.
  */
+@Suppress("UnusedPrivateProperty", "UnusedPrivateClass")
 class JdbcRateLimiter(
     private val jdbc: JdbcClient,
     transactionManager: PlatformTransactionManager,

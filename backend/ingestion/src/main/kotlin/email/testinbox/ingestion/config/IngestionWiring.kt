@@ -42,7 +42,17 @@ class IngestionWiring {
         )
 
     @Bean
-    fun limitsConfig(properties: IngestionProperties): LimitsConfig = properties.limits.toConfig()
+    fun limitsConfig(properties: IngestionProperties): LimitsConfig =
+        properties.limits.toConfig().also {
+            if (!it.enabled) {
+                // Worth more here than on the API: an INGEST refusal is invisible
+                // by design, so a silently disabled limiter looks identical to a
+                // working one from every direction.
+                org.slf4j.LoggerFactory
+                    .getLogger(IngestionWiring::class.java)
+                    .warn("testinbox.limits.enabled=false — inbound rate limits are NOT enforced")
+            }
+        }
 
     @Bean
     fun limitMetrics(registry: io.micrometer.core.instrument.MeterRegistry): LimitMetrics = MicrometerLimitMetrics(registry)

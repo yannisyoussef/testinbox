@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.transaction.PlatformTransactionManager
+import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -38,6 +39,40 @@ class RateLimitAndQuotaTest : PersistenceIntegrationTest() {
 
     private fun limiter(policy: RatePolicy): RateLimiter = JdbcRateLimiter(jdbc, transactionManager) { _, _ -> policy }
 
+    /**
+     * A limiter on its own connection pool and its own transaction manager — a
+     * genuinely separate node, not just a second object in this JVM. Two
+     * instances sharing the application's pool would still pass if the limiter
+     * kept its counters in process memory, which is the design ADR-027 rejects.
+     */
+    private fun independentNode(policy: RatePolicy): RateLimiter {
+        val dataSource =
+            org.springframework.jdbc.datasource
+                .DriverManagerDataSource(postgres.jdbcUrl, postgres.username, postgres.password)
+                .apply { setDriverClassName("org.postgresql.Driver") }
+        return JdbcRateLimiter(
+            JdbcClient.create(dataSource),
+            org.springframework.jdbc.support
+                .JdbcTransactionManager(dataSource),
+        ) { _, _ -> policy }
+    }
+
+    private fun storedTokens(
+        workspaceId: email.testinbox.domain.WorkspaceId,
+        category: RateCategory,
+    ): Double? =
+        jdbc
+            .sql(
+                """
+                SELECT tokens FROM rate_bucket
+                 WHERE workspace_id = :workspaceId AND category = :category AND inbox_id IS NULL
+                """.trimIndent(),
+            ).param("workspaceId", workspaceId.value)
+            .param("category", category.name)
+            .query { rs, _ -> rs.getDouble("tokens") }
+            .optional()
+            .orElse(null)
+
     private val threeFast = RatePolicy(capacity = 3, refillPerSecond = 1.0)
 
     @Test
@@ -53,12 +88,12 @@ class RateLimitAndQuotaTest : PersistenceIntegrationTest() {
     }
 
     @Test
-    fun `two limiter instances share one workspace budget (multi-node correctness)`() {
+    fun `two nodes on separate connection pools share one workspace budget`() {
         val (workspaceId, _) = Fixtures.provisionTenant(jdbc)
-        // Two independent limiters = two API nodes against the same database.
-        val nodeA = limiter(threeFast)
-        val nodeB = limiter(threeFast)
-        // Alternating between them must not multiply the allowance.
+        // Separate pools and transaction managers: state cannot be shared in
+        // process memory, only through PostgreSQL.
+        val nodeA = independentNode(threeFast)
+        val nodeB = independentNode(threeFast)
         val outcomes =
             listOf(
                 nodeA.tryConsume(workspaceId, RateCategory.INBOX_CREATE),
@@ -68,6 +103,52 @@ class RateLimitAndQuotaTest : PersistenceIntegrationTest() {
             )
         outcomes.count { it.allowed } shouldBe 3
         outcomes[3].allowed shouldBe false
+    }
+
+    @Test
+    fun `the budget lives in PostgreSQL, not in the limiter's memory`() {
+        val (workspaceId, _) = Fixtures.provisionTenant(jdbc)
+        storedTokens(workspaceId, RateCategory.INBOX_CREATE) shouldBe null
+
+        limiter(threeFast).tryConsume(workspaceId, RateCategory.INBOX_CREATE).allowed shouldBe true
+
+        // Exactly one durable row, holding the spent state — an in-memory
+        // limiter would leave nothing here and would still pass every
+        // behavioural assertion in this class.
+        val tokens = storedTokens(workspaceId, RateCategory.INBOX_CREATE)
+        tokens.shouldNotBeNull()
+        (tokens < threeFast.capacity.toDouble()) shouldBe true
+
+        // A freshly built limiter with no shared process state sees the spend.
+        val coldNode = independentNode(threeFast)
+        repeat(2) { coldNode.tryConsume(workspaceId, RateCategory.INBOX_CREATE).allowed shouldBe true }
+        coldNode.tryConsume(workspaceId, RateCategory.INBOX_CREATE).allowed shouldBe false
+    }
+
+    @Test
+    fun `refill time comes from PostgreSQL, not from the calling node's clock`() {
+        val (workspaceId, _) = Fixtures.provisionTenant(jdbc)
+        val limiter = limiter(threeFast)
+        limiter.tryConsume(workspaceId, RateCategory.INBOX_CREATE)
+
+        val updatedAt =
+            jdbc
+                .sql(
+                    """
+                    SELECT updated_at, now() AS server_now FROM rate_bucket
+                     WHERE workspace_id = :workspaceId AND category = :category AND inbox_id IS NULL
+                    """.trimIndent(),
+                ).param("workspaceId", workspaceId.value)
+                .param("category", RateCategory.INBOX_CREATE.name)
+                .query { rs, _ -> Timestamps.fromDb(rs, "updated_at")!! to Timestamps.fromDb(rs, "server_now")!! }
+                .single()
+        // The stamp was written by the database. Within a second of the server's
+        // own clock proves the node's wall clock never entered the calculation.
+        val skew =
+            java.time.Duration
+                .between(updatedAt.first, updatedAt.second)
+                .abs()
+        (skew < Duration.ofSeconds(5)) shouldBe true
     }
 
     @Test
@@ -158,13 +239,13 @@ class RateLimitAndQuotaTest : PersistenceIntegrationTest() {
     @Test
     fun `wait slots admit exactly the ceiling and refuse the next`() {
         val (workspaceId, _) = Fixtures.provisionTenant(jdbc)
-        val expiry = Instant.now().plusSeconds(60)
-        val held = (1..3).map { waitSlots.acquire(workspaceId, 3, expiry) }
+        val lease: Duration = Duration.ofSeconds(60)
+        val held = (1..3).map { waitSlots.acquire(workspaceId, 3, lease) }
         held.forEach { it.shouldNotBeNull() }
-        waitSlots.acquire(workspaceId, 3, expiry) shouldBe null
+        waitSlots.acquire(workspaceId, 3, lease) shouldBe null
         // Releasing one frees exactly one.
         held.first()!!.close()
-        waitSlots.acquire(workspaceId, 3, expiry).shouldNotBeNull()
+        waitSlots.acquire(workspaceId, 3, lease).shouldNotBeNull()
     }
 
     @Test
@@ -179,7 +260,7 @@ class RateLimitAndQuotaTest : PersistenceIntegrationTest() {
                 (1..threads).map {
                     executor.submit<Boolean> {
                         gate.await(5, TimeUnit.SECONDS)
-                        waitSlots.acquire(workspaceId, ceiling, Instant.now().plusSeconds(60)) != null
+                        waitSlots.acquire(workspaceId, ceiling, Duration.ofSeconds(60)) != null
                     }
                 }
             gate.countDown()
@@ -192,22 +273,23 @@ class RateLimitAndQuotaTest : PersistenceIntegrationTest() {
     @Test
     fun `an expired lease is reclaimed so a crashed node cannot shrink the allowance`() {
         val (workspaceId, _) = Fixtures.provisionTenant(jdbc)
-        // A slot whose holder died: already expired on arrival.
-        waitSlots.acquire(workspaceId, 1, Instant.now().minusSeconds(1)).shouldNotBeNull()
+        // A slot whose holder died: the lease is already expired on arrival.
+        waitSlots.acquire(workspaceId, 1, Duration.ofSeconds(-1)).shouldNotBeNull()
         // The ceiling is 1 and the only slot is stale — the next caller reclaims it.
-        waitSlots.acquire(workspaceId, 1, Instant.now().plusSeconds(60)).shouldNotBeNull()
-        (waitSlots.reapExpired(Instant.now().plusSeconds(3600)) >= 1) shouldBe true
+        waitSlots.acquire(workspaceId, 1, Duration.ofSeconds(60)).shouldNotBeNull()
+        // Expiry is evaluated by PostgreSQL, so no node clock is passed in.
+        waitSlots.reapExpired() shouldBe 0
     }
 
     @Test
     fun `wait slots are isolated per workspace`() {
         val (workspaceA, _) = Fixtures.provisionTenant(jdbc)
         val (workspaceB, _) = Fixtures.provisionTenant(jdbc)
-        val expiry = Instant.now().plusSeconds(60)
-        waitSlots.acquire(workspaceA, 1, expiry).shouldNotBeNull()
-        waitSlots.acquire(workspaceA, 1, expiry) shouldBe null
+        val lease: Duration = Duration.ofSeconds(60)
+        waitSlots.acquire(workspaceA, 1, lease).shouldNotBeNull()
+        waitSlots.acquire(workspaceA, 1, lease) shouldBe null
         // B's allowance is its own.
-        waitSlots.acquire(workspaceB, 1, expiry).shouldNotBeNull()
+        waitSlots.acquire(workspaceB, 1, lease).shouldNotBeNull()
     }
 
     @Test

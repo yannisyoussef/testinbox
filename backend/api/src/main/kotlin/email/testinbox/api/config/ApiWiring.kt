@@ -36,10 +36,20 @@ import org.springframework.transaction.PlatformTransactionManager
 import java.time.Clock
 
 @Configuration
-class ApiWiring {
+class ClockConfig {
     @Bean
     fun clock(): Clock = Clock.systemUTC()
+}
 
+/**
+ * Collaborators shared by most beans are injected once here rather than
+ * repeated in every factory method's parameter list.
+ */
+@Configuration
+class ApiWiring(
+    private val clock: Clock,
+    private val properties: TestInboxProperties,
+) {
     @Bean
     fun testInboxConfig(properties: TestInboxProperties): TestInboxConfig = properties.toConfig()
 
@@ -92,7 +102,6 @@ class ApiWiring {
         tx: TransactionRunner,
         quotas: WorkspaceQuotaState,
         limits: LimitsConfig,
-        clock: Clock,
         config: TestInboxConfig,
         metrics: LimitMetrics,
     ): CreateInbox = CreateInbox(inboxes, reservations, tx, quotas, limits.quotas, clock, config, metrics)
@@ -123,7 +132,6 @@ class ApiWiring {
         reservations: ExactAddressReservations,
         blobs: BlobStore,
         tx: TransactionRunner,
-        clock: Clock,
         config: TestInboxConfig,
     ): ExpireInboxes = ExpireInboxes(inboxes, reservations, blobs, tx, clock, config)
 
@@ -131,8 +139,6 @@ class ApiWiring {
     fun orphanBlobSweep(
         blobs: BlobStore,
         messages: MessageRepository,
-        clock: Clock,
-        properties: TestInboxProperties,
     ): OrphanBlobSweep = OrphanBlobSweep(blobs, messages, clock, properties.orphanMinAge)
 
     @Bean

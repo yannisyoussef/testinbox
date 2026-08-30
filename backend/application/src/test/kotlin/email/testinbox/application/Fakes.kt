@@ -357,7 +357,7 @@ class FakeWaitSlots : WaitSlots {
     override fun acquire(
         workspaceId: WorkspaceId,
         maxConcurrent: Long,
-        expiresAt: Instant,
+        leaseFor: java.time.Duration,
     ): WaitSlot? {
         if (held >= maxConcurrent) return null
         held++
@@ -369,5 +369,5 @@ class FakeWaitSlots : WaitSlots {
         }
     }
 
-    override fun reapExpired(now: Instant): Int = 0
+    override fun reapExpired(): Int = 0
 }

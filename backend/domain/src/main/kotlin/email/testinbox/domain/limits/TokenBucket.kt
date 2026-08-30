@@ -15,6 +15,13 @@ enum class RateCategory {
     /** Holds server resources over time; concurrency is governed separately. */
     WAIT,
 
+    /**
+     * Cheap metadata reads. Charged despite being cheap: leaving them free
+     * lets a caller refused a WAIT hot-poll the message list instead, which
+     * would make the wait limits bound only the polite path.
+     */
+    READ,
+
     /** Bandwidth and storage-read intensive. */
     DOWNLOAD,
 

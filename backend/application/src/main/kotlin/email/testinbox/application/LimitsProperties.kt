@@ -18,6 +18,7 @@ data class LimitsProperties(
     val maxConcurrentWaits: Long = 50,
     val inboxCreate: RateProperties = RateProperties(capacity = 60, refillPerSecond = 1.0),
     val wait: RateProperties = RateProperties(capacity = 120, refillPerSecond = 4.0),
+    val read: RateProperties = RateProperties(capacity = 600, refillPerSecond = 20.0),
     val download: RateProperties = RateProperties(capacity = 60, refillPerSecond = 2.0),
     val ingest: RateProperties = RateProperties(capacity = 300, refillPerSecond = 10.0),
     /** Per-inbox share of the inbound budget; must not exceed [ingest]. */
@@ -46,6 +47,7 @@ data class LimitsProperties(
                     mapOf(
                         RateCategory.INBOX_CREATE to inboxCreate.toPolicy(),
                         RateCategory.WAIT to wait.toPolicy(),
+                        RateCategory.READ to read.toPolicy(),
                         RateCategory.DOWNLOAD to download.toPolicy(),
                         RateCategory.INGEST to ingest.toPolicy(),
                     ),

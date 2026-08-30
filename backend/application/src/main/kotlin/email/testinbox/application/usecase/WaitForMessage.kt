@@ -5,6 +5,7 @@ import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
+import email.testinbox.application.port.WaitHandle
 import email.testinbox.application.port.WaitSlots
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.WorkspaceId
@@ -104,34 +105,7 @@ class WaitForMessage(
             hook.afterSubscribe(command.inboxId)
             firstMatch(command)?.let { return Result.Matched(it, elapsedMs(start)) }
             if (clock.instant().isBefore(deadline)) {
-                // The slot is claimed only now, once this call is genuinely going
-                // to park (ADR-027 §7). A wait already satisfiable consumes no
-                // concurrency and must not be refused for capacity it never used.
-                val slot =
-                    waitSlots.acquire(
-                        workspaceId = command.workspaceId,
-                        maxConcurrent = maxConcurrentWaits,
-                        // Outlive the window so a crashed node cannot leak the slot,
-                        // but not so far that recovery is slow.
-                        expiresAt = deadline.plus(config.waitWindowCap),
-                    ) ?: run {
-                        metrics.waitSlotRejected()
-                        return Result.ConcurrentWaitLimitExceeded(maxConcurrentWaits)
-                    }
-                metrics.waitSlotsChanged(1)
-                slot.use {
-                    try {
-                        while (true) {
-                            firstMatch(command)?.let { return Result.Matched(it, elapsedMs(start)) }
-                            if (!clock.instant().isBefore(deadline)) break
-                            handle.awaitWake(deadline)
-                        }
-                    } finally {
-                        // Mirrors the slot release, including on the early return
-                        // above and on any exception, so the gauge cannot drift up.
-                        metrics.waitSlotsChanged(-1)
-                    }
-                }
+                parkUntil(command, handle, start, deadline)?.let { return it }
             }
         }
 
@@ -143,6 +117,50 @@ class WaitForMessage(
                 arrivedInWindow.count { it.parseStatus == ParseStatus.OK && !command.matcher.matches(it) },
             parseFailedCount = arrivedInWindow.count { it.parseStatus == ParseStatus.FAILED },
         )
+    }
+
+    /**
+     * Claims a concurrency slot and blocks until a match or the deadline.
+     * Returns a [Result] to propagate (a match, or the concurrency refusal),
+     * or null when the window simply expired.
+     *
+     * The slot is claimed only here — once the call is genuinely going to park
+     * (ADR-027 §7) — so a wait that was already satisfiable is never refused
+     * for capacity it does not consume.
+     */
+    private fun parkUntil(
+        command: Command,
+        handle: WaitHandle,
+        start: Instant,
+        deadline: Instant,
+    ): Result? {
+        val slot =
+            waitSlots.acquire(
+                workspaceId = command.workspaceId,
+                maxConcurrent = maxConcurrentWaits,
+                // Outlive the window so a crashed node cannot leak the slot,
+                // but not so far that recovery is slow. The database turns this
+                // into a deadline, so node clock skew cannot free a live slot.
+                leaseFor = Duration.between(clock.instant(), deadline).plus(config.waitWindowCap),
+            ) ?: run {
+                metrics.waitSlotRejected()
+                return Result.ConcurrentWaitLimitExceeded(maxConcurrentWaits)
+            }
+        metrics.waitSlotsChanged(1)
+        return slot.use {
+            try {
+                while (true) {
+                    firstMatch(command)?.let { return@use Result.Matched(it, elapsedMs(start)) }
+                    if (!clock.instant().isBefore(deadline)) break
+                    handle.awaitWake(deadline)
+                }
+                null
+            } finally {
+                // Mirrors the slot release, including on an early match and on
+                // any exception, so the gauge cannot drift upward.
+                metrics.waitSlotsChanged(-1)
+            }
+        }
     }
 
     private fun firstMatch(command: Command): Message? = messages.listVisible(command.inboxId).firstOrNull { command.matcher.matches(it) }

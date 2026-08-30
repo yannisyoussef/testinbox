@@ -70,8 +70,24 @@ class LimitsAcceptanceTest {
 
     @Test
     fun `one workspace exhausting its limits never degrades another`() {
-        // The rate-limited workspace has already spent its budget above; a
-        // different tenant is served normally throughout.
+        // Exhaust both restricted tenants here rather than relying on the other
+        // tests having run first — JUnit method order is not guaranteed, and a
+        // test whose premise is a comment can pass without ever establishing it.
+        val rateLimited = rateClient()
+        val created =
+            generateSequence { runCatching { rateLimited.createInboxBlocking() }.getOrNull() }
+                .take(3)
+                .toList()
+        assertThrows<TestInboxRateLimitException> { rateLimited.createInboxBlocking() }
+
+        val quotaBound = quotaClient()
+        val quotaInboxes =
+            generateSequence { runCatching { quotaBound.createInboxBlocking() }.getOrNull() }
+                .take(2)
+                .toList()
+        assertThrows<TestInboxQuotaExceededException> { quotaBound.createInboxBlocking() }
+
+        // With both neighbours wedged, an unrelated tenant is served normally.
         val neighbour = TestInboxClient(apiKey = E2eStack.API_KEY, baseUrl = E2eStack.apiBaseUrl)
         val inbox = neighbour.createInboxBlocking(CreateInboxOptions(ttl = Duration.ofMinutes(5)))
         inbox.address.isNotBlank() shouldBe true
@@ -84,6 +100,9 @@ class LimitsAcceptanceTest {
         )
         val message = inbox.awaitMessageBlocking(Duration.ofSeconds(20))
         message.subject shouldBe "Unaffected by a neighbour"
+
         inbox.deleteBlocking()
+        created.forEach { runCatching { it.deleteBlocking() } }
+        quotaInboxes.forEach { runCatching { it.deleteBlocking() } }
     }
 }

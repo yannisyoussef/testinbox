@@ -99,7 +99,7 @@ class SmtpIngestionIntegrationTest {
             // Small INGEST budget so the boundary is exercised without a flood.
             // Workspace-wide inbound budget, deliberately larger than the
             // per-inbox one so the two scopes are distinguishable in tests.
-            registry.add("testinbox.limits.ingest.capacity") { 20 }
+            registry.add("testinbox.limits.ingest.capacity") { 4 }
             registry.add("testinbox.limits.ingest.refill-per-second") { 0.01 }
             registry.add("testinbox.limits.ingest-per-inbox.capacity") { 3 }
             registry.add("testinbox.limits.ingest-per-inbox.refill-per-second") { 0.01 }
@@ -397,12 +397,38 @@ class SmtpIngestionIntegrationTest {
             smtp.send("legit@example.com", listOf(quiet.address), raw).code shouldBe 250
         }
         await().atMost(Duration.ofSeconds(10)).untilAsserted {
-            // The flood stops at the per-inbox cap (3), well below the workspace
-            // cap (20) — so it is the per-inbox scope doing the limiting...
+            // The flood stops at the per-inbox cap (3), below the workspace cap
+            // (4) — so it is the per-inbox scope doing the limiting...
             messages.listVisible(flooded.id).size shouldBe 3
-            // ...and the workspace still has budget for its other inboxes.
+            // ...and crucially the workspace still has a token left for its
+            // other inboxes. Charging the workspace bucket for deliveries the
+            // per-inbox bucket already refused would have consumed all 4 and
+            // black-holed this one.
             messages.listVisible(quiet.id).size shouldBe 1
         }
+    }
+
+    @Test
+    fun `the workspace-wide inbound ceiling refuses once every inbox has spent its share`() {
+        val workspaceId = WorkspaceId(UUID.randomUUID())
+        val first = provisionInbox(workspaceId)
+        val second = provisionInbox(workspaceId)
+        val third = provisionInbox(workspaceId)
+        val raw = corpus("simple-text.eml")
+        client().use { smtp ->
+            // 3 + 1 fills the workspace budget of 4 without any single inbox
+            // reaching its own cap of 3.
+            repeat(3) { smtp.send("a@example.com", listOf(first.address), raw).code shouldBe 250 }
+            smtp.send("b@example.com", listOf(second.address), raw).code shouldBe 250
+            // The workspace ceiling now binds, even though this inbox has spent
+            // nothing of its own.
+            smtp.send("c@example.com", listOf(third.address), raw).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(first.id).size shouldBe 3
+            messages.listVisible(second.id).size shouldBe 1
+        }
+        messages.listVisible(third.id).shouldBeEmpty()
     }
 
     @Test

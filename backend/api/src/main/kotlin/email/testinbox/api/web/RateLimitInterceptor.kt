@@ -32,36 +32,31 @@ object RateCategories {
     /** The category charged when nothing matches — deliberately the tightest. */
     val DEFAULT: RateCategory = RateCategory.INBOX_CREATE
 
+    private val READ =
+        listOf(
+            Regex("^/v1/inboxes/[^/]+$"),
+            Regex("^/v1/inboxes/[^/]+/messages$"),
+            Regex("^/v1/messages/[^/]+$"),
+            Regex("^/v1/messages/[^/]+/attachments$"),
+        )
+
     /**
-     * Null means "not charged a token of its own". Cheap metadata reads are
-     * deliberately uncharged: a bucket write per GET costs a row update on a
-     * hot row, and these reads are already bounded by the workspace's inbox
-     * and storage quotas. This is an explicit allow-list, so it can never be
-     * reached by forgetting to classify a route.
+     * Every `/v1` route is charged something. Metadata reads get a generous
+     * READ budget rather than a free pass: leaving them uncharged would let a
+     * caller refused a WAIT hot-poll the message list instead, so the wait
+     * limits would bound only the well-behaved client.
      */
     fun of(
         method: String,
         path: String,
-    ): RateCategory? =
+    ): RateCategory =
         when {
             WAIT.matches(path) -> RateCategory.WAIT
             DOWNLOAD.matches(path) -> RateCategory.DOWNLOAD
             INBOX_CREATE.matches(path) && method.equals("POST", ignoreCase = true) -> RateCategory.INBOX_CREATE
-            isCheapRead(method, path) -> null
+            READ.any { it.matches(path) } -> RateCategory.READ
             else -> DEFAULT
         }
-
-    private fun isCheapRead(
-        method: String,
-        path: String,
-    ): Boolean =
-        (method.equals("GET", ignoreCase = true) || method.equals("DELETE", ignoreCase = true)) &&
-            (
-                Regex("^/v1/inboxes/[^/]+$").matches(path) ||
-                    Regex("^/v1/inboxes/[^/]+/messages$").matches(path) ||
-                    Regex("^/v1/messages/[^/]+$").matches(path) ||
-                    Regex("^/v1/messages/[^/]+/attachments$").matches(path)
-            )
 }
 
 /**
@@ -79,6 +74,7 @@ class RateLimitInterceptor(
     private val rateLimiter: RateLimiter,
     private val limits: LimitsConfig,
     private val metrics: LimitMetrics,
+    private val objectMapper: tools.jackson.databind.ObjectMapper,
 ) : HandlerInterceptor {
     override fun preHandle(
         request: HttpServletRequest,
@@ -91,7 +87,7 @@ class RateLimitInterceptor(
         val apiKey = request.getAttribute(AuthAttributes.API_KEY) ?: return true
         val workspaceId = (apiKey as email.testinbox.domain.tenant.ApiKey).workspaceId
 
-        val category = RateCategories.of(request.method, request.requestURI) ?: return true
+        val category = RateCategories.of(request.method, request.requestURI)
         val decision = rateLimiter.tryConsume(workspaceId, category)
         metrics.rateDecision(category, decision.allowed)
 
@@ -104,18 +100,25 @@ class RateLimitInterceptor(
         if (decision.allowed) return true
 
         val seconds = maxOf(1L, decision.retryAfter?.toSeconds() ?: 1L)
+        val problem =
+            Problems
+                .of(
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    "rate-limit-exceeded",
+                    "Rate limit exceeded",
+                    "Too many ${category.name} requests for this workspace",
+                    request,
+                ).also {
+                    it.setProperty("category", category.name)
+                    it.setProperty("retryAfterSeconds", seconds)
+                }
         response.status = HttpStatus.TOO_MANY_REQUESTS.value()
         response.contentType = MediaType.APPLICATION_PROBLEM_JSON_VALUE
         response.setHeader(HttpHeaders.RETRY_AFTER, seconds.toString())
-        response.writer.write(
-            """
-            {"type":"https://testinbox.email/problems/rate-limit-exceeded",
-            "title":"Rate limit exceeded","status":429,
-            "detail":"Too many ${category.name} requests for this workspace",
-            "category":"${category.name}","retryAfterSeconds":$seconds,
-            "correlationId":"${Correlation.of(request)}"}
-            """.trimIndent(),
-        )
+        // Serialized, never string-interpolated: the correlation id inside the
+        // problem is caller-supplied, and hand-built JSON would let it inject
+        // members or corrupt the body outright.
+        objectMapper.writeValue(response.outputStream, problem)
         return false
     }
 }
