@@ -36,6 +36,7 @@ full_backend() {
   fixture "$root" backend/persistence "$ABOVE_ANY_MINIMUM"
   fixture "$root" backend/storage "$ABOVE_ANY_MINIMUM"
   fixture "$root" backend/notification "$ABOVE_ANY_MINIMUM"
+  fixture "$root" backend/observability "$ABOVE_ANY_MINIMUM"
   fixture "$root" backend/ingestion "$ABOVE_ANY_MINIMUM"
   fixture "$root" backend/api "$ABOVE_ANY_MINIMUM"
 }
