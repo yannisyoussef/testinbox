@@ -1,0 +1,43 @@
+# Fixture: an additive change — a new optional request field, a new response
+# field and a new endpoint. Must PASS the gate (ADR-015 additive-only rule).
+openapi: 3.1.0
+info:
+  title: Gate fixture
+  version: "1.1.0"
+paths:
+  /widgets:
+    post:
+      operationId: createWidget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                colour: { type: string }
+              required: [name]
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  name: { type: string }
+                  colour: { type: string }
+                required: [id, name]
+  /widgets/{id}:
+    get:
+      operationId: getWidget
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Found.

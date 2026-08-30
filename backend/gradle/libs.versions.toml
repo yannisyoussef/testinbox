@@ -12,6 +12,7 @@ jakartaMailApi = "2.1.5"
 jsoup = "1.23.2"
 awsSdk = "2.54.7"
 spotless = "8.10.1"
+detekt = "1.23.8"
 awaitility = "4.3.0"
 
 [libraries]
@@ -37,3 +38,4 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-spring = { id = "org.jetbrains.kotlin.plugin.spring", version.ref = "kotlin" }
 spring-boot = { id = "org.springframework.boot", version.ref = "springBoot" }
 spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
+detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }

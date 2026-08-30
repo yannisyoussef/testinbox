@@ -28,7 +28,8 @@ Migrations run automatically on application startup (Flyway). Start the two
 deployables in separate terminals from `backend/`:
 
 ```bash
-TESTINBOX_BOOTSTRAP_API_KEY=tk_local_dev_key ./gradlew :api:bootRun
+export TESTINBOX_BOOTSTRAP_API_KEY=tk_local_dev_key
+./gradlew :api:bootRun
 ```
 
 ```bash
@@ -44,7 +45,7 @@ TESTINBOX_BOOTSTRAP_API_KEY=tk_local_dev_key ./gradlew :api:bootRun
 
 ```bash
 curl -s -X POST http://localhost:8080/v1/inboxes \
-  -H "Authorization: Bearer tk_local_dev_key" \
+  -H "Authorization: Bearer $TESTINBOX_BOOTSTRAP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"aliasHint":"demo","ttlSeconds":600}'
 ```
@@ -55,7 +56,7 @@ then:
 
 ```bash
 curl -s -X POST http://localhost:8080/v1/inboxes/<id>/messages/wait \
-  -H "Authorization: Bearer tk_local_dev_key" \
+  -H "Authorization: Bearer $TESTINBOX_BOOTSTRAP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"matcher":{},"timeoutSeconds":30}'
 ```

@@ -1,0 +1,19 @@
+# Secret-scanning configuration (docs/quality/strategy.md).
+#
+# The scan targets the working tree rather than history: the current state is
+# what a build gate can act on, and a secret that was committed and later
+# removed needs rotation, not a red build on an unrelated pull request.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated build output — not repository content (see .gitignore)."
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)build/''',
+  '''(^|/)dist/''',
+  '''(^|/)\.next/''',
+  '''(^|/)\.gradle/''',
+  '''(^|/)test-results/''',
+  '''(^|/)playwright-report/''',
+]
