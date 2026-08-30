@@ -5,6 +5,11 @@ plugins {
 dependencies {
     testImplementation(project(":api"))
     testImplementation(project(":ingestion"))
+    testImplementation(project(":application"))
+    // Resolved from the included ../sdk/kotlin build (composite substitution).
+    testImplementation("email.testinbox:testinbox-client:0.1.0-SNAPSHOT")
+    testImplementation(libs.kotest.assertions)
+    testImplementation("org.springframework.boot:spring-boot-starter-jdbc")
     testImplementation(platform(libs.spring.boot.dependencies))
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.boot:spring-boot-starter-web")

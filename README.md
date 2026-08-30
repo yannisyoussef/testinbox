@@ -5,10 +5,11 @@ tests, CI pipelines, and local development environments a deterministic way to
 create ephemeral email addresses, receive mail sent to them, and assert on the
 result — without polling a real mailbox or fighting flaky delivery timing.
 
-> **Status: inception.** This repository currently contains only the product
-> and architectural decisions needed before implementation starts. No product
-> code has been written yet. See [`VISION.md`](VISION.md) for what "done with
-> inception" means and what happens next.
+> **Status: walking skeleton.** The foundation and MVP vertical slice are
+> implemented and runnable entirely locally: backend (API + SMTP ingestion
+> gateway), contract-first REST v1, JVM and TypeScript SDKs, and a minimal
+> inspection web UI. See [`docs/dev/local-setup.md`](docs/dev/local-setup.md)
+> to run it, and [`VISION.md`](VISION.md) for the roadmap.
 
 ## Why TestInbox
 
@@ -41,23 +42,23 @@ val verificationUrl = message.links.first().href
 | Architecture decision records | [`docs/adr/`](docs/adr/README.md) |
 | Contribution and repo conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
-## Intended (not yet created) repository layout
+## Repository layout
 
 ```
 backend/            # Kotlin/Spring Boot modular monolith (Gradle multi-module)
   api/               # HTTP adapter; implements the contract-first OpenAPI spec
+                     #   (committed at backend/api/contract/openapi.yaml, ADR-022)
   ingestion/         # Inbound mail gateway adapter (separately deployable)
   application/       # Use cases + ports (ADR-024); all invariant-bearing writes
   domain/            # Core domain model, framework-free
-  persistence/       # Postgres adapter implementing repository ports
+  persistence/       # Postgres adapter implementing repository ports (+ Flyway)
   storage/           # S3/MinIO object storage adapter
+  notification/      # Postgres LISTEN/NOTIFY wait fan-out adapter (ADR-020)
+  architecture/      # ArchUnit dependency-rule tests
+  e2e/               # Black-box acceptance: SMTP + REST + Karate + both SDKs
 sdk/
-  kotlin/            # email.testinbox:testinbox-client (JVM)
-  typescript/        # @testinbox/client (npm)
-web/                 # Next.js dashboard
+  kotlin/            # email.testinbox:testinbox-client (JVM, Java 17 baseline)
+  typescript/        # @testinbox/client (npm, Node >= 20)
+web/                 # Next.js inspection UI (sandboxed HTML preview, ADR-011)
 docs/                # this documentation set
 ```
-
-Nothing under `backend/`, `sdk/`, or `web/` exists yet. It will be scaffolded
-only after the decisions in [`VISION.md`](VISION.md#human-decisions-required-before-implementation)
-are reviewed.

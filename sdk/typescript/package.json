@@ -1,0 +1,50 @@
+{
+  "name": "@testinbox/client",
+  "version": "0.1.0",
+  "description": "Official TestInbox SDK for TypeScript/JavaScript — ephemeral email inboxes and deterministic wait-for-message for automated tests.",
+  "private": false,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run src",
+    "test:integration": "vitest run test/integration"
+  },
+  "keywords": [
+    "email",
+    "testing",
+    "smtp",
+    "inbox",
+    "e2e",
+    "testinbox"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

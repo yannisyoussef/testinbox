@@ -1,0 +1,10 @@
+extends: ["spectral:oas"]
+rules:
+  # The walking-skeleton contract keeps descriptions concise; these
+  # documentation-completeness rules stay advisory for now.
+  oas3-api-servers: warn
+  operation-tags: off
+  operation-tag-defined: off
+  info-contact: off
+  info-description: warn
+  operation-description: off

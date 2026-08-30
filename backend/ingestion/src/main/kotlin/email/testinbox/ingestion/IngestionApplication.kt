@@ -11,7 +11,7 @@ import org.springframework.boot.runApplication
  * invokes the shared ReceiveInboundMessage use case — never writing to
  * Postgres/object storage directly (ADR-024).
  */
-@SpringBootApplication(scanBasePackages = ["email.testinbox"])
+@SpringBootApplication(scanBasePackages = ["email.testinbox.ingestion", "email.testinbox.persistence"])
 @EnableConfigurationProperties(IngestionProperties::class)
 class IngestionApplication
 
