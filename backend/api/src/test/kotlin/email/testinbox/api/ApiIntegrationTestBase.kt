@@ -27,6 +27,7 @@ import org.springframework.http.HttpMethod
 import org.springframework.http.ResponseEntity
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
+import org.springframework.test.context.TestPropertySource
 import org.springframework.web.client.DefaultResponseErrorHandler
 import org.springframework.web.client.RestTemplate
 import org.testcontainers.containers.MinIOContainer
@@ -36,8 +37,32 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.UUID
 
+/**
+ * Limits are set generously here, not in @DynamicPropertySource, for two
+ * reasons: every suite shares one bootstrap workspace and would otherwise
+ * exhaust a realistic budget collectively, and @TestPropertySource is what a
+ * subclass can override (a dynamic property source outranks it).
+ */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestPropertySource(
+    properties = [
+        "testinbox.limits.max-active-inboxes=100000",
+        "testinbox.limits.max-stored-bytes=1000000000",
+        "testinbox.limits.max-concurrent-waits=1000",
+        "testinbox.limits.inbox-create.capacity=100000",
+        "testinbox.limits.inbox-create.refill-per-second=10000",
+        "testinbox.limits.wait.capacity=100000",
+        "testinbox.limits.wait.refill-per-second=10000",
+        "testinbox.limits.download.capacity=100000",
+        "testinbox.limits.download.refill-per-second=10000",
+        "testinbox.limits.ingest.capacity=100000",
+        "testinbox.limits.ingest.refill-per-second=10000",
+        // Here rather than in @DynamicPropertySource so a subclass can override
+        // it: a dynamic property source outranks @TestPropertySource.
+        "testinbox.wait-window-cap=5s",
+    ],
+)
 abstract class ApiIntegrationTestBase {
     companion object {
         const val BOOTSTRAP_KEY = "tk_test_bootstrap_key"
@@ -61,7 +86,6 @@ abstract class ApiIntegrationTestBase {
             registry.add("testinbox.storage.secret-key") { "testinbox123" }
             registry.add("testinbox.bootstrap.api-key") { BOOTSTRAP_KEY }
             registry.add("testinbox.mail-domain") { "testinbox.local" }
-            registry.add("testinbox.wait-window-cap") { "5s" }
             registry.add("testinbox.sweep-interval") { "1s" }
             registry.add("testinbox.expiry-grace") { "1s" }
         }
@@ -144,24 +168,75 @@ abstract class ApiIntegrationTestBase {
         )
     }
 
+    /**
+     * A fresh workspace with its own API key. Any suite asserting on a
+     * per-workspace limit must own its workspace: quota usage is derived from
+     * real rows, so a workspace shared with other suites carries their inboxes
+     * and their spent tokens.
+     */
+    fun provisionIsolatedWorkspace(label: String): IsolatedTenant {
+        val now = Instant.now().truncatedTo(ChronoUnit.MICROS)
+        val workspaceId = WorkspaceId(UUID.randomUUID())
+        val projectId = ProjectId(UUID.randomUUID())
+        val plaintextKey = "tk_${label}_${UUID.randomUUID()}"
+        provisioning.ensureWorkspace(Workspace(workspaceId, label, now))
+        provisioning.ensureProject(Project(projectId, workspaceId, label, now))
+        provisioning.ensureApiKey(
+            ApiKey(
+                ApiKeyId(UUID.randomUUID()),
+                workspaceId,
+                projectId,
+                Sha256.hex(plaintextKey),
+                setOf(ApiScope.INBOXES_WRITE, ApiScope.MESSAGES_READ),
+                now,
+                null,
+            ),
+        )
+        return IsolatedTenant(workspaceId, projectId, plaintextKey)
+    }
+
+    /** A second API key inside an existing workspace, for rotation/sharing tests. */
+    fun provisionAdditionalKey(tenant: IsolatedTenant): String {
+        val plaintextKey = "tk_extra_${UUID.randomUUID()}"
+        provisioning.ensureApiKey(
+            ApiKey(
+                ApiKeyId(UUID.randomUUID()),
+                tenant.workspaceId,
+                tenant.projectId,
+                Sha256.hex(plaintextKey),
+                setOf(ApiScope.INBOXES_WRITE, ApiScope.MESSAGES_READ),
+                Instant.now().truncatedTo(ChronoUnit.MICROS),
+                null,
+            ),
+        )
+        return plaintextKey
+    }
+
+    data class IsolatedTenant(
+        val workspaceId: WorkspaceId,
+        val projectId: ProjectId,
+        val apiKey: String,
+    )
+
     fun appendVisibleMessage(
         inboxId: InboxId,
         address: String,
         subject: String = "Verify your email",
         parseStatus: ParseStatus = ParseStatus.OK,
         receivedAt: Instant = Instant.now().truncatedTo(ChronoUnit.MICROS),
+        workspaceId: WorkspaceId = bootstrapWorkspaceId,
     ): Message {
         val message =
             Message(
                 id = MessageId(UUID.randomUUID()),
-                workspaceId = bootstrapWorkspaceId,
+                workspaceId = workspaceId,
                 inboxId = inboxId,
                 receivedAt = receivedAt,
                 provider = "local-smtp",
                 providerMessageId = null,
                 envelopeFrom = "no-reply@example.com",
                 envelopeTo = address,
-                rawObjectKey = "$bootstrapWorkspaceId/$inboxId/${UUID.randomUUID()}/raw.eml",
+                rawObjectKey = "$workspaceId/$inboxId/${UUID.randomUUID()}/raw.eml",
                 rawSizeBytes = 5,
                 contentFingerprint = UUID.randomUUID().toString(),
                 possibleDuplicateOfMessageId = null,

@@ -97,6 +97,7 @@ class DependencyRuleTest {
                 "persistence" to "email.testinbox.persistence..",
                 "storage" to "email.testinbox.storage..",
                 "notification" to "email.testinbox.notification..",
+                "observability" to "email.testinbox.observability..",
             )
         for ((name, pkg) in adapterPackages) {
             val others = adapterPackages.filterKeys { it != name }.values.toTypedArray()
@@ -143,6 +144,43 @@ class DependencyRuleTest {
             .resideInAnyPackage(
                 "email.testinbox.persistence..",
                 "email.testinbox.storage..",
+            ).check(allClasses)
+    }
+
+    @Test
+    fun `limit enforcement lives in the application layer, not in an adapter (ADR-027)`() {
+        // A limiter or quota check owned by an HTTP filter could not protect the
+        // independently deployed ingestion gateway, and a quota check duplicated
+        // in an adapter drifts across two deployables. Adapters may map and
+        // render; the decision belongs to exactly one use case.
+        noClasses()
+            .that()
+            .resideInAPackage("email.testinbox.api..")
+            .or()
+            .resideInAPackage("email.testinbox.ingestion..")
+            .should()
+            .beAssignableTo(email.testinbox.application.port.RateLimiter::class.java)
+            .orShould()
+            .beAssignableTo(email.testinbox.application.port.WorkspaceQuotaState::class.java)
+            .orShould()
+            .beAssignableTo(email.testinbox.application.port.WaitSlots::class.java)
+            .because("limit decisions are application-layer concerns (ADR-024, ADR-027 §3)")
+            .check(allClasses)
+    }
+
+    @Test
+    fun `the limit domain stays free of framework and storage types`() {
+        classes()
+            .that()
+            .resideInAPackage("email.testinbox.domain.limits..")
+            .should()
+            .onlyDependOnClassesThat(
+                describe("are domain, JDK, or Kotlin stdlib classes") { target: JavaClass ->
+                    target.packageName.startsWith("email.testinbox.domain") ||
+                        target.packageName.startsWith("java") ||
+                        target.packageName.startsWith("kotlin") ||
+                        target.packageName.startsWith("org.jetbrains.annotations")
+                },
             ).check(allClasses)
     }
 

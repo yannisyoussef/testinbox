@@ -15,8 +15,23 @@ export interface ProblemDetails {
   detail?: string;
   instance?: string;
   correlationId?: string;
-  /** Present on address-already-reserved conflicts still in cooldown (ADR-021). */
+  /**
+   * Seconds until a retry may succeed. Present on rate-limit and
+   * concurrent-wait refusals, and on address-already-reserved conflicts still
+   * in cooldown (ADR-021). Absent on quota-exceeded, where waiting does not
+   * help.
+   */
   retryAfterSeconds?: number;
+  /** Rate category that refused the request (ADR-027). */
+  category?: string;
+  /** Quota dimension that is exhausted, on quota-exceeded (ADR-027). */
+  quota?: string;
+  /** Configured allowance for the exceeded limit. */
+  limit?: number;
+  /** Current consumption of the exceeded quota dimension. */
+  current?: number;
+  /** Tokens left, when the server reports it. */
+  remaining?: number;
 }
 
 /** Base class for every error thrown by the TestInbox SDK. */
@@ -86,6 +101,52 @@ export class TestInboxInboxGoneError extends TestInboxError {
   constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
     super(message, problem, options);
     this.name = "TestInboxInboxGoneError";
+  }
+}
+
+/**
+ * 429 — the workspace's request budget for this operation is exhausted
+ * (ADR-027). Waiting helps: `retryAfterSeconds` is the server's own estimate.
+ *
+ * Deliberately never retried automatically by the SDK: `POST /v1/inboxes`
+ * creates a resource and `Idempotency-Key` is not implemented, so an
+ * automatic retry could create duplicate inboxes. The caller decides.
+ */
+export class TestInboxRateLimitError extends TestInboxError {
+  readonly retryAfterSeconds?: number;
+  /** Rate category that refused the request, when the server names one. */
+  readonly category?: string;
+  readonly limit?: number;
+  readonly remaining?: number;
+
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxRateLimitError";
+    this.retryAfterSeconds = problem?.retryAfterSeconds;
+    this.category = problem?.category;
+    this.limit = problem?.limit;
+    this.remaining = problem?.remaining;
+  }
+}
+
+/**
+ * 409 with problem type `quota-exceeded` — a workspace resource allowance is
+ * exhausted (ADR-027). Distinct from `TestInboxRateLimitError` because
+ * waiting does **not** help: the caller must free capacity, for example by
+ * deleting an inbox.
+ */
+export class TestInboxQuotaExceededError extends TestInboxError {
+  /** Quota dimension that is exhausted, e.g. `ACTIVE_INBOXES`. */
+  readonly quota?: string;
+  readonly limit?: number;
+  readonly current?: number;
+
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxQuotaExceededError";
+    this.quota = problem?.quota;
+    this.limit = problem?.limit;
+    this.current = problem?.current;
   }
 }
 

@@ -11,6 +11,7 @@ dependencies {
     implementation(project(":persistence"))
     implementation(project(":storage"))
     implementation(project(":notification"))
+    implementation(project(":observability"))
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-actuator")

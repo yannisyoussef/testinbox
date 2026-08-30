@@ -8,6 +8,7 @@ dependencies {
     testImplementation(project(":persistence"))
     testImplementation(project(":storage"))
     testImplementation(project(":notification"))
+    testImplementation(project(":observability"))
     testImplementation(project(":api"))
     testImplementation(project(":ingestion"))
     testImplementation(platform(libs.spring.boot.dependencies))

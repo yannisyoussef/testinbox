@@ -28,6 +28,7 @@
 | [0024](0024-application-layer-and-dependency-rule.md) | Application layer and dependency rule | Accepted |
 | [0025](0025-unknown-recipient-handling.md) | Unknown-recipient handling | Accepted |
 | [0026](0026-recipient-scoped-provider-delivery-identity.md) | Recipient-scoped provider delivery identity | Accepted |
+| [0027](0027-rate-limiting-and-resource-quotas.md) | Rate limiting and resource quota strategy | Accepted |
 
 `Proposed` ADRs require a human decision (see `VISION.md` §Human Decisions
 Required Before Implementation) before they can move to `Accepted`.

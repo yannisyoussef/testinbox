@@ -1,5 +1,6 @@
 package email.testinbox.application.usecase
 
+import email.testinbox.application.FakeRateLimiter
 import email.testinbox.application.InMemoryBlobStore
 import email.testinbox.application.InMemoryInboxRepository
 import email.testinbox.application.InMemoryMessageRepository
@@ -52,6 +53,7 @@ class ReceiveInboundDeliveryTest {
         }
     private lateinit var useCase: ReceiveInboundDelivery
     private lateinit var inbox: Inbox
+    private val rateLimiter = FakeRateLimiter()
 
     @BeforeEach
     fun setUp() {
@@ -59,7 +61,7 @@ class ReceiveInboundDeliveryTest {
         messages = InMemoryMessageRepository()
         blobs = InMemoryBlobStore()
         clock = MutableClock(Instant.parse("2026-08-29T12:00:00Z"))
-        useCase = ReceiveInboundDelivery(inboxes, messages, blobs, parser, RollbackTx(messages), clock)
+        useCase = ReceiveInboundDelivery(inboxes, messages, blobs, parser, RollbackTx(messages), rateLimiter, clock)
         inbox = provisionInbox("test@testinbox.local")
     }
 

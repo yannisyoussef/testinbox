@@ -25,12 +25,21 @@ object Correlation {
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
 class CorrelationFilter : OncePerRequestFilter() {
+    private companion object {
+        val SAFE_CORRELATION_ID = Regex("^[A-Za-z0-9._-]{1,64}$")
+    }
+
     override fun doFilterInternal(
         request: HttpServletRequest,
         response: HttpServletResponse,
         filterChain: FilterChain,
     ) {
-        val correlationId = request.getHeader(Correlation.HEADER) ?: UUID.randomUUID().toString()
+        // A client-supplied id is echoed into logs, MDC and problem bodies, so
+        // it is accepted only in a shape that cannot forge a log line or inflate
+        // a response; anything else gets a fresh one.
+        val supplied = request.getHeader(Correlation.HEADER)
+        val correlationId =
+            if (supplied != null && SAFE_CORRELATION_ID.matches(supplied)) supplied else UUID.randomUUID().toString()
         request.setAttribute(Correlation.ATTRIBUTE, correlationId)
         response.setHeader(Correlation.HEADER, correlationId)
         response.setHeader("X-API-Stability", "experimental")

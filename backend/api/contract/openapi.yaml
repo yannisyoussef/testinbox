@@ -41,7 +41,35 @@ components:
     correlationId:
       description: Correlation id echoed in logs/traces and RFC 7807 bodies.
       schema: { type: string }
+    rateLimitLimit:
+      description: Burst capacity of the bucket governing this request (ADR-027).
+      schema: { type: integer, format: int64 }
+    rateLimitRemaining:
+      description: Whole tokens left in that bucket after this request.
+      schema: { type: integer, format: int64 }
+    rateLimitReset:
+      description: Seconds until at least one token is available again.
+      schema: { type: integer, format: int64 }
+    retryAfter:
+      description: >
+        RFC 9110 Retry-After, in whole seconds. Present only where waiting
+        actually helps — never on a quota refusal, which waiting cannot fix.
+      schema: { type: integer, format: int64 }
   responses:
+    RateLimited:
+      description: >
+        Too many requests for this workspace
+        (`type: https://testinbox.email/problems/rate-limit-exceeded`).
+        Limits are workspace-scoped and derived from the authenticated API
+        key, so rotating a key does not reset them.
+      headers:
+        Retry-After: { $ref: "#/components/headers/retryAfter" }
+        RateLimit-Limit: { $ref: "#/components/headers/rateLimitLimit" }
+        RateLimit-Remaining: { $ref: "#/components/headers/rateLimitRemaining" }
+        RateLimit-Reset: { $ref: "#/components/headers/rateLimitReset" }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
     Problem:
       description: RFC 7807 problem.
       content:
@@ -60,7 +88,25 @@ components:
         correlationId: { type: string }
         retryAfterSeconds:
           type: integer
-          description: Present on address-already-reserved conflicts still in cooldown (ADR-021).
+          description: >
+            Seconds until a retry may succeed. Present on rate-limit and
+            concurrent-wait refusals, and on address-already-reserved
+            conflicts still in cooldown (ADR-021). Absent on quota-exceeded,
+            where waiting does not help.
+        category:
+          type: string
+          description: Rate category that refused the request (ADR-027).
+        quota:
+          type: string
+          description: Quota dimension that is exhausted, on quota-exceeded.
+        limit:
+          type: integer
+          format: int64
+          description: Configured allowance for the exceeded limit.
+        current:
+          type: integer
+          format: int64
+          description: Current consumption of the exceeded quota dimension.
       required: [type, title, status]
     AddressMode:
       type: string
@@ -259,11 +305,17 @@ paths:
         "403": { $ref: "#/components/responses/Problem" }
         "409":
           description: >
-            EXACT local-part already reserved or in cooldown
-            (`type: https://testinbox.email/problems/address-already-reserved`).
+            Either the EXACT local-part is already reserved or in cooldown
+            (`type: https://testinbox.email/problems/address-already-reserved`,
+            ADR-021), or a workspace quota is exhausted
+            (`type: https://testinbox.email/problems/quota-exceeded`, ADR-027).
+            Clients must discriminate on the problem `type`, never on the
+            status code. Quota exhaustion carries no `Retry-After`: waiting
+            does not help, the caller must free capacity.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /inboxes/{id}:
     get:
       operationId: getInbox
@@ -337,6 +389,21 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
+        "429":
+          description: >
+            Either the workspace's wait request rate was exceeded
+            (`type: .../rate-limit-exceeded`) or it already holds every
+            concurrent wait slot
+            (`type: .../concurrent-wait-limit-exceeded`). Both are
+            time-recoverable and carry `Retry-After`.
+          headers:
+            Retry-After: { $ref: "#/components/headers/retryAfter" }
+            RateLimit-Limit: { $ref: "#/components/headers/rateLimitLimit" }
+            RateLimit-Remaining: { $ref: "#/components/headers/rateLimitRemaining" }
+            RateLimit-Reset: { $ref: "#/components/headers/rateLimitReset" }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
   /messages/{id}:
     get:
       operationId: getMessage
@@ -368,6 +435,7 @@ paths:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /messages/{id}/attachments:
     get:
       operationId: listAttachments
@@ -400,3 +468,4 @@ paths:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }

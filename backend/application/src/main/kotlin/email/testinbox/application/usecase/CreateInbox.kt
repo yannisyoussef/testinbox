@@ -4,8 +4,10 @@ import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.ExactAddressReservations
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
+import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.ReserveOutcome
 import email.testinbox.application.port.TransactionRunner
+import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
@@ -16,6 +18,9 @@ import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.inbox.InboxState
 import email.testinbox.domain.inbox.LocalPartPolicy
 import email.testinbox.domain.inbox.ReservationStatus
+import email.testinbox.domain.limits.QuotaDimension
+import email.testinbox.domain.limits.QuotaExceeded
+import email.testinbox.domain.limits.QuotaPolicy
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -30,8 +35,11 @@ class CreateInbox(
     private val inboxes: InboxRepository,
     private val reservations: ExactAddressReservations,
     private val tx: TransactionRunner,
+    private val quotas: WorkspaceQuotaState,
+    private val policy: QuotaPolicy,
     private val clock: Clock,
     private val config: TestInboxConfig,
+    private val metrics: LimitMetrics = LimitMetrics.NOOP,
 ) {
     data class Command(
         val workspaceId: WorkspaceId,
@@ -51,6 +59,14 @@ class CreateInbox(
         data class AddressConflict(
             val localPart: String,
             val availableAt: Instant?,
+        ) : Result
+
+        /**
+         * A workspace allowance is exhausted — maps to 409, not 429 (ADR-027
+         * §8): waiting does not help, the caller must free capacity.
+         */
+        data class QuotaRejected(
+            val exceeded: QuotaExceeded,
         ) : Result
 
         data class InvalidRequest(
@@ -78,10 +94,38 @@ class CreateInbox(
                     Duration.ofSeconds(command.ttlSeconds)
                 }
             }
-        return when (command.addressMode) {
-            AddressMode.GENERATED -> createGenerated(command, now, ttl)
-            AddressMode.EXACT -> createExact(command, now, ttl)
+        // One transaction for the whole admission decision, with the workspace
+        // guard as its first statement (ADR-027 §6): deriving a count and then
+        // inserting is check-then-act, so without it N concurrent creates all
+        // observe capacity for one. The guard must precede any inbox write, or
+        // it closes a lock-order cycle with the retention sweep's DELETE.
+        return tx.required {
+            quotas.guardAdmission(command.workspaceId)
+            admit(command.workspaceId)?.let {
+                metrics.quotaRejected(it.dimension)
+                return@required Result.QuotaRejected(it)
+            }
+            when (command.addressMode) {
+                AddressMode.GENERATED -> createGenerated(command, now, ttl)
+                AddressMode.EXACT -> createExact(command, now, ttl)
+            }
         }
+    }
+
+    /** Null when the workspace may take one more inbox; otherwise why not. */
+    private fun admit(workspaceId: WorkspaceId): QuotaExceeded? {
+        val activeInboxes = quotas.activeInboxCount(workspaceId)
+        if (!policy.admits(QuotaDimension.ACTIVE_INBOXES, activeInboxes)) {
+            return QuotaExceeded(QuotaDimension.ACTIVE_INBOXES, policy.maxActiveInboxes, activeInboxes)
+        }
+        // A workspace at its storage ceiling may keep receiving mail for the
+        // inboxes it already holds (ADR-027 §2), but may not enlarge its
+        // footprint by adding more.
+        val stored = quotas.storedBytes(workspaceId)
+        if (!policy.admits(QuotaDimension.STORED_BYTES, stored, amount = 0)) {
+            return QuotaExceeded(QuotaDimension.STORED_BYTES, policy.maxStoredBytes, stored)
+        }
+        return null
     }
 
     private fun createGenerated(

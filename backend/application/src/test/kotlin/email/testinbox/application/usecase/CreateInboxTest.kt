@@ -1,6 +1,8 @@
 package email.testinbox.application.usecase
 
 import email.testinbox.application.InMemoryInboxRepository
+import email.testinbox.application.InMemoryMessageRepository
+import email.testinbox.application.InMemoryQuotaState
 import email.testinbox.application.InMemoryReservations
 import email.testinbox.application.MutableClock
 import email.testinbox.application.NoopTx
@@ -9,6 +11,7 @@ import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.inbox.AddressMode
 import email.testinbox.domain.inbox.InboxState
+import email.testinbox.domain.limits.QuotaPolicy
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldEndWith
 import io.kotest.matchers.string.shouldStartWith
@@ -26,6 +29,9 @@ class CreateInboxTest {
     private lateinit var reservations: InMemoryReservations
     private lateinit var clock: MutableClock
     private lateinit var useCase: CreateInbox
+    private lateinit var quotas: InMemoryQuotaState
+    private val quotaPolicy =
+        QuotaPolicy(maxActiveInboxes = 100, maxStoredBytes = 1_000_000, maxConcurrentWaits = 10)
 
     private val config =
         TestInboxConfig(
@@ -40,7 +46,8 @@ class CreateInboxTest {
         inboxes = InMemoryInboxRepository()
         reservations = InMemoryReservations()
         clock = MutableClock(Instant.parse("2026-08-29T12:00:00Z"))
-        useCase = CreateInbox(inboxes, reservations, NoopTx, clock, config)
+        quotas = InMemoryQuotaState(inboxes, InMemoryMessageRepository())
+        useCase = CreateInbox(inboxes, reservations, NoopTx, quotas, quotaPolicy, clock, config)
     }
 
     private fun command(
