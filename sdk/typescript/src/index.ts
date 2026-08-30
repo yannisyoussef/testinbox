@@ -8,6 +8,8 @@
 export { TestInboxClient } from "./client";
 export {
   TestInboxApiError,
+  TestInboxQuotaExceededError,
+  TestInboxRateLimitError,
   TestInboxAuthError,
   TestInboxConflictError,
   TestInboxError,

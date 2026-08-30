@@ -52,7 +52,7 @@ class IngestionWiring {
         jdbc: JdbcClient,
         transactionManager: PlatformTransactionManager,
         limits: LimitsConfig,
-    ): RateLimiter = JdbcRateLimiter(jdbc, transactionManager) { limits.rateFor(it) }
+    ): RateLimiter = JdbcRateLimiter(jdbc, transactionManager) { category, perInbox -> limits.rateFor(category, perInbox) }
 
     @Bean
     fun mimeParser(): MimeParser = JakartaMimeParser()

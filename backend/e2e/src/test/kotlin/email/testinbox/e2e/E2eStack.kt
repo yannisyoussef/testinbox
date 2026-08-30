@@ -21,6 +21,16 @@ import java.sql.DriverManager
  */
 object E2eStack {
     const val API_KEY = "tk_e2e_acceptance_key"
+
+    /**
+     * Limits are deployment configuration, not per-workspace state, so the
+     * ADR-027 scenarios run against extra API nodes with deliberately tiny
+     * allowances, sharing the same database. Two of them, because a node tight
+     * on both dimensions could not show which one refused: the quota node has
+     * a generous rate, the rate node a generous quota.
+     */
+    const val QUOTA_API_KEY = "tk_e2e_quota_key"
+    const val RATE_API_KEY = "tk_e2e_rate_key"
     const val MAIL_DOMAIN = "testinbox.local"
 
     val postgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:16-alpine").also { it.start() }
@@ -56,12 +66,74 @@ object E2eStack {
                             "testinbox.sweep-interval" to "1s",
                             "testinbox.expiry-grace" to "1s",
                             "testinbox.wait-window-cap" to "10s",
+                            // Generous here: the main acceptance flows must not
+                            // trip a limit they are not testing.
+                            "testinbox.limits.max-active-inboxes" to "1000",
+                            "testinbox.limits.inbox-create.capacity" to "1000",
+                            "testinbox.limits.inbox-create.refill-per-second" to "1000",
+                            "testinbox.limits.wait.capacity" to "1000",
+                            "testinbox.limits.wait.refill-per-second" to "1000",
+                            "testinbox.limits.ingest.capacity" to "1000",
+                            "testinbox.limits.ingest.refill-per-second" to "1000",
+                            "testinbox.limits.ingest-per-inbox.capacity" to "1000",
+                            "testinbox.limits.ingest-per-inbox.refill-per-second" to "1000",
                         ),
                 ),
             )
 
     val apiPort: Int = apiContext.environment.getProperty("local.server.port")!!.toInt()
     val apiBaseUrl: String = "http://localhost:$apiPort"
+
+    private fun restrictedNode(
+        bootstrapKey: String,
+        workspaceId: String,
+        overrides: Map<String, String>,
+    ): ConfigurableApplicationContext =
+        SpringApplicationBuilder(ApiApplication::class.java)
+            .run(
+                *args(
+                    commonProperties +
+                        mapOf(
+                            "server.port" to "0",
+                            "testinbox.bootstrap.api-key" to bootstrapKey,
+                            "testinbox.bootstrap.workspace-id" to workspaceId,
+                            "testinbox.bootstrap.project-id" to workspaceId,
+                            "testinbox.sweep-interval" to "1s",
+                            "testinbox.expiry-grace" to "1s",
+                        ) + overrides,
+                ),
+            )
+
+    /** Tight quota, generous rate: a refusal here is unambiguously the quota. */
+    val quotaApiContext: ConfigurableApplicationContext =
+        restrictedNode(
+            QUOTA_API_KEY,
+            "00000000-0000-0000-0000-0000000000q1".replace('q', 'a'),
+            mapOf(
+                "testinbox.limits.max-active-inboxes" to "2",
+                "testinbox.limits.inbox-create.capacity" to "1000",
+                "testinbox.limits.inbox-create.refill-per-second" to "1000",
+            ),
+        )
+
+    val quotaApiBaseUrl: String =
+        "http://localhost:${quotaApiContext.environment.getProperty("local.server.port")!!}"
+
+    /** Tight rate, generous quota: a refusal here is unambiguously the rate. */
+    val rateApiContext: ConfigurableApplicationContext =
+        restrictedNode(
+            RATE_API_KEY,
+            "00000000-0000-0000-0000-0000000000r1".replace('r', 'b'),
+            mapOf(
+                "testinbox.limits.max-active-inboxes" to "1000",
+                "testinbox.limits.inbox-create.capacity" to "2",
+                // Slow refill so the boundary cannot heal mid-test.
+                "testinbox.limits.inbox-create.refill-per-second" to "0.01",
+            ),
+        )
+
+    val rateApiBaseUrl: String =
+        "http://localhost:${rateApiContext.environment.getProperty("local.server.port")!!}"
 
     val ingestionContext: ConfigurableApplicationContext =
         SpringApplicationBuilder(IngestionApplication::class.java)

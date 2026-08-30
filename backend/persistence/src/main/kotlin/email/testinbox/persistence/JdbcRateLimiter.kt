@@ -36,7 +36,7 @@ import java.time.Instant
 class JdbcRateLimiter(
     private val jdbc: JdbcClient,
     transactionManager: PlatformTransactionManager,
-    private val policies: (RateCategory) -> RatePolicy,
+    private val policies: (RateCategory, Boolean) -> RatePolicy,
 ) : RateLimiter {
     private val ownTransaction =
         TransactionTemplate(transactionManager).apply {
@@ -54,7 +54,7 @@ class JdbcRateLimiter(
         category: RateCategory,
         inboxId: InboxId?,
     ): RateDecision {
-        val policy = policies(category)
+        val policy = policies(category, inboxId != null)
         return ownTransaction.execute { consume(workspaceId, category, inboxId, policy) }!!
     }
 

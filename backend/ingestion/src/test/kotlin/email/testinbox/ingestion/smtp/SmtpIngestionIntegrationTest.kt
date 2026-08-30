@@ -96,6 +96,13 @@ class SmtpIngestionIntegrationTest {
             registry.add("testinbox.storage.secret-key") { "testinbox123" }
             registry.add("testinbox.mail-domain") { "testinbox.local" }
             registry.add("testinbox.max-raw-size-bytes") { 64 * 1024 }
+            // Small INGEST budget so the boundary is exercised without a flood.
+            // Workspace-wide inbound budget, deliberately larger than the
+            // per-inbox one so the two scopes are distinguishable in tests.
+            registry.add("testinbox.limits.ingest.capacity") { 20 }
+            registry.add("testinbox.limits.ingest.refill-per-second") { 0.01 }
+            registry.add("testinbox.limits.ingest-per-inbox.capacity") { 3 }
+            registry.add("testinbox.limits.ingest-per-inbox.refill-per-second") { 0.01 }
         }
     }
 
@@ -351,6 +358,51 @@ class SmtpIngestionIntegrationTest {
         messages.findById(workspaceB, messageA.id) shouldBe null
         messageA.rawObjectKey.startsWith("$workspaceA/") shouldBe true
         messageB.rawObjectKey.startsWith("$workspaceB/") shouldBe true
+    }
+
+    @Test
+    fun `ingest rate limiting never changes the SMTP reply (ADR-025 uniformity preserved)`() {
+        val inbox = provisionInbox()
+        val ghost = "ghost-${UUID.randomUUID().toString().take(8)}@testinbox.local"
+        val raw = corpus("simple-text.eml")
+        // The configured INGEST capacity for these tests is 3 per inbox.
+        client().use { smtp ->
+            repeat(5) {
+                // Every delivery answers 250 whether it was stored or dropped, and
+                // an unknown recipient answers 250 too. A visible refusal here would
+                // rebuild exactly the enumeration oracle ADR-025 removed.
+                smtp.send("flood@example.com", listOf(inbox.address), raw).code shouldBe 250
+            }
+            smtp.send("flood@example.com", listOf(ghost), raw).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            // Storage is bounded by the budget: the excess was discarded in-process.
+            messages.listVisible(inbox.id).size shouldBe 3
+        }
+    }
+
+    @Test
+    fun `one flooded inbox does not consume another inbox's inbound budget`() {
+        // Same workspace on purpose: across workspaces the budgets are separate
+        // anyway, so that would prove nothing about the per-inbox scope.
+        val workspaceId = WorkspaceId(UUID.randomUUID())
+        val flooded = provisionInbox(workspaceId)
+        val quiet = provisionInbox(workspaceId)
+        val raw = corpus("simple-text.eml")
+        client().use { smtp ->
+            repeat(5) { smtp.send("flood@example.com", listOf(flooded.address), raw).code shouldBe 250 }
+            // A different inbox in the same workspace is still served: the INGEST
+            // budget is keyed per inbox as well as per workspace, so a flood at one
+            // guessed EXACT address cannot starve the rest of the workspace.
+            smtp.send("legit@example.com", listOf(quiet.address), raw).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            // The flood stops at the per-inbox cap (3), well below the workspace
+            // cap (20) — so it is the per-inbox scope doing the limiting...
+            messages.listVisible(flooded.id).size shouldBe 3
+            // ...and the workspace still has budget for its other inboxes.
+            messages.listVisible(quiet.id).size shouldBe 1
+        }
     }
 
     @Test

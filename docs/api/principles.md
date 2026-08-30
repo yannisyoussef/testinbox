@@ -34,8 +34,21 @@
 8. **Correlation IDs**: every response includes a `correlationId` (also
    present in error bodies), propagated into logs/traces — see
    [`docs/architecture/observability.md`](../architecture/observability.md).
-9. **Rate limits**: surfaced via standard `RateLimit-*` response headers;
-   exceeding a limit returns `429` with an RFC 7807 body, not a silent drop.
+9. **Rate limits and quotas** (implemented, ADR-027): governed responses carry
+   `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` for the
+   caller's own workspace, so a client can pace itself without provoking a
+   refusal. The two refusals are deliberately different answers:
+   - exceeding a **rate** returns `429` + `Retry-After` (whole seconds, never
+     zero) with problem type `rate-limit-exceeded`, or
+     `concurrent-wait-limit-exceeded` for the long-poll ceiling — waiting
+     helps;
+   - exhausting a **quota** returns `409` with problem type `quota-exceeded`
+     and **no** `Retry-After` — waiting does not help, the caller must free
+     capacity. `429` there would invite a retry loop that cannot succeed.
+   `POST /v1/inboxes` therefore has two distinct `409` meanings; clients must
+   discriminate on the problem `type`, never on the status code. Limits are
+   workspace-scoped and derived from the authenticated key, so rotating or
+   minting a key does not reset them.
 10. **No breaking changes within a major version.** Additive changes
     (new optional fields, new endpoints) are always safe; anything else
     requires a new version per [ADR-015](../adr/0015-rest-compatibility-versioning.md).

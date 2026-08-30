@@ -13,6 +13,8 @@
 
 import {
   TestInboxApiError,
+  TestInboxQuotaExceededError,
+  TestInboxRateLimitError,
   TestInboxAuthError,
   TestInboxConflictError,
   TestInboxError,
@@ -134,6 +136,10 @@ function asProblemDetails(status: number, body: unknown): ProblemDetails {
     correlationId: typeof body.correlationId === "string" ? body.correlationId : undefined,
     retryAfterSeconds:
       typeof body.retryAfterSeconds === "number" ? body.retryAfterSeconds : undefined,
+    category: typeof body.category === "string" ? body.category : undefined,
+    quota: typeof body.quota === "string" ? body.quota : undefined,
+    limit: typeof body.limit === "number" ? body.limit : undefined,
+    current: typeof body.current === "number" ? body.current : undefined,
   };
 }
 
@@ -150,9 +156,15 @@ function errorForStatus(status: number, problem: ProblemDetails): TestInboxError
     case 404:
       return new TestInboxNotFoundError(message, problem);
     case 409:
-      return new TestInboxConflictError(message, problem);
+      // Two distinct 409 meanings share this status (ADR-021 vs ADR-027), so
+      // the problem type decides which error this is — never the status code.
+      return problem.type?.endsWith("/quota-exceeded")
+        ? new TestInboxQuotaExceededError(message, problem)
+        : new TestInboxConflictError(message, problem);
     case 410:
       return new TestInboxInboxGoneError(message, problem);
+    case 429:
+      return new TestInboxRateLimitError(message, problem);
     default:
       return new TestInboxApiError(message, problem);
   }

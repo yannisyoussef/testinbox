@@ -45,17 +45,17 @@ ROOT="${VERIFY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # module:minimum-expected-test-count
 BACKEND_MODULES=(
-  "backend/architecture:5"
-  "backend/domain:10"
-  "backend/application:25"
-  "backend/persistence:12"
+  "backend/architecture:7"
+  "backend/domain:25"
+  "backend/application:35"
+  "backend/persistence:25"
   "backend/storage:3"
   "backend/notification:5"
-  "backend/ingestion:14"
-  "backend/api:18"
+  "backend/ingestion:20"
+  "backend/api:28"
 )
 E2E_MODULES=(
-  "backend/e2e:9"
+  "backend/e2e:12"
 )
 
 case "$SCOPE" in

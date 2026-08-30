@@ -61,7 +61,7 @@ class ApiWiring {
         jdbc: JdbcClient,
         transactionManager: PlatformTransactionManager,
         limits: LimitsConfig,
-    ): RateLimiter = JdbcRateLimiter(jdbc, transactionManager) { limits.rateFor(it) }
+    ): RateLimiter = JdbcRateLimiter(jdbc, transactionManager) { category, perInbox -> limits.rateFor(category, perInbox) }
 
     @Bean(destroyMethod = "close")
     fun blobStore(properties: TestInboxProperties): BlobStore =

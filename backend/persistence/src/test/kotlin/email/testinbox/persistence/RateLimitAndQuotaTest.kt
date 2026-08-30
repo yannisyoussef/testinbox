@@ -36,7 +36,7 @@ class RateLimitAndQuotaTest : PersistenceIntegrationTest() {
 
     @Autowired lateinit var tx: TransactionRunner
 
-    private fun limiter(policy: RatePolicy): RateLimiter = JdbcRateLimiter(jdbc, transactionManager) { policy }
+    private fun limiter(policy: RatePolicy): RateLimiter = JdbcRateLimiter(jdbc, transactionManager) { _, _ -> policy }
 
     private val threeFast = RatePolicy(capacity = 3, refillPerSecond = 1.0)
 

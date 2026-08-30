@@ -20,6 +20,8 @@ data class LimitsProperties(
     val wait: RateProperties = RateProperties(capacity = 120, refillPerSecond = 4.0),
     val download: RateProperties = RateProperties(capacity = 60, refillPerSecond = 2.0),
     val ingest: RateProperties = RateProperties(capacity = 300, refillPerSecond = 10.0),
+    /** Per-inbox share of the inbound budget; must not exceed [ingest]. */
+    val ingestPerInbox: RateProperties = RateProperties(capacity = 60, refillPerSecond = 2.0),
 ) {
     data class RateProperties(
         val capacity: Long,
@@ -47,6 +49,7 @@ data class LimitsProperties(
                         RateCategory.DOWNLOAD to download.toPolicy(),
                         RateCategory.INGEST to ingest.toPolicy(),
                     ),
+                perInboxIngest = ingestPerInbox.toPolicy(),
             )
         }
 }

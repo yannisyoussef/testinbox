@@ -25,6 +25,39 @@ class TestInboxConflictException(
 class TestInboxInboxGoneException(message: String, correlationId: String? = null) :
     TestInboxException(message, correlationId)
 
+/**
+ * The workspace's request budget for this operation is exhausted (HTTP 429,
+ * ADR-027). Waiting helps: [retryAfter] is the server's own estimate.
+ *
+ * Deliberately *not* retried automatically by the SDK. `POST /v1/inboxes`
+ * creates a resource and `Idempotency-Key` is not implemented, so an
+ * automatic retry could create duplicate inboxes; the caller decides.
+ */
+class TestInboxRateLimitException(
+    message: String,
+    correlationId: String? = null,
+    val retryAfter: java.time.Duration? = null,
+    /** Rate category that refused the request, when the server names one. */
+    val category: String? = null,
+    val limit: Long? = null,
+    val remaining: Long? = null,
+) : TestInboxException(message, correlationId)
+
+/**
+ * A workspace resource allowance is exhausted (HTTP 409 with problem type
+ * `quota-exceeded`, ADR-027). Distinct from [TestInboxRateLimitException]
+ * because waiting does **not** help — the caller must free capacity, for
+ * example by deleting an inbox.
+ */
+class TestInboxQuotaExceededException(
+    message: String,
+    correlationId: String? = null,
+    /** Quota dimension that is exhausted, e.g. `ACTIVE_INBOXES`. */
+    val quota: String? = null,
+    val limit: Long? = null,
+    val current: Long? = null,
+) : TestInboxException(message, correlationId)
+
 class TestInboxApiException(
     val statusCode: Int,
     val problemType: String?,

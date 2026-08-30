@@ -22,17 +22,22 @@ fixture() {
 XML
 }
 
-# Every backend module, each comfortably above its minimum.
+# Every backend module, each comfortably above its minimum. The count is a
+# single large number rather than per-module values so that raising a real
+# minimum in the verifier never silently breaks this self-test — the
+# below-minimum case is asserted explicitly elsewhere instead.
+ABOVE_ANY_MINIMUM=1000
+
 full_backend() {
   local root="$1"
-  fixture "$root" backend/architecture 20
-  fixture "$root" backend/domain 20
-  fixture "$root" backend/application 40
-  fixture "$root" backend/persistence 20
-  fixture "$root" backend/storage 10
-  fixture "$root" backend/notification 10
-  fixture "$root" backend/ingestion 20
-  fixture "$root" backend/api 30
+  fixture "$root" backend/architecture "$ABOVE_ANY_MINIMUM"
+  fixture "$root" backend/domain "$ABOVE_ANY_MINIMUM"
+  fixture "$root" backend/application "$ABOVE_ANY_MINIMUM"
+  fixture "$root" backend/persistence "$ABOVE_ANY_MINIMUM"
+  fixture "$root" backend/storage "$ABOVE_ANY_MINIMUM"
+  fixture "$root" backend/notification "$ABOVE_ANY_MINIMUM"
+  fixture "$root" backend/ingestion "$ABOVE_ANY_MINIMUM"
+  fixture "$root" backend/api "$ABOVE_ANY_MINIMUM"
 }
 
 check() {
@@ -60,13 +65,13 @@ check "all scope fails when e2e results are missing" 1 all "$root/backend-only"
 check "e2e scope fails when e2e results are missing" 1 e2e "$root/backend-only"
 
 # e2e scope: only e2e results present — the shape of the e2e CI job.
-fixture "$root/e2e-only" backend/e2e 10
+fixture "$root/e2e-only" backend/e2e "$ABOVE_ANY_MINIMUM"
 check "e2e scope passes with only e2e results" 0 e2e "$root/e2e-only"
 check "backend scope fails when backend results are missing" 1 backend "$root/e2e-only"
 
 # all scope: full local verification.
 full_backend "$root/complete"
-fixture "$root/complete" backend/e2e 10
+fixture "$root/complete" backend/e2e "$ABOVE_ANY_MINIMUM"
 check "all scope passes when every module reported" 0 all "$root/complete"
 
 # Missing module inside the scope.

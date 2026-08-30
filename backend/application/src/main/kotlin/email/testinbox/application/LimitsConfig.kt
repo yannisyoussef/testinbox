@@ -14,15 +14,28 @@ data class LimitsConfig(
     val enabled: Boolean,
     val quotas: QuotaPolicy,
     val rates: Map<RateCategory, RatePolicy>,
+    /**
+     * INGEST budget for a single inbox. Deliberately smaller than the
+     * workspace-wide INGEST policy: if the two were equal, a flood against one
+     * guessed EXACT address would drain the workspace budget and starve every
+     * other inbox — which is the whole point of having a per-inbox scope.
+     */
+    val perInboxIngest: RatePolicy,
 ) {
     init {
         // Default-deny: a category with no configured policy would otherwise be
         // silently unlimited the moment someone adds one.
         val missing = RateCategory.entries.filterNot { it in rates }
         require(missing.isEmpty()) { "no rate policy configured for $missing" }
+        require(perInboxIngest.capacity <= rates.getValue(RateCategory.INGEST).capacity) {
+            "per-inbox INGEST capacity must not exceed the workspace-wide one"
+        }
     }
 
-    fun rateFor(category: RateCategory): RatePolicy = rates.getValue(category)
+    fun rateFor(
+        category: RateCategory,
+        perInbox: Boolean = false,
+    ): RatePolicy = if (perInbox && category == RateCategory.INGEST) perInboxIngest else rates.getValue(category)
 
     companion object {
         /**
@@ -43,6 +56,7 @@ data class LimitsConfig(
                     RateCategory.entries.associateWith {
                         RatePolicy(capacity = Long.MAX_VALUE / 2, refillPerSecond = 1e9)
                     },
+                perInboxIngest = RatePolicy(capacity = Long.MAX_VALUE / 2, refillPerSecond = 1e9),
             )
     }
 }

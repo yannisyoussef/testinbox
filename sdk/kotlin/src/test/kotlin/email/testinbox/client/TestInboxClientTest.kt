@@ -182,6 +182,61 @@ class TestInboxClientTest {
     }
 
     @Test
+    fun `429 maps to a typed rate-limit error carrying the server's retry hint`() {
+        script(201, inboxJson)
+        script(
+            429,
+            """{"type":"https://testinbox.email/problems/rate-limit-exceeded","title":"Rate limit exceeded",
+               "status":429,"detail":"Too many INBOX_CREATE requests","category":"INBOX_CREATE",
+               "retryAfterSeconds":7,"correlationId":"c-429"}""",
+        )
+        val inbox = client.createInboxBlocking()
+        val exception =
+            assertThrows(TestInboxRateLimitException::class.java) {
+                inbox.awaitMessageBlocking(Duration.ofSeconds(5))
+            }
+        assertEquals(java.time.Duration.ofSeconds(7), exception.retryAfter)
+        assertEquals("INBOX_CREATE", exception.category)
+        assertEquals("c-429", exception.correlationId)
+    }
+
+    @Test
+    fun `quota exhaustion is a distinct error from an address conflict on the same 409`() {
+        // Two different 409 meanings share the status code, so the SDK must
+        // discriminate on the problem type, never on the status (ADR-027 §8).
+        script(
+            409,
+            """{"type":"https://testinbox.email/problems/quota-exceeded","title":"Quota exceeded",
+               "status":409,"detail":"ACTIVE_INBOXES exhausted","quota":"ACTIVE_INBOXES",
+               "limit":2,"current":2}""",
+        )
+        val quota =
+            assertThrows(TestInboxQuotaExceededException::class.java) { client.createInboxBlocking() }
+        assertEquals("ACTIVE_INBOXES", quota.quota)
+        assertEquals(2L, quota.limit)
+        assertEquals(2L, quota.current)
+
+        script(
+            409,
+            """{"type":"https://testinbox.email/problems/address-already-reserved","title":"Conflict",
+               "status":409,"retryAfterSeconds":3600}""",
+        )
+        assertThrows(TestInboxConflictException::class.java) {
+            client.createInboxBlocking(CreateInboxOptions(addressMode = AddressMode.EXACT, localPart = "qa"))
+        }
+    }
+
+    @Test
+    fun `a rate-limited create is never retried automatically`() {
+        // Idempotency-Key is unimplemented, so an automatic retry of a resource-
+        // creating POST could create duplicate inboxes. The caller decides.
+        script(429, """{"type":"https://testinbox.email/problems/rate-limit-exceeded","status":429}""")
+        assertThrows(TestInboxRateLimitException::class.java) { client.createInboxBlocking() }
+        // Exactly one request was made: no hidden retry.
+        assertEquals(1, requests.size)
+    }
+
+    @Test
     fun `messages listing and delete round-trip`() {
         script(201, inboxJson)
         script(200, """{"items":[$messageJson],"nextCursor":null}""")

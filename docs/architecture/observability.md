@@ -26,6 +26,15 @@ HTTP request, correlation is via a **message correlation ID** propagated as:
 - `message_duplicate_event_noop_total` (same provider event reprocessed, ADR-019)
 - `wait_listen_reconnect_total` / `wait_listen_degraded_polling` (gauge; ADR-020)
 - `object_storage_operation_duration_seconds`
+- `testinbox_rate_decision_total` (labels: `category`, `outcome`) — ADR-027
+- `testinbox_quota_rejected_total` (label: `quota`)
+- `testinbox_wait_slot_rejected_total`, `testinbox_wait_slots_active` (gauge)
+
+Every limit metric label is drawn from a closed enum or a boolean. Workspace
+id, API key, inbox id and email address are never labels: their cardinality is
+caller-controlled, so labelling by them would let a caller choose how much
+memory the metrics backend spends. Per-tenant attribution belongs in the
+structured logs, which are access-controlled and carry a correlation id.
 
 ## Logging
 
