@@ -39,7 +39,7 @@ flowchart TB
 
 - **domain**: entities and pure domain logic. Depends on nothing.
 - **application**: use cases — `CreateInbox`, `ReserveExactAddress`
-  (ADR-021), `ReceiveInboundMessage`, `WaitForMessage`, `ExpireInboxes` —
+  (ADR-021), `ReceiveInboundDelivery`, `WaitForMessage`, `ExpireInboxes` —
   and the **port interfaces** they need (`InboxRepository`,
   `MessageRepository`, `BlobStore`, `MessageNotifier`, `Clock`). All
   invariant-bearing writes live here, once.
@@ -80,5 +80,5 @@ directions (`domain` depends on nothing; `application` depends only on
 - The ArchUnit rules become straightforwardly checkable statements about
   module dependency direction rather than contradicting the diagram.
 - Ingestion and API cannot drift on lifecycle semantics: there is one
-  `ReceiveInboundMessage` implementation to test (including the ADR-020
+  `ReceiveInboundDelivery` implementation to test (including the ADR-020
   same-transaction persist+notify), used by every provider adapter.

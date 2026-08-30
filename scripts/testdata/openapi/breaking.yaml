@@ -1,0 +1,30 @@
+# Fixture: breaking changes — a newly required request field and a removed
+# required response field. Must FAIL the gate.
+openapi: 3.1.0
+info:
+  title: Gate fixture
+  version: "2.0.0"
+paths:
+  /widgets:
+    post:
+      operationId: createWidget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                colour: { type: string }
+              required: [name, colour]
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                required: [id]

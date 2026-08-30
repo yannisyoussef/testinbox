@@ -5,39 +5,107 @@ on:
     branches: [main, master]
   pull_request:
 
+# Action majors are current as of this revision (checkout v7, setup-java v6,
+# setup-node v7, upload-artifact v7 — all Node 24 runtimes). gradle/actions is
+# deliberately held at v5, the last MIT-licensed line: v6 moves caching into
+# the proprietary `gradle-actions-caching` component whose Terms of Use we have
+# not accepted. v5 already runs on Node 24, so it clears the deprecation.
 jobs:
-  contract-lint:
-    name: OpenAPI contract lint
+  contract:
+    name: OpenAPI contract (lint + backwards compatibility)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Spectral lint (contract-first, ADR-022)
         run: npx --yes @stoplight/spectral-cli@6 lint backend/api/contract/openapi.yaml --ruleset .spectral.yaml --fail-severity error
+      - name: Self-test the compatibility gate (additive passes, breaking fails)
+        run: ./scripts/openapi-breaking-check.test.sh
+      - name: Fetch the PR base spec deterministically
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git show "$BASE_SHA:backend/api/contract/openapi.yaml" > /tmp/base-openapi.yaml
+      - name: Breaking-change gate against the PR base (ADR-015/022)
+        if: github.event_name == 'pull_request'
+        run: ./scripts/openapi-breaking-check.sh /tmp/base-openapi.yaml backend/api/contract/openapi.yaml
+
+  static-analysis:
+    name: Static analysis (Detekt, secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          # Detekt 1.23.x cannot run on a Java 25 runtime; the analyzer and this
+          # job run on 21. Compilation elsewhere still targets 25.
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Detekt (backend)
+        working-directory: backend
+        run: ./gradlew detekt
+      - name: Detekt (JVM SDK)
+        working-directory: sdk/kotlin
+        run: ./gradlew detekt
+      # Working-tree scan: the current state is what a gate can act on. A secret
+      # already committed and removed needs rotation, not a red build.
+      - name: Secret scan (gitleaks)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar xz -C /tmp gitleaks
+          /tmp/gitleaks dir . --config .gitleaks.toml --no-banner --redact --exit-code 1
+
+  supply-chain:
+    name: Dependency vulnerabilities (informational)
+    runs-on: ubuntu-latest
+    # Informational by design (docs/quality/strategy.md): a CVE published in a
+    # transitive dependency is not a regression introduced by the pull request,
+    # and blocking unrelated work on it is the noisy-gate failure mode.
+    # Remediation goes through Dependabot; Detekt and gitleaks are the gates.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - name: OSV-Scanner (npm lockfiles)
+        env:
+          OSV_VERSION: 2.5.1
+        run: |
+          curl -fsSL -o /tmp/osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64"
+          chmod +x /tmp/osv-scanner
+          /tmp/osv-scanner scan source \
+            --lockfile web/package-lock.json \
+            --lockfile sdk/typescript/package-lock.json
 
   backend:
     name: Backend (format, compile, unit + integration + architecture)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 25
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
+      - name: Self-test the CI test verifier
+        run: ./scripts/verify-test-results.test.sh
       - name: Formatting
         working-directory: backend
         run: ./gradlew spotlessCheck
       - name: Build and test (excluding e2e)
         working-directory: backend
         run: ./gradlew build -x :e2e:test
-      - name: Verify test suites actually produced results
-        run: ./scripts/verify-test-results.sh
+      - name: Verify backend test suites actually produced results
+        run: VERIFY_SCOPE=backend ./scripts/verify-test-results.sh
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-test-reports
           path: backend/*/build/reports/tests/test
@@ -47,15 +115,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 25
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
       - name: Install TS SDK dependencies (used by the live SDK e2e test)
         working-directory: sdk/typescript
         run: npm ci
@@ -63,10 +131,10 @@ jobs:
         working-directory: backend
         run: ./gradlew :e2e:test
       - name: Verify e2e suites produced results
-        run: VERIFY_E2E=true ./scripts/verify-test-results.sh
+        run: VERIFY_SCOPE=e2e ./scripts/verify-test-results.sh
       - name: Upload e2e reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-test-reports
           path: backend/e2e/build/reports/tests/test
@@ -79,14 +147,14 @@ jobs:
         # ADR-023 consumer perspective: the artifact must serve 17/21/25.
         java: [17, 21, 25]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: |
             ${{ matrix.java }}
             25
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
       - name: Build and test
         working-directory: sdk/kotlin
         run: ./gradlew build
@@ -109,8 +177,8 @@ jobs:
       matrix:
         node: [20, 22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
       - working-directory: sdk/typescript
@@ -124,8 +192,8 @@ jobs:
     name: Web UI (build + Playwright sandbox proofs)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - working-directory: web

@@ -2,7 +2,7 @@
 
 | Endpoint | MVP? | Notes |
 |---|---|---|
-| `POST /v1/inboxes` | Yes | Body: `ttl`, `addressMode` (`GENERATED` default with optional `aliasHint` prefix; `EXACT` with `localPart`, `409` on reservation conflict, cooldown on reuse — ADR-021). Supports `Idempotency-Key`. |
+| `POST /v1/inboxes` | Yes | Body: `ttl`, `addressMode` (`GENERATED` default with optional `aliasHint` prefix; `EXACT` with `localPart`, `409` on reservation conflict, cooldown on reuse — ADR-021). `Idempotency-Key` is deferred, not advertised (docs/api/principles.md §7). |
 | `GET /v1/inboxes/{id}` | Yes | Returns state (`Active`/`Expiring`/`Expired`/`Deleted`), address, TTL/expiry timestamp. |
 | `DELETE /v1/inboxes/{id}` | Yes | Explicit early teardown; cascades to messages/attachments per `message-lifecycle.md`. |
 | `GET /v1/inboxes/{id}/messages` | Yes | Cursor-paginated; supports basic filter params mirroring wait matchers, for polling-style consumers/dashboard. |

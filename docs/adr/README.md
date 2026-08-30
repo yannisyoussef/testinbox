@@ -20,13 +20,14 @@
 | [0016](0016-sdk-compatibility-versioning.md) | SDK compatibility/versioning | Proposed |
 | [0017](0017-maven-npm-distribution.md) | Maven/npm distribution | Proposed |
 | [0018](0018-framework-integration-strategy.md) | Framework integration strategy | Proposed |
-| [0019](0019-inbound-deduplication-semantics.md) | Inbound deduplication semantics | Accepted |
+| [0019](0019-inbound-deduplication-semantics.md) | Inbound deduplication semantics | Accepted (amended by 0026) |
 | [0020](0020-wait-reliability-and-timeout-semantics.md) | Wait reliability and timeout semantics | Accepted |
 | [0021](0021-exact-address-reservation.md) | Inbox addressing — generated and exact modes | Accepted |
 | [0022](0022-openapi-contract-first.md) | Contract-first OpenAPI | Accepted |
 | [0023](0023-sdk-runtime-baselines.md) | Public SDK runtime baselines | Accepted |
 | [0024](0024-application-layer-and-dependency-rule.md) | Application layer and dependency rule | Accepted |
 | [0025](0025-unknown-recipient-handling.md) | Unknown-recipient handling | Accepted |
+| [0026](0026-recipient-scoped-provider-delivery-identity.md) | Recipient-scoped provider delivery identity | Accepted |
 
 `Proposed` ADRs require a human decision (see `VISION.md` §Human Decisions
 Required Before Implementation) before they can move to `Accepted`.

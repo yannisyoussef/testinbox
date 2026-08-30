@@ -241,12 +241,6 @@ paths:
     post:
       operationId: createInbox
       summary: Create an inbox (GENERATED or EXACT addressing, ADR-021).
-      parameters:
-        - name: Idempotency-Key
-          in: header
-          required: false
-          schema: { type: string }
-          description: Reserved for replay-safe creation; accepted but not yet honored (walking skeleton).
       requestBody:
         required: true
         content:

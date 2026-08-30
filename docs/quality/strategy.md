@@ -34,9 +34,46 @@ passed. CI must additionally assert, from the test report output, that:
 - Coverage/mutation reports (where used) are generated and checked, not just
   attempted.
 
-This is a CI-configuration requirement to be implemented alongside the first
-CI pipeline, not a currently-implemented mechanism (no CI exists yet at the
-inception stage).
+This is implemented by `scripts/verify-test-results.sh`, which CI runs after
+the build. Because CI jobs execute disjoint suites, the verifier takes an
+explicit scope (`VERIFY_SCOPE=backend|e2e|all`) and checks only the modules
+that scope is supposed to have produced — an "all modules" expectation would
+otherwise fail whichever job it does not describe. Missing report directories,
+report directories with no XML at all, counts below a per-module minimum,
+any skip, and any failure/error all fail the build.
+
+The verifier is itself tested (`scripts/verify-test-results.test.sh`, run in
+CI before the build): a gate that cannot fail is indistinguishable from no
+gate.
+
+## CI gates: what fails the build
+
+| Gate | Tool | Fails CI? |
+|---|---|---|
+| Formatting | Spotless/ktlint | Yes |
+| Kotlin static analysis | Detekt (backend + JVM SDK) | Yes |
+| Test execution evidence | `verify-test-results.sh` | Yes |
+| Verifier self-test | `verify-test-results.test.sh` | Yes |
+| Architecture boundaries | ArchUnit | Yes |
+| OpenAPI structure/style | Spectral | Yes |
+| OpenAPI backwards compatibility | oasdiff vs. the PR base spec | Yes on ERR; warnings (e.g. removing an optional parameter) are reported only |
+| Compatibility-gate self-test | `openapi-breaking-check.test.sh` | Yes |
+| Secret detection | gitleaks (working tree) | Yes |
+| Dependency vulnerabilities | OSV-Scanner (npm lockfiles) | **No — informational** |
+| Dependency updates | Dependabot (grouped, weekly) | n/a — opens PRs |
+
+OSV-Scanner is deliberately non-blocking: a CVE published in a transitive
+dependency is not a regression introduced by the pull request that happens to
+run next, and blocking unrelated work on it is the noisy-gate failure mode
+that gets security tooling disabled. Findings are visible in the job output
+and remediated through Dependabot or an explicit dependency override.
+JVM dependency vulnerabilities are monitored repository-side via GitHub's
+dependency graph and Dependabot alerts rather than a second CI scanner.
+
+Detekt 1.23.x (the current stable line) cannot run on a Java 25 runtime, so
+it is detached from `check` and runs in a dedicated job on Java 21. This
+bounds the analyzer's runtime only; production code still compiles against
+the Java 25 toolchain and the JVM SDK still targets Java 17 bytecode.
 
 ## Hostile MIME as a first-class concern
 

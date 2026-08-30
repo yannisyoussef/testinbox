@@ -8,22 +8,19 @@ sequenceDiagram
     participant Obj as Object storage
     participant Notify as Wait/Notify
 
-    Sender->>GW: MAIL FROM / RCPT TO / DATA
-    GW->>GW: resolve recipient token -> inbox (or unknown)
-    alt unknown / expired inbox
-        GW->>GW: accept at SMTP level, discard immediately (metadata-only log, ADR-025)
-        GW-->>Sender: 250 OK
-    else known active inbox
-        GW->>Obj: store raw MIME (per-message key)
-        alt same provider event already recorded (providerMessageId, ADR-019)
-            GW-->>Sender: 250 OK (reprocessing, no-op)
-        else new delivery
-            GW->>GW: parse MIME (headers, text, HTML, links, attachments)
-            alt parse failure
-                GW->>DB: persist Message(parseStatus=FAILED, raw pointer) + pg_notify (one tx)
-            else parse success
-                GW->>DB: persist Message(parseStatus=OK, parsed fields) + pg_notify (one tx)
-            end
+    Sender->>GW: MAIL FROM / RCPT TO (xN) / DATA
+    GW->>GW: one inbound event: resolve every envelope recipient
+    Note over GW: unknown/expired recipients discarded in-process (ADR-025)
+    alt no recipient resolves
+        GW-->>Sender: 250 OK (nothing stored)
+    else one or more known active inboxes
+        GW->>GW: parse MIME once for the event
+        GW->>Obj: store raw MIME + attachments per accepted recipient (per-message keys)
+        GW->>DB: ONE transaction — insert every recipient Message + pg_notify each inbox
+        Note over DB,Notify: all recipients commit together, or none (ADR-026)
+        alt transaction fails
+            GW-->>Sender: 451 (sender retries the whole transaction; nothing committed)
+        else committed
             Note over DB,Notify: NOTIFY delivered to listeners after commit (ADR-020)
             GW-->>Sender: 250 OK
         end
@@ -36,7 +33,20 @@ sequenceDiagram
    valid TestInbox addresses; the *existence* check of the underlying inbox
    happens after `DATA`, not at `RCPT TO`, to avoid leaking which addresses
    are currently reserved via SMTP-level enumeration.
-2. **Recipient resolution**: the address token is looked up against active
+2. **One event, one invocation**: the adapter hands the whole `DATA`
+   transaction — envelope sender, *all* envelope recipients, raw bytes — to
+   the application exactly once
+   ([ADR-026](../adr/0026-recipient-scoped-provider-delivery-identity.md)).
+   Every accepted recipient's `Message` row and `pg_notify` commits in a
+   single database transaction, so a failure can never leave one recipient
+   persisted and another not. If it did, the sender's retry of the whole
+   transaction would manufacture a duplicate for the recipient that already
+   succeeded — an infrastructure-induced duplicate, not an observation of the
+   system under test. Duplicate `RCPT TO` values collapse to one delivery.
+   Blobs are written before the transaction; those left behind by a failed
+   transaction are reclaimed by the orphan sweep, because losing raw bytes is
+   worse than transiently storing unreferenced ones.
+3. **Recipient resolution**: the address token is looked up against active
    inbox reservations. No match (unknown, expired, or already-deleted) →
    message is still accepted (SMTP-level 250) to avoid backscatter/NDN abuse,
    but its content is **discarded immediately and never stored** — no
@@ -47,12 +57,16 @@ sequenceDiagram
    used as a bounce oracle, at the cost of not surfacing "why didn't my
    email arrive" directly to the sender (operators see it via
    gateway logs/metrics).
-3. **Deduplication — faithful observation** (see
-   [ADR-019](../adr/0019-inbound-deduplication-semantics.md)): TestInbox
-   never suppresses a message based on its content. Deduplication applies
-   **only** to reprocessing of the *same provider delivery event*
-   (unique constraint on `(provider, providerMessageId)`, e.g., an SES
-   notification redelivered by SNS). Every completed SMTP `DATA`
+4. **Deduplication — faithful observation** (see
+   [ADR-019](../adr/0019-inbound-deduplication-semantics.md), amended by
+   [ADR-026](../adr/0026-recipient-scoped-provider-delivery-identity.md)):
+   TestInbox never suppresses a message based on its content. Deduplication
+   applies **only** to reprocessing of the *same provider delivery event for
+   the same recipient* (unique constraint on
+   `(provider, providerMessageId, envelope recipient)`, e.g., an SES
+   notification redelivered by SNS). One event fanning out to several
+   recipients therefore yields one row per recipient, never one row total.
+   Every completed SMTP `DATA`
    transaction produces its own `Message` row — including two genuinely
    separate but byte-identical sends, which are exactly the
    duplicate-send defects a QA tool must expose. The gateway persists
@@ -61,21 +75,22 @@ sequenceDiagram
    second row annotated `possibleDuplicateOfMessageId` (shared content
    fingerprint), never silently collapsed. See
    [`message-lifecycle.md`](message-lifecycle.md).
-4. **Storage before parsing**: raw MIME is written to object storage before
+5. **Storage before parsing**: raw MIME is written to object storage before
    parsing is attempted, so a parser crash or poison-message never loses the
-   original bytes.
-5. **Parsing**: MIME → structured `Message` (headers, plaintext, sanitized
+   original bytes. Recipients of the same event never share a blob: each
+   message owns its raw and attachment objects (ADR-005).
+6. **Parsing**: MIME → structured `Message` (headers, plaintext, sanitized
    HTML render pointer, extracted links, attachment metadata). See
    [ADR-011](../adr/0011-html-rendering-security.md) for HTML handling and
    [`docs/quality/strategy.md`](../quality/strategy.md) for hostile-MIME test
    coverage. Parse failure never drops the message: it is persisted with
    `parseStatus=FAILED` and the raw MIME remains retrievable via
    `GET /v1/messages/{id}/raw`.
-6. **Ordering**: messages are timestamped on receipt and returned in
+7. **Ordering**: messages are timestamped on receipt and returned in
    receipt order per inbox; cross-connection strict ordering is *not*
    guaranteed (two concurrent SMTP sessions delivering to different inboxes,
    or even the same inbox from different sender MTAs, may interleave).
-7. **Notification**: the message insert and `pg_notify()` happen in the
+8. **Notification**: the message insert and `pg_notify()` happen in the
    **same PostgreSQL transaction**; Postgres delivers the notification to
    listeners only after (and only if) that transaction commits (see
    [ADR-020](../adr/0020-wait-reliability-and-timeout-semantics.md)). A

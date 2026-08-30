@@ -1,9 +1,19 @@
 # ADR-019: Inbound Message Deduplication Semantics
 
-**Status:** Accepted (amends the deduplication consequence of
+**Status:** Accepted, amended by
+[ADR-026](0026-recipient-scoped-provider-delivery-identity.md)
+(amends the deduplication consequence of
 [ADR-003](0003-inbound-mail-abstraction.md); replaces the deduplication
 contract previously described in `docs/architecture/inbound-mail-flow.md`
 and the "effectively-once" language in `docs/architecture/message-lifecycle.md`)
+
+> **Amendment (ADR-026).** The decision below stands in full — no
+> content-based suppression, dedup only for reprocessing of the same provider
+> event — with one narrowing: the dedup key stated here as
+> `(provider, providerMessageId)` is insufficient for providers whose single
+> event carries several envelope recipients, and is superseded by
+> `(provider, providerMessageId, normalized envelope recipient)`. Read this
+> ADR for the rationale, ADR-026 for the current key.
 
 ## Context
 
@@ -48,7 +58,8 @@ risks hiding SUT defects.
    event.** When a provider supplies a stable per-delivery identifier
    (`providerMessageId`, e.g., an SES message ID on a redelivered SNS
    notification), re-presentation of that same event is a no-op enforced
-   by a unique constraint on `(provider, providerMessageId)`. The local
+   by a unique constraint on `(provider, providerMessageId)` — amended by
+   ADR-026 to `(provider, providerMessageId, envelope recipient)`. The local
    SMTP adapter has no such identifier: each completed `DATA` transaction
    is a distinct event by definition.
 3. **The at-least-once window is surfaced, not hidden.** The ingestion

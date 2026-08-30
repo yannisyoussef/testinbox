@@ -1,0 +1,68 @@
+# Detekt overrides on top of the default rule set (buildUponDefaultConfig).
+# Deliberately narrow: the gate must be deterministic and low-noise, so rules
+# that fight the codebase's established conventions or duplicate Spotless/
+# ktlint formatting checks are disabled rather than suppressed case by case.
+build:
+  maxIssues: 0
+
+complexity:
+  LongMethod:
+    # Inbound delivery and MIME mapping are long but linear; splitting them for
+    # a metric would hurt readability more than it helps.
+    threshold: 120
+  LongParameterList:
+    # Use cases and adapters take their collaborators explicitly (no DI magic).
+    functionThreshold: 8
+    constructorThreshold: 10
+  TooManyFunctions:
+    thresholdInClasses: 25
+    thresholdInFiles: 30
+    ignorePrivate: true
+    ignoreOverridden: true
+  CyclomaticComplexMethod:
+    threshold: 20
+  NestedBlockDepth:
+    threshold: 5
+
+empty-blocks:
+  EmptyFunctionBlock:
+    # Interface methods we intentionally do not implement (e.g. SMTP done()).
+    ignoreOverridden: true
+
+exceptions:
+  TooGenericExceptionCaught:
+    # The SMTP adapter must catch everything and translate to a 451 soft-fail.
+    active: false
+  SwallowedException:
+    active: false
+  InstanceOfCheckForException:
+    active: false
+
+style:
+  MagicNumber:
+    active: false
+  ReturnCount:
+    active: false
+  MaxLineLength:
+    # Formatting is Spotless/ktlint's job; keep one owner per concern.
+    active: false
+  ThrowsCount:
+    active: false
+  LoopWithTooManyJumpStatements:
+    active: false
+  UnusedPrivateMember:
+    active: true
+  UtilityClassWithPublicConstructor:
+    # Spring test base classes hold only a container companion by design.
+    ignoreAnnotated: ["SpringBootTest"]
+
+naming:
+  FunctionNaming:
+    # Backtick-quoted test names are the repository convention.
+    ignoreAnnotated: ["Test"]
+  TopLevelPropertyNaming:
+    active: true
+
+performance:
+  SpreadOperator:
+    active: false

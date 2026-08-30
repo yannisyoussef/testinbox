@@ -1,6 +1,7 @@
 plugins {
     kotlin("jvm") version "2.3.21"
     kotlin("plugin.serialization") version "2.3.21"
+    id("io.gitlab.arturbosch.detekt") version "1.23.8"
     `java-library`
 }
 
@@ -33,6 +34,35 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:5.13.4"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+// Same static-analysis gate as the backend (docs/quality/strategy.md). The
+// Detekt 1.23.x analyzer cannot run on Java 25, so it is pinned to a Java 21
+// launcher and detached from `check`; the artifact still targets Java 17
+// bytecode and `build` still runs on the Java 25 toolchain.
+detekt {
+    config.setFrom(rootProject.file("../../config/detekt/detekt.yml"))
+    buildUponDefaultConfig = true
+    parallel = true
+}
+
+tasks.matching { it.name == "check" }.configureEach {
+    setDependsOn(dependsOn.filterNot { it.toString().contains("detekt", ignoreCase = true) })
+}
+
+tasks.withType<io.gitlab.arturbosch.detekt.Detekt>().configureEach {
+    jdkHome.set(
+        javaToolchains
+            .compilerFor { languageVersion.set(JavaLanguageVersion.of(21)) }
+            .map { it.metadata.installationPath },
+    )
+    jvmTarget = "17"
+    reports {
+        html.required.set(false)
+        sarif.required.set(false)
+        md.required.set(false)
+        txt.required.set(false)
+    }
 }
 
 tasks.withType<Test>().configureEach {

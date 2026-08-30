@@ -21,10 +21,16 @@
    for `GET /v1/inboxes/{id}/messages` and similar list endpoints — offset
    pagination is unstable under concurrent inserts, which is the common case
    here (mail arriving while a test paginates).
-7. **Idempotency**: mutating POSTs that create a resource with side effects
-   (`POST /v1/inboxes`, `POST /v1/test-runs`) accept an optional
-   `Idempotency-Key` header; replays with the same key return the original
-   result rather than creating a duplicate.
+7. **Idempotency**: *planned, not implemented.* The intent is that mutating
+   POSTs which create a resource (`POST /v1/inboxes`) accept an optional
+   `Idempotency-Key` header whose replays return the original result rather
+   than creating a duplicate. Until the semantics below are implemented and
+   tested, the header is **absent from the public contract** rather than
+   advertised-but-ignored — a documented header that silently does nothing is
+   worse than no header. Implementation must define and test: scope
+   (workspace/project), key retention, same-key/same-request replay,
+   same-key/different-request conflict (`409`), concurrent same-key creation,
+   behaviour when the original request failed, response replay, and cleanup.
 8. **Correlation IDs**: every response includes a `correlationId` (also
    present in error bodies), propagated into logs/traces — see
    [`docs/architecture/observability.md`](../architecture/observability.md).

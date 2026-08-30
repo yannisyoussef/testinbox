@@ -34,6 +34,10 @@ class JdbcMessageRepository(
      * insert and `pg_notify` execute in ONE transaction. PostgreSQL delivers
      * the notification only after — and only if — this transaction commits,
      * so a notified waiter always finds the message queryable as Visible.
+     *
+     * REQUIRED propagation: when the caller already runs a transaction (one
+     * inbound event fanning out to several recipients, ADR-026) every row and
+     * every notification of that event commits together or not at all.
      */
     @Transactional
     override fun appendVisible(message: Message): AppendOutcome {
@@ -51,7 +55,8 @@ class JdbcMessageRepository(
                             :contentFingerprint, :possibleDuplicateOf,
                             :parseStatus, :parseError, :fromAddress, :fromHeader, :toHeader,
                             :subject, :textBody, :htmlBody, :headers::jsonb, :links::jsonb)
-                    ON CONFLICT (provider, provider_message_id) WHERE provider_message_id IS NOT NULL DO NOTHING
+                    ON CONFLICT (provider, provider_message_id, envelope_to)
+                        WHERE provider_message_id IS NOT NULL DO NOTHING
                     """.trimIndent(),
                 ).param("id", message.id.value)
                 .param("workspaceId", message.workspaceId.value)

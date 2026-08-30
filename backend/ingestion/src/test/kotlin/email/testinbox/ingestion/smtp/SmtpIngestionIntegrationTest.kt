@@ -1,5 +1,6 @@
 package email.testinbox.ingestion.smtp
 
+import email.testinbox.application.port.AppendOutcome
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.MessageRepository
@@ -9,17 +10,24 @@ import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.inbox.AddressMode
 import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.inbox.InboxState
+import email.testinbox.domain.message.Message
 import email.testinbox.domain.message.ParseStatus
+import email.testinbox.persistence.JdbcMessageRepository
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import org.awaitility.Awaitility.await
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.boot.test.context.TestConfiguration
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Primary
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
@@ -38,6 +46,32 @@ import java.util.UUID
  */
 @SpringBootTest
 class SmtpIngestionIntegrationTest {
+    /**
+     * Lets a test fail persistence for one envelope recipient of a delivery,
+     * which is the only way to prove the multi-recipient transaction really is
+     * all-or-nothing (ADR-026) rather than all-or-some.
+     */
+    class FaultInjectingMessageRepository(
+        private val delegate: MessageRepository,
+    ) : MessageRepository by delegate {
+        @Volatile var failForRecipient: String? = null
+
+        override fun appendVisible(message: Message): AppendOutcome {
+            if (message.envelopeTo == failForRecipient) {
+                error("injected persistence failure for ${message.envelopeTo}")
+            }
+            return delegate.appendVisible(message)
+        }
+    }
+
+    @TestConfiguration
+    class FaultInjectionConfig {
+        @Bean
+        @Primary
+        fun faultInjectingMessages(delegate: JdbcMessageRepository): FaultInjectingMessageRepository =
+            FaultInjectingMessageRepository(delegate)
+    }
+
     companion object {
         @JvmStatic
         @ServiceConnection
@@ -69,17 +103,23 @@ class SmtpIngestionIntegrationTest {
 
     @Autowired lateinit var messages: MessageRepository
 
+    @Autowired lateinit var faults: FaultInjectingMessageRepository
+
     @Autowired lateinit var blobs: BlobStore
 
     @Autowired lateinit var jdbc: JdbcClient
 
+    @AfterEach
+    fun clearFaultInjection() {
+        faults.failForRecipient = null
+    }
+
     private fun corpus(name: String): ByteArray = checkNotNull(javaClass.getResourceAsStream("/mime-corpus/$name")).readAllBytes()
 
-    private fun provisionInbox(): Inbox {
-        val workspaceId = WorkspaceId(UUID.randomUUID())
+    private fun provisionInbox(workspaceId: WorkspaceId = WorkspaceId(UUID.randomUUID())): Inbox {
         val projectId = ProjectId(UUID.randomUUID())
         jdbc
-            .sql("INSERT INTO workspace (id, name, created_at) VALUES (:id, 'w', now())")
+            .sql("INSERT INTO workspace (id, name, created_at) VALUES (:id, 'w', now()) ON CONFLICT DO NOTHING")
             .param("id", workspaceId.value)
             .update()
         jdbc
@@ -205,6 +245,112 @@ class SmtpIngestionIntegrationTest {
         client().use { smtp ->
             smtp.rcptProbe("a@b.c", "someone@not-our-domain.example").code shouldBe 553
         }
+    }
+
+    @Test
+    fun `one DATA transaction with two active recipients delivers to both`() {
+        val first = provisionInbox()
+        val second = provisionInbox()
+        client().use { smtp ->
+            smtp
+                .send("no-reply@example.com", listOf(first.address, second.address), corpus("simple-text.eml"))
+                .code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(first.id).size shouldBe 1
+            messages.listVisible(second.id).size shouldBe 1
+        }
+        // Identical MIME to both recipients: two independent, per-message blobs, no cross-suppression.
+        val firstMessage = messages.listVisible(first.id).single()
+        val secondMessage = messages.listVisible(second.id).single()
+        firstMessage.contentFingerprint shouldBe secondMessage.contentFingerprint
+        firstMessage.rawObjectKey shouldNotBe secondMessage.rawObjectKey
+        firstMessage.envelopeTo shouldBe first.address
+        secondMessage.envelopeTo shouldBe second.address
+        blobs.get(firstMessage.rawObjectKey).shouldNotBeNull()
+        blobs.get(secondMessage.rawObjectKey).shouldNotBeNull()
+    }
+
+    @Test
+    fun `active plus unknown recipient - the active one is delivered, the unknown leaves no trace`() {
+        val active = provisionInbox()
+        val ghost = "ghost-${UUID.randomUUID().toString().take(8)}@testinbox.local"
+        client().use { smtp ->
+            smtp.send("no-reply@example.com", listOf(active.address, ghost), corpus("simple-text.eml")).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(active.id).size shouldBe 1
+        }
+        val ghostRows =
+            jdbc
+                .sql("SELECT count(*) AS c FROM message WHERE envelope_to = :g")
+                .param("g", ghost)
+                .query { rs, _ -> rs.getLong("c") }
+                .single()
+        ghostRows shouldBe 0L
+    }
+
+    @Test
+    fun `persistence failure for one recipient commits nothing and soft-fails the whole transaction`() {
+        val first = provisionInbox()
+        val second = provisionInbox()
+        faults.failForRecipient = second.address
+        client().use { smtp ->
+            // 451: the sender must retry the transaction as a unit.
+            smtp
+                .send("no-reply@example.com", listOf(first.address, second.address), corpus("simple-text.eml"))
+                .code shouldBe 451
+        }
+        // The partial-delivery failure mode: recipient A must NOT be committed.
+        messages.listVisible(first.id).shouldBeEmpty()
+        messages.listVisible(second.id).shouldBeEmpty()
+    }
+
+    @Test
+    fun `retry after a failed transaction delivers each recipient exactly once`() {
+        val first = provisionInbox()
+        val second = provisionInbox()
+        val raw = corpus("simple-text.eml")
+        faults.failForRecipient = second.address
+        client().use { smtp ->
+            smtp.send("no-reply@example.com", listOf(first.address, second.address), raw).code shouldBe 451
+        }
+        faults.failForRecipient = null
+        client().use { smtp ->
+            smtp.send("no-reply@example.com", listOf(first.address, second.address), raw).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(first.id).size shouldBe 1
+            messages.listVisible(second.id).size shouldBe 1
+        }
+        // No infrastructure-induced duplicate for the recipient that "already worked".
+        messages.listVisible(first.id).single().possibleDuplicateOfMessageId shouldBe null
+    }
+
+    @Test
+    fun `recipients in different workspaces do not leak across the tenant boundary`() {
+        val workspaceA = WorkspaceId(UUID.randomUUID())
+        val workspaceB = WorkspaceId(UUID.randomUUID())
+        val inboxA = provisionInbox(workspaceA)
+        val inboxB = provisionInbox(workspaceB)
+        client().use { smtp ->
+            smtp
+                .send("no-reply@example.com", listOf(inboxA.address, inboxB.address), corpus("simple-text.eml"))
+                .code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(inboxA.id).size shouldBe 1
+            messages.listVisible(inboxB.id).size shouldBe 1
+        }
+        val messageA = messages.listVisible(inboxA.id).single()
+        val messageB = messages.listVisible(inboxB.id).single()
+        messageA.workspaceId shouldBe workspaceA
+        messageB.workspaceId shouldBe workspaceB
+        // A workspace-scoped read never sees the other tenant's row.
+        messages.findById(workspaceA, messageB.id) shouldBe null
+        messages.findById(workspaceB, messageA.id) shouldBe null
+        messageA.rawObjectKey.startsWith("$workspaceA/") shouldBe true
+        messageB.rawObjectKey.startsWith("$workspaceB/") shouldBe true
     }
 
     @Test

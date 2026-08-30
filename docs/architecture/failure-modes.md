@@ -2,7 +2,9 @@
 
 | Failure | Handling |
 |---|---|
-| Same provider delivery event reprocessed (e.g., SES/SNS redelivery) | Deduplicated via unique constraint on `(provider, providerMessageId)` — a no-op (ADR-019). |
+| Same provider delivery event reprocessed (e.g., SES/SNS redelivery) | Deduplicated per recipient via unique constraint on `(provider, providerMessageId, envelope recipient)` — a no-op (ADR-019 as amended by ADR-026). |
+| One provider event carrying several envelope recipients | One `Message` row per recipient, all inserted and notified in a single transaction; the composite delivery key stops the first recipient from suppressing the rest (ADR-026). |
+| Persistence fails partway through a multi-recipient delivery | The whole transaction rolls back and the adapter returns SMTP `451`; the sender retries the transaction as a unit, so no recipient can receive an infrastructure-induced duplicate. Blobs written before the failure are reclaimed by the orphan sweep. |
 | Sender MTA retries after gateway crash between persist and `250 OK` | Surfaced as a second `Message` row annotated `possibleDuplicateOfMessageId` — never silently suppressed, because a byte-identical retry is indistinguishable from a genuine duplicate send by the SUT, which TestInbox must expose (ADR-019). |
 | SUT genuinely sends the same email twice (byte-identical) | Two `Message` rows, faithfully observable — content-based dedup is explicitly forbidden (ADR-019). |
 | Malformed/unparseable MIME | Raw MIME already persisted before parsing is attempted; message stored as `ParseFailed`, retrievable via `/raw`, does not satisfy field matchers. |
