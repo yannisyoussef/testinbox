@@ -182,8 +182,11 @@ class InMemoryReservations : ExactAddressReservations {
 }
 
 class InMemoryMessageRepository : MessageRepository {
-    val messages = mutableListOf<Message>()
-    val notifiedInboxes = mutableListOf<InboxId>()
+    // Concurrency tests drive this from several threads at once (concurrent
+    // waiters, multi-recipient events), so the backing lists must tolerate
+    // concurrent append-while-iterating rather than throwing.
+    val messages: MutableList<Message> = java.util.concurrent.CopyOnWriteArrayList()
+    val notifiedInboxes: MutableList<InboxId> = java.util.concurrent.CopyOnWriteArrayList()
 
     /** Envelope recipient whose append throws, simulating a mid-event persistence failure. */
     var failAppendForRecipient: String? = null

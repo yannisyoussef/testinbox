@@ -4,6 +4,7 @@ import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.ExactAddressReservations
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
+import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.ReserveOutcome
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.WorkspaceQuotaState
@@ -38,6 +39,7 @@ class CreateInbox(
     private val policy: QuotaPolicy,
     private val clock: Clock,
     private val config: TestInboxConfig,
+    private val metrics: LimitMetrics = LimitMetrics.NOOP,
 ) {
     data class Command(
         val workspaceId: WorkspaceId,
@@ -99,7 +101,10 @@ class CreateInbox(
         // it closes a lock-order cycle with the retention sweep's DELETE.
         return tx.required {
             quotas.guardAdmission(command.workspaceId)
-            admit(command.workspaceId)?.let { return@required Result.QuotaRejected(it) }
+            admit(command.workspaceId)?.let {
+                metrics.quotaRejected(it.dimension)
+                return@required Result.QuotaRejected(it)
+            }
             when (command.addressMode) {
                 AddressMode.GENERATED -> createGenerated(command, now, ttl)
                 AddressMode.EXACT -> createExact(command, now, ttl)

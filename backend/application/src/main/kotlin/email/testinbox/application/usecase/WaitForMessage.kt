@@ -2,6 +2,7 @@ package email.testinbox.application.usecase
 
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.InboxRepository
+import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.WaitSlots
@@ -44,6 +45,7 @@ class WaitForMessage(
     private val clock: Clock,
     private val config: TestInboxConfig,
     private val hook: WaitSyncHook = WaitSyncHook.NOOP,
+    private val metrics: LimitMetrics = LimitMetrics.NOOP,
 ) {
     data class Command(
         val workspaceId: WorkspaceId,
@@ -112,12 +114,22 @@ class WaitForMessage(
                         // Outlive the window so a crashed node cannot leak the slot,
                         // but not so far that recovery is slow.
                         expiresAt = deadline.plus(config.waitWindowCap),
-                    ) ?: return Result.ConcurrentWaitLimitExceeded(maxConcurrentWaits)
+                    ) ?: run {
+                        metrics.waitSlotRejected()
+                        return Result.ConcurrentWaitLimitExceeded(maxConcurrentWaits)
+                    }
+                metrics.waitSlotsChanged(1)
                 slot.use {
-                    while (true) {
-                        firstMatch(command)?.let { return Result.Matched(it, elapsedMs(start)) }
-                        if (!clock.instant().isBefore(deadline)) break
-                        handle.awaitWake(deadline)
+                    try {
+                        while (true) {
+                            firstMatch(command)?.let { return Result.Matched(it, elapsedMs(start)) }
+                            if (!clock.instant().isBefore(deadline)) break
+                            handle.awaitWake(deadline)
+                        }
+                    } finally {
+                        // Mirrors the slot release, including on the early return
+                        // above and on any exception, so the gauge cannot drift up.
+                        metrics.waitSlotsChanged(-1)
                     }
                 }
             }

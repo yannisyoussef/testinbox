@@ -94,7 +94,8 @@ class ApiWiring {
         limits: LimitsConfig,
         clock: Clock,
         config: TestInboxConfig,
-    ): CreateInbox = CreateInbox(inboxes, reservations, tx, quotas, limits.quotas, clock, config)
+        metrics: LimitMetrics,
+    ): CreateInbox = CreateInbox(inboxes, reservations, tx, quotas, limits.quotas, clock, config, metrics)
 
     @Bean
     fun deleteInbox(
