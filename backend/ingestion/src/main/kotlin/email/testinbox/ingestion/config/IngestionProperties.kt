@@ -1,5 +1,6 @@
 package email.testinbox.ingestion.config
 
+import email.testinbox.application.LimitsProperties
 import email.testinbox.application.TestInboxConfig
 import org.springframework.boot.context.properties.ConfigurationProperties
 import java.time.Duration
@@ -13,6 +14,7 @@ data class IngestionProperties(
     val exactCooldown: Duration = Duration.ofHours(24),
     val waitWindowCap: Duration = Duration.ofSeconds(60),
     val maxRawSizeBytes: Long = 15L * 1024 * 1024,
+    val limits: LimitsProperties = LimitsProperties(),
     val smtp: Smtp = Smtp(),
     val storage: Storage = Storage(),
 ) {

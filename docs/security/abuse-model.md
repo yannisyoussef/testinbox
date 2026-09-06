@@ -14,11 +14,21 @@
    prevents the product being used for long-lived persistent addresses,
    which would otherwise make it attractive as a real communication channel
    rather than a test fixture.
-4. **Rate limited and quota controlled per API key/workspace**: inbox
-   creation rate, message ingestion rate, storage volume, and concurrent
-   wait requests are all bounded, surfaced via `RateLimit-*` headers
-   (`docs/api/principles.md`). Limits should be generous enough for
-   legitimate CI parallelism but not unbounded.
+4. **Rate limited and quota controlled per workspace** (implemented,
+   [ADR-027](../adr/0027-rate-limiting-and-resource-quotas.md)): inbox
+   creation rate, inbound ingestion rate, download rate, active inbox count,
+   stored bytes, and concurrent wait requests are all bounded, surfaced via
+   `RateLimit-*` headers (`docs/api/principles.md`). Limits key on the
+   workspace, never on the API key — otherwise a tenant could mint keys for
+   extra allowance and key rotation would double as limit evasion — and never
+   on source IP, which is caller-forgeable and wrong for CI behind shared NAT.
+   Defaults are generous enough for legitimate CI parallelism.
+
+   Storage is bounded by admission control on *tenant-initiated growth*: a
+   workspace at its ceiling cannot create new inboxes, while mail to the
+   inboxes it already holds is still accepted. The residual overshoot is
+   bounded by the ingestion rate limit and the ADR-009 TTL cap. Quota state is
+   deliberately invisible over SMTP — see below.
 5. **No reply/threading UI or API.** Even the debugging dashboard only
    displays received mail; it cannot be used to carry on a conversation.
 6. **Unknown-recipient mail is discarded immediately and never stored**
@@ -36,6 +46,16 @@
   operationally costly, and terms-of-service enforcement — this is a
   business/legal control, not purely a technical one, and is called out in
   `VISION.md`'s Human Decisions (compliance/abuse-reporting posture).
+- **Enumeration via limit responses**: none. Rate and quota enforcement never
+  changes an SMTP reply — a syntactically valid recipient always receives the
+  uniform `250` of ADR-025, whether its workspace is over quota, over its
+  inbound rate, or entirely unknown. An over-rate delivery is discarded
+  in-process exactly as an unknown-recipient delivery is. This is why storage
+  quota is enforced on inbox creation rather than on delivery: a `4xx` for a
+  live-but-over-quota recipient would have made those addresses
+  distinguishable from unknown ones, handing an attacker who can drive a
+  workspace over quota a workspace-membership oracle
+  ([ADR-027](../adr/0027-rate-limiting-and-resource-quotas.md) §1).
 - **Address guessing/enumeration**: generated tokens use enough entropy
   that guessing an active address is infeasible; SMTP-level responses are
   designed not to distinguish "unknown recipient" from "known recipient,

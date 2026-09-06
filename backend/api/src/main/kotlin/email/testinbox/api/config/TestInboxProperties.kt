@@ -1,5 +1,6 @@
 package email.testinbox.api.config
 
+import email.testinbox.application.LimitsProperties
 import email.testinbox.application.TestInboxConfig
 import org.springframework.boot.context.properties.ConfigurationProperties
 import java.time.Duration
@@ -17,6 +18,7 @@ data class TestInboxProperties(
     val sweepInterval: Duration = Duration.ofSeconds(5),
     val orphanSweepInterval: Duration = Duration.ofMinutes(30),
     val orphanMinAge: Duration = Duration.ofHours(1),
+    val limits: LimitsProperties = LimitsProperties(),
     val storage: Storage = Storage(),
     val bootstrap: Bootstrap = Bootstrap(),
 ) {

@@ -4,6 +4,7 @@ import email.testinbox.api.config.TestInboxProperties
 import email.testinbox.application.Sha256
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.ProvisioningRepository
+import email.testinbox.application.port.WaitSlots
 import email.testinbox.application.usecase.ExpireInboxes
 import email.testinbox.application.usecase.OrphanBlobSweep
 import email.testinbox.domain.ApiKeyId
@@ -28,11 +29,23 @@ import java.util.UUID
 class SweepScheduler(
     private val expireInboxes: ExpireInboxes,
     private val orphanBlobSweep: OrphanBlobSweep,
+    private val waitSlots: WaitSlots,
 ) {
     @Scheduled(fixedDelayString = "\${testinbox.sweep-interval:5s}")
     fun lifecycleSweep() {
         runCatching { expireInboxes.sweep() }
             .onFailure { log.warn("lifecycle sweep failed", it) }
+    }
+
+    /**
+     * Reclaims wait slots whose holder died. Acquisition already clears a
+     * workspace's own stale rows, so this exists for the workspace that stops
+     * waiting entirely — and so a rising count is a visible crash-leak signal.
+     */
+    @Scheduled(fixedDelayString = "\${testinbox.sweep-interval:5s}")
+    fun waitLeaseSweep() {
+        runCatching { waitSlots.reapExpired() }
+            .onFailure { log.warn("wait lease reaper failed", it) }
     }
 
     @Scheduled(

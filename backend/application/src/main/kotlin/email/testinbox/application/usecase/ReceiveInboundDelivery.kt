@@ -5,13 +5,16 @@ import email.testinbox.application.Sha256
 import email.testinbox.application.port.AppendOutcome
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.InboxRepository
+import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.MimeParseResult
 import email.testinbox.application.port.MimeParser
+import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.domain.AttachmentId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.inbox.Inbox
+import email.testinbox.domain.limits.RateCategory
 import email.testinbox.domain.message.Attachment
 import email.testinbox.domain.message.Message
 import email.testinbox.domain.message.ParseStatus
@@ -48,7 +51,9 @@ class ReceiveInboundDelivery(
     private val blobs: BlobStore,
     private val parser: MimeParser,
     private val transactions: TransactionRunner,
+    private val rateLimiter: RateLimiter,
     private val clock: Clock,
+    private val metrics: LimitMetrics = LimitMetrics.NOOP,
 ) {
     data class Command(
         val envelopeFrom: String?,
@@ -65,6 +70,8 @@ class ReceiveInboundDelivery(
         val discardedRecipients: Int,
         /** Recipients already recorded for this provider event — reprocessing no-ops (ADR-026). */
         val duplicateRecipients: Int,
+        /** Recipients whose inbound rate budget was exhausted; their content was discarded. */
+        val rateLimitedRecipients: Int = 0,
     )
 
     private data class Prepared(
@@ -88,17 +95,42 @@ class ReceiveInboundDelivery(
         val parseResult = parser.parse(command.raw)
 
         var discarded = 0
+        var rateLimited = 0
         val prepared = mutableListOf<Prepared>()
         for (recipient in recipients) {
             val inbox = inboxes.findReceivableByAddress(recipient)
             if (inbox == null || !inbox.canReceiveAt(now)) {
-                logDiscard(recipient, command)
+                logDiscard(recipient, command, "unknown_recipient")
                 discarded++
+                continue
+            }
+            // ADR-027 §4: the inbound budget is charged per workspace AND per
+            // inbox, so a flood against one guessed EXACT address cannot consume
+            // the whole workspace's allowance. Charged only after the recipient
+            // resolves, so the ADR-025 unknown path never reaches the limiter.
+            // Narrow scope FIRST, and short-circuit. Spending both unconditionally
+            // would let a flood against one guessed address keep draining the
+            // workspace token after its own bucket is empty — starving every
+            // other inbox in that workspace, which is precisely what the
+            // per-inbox key exists to prevent.
+            val inboxBudget = rateLimiter.tryConsume(inbox.workspaceId, RateCategory.INGEST, inbox.id)
+            val workspaceBudget =
+                if (inboxBudget.allowed) rateLimiter.tryConsume(inbox.workspaceId, RateCategory.INGEST) else null
+            if (!inboxBudget.allowed || workspaceBudget?.allowed != true) {
+                // Discarded in-process, exactly as ADR-025 discards unknown
+                // recipients. The SMTP reply is unchanged (ADR-027 §1): making a
+                // refusal visible here would rebuild the enumeration oracle.
+                logDiscard(recipient, command, "ingest_rate_limited")
+                // The only signal that a live inbox is losing mail: the SMTP
+                // reply stays uniform by design (ADR-027 §1), so this counter and
+                // the log line above are what make it observable at all.
+                metrics.rateDecision(RateCategory.INGEST, allowed = false)
+                rateLimited++
                 continue
             }
             prepared += prepare(inbox, recipient, command, parseResult)
         }
-        if (prepared.isEmpty()) return Result(emptyList(), discarded, 0)
+        if (prepared.isEmpty()) return Result(emptyList(), discarded, 0, rateLimited)
 
         // One transaction for every recipient row of this event: all rows and
         // their pg_notify calls commit together, or none of them do.
@@ -126,7 +158,7 @@ class ReceiveInboundDelivery(
                 }
             }
         }
-        return Result(accepted, discarded, duplicates)
+        return Result(accepted, discarded, duplicates, rateLimited)
     }
 
     private fun prepare(
@@ -221,10 +253,12 @@ class ReceiveInboundDelivery(
     private fun logDiscard(
         recipient: String,
         command: Command,
+        reason: String,
     ) {
         // ADR-025: metadata only — hashed recipient token, sender domain, size. Never content.
         log.info(
-            "smtp_unknown_recipient_discard recipientHash={} senderDomain={} sizeBytes={}",
+            "smtp_discard reason={} recipientHash={} senderDomain={} sizeBytes={}",
+            reason,
             Sha256.hex(recipient).take(16),
             command.envelopeFrom?.substringAfter('@', missingDelimiterValue = "unknown") ?: "unknown",
             command.raw.size,

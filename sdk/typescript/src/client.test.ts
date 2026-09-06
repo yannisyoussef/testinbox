@@ -8,6 +8,8 @@ import {
   TestInboxForbiddenError,
   TestInboxInboxGoneError,
   TestInboxNotFoundError,
+  TestInboxQuotaExceededError,
+  TestInboxRateLimitError,
   TestInboxTimeoutError,
 } from "./index";
 
@@ -419,6 +421,105 @@ describe("error taxonomy (RFC 7807 mapping)", () => {
     expect(
       new TestInboxTimeoutError("x", { elapsedMs: 1, arrivedButUnmatchedCount: 0, parseFailedCount: 0 }),
     ).toBeInstanceOf(TestInboxError);
+  });
+});
+
+describe("rate limits and quotas (ADR-027)", () => {
+  it("maps 429 to a typed rate-limit error carrying the server's retry hint", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        429,
+        {
+          type: "https://testinbox.email/problems/rate-limit-exceeded",
+          title: "Rate limit exceeded",
+          status: 429,
+          detail: "Too many INBOX_CREATE requests",
+          category: "INBOX_CREATE",
+          retryAfterSeconds: 7,
+          correlationId: "c-429",
+        },
+        { "content-type": "application/problem+json" },
+      ),
+    );
+
+    const error = await client()
+      .createInbox()
+      .then(
+        () => {
+          throw new Error("expected a rate-limit error");
+        },
+        (e: unknown) => e,
+      );
+    expect(error).toBeInstanceOf(TestInboxRateLimitError);
+    const rateLimited = error as TestInboxRateLimitError;
+    expect(rateLimited.retryAfterSeconds).toBe(7);
+    expect(rateLimited.category).toBe("INBOX_CREATE");
+    expect(rateLimited.correlationId).toBe("c-429");
+    // No hidden retry: creating a resource is not automatically repeated while
+    // Idempotency-Key is unimplemented.
+    expect(fetchMock.mock.calls).toHaveLength(1);
+  });
+
+  it("discriminates the two 409 meanings on problem type, not status", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(409, {
+        type: "https://testinbox.email/problems/quota-exceeded",
+        title: "Quota exceeded",
+        status: 409,
+        quota: "ACTIVE_INBOXES",
+        limit: 2,
+        current: 2,
+      }),
+    );
+    const quota = await client()
+      .createInbox()
+      .then(
+        () => {
+          throw new Error("expected a quota error");
+        },
+        (e: unknown) => e,
+      );
+    expect(quota).toBeInstanceOf(TestInboxQuotaExceededError);
+    expect((quota as TestInboxQuotaExceededError).quota).toBe("ACTIVE_INBOXES");
+    expect((quota as TestInboxQuotaExceededError).current).toBe(2);
+
+    // The same status with the ADR-021 type stays a plain conflict.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(409, {
+        type: "https://testinbox.email/problems/address-already-reserved",
+        title: "Conflict",
+        status: 409,
+        retryAfterSeconds: 3600,
+      }),
+    );
+    const conflict = await client()
+      .createInbox({ addressMode: "EXACT", localPart: "qa" })
+      .then(
+        () => {
+          throw new Error("expected a conflict error");
+        },
+        (e: unknown) => e,
+      );
+    expect(conflict).toBeInstanceOf(TestInboxConflictError);
+    expect(conflict).not.toBeInstanceOf(TestInboxQuotaExceededError);
+  });
+
+  it("does not retry a rate-limited wait automatically", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, inboxDto()))
+      .mockResolvedValueOnce(
+        jsonResponse(429, {
+          type: "https://testinbox.email/problems/concurrent-wait-limit-exceeded",
+          status: 429,
+          retryAfterSeconds: 1,
+        }),
+      );
+    const inbox = await client().getInbox(INBOX_ID);
+    await expect(inbox.waitForMessage({ timeoutMs: 5_000 })).rejects.toBeInstanceOf(
+      TestInboxRateLimitError,
+    );
+    // One wait POST, not a chained retry loop.
+    expect(fetchMock.mock.calls).toHaveLength(2);
   });
 });
 

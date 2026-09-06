@@ -15,3 +15,6 @@ dist/
 .gradle/
 test-results/
 playwright-report/
+
+# Long-form task prompts handed to agents; not part of the product
+prompts/

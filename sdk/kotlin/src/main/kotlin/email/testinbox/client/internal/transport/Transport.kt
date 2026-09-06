@@ -6,6 +6,8 @@ import email.testinbox.client.TestInboxConflictException
 import email.testinbox.client.TestInboxForbiddenException
 import email.testinbox.client.TestInboxInboxGoneException
 import email.testinbox.client.TestInboxNotFoundException
+import email.testinbox.client.TestInboxQuotaExceededException
+import email.testinbox.client.TestInboxRateLimitException
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -108,6 +110,10 @@ internal data class ProblemDto(
     val detail: String? = null,
     val correlationId: String? = null,
     val retryAfterSeconds: Long? = null,
+    val category: String? = null,
+    val quota: String? = null,
+    val limit: Long? = null,
+    val current: Long? = null,
 )
 
 internal class Transport(
@@ -169,20 +175,46 @@ internal class Transport(
         val response =
             httpClient.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofByteArray()).await()
         if (response.statusCode() in 200..299) return response.body()
-        throw mapError(response.statusCode(), response.body())
+        throw mapError(response.statusCode(), response.body(), response.headers())
     }
 
-    private fun mapError(status: Int, body: ByteArray): RuntimeException {
+    private fun mapError(
+        status: Int,
+        body: ByteArray,
+        headers: java.net.http.HttpHeaders,
+    ): RuntimeException {
         val problem =
             runCatching { json.decodeFromString(ProblemDto.serializer(), String(body)) }
                 .getOrElse { ProblemDto() }
         val detail = problem.detail ?: problem.title ?: "HTTP $status"
-        return when (status) {
-            401 -> TestInboxAuthException(detail, problem.correlationId)
-            403 -> TestInboxForbiddenException(detail, problem.correlationId)
-            404 -> TestInboxNotFoundException(detail, problem.correlationId)
-            409 -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
-            410 -> TestInboxInboxGoneException(detail, problem.correlationId)
+        val retryAfter =
+            (problem.retryAfterSeconds ?: headers.firstValue("Retry-After").orElse(null)?.toLongOrNull())
+                ?.let(java.time.Duration::ofSeconds)
+        return when {
+            status == 401 -> TestInboxAuthException(detail, problem.correlationId)
+            status == 403 -> TestInboxForbiddenException(detail, problem.correlationId)
+            status == 404 -> TestInboxNotFoundException(detail, problem.correlationId)
+            // Two distinct 409s share this status (ADR-021 vs ADR-027), so the
+            // problem type — not the status code — decides which error this is.
+            status == 409 && problem.type?.endsWith("/quota-exceeded") == true ->
+                TestInboxQuotaExceededException(
+                    detail,
+                    problem.correlationId,
+                    quota = problem.quota,
+                    limit = problem.limit,
+                    current = problem.current,
+                )
+            status == 409 -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
+            status == 410 -> TestInboxInboxGoneException(detail, problem.correlationId)
+            status == 429 ->
+                TestInboxRateLimitException(
+                    detail,
+                    problem.correlationId,
+                    retryAfter = retryAfter,
+                    category = problem.category,
+                    limit = problem.limit ?: headers.firstValue("RateLimit-Limit").orElse(null)?.toLongOrNull(),
+                    remaining = headers.firstValue("RateLimit-Remaining").orElse(null)?.toLongOrNull(),
+                )
             else -> TestInboxApiException(status, problem.type, detail, problem.correlationId)
         }
     }

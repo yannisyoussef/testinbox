@@ -9,6 +9,7 @@ import email.testinbox.application.usecase.DeleteInbox
 import email.testinbox.application.usecase.WaitForMessage
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.inbox.AddressMode
+import email.testinbox.domain.limits.QuotaExceeded
 import email.testinbox.domain.message.HeaderMatcher
 import email.testinbox.domain.message.MessageMatcher
 import email.testinbox.domain.tenant.ApiScope
@@ -26,6 +27,8 @@ import org.springframework.web.bind.annotation.RestController
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+
+private val CONCURRENT_WAIT_RETRY_AFTER: java.time.Duration = java.time.Duration.ofSeconds(1)
 
 @RestController
 @RequestMapping("/v1/inboxes")
@@ -79,6 +82,10 @@ class InboxController(
         return when (result) {
             is CreateInbox.Result.Created -> {
                 ResponseEntity.status(HttpStatus.CREATED).body(InboxDto.from(result.inbox))
+            }
+
+            is CreateInbox.Result.QuotaRejected -> {
+                quotaProblem(result.exceeded, request)
             }
 
             is CreateInbox.Result.InvalidRequest -> {
@@ -263,6 +270,21 @@ class InboxController(
                 inboxNotFound(request)
             }
 
+            is WaitForMessage.Result.ConcurrentWaitLimitExceeded -> {
+                // Rate-shaped, not state-shaped: a slot frees with time (ADR-027 §8).
+                Problems.respond(
+                    Problems
+                        .of(
+                            HttpStatus.TOO_MANY_REQUESTS,
+                            "concurrent-wait-limit-exceeded",
+                            "Concurrent wait limit exceeded",
+                            "This workspace already holds all ${result.limit} concurrent wait slots",
+                            request,
+                        ).also { it.setProperty("limit", result.limit) },
+                    retryAfter = CONCURRENT_WAIT_RETRY_AFTER,
+                )
+            }
+
             is WaitForMessage.Result.InvalidRequest -> {
                 Problems.respond(
                     Problems.of(
@@ -276,6 +298,30 @@ class InboxController(
             }
         }
     }
+
+    /**
+     * Quota exhaustion is 409, never 429 (ADR-027 §8): waiting does not help,
+     * so advertising a retry would send SDKs and CI scripts into a loop that
+     * cannot succeed. The caller must free capacity.
+     */
+    private fun quotaProblem(
+        exceeded: QuotaExceeded,
+        request: HttpServletRequest,
+    ): ResponseEntity<*> =
+        Problems.respond(
+            Problems
+                .of(
+                    HttpStatus.CONFLICT,
+                    "quota-exceeded",
+                    "Quota exceeded",
+                    "Workspace quota ${exceeded.dimension.name} exhausted (${exceeded.current}/${exceeded.limit})",
+                    request,
+                ).also {
+                    it.setProperty("quota", exceeded.dimension.name)
+                    it.setProperty("limit", exceeded.limit)
+                    it.setProperty("current", exceeded.current)
+                },
+        )
 
     private fun inboxNotFound(request: HttpServletRequest): ResponseEntity<*> =
         Problems.respond(
