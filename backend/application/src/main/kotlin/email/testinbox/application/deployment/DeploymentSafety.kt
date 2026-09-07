@@ -74,100 +74,145 @@ object DeploymentSafety {
      */
     val PROXY_TIMEOUT_MARGIN: Duration = Duration.ofSeconds(30)
 
-    fun validate(settings: DeploymentSettings): List<DeploymentViolation> {
-        val violations = mutableListOf<DeploymentViolation>()
+    /**
+     * Split into one function per concern rather than one long sequence: the
+     * checks are independent, and a single method accumulating all of them is
+     * both harder to read and — measurably — over the project's complexity
+     * threshold.
+     */
+    fun validate(settings: DeploymentSettings): List<DeploymentViolation> =
+        buildList {
+            addAll(checkMailDomain(settings))
+            addAll(checkDatabase(settings))
+            addAll(checkObjectStorage(settings))
+            addAll(checkPublicBaseUrl(settings))
+            addAll(checkBootstrapKey(settings))
+            addAll(checkProxyTimeout(settings))
+            addAll(checkLimits(settings))
+        }
 
-        fun reject(
-            setting: String,
-            problem: String,
-        ) = violations.add(DeploymentViolation(setting, problem))
-
+    private fun checkMailDomain(settings: DeploymentSettings): List<DeploymentViolation> =
         if (settings.mailDomain.isBlank() || settings.mailDomain.equals(LOCAL_MAIL_DOMAIN, ignoreCase = true)) {
-            reject(
-                "testinbox.mail-domain",
-                "is the local-development default '$LOCAL_MAIL_DOMAIN' — set the mail domain for ${settings.environment}",
+            listOf(
+                DeploymentViolation(
+                    "testinbox.mail-domain",
+                    "is the local-development default '$LOCAL_MAIL_DOMAIN' — set the mail domain for ${settings.environment}",
+                ),
             )
+        } else {
+            emptyList()
         }
 
-        if (containsLocalHost(settings.databaseUrl)) {
-            reject("spring.datasource.url", "points at the local host — a deployed process needs the environment's database")
-        }
-        if (settings.databaseUrl.isBlank()) {
-            reject("spring.datasource.url", "is not set")
-        }
-        if (settings.databaseUsername.isBlank()) {
-            reject("spring.datasource.username", "is not set")
-        }
-        if (isLocalDevSecret(settings.databasePassword)) {
-            reject("spring.datasource.password", "is a local-development default or empty — inject the environment's credential")
-        }
-
-        if (settings.storageEndpoint.isBlank()) {
-            reject("testinbox.storage.endpoint", "is not set")
-        } else if (containsLocalHost(settings.storageEndpoint)) {
-            reject("testinbox.storage.endpoint", "points at the local host — a deployed process needs the environment's object store")
-        }
-        if (isLocalDevSecret(settings.storageAccessKey)) {
-            reject("testinbox.storage.access-key", "is a local-development default or empty")
-        }
-        if (isLocalDevSecret(settings.storageSecretKey)) {
-            reject("testinbox.storage.secret-key", "is a local-development default or empty")
-        }
-
-        settings.publicBaseUrl?.let { url ->
-            when {
-                url.isBlank() -> {
-                    reject("testinbox.public-base-url", "is blank")
-                }
-
-                url.startsWith("http://", ignoreCase = true) -> {
-                    reject("testinbox.public-base-url", "is plaintext HTTP — a public surface must be HTTPS")
-                }
-
-                !url.startsWith("https://", ignoreCase = true) -> {
-                    reject("testinbox.public-base-url", "is not an absolute https:// URL")
-                }
+    private fun checkDatabase(settings: DeploymentSettings): List<DeploymentViolation> =
+        buildList {
+            if (settings.databaseUrl.isBlank()) {
+                add(DeploymentViolation("spring.datasource.url", "is not set"))
+            } else if (containsLocalHost(settings.databaseUrl)) {
+                add(
+                    DeploymentViolation(
+                        "spring.datasource.url",
+                        "points at the local host — a deployed process needs the environment's database",
+                    ),
+                )
+            }
+            if (settings.databaseUsername.isBlank()) {
+                add(DeploymentViolation("spring.datasource.username", "is not set"))
+            }
+            if (isLocalDevSecret(settings.databasePassword)) {
+                add(
+                    DeploymentViolation(
+                        "spring.datasource.password",
+                        "is a local-development default or empty — inject the environment's credential",
+                    ),
+                )
             }
         }
 
-        val key = settings.bootstrapApiKey?.takeIf { it.isNotBlank() }
-        if (key != null) {
+    private fun checkObjectStorage(settings: DeploymentSettings): List<DeploymentViolation> =
+        buildList {
+            if (settings.storageEndpoint.isBlank()) {
+                add(DeploymentViolation("testinbox.storage.endpoint", "is not set"))
+            } else if (containsLocalHost(settings.storageEndpoint)) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.storage.endpoint",
+                        "points at the local host — a deployed process needs the environment's object store",
+                    ),
+                )
+            }
+            if (isLocalDevSecret(settings.storageAccessKey)) {
+                add(DeploymentViolation("testinbox.storage.access-key", "is a local-development default or empty"))
+            }
+            if (isLocalDevSecret(settings.storageSecretKey)) {
+                add(DeploymentViolation("testinbox.storage.secret-key", "is a local-development default or empty"))
+            }
+        }
+
+    private fun checkPublicBaseUrl(settings: DeploymentSettings): List<DeploymentViolation> {
+        // Absent is legitimate: the ingestion gateway terminates SMTP and has
+        // no public HTTP origin of its own.
+        val url = settings.publicBaseUrl ?: return emptyList()
+        val problem =
+            when {
+                url.isBlank() -> "is blank"
+                url.startsWith("http://", ignoreCase = true) -> "is plaintext HTTP — a public surface must be HTTPS"
+                !url.startsWith("https://", ignoreCase = true) -> "is not an absolute https:// URL"
+                else -> return emptyList()
+            }
+        return listOf(DeploymentViolation("testinbox.public-base-url", problem))
+    }
+
+    private fun checkBootstrapKey(settings: DeploymentSettings): List<DeploymentViolation> {
+        val key = settings.bootstrapApiKey?.takeIf { it.isNotBlank() } ?: return emptyList()
+        return buildList {
             if (key.length < MIN_BOOTSTRAP_KEY_LENGTH) {
                 // Length only — never the value, never a hash of it (ADR-010).
-                reject(
-                    "testinbox.bootstrap.api-key",
-                    "is ${key.length} characters; a deployed bootstrap key must be at least $MIN_BOOTSTRAP_KEY_LENGTH",
+                add(
+                    DeploymentViolation(
+                        "testinbox.bootstrap.api-key",
+                        "is ${key.length} characters; a deployed bootstrap key must be at least $MIN_BOOTSTRAP_KEY_LENGTH",
+                    ),
                 )
             }
             if (LOCAL_DEV_SECRETS.any { key.equals(it, ignoreCase = true) } || key.startsWith("tk_e2e_")) {
-                reject("testinbox.bootstrap.api-key", "is a known development/test fixture key")
+                add(DeploymentViolation("testinbox.bootstrap.api-key", "is a known development/test fixture key"))
             }
         }
-
-        val proxyTimeout = settings.proxyReadTimeout
-        if (proxyTimeout == null) {
-            reject(
-                "testinbox.proxy-read-timeout",
-                "is not declared — without it nothing checks that the ingress outlives a ${settings.waitWindowCap.toSeconds()}s wait",
-            )
-        } else {
-            val required = settings.waitWindowCap.plus(PROXY_TIMEOUT_MARGIN)
-            if (proxyTimeout < required) {
-                reject(
-                    "testinbox.proxy-read-timeout",
-                    "is ${proxyTimeout.toSeconds()}s but the wait window cap is ${settings.waitWindowCap.toSeconds()}s; " +
-                        "the proxy would abort a legitimate long poll before the server answers " +
-                        "(need at least ${required.toSeconds()}s)",
-                )
-            }
-        }
-
-        if (!settings.limitsEnabled) {
-            reject("testinbox.limits.enabled", "is false — a reachable deployment would be unprotected (ADR-027)")
-        }
-
-        return violations
     }
+
+    private fun checkProxyTimeout(settings: DeploymentSettings): List<DeploymentViolation> {
+        val proxyTimeout =
+            settings.proxyReadTimeout
+                ?: return listOf(
+                    DeploymentViolation(
+                        "testinbox.proxy-read-timeout",
+                        "is not declared — without it nothing checks that the ingress outlives a " +
+                            "${settings.waitWindowCap.toSeconds()}s wait",
+                    ),
+                )
+        val required = settings.waitWindowCap.plus(PROXY_TIMEOUT_MARGIN)
+        if (proxyTimeout >= required) return emptyList()
+        return listOf(
+            DeploymentViolation(
+                "testinbox.proxy-read-timeout",
+                "is ${proxyTimeout.toSeconds()}s but the wait window cap is ${settings.waitWindowCap.toSeconds()}s; " +
+                    "the proxy would abort a legitimate long poll before the server answers " +
+                    "(need at least ${required.toSeconds()}s)",
+            ),
+        )
+    }
+
+    private fun checkLimits(settings: DeploymentSettings): List<DeploymentViolation> =
+        if (settings.limitsEnabled) {
+            emptyList()
+        } else {
+            listOf(
+                DeploymentViolation(
+                    "testinbox.limits.enabled",
+                    "is false — a reachable deployment would be unprotected (ADR-027)",
+                ),
+            )
+        }
 
     /** Renders violations for a startup failure. Setting *names* and problems only — no values. */
     fun describe(violations: List<DeploymentViolation>): String =
