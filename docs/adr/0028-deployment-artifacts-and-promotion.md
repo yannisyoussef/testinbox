@@ -1,6 +1,8 @@
 # ADR-028: Deployment Artifacts and Promotion by Digest
 
-**Status:** Accepted
+**Status:** Accepted (§6 amended 2026-09-07 by TI-DEPLOY-002: the container
+vulnerability policy is now environment-sensitive — see "Amendment: vulnerability
+policy by environment" at the end)
 
 ## Context
 
@@ -82,3 +84,40 @@ runtime choice (Java 25) from the SDKs' *public* distribution contract.
 - Because images are configuration-free, a misconfigured environment fails at
   *startup*, not at build. ADR-029 and the staging configuration validation
   make that failure loud and early rather than a silently insecure default.
+
+## Amendment: vulnerability policy by environment (2026-09-07)
+
+The original §6 made container scanning informational everywhere, reasoning by
+analogy with OSV-Scanner: a CVE published in a base image is not a regression
+introduced by the merge that happens to build next, and blocking unrelated work
+on it is the noisy-gate failure mode that ends with the tooling switched off.
+
+That reasoning is right for **develop**, where the cost of a false block is
+paid several times a day by people whose change has nothing to do with the
+finding. It is weak for **promotion to production**, which is a deliberate,
+infrequent, human-initiated act — exactly the moment when "we know about this
+and shipped anyway" should require a decision rather than a shrug.
+
+So the policy splits:
+
+| Path | Policy |
+|---|---|
+| pull request, `develop` | **Informational.** Findings are printed; nothing is blocked. |
+| promotion to `master` | **Blocking** on `HIGH`/`CRITICAL` — *and only where a fix exists*. |
+
+`--ignore-unfixed` applies in both modes, and that is the load-bearing half.
+Refusing to promote over a vulnerability nobody can remediate does not make the
+release safer; it makes the release not happen, which is usually the worse
+outcome and is how a blocking scanner earns a permanent bypass. A finding with
+a published fix is a different proposition: it is actionable, so requiring it
+to be acted on before production is a real gate rather than a toll.
+
+Enforcement lives in `.github/workflows/build-images.yml` behind the
+`enforce_vulnerability_policy` input, which only the promotion workflow
+(`release-candidate.yml`) sets. Nothing else about ADR-028 changes: images are
+still built once, promoted by digest, and the promotion path never rebuilds or
+re-pushes — it scans the artifacts that already exist.
+
+This amendment weakens no other gate. gitleaks, provenance, SBOM, the non-root
+assertion, digest ownership validation and the migration rollback-safety gate
+are unchanged.

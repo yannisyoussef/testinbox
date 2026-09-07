@@ -27,12 +27,16 @@ last successful `Staging` workflow run records all four digests, the commit and
 the timestamp. That is why the evidence exists.
 
 **How to roll back:** run the `Staging` workflow via *Run workflow*
-(`workflow_dispatch`) and supply all four references. They are validated before
-anything is pulled — ownership *and* digest-pinning — so an arbitrary image
-from an arbitrary registry cannot be deployed this way
-(`scripts/validate-image-digest.sh`, 15 negative self-tests).
+(`workflow_dispatch`) and supply all four references. They are validated twice
+before they leave GitHub — ownership *and* digest-pinning, by
+`scripts/validate-image-digest.sh` (15 negative self-tests) and again inside
+`scripts/gitlab-handoff.sh` — so an arbitrary image from an arbitrary registry
+cannot be handed to Ops this way.
 
-Or, on the host directly:
+The handoff carries the digest set; **Ops performs the rollback**, and the
+result is visible there, not in the GitHub run.
+
+Or, for the self-hosted reference topology, on the host directly:
 
 ```bash
 TESTINBOX_API_IMAGE=ghcr.io/<owner>/testinbox-api@sha256:111… \
@@ -65,6 +69,27 @@ healthy. A stricter equality check would look tidier and would make every
 rollback after a migration impossible.
 
 ## When artifact rollback is NOT safe
+
+`scripts/check-migration-safety.sh` now enforces the expand-only rule in CI
+rather than leaving it to review. It fails the build on an undeclared
+rollback-breaking construct, and a migration that genuinely intends to break
+compatibility must say so in the file:
+
+```sql
+-- testinbox:rollback-unsafe: legacy_flag unread since v0.4; contract release only.
+ALTER TABLE inbox DROP COLUMN legacy_flag;
+```
+
+A declaration does not make it safe — it makes it *visible*, and the
+promotion gate then blocks the release until it is handled deliberately
+(see [release-process.md](release-process.md)).
+
+**What the gate cannot see**, and why `.github/CODEOWNERS` covers migrations:
+constraint *tightening*. Dropping a constraint and adding a narrower one reads,
+statement by statement, exactly like the widening ADR-026 legitimately did in
+V2. Also invisible to it: a backfill that assumes the new code is already
+deployed, and a change that is technically additive but semantically
+incompatible. Those need a human.
 
 A migration breaks the property above if it does any of:
 

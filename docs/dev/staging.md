@@ -1,12 +1,55 @@
 # Staging
 
-> **Status: no staging environment is deployed.** No hosting provider has been
-> selected — [ADR-030](../adr/0030-staging-deployment-target.md) is `Proposed`
-> and `VISION.md` §7 lists the decision as outstanding. Everything below is
-> built, committed and exercised on every CI run against an ephemeral copy of
-> this exact topology; what is missing is a host to put it on.
+**Live at https://staging.testinbox.email**, deployed from `develop` through
+the Infinity Ops platform (ADR-030, Accepted).
 
-## Topology
+This document describes the **contract** the application has with that
+environment — what it needs, what it exposes, what must not change. It is not
+an Ops runbook: how the host is reconciled, where secrets are stored and how
+the estate is administered belong in `infinity/infinity-core`, and duplicating
+them here would create a second description that silently goes stale.
+
+## As built
+
+```
+                     Cloudflare (proxied, TLS)
+                              │
+                       Traefik (Infinity estate)
+                              │
+                 ┌────────────┴────────────┐
+                 │                         │
+          TestInbox API              TestInbox web
+                 │
+   ┌─────────────┼──────────────┐
+   │             │              │
+PostgreSQL     MinIO      ingestion (SMTP 127.0.0.1:2525)
+(direct,      (scoped
+ no pooler)    creds)
+```
+
+| | |
+|---|---|
+| Host | Contabo US, shared Infinity dev/staging estate |
+| Ingress | Cloudflare → Traefik. **The application's nginx is not deployed here** |
+| Database | Stack-local PostgreSQL, direct session-scoped connection, no pooler |
+| Object storage | Stack-local MinIO, bucket-scoped credentials |
+| SMTP | `127.0.0.1:2525`, loopback only. No public SMTP, no MX |
+| Observability | Prometheus scrapes the management ports; Loki for logs; Uptime Kuma for HTTPS/TLS |
+| Delivery | GitHub → GHCR digests → GitLab `infinity-core` → host reconcile |
+
+**Two topologies exist on purpose.** The nginx/compose stack in `deploy/staging/`
+is not a stale description of the above — it is the provider-neutral reference
+for self-hosted deployments, and it is what the ephemeral CI rehearsal runs on
+every pull request. ADR-030 explains the split; the short version is that the
+rehearsal proves the properties the *application* owns, before merge, on an
+edge we control, and the deployed environment proves this particular estate
+satisfies them.
+
+## The provider-neutral reference topology
+
+Not what runs at `staging.testinbox.email` — that is the diagram above. This is
+the self-hosted stack in `deploy/staging/`, which the CI rehearsal stands up on
+every pull request.
 
 ```
                     ┌─────────────────────────────────────────────┐
@@ -29,10 +72,11 @@
    one-shot, before any of the above: migrator
 ```
 
-Staging is production-*like*, not production-*sized*: one API instance, one
-ingestion instance, a small database and object store. The structure — separate
-deployables, an edge that terminates TLS, a private management port, a one-shot
-migration job — is what a larger deployment would keep.
+Both topologies are production-*like*, not production-*sized*: one API
+instance, one ingestion instance, a small database and object store. The
+structure — separate deployables, an edge that terminates TLS, a private
+management port, a one-shot migration job — is what a larger deployment keeps,
+and it is identical either side of the split.
 
 Files: `deploy/staging/compose.yaml` (application + edge),
 `deploy/staging/compose.data.yaml` (self-hosted PostgreSQL/MinIO overlay; omit
@@ -40,7 +84,7 @@ it when the environment supplies managed services),
 `deploy/staging/nginx/templates/default.conf.template`,
 `deploy/staging/deploy.sh`, `deploy/staging/.env.example`.
 
-## The LISTEN constraint — read this before choosing a database
+## The LISTEN constraint — true of both topologies
 
 `waitForMessage` is woken by PostgreSQL `LISTEN/NOTIFY` on a **session-scoped**
 connection (ADR-020). That connection must never be routed through
@@ -53,30 +97,47 @@ the session goes back to the pool between statements. TestInbox degrades to
 bounded re-query rather than hanging, so the symptom is a *latency regression*,
 not an error. Nothing goes red.
 
-- `compose.data.yaml` connects directly to PostgreSQL. No pooler.
-- Any managed candidate must expose a session-mode endpoint, and
+- The deployed staging stack connects to a stack-local PostgreSQL **directly**.
+  No PgBouncer, no pooled endpoint.
+- `compose.data.yaml` does the same for the self-hosted topology.
+- Any future managed candidate must expose a session-mode endpoint, and
   `TESTINBOX_DB_URL` must point at it.
-- The synthetic suite asserts a parked wait resolves within 5 s of delivery,
-  which fails loudly if notifications are not arriving.
+- The synthetic suite measures wake-up latency from the moment the gateway
+  accepts the delivery, and `testinbox_wait_listen_degraded_polling` reports
+  the state continuously — so the failure is caught both at deploy time and
+  in perpetuity.
 
-## Long-poll and the ingress
+## Long-poll and the ingress — and the ceiling it imposes
 
 The server answers a bounded long poll with `200 {status: TIMEOUT}` — never a
-408, never a gateway error. nginx's **default** `proxy_read_timeout` is 60 s,
-which is exactly the wait-window cap, so a stock reverse proxy races every
-full-window wait and turns a legitimate answer into a 504.
+408, never a gateway error. Every hop in front of it must outlive that wait, or
+a legitimate answer becomes a 504.
 
-| setting | value | source |
-|---|---|---|
-| server wait-window cap | 60 s | `testinbox.wait-window-cap` |
-| required margin | ≥ 30 s | `DeploymentSafety.PROXY_TIMEOUT_MARGIN` |
-| edge `proxy_read_timeout` | 120 s | `TESTINBOX_PROXY_READ_TIMEOUT_SECONDS` |
-| graceful shutdown (api) | 75 s | `spring.lifecycle.timeout-per-shutdown-phase` |
+**On the deployed path the ceiling is Cloudflare's, and it is 100 s:**
 
-Both the edge and the applications read the same environment variable, and the
-applications refuse to start if the pair is inconsistent. The synthetic suite
-proves it end to end by parking a request for the full window through the real
-ingress and requiring TestInbox's own timeout answer back.
+| | value |
+|---|---|
+| Server wait-window cap (`testinbox.wait-window-cap`) | **60 s** |
+| Required safety margin (`DeploymentSafety.PROXY_TIMEOUT_MARGIN`) | 30 s |
+| Minimum acceptable ingress timeout | 90 s |
+| Cloudflare effective ceiling | **100 s** |
+| Traefik | no shorter timeout |
+| **Effective edge timeout, deployed** | **100 s** |
+| Graceful shutdown (api) | 75 s |
+
+So there is **10 s of headroom, not 60 s**. Do not read the nginx reference's
+`TESTINBOX_PROXY_READ_TIMEOUT_SECONDS=120` as describing staging: that value
+governs the self-hosted topology, where we own the proxy.
+
+> **`TESTINBOX_WAIT_WINDOW_CAP` must not exceed 70 s** while this Cloudflare
+> configuration is in use. It is currently 60 s. Raising it past 70 s makes
+> full-window waits fail intermittently at the edge, and the fix for that is an
+> edge/DNS/plan decision — **not** an application environment variable.
+
+`DeploymentSafety` enforces the margin from the values a process is given, and
+the synthetic suite proves it end to end by parking one request for the full
+window through the real ingress and requiring TestInbox's own timeout answer
+back — a 502/504 fails the deployment.
 
 ## Health and readiness
 
@@ -151,33 +212,58 @@ could not.
 | TLS | 1.2/1.3, HSTS, no session tickets |
 | unmatched `Host` | `444`, no fallthrough into the TestInbox vhost |
 
-## Required secrets — names only
+## Secrets — who holds what
 
-Set on the GitHub `staging` **environment** (protected), never in the
-repository. `deploy/staging/.env.example` carries the same names with
-placeholder values.
+**GitHub holds exactly one secret for this path:**
 
-| name | used for |
-|---|---|
-| `TESTINBOX_DB_URL` / `TESTINBOX_DB_USER` / `TESTINBOX_DB_PASSWORD` | database connection (session-mode) |
-| `TESTINBOX_S3_ENDPOINT` / `TESTINBOX_S3_ACCESS_KEY` / `TESTINBOX_S3_SECRET_KEY` / `TESTINBOX_S3_BUCKET` | object storage |
-| `TESTINBOX_BOOTSTRAP_API_KEY` | the synthetic-test credential provisioned at startup |
-| `STAGING_SYNTHETIC_API_KEY` | the same value, read by the synthetic suite in CI |
-| `STAGING_SSH_HOST` / `STAGING_SSH_USER` / `STAGING_SSH_KEY` / `STAGING_SSH_KNOWN_HOSTS` | deployment channel (Option A) |
-| `STAGING_SMTP_HOST` | private SMTP ingress the synthetic suite delivers to |
+| name | scope | what it can do |
+|---|---|---|
+| `GITLAB_TRIGGER_TOKEN` | `staging-handoff` environment | Start one pipeline in `infinity/infinity-core`. Nothing else. |
 
-Environment **variables** (not secret): `STAGING_DEPLOY_ENABLED`,
-`STAGING_URL`, `STAGING_DEPLOY_PATH`, `STAGING_SMTP_PORT`.
+That is the whole list, and the shrinkage is the point. GitHub previously held
+`STAGING_SSH_HOST`, `STAGING_SSH_USER`, `STAGING_SSH_KEY`,
+`STAGING_SSH_KNOWN_HOSTS` and `STAGING_SYNTHETIC_API_KEY` in order to push a
+deployment and verify it afterwards. On a pull-based estate none of that is
+needed, so **all five have been removed** — a compromised GitHub Actions run
+can no longer reach the staging host at all.
 
-The synthetic credential is dedicated to synthetic testing. It is never a
-personal or administrative key, and the applications refuse to start with a
-bootstrap key shorter than 32 characters or one matching a known fixture.
+**Ops holds everything else**, because Ops already did: the database, object
+storage and bootstrap credentials, the host, and the synthetic test credential.
+The application consumes them by name (`deploy/staging/.env.example` lists the
+names with placeholder values) but this repository never carries the values and
+never transports them.
+
+The synthetic credential is dedicated to synthetic testing — never a personal
+or administrative key — and the applications refuse to start with a bootstrap
+key shorter than 32 characters or one matching a known fixture.
 
 Secrets appear in **no** Dockerfile, compose file, workflow literal, container
 label, build arg, image, or log line. `DeploymentSafety` reports setting names
-and problems, never values; the migrator logs versions, never its JDBC URL.
+and problems, never values; the migrator logs versions, never its JDBC URL; and
+the handoff script keeps the trigger token out of argv and out of every message
+it prints.
 
-## Host provisioning
+## Metrics
+
+Both deployables expose `/actuator/prometheus` on the private management port
+(9090 API, 9091 ingestion), which the edge never routes. The full metric list
+is in [observability.md](../architecture/observability.md).
+
+The one worth an alert is `testinbox_wait_listen_degraded_polling`. It is 1
+whenever `LISTEN` notifications are not being delivered and parked waits are
+falling back to bounded re-query — a state in which **everything else looks
+healthy**: HTTP 200, messages arriving, readiness green, only latency worse.
+It is exactly what a transaction-mode pooler in front of PostgreSQL produces,
+which is why this environment connects to PostgreSQL directly.
+
+`testinbox_build{service,git_sha,version}` answers "what is running?" from the
+same place. The image digest is deliberately not a label — an image cannot know
+its own digest, and Ops owns that fact.
+
+## Host provisioning (self-hosted reference only)
+
+> The Infinity estate provisions itself; this section applies to the
+> provider-neutral topology, not to `staging.testinbox.email`.
 
 The deployment workflow ships image digests and a commit; it does **not** ship
 the environment's configuration. Before the first deployment the host needs:
