@@ -159,6 +159,11 @@ class MicrometerMetricsTest {
             setOf("INVALID_RECIPIENT", "MESSAGE_TOO_LARGE", "PROCESSING_FAILED", "SCHEMA_UNAVAILABLE")
     }
 
+    // Detekt forbids explicit GC calls, and rightly — except here, where
+    // forcing collection IS the assertion: Micrometer holds gauge state weakly,
+    // and the bug this pins (a build metric reading NaN in production) is
+    // reachable no other way.
+    @Suppress("ExplicitGarbageCollectionCall")
     @Test
     fun `build info is a constant one carrying identity as labels`() {
         BuildInfoMetric(registry, service = "testinbox-api", gitSha = "abc1234", version = "0.1.0")

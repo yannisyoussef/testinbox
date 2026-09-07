@@ -31,8 +31,45 @@ import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.transaction.PlatformTransactionManager
 import java.time.Clock
 
+/**
+ * Metric adapters, separated from `IngestionWiring` only so that class can take
+ * them as constructor properties rather than repeating them in the signature of
+ * every bean that needs one.
+ */
 @Configuration
-class IngestionWiring {
+class IngestionMetricsWiring {
+    @Bean
+    fun limitMetrics(registry: io.micrometer.core.instrument.MeterRegistry): LimitMetrics = MicrometerLimitMetrics(registry)
+
+    @Bean
+    fun inboundMetrics(registry: io.micrometer.core.instrument.MeterRegistry): InboundMetrics = MicrometerInboundMetrics(registry)
+
+    @Bean
+    fun smtpMetrics(registry: io.micrometer.core.instrument.MeterRegistry): SmtpMetrics = MicrometerSmtpMetrics(registry)
+
+    @Bean
+    fun blobStoreMetrics(registry: io.micrometer.core.instrument.MeterRegistry): BlobStoreMetrics = MicrometerBlobStoreMetrics(registry)
+
+    /** See the API's equivalent: build identity, never a fabricated digest. */
+    @Bean
+    fun buildInfoMetric(
+        registry: io.micrometer.core.instrument.MeterRegistry,
+        properties: IngestionProperties,
+    ): BuildInfoMetric =
+        BuildInfoMetric(
+            registry,
+            service = "testinbox-ingestion",
+            gitSha = properties.deployment.gitSha,
+            version = javaClass.`package`?.implementationVersion ?: "unknown",
+        )
+}
+
+@Configuration
+class IngestionWiring(
+    private val limitMetrics: LimitMetrics,
+    private val inboundMetrics: InboundMetrics,
+    private val blobStoreMetrics: BlobStoreMetrics,
+) {
     @Bean
     fun clock(): Clock = Clock.systemUTC()
 
@@ -40,10 +77,7 @@ class IngestionWiring {
     fun testInboxConfig(properties: IngestionProperties): TestInboxConfig = properties.toConfig()
 
     @Bean(destroyMethod = "close")
-    fun blobStore(
-        properties: IngestionProperties,
-        metrics: BlobStoreMetrics,
-    ): BlobStore =
+    fun blobStore(properties: IngestionProperties): BlobStore =
         S3BlobStore(
             S3BlobStoreConfig(
                 endpoint = properties.storage.endpoint,
@@ -53,7 +87,7 @@ class IngestionWiring {
                 bucket = properties.storage.bucket,
                 createBucket = properties.storage.createBucket,
             ),
-            metrics,
+            blobStoreMetrics,
         )
 
     /**
@@ -92,31 +126,6 @@ class IngestionWiring {
         }
 
     @Bean
-    fun limitMetrics(registry: io.micrometer.core.instrument.MeterRegistry): LimitMetrics = MicrometerLimitMetrics(registry)
-
-    @Bean
-    fun inboundMetrics(registry: io.micrometer.core.instrument.MeterRegistry): InboundMetrics = MicrometerInboundMetrics(registry)
-
-    @Bean
-    fun smtpMetrics(registry: io.micrometer.core.instrument.MeterRegistry): SmtpMetrics = MicrometerSmtpMetrics(registry)
-
-    @Bean
-    fun blobStoreMetrics(registry: io.micrometer.core.instrument.MeterRegistry): BlobStoreMetrics = MicrometerBlobStoreMetrics(registry)
-
-    /** See the API's equivalent: build identity, never a fabricated digest. */
-    @Bean
-    fun buildInfoMetric(
-        registry: io.micrometer.core.instrument.MeterRegistry,
-        properties: IngestionProperties,
-    ): BuildInfoMetric =
-        BuildInfoMetric(
-            registry,
-            service = "testinbox-ingestion",
-            gitSha = properties.deployment.gitSha,
-            version = javaClass.`package`?.implementationVersion ?: "unknown",
-        )
-
-    @Bean
     fun rateLimiter(
         jdbc: JdbcClient,
         transactionManager: PlatformTransactionManager,
@@ -135,8 +144,6 @@ class IngestionWiring {
         transactions: TransactionRunner,
         rateLimiter: RateLimiter,
         clock: Clock,
-        limitMetrics: LimitMetrics,
-        inboundMetrics: InboundMetrics,
     ): ReceiveInboundDelivery =
         ReceiveInboundDelivery(
             inboxes,
