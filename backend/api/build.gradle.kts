@@ -15,6 +15,8 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
+    // Scrape endpoint on the private management port (docs/architecture/observability.md).
+    runtimeOnly("io.micrometer:micrometer-registry-prometheus")
     implementation("tools.jackson.module:jackson-module-kotlin")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
@@ -27,4 +29,9 @@ dependencies {
     testImplementation(libs.awaitility)
     testImplementation("io.swagger.parser.v3:swagger-parser:2.1.31")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+// /actuator/info must be able to answer "what exact commit is running?" (ADR-028).
+springBoot {
+    buildInfo()
 }

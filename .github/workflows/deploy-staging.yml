@@ -1,0 +1,367 @@
+name: Staging
+
+# develop → immutable artifacts → staging deployment → migration → readiness
+# → post-deployment synthetic test → evidence  (TI-DEPLOY-001).
+#
+# `develop` is the staging candidate; `master` is the production-approved
+# candidate. Nothing here deploys production, and no master→production
+# automation exists.
+#
+# NOTE ON THE CURRENT STATE: no staging provider has been chosen (ADR-030 is
+# Proposed, VISION.md §7). The `deploy` job is therefore inert until the
+# `STAGING_DEPLOY_ENABLED` variable is set on the `staging` environment. Every
+# other stage runs for real, including a full ephemeral rehearsal of the
+# deployment on the runner — so the pipeline cannot rot while the decision is
+# outstanding, and enabling a target is configuration rather than a redesign.
+
+on:
+  push:
+    branches: [develop]
+  # Feature PRs are never deployed to shared staging (§6). They do run the
+  # image build and the ephemeral rehearsal, because a deployment path that is
+  # only exercised after merge is a deployment path that breaks after merge.
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "backend/**"
+      - "web/**"
+      - "sdk/**"
+      - "scripts/**"
+      - ".github/workflows/deploy-staging.yml"
+      - ".github/workflows/build-images.yml"
+  workflow_dispatch:
+    inputs:
+      api_image:
+        description: "Redeploy/rollback: full api reference (ghcr.io/OWNER/testinbox-api@sha256:...). Leave all four blank to build from this ref."
+        required: false
+      ingestion_image:
+        required: false
+      migrator_image:
+        required: false
+      web_image:
+        required: false
+
+concurrency:
+  # Scoped per ref, so an ephemeral PR rehearsal never contends with a real
+  # deployment. GitHub keeps only ONE pending run per group and cancels earlier
+  # pending ones — a single shared group would let a queued develop deployment
+  # be dropped by the next pull request.
+  group: testinbox-staging-${{ github.ref }}
+  # NEVER cancel in progress. A cancelled run can interrupt the migration job
+  # between statements, and recovery from a half-applied schema is manual.
+  # Two rapid merges to develop queue; they do not race.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # A manual redeploy/rollback supplies digests instead of building. They are
+  # validated here, before anything is pulled: without this, "redeploy" would
+  # accept an arbitrary image from an arbitrary registry (§29).
+  # ---------------------------------------------------------------------------
+  resolve-artifacts:
+    name: Resolve artifacts
+    runs-on: ubuntu-latest
+    outputs:
+      supplied: ${{ steps.check.outputs.supplied }}
+      api: ${{ steps.check.outputs.api }}
+      ingestion: ${{ steps.check.outputs.ingestion }}
+      migrator: ${{ steps.check.outputs.migrator }}
+      web: ${{ steps.check.outputs.web }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Self-test the digest validator
+        run: ./scripts/validate-image-digest.test.sh
+      - id: check
+        env:
+          API: ${{ inputs.api_image }}
+          INGESTION: ${{ inputs.ingestion_image }}
+          MIGRATOR: ${{ inputs.migrator_image }}
+          WEB: ${{ inputs.web_image }}
+        run: |
+          set -euo pipefail
+          supplied=0
+          for value in "$API" "$INGESTION" "$MIGRATOR" "$WEB"; do
+            [[ -n "$value" ]] && supplied=$((supplied + 1))
+          done
+          if (( supplied == 0 )); then
+            echo "supplied=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if (( supplied != 4 )); then
+            echo "::error::Supply all four image references or none; got $supplied."
+            exit 1
+          fi
+          EXPECTED_IMAGE_REPOSITORY="ghcr.io/${{ github.repository_owner }}" \
+            ./scripts/validate-image-digest.sh "$API" "$INGESTION" "$MIGRATOR" "$WEB"
+          {
+            echo "supplied=true"
+            echo "api=$API"
+            echo "ingestion=$INGESTION"
+            echo "migrator=$MIGRATOR"
+            echo "web=$WEB"
+          } >> "$GITHUB_OUTPUT"
+
+  # Two call sites rather than one with a conditional `push:`, because a job's
+  # `permissions:` block cannot be conditional. A same-repo pull request runs
+  # the workflow file *as the PR edited it*; if that path were granted
+  # `packages: write` and an OIDC identity, `push: false` would be the only
+  # thing standing between a PR and a published artifact — and a PR can edit
+  # that too. The PR path therefore holds nothing to abuse.
+  build-pr:
+    name: Immutable artifacts (build only)
+    needs: resolve-artifacts
+    if: github.event_name == 'pull_request' && needs.resolve-artifacts.outputs.supplied != 'true'
+    uses: ./.github/workflows/build-images.yml
+    permissions:
+      contents: read
+    with:
+      push: false
+
+  build:
+    name: Immutable artifacts
+    needs: resolve-artifacts
+    if: github.event_name != 'pull_request' && needs.resolve-artifacts.outputs.supplied != 'true'
+    uses: ./.github/workflows/build-images.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    with:
+      push: true
+
+  # ---------------------------------------------------------------------------
+  # The whole deployment, executed for real against an ephemeral copy of the
+  # staging topology on the runner: images deployed BY DIGEST from a registry,
+  # one migration job gated on, readiness that reflects the database/schema/
+  # object store/LISTEN connection, real TLS through real nginx, and the
+  # post-deployment synthetic suite driven by the public SDK.
+  #
+  # This is not a deployment — nothing is reachable off the runner — and it
+  # selects no provider. It is what makes the pipeline verifiable while ADR-030
+  # is outstanding, and it stays valuable afterwards as a pre-merge gate.
+  # ---------------------------------------------------------------------------
+  rehearsal:
+    name: Ephemeral staging rehearsal + synthetic suite
+    needs: resolve-artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Run the rehearsal
+        # Bounded at the step, not only the job: a hung docker build would
+        # otherwise burn the full job timeout before printing anything.
+        timeout-minutes: 35
+        run: ./scripts/staging-rehearsal.sh
+      - name: Record the outcome
+        if: always()
+        run: |
+          if [[ "${{ job.status }}" == "success" ]]; then
+            echo "Rehearsal PASSED — migration, readiness, TLS ingress, long-poll window and the full synthetic workflow all verified." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Rehearsal FAILED — see the job log; container logs are printed on teardown." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # The real staging deployment. Inert until a provider is chosen (ADR-030).
+  #
+  # `environment: staging` is what makes the secrets below resolvable at all,
+  # and gives GitHub deployment records naming who/what triggered the run (§29).
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to staging
+    needs: [resolve-artifacts, build, rehearsal]
+    # `always()` so a skipped `build` (manual redeploy path) does not skip this.
+    # The ref guard is load-bearing. Everything the host executes — deploy.sh,
+    # the compose files, the nginx template AND scripts/validate-image-digest.sh
+    # — is checked out from `github.sha`, so a dispatch from an unreviewed
+    # branch would supply the very gate that is supposed to guard it. Staging
+    # deploys `develop` and nothing else.
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      github.ref_name == 'develop' &&
+      needs.rehearsal.result == 'success' &&
+      (needs.build.result == 'success' || needs.resolve-artifacts.outputs.supplied == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Deployment target status
+        id: target
+        run: |
+          if [[ "${{ vars.STAGING_DEPLOY_ENABLED }}" != "true" ]]; then
+            {
+              echo "## Staging NOT deployed — no provider selected"
+              echo
+              echo "ADR-030 is **Proposed**: no hosting target has been chosen"
+              echo "(\`VISION.md\` §7). Artifacts were built and the full deployment"
+              echo "was rehearsed, but nothing was deployed to a persistent"
+              echo "environment."
+              echo
+              echo "To enable, set \`STAGING_DEPLOY_ENABLED=true\` and the deployment"
+              echo "secrets on the \`staging\` environment — see \`docs/dev/staging.md\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve the digest set to deploy
+        if: steps.target.outputs.enabled == 'true'
+        id: artifacts
+        env:
+          REGISTRY: ghcr.io/${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ needs.resolve-artifacts.outputs.supplied }}" == "true" ]]; then
+            api='${{ needs.resolve-artifacts.outputs.api }}'
+            ingestion='${{ needs.resolve-artifacts.outputs.ingestion }}'
+            migrator='${{ needs.resolve-artifacts.outputs.migrator }}'
+            web='${{ needs.resolve-artifacts.outputs.web }}'
+          else
+            api="${REGISTRY}/testinbox-api@${{ needs.build.outputs.api-digest }}"
+            ingestion="${REGISTRY}/testinbox-ingestion@${{ needs.build.outputs.ingestion-digest }}"
+            migrator="${REGISTRY}/testinbox-migrator@${{ needs.build.outputs.migrator-digest }}"
+            web="${REGISTRY}/testinbox-web@${{ needs.build.outputs.web-digest }}"
+          fi
+          # Belt and braces: whatever path produced these, they are ours and
+          # they are digests before anything is pulled onto the host.
+          EXPECTED_IMAGE_REPOSITORY="$REGISTRY" \
+            ./scripts/validate-image-digest.sh "$api" "$ingestion" "$migrator" "$web"
+          {
+            echo "api=$api"
+            echo "ingestion=$ingestion"
+            echo "migrator=$migrator"
+            echo "web=$web"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Require every deployment secret
+        if: steps.target.outputs.enabled == 'true'
+        env:
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
+          SYNTHETIC_API_KEY: ${{ secrets.STAGING_SYNTHETIC_API_KEY }}
+        run: |
+          # A missing secret must fail the deployment, not produce a half-applied
+          # one (§19). Only names are ever printed.
+          missing=""
+          for name in SSH_HOST SSH_USER SSH_KEY SSH_KNOWN_HOSTS SYNTHETIC_API_KEY; do
+            [[ -n "${!name:-}" ]] || missing="$missing STAGING_$name"
+          done
+          if [[ -n "$missing" ]]; then
+            echo "::error::missing required staging secret(s):$missing"
+            exit 1
+          fi
+
+      # Everything below is the ADR-030 Option A reference implementation. It
+      # is written out rather than left as a TODO so that choosing the target
+      # is a configuration change; it does not run until then.
+      - name: Deploy over SSH
+        if: steps.target.outputs.enabled == 'true'
+        env:
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
+          DEPLOY_PATH: ${{ vars.STAGING_DEPLOY_PATH || '/opt/testinbox' }}
+          API_IMAGE: ${{ steps.artifacts.outputs.api }}
+          INGESTION_IMAGE: ${{ steps.artifacts.outputs.ingestion }}
+          MIGRATOR_IMAGE: ${{ steps.artifacts.outputs.migrator }}
+          WEB_IMAGE: ${{ steps.artifacts.outputs.web }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          # Pinned host key, never StrictHostKeyChecking=no: accepting any key
+          # would make the deployment channel trivially interceptable.
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/deploy_known_hosts && chmod 600 ~/.ssh/deploy_known_hosts
+          ssh -i ~/.ssh/id_deploy \
+              -o IdentitiesOnly=yes \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile=~/.ssh/deploy_known_hosts \
+              "$SSH_USER@$SSH_HOST" \
+            "cd '$DEPLOY_PATH' \
+             && git fetch --depth=1 origin ${{ github.sha }} && git checkout --detach ${{ github.sha }} \
+             && EXPECTED_IMAGE_REPOSITORY='ghcr.io/${{ github.repository_owner }}' \
+                TESTINBOX_API_IMAGE='$API_IMAGE' \
+                TESTINBOX_INGESTION_IMAGE='$INGESTION_IMAGE' \
+                TESTINBOX_MIGRATOR_IMAGE='$MIGRATOR_IMAGE' \
+                TESTINBOX_WEB_IMAGE='$WEB_IMAGE' \
+                TESTINBOX_GIT_SHA='${{ github.sha }}' \
+                ./deploy/staging/deploy.sh"
+
+      # SMTP ingress is private and stays private (§10/§22): it is bound to a
+      # loopback/private interface on the host and is NOT reachable from a
+      # GitHub-hosted runner, which has no stable egress address to allowlist
+      # anyway. The synthetic suite reaches it through an SSH local forward over
+      # the deployment channel that already exists, so proving the deployment
+      # never requires opening the SMTP adapter to the Internet.
+      - name: Open a private SMTP forward
+        if: steps.target.outputs.enabled == 'true'
+        env:
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          SMTP_PORT: ${{ vars.STAGING_SMTP_PORT || '2525' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy \
+              -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/deploy_known_hosts \
+              -f -N -L "2525:127.0.0.1:${SMTP_PORT}" "$SSH_USER@$SSH_HOST"
+          for _ in $(seq 1 30); do
+            (exec 3<>/dev/tcp/127.0.0.1/2525) 2>/dev/null && break
+            sleep 1
+          done
+
+      - name: Post-deployment synthetic verification
+        if: steps.target.outputs.enabled == 'true'
+        env:
+          TESTINBOX_BASE_URL: ${{ vars.STAGING_URL }}
+          TESTINBOX_API_KEY: ${{ secrets.STAGING_SYNTHETIC_API_KEY }}
+          # The near end of the forward above.
+          TESTINBOX_SMTP_HOST: 127.0.0.1
+          TESTINBOX_SMTP_PORT: "2525"
+        run: |
+          set -euo pipefail
+          ( cd sdk/typescript && npm ci && npm run build )
+          ( cd deploy/synthetic && npm ci && npm test )
+
+      - name: Close the deployment channel
+        if: always() && steps.target.outputs.enabled == 'true'
+        run: |
+          pkill -f 'ssh -i .*id_deploy' || true
+          rm -f ~/.ssh/id_deploy ~/.ssh/deploy_known_hosts
+
+      - name: Deployment evidence
+        if: always() && steps.target.outputs.enabled == 'true'
+        run: |
+          {
+            echo "## Staging deployment"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| environment | staging |"
+            echo "| commit | \`${{ github.sha }}\` |"
+            echo "| triggered by | ${{ github.actor }} (${{ github.event_name }}) |"
+            echo "| api image | \`${{ steps.artifacts.outputs.api }}\` |"
+            echo "| ingestion image | \`${{ steps.artifacts.outputs.ingestion }}\` |"
+            echo "| migrator image | \`${{ steps.artifacts.outputs.migrator }}\` |"
+            echo "| web image | \`${{ steps.artifacts.outputs.web }}\` |"
+            echo "| deployment result | ${{ job.status }} |"
+            echo "| url | ${{ vars.STAGING_URL }} |"
+            echo "| timestamp | $(date -u +%Y-%m-%dT%H:%M:%SZ) |"
+          } >> "$GITHUB_STEP_SUMMARY"

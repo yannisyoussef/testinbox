@@ -9,6 +9,7 @@ include(
     "observability",
     "api",
     "ingestion",
+    "migrator",
     "architecture",
     "e2e",
 )

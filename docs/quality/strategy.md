@@ -16,6 +16,7 @@ after it.
 | API contract | Karate or REST Assured against a running instance | Verifies the OpenAPI contract matches actual behavior; run against the same build that will be released. |
 | Acceptance / end-to-end | The product's own SDKs, dogfooding | The MVP slice itself (create → send → wait → assert → cleanup) is validated by running it through the real JVM and TypeScript SDKs, not just internal test harnesses — if the SDK can't do it ergonomically, the feature isn't done. |
 | UI | Playwright | Dashboard: message inspection renders safely (sandboxed HTML, no script execution), core admin flows (API key creation, project management). |
+| Deployment | Container build, `staging-rehearsal.sh`, post-deployment synthetic suite | The deployment path itself: images build and run non-root, one migration job applies exactly what the artifact bundles, readiness reflects database/schema/object store/`LISTEN`, and a real inbound workflow succeeds through a real TLS ingress. A full server wait window is parked through the actual reverse proxy, because a proxy read timeout shorter than the wait window is invisible to every other layer. |
 | Architecture | ArchUnit | Enforces module boundaries from `docs/architecture/component-architecture.md` (e.g., `domain` module must not depend on Spring/JPA/provider-specific types). |
 | Resource limits | Postgres integration + API + e2e | Rate/quota decisions (ADR-027): capacity boundaries, multi-node budget sharing across two limiter instances, per-workspace and per-inbox isolation, derived usage surviving a cascade delete, the `429`/`409` split, and that no limiter key derives from a request header. |
 | Concurrency | Targeted tests | Concurrent `createInbox()` token collisions, concurrent `EXACT` reservations racing to `409` (ADR-021), concurrent waiters on one inbox, wait-request cancellation/resource cleanup, inbox-expiry-vs-inbound-delivery race (`docs/architecture/inbound-mail-flow.md`), persist+`pg_notify` single-transaction atomicity, and a kill-the-`LISTEN`-connection test proving parked waiters still resolve after reconnect (ADR-020). |
@@ -60,8 +61,20 @@ gate.
 | OpenAPI backwards compatibility | oasdiff vs. the PR base spec | Yes on ERR; warnings (e.g. removing an optional parameter) are reported only |
 | Compatibility-gate self-test | `openapi-breaking-check.test.sh` | Yes |
 | Secret detection | gitleaks (working tree) | Yes |
+| Deployment-gate self-tests | `validate-image-digest.test.sh`, `deploy-preflight.test.sh` | Yes |
+| Container build + non-root runtime | `build-images.yml` | Yes |
+| Ephemeral staging rehearsal + synthetic suite | `staging-rehearsal.sh` | Yes |
+| Container vulnerabilities | Trivy (pushed images) | **No — informational** |
 | Dependency vulnerabilities | OSV-Scanner (npm lockfiles) | **No — informational** |
 | Dependency updates | Dependabot (grouped, weekly) | n/a — opens PRs |
+
+Trivy is non-blocking for the same reason as OSV-Scanner, one layer down: a CVE
+published in a base image is not a regression introduced by the merge that
+happens to run next, and making every historical CVE a deployment blocker is
+how a team learns to skip the deployment gate. Remediation is moving the base
+image. The deployment gates that *are* blocking — digest ownership/pinning,
+non-root runtime, migration success, readiness, the synthetic suite — all have
+something proving they can fail.
 
 OSV-Scanner is deliberately non-blocking: a CVE published in a transitive
 dependency is not a regression introduced by the pull request that happens to

@@ -1,0 +1,29 @@
+spring:
+  application:
+    name: testinbox-migrator
+  main:
+    web-application-type: none
+    banner-mode: "off"
+  datasource:
+    # Defaults are the local compose stack, for running the migrator by hand
+    # against it. A deployment always supplies all three; there is no staging
+    # profile here because the migrator has exactly one input and no traffic
+    # surface to misconfigure — a wrong URL fails on connect, loudly.
+    url: ${TESTINBOX_DB_URL:jdbc:postgresql://localhost:5432/testinbox}
+    username: ${TESTINBOX_DB_USER:testinbox}
+    password: ${TESTINBOX_DB_PASSWORD:testinbox}
+    hikari:
+      # One short-lived connection is all a one-shot job needs.
+      maximum-pool-size: 2
+  flyway:
+    enabled: true
+    # Explicitly OFF. Baselining would let the migrator adopt a non-empty
+    # database it did not create — silently marking migrations as applied that
+    # never ran. A database this migrator has not built from V1 should fail
+    # loudly and be looked at, not be assumed compatible.
+    baseline-on-migrate: false
+
+logging:
+  level:
+    root: INFO
+    org.flywaydb: INFO

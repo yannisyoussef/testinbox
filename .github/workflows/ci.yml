@@ -35,7 +35,7 @@ jobs:
         run: ./scripts/openapi-breaking-check.sh /tmp/base-openapi.yaml backend/api/contract/openapi.yaml
 
   static-analysis:
-    name: Static analysis (Detekt, secret scan)
+    name: Static analysis (Detekt, deployment gates, secret scan)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -52,6 +52,17 @@ jobs:
       - name: Detekt (JVM SDK)
         working-directory: sdk/kotlin
         run: ./gradlew detekt
+      # Deployment gates are only gates if something proves they can fail; both
+      # of these are negative-test suites (docs/quality/strategy.md).
+      - name: Self-test the deployment gates (digest validation, deploy preflight)
+        run: |
+          ./scripts/validate-image-digest.test.sh
+          ./scripts/deploy-preflight.test.sh
+      - name: Shell syntax of the deployment scripts
+        run: |
+          for script in scripts/*.sh deploy/staging/*.sh; do
+            bash -n "$script" || { echo "::error::$script has a syntax error"; exit 1; }
+          done
       # Working-tree scan: the current state is what a gate can act on. A secret
       # already committed and removed needs rotation, not a red build.
       - name: Secret scan (gitleaks)

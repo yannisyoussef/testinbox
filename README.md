@@ -39,6 +39,7 @@ val verificationUrl = message.links.first().href
 | SDK design and package distribution | [`docs/sdk/`](docs/sdk/) |
 | Threat model and abuse prevention | [`docs/security/`](docs/security/), [`SECURITY.md`](SECURITY.md) |
 | Testing/quality strategy | [`docs/quality/`](docs/quality/) |
+| Deployment, staging, release and rollback | [`docs/dev/deployment.md`](docs/dev/deployment.md), [`docs/dev/staging.md`](docs/dev/staging.md), [`docs/dev/release-process.md`](docs/dev/release-process.md), [`docs/dev/rollback.md`](docs/dev/rollback.md) |
 | Architecture decision records | [`docs/adr/`](docs/adr/README.md) |
 | Contribution and repo conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
@@ -54,11 +55,18 @@ backend/            # Kotlin/Spring Boot modular monolith (Gradle multi-module)
   persistence/       # Postgres adapter implementing repository ports (+ Flyway)
   storage/           # S3/MinIO object storage adapter
   notification/      # Postgres LISTEN/NOTIFY wait fan-out adapter (ADR-020)
+  observability/     # Micrometer metric adapters
+  migrator/          # One-shot Flyway executor; the sole migration path (ADR-029)
   architecture/      # ArchUnit dependency-rule tests
   e2e/               # Black-box acceptance: SMTP + REST + Karate + both SDKs
 sdk/
   kotlin/            # email.testinbox:testinbox-client (JVM, Java 17 baseline)
   typescript/        # @testinbox/client (npm, Node >= 20)
 web/                 # Next.js inspection UI (sandboxed HTML preview, ADR-011)
+deploy/
+  docker/            # Production-grade container definitions (ADR-028)
+  staging/           # Staging topology: compose, nginx edge, deploy script
+  synthetic/         # Post-deployment verification driven by the public SDK
+scripts/             # CI gates and their self-tests; the staging rehearsal
 docs/                # this documentation set
 ```

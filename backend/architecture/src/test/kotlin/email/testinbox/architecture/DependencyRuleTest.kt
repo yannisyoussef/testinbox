@@ -114,19 +114,74 @@ class DependencyRuleTest {
 
     @Test
     fun `entry-point adapters do not depend on each other`() {
+        val entryPoints = listOf("email.testinbox.api..", "email.testinbox.ingestion..", "email.testinbox.migrator..")
+        for (entryPoint in entryPoints) {
+            val others = entryPoints.filterNot { it == entryPoint }.toTypedArray()
+            noClasses()
+                .that()
+                .resideInAPackage(entryPoint)
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(*others)
+                .because("each deployable is independently deployable (ADR-001, ADR-029)")
+                .check(allClasses)
+        }
+    }
+
+    @Test
+    fun `the migration executor knows nothing but Flyway and its own configuration (ADR-029)`() {
+        // The migrator exists to fail for exactly one reason. It carries the
+        // persistence module's SQL resources at runtime and must not compile
+        // against a single TestInbox class: a migrator that could reach the
+        // domain would eventually be asked to seed, backfill or fix data, and
+        // then the one deployment step that cannot be rolled back would have
+        // application logic in it.
         noClasses()
             .that()
-            .resideInAPackage("email.testinbox.api..")
+            .resideInAPackage("email.testinbox.migrator..")
             .should()
             .dependOnClassesThat()
-            .resideInAPackage("email.testinbox.ingestion..")
+            .resideInAnyPackage(
+                "email.testinbox.domain..",
+                "email.testinbox.application..",
+                "email.testinbox.persistence..",
+                "email.testinbox.storage..",
+                "email.testinbox.notification..",
+                "email.testinbox.observability..",
+            ).check(allClasses)
+    }
+
+    @Test
+    fun `the migration history is read by exactly one adapter (ADR-029)`() {
+        // The port may only be implemented where the system of record lives. A
+        // second implementation — an entry point reading flyway_schema_history
+        // for itself — is how the two deployables start disagreeing about
+        // whether the environment is safe to serve.
+        classes()
+            .that()
+            .implement(email.testinbox.application.deployment.SchemaHistory::class.java)
+            .should()
+            .resideInAPackage("email.testinbox.persistence..")
+            .because("the schema history is a persistence concern (ADR-024, ADR-029 §4)")
             .check(allClasses)
+    }
+
+    @Test
+    fun `entry points consume the schema verdict, never the raw versions (ADR-029)`() {
+        // SchemaVersion and AppliedSchema are the inputs to the comparison, and
+        // an adapter that holds them is an adapter about to redo it. Entry
+        // points get SchemaStatus — already decided, already rendered — so
+        // this rule fails the moment a second copy of the policy appears.
         noClasses()
             .that()
-            .resideInAPackage("email.testinbox.ingestion..")
+            .resideInAnyPackage("email.testinbox.api..", "email.testinbox.ingestion..")
             .should()
             .dependOnClassesThat()
-            .resideInAPackage("email.testinbox.api..")
+            .haveFullyQualifiedName(email.testinbox.application.deployment.SchemaVersion::class.java.name)
+            .orShould()
+            .dependOnClassesThat()
+            .haveFullyQualifiedName(email.testinbox.application.deployment.AppliedSchema::class.java.name)
+            .because("schema compatibility is decided once, in the application layer (ADR-024, ADR-029 §4)")
             .check(allClasses)
     }
 

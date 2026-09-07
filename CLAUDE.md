@@ -81,6 +81,34 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
    query workspace-scoped; cross-tenant read is a security bug. Cross-tenant
    lookups return `404`, not `403`.
 
+## Deployment (ADR-028/029; target still undecided — ADR-030 is Proposed)
+
+- **Build once, promote many.** Images are built only by
+  `.github/workflows/build-images.yml`; the **digest** is the deployment
+  identity. Never deploy by tag, never publish `latest`, never rebuild per
+  environment. `scripts/validate-image-digest.sh` enforces it.
+- **Exactly one migration executor**: the `migrator` deployable. Deployed
+  applications set `spring.flyway.enabled: false` and refuse *readiness* until
+  the schema matches what their own artifact bundles. A schema **ahead** of the
+  artifact is healthy — that is a rolled-back artifact, and forbidding it would
+  make rollback impossible after any migration.
+- Migrations are **expand-only**. A migration that drops/renames/narrows makes
+  artifact rollback unsafe and must say so in the PR (`docs/dev/rollback.md`).
+- **The proxy read timeout must exceed `testinbox.wait-window-cap` by ≥30s**, or
+  a legitimate `200 {status: TIMEOUT}` becomes a 504. nginx's default is exactly
+  60s — the same as the cap. Both sides read one variable and `DeploymentSafety`
+  refuses to start on a mismatch.
+- LISTEN needs a **session-scoped** connection. A transaction-mode pooler
+  accepts `LISTEN` and silently never delivers; the symptom is latency, not an
+  error. Never put the database behind one.
+- Edge limits (nginx) are infrastructure ceilings and are **not** the ADR-027
+  tenant policy — that stays in the application layer where it also covers the
+  ingestion gateway.
+- A deployment is not successful because containers are running: the
+  post-deployment synthetic suite (`deploy/synthetic/`) is the gate.
+  `scripts/staging-rehearsal.sh` runs the whole thing locally.
+- No public MX record, no production deployment, no `master` auto-deploy.
+
 ## Coding conventions
 
 - Kotlin, 4-space indent, formatting enforced by Spotless/ktlint

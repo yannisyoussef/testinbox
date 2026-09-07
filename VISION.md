@@ -112,4 +112,8 @@ they are not resolvable by further internal analysis alone.
    justifies it for MVP.
 7. **Target initial deployment environment** (self-hosted/on-prem vs. a
    TestInbox-operated cloud service vs. both) — affects DevOps/SRE priorities
-   and multi-tenancy urgency.
+   and multi-tenancy urgency. Now scoped by
+   [ADR-030](docs/adr/0030-staging-deployment-target.md), which states the
+   minimum capabilities a target must provide, three concrete options with
+   trade-offs, and a recommendation. The deployment pipeline itself is built
+   and verified; only the choice of host is outstanding.
