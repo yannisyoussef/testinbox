@@ -52,6 +52,7 @@ class ReceiveInboundDeliveryTest {
             override fun parse(raw: ByteArray): MimeParseResult = parseResult
         }
     private lateinit var useCase: ReceiveInboundDelivery
+    private val metrics = RecordingInboundMetrics()
     private lateinit var inbox: Inbox
     private val rateLimiter = FakeRateLimiter()
 
@@ -61,7 +62,8 @@ class ReceiveInboundDeliveryTest {
         messages = InMemoryMessageRepository()
         blobs = InMemoryBlobStore()
         clock = MutableClock(Instant.parse("2026-08-29T12:00:00Z"))
-        useCase = ReceiveInboundDelivery(inboxes, messages, blobs, parser, RollbackTx(messages), rateLimiter, clock)
+        useCase =
+            ReceiveInboundDelivery(inboxes, messages, blobs, parser, RollbackTx(messages), rateLimiter, clock, inboundMetrics = metrics)
         inbox = provisionInbox("test@testinbox.local")
     }
 
@@ -281,5 +283,23 @@ class ReceiveInboundDeliveryTest {
         attachment.fileName shouldBe "invoice.pdf"
         attachment.objectKey.contains("/attachments/") shouldBe true
         blobs.get(attachment.objectKey)?.toList() shouldBe listOf<Byte>(1, 2)
+    }
+
+    @Test
+    fun `every inbound outcome reaches a counter, and the unknown one is the only signal there is`() {
+        // ADR-025 keeps the SMTP reply uniform for an unknown recipient, so
+        // nothing downstream can tell that mail was discarded. These counters
+        // are the whole signal — and until this increment the wiring that
+        // supplies them was missing in the deployed gateway, with every
+        // metrics test still green. Hence a test at the call site.
+        useCase.execute(command())
+        metrics.received shouldBe listOf(ParseStatus.OK)
+        metrics.parsed shouldBe listOf(ParseStatus.OK)
+        metrics.unknownRecipients.get() shouldBe 0
+
+        useCase.execute(command(recipients = listOf("nobody-here@testinbox.local")))
+        metrics.unknownRecipients.get() shouldBe 1
+        // ...and nothing was stored for it.
+        metrics.received shouldBe listOf(ParseStatus.OK)
     }
 }

@@ -1,6 +1,7 @@
 package email.testinbox.notification
 
 import email.testinbox.application.port.NOTIFICATION_CHANNEL
+import email.testinbox.application.port.NotifierMetrics
 import email.testinbox.application.port.WakeOutcome
 import email.testinbox.domain.InboxId
 import io.kotest.matchers.longs.shouldBeGreaterThan
@@ -29,6 +30,33 @@ import java.util.concurrent.TimeUnit
 class PgListenNotifierTest {
     private lateinit var postgres: PostgreSQLContainer<*>
     private lateinit var notifier: PgListenNotifier
+    private val metrics = RecordingNotifierMetrics()
+
+    /**
+     * Records what the adapter actually reports, so the degraded signal is
+     * proven against a real killed connection rather than by calling the
+     * metrics object directly (TI-DEPLOY-002 §11). The unit-level behaviour of
+     * the gauge lives in `NotifierMetricsTest`; what is proven here is that the
+     * transport drives it.
+     */
+    private class RecordingNotifierMetrics : NotifierMetrics {
+        @Volatile var degraded = true
+        val reconnects =
+            java.util.concurrent.atomic
+                .AtomicInteger(0)
+
+        override fun listening() {
+            degraded = false
+        }
+
+        override fun degraded() {
+            degraded = true
+        }
+
+        override fun reconnected() {
+            reconnects.incrementAndGet()
+        }
+    }
 
     @BeforeAll
     fun setUp() {
@@ -42,6 +70,7 @@ class PgListenNotifierTest {
                     degradedInterval = Duration.ofMillis(300),
                     reconnectBackoff = Duration.ofMillis(100),
                 ),
+                metrics,
             )
         notifier.start()
         await().atMost(Duration.ofSeconds(10)).until { notifier.health().listening }
@@ -63,6 +92,13 @@ class PgListenNotifierTest {
                 it.executeQuery()
             }
         }
+    }
+
+    @Test
+    fun `a live LISTEN connection reports not degraded`() {
+        // The healthy half of the pair asserted in the reconnect test below.
+        // A gauge that only ever reported one state would be decoration.
+        metrics.degraded shouldBe false
     }
 
     @Test
@@ -123,6 +159,15 @@ class PgListenNotifierTest {
         await().atMost(Duration.ofSeconds(10)).until { notifier.health().listening }
         notifier.health().epoch shouldBeGreaterThan epochBefore
         notifier.health().reconnectCount shouldBeGreaterThan 0L
+
+        // The whole point of the degraded gauge: this outage was invisible to
+        // callers — the waiter above was still woken and still got its answer —
+        // so without a metric driven by the transport itself, nothing would
+        // distinguish this from a healthy system running slightly slower
+        // (ADR-020, ADR-030 capability 2).
+        metrics.reconnects.get().toLong() shouldBeGreaterThan 0L
+        // ...and it returns to healthy rather than latching.
+        await().atMost(Duration.ofSeconds(10)).until { !metrics.degraded }
 
         // And after recovery, notifications flow again end-to-end.
         val recovered = InboxId(UUID.randomUUID())

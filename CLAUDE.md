@@ -81,7 +81,7 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
    query workspace-scoped; cross-tenant read is a security bug. Cross-tenant
    lookups return `404`, not `403`.
 
-## Deployment (ADR-028/029; target still undecided — ADR-030 is Proposed)
+## Deployment (ADR-028/029/030 — staging is LIVE)
 
 - **Build once, promote many.** Images are built only by
   `.github/workflows/build-images.yml`; the **digest** is the deployment
@@ -107,6 +107,25 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
 - A deployment is not successful because containers are running: the
   post-deployment synthetic suite (`deploy/synthetic/`) is the gate.
   `scripts/staging-rehearsal.sh` runs the whole thing locally.
+- **GitHub does not deploy.** It builds, proves, and hands a digest set to
+  GitLab `infinity/infinity-core`, which reconciles the host. The only
+  cross-system secret GitHub holds is `GITLAB_TRIGGER_TOKEN`. Never reintroduce
+  a host credential here, and never let a workflow claim a deployment
+  succeeded because the trigger returned 2xx — the verdict lives in Ops.
+- **The deployed edge is Cloudflare → Traefik, not our nginx.** The nginx
+  topology in `deploy/staging/` is the self-hosted reference and the PR
+  rehearsal; both are kept. Tests must assert the *invariant*, not one edge's
+  mechanism (`deploy/synthetic/src/edge.mjs` is the worked example).
+- **Cloudflare caps a request at ~100s**, so `TESTINBOX_WAIT_WINDOW_CAP` must
+  not exceed 70s on staging. It is 60s. Raising it is an edge decision, not an
+  environment variable.
+- Migrations are gated by `scripts/check-migration-safety.sh` and owned in
+  `.github/CODEOWNERS`; a destructive one must declare
+  `-- testinbox:rollback-unsafe:` and then cannot be promoted silently.
+- Metric labels come from closed enums only — never a workspace/inbox/message
+  id, key, address or correlation id. Watch
+  `testinbox_wait_listen_degraded_polling`: it is the only signal that
+  LISTEN/NOTIFY has failed, because everything else stays green.
 - No public MX record, no production deployment, no `master` auto-deploy.
 
 ## Coding conventions

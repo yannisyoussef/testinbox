@@ -37,8 +37,14 @@ export const config = Object.freeze({
   waitWindowSeconds: optionalInt("TESTINBOX_WAIT_WINDOW_SECONDS", 60),
   /** How long a wait is left parked before the message is delivered (§18). */
   parkedWaitSeconds: optionalInt("TESTINBOX_PARKED_WAIT_SECONDS", 10),
-  /** Plaintext origin, when the environment has one — used to prove it only redirects. */
-  httpBaseUrl: process.env.TESTINBOX_HTTP_BASE_URL?.trim() || undefined,
+  /** Plaintext origin — proven to only ever redirect. */
+  httpBaseUrl: required("TESTINBOX_HTTP_BASE_URL"),
+  /**
+   * True when the edge is this repository's own nginx (the CI rehearsal),
+   * which lets the unknown-Host assertion demand the stronger `return 444`
+   * behaviour instead of merely a refusal.
+   */
+  edgeIsReference: process.env.TESTINBOX_EDGE === "nginx-reference",
 });
 
 /**

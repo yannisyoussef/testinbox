@@ -30,7 +30,7 @@ REGISTRY_NAME="testinbox-rehearsal-registry"
 HTTPS_PORT="${REHEARSAL_HTTPS_PORT:-8443}"
 # Raised deliberately when tests are added; a silently shrinking gate is the
 # failure this number exists to catch.
-SYNTHETIC_MINIMUM=11
+SYNTHETIC_MINIMUM=13
 HTTP_PORT="${REHEARSAL_HTTP_PORT:-8080}"
 SMTP_PORT="${REHEARSAL_SMTP_PORT:-2525}"
 KEEP=false
@@ -188,6 +188,28 @@ case "$READINESS" in
   *) echo "the API is not holding a LISTEN connection (ADR-020); wait latency would silently degrade" >&2; exit 1 ;;
 esac
 
+# And that Ops can actually see it. A metric that exists in a unit test but is
+# not on the scrape endpoint of the running container is not observability.
+SCRAPE=$("${COMPOSE[@]}" exec -T api wget -q -O - http://127.0.0.1:9090/actuator/prometheus)
+for metric in testinbox_build testinbox_wait_listen_degraded_polling testinbox_wait_requests_active; do
+  case "$SCRAPE" in
+    *"$metric"*) echo "ok — $metric is on the scrape endpoint" ;;
+    *) echo "$metric is missing from /actuator/prometheus" >&2; exit 1 ;;
+  esac
+done
+# The degraded gauge must read healthy on a stack whose LISTEN connection is up
+# — a gauge stuck at 1 would alert forever and be muted within a week.
+# Matched by regex, not substring: the exposition format renders the value as
+# `0`, `0.0` or `0.000000` depending on the registry, and pinning one spelling
+# would make this fail for a formatting reason and look like an outage.
+DEGRADED_LINE=$(printf '%s\n' "$SCRAPE" | grep -E '^testinbox_wait_listen_degraded_polling(\{[^}]*\})?[[:space:]]' | head -1)
+if printf '%s' "$DEGRADED_LINE" | grep -Eq '[[:space:]]0(\.0*)?$'; then
+  echo "ok — degraded-polling gauge reads healthy ($DEGRADED_LINE)"
+else
+  echo "testinbox_wait_listen_degraded_polling is not 0 on a healthy stack: '$DEGRADED_LINE'" >&2
+  exit 1
+fi
+
 step "7/8 build the public SDK this commit ships, for the synthetic suite"
 ( cd "$REPO_ROOT/sdk/typescript" && npm ci --silent && npm run build --silent )
 # `npm ci` needs the SDK's dist/ to already exist: the synthetic package
@@ -208,6 +230,7 @@ TESTINBOX_API_KEY="$TESTINBOX_BOOTSTRAP_API_KEY" \
 TESTINBOX_SMTP_HOST=127.0.0.1 \
 TESTINBOX_SMTP_PORT="$SMTP_PORT" \
 TESTINBOX_WAIT_WINDOW_SECONDS=60 \
+TESTINBOX_EDGE=nginx-reference \
   npm run test:junit
 
 # The synthetic suite is a blocking deployment gate, so it gets the same

@@ -44,6 +44,7 @@ class IngestionDeploymentSafetyCheck(
                         bootstrapApiKey = null,
                         waitWindowCap = properties.waitWindowCap,
                         proxyReadTimeout = properties.deployment.proxyReadTimeout,
+                        edgeRequestCeiling = properties.deployment.edgeRequestCeiling,
                         limitsEnabled = properties.limits.enabled,
                     ),
                 )

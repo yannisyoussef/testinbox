@@ -225,21 +225,24 @@ jobs:
           subject-digest: ${{ steps.web.outputs.digest }}
           push-to-registry: true
 
-      # Informational, consistent with the OSV-Scanner posture in
-      # docs/quality/strategy.md: a CVE published in a base image is not a
-      # regression introduced by the merge that happens to run next, and
-      # blocking every deployment on the CVE backlog is the noisy-gate failure
-      # mode that gets scanners switched off. Findings are visible here and are
-      # remediated by moving the base image.
+      # Informational on this path by construction: `deploy-staging.yml` never
+      # sets `enforce_vulnerability_policy`. The blocking half runs on the
+      # promotion path, against the digests that were actually published —
+      # see `release-candidate.yml`. Policy and its self-tests live in
+      # `scripts/scan-images.sh`.
       - name: Container vulnerability scan (informational)
         if: inputs.push
         continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.REGISTRY }}/testinbox-api@${{ steps.api.outputs.digest }}
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
+        env:
+          TRIVY_VERSION: 0.68.0
+        run: |
+          set -euo pipefail
+          ./scripts/install-trivy.sh
+          ENFORCE=false TRIVY_BIN=/tmp/trivy ./scripts/scan-images.sh \
+            "${REGISTRY}/testinbox-api@${{ steps.api.outputs.digest }}" \
+            "${REGISTRY}/testinbox-ingestion@${{ steps.ingestion.outputs.digest }}" \
+            "${REGISTRY}/testinbox-migrator@${{ steps.migrator.outputs.digest }}" \
+            "${REGISTRY}/testinbox-web@${{ steps.web.outputs.digest }}"
 
       - name: Record digests
         if: inputs.push

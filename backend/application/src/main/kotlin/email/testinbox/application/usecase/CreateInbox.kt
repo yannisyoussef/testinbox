@@ -2,6 +2,7 @@ package email.testinbox.application.usecase
 
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.ExactAddressReservations
+import email.testinbox.application.port.InboxMetrics
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
 import email.testinbox.application.port.LimitMetrics
@@ -40,6 +41,7 @@ class CreateInbox(
     private val clock: Clock,
     private val config: TestInboxConfig,
     private val metrics: LimitMetrics = LimitMetrics.NOOP,
+    private val inboxMetrics: InboxMetrics = InboxMetrics.NOOP,
 ) {
     data class Command(
         val workspaceId: WorkspaceId,
@@ -141,6 +143,7 @@ class CreateInbox(
                 newInbox(command, now, ttl, AddressMode.GENERATED, GeneratedAddress.localPart(command.aliasHint))
             when (inboxes.insert(inbox)) {
                 InsertInboxOutcome.Inserted -> {
+                    inboxMetrics.inboxCreated(AddressMode.GENERATED)
                     return Result.Created(inbox)
                 }
 
@@ -194,8 +197,14 @@ class CreateInbox(
 
                 ReserveOutcome.Reserved -> {
                     when (inboxes.insert(inbox)) {
-                        InsertInboxOutcome.Inserted -> Result.Created(inbox)
-                        InsertInboxOutcome.AddressTaken -> Result.AddressConflict(localPart, null)
+                        InsertInboxOutcome.Inserted -> {
+                            inboxMetrics.inboxCreated(AddressMode.EXACT)
+                            Result.Created(inbox)
+                        }
+
+                        InsertInboxOutcome.AddressTaken -> {
+                            Result.AddressConflict(localPart, null)
+                        }
                     }
                 }
             }

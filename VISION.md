@@ -110,10 +110,11 @@ they are not resolvable by further internal analysis alone.
 6. **Whether a `TestRun` entity is a real product requirement** or an
    assumption inherited from the brief — no concrete use case currently
    justifies it for MVP.
-7. **Target initial deployment environment** (self-hosted/on-prem vs. a
-   TestInbox-operated cloud service vs. both) — affects DevOps/SRE priorities
-   and multi-tenancy urgency. Now scoped by
-   [ADR-030](docs/adr/0030-staging-deployment-target.md), which states the
-   minimum capabilities a target must provide, three concrete options with
-   trade-offs, and a recommendation. The deployment pipeline itself is built
-   and verified; only the choice of host is outstanding.
+7. ~~**Target initial deployment environment**~~ — **DECIDED** for staging by
+   [ADR-030](docs/adr/0030-staging-deployment-target.md) (Accepted): the
+   existing Infinity shared dev/staging host, behind Cloudflare and the
+   estate's Traefik, delivered pull-based through GitLab `infinity-core`.
+   Persistent staging is live. **Production remains undecided** beyond the
+   stated intention to target OVH, and needs its own increment — deciding
+   where staging runs did not decide where production runs, and it did not
+   decide the inbound mail provider (item 3 / ADR-004 is still open).

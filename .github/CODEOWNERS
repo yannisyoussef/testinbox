@@ -1,0 +1,23 @@
+# Code owners — review that a CI gate cannot substitute for.
+#
+# Flyway migrations are listed because artifact rollback (ADR-028/029) depends
+# on every migration being expand-only, and `scripts/check-migration-safety.sh`
+# can only catch the unambiguous breaks. The judgement calls it cannot make —
+# a constraint tightened rather than widened, a backfill that assumes the new
+# code is already deployed, a change that is technically additive but
+# semantically incompatible — are exactly what a human review is for.
+/backend/persistence/src/main/resources/db/migration/ @yannisyoussef
+
+# The deployment contract with the Infinity Ops platform: what GitHub sends,
+# what it is allowed to hold, and what a green run is permitted to claim
+# (ADR-030). A change here can quietly reintroduce a host credential or turn a
+# handoff back into a false deployment success.
+/.github/workflows/                                   @yannisyoussef
+/scripts/gitlab-handoff.sh                            @yannisyoussef
+/scripts/check-migration-safety.sh                    @yannisyoussef
+/scripts/validate-image-digest.sh                     @yannisyoussef
+/deploy/                                              @yannisyoussef
+
+# Accepted ADRs are authoritative (CLAUDE.md); they are amended by new ADRs,
+# not edited in passing.
+/docs/adr/                                            @yannisyoussef

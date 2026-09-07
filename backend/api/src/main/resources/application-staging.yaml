@@ -61,6 +61,11 @@ testinbox:
     # Declared, not probed: the point is to refuse a deployment whose ingress
     # would abort a legitimate long poll (ADR-020, docs/dev/staging.md).
     proxy-read-timeout: ${TESTINBOX_PROXY_READ_TIMEOUT}
+    # Hard ceiling the environment's ingress imposes on ANY request. Cloudflare
+    # caps at ~100s on the deployed staging path (ADR-030) and no application
+    # setting raises it, so the wait window must fit underneath. Unset where the
+    # ingress is ours and imposes no ceiling of its own.
+    edge-request-ceiling: ${TESTINBOX_EDGE_REQUEST_CEILING:}
     git-sha: ${TESTINBOX_GIT_SHA:unknown}
     image-digest: ${TESTINBOX_IMAGE_DIGEST:unknown}
 

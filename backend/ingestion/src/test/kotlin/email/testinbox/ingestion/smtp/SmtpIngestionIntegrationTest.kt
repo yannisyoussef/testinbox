@@ -2,8 +2,11 @@ package email.testinbox.ingestion.smtp
 
 import email.testinbox.application.port.AppendOutcome
 import email.testinbox.application.port.BlobStore
+import email.testinbox.application.port.InboundMetrics
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.MessageRepository
+import email.testinbox.application.port.SmtpMetrics
+import email.testinbox.application.port.SmtpRejection
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
@@ -70,6 +73,56 @@ class SmtpIngestionIntegrationTest {
         @Primary
         fun faultInjectingMessages(delegate: JdbcMessageRepository): FaultInjectingMessageRepository =
             FaultInjectingMessageRepository(delegate)
+
+        /**
+         * Recording metric ports, replacing the Micrometer ones so this test can
+         * assert that the production CALL SITES fire — through the real
+         * `IngestionWiring`, over a real socket.
+         *
+         * `:observability` proves a meter moves when its port method is called;
+         * nothing there proves anything calls it, and the `= NOOP` defaults on
+         * every port make a missing collaborator silent. That is not a
+         * hypothetical failure: this deployable shipped with `LimitMetrics`
+         * absent from `ReceiveInboundDelivery`, so the ADR-027 inbound counters
+         * never moved in production while the metrics suite stayed green.
+         */
+        @Bean
+        @Primary
+        fun recordingSmtpMetrics(): RecordingSmtpMetrics = RecordingSmtpMetrics()
+
+        @Bean
+        @Primary
+        fun recordingInboundMetrics(): RecordingInboundMetrics = RecordingInboundMetrics()
+    }
+
+    class RecordingSmtpMetrics : SmtpMetrics {
+        val accepted =
+            java.util.concurrent.atomic
+                .AtomicInteger(0)
+        val rejections = java.util.concurrent.CopyOnWriteArrayList<SmtpRejection>()
+
+        override fun accepted() {
+            accepted.incrementAndGet()
+        }
+
+        override fun rejected(reason: SmtpRejection) {
+            rejections += reason
+        }
+    }
+
+    class RecordingInboundMetrics : InboundMetrics {
+        val received = java.util.concurrent.CopyOnWriteArrayList<ParseStatus>()
+        val unknownRecipients =
+            java.util.concurrent.atomic
+                .AtomicInteger(0)
+
+        override fun messageReceived(parseStatus: ParseStatus) {
+            received += parseStatus
+        }
+
+        override fun unknownRecipientDiscarded() {
+            unknownRecipients.incrementAndGet()
+        }
     }
 
     companion object {
@@ -115,6 +168,10 @@ class SmtpIngestionIntegrationTest {
     @Autowired lateinit var blobs: BlobStore
 
     @Autowired lateinit var jdbc: JdbcClient
+
+    @Autowired lateinit var smtpMetrics: RecordingSmtpMetrics
+
+    @Autowired lateinit var inboundMetrics: RecordingInboundMetrics
 
     @AfterEach
     fun clearFaultInjection() {
@@ -445,5 +502,48 @@ class SmtpIngestionIntegrationTest {
             smtp.send("a@b.c", listOf(inbox.address), corpus("simple-text.eml")).code shouldBe 250
         }
         messages.listVisible(inbox.id).shouldBeEmpty()
+    }
+
+    @Test
+    fun `the production call sites fire — accepted, stored, and the invisible discard`() {
+        // Everything here goes through the real SMTP socket and the real
+        // IngestionWiring, so it fails if a metric call site is deleted OR if a
+        // metrics collaborator stops being wired — the two failures the
+        // :observability suite structurally cannot see.
+        val acceptedBefore = smtpMetrics.accepted.get()
+        val storedBefore = inboundMetrics.received.size
+        val discardedBefore = inboundMetrics.unknownRecipients.get()
+
+        val inbox = provisionInbox()
+        client().use { smtp ->
+            smtp.send("no-reply@example.com", listOf(inbox.address), corpus("simple-text.eml")).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            inboundMetrics.received.size shouldBe storedBefore + 1
+        }
+        smtpMetrics.accepted.get() shouldBe acceptedBefore + 1
+        inboundMetrics.received.last() shouldBe ParseStatus.OK
+        inboundMetrics.unknownRecipients.get() shouldBe discardedBefore
+
+        // ADR-025: an unknown recipient gets the SAME uniform 250, so the
+        // accept counter moves identically and only the discard counter tells
+        // anyone the mail went nowhere. That asymmetry is the reason this
+        // counter exists at all.
+        val ghost = "ghost-${UUID.randomUUID().toString().take(8)}@testinbox.local"
+        client().use { smtp ->
+            smtp.send("no-reply@example.com", listOf(ghost), corpus("simple-text.eml")).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            inboundMetrics.unknownRecipients.get() shouldBe discardedBefore + 1
+        }
+        smtpMetrics.accepted.get() shouldBe acceptedBefore + 2
+        inboundMetrics.received.size shouldBe storedBefore + 1
+
+        // A recipient outside our mail domain is refused at RCPT, by reason —
+        // a syntax/domain check, never an existence check (ADR-025).
+        client().use { smtp ->
+            runCatching { smtp.send("no-reply@example.com", listOf("someone@example.com"), corpus("simple-text.eml")) }
+        }
+        smtpMetrics.rejections shouldContain SmtpRejection.INVALID_RECIPIENT
     }
 }

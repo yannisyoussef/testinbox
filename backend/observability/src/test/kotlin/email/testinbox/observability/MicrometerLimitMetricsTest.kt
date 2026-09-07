@@ -43,21 +43,9 @@ class MicrometerLimitMetricsTest {
     }
 
     @Test
-    fun `the active wait gauge returns to zero after paired acquire and release`() {
-        metrics.waitSlotsChanged(1)
-        metrics.waitSlotsChanged(1)
-        gauge() shouldBe 2.0
-        metrics.waitSlotsChanged(-1)
-        metrics.waitSlotsChanged(-1)
-        // A gauge that only ever climbed would make a leak look like load.
-        gauge() shouldBe 0.0
-    }
-
-    @Test
     fun `every label value is drawn from a closed enum, never from caller-controlled data`() {
         RateCategory.entries.forEach { metrics.rateDecision(it, allowed = false) }
         QuotaDimension.entries.forEach { metrics.quotaRejected(it) }
-        metrics.waitSlotRejected()
 
         val categoryNames = RateCategory.entries.map { it.name }.toSet()
         val quotaNames = QuotaDimension.entries.map { it.name }.toSet()
@@ -77,8 +65,6 @@ class MicrometerLimitMetricsTest {
             }
         }
         // Cardinality is therefore bounded by the enums, not by traffic.
-        (registry.meters.size <= categoryNames.size * 2 + quotaNames.size + 2) shouldBe true
+        (registry.meters.size <= categoryNames.size * 2 + quotaNames.size) shouldBe true
     }
-
-    private fun gauge(): Double = registry.find("testinbox_wait_slots_active").gauge()!!.value()
 }

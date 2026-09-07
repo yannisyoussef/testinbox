@@ -1,0 +1,130 @@
+name: Release candidate
+
+# The production-promotion gates. They gate; they do NOT deploy — there is no
+# production deployment in this repository, and this workflow does not create
+# one (it never builds, never pushes, and never contacts Ops).
+#
+# It exists because two policies are stricter on the promotion path than on
+# develop, and without something running here the stricter halves would be
+# paragraphs nobody enforces:
+#
+#   * ADR-028 §6 (amended) — HIGH/CRITICAL vulnerabilities WITH a fix block a
+#     release, while the same findings are informational on develop.
+#   * ADR-029 §6 — a migration that declares itself rollback-breaking is
+#     allowed on develop, where it is visible and deliberate, but must not
+#     reach a release without explicit handling.
+#
+# `master` is the production-approved candidate. Reaching it is a human
+# decision (docs/dev/release-process.md); this makes two of its preconditions
+# machine-checked.
+on:
+  # Deliberately only on the PROMOTION PULL REQUEST. That is when the decision
+  # is made, and it is also the only event where the head commit is the develop
+  # tip whose images were actually published — a push to master gives a merge
+  # commit that no artifact in GHCR carries.
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  vulnerability-policy:
+    name: Promotion vulnerability policy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Read-only: this job pulls the already-published artifacts. It never
+      # builds and never pushes (ADR-028 build-once/promote-many — the promoted
+      # bytes must be the bytes that were tested, not a fresh rebuild that
+      # would resolve different base layers).
+      packages: read
+    env:
+      REGISTRY: ghcr.io/${{ github.repository_owner }}
+      # The develop tip being promoted, not the merge commit: the images were
+      # tagged with this SHA when they were pushed.
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Self-test the policy
+        run: ./scripts/scan-images.test.sh
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the promoted digests
+        id: digests
+        run: |
+          set -euo pipefail
+          refs=()
+          for image in api ingestion migrator web; do
+            tag="${REGISTRY}/testinbox-${image}:${CANDIDATE_SHA}"
+            # Resolve the tag to the digest it currently points at, then scan
+            # the digest. A tag can be repointed; the digest is the artifact.
+            digest="$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}')" || {
+              echo "::error::no published image for testinbox-${image} at ${CANDIDATE_SHA}."
+              echo "::error::Promotion scans the artifacts develop published; this commit has none."
+              exit 1
+            }
+            refs+=("${REGISTRY}/testinbox-${image}@${digest}")
+            echo "testinbox-${image} -> ${digest}"
+          done
+          ./scripts/validate-image-digest.sh "${refs[@]}"
+          printf 'refs=%s\n' "${refs[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: 0.68.0
+        run: ./scripts/install-trivy.sh
+
+      - name: Scan the promoted artifacts
+        env:
+          REFS: ${{ steps.digests.outputs.refs }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          ENFORCE=true TRIVY_BIN=/tmp/trivy ./scripts/scan-images.sh $REFS
+
+  migration-policy:
+    name: Migration rollback safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Needs history to diff the release range against master.
+          fetch-depth: 0
+      - name: Self-test the gate
+        run: ./scripts/check-migration-safety.test.sh
+      - name: Check the migrations in this release range
+        id: migrations
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Scoped to the RANGE, not the whole tree. Migrations are immutable
+          # once applied, so scanning every file forever would mean one declared
+          # rollback-unsafe migration blocks every future release permanently,
+          # with no way to acknowledge it and move on.
+          ./scripts/check-migration-safety.sh --since "$BASE_SHA"
+      - name: Apply promotion policy
+        run: |
+          case "${{ steps.migrations.outcome }}" in
+            success) echo "Migrations added in this release are expand-only; artifact rollback remains available." ;;
+            *)
+              {
+                echo "## Release blocked: migration rollback safety"
+                echo
+                echo "A migration added since \`master\` is rollback-breaking. See the gate"
+                echo "output above and \`docs/dev/release-process.md\`: a declared-unsafe"
+                echo "migration needs explicit release handling — splitting it"
+                echo "expand/contract across two releases, or accepting in writing that"
+                echo "this release cannot be rolled back by redeploying previous digests."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::migration rollback-safety gate did not pass for this release range"
+              exit 1 ;;
+          esac

@@ -1,53 +1,151 @@
 # ADR-030: Staging Deployment Target
 
-**Status:** Proposed — requires a human decision (see `VISION.md` §7)
+**Status:** Accepted (2026-09-07). Replaces the Proposed form of this ADR; the
+options analysis below is retained because it is the reasoning the decision was
+made against.
 
-> Nothing in this repository selects a hosting provider. The deployment
-> artifacts, topology, migration model, readiness contract, edge configuration
-> and synthetic verification are all provider-neutral and are exercised end to
-> end in CI against an ephemeral stack. What is *not* decided is where a
-> persistent staging environment lives. This ADR states the requirement, the
-> options and the trade-offs so that decision can be made once, deliberately.
+> Persistent staging is live at **https://staging.testinbox.email**, deployed
+> from `develop` through the Infinity Ops platform. The provider-neutral
+> topology this ADR originally proposed as Option A remains in the repository
+> and is exercised on every pull request — see "Why two topologies" below,
+> which is the one part of this decision most likely to be misread as drift.
 
 ## Context
 
-`VISION.md` lists "Target initial deployment environment (self-hosted/on-prem
-vs. a TestInbox-operated cloud service vs. both)" as a Human Decision Required
-Before Implementation, and ADR-004 defers the production inbound-mail provider
-choice (self-hosted Postfix vs. AWS SES) explicitly *until a target deployment
-environment is decided*. Picking a staging host silently would pre-empt both.
+`VISION.md` listed "Target initial deployment environment" as a Human Decision
+Required Before Implementation, and ADR-004 defers the production inbound-mail
+provider *until a deployment environment is decided*. TI-DEPLOY-001 therefore
+built everything that did not depend on the answer and stopped. This ADR
+records the answer.
 
-TI-DEPLOY-001 therefore builds everything that does not depend on the answer,
-and stops here.
+The minimum capabilities a target must provide are unchanged and are restated
+below, because they are what any future environment — including production —
+must still satisfy.
 
-### Minimum capabilities a staging target must provide
+## Decision
 
-Derived from the Accepted ADRs, not from convenience:
+Staging runs on the **existing Infinity shared dev/staging host (Contabo, US)**,
+alongside the other services on that estate rather than on a host provisioned
+for TestInbox alone.
 
-| # | Capability | Why (source) |
+```
+                     Cloudflare (proxied, TLS)
+                              │
+                       Traefik (Infinity estate ingress)
+                              │
+                 ┌────────────┴────────────┐
+                 │                         │
+          TestInbox API              TestInbox web
+                 │
+   ┌─────────────┼──────────────┐
+   │             │              │
+PostgreSQL     MinIO      ingestion (SMTP, loopback only)
+(stack-local, (stack-local,
+ direct)       scoped creds)
+```
+
+| Concern | Decision |
+|---|---|
+| HTTP ingress | Cloudflare-proxied → the estate's existing Traefik → TestInbox. The application's own nginx is **not** deployed here. |
+| Database | Stack-local PostgreSQL container, **direct session-scoped connection**. No transaction-mode pooler — capability 2 below. |
+| Object storage | Stack-local MinIO with credentials scoped to TestInbox's bucket, not root credentials. |
+| SMTP | `127.0.0.1:2525` on the staging host. Loopback only: no public SMTP, no MX. The synthetic suite runs **on the host**, which is why no tunnel or public port is needed. |
+| Observability | Prometheus scrapes the API and ingestion management ports; Loki collects logs; Uptime Kuma watches HTTPS/TLS. |
+| Continuous delivery | GitHub builds, tests and attests → GHCR immutable digests → **release handoff to GitLab `infinity/infinity-core`** → the estate's existing pull/reconcile mechanism. |
+| Production | **OVH** remains the intended production target. Production is not deployed, and this ADR does not authorise it. |
+
+### Why the CD boundary moved
+
+The Infinity estate is pull-based, so a push-based deployment from GitHub would
+have required GitHub to hold an SSH key for the staging host, plus the
+synthetic-test credential to verify afterwards. Handing an immutable digest set
+to Ops instead means the only cross-system credential GitHub holds is a GitLab
+pipeline trigger token, which can start one pipeline and do nothing else. The
+host credentials never leave the system that already owns them.
+
+The cost is that **GitHub can no longer observe the deployment outcome**. A 2xx
+from the trigger API means the release candidate was accepted, not that it was
+deployed. The workflow says exactly that, and the authoritative staging verdict
+lives in `infinity-core`. This is a real reduction in what GitHub can tell you,
+accepted deliberately in exchange for not duplicating host credentials — see
+`docs/dev/deployment.md`.
+
+### Why two topologies is not drift
+
+The repository still contains `deploy/staging/compose.yaml` and the nginx edge,
+and CI still stands the whole thing up on every pull request. That is
+deliberate, and it is not a second, stale description of the deployed system:
+
+- **They answer different questions.** The rehearsal proves the deployment
+  properties the *application* owns — that one migration job runs and is gated
+  on, that readiness reflects the database/schema/object store/`LISTEN`
+  connection, that a full 60s long poll survives a reverse proxy, that the
+  public SDK completes a real inbound workflow. Those must hold on any edge.
+  The Infinity environment proves that the *particular* estate satisfies them.
+- **It is the self-hosted reference.** TestInbox is meant to be runnable by
+  someone who is not on the Infinity estate; the nginx topology is the
+  provider-neutral answer for them, and an unexecuted reference implementation
+  rots.
+- **It gates pull requests; the Ops pipeline cannot.** The Ops deployment
+  happens after merge. Without the rehearsal, no deployment property would be
+  checked before a change lands.
+
+Where the two differ, the *invariant* is what is shared and the *mechanism* is
+not. The unknown-Host synthetic assertion is the worked example: nginx enforces
+it with `return 444` (connection dropped) and Cloudflare/Traefik with a 4xx.
+The test asserts "an unrecognised Host is not served by TestInbox" and accepts
+either, while still failing if a 4xx turns out to have been produced by the
+application (`deploy/synthetic/src/edge.mjs`).
+
+### Edge timeout ceiling
+
+The deployed path imposes a ceiling the nginx reference does not:
+
+| | value |
+|---|---|
+| Server wait-window cap (`testinbox.wait-window-cap`) | 60 s |
+| Required safety margin (`DeploymentSafety`) | 30 s |
+| Minimum acceptable ingress timeout | 90 s |
+| Cloudflare effective ceiling | **100 s** |
+| Traefik | no shorter timeout |
+| **Effective edge timeout on this path** | **100 s** |
+
+So `TESTINBOX_WAIT_WINDOW_CAP` **must not exceed 70 s** while this Cloudflare
+configuration is in use — and 70 s is the arithmetic maximum, not a
+recommendation: it consumes the entire 30 s margin, leaving nothing for TLS
+handshake, transit or scheduling. **Keep it at 60 s.** Raising it past what the
+edge can hold is an edge/DNS/tier decision, not an application environment
+variable.
+
+This is enforced, not merely documented: `testinbox.deployment.edge-request-ceiling`
+carries the ingress's hard per-request limit, and `DeploymentSafety` refuses to
+start a process whose wait window plus margin exceeds it — or whose declared
+proxy read timeout claims more patience than the edge actually has. The
+provider-neutral topology leaves it unset, because there the edge is ours.
+
+## Minimum capabilities (unchanged, and how the chosen target meets them)
+
+| # | Capability | Met by |
 |---|---|---|
-| 1 | Linux container execution, ≥ 3 long-running processes + a one-shot job | ADR-001 (API and ingestion are separate deployables), ADR-029 (migration job) |
-| 2 | PostgreSQL 16+, reachable over a **session-scoped** connection | ADR-006; ADR-020 requires `LISTEN` on a connection that is never routed through transaction-mode pooling |
-| 3 | S3-compatible object storage | ADR-005 (raw MIME written before the DB row) |
-| 4 | HTTPS ingress with a **configurable proxy read timeout > 60 s** | ADR-012/020 bounded long polling; the server wait window cap is 60 s |
-| 5 | Private/restricted inbound TCP for SMTP (port 25 or an alternative), reachable by the synthetic test but not by the Internet | ADR-025 and §22 of the increment brief: no public MX yet |
-| 6 | Secret injection that is not the Git repository | ADR-010 (keys hashed at rest, never logged/committed) |
-| 7 | Persistent logs and a metrics scrape or push path | `docs/architecture/observability.md` |
-| 8 | Ability to run a one-shot job to completion and gate on its exit code | ADR-029 |
-| 9 | Ability to pull from GHCR by digest | ADR-028 |
-| 10 | Outbound network (object storage, registry) | ADR-005/028 |
+| 1 | Linux container execution, ≥ 3 long-running processes + a one-shot job | Existing estate host |
+| 2 | PostgreSQL over a **session-scoped** connection | Stack-local PostgreSQL, direct — no PgBouncer |
+| 3 | S3-compatible object storage | Stack-local MinIO, bucket-scoped credentials |
+| 4 | HTTPS ingress with read timeout > 60 s | Cloudflare 100 s / Traefik — verified by the deployed synthetic suite |
+| 5 | Private inbound TCP for SMTP | `127.0.0.1:2525`; synthetic runs on the host |
+| 6 | Secret injection outside Git | Ops platform |
+| 7 | Persistent logs and metrics | Loki, Prometheus, Uptime Kuma |
+| 8 | Run a one-shot job and gate on its exit code | Ops reconcile runs the migrator |
+| 9 | Pull from GHCR by digest | Ops pull/reconcile |
+| 10 | Outbound network | Estate host |
 
-Capability 2 is the one that most often fails silently. A managed Postgres
-fronted by a transaction-mode pooler (PgBouncer in `transaction` mode,
-Supabase's pooled port, some "serverless Postgres" endpoints) will accept
-`LISTEN` and then never deliver a notification, because the session is
-returned to the pool between statements. TestInbox degrades to bounded
-re-query in that state rather than hanging, so **the symptom is a latency
-regression, not an error** — which is exactly why it must be verified before
-selection, not after. Any candidate must expose a direct, session-mode
-connection endpoint.
+Capability 2 remains the one that fails silently: a transaction-mode pooler
+accepts `LISTEN` and then never delivers a notification, so the symptom is a
+latency regression rather than an error. The deployed environment connects
+directly, the deployed synthetic suite measures wake-up latency, and
+`wait_listen_degraded_polling` now makes the fallback state continuously
+visible in Prometheus (`docs/architecture/observability.md`).
 
-## Options
+## Options considered (retained for the record)
 
 ### Option A — Single small Linux VM, Docker Compose
 
@@ -104,36 +202,66 @@ S3/GCS; ALB or equivalent.
   choosing AWS here would put a thumb on the scale for SES in ADR-004 — a
   decision `VISION.md` deliberately keeps separate.
 
-## Recommendation
+## How the decision relates to those options
 
-**Option A**, unless there is an existing organisational cloud account and an
-operator who wants the environment there. It is the only option that meets
-capabilities 2, 4 and 5 without a per-provider investigation, it is the
-cheapest, and it pre-empts nothing: the compose topology is a faithful,
-smaller-scale model of any of the three, and moving from A to B or C later
-changes the deployment *step* of the pipeline, not the artifacts, the
-migration model, the readiness contract or the synthetic suite.
+The chosen target is **Option A's shape on an estate that already existed**:
+a Linux host running containers, with PostgreSQL and object storage local to
+the stack. That is why capabilities 2, 4 and 5 — the three that Options B and C
+put at risk — are met without any per-provider investigation.
 
-## Decision required
+Two things differ from Option A as written, and both are consequences of
+joining an existing estate rather than provisioning a host for TestInbox alone:
 
-1. Which of A / B / C — or a specific host that already exists.
-2. Who owns the account, the billing and the DNS zone for
-   `staging.testinbox.email`.
-3. Confirmation that the chosen PostgreSQL endpoint offers a session-mode
-   connection (capability 2).
-4. Confirmation of the ingress idle/read timeout ceiling (capability 4).
-5. How the synthetic test reaches SMTP ingress privately (capability 5):
-   host firewall, private network, VPN, or a restricted source range.
+1. **The ingress is the estate's Traefik behind Cloudflare, not our nginx.**
+   Option A assumed we would own the edge. We do not, and adding a second
+   reverse proxy inside an estate that already terminates HTTP would be pure
+   duplication. The nginx configuration therefore stops being the deployed
+   edge and becomes the self-hosted reference — see "Why two topologies".
+2. **Delivery is pull-based via Ops, not an SSH deploy from CI.** Option A
+   assumed CI would push. On a shared estate the reconcile mechanism already
+   exists, and reusing it keeps host credentials out of GitHub entirely.
 
-Until this ADR is Accepted, `deploy-staging.yml` builds and verifies artifacts
-but performs no provider-specific provisioning, and the deployment job stays
-inert behind the `STAGING_DEPLOY_ENABLED` environment variable.
+Options B and C are not revisited: nothing about them improved, and the
+capability risks recorded above still stand if they are ever reconsidered.
+
+## What Ops must guarantee
+
+The handoff moved three responsibilities across the boundary. Two were already
+Ops concerns; the third was previously enforced inside the GitHub run and is
+now enforceable only in `infinity-core`, so it is stated here as a contract
+requirement rather than left implicit:
+
+1. **At most one reconcile per environment at a time.** ADR-029 requires
+   exactly one migration executor and a deployment that is never interrupted
+   mid-migration. GitHub used to serialise this with a concurrency group,
+   because the migration ran inside the run. The handoff returns as soon as the
+   trigger is accepted, so two rapid merges can now hand over two candidates
+   while the first is still reconciling. Ops must queue them: a later candidate
+   supersedes an earlier one, it does not race it.
+2. **A container stop grace period of at least 90 s for the API** (60 s for
+   ingestion). The applications drain a parked long poll on `SIGTERM`
+   (`spring.lifecycle.timeout-per-shutdown-phase`); Docker's 10 s default would
+   `SIGKILL` a wait that was still legitimately running.
+3. **The post-deployment synthetic suite**, run on the host after reconcile.
+   GitHub can no longer run it — it has no route to the private SMTP listener,
+   by design — so it is the Ops pipeline that turns "containers started" into
+   "the deployment works".
 
 ## Consequences
 
-- The pipeline is complete and proven except for its last step; enabling a
-  target is expected to be configuration plus a deploy script, not a redesign.
-- `deploy/staging/compose.yaml` and `deploy/staging/deploy.sh` are the
-  reference implementation for Option A and are executed on every run of the
-  staging workflow as an ephemeral rehearsal, so they cannot rot unnoticed.
-- ADR-004 (production inbound provider) remains untouched and unprejudiced.
+- GitHub no longer holds any staging host credential. It also no longer knows
+  whether a deployment succeeded; that verdict is in Ops, and the workflow is
+  named and worded so nobody reads acceptance as success.
+- The application repository documents the **contract** with Ops (payload,
+  validation, digest identity), not Ops' implementation. Reconcile mechanics
+  belong in `infinity-core`.
+- Two topologies coexist by design, with the split of responsibilities above.
+  Neither is allowed to rot: the rehearsal runs on every pull request, and the
+  deployed environment runs the same synthetic suite after every reconcile.
+- The 100 s Cloudflare ceiling is an architectural constraint on the wait
+  window, recorded here and enforced at startup by `DeploymentSafety` through
+  `edge-request-ceiling`.
+- **ADR-004 (production inbound provider) remains unresolved.** Choosing a
+  staging host does not choose a mail provider, and no MX record exists.
+- Production (OVH) is named as an intention only. Promoting to it needs its own
+  increment and its own decision.

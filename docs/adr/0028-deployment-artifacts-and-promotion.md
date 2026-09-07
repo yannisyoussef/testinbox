@@ -1,6 +1,8 @@
 # ADR-028: Deployment Artifacts and Promotion by Digest
 
-**Status:** Accepted
+**Status:** Accepted (§6 amended by
+[ADR-031](0031-vulnerability-policy-by-environment.md): container vulnerability
+scanning is informational on develop and blocking on promotion to `master`)
 
 ## Context
 
@@ -68,7 +70,8 @@ runtime choice (Java 25) from the SDKs' *public* distribution contract.
   authenticated API, with independent scaling and blast radius.
 - **Publishing to Docker Hub or a cloud-provider registry.** Rejected for now:
   GHCR needs no additional account, no long-lived credential, and no provider
-  decision — and provider selection is explicitly still open (ADR-030).
+  decision. (Provider selection was open when this was written; ADR-030 has
+  since settled staging, and GHCR remains the registry.)
 
 ## Consequences
 

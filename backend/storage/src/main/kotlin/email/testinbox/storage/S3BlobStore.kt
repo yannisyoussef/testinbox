@@ -1,6 +1,9 @@
 package email.testinbox.storage
 
+import email.testinbox.application.port.BlobOperation
+import email.testinbox.application.port.BlobOutcome
 import email.testinbox.application.port.BlobStore
+import email.testinbox.application.port.BlobStoreMetrics
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.core.sync.RequestBody
@@ -18,6 +21,7 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
 import java.net.URI
+import java.time.Duration
 import java.time.Instant
 
 data class S3BlobStoreConfig(
@@ -36,6 +40,7 @@ data class S3BlobStoreConfig(
  */
 class S3BlobStore(
     private val config: S3BlobStoreConfig,
+    private val metrics: BlobStoreMetrics = BlobStoreMetrics.NOOP,
 ) : BlobStore,
     AutoCloseable {
     private val s3: S3Client =
@@ -66,7 +71,7 @@ class S3BlobStore(
         key: String,
         bytes: ByteArray,
         contentType: String,
-    ) {
+    ) = timed(BlobOperation.PUT) {
         s3.putObject(
             PutObjectRequest
                 .builder()
@@ -76,9 +81,18 @@ class S3BlobStore(
                 .build(),
             RequestBody.fromBytes(bytes),
         )
+        Unit
     }
 
     override fun get(key: String): ByteArray? =
+        // A miss is reported as NOT_FOUND, not success: a raw MIME object that
+        // is absent when /raw asks for it (ADR-005) is precisely the failure
+        // this metric would be consulted for, and success would hide it.
+        timed(BlobOperation.GET, missIsNotFound = true) {
+            getOrNull(key)
+        }
+
+    private fun getOrNull(key: String): ByteArray? =
         try {
             s3
                 .getObjectAsBytes(
@@ -92,68 +106,97 @@ class S3BlobStore(
             null
         }
 
-    override fun delete(key: String) {
-        s3.deleteObject(
-            DeleteObjectRequest
-                .builder()
-                .bucket(config.bucket)
-                .key(key)
-                .build(),
-        )
-    }
+    override fun delete(key: String) =
+        timed(BlobOperation.DELETE) {
+            s3.deleteObject(
+                DeleteObjectRequest
+                    .builder()
+                    .bucket(config.bucket)
+                    .key(key)
+                    .build(),
+            )
+            Unit
+        }
 
-    override fun deletePrefix(prefix: String) {
-        var continuation: String? = null
-        do {
-            val listing =
-                s3.listObjectsV2(
-                    ListObjectsV2Request
-                        .builder()
-                        .bucket(config.bucket)
-                        .prefix(prefix)
-                        .continuationToken(continuation)
-                        .build(),
-                )
-            val keys = listing.contents().map { ObjectIdentifier.builder().key(it.key()).build() }
-            if (keys.isNotEmpty()) {
-                s3.deleteObjects(
-                    DeleteObjectsRequest
-                        .builder()
-                        .bucket(config.bucket)
-                        .delete(Delete.builder().objects(keys).build())
-                        .build(),
-                )
-            }
-            continuation = listing.nextContinuationToken()
-        } while (continuation != null)
-    }
+    override fun deletePrefix(prefix: String) =
+        timed(BlobOperation.DELETE_PREFIX) {
+            var continuation: String? = null
+            do {
+                val listing =
+                    s3.listObjectsV2(
+                        ListObjectsV2Request
+                            .builder()
+                            .bucket(config.bucket)
+                            .prefix(prefix)
+                            .continuationToken(continuation)
+                            .build(),
+                    )
+                val keys = listing.contents().map { ObjectIdentifier.builder().key(it.key()).build() }
+                if (keys.isNotEmpty()) {
+                    s3.deleteObjects(
+                        DeleteObjectsRequest
+                            .builder()
+                            .bucket(config.bucket)
+                            .delete(Delete.builder().objects(keys).build())
+                            .build(),
+                    )
+                }
+                continuation = listing.nextContinuationToken()
+            } while (continuation != null)
+        }
 
     override fun listKeysOlderThan(
         prefix: String,
         olderThan: Instant,
-    ): List<String> {
-        val result = mutableListOf<String>()
-        var continuation: String? = null
-        do {
-            val listing =
-                s3.listObjectsV2(
-                    ListObjectsV2Request
-                        .builder()
-                        .bucket(config.bucket)
-                        .prefix(prefix)
-                        .continuationToken(continuation)
-                        .build(),
-                )
-            listing
-                .contents()
-                .filter { it.lastModified().isBefore(olderThan) }
-                .forEach { result += it.key() }
-            continuation = listing.nextContinuationToken()
-        } while (continuation != null)
-        return result
-    }
+    ): List<String> =
+        timed(BlobOperation.LIST) {
+            val result = mutableListOf<String>()
+            var continuation: String? = null
+            do {
+                val listing =
+                    s3.listObjectsV2(
+                        ListObjectsV2Request
+                            .builder()
+                            .bucket(config.bucket)
+                            .prefix(prefix)
+                            .continuationToken(continuation)
+                            .build(),
+                    )
+                listing
+                    .contents()
+                    .filter { it.lastModified().isBefore(olderThan) }
+                    .forEach { result += it.key() }
+                continuation = listing.nextContinuationToken()
+            } while (continuation != null)
+            result
+        }
 
     override fun close() {
         s3.close()
+    }
+
+    /**
+     * Times one call and records it under a fixed operation label. Object
+     * storage is on the critical path of every inbound delivery — raw bytes are
+     * written before the row (ADR-005) — so its latency is the first thing to
+     * look at when ingestion slows and nothing else changed.
+     *
+     * The outcome tag is a boolean and the key is never a label: keys are
+     * caller-derived and therefore unbounded.
+     */
+    private fun <T> timed(
+        operation: BlobOperation,
+        missIsNotFound: Boolean = false,
+        block: () -> T,
+    ): T {
+        val startedAt = System.nanoTime()
+        var outcome = BlobOutcome.FAILURE
+        try {
+            val result = block()
+            outcome = if (missIsNotFound && result == null) BlobOutcome.NOT_FOUND else BlobOutcome.SUCCESS
+            return result
+        } finally {
+            metrics.operationCompleted(operation, Duration.ofNanos(System.nanoTime() - startedAt), outcome)
+        }
     }
 }

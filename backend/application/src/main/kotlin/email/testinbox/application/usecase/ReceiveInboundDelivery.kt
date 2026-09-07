@@ -4,6 +4,7 @@ import email.testinbox.application.ObjectKeys
 import email.testinbox.application.Sha256
 import email.testinbox.application.port.AppendOutcome
 import email.testinbox.application.port.BlobStore
+import email.testinbox.application.port.InboundMetrics
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.MessageRepository
@@ -21,6 +22,7 @@ import email.testinbox.domain.message.ParseStatus
 import email.testinbox.domain.message.ParsedContent
 import org.slf4j.LoggerFactory
 import java.time.Clock
+import java.time.Duration
 import java.util.UUID
 
 /**
@@ -54,6 +56,7 @@ class ReceiveInboundDelivery(
     private val rateLimiter: RateLimiter,
     private val clock: Clock,
     private val metrics: LimitMetrics = LimitMetrics.NOOP,
+    private val inboundMetrics: InboundMetrics = InboundMetrics.NOOP,
 ) {
     data class Command(
         val envelopeFrom: String?,
@@ -92,7 +95,13 @@ class ReceiveInboundDelivery(
         val recipients = command.recipients.map { it.trim().lowercase() }.distinct()
         val fingerprint = Sha256.hex(command.raw)
         // One event, one parse: recipients of the same event share the bytes.
+        val parseStartedAt = System.nanoTime()
         val parseResult = parser.parse(command.raw)
+        val parseStatus = if (parseResult is MimeParseResult.Parsed) ParseStatus.OK else ParseStatus.FAILED
+        // Timed around the parser alone, so the measurement is parsing cost and
+        // not storage or database latency. A hostile MIME corpus entry that
+        // takes seconds shows up here and nowhere else.
+        inboundMetrics.parseCompleted(Duration.ofNanos(System.nanoTime() - parseStartedAt), parseStatus)
 
         var discarded = 0
         var rateLimited = 0
@@ -101,6 +110,10 @@ class ReceiveInboundDelivery(
             val inbox = inboxes.findReceivableByAddress(recipient)
             if (inbox == null || !inbox.canReceiveAt(now)) {
                 logDiscard(recipient, command, "unknown_recipient")
+                // ADR-025 keeps the SMTP reply uniform for an unknown
+                // recipient, so this counter is the only thing that makes the
+                // volume of undeliverable mail visible at all.
+                inboundMetrics.unknownRecipientDiscarded()
                 discarded++
                 continue
             }
@@ -148,10 +161,12 @@ class ReceiveInboundDelivery(
             when (outcome) {
                 AppendOutcome.Appended -> {
                     accepted += candidate.messageId
+                    inboundMetrics.messageReceived(candidate.parseStatus)
                 }
 
                 AppendOutcome.DuplicateProviderEvent -> {
                     duplicates++
+                    inboundMetrics.duplicateProviderEventNoop()
                     // Reprocessed event: the blobs written for this no-op are ours alone
                     // (per-message keys), so removing them cannot touch the original row.
                     candidate.objectKeys.forEach(blobs::delete)

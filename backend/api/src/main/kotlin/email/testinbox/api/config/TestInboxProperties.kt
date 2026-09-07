@@ -52,6 +52,13 @@ data class TestInboxProperties(
          * legitimate long poll short fails to start instead of returning 504s.
          */
         val proxyReadTimeout: Duration? = null,
+        /**
+         * Hard ceiling the environment's ingress imposes on ANY request, when
+         * it has one — Cloudflare's ~100s on the deployed staging path
+         * (ADR-030). No application setting can raise it, so the wait window
+         * has to fit underneath it.
+         */
+        val edgeRequestCeiling: Duration? = null,
         val gitSha: String = "unknown",
         /** Digest of the running image — knowable only at deploy time (ADR-028). */
         val imageDigest: String = "unknown",

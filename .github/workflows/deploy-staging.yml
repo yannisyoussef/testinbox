@@ -1,18 +1,25 @@
 name: Staging
 
-# develop → immutable artifacts → staging deployment → migration → readiness
-# → post-deployment synthetic test → evidence  (TI-DEPLOY-001).
+# develop → immutable artifacts → ephemeral rehearsal → release handoff.
+#
+# WHERE THIS WORKFLOW STOPS (ADR-030). Persistent staging runs on the Infinity
+# estate, which is pull-based: this workflow builds artifacts, proves them
+# against a full ephemeral copy of the deployment, and hands their immutable
+# identity to GitLab `infinity/infinity-core`. It does not deploy, and it holds
+# no credential for the staging host.
+#
+# So the last job is called `handoff`, not `deploy`, and nothing here reports a
+# deployment as successful. The authoritative staging verdict — reconcile,
+# migration, readiness, post-deployment synthetic suite — lives in Ops.
+#
+# The ephemeral rehearsal is NOT redundant with that. It proves the
+# provider-neutral deployment stack the application owns (ADR-030 keeps the
+# nginx topology as the reference implementation for self-hosted deployments),
+# and it is the only one of the two that gates a pull request.
 #
 # `develop` is the staging candidate; `master` is the production-approved
 # candidate. Nothing here deploys production, and no master→production
 # automation exists.
-#
-# NOTE ON THE CURRENT STATE: no staging provider has been chosen (ADR-030 is
-# Proposed, VISION.md §7). The `deploy` job is therefore inert until the
-# `STAGING_DEPLOY_ENABLED` variable is set on the `staging` environment. Every
-# other stage runs for real, including a full ephemeral rehearsal of the
-# deployment on the runner — so the pipeline cannot rot while the decision is
-# outstanding, and enabling a target is configuration rather than a redesign.
 
 on:
   push:
@@ -47,9 +54,16 @@ concurrency:
   # pending ones — a single shared group would let a queued develop deployment
   # be dropped by the next pull request.
   group: testinbox-staging-${{ github.ref }}
-  # NEVER cancel in progress. A cancelled run can interrupt the migration job
-  # between statements, and recovery from a half-applied schema is manual.
-  # Two rapid merges to develop queue; they do not race.
+  # NEVER cancel in progress: a cancelled run can interrupt a rehearsal
+  # mid-migration, and it can also cancel a handoff between validation and the
+  # trigger.
+  #
+  # NOTE what this no longer guarantees. When the migration ran inside this
+  # workflow, the group serialised deployments. The handoff returns as soon as
+  # GitLab accepts the trigger, so two rapid merges can hand over two
+  # candidates while the first is still reconciling. Serialising the actual
+  # deployment is now an Ops responsibility, recorded as a contract requirement
+  # in ADR-030 ("What Ops must guarantee").
   cancel-in-progress: false
 
 permissions:
@@ -169,20 +183,29 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------------
-  # The real staging deployment. Inert until a provider is chosen (ADR-030).
+  # Release handoff to the Infinity Ops platform (ADR-030).
   #
-  # `environment: staging` is what makes the secrets below resolvable at all,
-  # and gives GitHub deployment records naming who/what triggered the run (§29).
+  # This job does NOT deploy. The Infinity estate is pull-based: GitHub builds
+  # and proves artifacts, then hands their immutable identity to GitLab
+  # `infinity/infinity-core`, which reconciles the staging host. GitHub holds no
+  # SSH key, no database credential and no synthetic API key — the previous
+  # push-based path did, and removing it removes that blast radius entirely.
+  #
+  # The environment is deliberately `staging-handoff`, not `staging`. A GitHub
+  # Environment named for the target would render this as "deployed to staging"
+  # in the commit and PR UI, which would be false: a 2xx from the trigger API
+  # means the release candidate was accepted for deployment, nothing more.
+  # Deployment, migration, readiness and the post-deployment synthetic suite all
+  # run asynchronously in Ops, and their verdict lives there
+  # (docs/dev/deployment.md).
   # ---------------------------------------------------------------------------
-  deploy:
-    name: Deploy to staging
+  handoff:
+    name: Release handoff to GitLab Ops
     needs: [resolve-artifacts, build, rehearsal]
     # `always()` so a skipped `build` (manual redeploy path) does not skip this.
-    # The ref guard is load-bearing. Everything the host executes — deploy.sh,
-    # the compose files, the nginx template AND scripts/validate-image-digest.sh
-    # — is checked out from `github.sha`, so a dispatch from an unreviewed
-    # branch would supply the very gate that is supposed to guard it. Staging
-    # deploys `develop` and nothing else.
+    # The ref guard stays load-bearing: only `develop` is a staging candidate,
+    # and a dispatch from an unreviewed branch would otherwise supply both the
+    # digests and the validator that is meant to check them.
     if: |
       always() &&
       github.event_name != 'pull_request' &&
@@ -190,35 +213,18 @@ jobs:
       needs.rehearsal.result == 'success' &&
       (needs.build.result == 'success' || needs.resolve-artifacts.outputs.supplied == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     environment:
-      name: staging
-      url: ${{ vars.STAGING_URL }}
+      name: staging-handoff
     steps:
       - uses: actions/checkout@v7
 
-      - name: Deployment target status
-        id: target
-        run: |
-          if [[ "${{ vars.STAGING_DEPLOY_ENABLED }}" != "true" ]]; then
-            {
-              echo "## Staging NOT deployed — no provider selected"
-              echo
-              echo "ADR-030 is **Proposed**: no hosting target has been chosen"
-              echo "(\`VISION.md\` §7). Artifacts were built and the full deployment"
-              echo "was rehearsed, but nothing was deployed to a persistent"
-              echo "environment."
-              echo
-              echo "To enable, set \`STAGING_DEPLOY_ENABLED=true\` and the deployment"
-              echo "secrets on the \`staging\` environment — see \`docs/dev/staging.md\`."
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Self-test the handoff contract
+        # Runs before the real handoff, so a broken payload builder is caught
+        # here rather than by Ops rejecting an opaque pipeline.
+        run: ./scripts/gitlab-handoff.test.sh
 
-      - name: Resolve the digest set to deploy
-        if: steps.target.outputs.enabled == 'true'
+      - name: Resolve the digest set to hand off
         id: artifacts
         env:
           REGISTRY: ghcr.io/${{ github.repository_owner }}
@@ -235,8 +241,6 @@ jobs:
             migrator="${REGISTRY}/testinbox-migrator@${{ needs.build.outputs.migrator-digest }}"
             web="${REGISTRY}/testinbox-web@${{ needs.build.outputs.web-digest }}"
           fi
-          # Belt and braces: whatever path produced these, they are ours and
-          # they are digests before anything is pulled onto the host.
           EXPECTED_IMAGE_REPOSITORY="$REGISTRY" \
             ./scripts/validate-image-digest.sh "$api" "$ingestion" "$migrator" "$web"
           {
@@ -246,122 +250,69 @@ jobs:
             echo "web=$web"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Require every deployment secret
-        if: steps.target.outputs.enabled == 'true'
+      - name: Hand the release candidate to GitLab Ops
+        id: handoff
         env:
-          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
-          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
-          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
-          SYNTHETIC_API_KEY: ${{ secrets.STAGING_SYNTHETIC_API_KEY }}
+          # The only cross-system credential GitHub holds for this path, and it
+          # can do exactly one thing: start a pipeline in infinity-core.
+          GITLAB_TRIGGER_TOKEN: ${{ secrets.GITLAB_TRIGGER_TOKEN }}
+          # gitlab-handoff.sh defaults GITLAB_API_URL to gitlab.com. That default is
+          # right for the repository — no Ops platform is assumed — but it means the
+          # host MUST be passed explicitly here, or the trigger token is POSTed to
+          # gitlab.com. Deliberately no `||` fallback: an unset variable has to fail
+          # the run, not silently send a credential to the wrong host.
+          GITLAB_API_URL: ${{ vars.GITLAB_OPS_API_URL }}
+          GITLAB_PROJECT: ${{ vars.GITLAB_OPS_PROJECT || 'infinity%2Finfinity-core' }}
+          GITLAB_REF: ${{ vars.GITLAB_OPS_REF || 'develop' }}
+          EXPECTED_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}
         run: |
-          # A missing secret must fail the deployment, not produce a half-applied
-          # one (§19). Only names are ever printed.
-          missing=""
-          for name in SSH_HOST SSH_USER SSH_KEY SSH_KNOWN_HOSTS SYNTHETIC_API_KEY; do
-            [[ -n "${!name:-}" ]] || missing="$missing STAGING_$name"
-          done
-          if [[ -n "$missing" ]]; then
-            echo "::error::missing required staging secret(s):$missing"
+          set -euo pipefail
+          if [[ -z "${GITLAB_TRIGGER_TOKEN:-}" ]]; then
+            echo "::error::GITLAB_TRIGGER_TOKEN is not set on the staging-handoff environment"
             exit 1
           fi
+          if [[ -z "${GITLAB_API_URL:-}" ]]; then
+            echo "::error::GITLAB_OPS_API_URL is not set on the staging-handoff environment."
+            echo "::error::Without it the handoff would POST the trigger token to the"
+            echo "::error::gitlab.com default. Set it to the Ops instance API root."
+            exit 1
+          fi
+          ./scripts/gitlab-handoff.sh \
+            --commit "${{ github.sha }}" \
+            --api "${{ steps.artifacts.outputs.api }}" \
+            --ingestion "${{ steps.artifacts.outputs.ingestion }}" \
+            --migrator "${{ steps.artifacts.outputs.migrator }}" \
+            --web "${{ steps.artifacts.outputs.web }}"
 
-      # Everything below is the ADR-030 Option A reference implementation. It
-      # is written out rather than left as a TODO so that choosing the target
-      # is a configuration change; it does not run until then.
-      - name: Deploy over SSH
-        if: steps.target.outputs.enabled == 'true'
-        env:
-          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
-          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
-          SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
-          DEPLOY_PATH: ${{ vars.STAGING_DEPLOY_PATH || '/opt/testinbox' }}
-          API_IMAGE: ${{ steps.artifacts.outputs.api }}
-          INGESTION_IMAGE: ${{ steps.artifacts.outputs.ingestion }}
-          MIGRATOR_IMAGE: ${{ steps.artifacts.outputs.migrator }}
-          WEB_IMAGE: ${{ steps.artifacts.outputs.web }}
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
-          # Pinned host key, never StrictHostKeyChecking=no: accepting any key
-          # would make the deployment channel trivially interceptable.
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/deploy_known_hosts && chmod 600 ~/.ssh/deploy_known_hosts
-          ssh -i ~/.ssh/id_deploy \
-              -o IdentitiesOnly=yes \
-              -o BatchMode=yes \
-              -o StrictHostKeyChecking=yes \
-              -o UserKnownHostsFile=~/.ssh/deploy_known_hosts \
-              "$SSH_USER@$SSH_HOST" \
-            "cd '$DEPLOY_PATH' \
-             && git fetch --depth=1 origin ${{ github.sha }} && git checkout --detach ${{ github.sha }} \
-             && EXPECTED_IMAGE_REPOSITORY='ghcr.io/${{ github.repository_owner }}' \
-                TESTINBOX_API_IMAGE='$API_IMAGE' \
-                TESTINBOX_INGESTION_IMAGE='$INGESTION_IMAGE' \
-                TESTINBOX_MIGRATOR_IMAGE='$MIGRATOR_IMAGE' \
-                TESTINBOX_WEB_IMAGE='$WEB_IMAGE' \
-                TESTINBOX_GIT_SHA='${{ github.sha }}' \
-                ./deploy/staging/deploy.sh"
-
-      # SMTP ingress is private and stays private (§10/§22): it is bound to a
-      # loopback/private interface on the host and is NOT reachable from a
-      # GitHub-hosted runner, which has no stable egress address to allowlist
-      # anyway. The synthetic suite reaches it through an SSH local forward over
-      # the deployment channel that already exists, so proving the deployment
-      # never requires opening the SMTP adapter to the Internet.
-      - name: Open a private SMTP forward
-        if: steps.target.outputs.enabled == 'true'
-        env:
-          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
-          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
-          SMTP_PORT: ${{ vars.STAGING_SMTP_PORT || '2525' }}
-        run: |
-          set -euo pipefail
-          ssh -i ~/.ssh/id_deploy \
-              -o IdentitiesOnly=yes -o BatchMode=yes \
-              -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/deploy_known_hosts \
-              -f -N -L "2525:127.0.0.1:${SMTP_PORT}" "$SSH_USER@$SSH_HOST"
-          for _ in $(seq 1 30); do
-            (exec 3<>/dev/tcp/127.0.0.1/2525) 2>/dev/null && break
-            sleep 1
-          done
-
-      - name: Post-deployment synthetic verification
-        if: steps.target.outputs.enabled == 'true'
-        env:
-          TESTINBOX_BASE_URL: ${{ vars.STAGING_URL }}
-          TESTINBOX_API_KEY: ${{ secrets.STAGING_SYNTHETIC_API_KEY }}
-          # The near end of the forward above.
-          TESTINBOX_SMTP_HOST: 127.0.0.1
-          TESTINBOX_SMTP_PORT: "2525"
-        run: |
-          set -euo pipefail
-          ( cd sdk/typescript && npm ci && npm run build )
-          ( cd deploy/synthetic && npm ci && npm test )
-
-      - name: Close the deployment channel
-        if: always() && steps.target.outputs.enabled == 'true'
-        run: |
-          pkill -f 'ssh -i .*id_deploy' || true
-          rm -f ~/.ssh/id_deploy ~/.ssh/deploy_known_hosts
-
-      - name: Deployment evidence
-        if: always() && steps.target.outputs.enabled == 'true'
+      - name: Record the handoff
+        if: always()
         run: |
           {
-            echo "## Staging deployment"
+            if [[ "${{ steps.handoff.outcome }}" == "success" ]]; then
+              echo "## Release candidate handed to GitLab Ops"
+              echo
+              echo "The Ops pipeline has **accepted** this release candidate. That is not"
+              echo "the same as a successful deployment: the host reconcile, the migration"
+              echo "job, readiness and the post-deployment synthetic suite run"
+              echo "asynchronously in \`infinity/infinity-core\`, and **the authoritative"
+              echo "staging verdict lives there**, not in this workflow run."
+            else
+              echo "## Release handoff FAILED"
+              echo
+              echo "Nothing was handed to Ops; staging continues to run whatever it was"
+              echo "already running."
+            fi
             echo
             echo "| field | value |"
             echo "|---|---|"
-            echo "| environment | staging |"
+            echo "| handoff target | staging (deployed by Ops) |"
             echo "| commit | \`${{ github.sha }}\` |"
             echo "| triggered by | ${{ github.actor }} (${{ github.event_name }}) |"
-            echo "| api image | \`${{ steps.artifacts.outputs.api }}\` |"
-            echo "| ingestion image | \`${{ steps.artifacts.outputs.ingestion }}\` |"
-            echo "| migrator image | \`${{ steps.artifacts.outputs.migrator }}\` |"
-            echo "| web image | \`${{ steps.artifacts.outputs.web }}\` |"
-            echo "| deployment result | ${{ job.status }} |"
-            echo "| url | ${{ vars.STAGING_URL }} |"
-            echo "| timestamp | $(date -u +%Y-%m-%dT%H:%M:%SZ) |"
+            echo "| api | \`${{ steps.artifacts.outputs.api }}\` |"
+            echo "| ingestion | \`${{ steps.artifacts.outputs.ingestion }}\` |"
+            echo "| migrator | \`${{ steps.artifacts.outputs.migrator }}\` |"
+            echo "| web | \`${{ steps.artifacts.outputs.web }}\` |"
+            echo "| handoff result | ${{ steps.handoff.outcome }} |"
+            echo "| gitlab pipeline | ${{ steps.handoff.outputs.pipeline_url || 'n/a' }} |"
+            echo "| handed off at | $(date -u +%Y-%m-%dT%H:%M:%SZ) |"
           } >> "$GITHUB_STEP_SUMMARY"

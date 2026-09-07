@@ -2,6 +2,8 @@ package email.testinbox.ingestion.smtp
 
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.deployment.SchemaCompatibility
+import email.testinbox.application.port.SmtpMetrics
+import email.testinbox.application.port.SmtpRejection
 import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.ingestion.config.IngestionProperties
 import org.slf4j.LoggerFactory
@@ -37,6 +39,7 @@ class SmtpGateway(
     private val properties: IngestionProperties,
     private val config: TestInboxConfig,
     private val schema: SchemaCompatibility,
+    private val metrics: SmtpMetrics = SmtpMetrics.NOOP,
 ) : SmartLifecycle {
     @Volatile private var server: SMTPServer? = null
 
@@ -73,6 +76,10 @@ class SmtpGateway(
             val domain = normalized.substringAfterLast('@', missingDelimiterValue = "")
             if (domain != config.mailDomain.lowercase() || normalized.substringBefore('@').isEmpty()) {
                 // Syntax/domain-level rejection only — never an existence check (ADR-025).
+                // Counted by reason, and the reasons are protocol-level only:
+                // recipient existence is never one of them, so this counter can
+                // never become an enumeration oracle.
+                metrics.rejected(SmtpRejection.INVALID_RECIPIENT)
                 throw RejectException(553, "Requested action not taken: mailbox name not allowed")
             }
             recipients += normalized
@@ -89,6 +96,7 @@ class SmtpGateway(
             val schemaStatus = schema.status()
             if (!schemaStatus.compatible) {
                 log.error("refusing inbound delivery: {}", schemaStatus.detail)
+                metrics.rejected(SmtpRejection.SCHEMA_UNAVAILABLE)
                 throw RejectException(451, "Requested action aborted: local error in processing")
             }
             try {
@@ -105,9 +113,15 @@ class SmtpGateway(
                 // Persistence/storage unavailable: soft-fail the whole transaction so the
                 // sender retries it as a unit — nothing was committed (failure-modes.md).
                 log.error("inbound delivery failed; soft-failing the DATA transaction", e)
+                metrics.rejected(SmtpRejection.PROCESSING_FAILED)
                 throw RejectException(451, "Requested action aborted: local error in processing")
             }
-            // Uniform success regardless of recipient resolution (ADR-025).
+            // Uniform success regardless of recipient resolution (ADR-025) — so
+            // this counter measures accepted TRANSACTIONS, not delivered mail.
+            // What was actually stored, discarded as unknown or refused for rate
+            // is the inbound counters' job; conflating them here would make the
+            // uniform reply look like a delivery guarantee.
+            metrics.accepted()
             return null
         }
 
@@ -116,6 +130,7 @@ class SmtpGateway(
         private fun readBounded(data: InputStream): ByteArray {
             val bytes = data.readNBytes(config.maxRawSizeBytes.toInt() + 1)
             if (bytes.size > config.maxRawSizeBytes) {
+                metrics.rejected(SmtpRejection.MESSAGE_TOO_LARGE)
                 throw RejectException(552, "Requested mail action aborted: exceeded storage allocation")
             }
             return bytes

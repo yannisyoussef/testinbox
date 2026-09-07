@@ -6,6 +6,8 @@ import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.WaitHandle
+import email.testinbox.application.port.WaitMetrics
+import email.testinbox.application.port.WaitOutcome
 import email.testinbox.application.port.WaitSlots
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.WorkspaceId
@@ -46,7 +48,7 @@ class WaitForMessage(
     private val clock: Clock,
     private val config: TestInboxConfig,
     private val hook: WaitSyncHook = WaitSyncHook.NOOP,
-    private val metrics: LimitMetrics = LimitMetrics.NOOP,
+    private val metrics: WaitMetrics = WaitMetrics.NOOP,
 ) {
     data class Command(
         val workspaceId: WorkspaceId,
@@ -86,7 +88,37 @@ class WaitForMessage(
         ) : Result
     }
 
+    /**
+     * Measured around the whole call rather than at each return, because there
+     * are seven of them and the eighth would be the one nobody instruments.
+     * `System.nanoTime` rather than the injected clock: this is a wall-clock
+     * duration, and a test clock that does not advance would otherwise record
+     * every wait as instantaneous.
+     */
     fun execute(command: Command): Result {
+        val startedAt = System.nanoTime()
+        metrics.waitStarted()
+        var outcome = WaitOutcome.ERROR
+        try {
+            val result = executeInternal(command)
+            outcome = result.outcome()
+            return result
+        } finally {
+            metrics.waitCompleted(outcome, Duration.ofNanos(System.nanoTime() - startedAt))
+        }
+    }
+
+    private fun Result.outcome(): WaitOutcome =
+        when (this) {
+            is Result.Matched -> WaitOutcome.MATCHED
+            is Result.Timeout -> WaitOutcome.TIMEOUT
+            Result.InboxGone -> WaitOutcome.INBOX_GONE
+            Result.InboxNotFound -> WaitOutcome.INBOX_NOT_FOUND
+            is Result.ConcurrentWaitLimitExceeded -> WaitOutcome.WAIT_LIMIT_EXCEEDED
+            is Result.InvalidRequest -> WaitOutcome.INVALID_REQUEST
+        }
+
+    private fun executeInternal(command: Command): Result {
         if (command.timeoutSeconds <= 0) return Result.InvalidRequest("timeoutSeconds must be positive")
         val start = clock.instant()
         val window = minOf(Duration.ofSeconds(command.timeoutSeconds), config.waitWindowCap)
@@ -143,10 +175,10 @@ class WaitForMessage(
                 // into a deadline, so node clock skew cannot free a live slot.
                 leaseFor = Duration.between(clock.instant(), deadline).plus(config.waitWindowCap),
             ) ?: run {
-                metrics.waitSlotRejected()
+                metrics.slotRejected()
                 return Result.ConcurrentWaitLimitExceeded(maxConcurrentWaits)
             }
-        metrics.waitSlotsChanged(1)
+        metrics.slotsChanged(1)
         return slot.use {
             try {
                 while (true) {
@@ -158,7 +190,7 @@ class WaitForMessage(
             } finally {
                 // Mirrors the slot release, including on an early match and on
                 // any exception, so the gauge cannot drift upward.
-                metrics.waitSlotsChanged(-1)
+                metrics.slotsChanged(-1)
             }
         }
     }
