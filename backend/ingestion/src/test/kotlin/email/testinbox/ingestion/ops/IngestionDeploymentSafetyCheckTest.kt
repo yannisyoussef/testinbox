@@ -43,10 +43,10 @@ class IngestionDeploymentSafetyCheckTest {
             "testinbox.mail-domain=staging.testinbox.email",
             "spring.datasource.url=jdbc:postgresql://db.staging.internal:5432/testinbox",
             "spring.datasource.username=testinbox_staging",
-            "spring.datasource.password=S3EbcYQ0mSJEc0kL0iEsIeAgQdvvS7yl",
+            "spring.datasource.password=fixture-not-a-real-db-password--1",
             "testinbox.storage.endpoint=https://objects.staging.internal",
-            "testinbox.storage.access-key=AKIAEXAMPLESTAGINGKEY",
-            "testinbox.storage.secret-key=0kL0iEsIeAgQdvvS7ylS3EbcYQ0mSJEc",
+            "testinbox.storage.access-key=fixture-not-a-real-s3-access-key",
+            "testinbox.storage.secret-key=fixture-not-a-real-s3-secret----1",
         )
 
     @Test

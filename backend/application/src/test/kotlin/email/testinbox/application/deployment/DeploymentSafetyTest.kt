@@ -14,10 +14,10 @@ class DeploymentSafetyTest {
             mailDomain = "staging.testinbox.email",
             databaseUrl = "jdbc:postgresql://db.staging.internal:5432/testinbox",
             databaseUsername = "testinbox_staging",
-            databasePassword = "S3EbcYQ0mSJEc0kL0iEsIeAgQdvvS7yl",
+            databasePassword = "fixture-not-a-real-db-password--1",
             storageEndpoint = "https://objects.staging.internal",
-            storageAccessKey = "AKIAEXAMPLESTAGINGKEY",
-            storageSecretKey = "0kL0iEsIeAgQdvvS7ylS3EbcYQ0mSJEc",
+            storageAccessKey = "fixture-not-a-real-s3-access-key",
+            storageSecretKey = "fixture-not-a-real-s3-secret----1",
             publicBaseUrl = "https://api.staging.testinbox.email",
             bootstrapApiKey = "tk_stg_" + "x".repeat(40),
             waitWindowCap = Duration.ofSeconds(60),
@@ -129,7 +129,7 @@ class DeploymentSafetyTest {
             safe.copy(
                 // A JDBC URL legitimately carries inline credentials, so it is
                 // as much a secret as the password field beside it.
-                databaseUrl = "jdbc:postgresql://svc:hunter2SuperSecret@localhost:5432/testinbox",
+                databaseUrl = "jdbc:postgresql://svc:fixture-inline-url-credential@localhost:5432/testinbox",
                 databasePassword = "testinbox",
                 storageSecretKey = "testinbox123",
                 bootstrapApiKey = "tk_e2e_acceptance_key",
@@ -140,6 +140,6 @@ class DeploymentSafetyTest {
         message shouldContain "testinbox.bootstrap.api-key"
         message shouldNotContain "testinbox123"
         message shouldNotContain "tk_e2e_acceptance_key"
-        message shouldNotContain "hunter2SuperSecret"
+        message shouldNotContain "fixture-inline-url-credential"
     }
 }

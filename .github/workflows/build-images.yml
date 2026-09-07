@@ -147,30 +147,31 @@ jobs:
       # A real gate, not documentation: the Dockerfile's USER line is one
       # deletion away from silently producing root containers, and nothing else
       # in the pipeline would notice.
+      # A real gate, not documentation: the Dockerfile's USER line is one
+      # deletion away from silently producing root containers, and nothing else
+      # in the pipeline would notice.
       - name: Assert every runtime image runs as a non-root user
         run: |
-          set -euo pipefail
-          fail=0
+          set -uo pipefail
+
+          # Returns non-zero when the image runs as root. It reports, it does
+          # not decide — the callers below differ in what a root image means.
           assert_nonroot() {
-            local ref="$1"
-            local uid
-            uid=$(docker run --rm --entrypoint sh "$ref" -c 'id -u')
-            if [[ "$uid" == "0" ]]; then
-              echo "::error::$ref runs as root (uid 0)"
-              fail=1
-            else
-              echo "ok — $ref runs as uid $uid"
-            fi
+            local ref="$1" uid
+            uid=$(docker run --rm --entrypoint sh "$ref" -c 'id -u') || return 2
+            [[ "$uid" != "0" ]] || return 1
+            echo "ok — $ref runs as uid $uid"
           }
-          # Positive control first: prove the check reports a root image as a
-          # failure. Without it, a broken assert_nonroot would pass everything.
-          if assert_nonroot "alpine:3.22" 2>/dev/null; then
-            echo "::error::the non-root check passed a known-root image — the gate is broken"
+
+          # Positive control. Without it a check that always succeeded would
+          # pass every image, and the gate would be indistinguishable from none.
+          if assert_nonroot "alpine:3.22"; then
+            echo "::error::the non-root check accepted a known-root image — the gate is broken"
             exit 1
           fi
-          fail=0
-          echo "ok — the non-root check correctly rejects a root image"
+          echo "ok — the check correctly rejects a known-root image"
 
+          fail=0
           for image in api ingestion migrator web; do
             if [[ "${{ inputs.push }}" == "true" ]]; then
               # Address the pushed artifact by digest, so the assertion is made
@@ -181,10 +182,11 @@ jobs:
                 migrator)  digest='${{ steps.migrator.outputs.digest }}' ;;
                 web)       digest='${{ steps.web.outputs.digest }}' ;;
               esac
-              assert_nonroot "${REGISTRY}/testinbox-${image}@${digest}"
+              ref="${REGISTRY}/testinbox-${image}@${digest}"
             else
-              assert_nonroot "${REGISTRY}/testinbox-${image}:${{ github.sha }}"
+              ref="${REGISTRY}/testinbox-${image}:${{ github.sha }}"
             fi
+            assert_nonroot "$ref" || { echo "::error::$ref runs as root (uid 0)"; fail=1; }
           done
           exit "$fail"
 

@@ -28,7 +28,7 @@ class MigratorTest {
          * simultaneously meaningless (every message "contains" no `test`) and
          * brittle (any `latest` or `testinbox` substring would fail it).
          */
-        const val DB_PASSWORD = "Pw7yQ3nX2vT8kL5rB9mE4sA6dG1hJ0zC"
+        const val DB_PASSWORD = "fixture-not-a-real-db-password--2"
 
         val postgres: PostgreSQLContainer<*> =
             PostgreSQLContainer("postgres:16-alpine").withPassword(DB_PASSWORD).also { it.start() }

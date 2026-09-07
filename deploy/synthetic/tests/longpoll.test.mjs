@@ -113,7 +113,7 @@ test(
     await new Promise((resolve) => setTimeout(resolve, parkMs));
 
     const subject = `Parked wait ${token}`;
-    await sendRawSmtp({
+    const delivery = await sendRawSmtp({
       host: config.smtpHost,
       port: config.smtpPort,
       from: SENDER,
@@ -128,7 +128,8 @@ test(
     });
 
     const message = await waiting;
-    const elapsed = Date.now() - startedAt;
+    const resolvedAt = Date.now();
+    const elapsed = resolvedAt - startedAt;
 
     assert.equal(message.subject, subject);
     assert.ok(
@@ -137,18 +138,27 @@ test(
         `it cannot have been a parked request`,
     );
     // Wake-up must be via LISTEN/NOTIFY, not the bounded degraded re-query.
-    // The threshold is BELOW the degraded ticker (PgListenNotifier's
-    // degradedInterval, 1s) on purpose: a database behind a transaction-mode
-    // pooler accepts LISTEN and never delivers, and the waiter then still
-    // resolves in ~1-2s off the fallback. A 5s threshold would pass for
-    // exactly the deployment ADR-030 capability 2 exists to rule out.
-    const wakeMs = elapsed - parkMs;
+    //
+    // Measured from the SMTP 250, which is the moment the row and its
+    // pg_notify committed together (ADR-020). Measuring from when the send
+    // *began* would fold in connection setup, MIME parsing and the blob write,
+    // and on a loaded runner those alone approach the threshold — the
+    // assertion would then be about machine speed rather than about
+    // notifications.
+    //
+    // The threshold sits below PgListenNotifier's 1s degraded ticker on
+    // purpose. A database behind a transaction-mode pooler accepts LISTEN and
+    // silently never delivers; the waiter still resolves off the fallback, so
+    // a threshold above the ticker would pass for exactly the deployment
+    // ADR-030 capability 2 exists to rule out.
+    const wakeMs = resolvedAt - delivery.acceptedAt;
     assert.ok(
       wakeMs < 750,
-      `the parked wait took ${wakeMs}ms to resolve after delivery. That is at or beyond the ` +
-        `degraded re-query interval, so notifications are NOT reaching waiters — the signature ` +
-        `of a transaction-mode pooler in front of PostgreSQL (ADR-020, ADR-030 capability 2).`,
+      `the parked wait took ${wakeMs}ms to resolve after the gateway accepted the delivery. ` +
+        `That is at or beyond the degraded re-query interval, so notifications are NOT reaching ` +
+        `waiters — the signature of a transaction-mode pooler in front of PostgreSQL ` +
+        `(ADR-020, ADR-030 capability 2).`,
     );
-    console.log(`parked wait woke ${wakeMs}ms after SMTP delivery`);
+    console.log(`parked wait woke ${wakeMs}ms after the gateway accepted the delivery`);
   },
 );

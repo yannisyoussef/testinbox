@@ -86,7 +86,7 @@ class ReadinessIndicatorTest {
             prefix: String,
             olderThan: Instant,
         ): List<String> {
-            check(!failing) { "object storage unreachable at https://objects.example.internal (accessKey=AKIAEXAMPLE)" }
+            check(!failing) { "object storage unreachable at https://objects.example.internal (accessKey=fixture-key)" }
             return emptyList()
         }
     }

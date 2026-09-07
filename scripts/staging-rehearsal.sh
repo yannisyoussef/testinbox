@@ -65,7 +65,7 @@ trap cleanup EXIT
 mkdir -p "$WORK/tls"
 ENV_FILE="$WORK/.env"
 
-step "1/7 local registry (so images are deployed by real digest, as in production)"
+step "1/8 local registry (so images are deployed by real digest, as in production)"
 docker rm -f "$REGISTRY_NAME" >/dev/null 2>&1 || true
 docker run -d --name "$REGISTRY_NAME" -p "$REGISTRY_HOST:5000" registry:3 >/dev/null
 # Wait for it rather than sleeping blindly.
@@ -75,7 +75,7 @@ for _ in $(seq 1 60); do
 done
 curl -fsS "http://$REGISTRY_HOST/v2/" >/dev/null
 
-step "2/7 build and publish the immutable artifacts"
+step "2/8 build and publish the immutable artifacts"
 GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 # Plain variables rather than an associative array: macOS ships bash 3.2, and
 # this script has to run the same way on a developer machine and on a runner.
@@ -105,7 +105,7 @@ MIGRATOR_IMAGE="$(build_and_push migrator  deploy/docker/backend.Dockerfile --bu
 WEB_IMAGE="$(build_and_push web       deploy/docker/web.Dockerfile)"
 for ref in "$API_IMAGE" "$INGESTION_IMAGE" "$MIGRATOR_IMAGE" "$WEB_IMAGE"; do echo "  $ref"; done
 
-step "3/7 TLS material (a private CA, so verification stays ON in the synthetic suite)"
+step "3/8 TLS material (a private CA, so verification stays ON in the synthetic suite)"
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
   -keyout "$WORK/tls/ca.key" -out "$WORK/tls/ca.pem" \
   -subj "/CN=TestInbox Rehearsal CA" >/dev/null 2>&1
@@ -121,7 +121,7 @@ cat "$WORK/tls/leaf.pem" "$WORK/tls/ca.pem" > "$WORK/tls/fullchain.pem"
 chmod 644 "$WORK/tls/fullchain.pem" "$WORK/tls/ca.pem"
 chmod 600 "$WORK/tls/privkey.pem" "$WORK/tls/ca.key"
 
-step "4/7 environment"
+step "4/8 environment"
 # Generated per run: the rehearsal must never rely on a value that could also
 # be a real credential, and DeploymentSafety refuses local-development defaults.
 random() { LC_ALL=C tr -dc 'a-zA-Z0-9' </dev/urandom | head -c "${1:-40}"; }
@@ -171,18 +171,30 @@ ENV
 set -a; . "$ENV_FILE"; set +a
 export COMPOSE_ENV_FILES="$ENV_FILE"
 
-step "5/7 deploy (the same script a real host runs)"
+step "5/8 deploy (the same script a real host runs)"
 # The rehearsal registry replaces ghcr.io as the ownership root; the digest
 # pinning and image-name checks are exercised unchanged.
 EXPECTED_IMAGE_REPOSITORY="$REGISTRY_HOST" "$REPO_ROOT/deploy/staging/deploy.sh"
 
-step "6/7 build the public SDK this commit ships, for the synthetic suite"
+step "6/8 assert the wait notifier is on a real LISTEN connection"
+# Direct evidence, not inference. The synthetic suite can only observe wake-up
+# *latency* from outside; here the topology is ours, so read the mechanism
+# itself. A transaction-mode pooler would leave listening=false while the
+# product still worked — slower — which is precisely why it needs asserting.
+READINESS=$("${COMPOSE[@]}" exec -T api wget -q -O - http://127.0.0.1:9090/actuator/health/readiness)
+echo "$READINESS"
+case "$READINESS" in
+  *'"listening":true'*) echo "ok — LISTEN connection is live" ;;
+  *) echo "the API is not holding a LISTEN connection (ADR-020); wait latency would silently degrade" >&2; exit 1 ;;
+esac
+
+step "7/8 build the public SDK this commit ships, for the synthetic suite"
 ( cd "$REPO_ROOT/sdk/typescript" && npm ci --silent && npm run build --silent )
 # `npm ci` needs the SDK's dist/ to already exist: the synthetic package
 # depends on it through a file: reference.
 ( cd "$REPO_ROOT/deploy/synthetic" && npm ci --silent --no-audit --no-fund )
 
-step "7/7 post-deployment synthetic verification"
+step "8/8 post-deployment synthetic verification"
 # TLS verification stays ON: Node is pointed at the rehearsal CA rather than
 # told to ignore certificates.
 # `cd` rather than `npm --prefix`: --prefix relocates package.json but not the

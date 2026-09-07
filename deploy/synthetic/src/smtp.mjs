@@ -77,9 +77,15 @@ export async function sendRawSmtp({ host, port, from, to, raw, timeoutMs = 30_00
     const body = Buffer.from(raw).toString("latin1").replace(/\r?\n/g, "\r\n").replace(/^\./gm, "..");
     socket.write(body.endsWith("\r\n") ? body : `${body}\r\n`);
     const accepted = await send(".", 250);
+    // The instant the gateway said 250, the delivery was persisted and
+    // pg_notify had been issued in the same transaction (ADR-020). Callers
+    // measuring wake-up latency must start from here, not from when they began
+    // sending — everything before this point is connection setup, transfer,
+    // MIME parsing and the blob write, none of which is notification latency.
+    const acceptedAt = Date.now();
 
     await send("QUIT", 221);
-    return { rcptReply: rcpt, dataReply: accepted, transcript };
+    return { rcptReply: rcpt, dataReply: accepted, acceptedAt, transcript };
   } finally {
     socket.end();
     socket.destroy();
