@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import https from "node:https";
 import { config } from "../src/env.mjs";
+import { classifyUnknownHostProbe } from "../src/edge.mjs";
 
 /**
  * The edge's own claims, asserted against the deployed ingress (§10/§12).
@@ -74,12 +75,18 @@ test("plaintext HTTP redirects to HTTPS and never serves content", async (t) => 
   );
 });
 
-test("an unrecognised Host does not fall through into the TestInbox vhost", async () => {
+test("an unrecognised Host is not served by TestInbox", async () => {
+  // The invariant, not one edge's mechanism. nginx (`return 444`) drops the
+  // connection; Cloudflare/Traefik answer a 4xx. Both refuse. What must never
+  // happen is TestInbox answering — including with a 404 of its own, which
+  // would mean the request was routed to the application after all. See
+  // `src/edge.mjs`; its branches have their own self-tests.
+  //
   // fetch() forbids overriding Host, so this drops to the raw client. SNI stays
-  // `localhost` (the certificate is valid for it) while the HTTP Host header is
-  // something else — which is exactly how a misrouted vhost would be probed.
+  // the real hostname (the certificate is valid for it) while the HTTP Host
+  // header is something else — which is exactly how a misrouted vhost is probed.
   const url = new URL(config.baseUrl);
-  const result = await new Promise((resolve) => {
+  const probe = await new Promise((resolve) => {
     const request = https.request(
       {
         host: url.hostname,
@@ -90,18 +97,31 @@ test("an unrecognised Host does not fall through into the TestInbox vhost", asyn
         headers: { Host: "not-testinbox.example.com" },
       },
       (response) => {
-        response.resume();
-        resolve({ status: response.statusCode });
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          // Bounded: an edge error page is small, and a large body would only
+          // slow the probe down. Enough to see any application fingerprint.
+          if (body.length < 16_384) body += chunk;
+        });
+        response.on("end", () =>
+          resolve({ status: response.statusCode, headers: response.headers, body }),
+        );
       },
     );
     request.on("error", (error) => resolve({ error: error.code ?? error.message }));
+    request.setTimeout(15_000, () => {
+      request.destroy();
+      resolve({ error: "ETIMEDOUT" });
+    });
     request.end();
   });
 
-  // nginx `return 444` closes without a response, which the client sees as a
-  // reset. Anything with a status code means the request was served.
-  assert.ok(
-    result.error !== undefined,
-    `an unmatched Host was served with status ${result.status}; it must hit the default_server and be dropped`,
+  const verdict = classifyUnknownHostProbe(probe);
+  assert.equal(
+    verdict.served,
+    false,
+    `an unrecognised Host must not be served by TestInbox — ${verdict.reason}`,
   );
+  console.log(`unknown Host: ${verdict.reason}`);
 });

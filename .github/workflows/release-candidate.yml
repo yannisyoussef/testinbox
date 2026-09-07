@@ -1,0 +1,68 @@
+name: Release candidate
+
+# The production-promotion gate. It gates; it does NOT deploy — there is no
+# production deployment in this repository, and this workflow does not create
+# one (it never pushes an image and never contacts Ops).
+#
+# It exists because ADR-028 §6, as amended, applies a stricter vulnerability
+# policy to promotion than to day-to-day development: HIGH/CRITICAL findings
+# that have a fix available block a release, while the same findings are
+# informational on develop. Without something running on the master path, that
+# stricter half of the policy would be a paragraph nobody enforces.
+#
+# `master` is the production-approved candidate. Reaching it is a human
+# decision (docs/dev/release-process.md); this makes one of the conditions for
+# that decision machine-checked.
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  vulnerability-policy:
+    name: Promotion vulnerability policy
+    uses: ./.github/workflows/build-images.yml
+    permissions:
+      contents: read
+    with:
+      # Never publishes: promotion deploys the digests that were already built
+      # and validated on develop (ADR-028 build-once/promote-many). This build
+      # exists only to have something to scan.
+      push: false
+      enforce_vulnerability_policy: true
+
+  migration-policy:
+    name: Migration rollback safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Self-test the gate
+        run: ./scripts/check-migration-safety.test.sh
+      - name: Check migrations
+        id: migrations
+        continue-on-error: true
+        run: ./scripts/check-migration-safety.sh
+      - name: Apply promotion policy
+        run: |
+          # Exit 3 means a migration DECLARED itself rollback-unsafe. That is
+          # allowed to reach develop — it is visible and deliberate — but it
+          # must not slip into a release unnoticed, because artifact rollback
+          # across it does not work (docs/dev/rollback.md).
+          case "${{ steps.migrations.outcome }}" in
+            success) echo "All migrations are expand-only; artifact rollback remains available." ;;
+            *)
+              {
+                echo "## Release blocked: migration rollback safety"
+                echo
+                echo "This release range contains a migration that is rollback-breaking."
+                echo "See the gate output above and \`docs/dev/release-process.md\`; a"
+                echo "declared-unsafe migration needs explicit release handling, not a"
+                echo "silent promotion."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::error::migration rollback-safety gate did not pass"
+              exit 1 ;;
+          esac

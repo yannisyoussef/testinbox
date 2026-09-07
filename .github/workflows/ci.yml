@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    # `develop` included deliberately. A merge to develop hands a release
+    # candidate to Ops; running the full suite on the merge commit is what
+    # makes "the artifacts Ops received were tested" true rather than assumed.
+    # Until branch protection requires these checks (docs/dev/release-process.md),
+    # this is the only thing that runs them on the merged result at all.
+    branches: [main, master, develop]
   pull_request:
 
 # Action majors are current as of this revision (checkout v7, setup-java v6,
@@ -58,6 +63,12 @@ jobs:
         run: |
           ./scripts/validate-image-digest.test.sh
           ./scripts/deploy-preflight.test.sh
+          ./scripts/gitlab-handoff.test.sh
+          ./scripts/check-migration-safety.test.sh
+      # ADR-029 §6: artifact rollback holds only while migrations are
+      # expand-only. This is the gate; CODEOWNERS covers what it cannot see.
+      - name: Migration rollback-safety gate
+        run: ./scripts/check-migration-safety.sh
       - name: Shell syntax of the deployment scripts
         run: |
           for script in scripts/*.sh deploy/staging/*.sh; do

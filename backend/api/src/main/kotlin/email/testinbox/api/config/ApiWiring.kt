@@ -5,13 +5,17 @@ import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.port.ApiKeyRepository
 import email.testinbox.application.port.BlobStore
+import email.testinbox.application.port.BlobStoreMetrics
 import email.testinbox.application.port.ExactAddressReservations
+import email.testinbox.application.port.InboxMetrics
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
+import email.testinbox.application.port.NotifierMetrics
 import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.TransactionRunner
+import email.testinbox.application.port.WaitMetrics
 import email.testinbox.application.port.WaitSlots
 import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.application.query.InboxQueries
@@ -24,7 +28,12 @@ import email.testinbox.application.usecase.OrphanBlobSweep
 import email.testinbox.application.usecase.WaitForMessage
 import email.testinbox.notification.PgListenNotifier
 import email.testinbox.notification.PgListenNotifierConfig
+import email.testinbox.observability.BuildInfoMetric
+import email.testinbox.observability.MicrometerBlobStoreMetrics
+import email.testinbox.observability.MicrometerInboxMetrics
 import email.testinbox.observability.MicrometerLimitMetrics
+import email.testinbox.observability.MicrometerNotifierMetrics
+import email.testinbox.observability.MicrometerWaitMetrics
 import email.testinbox.persistence.BundledMigrations
 import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.persistence.JdbcSchemaHistory
@@ -70,6 +79,36 @@ class ApiWiring(
     fun limitMetrics(registry: io.micrometer.core.instrument.MeterRegistry): LimitMetrics = MicrometerLimitMetrics(registry)
 
     @Bean
+    fun inboxMetrics(registry: io.micrometer.core.instrument.MeterRegistry): InboxMetrics = MicrometerInboxMetrics(registry)
+
+    @Bean
+    fun waitMetrics(registry: io.micrometer.core.instrument.MeterRegistry): WaitMetrics = MicrometerWaitMetrics(registry)
+
+    @Bean
+    fun blobStoreMetrics(registry: io.micrometer.core.instrument.MeterRegistry): BlobStoreMetrics = MicrometerBlobStoreMetrics(registry)
+
+    @Bean
+    fun notifierMetrics(registry: io.micrometer.core.instrument.MeterRegistry): NotifierMetrics = MicrometerNotifierMetrics(registry)
+
+    /**
+     * "Which build is this?" answered from the same place Ops reads everything
+     * else (TI-DEPLOY-002 §13). The image digest is deliberately not a label:
+     * an image cannot know its own digest, and a value invented here would be a
+     * convincing lie in the one metric whose whole job is identity.
+     */
+    @Bean
+    fun buildInfoMetric(
+        registry: io.micrometer.core.instrument.MeterRegistry,
+        properties: TestInboxProperties,
+    ): BuildInfoMetric =
+        BuildInfoMetric(
+            registry,
+            service = "testinbox-api",
+            gitSha = properties.deployment.gitSha,
+            version = javaClass.`package`?.implementationVersion ?: "unknown",
+        )
+
+    @Bean
     fun rateLimiter(
         jdbc: JdbcClient,
         transactionManager: PlatformTransactionManager,
@@ -77,7 +116,10 @@ class ApiWiring(
     ): RateLimiter = JdbcRateLimiter(jdbc, transactionManager) { category, perInbox -> limits.rateFor(category, perInbox) }
 
     @Bean(destroyMethod = "close")
-    fun blobStore(properties: TestInboxProperties): BlobStore =
+    fun blobStore(
+        properties: TestInboxProperties,
+        metrics: BlobStoreMetrics,
+    ): BlobStore =
         S3BlobStore(
             S3BlobStoreConfig(
                 endpoint = properties.storage.endpoint,
@@ -87,6 +129,7 @@ class ApiWiring(
                 bucket = properties.storage.bucket,
                 createBucket = properties.storage.createBucket,
             ),
+            metrics,
         )
 
     /**
@@ -112,13 +155,17 @@ class ApiWiring(
     }
 
     @Bean(initMethod = "start", destroyMethod = "close")
-    fun messageNotifier(dataSourceProperties: DataSourceProperties): PgListenNotifier =
+    fun messageNotifier(
+        dataSourceProperties: DataSourceProperties,
+        metrics: NotifierMetrics,
+    ): PgListenNotifier =
         PgListenNotifier(
             PgListenNotifierConfig(
                 jdbcUrl = dataSourceProperties.determineUrl(),
                 username = dataSourceProperties.determineUsername().orEmpty(),
                 password = dataSourceProperties.determinePassword().orEmpty(),
             ),
+            metrics,
         )
 
     @Bean
@@ -130,7 +177,8 @@ class ApiWiring(
         limits: LimitsConfig,
         config: TestInboxConfig,
         metrics: LimitMetrics,
-    ): CreateInbox = CreateInbox(inboxes, reservations, tx, quotas, limits.quotas, clock, config, metrics)
+        inboxMetrics: InboxMetrics,
+    ): CreateInbox = CreateInbox(inboxes, reservations, tx, quotas, limits.quotas, clock, config, metrics, inboxMetrics)
 
     @Bean
     fun deleteInbox(
@@ -139,7 +187,8 @@ class ApiWiring(
         tx: TransactionRunner,
         clock: Clock,
         config: TestInboxConfig,
-    ): DeleteInbox = DeleteInbox(inboxes, reservations, tx, clock, config)
+        metrics: InboxMetrics,
+    ): DeleteInbox = DeleteInbox(inboxes, reservations, tx, clock, config, metrics)
 
     @Bean
     fun waitForMessage(
@@ -148,9 +197,22 @@ class ApiWiring(
         notifier: MessageNotifier,
         waitSlots: WaitSlots,
         limits: LimitsConfig,
+        limitMetrics: LimitMetrics,
         clock: Clock,
         config: TestInboxConfig,
-    ): WaitForMessage = WaitForMessage(inboxes, messages, notifier, waitSlots, limits.quotas.maxConcurrentWaits, clock, config)
+        waitMetrics: WaitMetrics,
+    ): WaitForMessage =
+        WaitForMessage(
+            inboxes,
+            messages,
+            notifier,
+            waitSlots,
+            limits.quotas.maxConcurrentWaits,
+            clock,
+            config,
+            metrics = limitMetrics,
+            waitMetrics = waitMetrics,
+        )
 
     @Bean
     fun expireInboxes(
@@ -159,7 +221,8 @@ class ApiWiring(
         blobs: BlobStore,
         tx: TransactionRunner,
         config: TestInboxConfig,
-    ): ExpireInboxes = ExpireInboxes(inboxes, reservations, blobs, tx, clock, config)
+        metrics: InboxMetrics,
+    ): ExpireInboxes = ExpireInboxes(inboxes, reservations, blobs, tx, clock, config, metrics)
 
     @Bean
     fun orphanBlobSweep(

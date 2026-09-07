@@ -4,6 +4,7 @@ import email.testinbox.application.ObjectKeys
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.ExactAddressReservations
+import email.testinbox.application.port.InboxMetrics
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.domain.inbox.AddressMode
@@ -24,6 +25,7 @@ class ExpireInboxes(
     private val tx: TransactionRunner,
     private val clock: Clock,
     private val config: TestInboxConfig,
+    private val metrics: InboxMetrics = InboxMetrics.NOOP,
 ) {
     data class SweepReport(
         val markedExpiring: Int,
@@ -60,6 +62,10 @@ class ExpireInboxes(
             deleted++
         }
 
+        // Counts the EXPIRED transition, not the hard delete: expiry is the
+        // lifecycle event (ADR-009), and the hard delete that follows is the
+        // sweep reclaiming storage for something already expired.
+        metrics.inboxExpired(expired)
         if (expiring + expired + deleted > 0) {
             log.info("inbox_sweep expiring={} expired={} hardDeleted={}", expiring, expired, deleted)
         }

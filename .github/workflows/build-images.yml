@@ -20,6 +20,13 @@ on:
         description: Push to GHCR and emit digests. False builds only (pull requests).
         type: boolean
         default: false
+      enforce_vulnerability_policy:
+        description: >
+          Block on HIGH/CRITICAL vulnerabilities that have a fix available
+          (ADR-028 §6 as amended). True on the production-promotion path;
+          false for develop and pull requests, where scanning is informational.
+        type: boolean
+        default: false
     outputs:
       api-digest:
         value: ${{ jobs.build.outputs.api-digest }}
@@ -225,21 +232,69 @@ jobs:
           subject-digest: ${{ steps.web.outputs.digest }}
           push-to-registry: true
 
-      # Informational, consistent with the OSV-Scanner posture in
-      # docs/quality/strategy.md: a CVE published in a base image is not a
-      # regression introduced by the merge that happens to run next, and
-      # blocking every deployment on the CVE backlog is the noisy-gate failure
-      # mode that gets scanners switched off. Findings are visible here and are
-      # remediated by moving the base image.
-      - name: Container vulnerability scan (informational)
-        if: inputs.push
-        continue-on-error: true
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.REGISTRY }}/testinbox-api@${{ steps.api.outputs.digest }}
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
+      # ADR-028 §6, as amended by TI-DEPLOY-002 §14. Two modes, and the
+      # difference is deliberate:
+      #
+      #   develop / pull request — INFORMATIONAL. A CVE disclosed in a base
+      #   image overnight is not a regression introduced by the change that
+      #   happens to build next, and blocking unrelated staging work on it is
+      #   the noisy-gate failure mode that ends with the scanner switched off.
+      #
+      #   production promotion — BLOCKING on HIGH/CRITICAL, but only where a
+      #   fix exists (`--ignore-unfixed`). Refusing to promote over a
+      #   vulnerability nobody can remediate does not make the release safer;
+      #   it just means the release does not happen, which is usually worse.
+      #
+      # Installed as a CLI rather than the action so both modes and all four
+      # images live in one readable place, matching how gitleaks and
+      # OSV-Scanner are already run in ci.yml.
+      - name: Container vulnerability scan (${{ inputs.enforce_vulnerability_policy && 'blocking' || 'informational' }})
+        continue-on-error: ${{ !inputs.enforce_vulnerability_policy }}
+        env:
+          TRIVY_VERSION: 0.68.0
+          ENFORCE: ${{ inputs.enforce_vulnerability_policy }}
+        run: |
+          set -uo pipefail
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            | tar xz -C /tmp trivy
+          if [[ "$ENFORCE" == "true" ]]; then
+            exit_code=1
+            echo "policy: BLOCKING on HIGH/CRITICAL with a fix available"
+          else
+            exit_code=0
+            echo "policy: informational — findings are reported, the build is not blocked"
+          fi
+
+          failed=0
+          for image in api ingestion migrator web; do
+            if [[ "${{ inputs.push }}" == "true" ]]; then
+              case "$image" in
+                api)       ref="${REGISTRY}/testinbox-api@${{ steps.api.outputs.digest }}" ;;
+                ingestion) ref="${REGISTRY}/testinbox-ingestion@${{ steps.ingestion.outputs.digest }}" ;;
+                migrator)  ref="${REGISTRY}/testinbox-migrator@${{ steps.migrator.outputs.digest }}" ;;
+                web)       ref="${REGISTRY}/testinbox-web@${{ steps.web.outputs.digest }}" ;;
+              esac
+            else
+              ref="${REGISTRY}/testinbox-${image}:${{ github.sha }}"
+            fi
+            echo "::group::trivy $image"
+            # --ignore-unfixed in BOTH modes: an unfixed finding is information,
+            # never a reason a release cannot ship.
+            /tmp/trivy image \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --exit-code "$exit_code" \
+              --format table \
+              --no-progress \
+              "$ref" || failed=1
+            echo "::endgroup::"
+          done
+
+          if [[ "$ENFORCE" == "true" && "$failed" == "1" ]]; then
+            echo "::error::HIGH/CRITICAL vulnerabilities with available fixes block promotion (ADR-028 §6)"
+            exit 1
+          fi
+          exit 0
 
       - name: Record digests
         if: inputs.push

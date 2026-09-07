@@ -4,15 +4,22 @@ import email.testinbox.application.LimitsConfig
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.port.BlobStore
+import email.testinbox.application.port.BlobStoreMetrics
+import email.testinbox.application.port.InboundMetrics
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.MimeParser
 import email.testinbox.application.port.RateLimiter
+import email.testinbox.application.port.SmtpMetrics
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.ingestion.mime.JakartaMimeParser
+import email.testinbox.observability.BuildInfoMetric
+import email.testinbox.observability.MicrometerBlobStoreMetrics
+import email.testinbox.observability.MicrometerInboundMetrics
 import email.testinbox.observability.MicrometerLimitMetrics
+import email.testinbox.observability.MicrometerSmtpMetrics
 import email.testinbox.persistence.BundledMigrations
 import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.persistence.JdbcSchemaHistory
@@ -33,7 +40,10 @@ class IngestionWiring {
     fun testInboxConfig(properties: IngestionProperties): TestInboxConfig = properties.toConfig()
 
     @Bean(destroyMethod = "close")
-    fun blobStore(properties: IngestionProperties): BlobStore =
+    fun blobStore(
+        properties: IngestionProperties,
+        metrics: BlobStoreMetrics,
+    ): BlobStore =
         S3BlobStore(
             S3BlobStoreConfig(
                 endpoint = properties.storage.endpoint,
@@ -43,6 +53,7 @@ class IngestionWiring {
                 bucket = properties.storage.bucket,
                 createBucket = properties.storage.createBucket,
             ),
+            metrics,
         )
 
     /**
@@ -84,6 +95,28 @@ class IngestionWiring {
     fun limitMetrics(registry: io.micrometer.core.instrument.MeterRegistry): LimitMetrics = MicrometerLimitMetrics(registry)
 
     @Bean
+    fun inboundMetrics(registry: io.micrometer.core.instrument.MeterRegistry): InboundMetrics = MicrometerInboundMetrics(registry)
+
+    @Bean
+    fun smtpMetrics(registry: io.micrometer.core.instrument.MeterRegistry): SmtpMetrics = MicrometerSmtpMetrics(registry)
+
+    @Bean
+    fun blobStoreMetrics(registry: io.micrometer.core.instrument.MeterRegistry): BlobStoreMetrics = MicrometerBlobStoreMetrics(registry)
+
+    /** See the API's equivalent: build identity, never a fabricated digest. */
+    @Bean
+    fun buildInfoMetric(
+        registry: io.micrometer.core.instrument.MeterRegistry,
+        properties: IngestionProperties,
+    ): BuildInfoMetric =
+        BuildInfoMetric(
+            registry,
+            service = "testinbox-ingestion",
+            gitSha = properties.deployment.gitSha,
+            version = javaClass.`package`?.implementationVersion ?: "unknown",
+        )
+
+    @Bean
     fun rateLimiter(
         jdbc: JdbcClient,
         transactionManager: PlatformTransactionManager,
@@ -102,5 +135,18 @@ class IngestionWiring {
         transactions: TransactionRunner,
         rateLimiter: RateLimiter,
         clock: Clock,
-    ): ReceiveInboundDelivery = ReceiveInboundDelivery(inboxes, messages, blobs, parser, transactions, rateLimiter, clock)
+        limitMetrics: LimitMetrics,
+        inboundMetrics: InboundMetrics,
+    ): ReceiveInboundDelivery =
+        ReceiveInboundDelivery(
+            inboxes,
+            messages,
+            blobs,
+            parser,
+            transactions,
+            rateLimiter,
+            clock,
+            metrics = limitMetrics,
+            inboundMetrics = inboundMetrics,
+        )
 }
