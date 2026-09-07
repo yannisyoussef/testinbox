@@ -1,0 +1,214 @@
+name: Build images
+
+# Reusable immutable-artifact build (ADR-028). Called by CI on pull requests to
+# prove the images still build, and by the staging deployment on `develop` to
+# produce the artifacts that are actually deployed.
+#
+# Build once, promote many: this is the ONLY place images are built. Staging
+# deploys what it outputs; a future production promotion deploys the same
+# digests. No environment ever rebuilds from source.
+#
+# Deliberately ONE job rather than a matrix. A matrix job can only contribute
+# to the workflow's outputs through its own `outputs` map, and every parallel
+# leg evaluates every key — so the three legs that did not produce a given
+# digest would overwrite the one that did with an empty string. Sequential also
+# lets the three backend images share the builder layers.
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: Push to GHCR and emit digests. False builds only (pull requests).
+        type: boolean
+        default: false
+    outputs:
+      api-digest:
+        value: ${{ jobs.build.outputs.api-digest }}
+      ingestion-digest:
+        value: ${{ jobs.build.outputs.ingestion-digest }}
+      migrator-digest:
+        value: ${{ jobs.build.outputs.migrator-digest }}
+      web-digest:
+        value: ${{ jobs.build.outputs.web-digest }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ inputs.push && 'and push' || '(no push)' }} OCI images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Least privilege, and only the workflow's own short-lived identity —
+      # no long-lived registry password exists anywhere (ADR-028 §3).
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      api-digest: ${{ steps.api.outputs.digest }}
+      ingestion-digest: ${{ steps.ingestion.outputs.digest }}
+      migrator-digest: ${{ steps.migrator.outputs.digest }}
+      web-digest: ${{ steps.web.outputs.digest }}
+    env:
+      REGISTRY: ghcr.io/${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: inputs.push
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags are convenience aliases only; the digest is the deployment
+      # identity, and `latest` is deliberately never published (ADR-028 §2).
+      - name: Build api
+        id: api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/backend.Dockerfile
+          build-args: |
+            MODULE=api
+            GIT_SHA=${{ github.sha }}
+          push: ${{ inputs.push }}
+          load: ${{ !inputs.push }}
+          tags: |
+            ${{ env.REGISTRY }}/testinbox-api:${{ github.sha }}
+            ${{ env.REGISTRY }}/testinbox-api:${{ github.ref_name }}
+          provenance: ${{ inputs.push }}
+          sbom: ${{ inputs.push }}
+          cache-from: type=gha,scope=backend-api
+          cache-to: type=gha,scope=backend-api,mode=max
+
+      - name: Build ingestion
+        id: ingestion
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/backend.Dockerfile
+          build-args: |
+            MODULE=ingestion
+            GIT_SHA=${{ github.sha }}
+          push: ${{ inputs.push }}
+          load: ${{ !inputs.push }}
+          tags: |
+            ${{ env.REGISTRY }}/testinbox-ingestion:${{ github.sha }}
+            ${{ env.REGISTRY }}/testinbox-ingestion:${{ github.ref_name }}
+          provenance: ${{ inputs.push }}
+          sbom: ${{ inputs.push }}
+          cache-from: type=gha,scope=backend-ingestion
+          cache-to: type=gha,scope=backend-ingestion,mode=max
+
+      - name: Build migrator
+        id: migrator
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/backend.Dockerfile
+          build-args: |
+            MODULE=migrator
+            GIT_SHA=${{ github.sha }}
+          push: ${{ inputs.push }}
+          load: ${{ !inputs.push }}
+          tags: |
+            ${{ env.REGISTRY }}/testinbox-migrator:${{ github.sha }}
+            ${{ env.REGISTRY }}/testinbox-migrator:${{ github.ref_name }}
+          provenance: ${{ inputs.push }}
+          sbom: ${{ inputs.push }}
+          cache-from: type=gha,scope=backend-migrator
+          cache-to: type=gha,scope=backend-migrator,mode=max
+
+      - name: Build web
+        id: web
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/web.Dockerfile
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          push: ${{ inputs.push }}
+          load: ${{ !inputs.push }}
+          tags: |
+            ${{ env.REGISTRY }}/testinbox-web:${{ github.sha }}
+            ${{ env.REGISTRY }}/testinbox-web:${{ github.ref_name }}
+          provenance: ${{ inputs.push }}
+          sbom: ${{ inputs.push }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+      # A real gate, not documentation: the Dockerfile's USER line is one
+      # deletion away from silently producing root containers, and nothing else
+      # in the pipeline would notice.
+      - name: Assert every runtime image runs as a non-root user
+        run: |
+          set -euo pipefail
+          fail=0
+          assert_nonroot() {
+            local ref="$1"
+            local uid
+            uid=$(docker run --rm --entrypoint sh "$ref" -c 'id -u')
+            if [[ "$uid" == "0" ]]; then
+              echo "::error::$ref runs as root (uid 0)"
+              fail=1
+            else
+              echo "ok — $ref runs as uid $uid"
+            fi
+          }
+          for image in api ingestion migrator web; do
+            if [[ "${{ inputs.push }}" == "true" ]]; then
+              # Address the pushed artifact by digest, so the assertion is made
+              # about the exact bytes that will be deployed.
+              case "$image" in
+                api)       digest='${{ steps.api.outputs.digest }}' ;;
+                ingestion) digest='${{ steps.ingestion.outputs.digest }}' ;;
+                migrator)  digest='${{ steps.migrator.outputs.digest }}' ;;
+                web)       digest='${{ steps.web.outputs.digest }}' ;;
+              esac
+              assert_nonroot "${REGISTRY}/testinbox-${image}@${digest}"
+            else
+              assert_nonroot "${REGISTRY}/testinbox-${image}:${{ github.sha }}"
+            fi
+          done
+          exit "$fail"
+
+      - name: Attest build provenance
+        if: inputs.push
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ env.REGISTRY }}/testinbox-api
+          subject-digest: ${{ steps.api.outputs.digest }}
+          push-to-registry: true
+
+      # Informational, consistent with the OSV-Scanner posture in
+      # docs/quality/strategy.md: a CVE published in a base image is not a
+      # regression introduced by the merge that happens to run next, and
+      # blocking every deployment on the CVE backlog is the noisy-gate failure
+      # mode that gets scanners switched off. Findings are visible here and are
+      # remediated by moving the base image.
+      - name: Container vulnerability scan (informational)
+        if: inputs.push
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ env.REGISTRY }}/testinbox-api@${{ steps.api.outputs.digest }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+      - name: Record digests
+        if: inputs.push
+        run: |
+          {
+            echo "### Immutable artifacts"
+            echo
+            echo "| image | digest |"
+            echo "|---|---|"
+            echo "| testinbox-api | \`${{ steps.api.outputs.digest }}\` |"
+            echo "| testinbox-ingestion | \`${{ steps.ingestion.outputs.digest }}\` |"
+            echo "| testinbox-migrator | \`${{ steps.migrator.outputs.digest }}\` |"
+            echo "| testinbox-web | \`${{ steps.web.outputs.digest }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
