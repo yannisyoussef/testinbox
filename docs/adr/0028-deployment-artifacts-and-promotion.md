@@ -16,12 +16,12 @@ dependency resolution drifts, a build-time network fetch returns something
 different. "It passed in staging" then says nothing about the bytes that
 reach production.
 
-The repository has three deployable processes today: the REST API
-(`backend/api`), the inbound SMTP gateway (`backend/ingestion`) — separate
-deployables since ADR-001 — and the Next.js inspection UI (`web`). ADR-013
-keeps them in one monorepo, and ADR-023 already distinguishes the backend's
-*private* runtime choice (Java 25) from the SDKs' *public* distribution
-contract.
+The repository has three long-running deployable processes today: the REST API
+(`backend/api`) and the inbound SMTP gateway (`backend/ingestion`), which
+ADR-001 keeps as separate deployables, plus the Next.js inspection UI (`web`),
+which ADR-013 places in the same monorepo. ADR-029 adds a fourth, one-shot one:
+the migration executor. ADR-023 already distinguishes the backend's *private*
+runtime choice (Java 25) from the SDKs' *public* distribution contract.
 
 ## Decision
 

@@ -152,17 +152,35 @@ class DependencyRuleTest {
     }
 
     @Test
-    fun `the schema-compatibility policy lives in the application layer, not in an adapter (ADR-029)`() {
-        // Readiness against a schema this artifact predates is a policy, and a
-        // policy written once per deployable is a policy that drifts — the two
-        // processes would disagree about whether the environment is safe.
-        // Adapters may implement the SchemaHistory port; the decision is not
-        // theirs.
+    fun `the migration history is read by exactly one adapter (ADR-029)`() {
+        // The port may only be implemented where the system of record lives. A
+        // second implementation — an entry point reading flyway_schema_history
+        // for itself — is how the two deployables start disagreeing about
+        // whether the environment is safe to serve.
+        classes()
+            .that()
+            .implement(email.testinbox.application.deployment.SchemaHistory::class.java)
+            .should()
+            .resideInAPackage("email.testinbox.persistence..")
+            .because("the schema history is a persistence concern (ADR-024, ADR-029 §4)")
+            .check(allClasses)
+    }
+
+    @Test
+    fun `entry points consume the schema verdict, never the raw versions (ADR-029)`() {
+        // SchemaVersion and AppliedSchema are the inputs to the comparison, and
+        // an adapter that holds them is an adapter about to redo it. Entry
+        // points get SchemaStatus — already decided, already rendered — so
+        // this rule fails the moment a second copy of the policy appears.
         noClasses()
             .that()
-            .resideInAnyPackage("email.testinbox.api..", "email.testinbox.ingestion..", "email.testinbox.persistence..")
+            .resideInAnyPackage("email.testinbox.api..", "email.testinbox.ingestion..")
             .should()
-            .beAssignableTo(email.testinbox.application.deployment.SchemaCompatibility::class.java)
+            .dependOnClassesThat()
+            .haveFullyQualifiedName(email.testinbox.application.deployment.SchemaVersion::class.java.name)
+            .orShould()
+            .dependOnClassesThat()
+            .haveFullyQualifiedName(email.testinbox.application.deployment.AppliedSchema::class.java.name)
             .because("schema compatibility is decided once, in the application layer (ADR-024, ADR-029 §4)")
             .check(allClasses)
     }

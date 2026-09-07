@@ -37,19 +37,20 @@ export const config = Object.freeze({
   waitWindowSeconds: optionalInt("TESTINBOX_WAIT_WINDOW_SECONDS", 60),
   /** How long a wait is left parked before the message is delivered (§18). */
   parkedWaitSeconds: optionalInt("TESTINBOX_PARKED_WAIT_SECONDS", 10),
+  /** Plaintext origin, when the environment has one — used to prove it only redirects. */
+  httpBaseUrl: process.env.TESTINBOX_HTTP_BASE_URL?.trim() || undefined,
 });
 
-export function assertHttps(url) {
-  if (!url.startsWith("https://")) {
-    // Not a style rule: a synthetic run over plaintext would prove the ingress
-    // works while proving nothing about the TLS termination it hides behind.
-    throw new Error(
-      `TESTINBOX_BASE_URL must be https:// (got ${url.split("://")[0]}://…). ` +
-        `Set TESTINBOX_ALLOW_PLAINTEXT=1 only for a deliberately plaintext environment.`,
-    );
-  }
-}
-
-if (!process.env.TESTINBOX_ALLOW_PLAINTEXT) {
-  assertHttps(config.baseUrl);
+/**
+ * No opt-out. A plaintext run would send `TESTINBOX_API_KEY` in the clear while
+ * proving nothing about the TLS termination it is supposed to be exercising —
+ * and an escape hatch for that is the kind that ends up set in CI.
+ * Against a private CA, trust the CA (`NODE_EXTRA_CA_CERTS`); do not drop to
+ * plaintext and do not disable verification.
+ */
+if (!config.baseUrl.startsWith("https://")) {
+  throw new Error(
+    `TESTINBOX_BASE_URL must be https:// (got ${config.baseUrl.split("://")[0]}://…). ` +
+      `For a private CA, set NODE_EXTRA_CA_CERTS instead.`,
+  );
 }

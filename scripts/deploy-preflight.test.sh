@@ -18,13 +18,29 @@ DIGEST="sha256:$(printf 'b%.0s' {1..64})"
 STUB_DIR=$(mktemp -d)
 trap 'rm -rf "$STUB_DIR"' EXIT
 
-# A `docker` that never does anything but leaves a trace that it was invoked.
+# A `docker` that records every invocation and fails on the first one. Used for
+# the "nothing is touched" cases.
 cat >"$STUB_DIR/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$DOCKER_STUB_MARKER"
 exit 97
 STUB
 chmod +x "$STUB_DIR/docker"
+
+# A `docker` that lets the pull succeed and then FAILS THE MIGRATION, recording
+# whether the script went on to start any service. This is the ordering the
+# file header calls the point, and it is the one with real consequences: a
+# deployment that starts services against a schema the migration did not apply.
+cat >"$STUB_DIR/docker-failing-migration" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$DOCKER_STUB_MARKER"
+case "$*" in
+  *" run "*migrator*) exit 3 ;;   # the migration job fails
+  *" up "*)           exit 0 ;;   # would start services — must never be reached
+  *)                  exit 0 ;;   # pull, ps, exec, ...
+esac
+STUB
+chmod +x "$STUB_DIR/docker-failing-migration"
 
 run_deploy() {
   rm -f "$STUB_DIR/marker"
@@ -80,6 +96,49 @@ check "a mutable tag is refused before the pull" 1 false env \
 # still fails non-zero because the stub does. Without this the three tests
 # above would also pass for a script that aborted for the wrong reason.
 check "a valid digest set proceeds to docker and propagates its failure" 97 true "${valid_env[@]}"
+
+# --- the ordering that matters -----------------------------------------------
+# A failed migration must abort BEFORE any service is started or updated
+# (ADR-029 §3). Nothing else in the suite reaches past the pull.
+rm -f "$STUB_DIR/marker"
+cp "$STUB_DIR/docker-failing-migration" "$STUB_DIR/docker"
+DOCKER_STUB_MARKER="$STUB_DIR/marker" \
+PATH="$STUB_DIR:$PATH" \
+EXPECTED_IMAGE_REPOSITORY="ghcr.io/testowner" \
+  "${valid_env[@]}" "$DEPLOY" >/dev/null 2>&1
+migration_status=$?
+
+if [[ "$migration_status" != "0" ]] && ! grep -qE '(^| )up ' "$STUB_DIR/marker"; then
+  echo "ok   — a failed migration aborts before any service is started"
+  pass=$((pass + 1))
+else
+  echo "FAIL — a failed migration did not stop the deployment (exit $migration_status)"
+  echo "       docker invocations:"; sed 's/^/         /' "$STUB_DIR/marker"
+  fail=$((fail + 1))
+fi
+
+# Positive control for the check above: with a migration that SUCCEEDS, the
+# script must reach `up`. Without this, the assertion would also pass for a
+# script that never starts anything under any circumstances.
+cat >"$STUB_DIR/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$DOCKER_STUB_MARKER"
+exit 0
+STUB
+chmod +x "$STUB_DIR/docker"
+rm -f "$STUB_DIR/marker"
+DOCKER_STUB_MARKER="$STUB_DIR/marker" \
+PATH="$STUB_DIR:$PATH" \
+EXPECTED_IMAGE_REPOSITORY="ghcr.io/testowner" \
+  "${valid_env[@]}" "$DEPLOY" >/dev/null 2>&1
+
+if grep -qE '(^| )up ' "$STUB_DIR/marker"; then
+  echo "ok   — a successful migration is followed by starting the services"
+  pass=$((pass + 1))
+else
+  echo "FAIL — services were never started even though the migration succeeded"
+  fail=$((fail + 1))
+fi
 
 echo "----"
 echo "deploy-preflight.test.sh: $pass passed, $fail failed"

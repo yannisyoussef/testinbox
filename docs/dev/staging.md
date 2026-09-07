@@ -90,17 +90,34 @@ returns 404 for `/actuator` as a second lock.
 | `/actuator/health/readiness` (api) | can this instance serve TestInbox traffic? | `readinessState`, `db`, `schema`, `objectStorage`, `waitNotifier` |
 | `/actuator/health/readiness` (ingestion) | " | `readinessState`, `db`, `schema`, `objectStorage`, `smtpListener` |
 
-Readiness is what the container healthcheck and `deploy.sh --wait` gate on, so
-a process never receives traffic before it can serve it.
+Readiness is what the container healthchecks and `deploy.sh --wait` gate on, so
+a **deployment** does not complete until every process can serve traffic.
+
+**What readiness does and does not gate here.** Be precise about this, because
+the obvious reading is wrong. nginx proxies to `api:8080` unconditionally — it
+does not consult Docker health — and Compose neither restarts nor removes an
+unhealthy container. So readiness gates the *deployment*, not every subsequent
+moment: after a host reboot, `restart: unless-stopped` brings the applications
+back with no migration job in between.
+
+That gap is why the schema refusal is enforced a second time, at request time:
+the API answers `/v1` with `503 schema-unavailable` + `Retry-After`, and the
+gateway soft-fails `DATA` with `451` so the sending MTA retries. ADR-029 §4
+describes both halves. Under an orchestrator that honours readiness, the probe
+alone would be enough; this topology is not that, and the ADR says so rather
+than assuming it.
 
 **Known cascade risk.** Readiness includes shared dependencies, so a database
-or object-store outage takes every node out of rotation at once rather than
-degrading. That is the correct answer for a single-instance staging environment
-(a node that cannot reach PostgreSQL cannot serve anything), but it is the
-classic fragile-health-check shape and should be revisited before a multi-node
-production deployment. `waitNotifier` is the most debatable member: ADR-020 puts
-LISTEN health in readiness, and bounded degraded re-query means a node with a
-dead LISTEN connection still returns *correct* results, just slower.
+or object-store outage marks every node not-ready at once rather than
+degrading. For single-instance staging the practical impact is nil (nothing
+routes on readiness anyway), but it is the classic fragile-health-check shape
+and must be revisited before a multi-node deployment where readiness *does*
+gate a load balancer. `waitNotifier` is the most debatable member: ADR-020 puts
+LISTEN health in readiness, yet its bounded degraded re-query exists precisely
+so a node with a dead LISTEN keeps returning *correct* results, just slower —
+so on a real load balancer a brief PostgreSQL restart would remove every
+replica and that degraded mode would never run. Changing it belongs in an
+ADR-020 amendment, not a note here.
 
 ## Network exposure
 
@@ -159,6 +176,44 @@ bootstrap key shorter than 32 characters or one matching a known fixture.
 Secrets appear in **no** Dockerfile, compose file, workflow literal, container
 label, build arg, image, or log line. `DeploymentSafety` reports setting names
 and problems, never values; the migrator logs versions, never its JDBC URL.
+
+## Host provisioning
+
+The deployment workflow ships image digests and a commit; it does **not** ship
+the environment's configuration. Before the first deployment the host needs:
+
+1. **A checkout** at `STAGING_DEPLOY_PATH` (default `/opt/testinbox`) that the
+   deploy user can `git fetch` into.
+2. **`deploy/staging/.env`**, created from `.env.example` with real values.
+   It is read by compose (which auto-loads `.env` from the compose file's
+   directory) and is never committed. This file — not the GitHub environment
+   secrets — is what the running containers read; the GitHub secrets cover the
+   *deployment channel* and the synthetic credential.
+3. **Registry access.** `deploy.sh` runs `docker compose pull` on the host. Either
+   publish the four GHCR packages publicly (which also publishes their SBOM and
+   provenance — a deliberate choice, not a default), or `docker login ghcr.io`
+   on the host with a read-only token. ADR-028 avoids long-lived credentials in
+   CI; a host-side pull token is a separate decision that belongs with ADR-030.
+4. **TLS material** at `TESTINBOX_TLS_DIR` — see below.
+
+## TLS: issuance and renewal
+
+Not yet automated, and it has a bootstrap order that will bite otherwise:
+nginx's `default_server` terminates 443, so **nginx will not start without a
+certificate**, which means the ACME HTTP-01 location on port 80 is unreachable
+on a fresh host. Two consequences:
+
+- **First issuance must happen before the first deployment** — e.g.
+  `certbot certonly --standalone` with the edge stopped, or a DNS-01 challenge.
+- **Expiry takes the edge down and it will not come back**, because nginx
+  refuses to start on a missing/invalid certificate. Renewal therefore needs a
+  timer plus an `nginx -s reload`, and monitoring on days-to-expiry.
+
+The `certbot-webroot` volume and the ACME location are in place for the renewal
+path; the certbot container/timer itself is deliberately not configured,
+because how certificates are obtained depends on the target (ADR-030) — a VM
+with public DNS, a platform that terminates TLS for you, and a cloud load
+balancer are three different answers.
 
 ## Data retention and reset
 

@@ -2,6 +2,8 @@ package email.testinbox.persistence
 
 import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.deployment.SchemaVersion
+import email.testinbox.domain.InboxId
+import email.testinbox.domain.WorkspaceId
 import io.kotest.matchers.collections.shouldContainAll
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
@@ -145,12 +147,47 @@ class SchemaUpgradeTest : PersistenceIntegrationTest() {
         flyway(dataSource, target = "1").migrate()
         val atV1 = compatibility.status()
         atV1.compatible shouldBe false
-        atV1.applied shouldBe SchemaVersion("1")
+        atV1.applied shouldBe "1"
 
         flyway(dataSource).migrate()
         val upgraded = compatibility.status()
         upgraded.compatible shouldBe true
-        upgraded.applied shouldBe bundled
+        upgraded.applied shouldBe bundled.raw
+    }
+
+    @Test
+    fun `the application layer reads and writes an upgraded schema, not just raw SQL`() {
+        // TI-DEPLOY-001 §24 asks that the application *works* after the
+        // upgrade, not merely that Flyway ran. The assertions above are raw
+        // `count(*)`: they would pass against a schema whose new unique index
+        // (ADR-026) or new columns the repositories cannot actually use. This
+        // drives the same repository code the deployed artifact runs.
+        val dataSource = freshDatabase()
+        val jdbc = JdbcClient.create(dataSource)
+        flyway(dataSource, target = "1").migrate()
+        val (workspace, inboxId, messageId) = seedV1Data(jdbc)
+        flyway(dataSource).migrate()
+
+        val inboxes = JdbcInboxRepository(jdbc)
+        val messages = JdbcMessageRepository(jdbc)
+
+        // Read data written under V1 through the current mapping.
+        val legacy = messages.listVisible(InboxId(inboxId))
+        legacy.map { it.id.value } shouldBe listOf(messageId)
+        legacy.single().providerMessageId shouldBe "evt-1"
+
+        val inbox = inboxes.findById(WorkspaceId(workspace), InboxId(inboxId))
+        inbox?.address shouldBe "legacy@testinbox.local"
+
+        // And write through it: this is what exercises the ADR-026
+        // recipient-scoped unique index that V2 put in V1's place.
+        val fresh =
+            Fixtures.message(
+                inbox = inbox!!,
+                providerMessageId = "evt-2",
+            )
+        messages.appendVisible(fresh)
+        messages.listVisible(InboxId(inboxId)).map { it.providerMessageId }.toSet() shouldBe setOf("evt-1", "evt-2")
     }
 
     @Test

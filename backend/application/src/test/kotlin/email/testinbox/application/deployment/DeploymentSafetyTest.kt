@@ -127,14 +127,19 @@ class DeploymentSafetyTest {
     fun `the rendered failure names settings and never echoes a secret value`() {
         val leaky =
             safe.copy(
+                // A JDBC URL legitimately carries inline credentials, so it is
+                // as much a secret as the password field beside it.
+                databaseUrl = "jdbc:postgresql://svc:hunter2SuperSecret@localhost:5432/testinbox",
                 databasePassword = "testinbox",
                 storageSecretKey = "testinbox123",
                 bootstrapApiKey = "tk_e2e_acceptance_key",
             )
         val message = DeploymentSafety.describe(DeploymentSafety.validate(leaky))
+        message shouldContain "spring.datasource.url"
         message shouldContain "spring.datasource.password"
         message shouldContain "testinbox.bootstrap.api-key"
         message shouldNotContain "testinbox123"
         message shouldNotContain "tk_e2e_acceptance_key"
+        message shouldNotContain "hunter2SuperSecret"
     }
 }

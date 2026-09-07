@@ -69,6 +69,10 @@ jobs:
 
       # Tags are convenience aliases only; the digest is the deployment
       # identity, and `latest` is deliberately never published (ADR-028 §2).
+      #
+      # The branch tag is emitted only when pushing: on a pull_request,
+      # `github.ref_name` is `<pr-number>/merge`, which is not a valid OCI
+      # reference at all — tagging with it fails the build outright.
       - name: Build api
         id: api
         uses: docker/build-push-action@v7
@@ -82,7 +86,7 @@ jobs:
           load: ${{ !inputs.push }}
           tags: |
             ${{ env.REGISTRY }}/testinbox-api:${{ github.sha }}
-            ${{ env.REGISTRY }}/testinbox-api:${{ github.ref_name }}
+            ${{ inputs.push && format('{0}/testinbox-api:{1}', env.REGISTRY, github.ref_name) || '' }}
           provenance: ${{ inputs.push }}
           sbom: ${{ inputs.push }}
           cache-from: type=gha,scope=backend-api
@@ -101,7 +105,7 @@ jobs:
           load: ${{ !inputs.push }}
           tags: |
             ${{ env.REGISTRY }}/testinbox-ingestion:${{ github.sha }}
-            ${{ env.REGISTRY }}/testinbox-ingestion:${{ github.ref_name }}
+            ${{ inputs.push && format('{0}/testinbox-ingestion:{1}', env.REGISTRY, github.ref_name) || '' }}
           provenance: ${{ inputs.push }}
           sbom: ${{ inputs.push }}
           cache-from: type=gha,scope=backend-ingestion
@@ -120,7 +124,7 @@ jobs:
           load: ${{ !inputs.push }}
           tags: |
             ${{ env.REGISTRY }}/testinbox-migrator:${{ github.sha }}
-            ${{ env.REGISTRY }}/testinbox-migrator:${{ github.ref_name }}
+            ${{ inputs.push && format('{0}/testinbox-migrator:{1}', env.REGISTRY, github.ref_name) || '' }}
           provenance: ${{ inputs.push }}
           sbom: ${{ inputs.push }}
           cache-from: type=gha,scope=backend-migrator
@@ -138,7 +142,7 @@ jobs:
           load: ${{ !inputs.push }}
           tags: |
             ${{ env.REGISTRY }}/testinbox-web:${{ github.sha }}
-            ${{ env.REGISTRY }}/testinbox-web:${{ github.ref_name }}
+            ${{ inputs.push && format('{0}/testinbox-web:{1}', env.REGISTRY, github.ref_name) || '' }}
           provenance: ${{ inputs.push }}
           sbom: ${{ inputs.push }}
           cache-from: type=gha,scope=web
@@ -162,6 +166,15 @@ jobs:
               echo "ok — $ref runs as uid $uid"
             fi
           }
+          # Positive control first: prove the check reports a root image as a
+          # failure. Without it, a broken assert_nonroot would pass everything.
+          if assert_nonroot "alpine:3.22" 2>/dev/null; then
+            echo "::error::the non-root check passed a known-root image — the gate is broken"
+            exit 1
+          fi
+          fail=0
+          echo "ok — the non-root check correctly rejects a root image"
+
           for image in api ingestion migrator web; do
             if [[ "${{ inputs.push }}" == "true" ]]; then
               # Address the pushed artifact by digest, so the assertion is made
@@ -179,12 +192,39 @@ jobs:
           done
           exit "$fail"
 
-      - name: Attest build provenance
+      # One step per image: the action attests a single subject, and attesting
+      # only the api image while the other three ship unattested is worse than
+      # not claiming provenance at all.
+      - name: Attest api provenance
         if: inputs.push
         uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/testinbox-api
           subject-digest: ${{ steps.api.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest ingestion provenance
+        if: inputs.push
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/testinbox-ingestion
+          subject-digest: ${{ steps.ingestion.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest migrator provenance
+        if: inputs.push
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/testinbox-migrator
+          subject-digest: ${{ steps.migrator.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest web provenance
+        if: inputs.push
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/testinbox-web
+          subject-digest: ${{ steps.web.outputs.digest }}
           push-to-registry: true
 
       # Informational, consistent with the OSV-Scanner posture in

@@ -33,6 +33,23 @@ if [[ "${TESTINBOX_BUNDLED_DATA:-true}" == "true" ]]; then
 fi
 compose() { docker compose "${COMPOSE_FILES[@]}" "$@"; }
 
+# `timeout(1)` is GNU coreutils and is absent on a stock macOS. Bounding the
+# migration matters (a stuck Flyway advisory lock would otherwise hang the
+# deployment indefinitely), but a missing coreutils must not itself abort a
+# perfectly good deployment — so it degrades to unbounded, loudly.
+run_bounded() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  else
+    echo "warning: no timeout(1) on PATH; running the migration job unbounded" >&2
+    "$@"
+  fi
+}
+
 step() { printf '\n=== %s ===\n' "$1"; }
 
 step "1/5 validate image references"
@@ -49,16 +66,32 @@ compose pull --quiet
 step "3/5 run the migration job to completion"
 # --rm: the job is one-shot. A non-zero exit propagates through `set -e` and
 # stops the deployment here, before any service is started or updated.
-if ! compose run --rm --no-deps=false migrator; then
+# Bounded, because Flyway takes a Postgres advisory lock: a stuck prior
+# executor would otherwise block this step, and with it the entire deployment
+# concurrency group, indefinitely.
+if ! run_bounded "${TESTINBOX_MIGRATION_TIMEOUT:-600}" docker compose "${COMPOSE_FILES[@]}" run --rm -T migrator; then
   echo "DEPLOYMENT ABORTED: schema migration failed; services were not touched" >&2
   exit 1
 fi
 
 step "4/5 start/update services"
 # --wait blocks on the healthchecks, which are readiness probes — so this
-# returns only when every service can actually serve TestInbox traffic.
-if ! compose up -d --wait --wait-timeout "${TESTINBOX_READY_TIMEOUT:-180}" api ingestion web edge; then
+# returns only when every service can actually serve TestInbox traffic. That
+# holds only because every service has a healthcheck: `--wait` treats one
+# without as ready the moment it is running.
+if ! compose up -d --wait --wait-timeout "${TESTINBOX_READY_TIMEOUT:-300}" api ingestion web; then
   echo "DEPLOYMENT FAILED: services did not become ready within the timeout" >&2
+  compose ps
+  exit 1
+fi
+
+# The edge is recreated explicitly. Compose considers it up to date on a
+# redeploy (same image, same environment) and would leave its workers holding
+# the previous configuration and upstream connections — the class of fault that
+# only ever shows up on the *second* deployment, which a greenfield rehearsal
+# never reaches.
+if ! compose up -d --wait --force-recreate --wait-timeout "${TESTINBOX_READY_TIMEOUT:-300}" edge; then
+  echo "DEPLOYMENT FAILED: the edge did not become ready within the timeout" >&2
   compose ps
   exit 1
 fi

@@ -42,10 +42,14 @@ on:
         required: false
 
 concurrency:
-  group: testinbox-staging
+  # Scoped per ref, so an ephemeral PR rehearsal never contends with a real
+  # deployment. GitHub keeps only ONE pending run per group and cancels earlier
+  # pending ones — a single shared group would let a queued develop deployment
+  # be dropped by the next pull request.
+  group: testinbox-staging-${{ github.ref }}
   # NEVER cancel in progress. A cancelled run can interrupt the migration job
-  # between statements, and the recovery from a half-applied schema is manual.
-  # Two rapid merges queue; they do not race.
+  # between statements, and recovery from a half-applied schema is manual.
+  # Two rapid merges to develop queue; they do not race.
   cancel-in-progress: false
 
 permissions:
@@ -100,10 +104,26 @@ jobs:
             echo "web=$WEB"
           } >> "$GITHUB_OUTPUT"
 
+  # Two call sites rather than one with a conditional `push:`, because a job's
+  # `permissions:` block cannot be conditional. A same-repo pull request runs
+  # the workflow file *as the PR edited it*; if that path were granted
+  # `packages: write` and an OIDC identity, `push: false` would be the only
+  # thing standing between a PR and a published artifact — and a PR can edit
+  # that too. The PR path therefore holds nothing to abuse.
+  build-pr:
+    name: Immutable artifacts (build only)
+    needs: resolve-artifacts
+    if: github.event_name == 'pull_request' && needs.resolve-artifacts.outputs.supplied != 'true'
+    uses: ./.github/workflows/build-images.yml
+    permissions:
+      contents: read
+    with:
+      push: false
+
   build:
     name: Immutable artifacts
     needs: resolve-artifacts
-    if: needs.resolve-artifacts.outputs.supplied != 'true'
+    if: github.event_name != 'pull_request' && needs.resolve-artifacts.outputs.supplied != 'true'
     uses: ./.github/workflows/build-images.yml
     permissions:
       contents: read
@@ -111,9 +131,7 @@ jobs:
       id-token: write
       attestations: write
     with:
-      # A pull request must never publish an artifact that a deployment could
-      # then pick up. It builds, and stops there.
-      push: ${{ github.event_name != 'pull_request' }}
+      push: true
 
   # ---------------------------------------------------------------------------
   # The whole deployment, executed for real against an ephemeral copy of the
@@ -137,6 +155,9 @@ jobs:
         with:
           node-version: 22
       - name: Run the rehearsal
+        # Bounded at the step, not only the job: a hung docker build would
+        # otherwise burn the full job timeout before printing anything.
+        timeout-minutes: 35
         run: ./scripts/staging-rehearsal.sh
       - name: Record the outcome
         if: always()
@@ -157,12 +178,19 @@ jobs:
     name: Deploy to staging
     needs: [resolve-artifacts, build, rehearsal]
     # `always()` so a skipped `build` (manual redeploy path) does not skip this.
+    # The ref guard is load-bearing. Everything the host executes — deploy.sh,
+    # the compose files, the nginx template AND scripts/validate-image-digest.sh
+    # — is checked out from `github.sha`, so a dispatch from an unreviewed
+    # branch would supply the very gate that is supposed to guard it. Staging
+    # deploys `develop` and nothing else.
     if: |
       always() &&
       github.event_name != 'pull_request' &&
+      github.ref_name == 'develop' &&
       needs.rehearsal.result == 'success' &&
       (needs.build.result == 'success' || needs.resolve-artifacts.outputs.supplied == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment:
       name: staging
       url: ${{ vars.STAGING_URL }}
@@ -225,11 +253,12 @@ jobs:
           SSH_USER: ${{ secrets.STAGING_SSH_USER }}
           SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
+          SYNTHETIC_API_KEY: ${{ secrets.STAGING_SYNTHETIC_API_KEY }}
         run: |
           # A missing secret must fail the deployment, not produce a half-applied
           # one (§19). Only names are ever printed.
           missing=""
-          for name in SSH_HOST SSH_USER SSH_KEY SSH_KNOWN_HOSTS; do
+          for name in SSH_HOST SSH_USER SSH_KEY SSH_KNOWN_HOSTS SYNTHETIC_API_KEY; do
             [[ -n "${!name:-}" ]] || missing="$missing STAGING_$name"
           done
           if [[ -n "$missing" ]]; then
@@ -247,6 +276,7 @@ jobs:
           SSH_USER: ${{ secrets.STAGING_SSH_USER }}
           SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
+          DEPLOY_PATH: ${{ vars.STAGING_DEPLOY_PATH || '/opt/testinbox' }}
           API_IMAGE: ${{ steps.artifacts.outputs.api }}
           INGESTION_IMAGE: ${{ steps.artifacts.outputs.ingestion }}
           MIGRATOR_IMAGE: ${{ steps.artifacts.outputs.migrator }}
@@ -257,28 +287,64 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
           # Pinned host key, never StrictHostKeyChecking=no: accepting any key
           # would make the deployment channel trivially interceptable.
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
-          ssh -i ~/.ssh/id_deploy "$SSH_USER@$SSH_HOST" \
-            "cd ${{ vars.STAGING_DEPLOY_PATH || '/opt/testinbox' }} \
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/deploy_known_hosts && chmod 600 ~/.ssh/deploy_known_hosts
+          ssh -i ~/.ssh/id_deploy \
+              -o IdentitiesOnly=yes \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile=~/.ssh/deploy_known_hosts \
+              "$SSH_USER@$SSH_HOST" \
+            "cd '$DEPLOY_PATH' \
              && git fetch --depth=1 origin ${{ github.sha }} && git checkout --detach ${{ github.sha }} \
-             && TESTINBOX_API_IMAGE='$API_IMAGE' \
+             && EXPECTED_IMAGE_REPOSITORY='ghcr.io/${{ github.repository_owner }}' \
+                TESTINBOX_API_IMAGE='$API_IMAGE' \
                 TESTINBOX_INGESTION_IMAGE='$INGESTION_IMAGE' \
                 TESTINBOX_MIGRATOR_IMAGE='$MIGRATOR_IMAGE' \
                 TESTINBOX_WEB_IMAGE='$WEB_IMAGE' \
                 TESTINBOX_GIT_SHA='${{ github.sha }}' \
                 ./deploy/staging/deploy.sh"
 
+      # SMTP ingress is private and stays private (§10/§22): it is bound to a
+      # loopback/private interface on the host and is NOT reachable from a
+      # GitHub-hosted runner, which has no stable egress address to allowlist
+      # anyway. The synthetic suite reaches it through an SSH local forward over
+      # the deployment channel that already exists, so proving the deployment
+      # never requires opening the SMTP adapter to the Internet.
+      - name: Open a private SMTP forward
+        if: steps.target.outputs.enabled == 'true'
+        env:
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          SMTP_PORT: ${{ vars.STAGING_SMTP_PORT || '2525' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy \
+              -o IdentitiesOnly=yes -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/deploy_known_hosts \
+              -f -N -L "2525:127.0.0.1:${SMTP_PORT}" "$SSH_USER@$SSH_HOST"
+          for _ in $(seq 1 30); do
+            (exec 3<>/dev/tcp/127.0.0.1/2525) 2>/dev/null && break
+            sleep 1
+          done
+
       - name: Post-deployment synthetic verification
         if: steps.target.outputs.enabled == 'true'
         env:
           TESTINBOX_BASE_URL: ${{ vars.STAGING_URL }}
           TESTINBOX_API_KEY: ${{ secrets.STAGING_SYNTHETIC_API_KEY }}
-          TESTINBOX_SMTP_HOST: ${{ secrets.STAGING_SMTP_HOST }}
-          TESTINBOX_SMTP_PORT: ${{ vars.STAGING_SMTP_PORT || '2525' }}
+          # The near end of the forward above.
+          TESTINBOX_SMTP_HOST: 127.0.0.1
+          TESTINBOX_SMTP_PORT: "2525"
         run: |
           set -euo pipefail
           ( cd sdk/typescript && npm ci && npm run build )
           ( cd deploy/synthetic && npm ci && npm test )
+
+      - name: Close the deployment channel
+        if: always() && steps.target.outputs.enabled == 'true'
+        run: |
+          pkill -f 'ssh -i .*id_deploy' || true
+          rm -f ~/.ssh/id_deploy ~/.ssh/deploy_known_hosts
 
       - name: Deployment evidence
         if: always() && steps.target.outputs.enabled == 'true'

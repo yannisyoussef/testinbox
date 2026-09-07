@@ -51,8 +51,21 @@ class IngestionWiring {
      * itself lives in the application layer behind the `SchemaHistory` port.
      */
     @Bean
-    fun schemaCompatibility(jdbc: JdbcClient): SchemaCompatibility =
-        SchemaCompatibility(JdbcSchemaHistory(jdbc), BundledMigrations.highest())
+    fun schemaCompatibility(
+        jdbc: JdbcClient,
+        properties: IngestionProperties,
+    ): SchemaCompatibility {
+        val bundled = BundledMigrations.highest()
+        // An artifact that cannot see its own migrations reports "nothing to
+        // require" and waves every schema through — the guard failing open,
+        // silently, in exactly the packaging (a nested Boot jar) that only a
+        // real deployment exercises. Locally there is nothing to protect, so
+        // this only bites where it matters.
+        check(bundled != null || properties.deployment.environment.isNullOrBlank()) {
+            "no migrations found on the classpath: this artifact cannot verify the schema it requires (ADR-029 §4)"
+        }
+        return SchemaCompatibility(JdbcSchemaHistory(jdbc), bundled)
+    }
 
     @Bean
     fun limitsConfig(properties: IngestionProperties): LimitsConfig =

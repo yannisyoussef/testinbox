@@ -1,6 +1,7 @@
 package email.testinbox.ingestion.smtp
 
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.ingestion.config.IngestionProperties
 import org.slf4j.LoggerFactory
@@ -35,6 +36,7 @@ class SmtpGateway(
     private val receive: ReceiveInboundDelivery,
     private val properties: IngestionProperties,
     private val config: TestInboxConfig,
+    private val schema: SchemaCompatibility,
 ) : SmartLifecycle {
     @Volatile private var server: SMTPServer? = null
 
@@ -78,6 +80,17 @@ class SmtpGateway(
 
         override fun data(data: InputStream): String? {
             val raw = readBounded(data)
+            // ADR-029 §4, gateway side. Readiness reports the same fact, but
+            // nothing in the shipped topology stops mail reaching a not-ready
+            // gateway — SMTP is a direct TCP listener, not something behind a
+            // health-aware proxy. A 451 is the honest answer and the one the
+            // failure-modes doc already prescribes for infrastructure trouble:
+            // the sending MTA retries, and nothing is lost.
+            val schemaStatus = schema.status()
+            if (!schemaStatus.compatible) {
+                log.error("refusing inbound delivery: {}", schemaStatus.detail)
+                throw RejectException(451, "Requested action aborted: local error in processing")
+            }
             try {
                 receive.execute(
                     ReceiveInboundDelivery.Command(

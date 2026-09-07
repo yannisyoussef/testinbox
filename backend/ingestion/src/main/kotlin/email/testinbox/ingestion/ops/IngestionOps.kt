@@ -71,8 +71,8 @@ class IngestionSchemaHealthIndicator(
         val status = schema.status()
         val builder = if (status.compatible) Health.up() else Health.outOfService()
         return builder
-            .withDetail("bundled", status.bundled?.raw ?: "none")
-            .withDetail("applied", status.applied?.raw ?: "none")
+            .withDetail("bundled", status.bundled ?: "none")
+            .withDetail("applied", status.applied ?: "none")
             .withDetail("detail", status.detail)
             .build()
     }

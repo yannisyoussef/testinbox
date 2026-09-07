@@ -185,9 +185,15 @@ class SmtpIngestionIntegrationTest {
         }
         val received = messages.listVisible(inbox.id)
         received[0].contentFingerprint shouldBe received[1].contentFingerprint
-        received[0].possibleDuplicateOfMessageId shouldBe null
-        // Annotated, never suppressed.
-        received[1].possibleDuplicateOfMessageId shouldBe received[0].id
+        // Asserted as a pair rather than by index: listVisible orders by
+        // (received_at, id), and two deliveries on one connection can land in
+        // the same timestamp, leaving a random uuid to break the tie. The
+        // invariant is that exactly one row is annotated as a duplicate of the
+        // other — annotated, never suppressed (ADR-019) — and that holds
+        // whichever way the tie falls.
+        val original = received.single { it.possibleDuplicateOfMessageId == null }
+        val annotated = received.single { it.possibleDuplicateOfMessageId != null }
+        annotated.possibleDuplicateOfMessageId shouldBe original.id
     }
 
     @Test

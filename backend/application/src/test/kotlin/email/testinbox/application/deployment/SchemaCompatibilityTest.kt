@@ -22,7 +22,7 @@ class SchemaCompatibilityTest {
     fun `a schema at the bundled version is compatible`() {
         val status = statusOf("3", successful = listOf("1", "2", "3"))
         status.compatible shouldBe true
-        status.applied?.raw shouldBe "3"
+        status.applied shouldBe "3"
     }
 
     @Test

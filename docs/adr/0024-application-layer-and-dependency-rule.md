@@ -2,7 +2,11 @@
 
 **Status:** Accepted (amends [ADR-001](0001-architecture-style.md) and
 [ADR-002](0002-domain-boundaries.md); corrects the module diagram in
-`docs/architecture/component-architecture.md`)
+`docs/architecture/component-architecture.md`. Amended by
+[ADR-029](0029-schema-migration-execution.md): `application.deployment` is a
+permitted non-use-case category — framework-free policy about the environment a
+process runs in, shared by both entry points, where duplicating it per
+deployable would drift)
 
 ## Context
 

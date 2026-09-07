@@ -22,7 +22,16 @@ import java.util.UUID
  */
 class MigratorTest {
     private companion object {
-        val postgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:16-alpine").also { it.start() }
+        /**
+         * An explicit, distinctive password. Testcontainers' default is the
+         * string `test`, which would make the credential-leak assertion below
+         * simultaneously meaningless (every message "contains" no `test`) and
+         * brittle (any `latest` or `testinbox` substring would fail it).
+         */
+        const val DB_PASSWORD = "Pw7yQ3nX2vT8kL5rB9mE4sA6dG1hJ0zC"
+
+        val postgres: PostgreSQLContainer<*> =
+            PostgreSQLContainer("postgres:16-alpine").withPassword(DB_PASSWORD).also { it.start() }
     }
 
     private fun freshDatabaseUrl(): String {
@@ -120,13 +129,27 @@ class MigratorTest {
 
     @Test
     fun `an unreachable database aborts startup rather than exiting successfully`() {
+        shouldThrowAny { runMigrator("jdbc:postgresql://127.0.0.1:1/nonexistent").close() }
+    }
+
+    @Test
+    fun `a rejected credential aborts startup without putting the credential in the failure`() {
+        // ADR-029 §7. This is the case where a credential is actually in play:
+        // the driver has one, the server refuses it, and the resulting chain of
+        // messages is what lands in a deployment log far more widely readable
+        // than the secret store.
         val failure =
             shouldThrowAny {
-                runMigrator("jdbc:postgresql://127.0.0.1:1/nonexistent").close()
+                SpringApplicationBuilder(MigratorApplication::class.java)
+                    .run(
+                        "--spring.datasource.url=${postgres.jdbcUrl}",
+                        "--spring.datasource.username=${postgres.username}",
+                        "--spring.datasource.password=$DB_PASSWORD-wrong",
+                    ).close()
             }
-        // ADR-029 §7: deployment logs are far more widely readable than the
-        // secret store, so the failure must not carry the credential.
-        val rendered = generateSequence<Throwable>(failure) { it.cause }.joinToString("\n") { it.message.orEmpty() }
-        rendered shouldNotContain postgres.password
+        val rendered =
+            generateSequence<Throwable>(failure) { it.cause }
+                .joinToString("\n") { "${it.javaClass.name}: ${it.message.orEmpty()}" }
+        rendered shouldNotContain DB_PASSWORD
     }
 }

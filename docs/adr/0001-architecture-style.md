@@ -3,7 +3,9 @@
 **Status:** Accepted (amended by [ADR-024](0024-application-layer-and-dependency-rule.md):
 the ingestion gateway remains independently deployable, but invokes the
 shared `application` use-case layer rather than writing to persistence
-directly)
+directly; and by [ADR-029](0029-schema-migration-execution.md): a third,
+one-shot `migrator` deployable exists, which owns no domain area, no state and
+no API, and is a deployment artifact rather than a service)
 
 ## Context
 

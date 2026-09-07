@@ -25,3 +25,5 @@ prompts/
 .env.*
 !.env.example
 deploy/**/tls/
+# The staging rehearsal writes a throwaway CA and server key here.
+.rehearsal/

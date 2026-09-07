@@ -47,6 +47,11 @@ services:
   migrator:
     image: ${TESTINBOX_MIGRATOR_IMAGE:?set to a ghcr.io/...@sha256:... reference}
     restart: "no"
+    # The images are hardened; without this the runtime still keeps the full
+    # default capability set. Nothing here raises privileges or binds a low port.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     environment:
       TESTINBOX_DB_URL: ${TESTINBOX_DB_URL:?set in .env}
       TESTINBOX_DB_USER: ${TESTINBOX_DB_USER:?set in .env}
@@ -56,6 +61,11 @@ services:
   api:
     <<: *jvm-common
     image: ${TESTINBOX_API_IMAGE:?set to a ghcr.io/...@sha256:... reference}
+    # The images are hardened; without this the runtime still keeps the full
+    # default capability set. Nothing here raises privileges or binds a low port.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     environment:
       <<: *jvm-env
       TESTINBOX_PUBLIC_BASE_URL: ${TESTINBOX_PUBLIC_BASE_URL:?set in .env}
@@ -74,12 +84,20 @@ services:
       timeout: 5s
       retries: 12
       start_period: 60s
-    stop_grace_period: 90s
+    # Must exceed spring.lifecycle.timeout-per-shutdown-phase, which must in
+    # turn exceed the wait window — or the container runtime kills a request
+    # the application was still legitimately draining.
+    stop_grace_period: ${TESTINBOX_API_STOP_GRACE:-90s}
     networks: [internal]
 
   ingestion:
     <<: *jvm-common
     image: ${TESTINBOX_INGESTION_IMAGE:?set to a ghcr.io/...@sha256:... reference}
+    # The images are hardened; without this the runtime still keeps the full
+    # default capability set. Nothing here raises privileges or binds a low port.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     environment:
       <<: *jvm-env
       TESTINBOX_IMAGE_DIGEST: ${TESTINBOX_INGESTION_IMAGE:-unknown}
@@ -98,18 +116,31 @@ services:
       timeout: 5s
       retries: 12
       start_period: 60s
-    stop_grace_period: 60s
+    stop_grace_period: ${TESTINBOX_INGESTION_STOP_GRACE:-60s}
     networks: [internal]
 
   web:
     image: ${TESTINBOX_WEB_IMAGE:?set to a ghcr.io/...@sha256:... reference}
     restart: unless-stopped
+    # The images are hardened; without this the runtime still keeps the full
+    # default capability set. Nothing here raises privileges or binds a low port.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     environment:
       # Server-side only: the browser talks to the same-origin /api/backend
       # proxy, so no API key ever crosses an origin or lands in a URL.
       TESTINBOX_API_URL: http://api:8080
       NODE_ENV: production
     expose: ["3000"]
+    healthcheck:
+      # Without this, `compose up --wait` calls the UI ready the instant the
+      # container starts — including on a redeploy where it was already up.
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     depends_on:
       api:
         condition: service_healthy
@@ -139,11 +170,19 @@ services:
     ports:
       - "${TESTINBOX_HTTP_BIND:-0.0.0.0}:${TESTINBOX_HTTP_PUBLISHED_PORT:-80}:80"
       - "${TESTINBOX_HTTPS_BIND:-0.0.0.0}:${TESTINBOX_HTTPS_PUBLISHED_PORT:-443}:443"
+    healthcheck:
+      # The edge is the public surface, and "the container is running" is not
+      # the same as "it is serving". 404 on /actuator is the expected answer.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
     depends_on:
       api:
         condition: service_healthy
       web:
-        condition: service_started
+        condition: service_healthy
     networks: [internal]
     logging:
       driver: json-file

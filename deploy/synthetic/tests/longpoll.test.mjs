@@ -37,32 +37,55 @@ async function newInbox(aliasHint) {
   return inbox;
 }
 
-test("a full server wait window survives the ingress", { timeout: (config.waitWindowSeconds + 60) * 1000 }, async () => {
-  const inbox = await newInbox("longpoll-window");
-  const windowMs = config.waitWindowSeconds * 1000;
+test(
+  "ONE request parked for the full server window survives the ingress",
+  { timeout: (config.waitWindowSeconds + 60) * 1000 },
+  async () => {
+    // Deliberately a raw fetch rather than the SDK. The SDK chains long polls
+    // (client.ts caps each call at the server window and loops until the
+    // caller's budget runs out), so an SDK-level assertion cannot tell one
+    // 60s request from several shorter ones — and it is the single long
+    // request that the proxy read timeout applies to. This makes it one
+    // request by construction.
+    const inbox = await newInbox("longpoll-window");
+    const windowMs = config.waitWindowSeconds * 1000;
 
-  const startedAt = Date.now();
-  let failure;
-  try {
-    await inbox.waitForMessage({ timeoutMs: windowMs });
-    failure = new Error("a wait on an empty inbox must not match");
-  } catch (error) {
-    failure = error;
-  }
-  const elapsed = Date.now() - startedAt;
+    const startedAt = Date.now();
+    const response = await fetch(`${config.baseUrl}/v1/inboxes/${inbox.id}/messages/wait`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ timeoutSeconds: config.waitWindowSeconds }),
+    });
+    const body = await response.json();
+    const elapsed = Date.now() - startedAt;
 
-  // The distinguishing assertion: a proxy that cut the request short produces
-  // a transport/gateway error, never the SDK's own timeout type.
-  assert.equal(
-    failure.name,
-    "TestInboxTimeoutError",
-    `expected the server's own TIMEOUT answer after ${elapsed}ms, got ${failure.name}: ${failure.message}`,
-  );
-  // And it really was parked for the window, not answered immediately.
-  assert.ok(
-    elapsed >= windowMs * 0.9,
-    `the wait returned after ${elapsed}ms, well short of the ${windowMs}ms window — ` +
-      `the request was not actually parked for the full window`,
+    // A proxy whose read timeout is at or below the wait window answers 502 or
+    // 504 here, or resets the connection. TestInbox's own answer is a 200.
+    assert.equal(
+      response.status,
+      200,
+      `expected 200 {status: TIMEOUT} after ${elapsed}ms; the ingress returned ${response.status}. ` +
+        `Its read timeout must exceed the ${config.waitWindowSeconds}s wait window.`,
+    );
+    assert.equal(body.status, "TIMEOUT", `unexpected wait result: ${JSON.stringify(body)}`);
+    assert.ok(
+      elapsed >= windowMs * 0.9,
+      `the request returned after ${elapsed}ms, short of the ${windowMs}ms window — it was not parked for the full window`,
+    );
+  },
+);
+
+test("the SDK surfaces a window timeout as its own error type, not a transport failure", async () => {
+  // The ergonomics half of the test above: whatever the ingress did, a caller
+  // sees TestInboxTimeoutError. A 502/504 would surface as TestInboxApiError
+  // and an aborted socket as a plain TestInboxError, so neither can pass here.
+  const inbox = await newInbox("longpoll-sdk");
+  await assert.rejects(
+    () => inbox.waitForMessage({ timeoutMs: 3_000 }),
+    (error) => error.name === "TestInboxTimeoutError",
   );
 });
 
@@ -113,15 +136,18 @@ test(
       `the wait resolved after ${elapsed}ms but the message was only sent at ${parkMs}ms — ` +
         `it cannot have been a parked request`,
     );
-    // Wake-up is via LISTEN/NOTIFY, not the bounded degraded re-query. Anything
-    // near or beyond the degraded interval would mean notifications are not
-    // being delivered — the exact silent failure a transaction-mode pooler
-    // causes (ADR-020, ADR-030 capability 2).
+    // Wake-up must be via LISTEN/NOTIFY, not the bounded degraded re-query.
+    // The threshold is BELOW the degraded ticker (PgListenNotifier's
+    // degradedInterval, 1s) on purpose: a database behind a transaction-mode
+    // pooler accepts LISTEN and never delivers, and the waiter then still
+    // resolves in ~1-2s off the fallback. A 5s threshold would pass for
+    // exactly the deployment ADR-030 capability 2 exists to rule out.
     const wakeMs = elapsed - parkMs;
     assert.ok(
-      wakeMs < 5_000,
-      `the parked wait took ${wakeMs}ms to resolve after delivery; LISTEN/NOTIFY is not ` +
-        `waking waiters and the deployment is falling back to degraded re-query`,
+      wakeMs < 750,
+      `the parked wait took ${wakeMs}ms to resolve after delivery. That is at or beyond the ` +
+        `degraded re-query interval, so notifications are NOT reaching waiters — the signature ` +
+        `of a transaction-mode pooler in front of PostgreSQL (ADR-020, ADR-030 capability 2).`,
     );
     console.log(`parked wait woke ${wakeMs}ms after SMTP delivery`);
   },

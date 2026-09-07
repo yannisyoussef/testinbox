@@ -40,9 +40,16 @@ fun interface SchemaHistory {
     fun read(): AppliedSchema
 }
 
+/**
+ * The rendered answer, not the raw materials.
+ *
+ * Versions come back as display strings on purpose: an adapter that needs
+ * `SchemaVersion` is an adapter that is about to re-derive the comparison
+ * itself, and `DependencyRuleTest` fails the build for exactly that.
+ */
 data class SchemaStatus(
-    val bundled: SchemaVersion?,
-    val applied: SchemaVersion?,
+    val bundled: String?,
+    val applied: String?,
     val compatible: Boolean,
     val detail: String,
 )
@@ -101,5 +108,5 @@ class SchemaCompatibility(
         applied: SchemaVersion?,
         compatible: Boolean,
         detail: String,
-    ) = SchemaStatus(bundled = bundled, applied = applied, compatible = compatible, detail = detail)
+    ) = SchemaStatus(bundled = bundled?.raw, applied = applied?.raw, compatible = compatible, detail = detail)
 }

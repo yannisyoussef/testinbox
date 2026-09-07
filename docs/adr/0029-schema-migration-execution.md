@@ -1,6 +1,7 @@
 # ADR-029: Schema Migration Execution Model
 
-**Status:** Accepted
+**Status:** Accepted (amends [ADR-001](0001-architecture-style.md): a third,
+one-shot backend deployable)
 
 ## Context
 
@@ -43,13 +44,27 @@ migration is not.
    the deployment step fails; application services are not started or updated.
    There is no `continue-on-error` on this path.
 
-4. **Applications refuse traffic against a schema they do not recognise.**
+4. **Applications refuse traffic against a schema they do not recognise**, in
+   two places, because one is not enough.
+
    Each deployable computes the highest migration version bundled in its own
-   artifact and compares it with `flyway_schema_history`. Readiness is DOWN
-   when the applied version is lower than the bundled version, or when the
-   history contains a failed migration. This makes point 2 safe: an
-   application that somehow starts ahead of its migration does not serve
-   traffic, it reports not-ready.
+   artifact and compares it with `flyway_schema_history`. Readiness is
+   OUT_OF_SERVICE when the applied version is lower than the bundled version,
+   or when the history contains a failed migration.
+
+   Readiness alone would be sufficient under an orchestrator that stops
+   routing to a node that reports not-ready. It is **not** sufficient in the
+   topology this project actually ships (ADR-030 Option A): the reverse proxy
+   forwards unconditionally and Docker Compose neither restarts nor removes an
+   unhealthy container, so a node whose readiness dropped would keep receiving
+   requests and failing them individually. The window is not hypothetical —
+   `restart: unless-stopped` brings the applications back after a host reboot
+   with no migration job in between.
+
+   So the refusal is also enforced at request time: the API answers `/v1` with
+   `503` + `Retry-After` (`schema-unavailable`), and the SMTP gateway soft-fails
+   the `DATA` transaction with `451` so the sending MTA retries and nothing is
+   lost. The verdict is cached briefly rather than queried per request.
 
    Note the asymmetry, which is deliberate: applied *higher* than bundled is
    **not** an error. That is the normal state during a rollback to a previous
@@ -99,5 +114,7 @@ migration is not.
   are small; the migrator image is the backend runtime plus Flyway.
 - Local development is unchanged: `docker compose up -d` then
   `./gradlew :api:bootRun` still migrates on startup.
-- The bundled-vs-applied version comparison must be tested in both directions
-  (behind, level, ahead) or the rollback path in (4) is unproven.
+- The bundled-vs-applied version comparison must be tested in all three
+  directions (behind, level, ahead) or the rollback path in (4) is unproven.
+- The request-time refusal adds a cached database read to the request path. The
+  cache TTL bounds both the cost and how long a recovered node keeps refusing.

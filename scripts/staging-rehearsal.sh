@@ -28,6 +28,9 @@ WORK="${REHEARSAL_WORK_DIR:-$REPO_ROOT/.rehearsal}"
 REGISTRY_HOST="127.0.0.1:${REHEARSAL_REGISTRY_PORT:-5000}"
 REGISTRY_NAME="testinbox-rehearsal-registry"
 HTTPS_PORT="${REHEARSAL_HTTPS_PORT:-8443}"
+# Raised deliberately when tests are added; a silently shrinking gate is the
+# failure this number exists to catch.
+SYNTHETIC_MINIMUM=11
 HTTP_PORT="${REHEARSAL_HTTP_PORT:-8080}"
 SMTP_PORT="${REHEARSAL_SMTP_PORT:-2525}"
 KEEP=false
@@ -84,8 +87,16 @@ build_and_push() {
   docker push "$ref:rehearsal" >&2
   # The digest is the deployment identity (ADR-028) — read it back from the
   # registry rather than trusting the tag we just wrote.
+  # Read the digest back from the REGISTRY for this exact tag. `docker inspect`
+  # .RepoDigests is a list whose order is not defined, so index 0 can be a
+  # digest from an earlier push of the same repository name — which would mean
+  # deploying the wrong bytes, not just a flaky run.
   local digest
-  digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$ref:rehearsal" | cut -d@ -f2)"
+  digest="$(docker buildx imagetools inspect "$ref:rehearsal" --format '{{.Manifest.Digest}}')"
+  case "$digest" in
+    sha256:*) ;;
+    *) echo "could not resolve a digest for $ref:rehearsal (got '$digest')" >&2; return 1 ;;
+  esac
   echo "$ref@$digest"
 }
 API_IMAGE="$(build_and_push api       deploy/docker/backend.Dockerfile --build-arg MODULE=api)"
@@ -106,7 +117,9 @@ openssl x509 -req -in "$WORK/tls/server.csr" -days 2 \
   -extfile <(printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\n') \
   -out "$WORK/tls/leaf.pem" >/dev/null 2>&1
 cat "$WORK/tls/leaf.pem" "$WORK/tls/ca.pem" > "$WORK/tls/fullchain.pem"
-chmod 644 "$WORK/tls/"*.pem
+# Readable by the nginx container's user, but the private material stays 600.
+chmod 644 "$WORK/tls/fullchain.pem" "$WORK/tls/ca.pem"
+chmod 600 "$WORK/tls/privkey.pem" "$WORK/tls/ca.key"
 
 step "4/7 environment"
 # Generated per run: the rehearsal must never rely on a value that could also
@@ -138,9 +151,9 @@ TESTINBOX_BOOTSTRAP_API_KEY=tk_reh_$(random 40)
 TESTINBOX_WAIT_WINDOW_CAP=60s
 TESTINBOX_PROXY_READ_TIMEOUT_SECONDS=120
 
-TESTINBOX_EDGE_RATE_PER_SECOND=50
-TESTINBOX_EDGE_BURST=100
-TESTINBOX_EDGE_CONN_LIMIT=128
+TESTINBOX_EDGE_RATE_PER_SECOND=200
+TESTINBOX_EDGE_BURST=1000
+TESTINBOX_EDGE_CONN_LIMIT=256
 
 TESTINBOX_TLS_DIR=$WORK/tls
 TESTINBOX_HTTP_BIND=127.0.0.1
@@ -149,6 +162,11 @@ TESTINBOX_HTTP_PUBLISHED_PORT=$HTTP_PORT
 TESTINBOX_HTTPS_PUBLISHED_PORT=$HTTPS_PORT
 TESTINBOX_SMTP_BIND=127.0.0.1
 TESTINBOX_SMTP_PUBLISHED_PORT=$SMTP_PORT
+
+# Chosen, not inherited: two cold JVMs plus bucket creation on a loaded CI
+# runner is the tightest timing in the pipeline.
+TESTINBOX_READY_TIMEOUT=420
+TESTINBOX_MIGRATION_TIMEOUT=300
 ENV
 set -a; . "$ENV_FILE"; set +a
 export COMPOSE_ENV_FILES="$ENV_FILE"
@@ -170,13 +188,32 @@ step "7/7 post-deployment synthetic verification"
 # `cd` rather than `npm --prefix`: --prefix relocates package.json but not the
 # working directory, so the test runner would look for tests/ in the caller's cwd.
 cd "$REPO_ROOT/deploy/synthetic"
+mkdir -p build/test-results
 NODE_EXTRA_CA_CERTS="$WORK/tls/ca.pem" \
 TESTINBOX_BASE_URL="https://localhost:$HTTPS_PORT" \
+TESTINBOX_HTTP_BASE_URL="http://localhost:$HTTP_PORT" \
 TESTINBOX_API_KEY="$TESTINBOX_BOOTSTRAP_API_KEY" \
 TESTINBOX_SMTP_HOST=127.0.0.1 \
 TESTINBOX_SMTP_PORT="$SMTP_PORT" \
 TESTINBOX_WAIT_WINDOW_SECONDS=60 \
-  npm test
+  npm run test:junit
+
+# The synthetic suite is a blocking deployment gate, so it gets the same
+# treatment as every other suite (docs/quality/strategy.md): a green exit code
+# is not evidence that anything ran. A renamed file or a `test.skip` would
+# otherwise shrink the gate silently.
+REPORT="$REPO_ROOT/deploy/synthetic/build/test-results/synthetic.xml"
+test -f "$REPORT" || { echo "synthetic suite produced no report" >&2; exit 1; }
+# Node's junit reporter emits a flat <testsuites> of <testcase> elements with
+# no summary attributes, so the elements themselves are what gets counted.
+RAN=$(grep -c '<testcase' "$REPORT" || true)
+FAILED=$(grep -c '<failure' "$REPORT" || true)
+SKIPPED=$(grep -c '<skipped' "$REPORT" || true)
+echo "synthetic suite: ${RAN:-0} tests, ${FAILED:-0} failed, ${SKIPPED:-0} skipped"
+test "${RAN:-0}" -ge "$SYNTHETIC_MINIMUM" || {
+  echo "expected at least $SYNTHETIC_MINIMUM synthetic tests, got ${RAN:-0}" >&2; exit 1; }
+test "${FAILED:-0}" -eq 0 || { echo "synthetic tests failed" >&2; exit 1; }
+test "${SKIPPED:-0}" -eq 0 || { echo "synthetic tests were skipped" >&2; exit 1; }
 
 step "rehearsal passed"
 echo "api:       $API_IMAGE"

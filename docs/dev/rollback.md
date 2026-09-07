@@ -92,9 +92,12 @@ had. There is nothing to roll back — investigate the migrator's output, fix
 forward, deploy again.
 
 If a migration failed *partway* and left a failed row in
-`flyway_schema_history`, every deployable will refuse readiness until it is
-resolved. That is deliberate: a half-applied schema should take the environment
-out of rotation, not serve traffic against it.
+`flyway_schema_history`, every deployable refuses readiness **and refuses
+traffic** until it is resolved — the API with `503 schema-unavailable`, the
+gateway with an SMTP `451` so senders retry. That is deliberate: a half-applied
+schema should take the environment out of service rather than serve against it,
+and readiness alone would not achieve that in this topology (see
+[staging.md](staging.md#health-and-readiness)).
 
 ## Recovering staging from scratch
 

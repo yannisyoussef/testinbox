@@ -2,7 +2,7 @@
 
 | # | Title | Status |
 |---|---|---|
-| [0001](0001-architecture-style.md) | Architecture style | Accepted (amended by 0024) |
+| [0001](0001-architecture-style.md) | Architecture style | Accepted (amended by 0024, 0029) |
 | [0002](0002-domain-boundaries.md) | Domain boundaries | Accepted (amended by 0024) |
 | [0003](0003-inbound-mail-abstraction.md) | Inbound mail abstraction | Accepted (amended by 0019) |
 | [0004](0004-initial-inbound-provider-strategy.md) | Initial inbound provider strategy | Proposed |
@@ -25,7 +25,7 @@
 | [0021](0021-exact-address-reservation.md) | Inbox addressing — generated and exact modes | Accepted |
 | [0022](0022-openapi-contract-first.md) | Contract-first OpenAPI | Accepted |
 | [0023](0023-sdk-runtime-baselines.md) | Public SDK runtime baselines | Accepted |
-| [0024](0024-application-layer-and-dependency-rule.md) | Application layer and dependency rule | Accepted |
+| [0024](0024-application-layer-and-dependency-rule.md) | Application layer and dependency rule | Accepted (amended by 0029) |
 | [0025](0025-unknown-recipient-handling.md) | Unknown-recipient handling | Accepted |
 | [0026](0026-recipient-scoped-provider-delivery-identity.md) | Recipient-scoped provider delivery identity | Accepted |
 | [0027](0027-rate-limiting-and-resource-quotas.md) | Rate limiting and resource quota strategy | Accepted |
