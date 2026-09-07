@@ -4,7 +4,6 @@ import email.testinbox.application.port.LimitMetrics
 import email.testinbox.domain.limits.QuotaDimension
 import email.testinbox.domain.limits.RateCategory
 import io.micrometer.core.instrument.MeterRegistry
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Micrometer implementation of the limit metrics port (ADR-027 §9,
@@ -20,12 +19,6 @@ import java.util.concurrent.atomic.AtomicLong
 class MicrometerLimitMetrics(
     private val registry: MeterRegistry,
 ) : LimitMetrics {
-    private val activeWaitSlots = AtomicLong(0)
-
-    init {
-        registry.gauge("testinbox_wait_slots_active", activeWaitSlots) { it.get().toDouble() }
-    }
-
     override fun rateDecision(
         category: RateCategory,
         allowed: Boolean,
@@ -42,13 +35,5 @@ class MicrometerLimitMetrics(
 
     override fun quotaRejected(dimension: QuotaDimension) {
         registry.counter("testinbox_quota_rejected_total", "quota", dimension.name).increment()
-    }
-
-    override fun waitSlotRejected() {
-        registry.counter("testinbox_wait_slot_rejected_total").increment()
-    }
-
-    override fun waitSlotsChanged(delta: Int) {
-        activeWaitSlots.addAndGet(delta.toLong())
     }
 }

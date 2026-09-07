@@ -47,6 +47,20 @@ done
 fail() { echo "HANDOFF REFUSED: $*" >&2; exit 1; }
 
 # --- validate before anything leaves the runner ------------------------------
+# The three settings below are interpolated into a curl CONFIG FILE, which is
+# line-oriented: a newline in any of them injects further curl options *after*
+# the line carrying the token — including a second `url =`, which makes curl
+# POST the whole form (token included) to an attacker's host. They come from
+# repository variables, which are writable with a weaker permission than
+# reading a secret, so leaving them unvalidated would turn "can edit a
+# variable" into "can read GITLAB_TRIGGER_TOKEN".
+[[ "$GITLAB_API_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]] ||
+  fail "GITLAB_API_URL is not a plain https URL"
+[[ "$GITLAB_PROJECT" =~ ^([0-9]+|[A-Za-z0-9._~-]+(%2[Ff][A-Za-z0-9._~-]+)+)$ ]] ||
+  fail "GITLAB_PROJECT must be a numeric id or a URL-encoded path (e.g. group%2Fproject)"
+[[ "$GITLAB_REF" =~ ^[A-Za-z0-9._/-]+$ ]] ||
+  fail "GITLAB_REF is not a plain git ref"
+
 # Ops validates all of this again on receipt; doing it here too means a bad
 # payload fails where the mistake was made, with a legible message, instead of
 # surfacing as an opaque pipeline failure in another system.
@@ -76,6 +90,15 @@ chmod 600 "$config"
   echo 'request = "POST"'
   echo 'silent'
   echo 'show-error'
+  # https only, and no redirect following: a 3xx must never carry the token to
+  # another host, and neither must a downgraded scheme.
+  echo 'proto = "=https"'
+  # Bounded. Without these a blackholed connection burns the whole job timeout
+  # and prints nothing.
+  echo 'connect-timeout = 10'
+  echo 'max-time = 60'
+  echo 'retry = 2'
+  echo 'retry-connrefused'
   echo 'write-out = "\nHTTP_STATUS:%{http_code}\n"'
   echo "form-string = \"token=${GITLAB_TRIGGER_TOKEN}\""
   echo "form-string = \"ref=${GITLAB_REF}\""
@@ -107,10 +130,35 @@ if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
   exit 1
 fi
 
-# Best-effort, and clearly labelled as such: these identify where the
-# authoritative verdict will appear, they are not the verdict.
-pipeline_id="$(printf '%s' "$body" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' | head -1)"
-pipeline_url="$(printf '%s' "$body" | sed -n 's|.*"web_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*|\1|p' | head -1)"
+# These identify where the authoritative verdict will appear; they are not the
+# verdict. Both are REMOTE data, so both are shape-checked before they go
+# anywhere near a shell or a step summary.
+# Anchored to the TOP-LEVEL object. A real GitLab trigger response nests
+# `"user":{"id":…,"web_url":…}` and `"detailed_status"`, and a greedy `.*"id"`
+# matches the LAST occurrence — so the unanchored form returned the trigger
+# bot's user id and a link to its profile page. That link is the one a human
+# follows to find the authoritative deployment verdict.
+if command -v jq >/dev/null 2>&1; then
+  pipeline_id="$(printf '%s' "$body" | jq -r '.id // empty' 2>/dev/null)"
+  pipeline_url="$(printf '%s' "$body" | jq -r '.web_url // empty' 2>/dev/null)"
+else
+  pipeline_id="$(printf '%s' "$body" | sed -n 's/^{[^{]*"id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
+  pipeline_url="$(printf '%s' "$body" | sed -n 's|^{[^{]*"web_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*|\1|p' | head -1)"
+fi
+
+# GitLab's trigger endpoint answers 201 with a pipeline object. A 2xx carrying
+# no pipeline id means something that is not GitLab answered — a proxy, a WAF,
+# a captive portal, a mistyped GITLAB_API_URL — and reporting that as an
+# accepted handoff would be the same class of lie this whole script is written
+# to avoid.
+[[ "$pipeline_id" =~ ^[0-9]+$ ]] ||
+  fail "GitLab returned HTTP $status but no pipeline id; the release was NOT handed over"
+# Deliberately an allow-list of URL characters with every shell metacharacter
+# excluded. The `sed` capture above stops at `"` but happily accepts `$`,
+# backticks and parentheses, and this value is written to $GITHUB_OUTPUT and
+# then rendered into a step summary — i.e. into a shell. Anything unexpected is
+# dropped rather than sanitised.
+[[ "$pipeline_url" =~ ^https://[A-Za-z0-9._~:/?#@=\&+%-]+$ ]] || pipeline_url=""
 
 echo "RELEASE HANDOFF ACCEPTED (HTTP $status)"
 [[ -n "$pipeline_id" ]] && echo "  gitlab pipeline id:  $pipeline_id"

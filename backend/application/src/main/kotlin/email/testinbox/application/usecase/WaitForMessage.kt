@@ -48,8 +48,7 @@ class WaitForMessage(
     private val clock: Clock,
     private val config: TestInboxConfig,
     private val hook: WaitSyncHook = WaitSyncHook.NOOP,
-    private val metrics: LimitMetrics = LimitMetrics.NOOP,
-    private val waitMetrics: WaitMetrics = WaitMetrics.NOOP,
+    private val metrics: WaitMetrics = WaitMetrics.NOOP,
 ) {
     data class Command(
         val workspaceId: WorkspaceId,
@@ -98,14 +97,14 @@ class WaitForMessage(
      */
     fun execute(command: Command): Result {
         val startedAt = System.nanoTime()
-        waitMetrics.waitStarted()
+        metrics.waitStarted()
         var outcome = WaitOutcome.ERROR
         try {
             val result = executeInternal(command)
             outcome = result.outcome()
             return result
         } finally {
-            waitMetrics.waitCompleted(outcome, Duration.ofNanos(System.nanoTime() - startedAt))
+            metrics.waitCompleted(outcome, Duration.ofNanos(System.nanoTime() - startedAt))
         }
     }
 
@@ -176,10 +175,10 @@ class WaitForMessage(
                 // into a deadline, so node clock skew cannot free a live slot.
                 leaseFor = Duration.between(clock.instant(), deadline).plus(config.waitWindowCap),
             ) ?: run {
-                metrics.waitSlotRejected()
+                metrics.slotRejected()
                 return Result.ConcurrentWaitLimitExceeded(maxConcurrentWaits)
             }
-        metrics.waitSlotsChanged(1)
+        metrics.slotsChanged(1)
         return slot.use {
             try {
                 while (true) {
@@ -191,7 +190,7 @@ class WaitForMessage(
             } finally {
                 // Mirrors the slot release, including on an early match and on
                 // any exception, so the gauge cannot drift upward.
-                metrics.waitSlotsChanged(-1)
+                metrics.slotsChanged(-1)
             }
         }
     }

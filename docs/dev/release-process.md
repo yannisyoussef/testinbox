@@ -84,6 +84,23 @@ Also true and visible before the PR:
 | What is running right now? | `testinbox_build{service,git_sha,version}` in Prometheus |
 | What was the previous known-good digest set? | The previous `Staging` run summary |
 
+## Required GitHub configuration — HUMAN ACTION
+
+Two things must be created by hand before the first merge to `develop` after
+this change, or the handoff job fails:
+
+1. **A GitHub Environment named `staging-handoff`** — deliberately not
+   `staging`, so nothing renders the handoff as a completed deployment.
+   Consider adding required reviewers: it is the last human gate before Ops
+   deploys.
+2. **Secret `GITLAB_TRIGGER_TOKEN`** on that environment — a GitLab pipeline
+   trigger token for `infinity/infinity-core`. It can start one pipeline and do
+   nothing else.
+
+Optional repository **variables**, both with working defaults:
+`GITLAB_OPS_PROJECT` (default `infinity%2Finfinity-core` — URL-encoded; an
+unencoded path is rejected) and `GITLAB_OPS_REF` (default `develop`).
+
 ## Required branch protection — HUMAN ACTION
 
 `develop` is currently **unprotected** (verified via the GitHub API on
@@ -114,6 +131,9 @@ list: it is non-blocking by design (ADR-028, `docs/quality/strategy.md`).
 
 The same protections should be applied to `master`, additionally requiring
 `Promotion vulnerability policy` and `Migration rollback safety`.
+
+Also add `Synthetic unit tests (edge invariant classifier)` — it runs inside the
+`Static analysis` job, so requiring that job covers it.
 
 ## Still to be decided
 

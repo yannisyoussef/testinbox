@@ -39,6 +39,7 @@ import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.persistence.JdbcSchemaHistory
 import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
+import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.LoggerFactory
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties
 import org.springframework.context.annotation.Bean
@@ -54,13 +55,59 @@ class ClockConfig {
 }
 
 /**
+ * Metric adapters, separated from `ApiWiring` only so that class can take them
+ * as constructor properties rather than repeating them in the signature of
+ * nearly every bean it defines.
+ */
+@Configuration
+class ApiMetricsWiring {
+    @Bean
+    fun limitMetrics(registry: MeterRegistry): LimitMetrics = MicrometerLimitMetrics(registry)
+
+    @Bean
+    fun inboxMetrics(registry: MeterRegistry): InboxMetrics = MicrometerInboxMetrics(registry)
+
+    @Bean
+    fun waitMetrics(registry: MeterRegistry): WaitMetrics = MicrometerWaitMetrics(registry)
+
+    @Bean
+    fun blobStoreMetrics(registry: MeterRegistry): BlobStoreMetrics = MicrometerBlobStoreMetrics(registry)
+
+    @Bean
+    fun notifierMetrics(registry: MeterRegistry): NotifierMetrics = MicrometerNotifierMetrics(registry)
+
+    /**
+     * "Which build is this?" answered from the same place Ops reads everything
+     * else. The image digest is deliberately not a label: an image cannot know
+     * its own digest, and a value invented here would be a convincing lie in
+     * the one metric whose whole job is identity.
+     */
+    @Bean
+    fun buildInfoMetric(
+        registry: MeterRegistry,
+        properties: TestInboxProperties,
+    ): BuildInfoMetric =
+        BuildInfoMetric(
+            registry,
+            service = "testinbox-api",
+            gitSha = properties.deployment.gitSha,
+            version = javaClass.`package`?.implementationVersion ?: "unknown",
+        )
+}
+
+/**
  * Collaborators shared by most beans are injected once here rather than
- * repeated in every factory method's parameter list.
+ * repeated in every factory method's parameter list — including the metric
+ * ports, which nearly every use case now takes and none of which vary per
+ * bean.
  */
 @Configuration
 class ApiWiring(
     private val clock: Clock,
     private val properties: TestInboxProperties,
+    private val limitMetrics: LimitMetrics,
+    private val inboxMetrics: InboxMetrics,
+    private val waitMetrics: WaitMetrics,
 ) {
     @Bean
     fun testInboxConfig(properties: TestInboxProperties): TestInboxConfig = properties.toConfig()
@@ -74,39 +121,6 @@ class ApiWiring(
                     .warn("testinbox.limits.enabled=false — rate limits and quotas are NOT enforced")
             }
         }
-
-    @Bean
-    fun limitMetrics(registry: io.micrometer.core.instrument.MeterRegistry): LimitMetrics = MicrometerLimitMetrics(registry)
-
-    @Bean
-    fun inboxMetrics(registry: io.micrometer.core.instrument.MeterRegistry): InboxMetrics = MicrometerInboxMetrics(registry)
-
-    @Bean
-    fun waitMetrics(registry: io.micrometer.core.instrument.MeterRegistry): WaitMetrics = MicrometerWaitMetrics(registry)
-
-    @Bean
-    fun blobStoreMetrics(registry: io.micrometer.core.instrument.MeterRegistry): BlobStoreMetrics = MicrometerBlobStoreMetrics(registry)
-
-    @Bean
-    fun notifierMetrics(registry: io.micrometer.core.instrument.MeterRegistry): NotifierMetrics = MicrometerNotifierMetrics(registry)
-
-    /**
-     * "Which build is this?" answered from the same place Ops reads everything
-     * else (TI-DEPLOY-002 §13). The image digest is deliberately not a label:
-     * an image cannot know its own digest, and a value invented here would be a
-     * convincing lie in the one metric whose whole job is identity.
-     */
-    @Bean
-    fun buildInfoMetric(
-        registry: io.micrometer.core.instrument.MeterRegistry,
-        properties: TestInboxProperties,
-    ): BuildInfoMetric =
-        BuildInfoMetric(
-            registry,
-            service = "testinbox-api",
-            gitSha = properties.deployment.gitSha,
-            version = javaClass.`package`?.implementationVersion ?: "unknown",
-        )
 
     @Bean
     fun rateLimiter(
@@ -133,9 +147,10 @@ class ApiWiring(
         )
 
     /**
-     * Backs the `schema` readiness indicator (ADR-029 §4). Wiring is the only
-     * place this adapter meets the persistence adapter (ADR-024): the policy
-     * itself lives in the application layer behind the `SchemaHistory` port.
+     * Backs the `schema` readiness indicator and the request-time gate
+     * (ADR-029 §4). Wiring is the only place this adapter meets the
+     * persistence adapter (ADR-024): the policy itself lives in the
+     * application layer behind the `SchemaHistory` port.
      */
     @Bean
     fun schemaCompatibility(
@@ -146,8 +161,7 @@ class ApiWiring(
         // An artifact that cannot see its own migrations reports "nothing to
         // require" and waves every schema through — the guard failing open,
         // silently, in exactly the packaging (a nested Boot jar) that only a
-        // real deployment exercises. Locally there is nothing to protect, so
-        // this only bites where it matters.
+        // real deployment exercises.
         check(bundled != null || properties.deployment.environment.isNullOrBlank()) {
             "no migrations found on the classpath: this artifact cannot verify the schema it requires (ADR-029 §4)"
         }
@@ -176,19 +190,15 @@ class ApiWiring(
         quotas: WorkspaceQuotaState,
         limits: LimitsConfig,
         config: TestInboxConfig,
-        metrics: LimitMetrics,
-        inboxMetrics: InboxMetrics,
-    ): CreateInbox = CreateInbox(inboxes, reservations, tx, quotas, limits.quotas, clock, config, metrics, inboxMetrics)
+    ): CreateInbox = CreateInbox(inboxes, reservations, tx, quotas, limits.quotas, clock, config, limitMetrics, inboxMetrics)
 
     @Bean
     fun deleteInbox(
         inboxes: InboxRepository,
         reservations: ExactAddressReservations,
         tx: TransactionRunner,
-        clock: Clock,
         config: TestInboxConfig,
-        metrics: InboxMetrics,
-    ): DeleteInbox = DeleteInbox(inboxes, reservations, tx, clock, config, metrics)
+    ): DeleteInbox = DeleteInbox(inboxes, reservations, tx, clock, config, inboxMetrics)
 
     @Bean
     fun waitForMessage(
@@ -197,10 +207,7 @@ class ApiWiring(
         notifier: MessageNotifier,
         waitSlots: WaitSlots,
         limits: LimitsConfig,
-        limitMetrics: LimitMetrics,
-        clock: Clock,
         config: TestInboxConfig,
-        waitMetrics: WaitMetrics,
     ): WaitForMessage =
         WaitForMessage(
             inboxes,
@@ -210,8 +217,7 @@ class ApiWiring(
             limits.quotas.maxConcurrentWaits,
             clock,
             config,
-            metrics = limitMetrics,
-            waitMetrics = waitMetrics,
+            metrics = waitMetrics,
         )
 
     @Bean
@@ -221,8 +227,7 @@ class ApiWiring(
         blobs: BlobStore,
         tx: TransactionRunner,
         config: TestInboxConfig,
-        metrics: InboxMetrics,
-    ): ExpireInboxes = ExpireInboxes(inboxes, reservations, blobs, tx, clock, config, metrics)
+    ): ExpireInboxes = ExpireInboxes(inboxes, reservations, blobs, tx, clock, config, inboxMetrics)
 
     @Bean
     fun orphanBlobSweep(

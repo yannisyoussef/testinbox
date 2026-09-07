@@ -65,11 +65,18 @@ have queried a series that does not exist. `MetricCardinalityTest` asserts the
 ### The one to alert on
 
 `testinbox_wait_listen_degraded_polling` deserves its own alert, because the
-condition it reports is **invisible in every other signal**. When the
-notification path breaks, TestInbox does not fail: `waitForMessage` still
-returns the right answer, HTTP stays 200, messages still arrive, and readiness
-may stay green. Only latency moves, by up to the degraded re-query interval
-(ADR-020). A database placed behind a transaction-mode pooler produces exactly
+condition it reports is **otherwise visible only as an outage or as nothing at
+all**. When the notification path breaks, TestInbox does not fail:
+`waitForMessage` still returns the right answer, HTTP stays 200 and messages
+still arrive — only latency moves, by up to the degraded re-query interval
+(ADR-020).
+
+Readiness is not a substitute. ADR-020 puts LISTEN health *in* the readiness
+group, so on a platform that routes on readiness this designed latency
+degradation removes the node entirely — a blunter outcome than the condition
+warrants, and one that tells an operator "down" rather than "degraded". The
+gauge is what distinguishes the two, and revisiting the readiness membership
+belongs in an ADR-020 amendment rather than a change made in passing here. A database placed behind a transaction-mode pooler produces exactly
 this state — `LISTEN` is accepted and no notification is ever delivered
 (ADR-030 capability 2).
 
@@ -91,6 +98,21 @@ contains process start.
   thread simply returns — so a `cancelled` bucket would be permanently empty
   and would misrepresent the others as complete. The `ERROR` outcome covers
   the failures that *are* observable.
+
+### A scrape endpoint is a trust boundary
+
+`testinbox_smtp_unknown_recipient_discard_total` is deliberately unlabelled and
+cannot name a recipient, so it does not reintroduce the ADR-025 enumeration
+oracle in the obvious form. It is still a *differential* one for anyone who can
+both send SMTP and read the scrape endpoint: send to one address, re-scrape,
+and compare against `testinbox_smtp_accept_total`.
+
+The control is entirely network-level — the management port is never published
+and never routed by the edge — which makes it a deployment assumption rather
+than something this repository can test. It is recorded here so it is a stated
+boundary rather than an accident of a compose file: **an environment that
+exposes `/actuator/prometheus` more widely than its SMTP listener has weakened
+ADR-025.**
 
 ### Cardinality is a security property, not tidiness
 

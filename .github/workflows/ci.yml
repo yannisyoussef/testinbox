@@ -67,8 +67,39 @@ jobs:
           ./scripts/check-migration-safety.test.sh
       # ADR-029 §6: artifact rollback holds only while migrations are
       # expand-only. This is the gate; CODEOWNERS covers what it cannot see.
+      #
+      # Exit 3 — a migration that DECLARED itself rollback-unsafe — is not a
+      # failure here. ADR-029 §6 requires such a break to be visible before
+      # promotion, not forbidden outright, and failing the author's own pull
+      # request for following the documented procedure would collapse the
+      # two-tier design into one. `release-candidate.yml` is where it blocks.
       - name: Migration rollback-safety gate
-        run: ./scripts/check-migration-safety.sh
+        run: |
+          set +e
+          ./scripts/check-migration-safety.sh
+          status=$?
+          set -e
+          case "$status" in
+            0) ;;
+            3)
+              {
+                echo "### Declared rollback-unsafe migration"
+                echo
+                echo "This branch contains a migration that declares itself"
+                echo "rollback-breaking. That is allowed on \`develop\`, and it will"
+                echo "**block promotion to master** until it is handled explicitly"
+                echo "— see \`docs/dev/release-process.md\`."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning::a declared rollback-unsafe migration is present; promotion to master will be blocked" ;;
+            *) exit "$status" ;;
+          esac
+      # Pure logic, no deployment needed: the unknown-Host classifier guards a
+      # security invariant across two different edges, and gating it behind the
+      # Docker-heavy rehearsal would mean it never runs on an ordinary PR.
+      - name: Synthetic unit tests (edge invariant classifier)
+        run: |
+          cd deploy/synthetic
+          npm run test:unit
       - name: Shell syntax of the deployment scripts
         run: |
           for script in scripts/*.sh deploy/staging/*.sh; do

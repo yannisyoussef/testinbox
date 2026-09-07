@@ -83,7 +83,15 @@ enum class WaitOutcome {
     ERROR,
 }
 
-/** Long-poll waits (`wait_request_duration_seconds`, `wait_requests_active`). */
+/**
+ * Everything about a long poll: its duration and outcome, how many are in
+ * flight, and the ADR-027 concurrency-slot signals.
+ *
+ * The slot signals live here rather than on `LimitMetrics` because
+ * `WaitForMessage` is their only caller, and splitting one use case's
+ * observability across two ports bought nothing but a longer parameter list.
+ * The exported metric names are unchanged.
+ */
 interface WaitMetrics {
     fun waitStarted() {}
 
@@ -91,6 +99,12 @@ interface WaitMetrics {
         outcome: WaitOutcome,
         duration: Duration,
     ) {}
+
+    /** A wait refused because the workspace already holds every slot (ADR-027 §3). */
+    fun slotRejected() {}
+
+    /** +1 on claim, -1 on release. Must be paired, or a leak looks like load. */
+    fun slotsChanged(delta: Int) {}
 
     companion object {
         val NOOP: WaitMetrics = object : WaitMetrics {}
@@ -133,12 +147,27 @@ enum class BlobOperation {
     LIST,
 }
 
+/**
+ * How an object-storage call ended.
+ *
+ * `NOT_FOUND` is separate from both because it is neither: the call worked and
+ * the object was absent. Folding it into SUCCESS hides the one case worth
+ * paging on — a raw MIME object missing when `/raw` asks for it (ADR-005) —
+ * and folding it into FAILURE would make the orphan sweep, which expects
+ * misses, look like a permanent outage.
+ */
+enum class BlobOutcome {
+    SUCCESS,
+    NOT_FOUND,
+    FAILURE,
+}
+
 /** Object storage (`object_storage_operation_duration_seconds`). */
 interface BlobStoreMetrics {
     fun operationCompleted(
         operation: BlobOperation,
         duration: Duration,
-        success: Boolean,
+        outcome: BlobOutcome,
     ) {}
 
     companion object {

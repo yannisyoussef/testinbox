@@ -91,6 +91,29 @@ check "one unsafe statement among safe ones is still blocked" $BLOCKED \
    ALTER TABLE message DROP COLUMN subject;
    CREATE INDEX ix_b ON message (provider);'
 
+# --- the short forms PostgreSQL also accepts --------------------------------
+# `COLUMN` is optional in ALTER TABLE. Matching only the long form advertised
+# coverage the gate did not have.
+check "DROP without the optional COLUMN keyword is blocked" $BLOCKED \
+  'ALTER TABLE message DROP subject;'
+check "ALTER ... TYPE without the optional COLUMN keyword is blocked" $BLOCKED \
+  'ALTER TABLE message ALTER raw_size_bytes TYPE integer;'
+check "a multi-clause ADD COLUMN is judged per clause, not per statement" $BLOCKED \
+  "ALTER TABLE inbox ADD COLUMN tier text NOT NULL, ADD COLUMN note text DEFAULT 'x';"
+
+# --- destructive statements that are not ALTER TABLE ------------------------
+check "DROP SCHEMA is blocked" $BLOCKED 'DROP SCHEMA public CASCADE;'
+check "TRUNCATE is blocked" $BLOCKED 'TRUNCATE TABLE message;'
+check "DROP TYPE is blocked" $BLOCKED 'DROP TYPE parse_status;'
+check "DROP VIEW is blocked" $BLOCKED 'DROP VIEW message_summary;'
+
+# --- loosening ALTERs must still pass, or the gate gets bypassed ------------
+check "DROP CONSTRAINT passes — it loosens" $SAFE \
+  'ALTER TABLE message DROP CONSTRAINT ck_message_parse_status;'
+check "DROP DEFAULT passes" $SAFE 'ALTER TABLE inbox ALTER COLUMN state DROP DEFAULT;'
+check "DROP NOT NULL passes — it widens what may be written" $SAFE \
+  'ALTER TABLE message ALTER COLUMN subject DROP NOT NULL;'
+
 # --- declared: visible, and handled by release policy rather than silently ok -
 check "a declared destructive migration is reported as declared, not blocked" $DECLARED \
   '-- testinbox:rollback-unsafe: legacy_flag is unread since v0.4; contract release only.
@@ -113,6 +136,19 @@ else
 fi
 
 # --- the gate itself ---------------------------------------------------------
+# A blocking gate that scans nothing must fail, not report success — the
+# failure mode `verify-test-results.sh` exists to prevent one layer up.
+empty_dir="$WORK/no-migrations"
+mkdir -p "$empty_dir"
+"$GATE" "$empty_dir" >/dev/null 2>&1
+if [[ $? == 2 ]]; then
+  echo "ok   — an empty migrations directory is an error, not a pass"
+  pass=$((pass + 1))
+else
+  echo "FAIL — an empty migrations directory did not fail the gate"
+  fail=$((fail + 1))
+fi
+
 if "$GATE" "$WORK/definitely-not-here" >/dev/null 2>&1; then
   echo "FAIL — a missing migrations directory should be a usage error"
   fail=$((fail + 1))

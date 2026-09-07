@@ -29,6 +29,7 @@ class CreateInboxTest {
     private lateinit var reservations: InMemoryReservations
     private lateinit var clock: MutableClock
     private lateinit var useCase: CreateInbox
+    private val metrics = RecordingInboxMetrics()
     private lateinit var quotas: InMemoryQuotaState
     private val quotaPolicy =
         QuotaPolicy(maxActiveInboxes = 100, maxStoredBytes = 1_000_000, maxConcurrentWaits = 10)
@@ -47,7 +48,7 @@ class CreateInboxTest {
         reservations = InMemoryReservations()
         clock = MutableClock(Instant.parse("2026-08-29T12:00:00Z"))
         quotas = InMemoryQuotaState(inboxes, InMemoryMessageRepository())
-        useCase = CreateInbox(inboxes, reservations, NoopTx, quotas, quotaPolicy, clock, config)
+        useCase = CreateInbox(inboxes, reservations, NoopTx, quotas, quotaPolicy, clock, config, inboxMetrics = metrics)
     }
 
     private fun command(
@@ -125,5 +126,19 @@ class CreateInboxTest {
         useCase
             .execute(command(mode = AddressMode.EXACT, localPart = "x", aliasHint = "y"))
             .shouldBeInstanceOf<CreateInbox.Result.InvalidRequest>()
+    }
+
+    @Test
+    fun `a created inbox is counted, by mode, and a refused one is not`() {
+        // Guards the call site, which the :observability tests cannot see: they
+        // prove the meter moves when the port is called, not that anything
+        // calls it.
+        useCase.execute(command(mode = AddressMode.GENERATED))
+        useCase.execute(command(mode = AddressMode.EXACT, localPart = "counted-once"))
+        metrics.created shouldBe listOf(AddressMode.GENERATED, AddressMode.EXACT)
+
+        // An invalid request must not inflate the counter.
+        useCase.execute(command(ttlSeconds = -1))
+        metrics.created shouldBe listOf(AddressMode.GENERATED, AddressMode.EXACT)
     }
 }

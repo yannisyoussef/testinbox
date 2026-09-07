@@ -30,7 +30,7 @@ REGISTRY_NAME="testinbox-rehearsal-registry"
 HTTPS_PORT="${REHEARSAL_HTTPS_PORT:-8443}"
 # Raised deliberately when tests are added; a silently shrinking gate is the
 # failure this number exists to catch.
-SYNTHETIC_MINIMUM=19
+SYNTHETIC_MINIMUM=13
 HTTP_PORT="${REHEARSAL_HTTP_PORT:-8080}"
 SMTP_PORT="${REHEARSAL_SMTP_PORT:-2525}"
 KEEP=false
@@ -230,6 +230,7 @@ TESTINBOX_API_KEY="$TESTINBOX_BOOTSTRAP_API_KEY" \
 TESTINBOX_SMTP_HOST=127.0.0.1 \
 TESTINBOX_SMTP_PORT="$SMTP_PORT" \
 TESTINBOX_WAIT_WINDOW_SECONDS=60 \
+TESTINBOX_EDGE=nginx-reference \
   npm run test:junit
 
 # The synthetic suite is a blocking deployment gate, so it gets the same

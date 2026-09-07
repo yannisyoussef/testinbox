@@ -3,8 +3,10 @@
 How a commit becomes something running. The decisions behind this are
 [ADR-028](../adr/0028-deployment-artifacts-and-promotion.md) (artifacts and
 promotion) and [ADR-029](../adr/0029-schema-migration-execution.md)
-(migrations); where staging is hosted is still open —
-[ADR-030](../adr/0030-staging-deployment-target.md).
+(migrations); where staging is hosted is settled by
+[ADR-030](../adr/0030-staging-deployment-target.md) (Accepted), and the
+container vulnerability policy by
+[ADR-031](../adr/0031-vulnerability-policy-by-environment.md).
 
 ## Who does what
 
@@ -124,8 +126,8 @@ standalone output) and nothing else — no Gradle, no npm, no source tree.
   the same reason;
 - OCI labels record source repository, revision and version. Provenance and
   SBOM are attached as build attestations; container CVE scanning is
-  **informational**, matching the OSV-Scanner posture in
-  [quality/strategy.md](../quality/strategy.md).
+  **informational on develop and blocking on promotion to `master`** for
+  HIGH/CRITICAL findings with an available fix (ADR-031).
 
 ## Deployment sequence (the provider-neutral reference)
 
@@ -191,9 +193,15 @@ Failures name the *setting*, never the value.
 
 Container scanning is **informational** on pull requests and `develop`, and
 **blocking** on promotion to `master` for HIGH/CRITICAL findings *that have a
-fix available*. The reasoning for both halves is in ADR-028's amendment; the
-enforcement is the `enforce_vulnerability_policy` input on
-`build-images.yml`, set only by `release-candidate.yml`.
+fix available*. The reasoning for both halves is
+[ADR-031](../adr/0031-vulnerability-policy-by-environment.md); the policy
+itself is `scripts/scan-images.sh`, with `scripts/scan-images.test.sh` proving
+both modes against a stubbed scanner.
+
+The promotion path **scans the artifacts that already exist** — it resolves the
+candidate commit's published tags to their current digests and scans those. It
+does not rebuild: a rebuild on the master runner would resolve different base
+layers and assert a property of bytes that will never run anywhere.
 
 ## Related
 

@@ -45,6 +45,13 @@ data class IngestionProperties(
     data class Deployment(
         val environment: String? = null,
         val proxyReadTimeout: Duration? = null,
+        /**
+         * Hard ceiling the environment's ingress imposes on ANY request, when
+         * it has one — Cloudflare's ~100s on the deployed staging path
+         * (ADR-030). No application setting can raise it, so the wait window
+         * has to fit underneath it.
+         */
+        val edgeRequestCeiling: Duration? = null,
         val gitSha: String = "unknown",
         val imageDigest: String = "unknown",
     )

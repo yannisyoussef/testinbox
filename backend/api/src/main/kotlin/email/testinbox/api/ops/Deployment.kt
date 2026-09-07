@@ -46,6 +46,7 @@ class DeploymentSafetyCheck(
                         bootstrapApiKey = properties.bootstrap.apiKey,
                         waitWindowCap = properties.waitWindowCap,
                         proxyReadTimeout = properties.deployment.proxyReadTimeout,
+                        edgeRequestCeiling = properties.deployment.edgeRequestCeiling,
                         limitsEnabled = properties.limits.enabled,
                     ),
                 )

@@ -14,9 +14,44 @@ import { classifyUnknownHostProbe } from "../src/edge.mjs";
  */
 
 test("a dropped connection is the strongest form of refusal", () => {
-  const verdict = classifyUnknownHostProbe({ error: "ECONNRESET" });
-  assert.equal(verdict.served, false);
-  assert.match(verdict.reason, /no HTTP response/);
+  for (const error of ["ECONNRESET", "ECONNREFUSED", "EPIPE"]) {
+    const verdict = classifyUnknownHostProbe({ error });
+    assert.equal(verdict.served, false, `${error} should read as a refusal`);
+    assert.match(verdict.reason, /refused/);
+  }
+});
+
+test("a timeout or DNS failure is NOT a refusal — absence of evidence is not evidence", () => {
+  // An edge that hangs on an unknown Host, or an environment that is simply
+  // unreachable, must not pass a security assertion.
+  for (const error of ["ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"]) {
+    assert.equal(classifyUnknownHostProbe({ error }).served, true, `${error} must not pass`);
+  }
+});
+
+test("an uninterpretable response fails closed", () => {
+  assert.equal(classifyUnknownHostProbe({}).served, true);
+  assert.equal(classifyUnknownHostProbe({ status: "404" }).served, true);
+  assert.equal(classifyUnknownHostProbe({ status: 100, headers: {}, body: "" }).served, true);
+});
+
+test("a fall-through onto the WEB container is caught, not read as a refusal", () => {
+  // The realistic misrouting on a shared estate: a catch-all router points at
+  // the UI. Next.js sets neither X-Correlation-Id nor X-API-Stability, and its
+  // default 404 body mentions neither TestInbox nor a correlation id.
+  const nextDefault404 = classifyUnknownHostProbe({
+    status: 404,
+    headers: { "x-powered-by": "Next.js" },
+    body: "<html><head><title>404: This page could not be found.</title></head></html>",
+  });
+  assert.equal(nextDefault404.served, true);
+
+  const withoutHeader = classifyUnknownHostProbe({
+    status: 404,
+    headers: {},
+    body: '<div>404</div><script src="/_next/static/chunks/main.js"></script>',
+  });
+  assert.equal(withoutHeader.served, true);
 });
 
 test("a bare 4xx from the edge is a refusal", () => {

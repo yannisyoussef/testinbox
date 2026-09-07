@@ -25,13 +25,35 @@
  * exactly what makes them a reliable tell.
  */
 export const TESTINBOX_RESPONSE_MARKERS = Object.freeze({
-  headers: ["x-correlation-id", "x-api-stability"],
+  headers: [
+    // Set by CorrelationFilter on EVERY API response, before routing or auth.
+    "x-correlation-id",
+    "x-api-stability",
+    // The UI is a Next.js server. A fall-through that lands on the WEB
+    // container is the most likely misrouting on a shared estate, and its
+    // default 404 page mentions neither TestInbox nor a correlation id — so
+    // without this marker the request reaches us and the test says "refused".
+    "x-powered-by",
+  ],
   bodyPatterns: [
     /testinbox/i, // the UI shell ("TestInbox Inspector") and problem type URIs
     /"correlationId"/, // RFC 7807 bodies from the API
     /https:\/\/testinbox\.email\/problems\//i,
+    /This page could not be found/i, // Next.js default 404 — i.e. our web container
+    /\/_next\//, // any Next.js asset reference
   ],
 });
+
+/**
+ * Transport failures, split by what they actually demonstrate.
+ *
+ * A reset or a refused connection is an edge *actively* declining to serve —
+ * nginx `return 444` is precisely this. A timeout or a DNS failure is the
+ * absence of evidence: an edge that hangs while trying to reach an upstream
+ * looks identical to one that is simply unreachable, and neither proves the
+ * invariant. Treating them alike would let a hung edge pass.
+ */
+const REFUSAL_ERRORS = new Set(["ECONNRESET", "ECONNREFUSED", "EPIPE", "ECONNABORTED"]);
 
 /**
  * @param {{error?: string, status?: number, headers?: Record<string,string>, body?: string}} probe
@@ -40,12 +62,26 @@ export const TESTINBOX_RESPONSE_MARKERS = Object.freeze({
  */
 export function classifyUnknownHostProbe(probe) {
   if (probe.error !== undefined) {
-    // No HTTP response at all — nginx `return 444`, or any edge that drops the
-    // connection. The strongest possible form of "not served".
-    return { served: false, reason: `no HTTP response (${probe.error})` };
+    if (REFUSAL_ERRORS.has(probe.error)) {
+      // No HTTP response at all — nginx `return 444`, or any edge that drops
+      // the connection. The strongest possible form of "not served".
+      return { served: false, reason: `connection refused by the edge (${probe.error})` };
+    }
+    return {
+      served: true,
+      reason: `the probe failed with ${probe.error}, which demonstrates nothing about the invariant — a hung or unreachable edge is not a refusal`,
+    };
   }
 
   const status = probe.status;
+  if (typeof status !== "number") {
+    // Fail closed. A classifier that cannot interpret a response must not
+    // report the security property as satisfied.
+    return { served: true, reason: `no interpretable status in the response (${JSON.stringify(status)})` };
+  }
+  if (status < 200) {
+    return { served: true, reason: `informational ${status} is not a refusal` };
+  }
   const headers = normalizeHeaders(probe.headers);
   const body = probe.body ?? "";
   const evidence = testInboxEvidence(headers, body);

@@ -186,6 +186,51 @@ class DependencyRuleTest {
     }
 
     @Test
+    fun `metric ports cannot carry a caller-controlled value (ADR-027 §14)`() {
+        // Bounded cardinality is a SECURITY property: a label whose values a
+        // caller chooses lets that caller choose how much memory the metrics
+        // backend spends. Today every metric port takes enums, durations and
+        // booleans, so there is no parameter an identifier could travel
+        // through — and this rule is what keeps that true. Adding a
+        // `workspaceId: String` to a port would otherwise compile, pass every
+        // other rule, and only be caught if whoever added it also remembered
+        // to exercise it in the cardinality test.
+        val metricPorts =
+            listOf(
+                email.testinbox.application.port.LimitMetrics::class.java,
+                email.testinbox.application.port.InboxMetrics::class.java,
+                email.testinbox.application.port.InboundMetrics::class.java,
+                email.testinbox.application.port.WaitMetrics::class.java,
+                email.testinbox.application.port.NotifierMetrics::class.java,
+                email.testinbox.application.port.BlobStoreMetrics::class.java,
+                email.testinbox.application.port.SmtpMetrics::class.java,
+            )
+        val allowed =
+            setOf(
+                java.time.Duration::class.java,
+                Boolean::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType,
+                Long::class.javaPrimitiveType,
+            )
+        for (port in metricPorts) {
+            // Kotlin emits synthetic `access$...` bridges for interface default
+            // implementations; they take the interface itself and are not part
+            // of the port's surface.
+            for (method in port.declaredMethods.filterNot { it.isSynthetic || it.isBridge || "$" in it.name }) {
+                for (parameter in method.parameterTypes) {
+                    val ok = parameter.isEnum || parameter in allowed
+                    check(ok) {
+                        "${port.simpleName}.${method.name} takes a ${parameter.simpleName}. Metric port " +
+                            "parameters must be enums, durations or numbers: anything caller-controlled " +
+                            "(workspace id, api key, inbox id, address, correlation id) becomes an " +
+                            "unbounded Prometheus label (ADR-027 §14)."
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     fun `ingestion never touches persistence or storage implementations directly`() {
         // The gateway invokes application use cases (ADR-024); its only legal
         // references to persistence/storage are the wiring of port implementations.

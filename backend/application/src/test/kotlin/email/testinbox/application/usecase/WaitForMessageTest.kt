@@ -6,6 +6,7 @@ import email.testinbox.application.InMemoryInboxRepository
 import email.testinbox.application.InMemoryMessageRepository
 import email.testinbox.application.MutableClock
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.port.WaitOutcome
 import email.testinbox.application.port.WakeOutcome
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
@@ -60,7 +61,10 @@ class WaitForMessageTest {
         inboxes.insert(inbox)
     }
 
-    private fun useCase(): WaitForMessage = WaitForMessage(inboxes, messages, notifier, waitSlots, maxConcurrentWaits, clock, config, hook)
+    private val metrics = RecordingWaitMetrics()
+
+    private fun useCase(): WaitForMessage =
+        WaitForMessage(inboxes, messages, notifier, waitSlots, maxConcurrentWaits, clock, config, hook, metrics)
 
     private fun command(
         matcher: MessageMatcher = MessageMatcher(),
@@ -267,5 +271,22 @@ class WaitForMessageTest {
         results.forEach { it.shouldBeInstanceOf<WaitForMessage.Result.Matched>() }
         val ids = results.map { (it as WaitForMessage.Result.Matched).message.id }.toSet()
         ids.size shouldBe 1
+    }
+
+    @Test
+    fun `every wait is counted exactly once, whatever its outcome`() {
+        // The started/completed pair is a try/finally contract: if it ever
+        // breaks, `testinbox_wait_requests_active` drifts upward and a handle
+        // leak becomes indistinguishable from load — which is the one thing
+        // that gauge exists to tell apart.
+        // An invalid request, then a match.
+        useCase().execute(command(timeoutSeconds = 0))
+        messages.appendVisible(visibleMessage())
+        useCase().execute(command())
+
+        metrics.started.get() shouldBe 2
+        metrics.completed shouldBe listOf(WaitOutcome.INVALID_REQUEST, WaitOutcome.MATCHED)
+        // Started and completed must stay balanced, or the gauge leaks.
+        metrics.started.get() shouldBe metrics.completed.size
     }
 }

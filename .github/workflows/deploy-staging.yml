@@ -54,9 +54,16 @@ concurrency:
   # pending ones — a single shared group would let a queued develop deployment
   # be dropped by the next pull request.
   group: testinbox-staging-${{ github.ref }}
-  # NEVER cancel in progress. A cancelled run can interrupt the migration job
-  # between statements, and recovery from a half-applied schema is manual.
-  # Two rapid merges to develop queue; they do not race.
+  # NEVER cancel in progress: a cancelled run can interrupt a rehearsal
+  # mid-migration, and it can also cancel a handoff between validation and the
+  # trigger.
+  #
+  # NOTE what this no longer guarantees. When the migration ran inside this
+  # workflow, the group serialised deployments. The handoff returns as soon as
+  # GitLab accepts the trigger, so two rapid merges can hand over two
+  # candidates while the first is still reconciling. Serialising the actual
+  # deployment is now an Ops responsibility, recorded as a contract requirement
+  # in ADR-030 ("What Ops must guarantee").
   cancel-in-progress: false
 
 permissions:
@@ -286,7 +293,7 @@ jobs:
             echo
             echo "| field | value |"
             echo "|---|---|"
-            echo "| environment | staging |"
+            echo "| handoff target | staging (deployed by Ops) |"
             echo "| commit | \`${{ github.sha }}\` |"
             echo "| triggered by | ${{ github.actor }} (${{ github.event_name }}) |"
             echo "| api | \`${{ steps.artifacts.outputs.api }}\` |"

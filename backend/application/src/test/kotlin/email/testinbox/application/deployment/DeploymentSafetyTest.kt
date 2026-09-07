@@ -22,6 +22,7 @@ class DeploymentSafetyTest {
             bootstrapApiKey = "tk_stg_" + "x".repeat(40),
             waitWindowCap = Duration.ofSeconds(60),
             proxyReadTimeout = Duration.ofSeconds(120),
+            edgeRequestCeiling = null,
             limitsEnabled = true,
         )
 
@@ -141,5 +142,51 @@ class DeploymentSafetyTest {
         message shouldNotContain "testinbox123"
         message shouldNotContain "tk_e2e_acceptance_key"
         message shouldNotContain "fixture-inline-url-credential"
+    }
+
+    @Test
+    fun `a wait window the environment's ingress cannot hold is refused`() {
+        // ADR-030: Cloudflare cuts a request at ~100s on the deployed path, and
+        // no application setting raises that. Without this check, a 90s window
+        // with a declared 120s proxy timeout passes every validation and then
+        // returns 524 for every full-window wait in production.
+        // Note the declared proxy timeout: on the deployed path it must be the
+        // real 100s ceiling, not the 120s the nginx reference topology uses.
+        // Copying that number across is exactly the mistake this catches.
+        val cloudflare =
+            safe.copy(edgeRequestCeiling = Duration.ofSeconds(100), proxyReadTimeout = Duration.ofSeconds(100))
+
+        DeploymentSafety.validate(cloudflare.copy(waitWindowCap = Duration.ofSeconds(60))).shouldBeEmpty()
+
+        val tooWide =
+            DeploymentSafety.validate(
+                cloudflare.copy(waitWindowCap = Duration.ofSeconds(90), proxyReadTimeout = Duration.ofSeconds(120)),
+            )
+        settingsOf(tooWide) shouldBe listOf("testinbox.wait-window-cap", "testinbox.proxy-read-timeout")
+        tooWide.first().problem shouldContain "cuts a request at 100s"
+    }
+
+    @Test
+    fun `70s is the exact boundary the ceiling allows`() {
+        // 70s + the 30s margin is exactly 100s. One second more is not.
+        val cloudflare =
+            safe.copy(edgeRequestCeiling = Duration.ofSeconds(100), proxyReadTimeout = Duration.ofSeconds(100))
+        DeploymentSafety
+            .validate(cloudflare.copy(waitWindowCap = Duration.ofSeconds(70), proxyReadTimeout = Duration.ofSeconds(100)))
+            .shouldBeEmpty()
+        settingsOf(
+            DeploymentSafety.validate(
+                cloudflare.copy(waitWindowCap = Duration.ofSeconds(71), proxyReadTimeout = Duration.ofSeconds(101)),
+            ),
+        ) shouldBe listOf("testinbox.wait-window-cap", "testinbox.proxy-read-timeout")
+    }
+
+    @Test
+    fun `an environment with no ingress ceiling is unconstrained by it`() {
+        // The provider-neutral nginx topology owns its own edge.
+        DeploymentSafety
+            .validate(
+                safe.copy(edgeRequestCeiling = null, waitWindowCap = Duration.ofSeconds(300), proxyReadTimeout = Duration.ofSeconds(400)),
+            ).shouldBeEmpty()
     }
 }

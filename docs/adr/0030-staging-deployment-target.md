@@ -1,8 +1,8 @@
 # ADR-030: Staging Deployment Target
 
-**Status:** Accepted (2026-09-07). Supersedes the Proposed form of this ADR;
-the options analysis below is retained because it is the reasoning the decision
-was made against.
+**Status:** Accepted (2026-09-07). Replaces the Proposed form of this ADR; the
+options analysis below is retained because it is the reasoning the decision was
+made against.
 
 > Persistent staging is live at **https://staging.testinbox.email**, deployed
 > from `develop` through the Infinity Ops platform. The provider-neutral
@@ -111,8 +111,17 @@ The deployed path imposes a ceiling the nginx reference does not:
 | **Effective edge timeout on this path** | **100 s** |
 
 So `TESTINBOX_WAIT_WINDOW_CAP` **must not exceed 70 s** while this Cloudflare
-configuration is in use. It is currently 60 s and is not raised here. Exceeding
-it is an edge/DNS/tier decision, not an application environment variable.
+configuration is in use — and 70 s is the arithmetic maximum, not a
+recommendation: it consumes the entire 30 s margin, leaving nothing for TLS
+handshake, transit or scheduling. **Keep it at 60 s.** Raising it past what the
+edge can hold is an edge/DNS/tier decision, not an application environment
+variable.
+
+This is enforced, not merely documented: `testinbox.deployment.edge-request-ceiling`
+carries the ingress's hard per-request limit, and `DeploymentSafety` refuses to
+start a process whose wait window plus margin exceeds it — or whose declared
+proxy read timeout claims more patience than the edge actually has. The
+provider-neutral topology leaves it unset, because there the edge is ours.
 
 ## Minimum capabilities (unchanged, and how the chosen target meets them)
 
@@ -215,6 +224,29 @@ joining an existing estate rather than provisioning a host for TestInbox alone:
 Options B and C are not revisited: nothing about them improved, and the
 capability risks recorded above still stand if they are ever reconsidered.
 
+## What Ops must guarantee
+
+The handoff moved three responsibilities across the boundary. Two were already
+Ops concerns; the third was previously enforced inside the GitHub run and is
+now enforceable only in `infinity-core`, so it is stated here as a contract
+requirement rather than left implicit:
+
+1. **At most one reconcile per environment at a time.** ADR-029 requires
+   exactly one migration executor and a deployment that is never interrupted
+   mid-migration. GitHub used to serialise this with a concurrency group,
+   because the migration ran inside the run. The handoff returns as soon as the
+   trigger is accepted, so two rapid merges can now hand over two candidates
+   while the first is still reconciling. Ops must queue them: a later candidate
+   supersedes an earlier one, it does not race it.
+2. **A container stop grace period of at least 90 s for the API** (60 s for
+   ingestion). The applications drain a parked long poll on `SIGTERM`
+   (`spring.lifecycle.timeout-per-shutdown-phase`); Docker's 10 s default would
+   `SIGKILL` a wait that was still legitimately running.
+3. **The post-deployment synthetic suite**, run on the host after reconcile.
+   GitHub can no longer run it — it has no route to the private SMTP listener,
+   by design — so it is the Ops pipeline that turns "containers started" into
+   "the deployment works".
+
 ## Consequences
 
 - GitHub no longer holds any staging host credential. It also no longer knows
@@ -226,9 +258,9 @@ capability risks recorded above still stand if they are ever reconsidered.
 - Two topologies coexist by design, with the split of responsibilities above.
   Neither is allowed to rot: the rehearsal runs on every pull request, and the
   deployed environment runs the same synthetic suite after every reconcile.
-- The 100 s Cloudflare ceiling is now an architectural constraint on the wait
-  window, recorded here and enforced in `DeploymentSafety` via the declared
-  proxy read timeout.
+- The 100 s Cloudflare ceiling is an architectural constraint on the wait
+  window, recorded here and enforced at startup by `DeploymentSafety` through
+  `edge-request-ceiling`.
 - **ADR-004 (production inbound provider) remains unresolved.** Choosing a
   staging host does not choose a mail provider, and no MX record exists.
 - Production (OVH) is named as an intention only. Promoting to it needs its own

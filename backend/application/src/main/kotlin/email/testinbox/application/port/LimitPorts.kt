@@ -109,10 +109,6 @@ interface LimitMetrics {
 
     fun quotaRejected(dimension: QuotaDimension) {}
 
-    fun waitSlotRejected() {}
-
-    fun waitSlotsChanged(delta: Int) {}
-
     companion object {
         val NOOP: LimitMetrics = object : LimitMetrics {}
     }

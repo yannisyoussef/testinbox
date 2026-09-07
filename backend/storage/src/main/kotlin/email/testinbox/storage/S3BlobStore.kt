@@ -1,6 +1,7 @@
 package email.testinbox.storage
 
 import email.testinbox.application.port.BlobOperation
+import email.testinbox.application.port.BlobOutcome
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.BlobStoreMetrics
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
@@ -84,7 +85,10 @@ class S3BlobStore(
     }
 
     override fun get(key: String): ByteArray? =
-        timed(BlobOperation.GET) {
+        // A miss is reported as NOT_FOUND, not success: a raw MIME object that
+        // is absent when /raw asks for it (ADR-005) is precisely the failure
+        // this metric would be consulted for, and success would hide it.
+        timed(BlobOperation.GET, missIsNotFound = true) {
             getOrNull(key)
         }
 
@@ -182,16 +186,17 @@ class S3BlobStore(
      */
     private fun <T> timed(
         operation: BlobOperation,
+        missIsNotFound: Boolean = false,
         block: () -> T,
     ): T {
         val startedAt = System.nanoTime()
-        var success = false
+        var outcome = BlobOutcome.FAILURE
         try {
             val result = block()
-            success = true
+            outcome = if (missIsNotFound && result == null) BlobOutcome.NOT_FOUND else BlobOutcome.SUCCESS
             return result
         } finally {
-            metrics.operationCompleted(operation, Duration.ofNanos(System.nanoTime() - startedAt), success)
+            metrics.operationCompleted(operation, Duration.ofNanos(System.nanoTime() - startedAt), outcome)
         }
     }
 }

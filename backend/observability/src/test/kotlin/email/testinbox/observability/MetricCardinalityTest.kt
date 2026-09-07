@@ -1,6 +1,7 @@
 package email.testinbox.observability
 
 import email.testinbox.application.port.BlobOperation
+import email.testinbox.application.port.BlobOutcome
 import email.testinbox.application.port.SmtpRejection
 import email.testinbox.application.port.WaitOutcome
 import email.testinbox.domain.inbox.AddressMode
@@ -52,6 +53,8 @@ class MetricCardinalityTest {
             wait.waitStarted()
             wait.waitCompleted(it, Duration.ofMillis(1))
         }
+        wait.slotRejected()
+        wait.slotsChanged(1)
 
         val notifier = MicrometerNotifierMetrics(registry)
         notifier.listening()
@@ -59,9 +62,8 @@ class MetricCardinalityTest {
         notifier.reconnected()
 
         val blobs = MicrometerBlobStoreMetrics(registry)
-        BlobOperation.entries.forEach {
-            blobs.operationCompleted(it, Duration.ofMillis(1), success = true)
-            blobs.operationCompleted(it, Duration.ofMillis(1), success = false)
+        BlobOperation.entries.forEach { operation ->
+            BlobOutcome.entries.forEach { blobs.operationCompleted(operation, Duration.ofMillis(1), it) }
         }
 
         val smtp = MicrometerSmtpMetrics(registry)
@@ -72,8 +74,6 @@ class MetricCardinalityTest {
         RateCategory.entries.forEach { limits.rateDecision(it, allowed = true) }
         RateCategory.entries.forEach { limits.rateDecision(it, allowed = false) }
         QuotaDimension.entries.forEach { limits.quotaRejected(it) }
-        limits.waitSlotRejected()
-        limits.waitSlotsChanged(1)
 
         BuildInfoMetric(registry, service = "testinbox-api", gitSha = "abc1234", version = "0.1.0")
     }
@@ -87,7 +87,9 @@ class MetricCardinalityTest {
             "mode" to AddressMode.entries.map { it.name }.toSet(),
             "parse_status" to ParseStatus.entries.map { it.name }.toSet(),
             "outcome" to
-                WaitOutcome.entries.map { it.name }.toSet() + setOf("success", "failure", "allowed", "rejected"),
+                WaitOutcome.entries.map { it.name }.toSet() +
+                BlobOutcome.entries.map { it.name.lowercase() }.toSet() +
+                setOf("allowed", "rejected"),
             "operation" to BlobOperation.entries.map { it.name }.toSet(),
             "reason" to SmtpRejection.entries.map { it.name }.toSet(),
             "category" to RateCategory.entries.map { it.name }.toSet(),

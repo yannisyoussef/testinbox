@@ -25,19 +25,61 @@
 # migration is not waved through: docs/dev/release-process.md requires it to be
 # handled explicitly before it can reach master.
 #
-# Exit codes:  0 = all migrations expand-only
+# SCOPE. By default every migration in the directory is scanned, which is what
+# a pull request wants: the whole tree must remain expand-only. `--since <ref>`
+# narrows to migrations ADDED relative to that ref, which is what a release
+# needs — migrations are immutable once applied, so scanning the whole history
+# forever would mean one declared rollback-unsafe migration blocked every
+# future release permanently, with no way to acknowledge it and move on.
+#
+# Exit codes:  0 = all migrations in scope are expand-only
 #              1 = a rollback-breaking construct with NO declaration
 #              2 = usage error
 #              3 = only declared-unsafe migrations (needs release handling)
 set -uo pipefail
 
-MIGRATIONS_DIR="${1:-backend/persistence/src/main/resources/db/migration}"
+MIGRATIONS_DIR="backend/persistence/src/main/resources/db/migration"
 DECLARATION_MARKER="testinbox:rollback-unsafe"
+SINCE_REF=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --since) SINCE_REF="${2:-}"; shift 2 ;;
+    --since=*) SINCE_REF="${1#*=}"; shift ;;
+    -*) echo "usage: $(basename "$0") [--since <git-ref>] [migrations-directory]" >&2; exit 2 ;;
+    *) MIGRATIONS_DIR="$1"; shift ;;
+  esac
+done
 
 if [[ ! -d "$MIGRATIONS_DIR" ]]; then
-  echo "usage: $(basename "$0") [migrations-directory]" >&2
+  echo "usage: $(basename "$0") [--since <git-ref>] [migrations-directory]" >&2
   echo "no such directory: $MIGRATIONS_DIR" >&2
   exit 2
+fi
+
+# Files to scan: everything, or only what this range adds.
+declare -a FILES=()
+if [[ -n "$SINCE_REF" ]]; then
+  while IFS= read -r file; do
+    [[ -n "$file" && -f "$file" ]] && FILES+=("$file")
+  done < <(git diff --name-only --diff-filter=AM "$SINCE_REF" -- "$MIGRATIONS_DIR" 2>/dev/null | grep '\.sql$' || true)
+  echo "scope: migrations added or modified since $SINCE_REF"
+  if (( ${#FILES[@]} == 0 )); then
+    echo "no migrations added since $SINCE_REF — nothing to check"
+    exit 0
+  fi
+else
+  shopt -s nullglob
+  FILES=("$MIGRATIONS_DIR"/*.sql)
+  shopt -u nullglob
+  # A blocking gate that silently scans nothing is worse than no gate: if the
+  # migrations directory ever moves, this must fail rather than report success.
+  # Checked here rather than after the loop because bash 3.2 (macOS) treats an
+  # empty array expansion under `set -u` as an unbound variable.
+  if (( ${#FILES[@]} == 0 )); then
+    echo "no migrations found in $MIGRATIONS_DIR — the gate scanned nothing" >&2
+    exit 2
+  fi
 fi
 
 # Strips SQL comments (block and line), flattens to one line, and splits on
@@ -75,26 +117,55 @@ check_statement() {
   case "$upper" in
     *"DROP TABLE"*)
       echo "DROP TABLE — the previous artifact still reads this table" ;;
-    *"DROP COLUMN"*)
-      echo "DROP COLUMN — the previous artifact still selects this column" ;;
+    *"DROP SCHEMA"*)
+      echo "DROP SCHEMA — takes every table with it" ;;
+    *"DROP VIEW"*|*"DROP SEQUENCE"*|*"DROP TYPE"*)
+      echo "DROP of a schema object the previous artifact may still reference" ;;
+    *"TRUNCATE"*)
+      echo "TRUNCATE — destroys rows the previous artifact expects to read" ;;
     *"RENAME TO"*|*"RENAME COLUMN"*)
       echo "RENAME — the previous artifact refers to the old name" ;;
-    *"ALTER COLUMN"*" TYPE "*)
-      echo "ALTER COLUMN ... TYPE — a narrowed type breaks the previous artifact's reads and writes" ;;
     *"SET NOT NULL"*)
       echo "SET NOT NULL — the previous artifact's inserts may omit this column" ;;
+  esac
+
+  # `COLUMN` is OPTIONAL in PostgreSQL's ALTER TABLE grammar, so matching only
+  # the long form would let `ALTER TABLE t DROP c` and
+  # `ALTER TABLE t ALTER c TYPE integer` through — both valid, both
+  # rollback-breaking. Match on ALTER TABLE plus the operation instead, and
+  # exclude the DROPs that only ever loosen.
+  case "$upper" in
+    *"ALTER TABLE"*)
+      case "$upper" in
+        *"DROP CONSTRAINT"*|*"DROP DEFAULT"*|*"DROP NOT NULL"*) ;;
+        *"DROP "*) echo "ALTER TABLE ... DROP — the previous artifact still selects this column" ;;
+      esac
+      case "$upper" in
+        *" TYPE "*) echo "ALTER TABLE ... TYPE — a narrowed type breaks the previous artifact's reads and writes" ;;
+      esac ;;
   esac
 
   # NOT NULL without a default only breaks rollback when a column is ADDED:
   # the previous artifact's INSERT does not mention the new column, so every
   # write fails. A NOT NULL column inside CREATE TABLE is fine — nothing older
   # writes to a table that did not exist.
+  #
+  # Checked per ADD-COLUMN CLAUSE, not per statement: one ALTER TABLE may carry
+  # several, and a statement-wide DEFAULT search would let
+  # `ADD COLUMN a text NOT NULL, ADD COLUMN b text DEFAULT 'x'` pass on b's
+  # default while a has none.
   case "$upper" in
     *"ADD COLUMN"*"NOT NULL"*)
-      case "$upper" in
-        *DEFAULT*) ;;
-        *) echo "ADD COLUMN ... NOT NULL with no DEFAULT — the previous artifact's inserts omit it" ;;
-      esac ;;
+      local clause
+      while IFS= read -r clause; do
+        case "$clause" in
+          *"NOT NULL"*)
+            case "$clause" in
+              *DEFAULT*) ;;
+              *) echo "ADD COLUMN ... NOT NULL with no DEFAULT — the previous artifact's inserts omit it"; break ;;
+            esac ;;
+        esac
+      done < <(printf '%s' "$upper" | tr ',' '\n' | grep "ADD COLUMN") ;;
   esac
 }
 
@@ -102,8 +173,7 @@ blocked=0
 declared=0
 scanned=0
 
-shopt -s nullglob
-for file in "$MIGRATIONS_DIR"/*.sql; do
+for file in "${FILES[@]}"; do
   scanned=$((scanned + 1))
   # Read the declaration from the RAW file: it lives in a comment, which
   # normalization deliberately removes.
@@ -132,7 +202,6 @@ for file in "$MIGRATIONS_DIR"/*.sql; do
     blocked=$((blocked + 1))
   fi
 done
-shopt -u nullglob
 
 echo "----"
 echo "scanned $scanned migration(s) in $MIGRATIONS_DIR"

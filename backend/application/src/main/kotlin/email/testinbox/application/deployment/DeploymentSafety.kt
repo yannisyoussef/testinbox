@@ -33,6 +33,17 @@ data class DeploymentSettings(
      * is to fail the deployment when the two are set inconsistently.
      */
     val proxyReadTimeout: Duration?,
+    /**
+     * Hard ceiling on how long the environment's ingress will hold ANY request,
+     * when it has one. Cloudflare caps a request at ~100 s on the deployed
+     * staging path (ADR-030), and no application setting can raise that — so a
+     * wait window that needs more than the ceiling allows produces a 524 no
+     * matter what `proxyReadTimeout` claims.
+     *
+     * Null where the ingress is ours and imposes no ceiling of its own, as in
+     * the provider-neutral nginx topology.
+     */
+    val edgeRequestCeiling: Duration?,
     val limitsEnabled: Boolean,
 )
 
@@ -88,6 +99,7 @@ object DeploymentSafety {
             addAll(checkPublicBaseUrl(settings))
             addAll(checkBootstrapKey(settings))
             addAll(checkProxyTimeout(settings))
+            addAll(checkEdgeCeiling(settings))
             addAll(checkLimits(settings))
         }
 
@@ -200,6 +212,40 @@ object DeploymentSafety {
                     "(need at least ${required.toSeconds()}s)",
             ),
         )
+    }
+
+    /**
+     * The declared proxy timeout is what *we* configured; the ceiling is what
+     * the environment will actually tolerate. Checking only the former lets a
+     * deployment pass validation and then fail in production: raise the wait
+     * window to 90 s, declare a 120 s proxy timeout, and every full-window wait
+     * is cut at Cloudflare's 100 s and returns 524 — with every check green.
+     */
+    private fun checkEdgeCeiling(settings: DeploymentSettings): List<DeploymentViolation> {
+        val ceiling = settings.edgeRequestCeiling ?: return emptyList()
+        val violations = mutableListOf<DeploymentViolation>()
+        val required = settings.waitWindowCap.plus(PROXY_TIMEOUT_MARGIN)
+        if (required > ceiling) {
+            violations +=
+                DeploymentViolation(
+                    "testinbox.wait-window-cap",
+                    "is ${settings.waitWindowCap.toSeconds()}s, which needs ${required.toSeconds()}s of ingress " +
+                        "patience, but this environment's ingress cuts a request at ${ceiling.toSeconds()}s; " +
+                        "a full-window wait would fail there whatever the proxy timeout says. Raising this is " +
+                        "an edge decision, not an application setting",
+                )
+        }
+        settings.proxyReadTimeout?.let { declared ->
+            if (declared > ceiling) {
+                violations +=
+                    DeploymentViolation(
+                        "testinbox.proxy-read-timeout",
+                        "is declared as ${declared.toSeconds()}s but the environment's ingress cuts a request at " +
+                            "${ceiling.toSeconds()}s; the declared value is not achievable here",
+                    )
+            }
+        }
+        return violations
     }
 
     private fun checkLimits(settings: DeploymentSettings): List<DeploymentViolation> =
