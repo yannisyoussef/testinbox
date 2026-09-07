@@ -114,19 +114,56 @@ class DependencyRuleTest {
 
     @Test
     fun `entry-point adapters do not depend on each other`() {
+        val entryPoints = listOf("email.testinbox.api..", "email.testinbox.ingestion..", "email.testinbox.migrator..")
+        for (entryPoint in entryPoints) {
+            val others = entryPoints.filterNot { it == entryPoint }.toTypedArray()
+            noClasses()
+                .that()
+                .resideInAPackage(entryPoint)
+                .should()
+                .dependOnClassesThat()
+                .resideInAnyPackage(*others)
+                .because("each deployable is independently deployable (ADR-001, ADR-029)")
+                .check(allClasses)
+        }
+    }
+
+    @Test
+    fun `the migration executor knows nothing but Flyway and its own configuration (ADR-029)`() {
+        // The migrator exists to fail for exactly one reason. It carries the
+        // persistence module's SQL resources at runtime and must not compile
+        // against a single TestInbox class: a migrator that could reach the
+        // domain would eventually be asked to seed, backfill or fix data, and
+        // then the one deployment step that cannot be rolled back would have
+        // application logic in it.
         noClasses()
             .that()
-            .resideInAPackage("email.testinbox.api..")
+            .resideInAPackage("email.testinbox.migrator..")
             .should()
             .dependOnClassesThat()
-            .resideInAPackage("email.testinbox.ingestion..")
-            .check(allClasses)
+            .resideInAnyPackage(
+                "email.testinbox.domain..",
+                "email.testinbox.application..",
+                "email.testinbox.persistence..",
+                "email.testinbox.storage..",
+                "email.testinbox.notification..",
+                "email.testinbox.observability..",
+            ).check(allClasses)
+    }
+
+    @Test
+    fun `the schema-compatibility policy lives in the application layer, not in an adapter (ADR-029)`() {
+        // Readiness against a schema this artifact predates is a policy, and a
+        // policy written once per deployable is a policy that drifts — the two
+        // processes would disagree about whether the environment is safe.
+        // Adapters may implement the SchemaHistory port; the decision is not
+        // theirs.
         noClasses()
             .that()
-            .resideInAPackage("email.testinbox.ingestion..")
+            .resideInAnyPackage("email.testinbox.api..", "email.testinbox.ingestion..", "email.testinbox.persistence..")
             .should()
-            .dependOnClassesThat()
-            .resideInAPackage("email.testinbox.api..")
+            .beAssignableTo(email.testinbox.application.deployment.SchemaCompatibility::class.java)
+            .because("schema compatibility is decided once, in the application layer (ADR-024, ADR-029 §4)")
             .check(allClasses)
     }
 

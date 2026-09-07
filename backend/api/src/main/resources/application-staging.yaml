@@ -1,0 +1,111 @@
+# Staging / deployed profile for the REST API (ADR-028/029).
+#
+# Everything here is deliberately WITHOUT a default: an unset variable must
+# fail startup, not silently fall back to the local-development value in
+# application.yaml. That is the failure this profile exists to prevent —
+# a deployed node quietly running on `testinbox/testinbox` against localhost.
+# `DeploymentSafetyCheck` catches the rest (values that resolve but are the
+# local defaults, plaintext public URLs, a proxy timeout shorter than the wait
+# window).
+server:
+  port: 8080
+  # A parked long poll is a live request: drain it rather than cutting it.
+  shutdown: graceful
+  # The ingress terminates TLS and is the only thing that may talk to us.
+  forward-headers-strategy: native
+  tomcat:
+    # Belt and braces behind nginx's own header limits (docs/dev/staging.md).
+    max-http-form-post-size: 1MB
+
+spring:
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${TESTINBOX_DB_URL}
+    username: ${TESTINBOX_DB_USER}
+    password: ${TESTINBOX_DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${TESTINBOX_DB_POOL_SIZE:16}
+  # ADR-029: exactly one migration executor, and it is not this process.
+  flyway:
+    enabled: false
+  lifecycle:
+    # Must exceed testinbox.wait-window-cap or shutdown truncates a legitimate wait.
+    timeout-per-shutdown-phase: ${TESTINBOX_SHUTDOWN_GRACE:75s}
+
+logging:
+  structured:
+    format:
+      console: ecs
+  level:
+    root: INFO
+
+testinbox:
+  mail-domain: ${TESTINBOX_MAIL_DOMAIN}
+  wait-window-cap: ${TESTINBOX_WAIT_WINDOW_CAP:60s}
+  storage:
+    endpoint: ${TESTINBOX_S3_ENDPOINT}
+    region: ${TESTINBOX_S3_REGION:us-east-1}
+    access-key: ${TESTINBOX_S3_ACCESS_KEY}
+    secret-key: ${TESTINBOX_S3_SECRET_KEY}
+    bucket: ${TESTINBOX_S3_BUCKET:testinbox-mime}
+    create-bucket: ${TESTINBOX_S3_CREATE_BUCKET:true}
+  bootstrap:
+    # The dedicated synthetic-test credential (docs/dev/staging.md). Injected
+    # from the environment's secret store; only its SHA-256 is ever persisted.
+    api-key: ${TESTINBOX_BOOTSTRAP_API_KEY:}
+  deployment:
+    environment: ${TESTINBOX_ENVIRONMENT}
+    public-base-url: ${TESTINBOX_PUBLIC_BASE_URL}
+    # Declared, not probed: the point is to refuse a deployment whose ingress
+    # would abort a legitimate long poll (ADR-020, docs/dev/staging.md).
+    proxy-read-timeout: ${TESTINBOX_PROXY_READ_TIMEOUT}
+    git-sha: ${TESTINBOX_GIT_SHA:unknown}
+    image-digest: ${TESTINBOX_IMAGE_DIGEST:unknown}
+
+management:
+  # Actuator moves off the traffic port entirely, so the public listener
+  # exposes nothing but /v1 (docs/dev/staging.md §network boundaries).
+  server:
+    port: ${TESTINBOX_MANAGEMENT_PORT:9090}
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      # Reachable only on the private management port.
+      show-details: always
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          # "Can this instance correctly serve TestInbox traffic?" — the
+          # database, a schema it recognises, object storage, and the
+          # session-scoped LISTEN connection ADR-020 puts in readiness.
+          include: readinessState,db,schema,objectStorage,waitNotifier
+  info:
+    env:
+      enabled: true
+    build:
+      enabled: true
+    java:
+      enabled: false
+    os:
+      enabled: false
+    process:
+      enabled: false
+  metrics:
+    tags:
+      # Low-cardinality deployment correlation only (observability.md).
+      service: testinbox-api
+      environment: ${TESTINBOX_ENVIRONMENT}
+
+info:
+  testinbox:
+    environment: ${TESTINBOX_ENVIRONMENT}
+    gitSha: ${TESTINBOX_GIT_SHA:unknown}
+    imageDigest: ${TESTINBOX_IMAGE_DIGEST:unknown}

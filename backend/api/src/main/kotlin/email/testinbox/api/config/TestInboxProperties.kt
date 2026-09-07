@@ -21,6 +21,7 @@ data class TestInboxProperties(
     val limits: LimitsProperties = LimitsProperties(),
     val storage: Storage = Storage(),
     val bootstrap: Bootstrap = Bootstrap(),
+    val deployment: Deployment = Deployment(),
 ) {
     data class Storage(
         val endpoint: String = "http://localhost:9000",
@@ -28,6 +29,32 @@ data class TestInboxProperties(
         val accessKey: String = "testinbox",
         val secretKey: String = "testinbox123",
         val bucket: String = "testinbox-mime",
+        /**
+         * Create the bucket at startup when missing. Convenient against MinIO;
+         * a managed object store where the deployment identity may not hold
+         * `CreateBucket` should set this false and pre-create the bucket.
+         */
+        val createBucket: Boolean = true,
+    )
+
+    /**
+     * Deployment identity and environment coupling (ADR-028/029). All of it is
+     * absent locally: `environment` being set is what marks this process as
+     * deployed and turns on the startup safety check.
+     */
+    data class Deployment(
+        val environment: String? = null,
+        /** Public origin this environment is served on; must be HTTPS when set. */
+        val publicBaseUrl: String? = null,
+        /**
+         * Read/idle timeout configured on the reverse proxy in front of this
+         * process. Declared here so a deployment whose ingress would cut a
+         * legitimate long poll short fails to start instead of returning 504s.
+         */
+        val proxyReadTimeout: Duration? = null,
+        val gitSha: String = "unknown",
+        /** Digest of the running image — knowable only at deploy time (ADR-028). */
+        val imageDigest: String = "unknown",
     )
 
     data class Bootstrap(

@@ -11,6 +11,7 @@ dependencies {
     testImplementation(project(":observability"))
     testImplementation(project(":api"))
     testImplementation(project(":ingestion"))
+    testImplementation(project(":migrator"))
     testImplementation(platform(libs.spring.boot.dependencies))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")

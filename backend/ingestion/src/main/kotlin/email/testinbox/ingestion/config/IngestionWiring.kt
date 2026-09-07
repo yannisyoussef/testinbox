@@ -2,6 +2,7 @@ package email.testinbox.ingestion.config
 
 import email.testinbox.application.LimitsConfig
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.LimitMetrics
@@ -12,7 +13,9 @@ import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.ingestion.mime.JakartaMimeParser
 import email.testinbox.observability.MicrometerLimitMetrics
+import email.testinbox.persistence.BundledMigrations
 import email.testinbox.persistence.JdbcRateLimiter
+import email.testinbox.persistence.JdbcSchemaHistory
 import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
 import org.springframework.context.annotation.Bean
@@ -38,8 +41,18 @@ class IngestionWiring {
                 accessKey = properties.storage.accessKey,
                 secretKey = properties.storage.secretKey,
                 bucket = properties.storage.bucket,
+                createBucket = properties.storage.createBucket,
             ),
         )
+
+    /**
+     * Backs the `schema` readiness indicator (ADR-029 §4). Wiring is the only
+     * place this adapter meets the persistence adapter (ADR-024): the policy
+     * itself lives in the application layer behind the `SchemaHistory` port.
+     */
+    @Bean
+    fun schemaCompatibility(jdbc: JdbcClient): SchemaCompatibility =
+        SchemaCompatibility(JdbcSchemaHistory(jdbc), BundledMigrations.highest())
 
     @Bean
     fun limitsConfig(properties: IngestionProperties): LimitsConfig =

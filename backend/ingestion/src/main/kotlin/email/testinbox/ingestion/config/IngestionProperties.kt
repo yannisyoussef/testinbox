@@ -17,6 +17,7 @@ data class IngestionProperties(
     val limits: LimitsProperties = LimitsProperties(),
     val smtp: Smtp = Smtp(),
     val storage: Storage = Storage(),
+    val deployment: Deployment = Deployment(),
 ) {
     data class Smtp(
         val port: Int = 2525,
@@ -28,6 +29,24 @@ data class IngestionProperties(
         val accessKey: String = "testinbox",
         val secretKey: String = "testinbox123",
         val bucket: String = "testinbox-mime",
+        /** See TestInboxProperties.Storage.createBucket. */
+        val createBucket: Boolean = true,
+    )
+
+    /**
+     * Deployment identity (ADR-028/029). `environment` being set is what marks
+     * this process as deployed and turns on the startup safety check.
+     *
+     * The gateway has no public HTTP surface of its own — it terminates SMTP —
+     * so `publicBaseUrl` stays null here and the proxy-timeout coupling is
+     * still declared, because the two deployables share a wait-window cap and
+     * a misconfiguration on either side is worth catching on either side.
+     */
+    data class Deployment(
+        val environment: String? = null,
+        val proxyReadTimeout: Duration? = null,
+        val gitSha: String = "unknown",
+        val imageDigest: String = "unknown",
     )
 
     fun toConfig(): TestInboxConfig =

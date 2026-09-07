@@ -29,6 +29,9 @@
 | [0025](0025-unknown-recipient-handling.md) | Unknown-recipient handling | Accepted |
 | [0026](0026-recipient-scoped-provider-delivery-identity.md) | Recipient-scoped provider delivery identity | Accepted |
 | [0027](0027-rate-limiting-and-resource-quotas.md) | Rate limiting and resource quota strategy | Accepted |
+| [0028](0028-deployment-artifacts-and-promotion.md) | Deployment artifacts and promotion by digest | Accepted |
+| [0029](0029-schema-migration-execution.md) | Schema migration execution model | Accepted |
+| [0030](0030-staging-deployment-target.md) | Staging deployment target | Proposed |
 
 `Proposed` ADRs require a human decision (see `VISION.md` §Human Decisions
 Required Before Implementation) before they can move to `Accepted`.
