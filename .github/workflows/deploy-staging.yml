@@ -256,6 +256,12 @@ jobs:
           # The only cross-system credential GitHub holds for this path, and it
           # can do exactly one thing: start a pipeline in infinity-core.
           GITLAB_TRIGGER_TOKEN: ${{ secrets.GITLAB_TRIGGER_TOKEN }}
+          # gitlab-handoff.sh defaults GITLAB_API_URL to gitlab.com. That default is
+          # right for the repository — no Ops platform is assumed — but it means the
+          # host MUST be passed explicitly here, or the trigger token is POSTed to
+          # gitlab.com. Deliberately no `||` fallback: an unset variable has to fail
+          # the run, not silently send a credential to the wrong host.
+          GITLAB_API_URL: ${{ vars.GITLAB_OPS_API_URL }}
           GITLAB_PROJECT: ${{ vars.GITLAB_OPS_PROJECT || 'infinity%2Finfinity-core' }}
           GITLAB_REF: ${{ vars.GITLAB_OPS_REF || 'develop' }}
           EXPECTED_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}
@@ -263,6 +269,12 @@ jobs:
           set -euo pipefail
           if [[ -z "${GITLAB_TRIGGER_TOKEN:-}" ]]; then
             echo "::error::GITLAB_TRIGGER_TOKEN is not set on the staging-handoff environment"
+            exit 1
+          fi
+          if [[ -z "${GITLAB_API_URL:-}" ]]; then
+            echo "::error::GITLAB_OPS_API_URL is not set on the staging-handoff environment."
+            echo "::error::Without it the handoff would POST the trigger token to the"
+            echo "::error::gitlab.com default. Set it to the Ops instance API root."
             exit 1
           fi
           ./scripts/gitlab-handoff.sh \
