@@ -33,6 +33,10 @@ on:
 permissions:
   contents: read
 
+# Action versions are the current majors: buildx v4, login v4, build-push v7,
+# attest-build-provenance v4. trivy-action publishes only `v`-prefixed tags and
+# has no floating major, so it is pinned exactly — an unresolvable action fails
+# the whole job at set-up time, before any `if:` on the step is evaluated.
 jobs:
   build:
     name: Build ${{ inputs.push && 'and push' || '(no push)' }} OCI images
@@ -53,11 +57,11 @@ jobs:
       REGISTRY: ghcr.io/${{ github.repository_owner }}
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
         if: inputs.push
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -67,7 +71,7 @@ jobs:
       # identity, and `latest` is deliberately never published (ADR-028 §2).
       - name: Build api
         id: api
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/backend.Dockerfile
@@ -86,7 +90,7 @@ jobs:
 
       - name: Build ingestion
         id: ingestion
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/backend.Dockerfile
@@ -105,7 +109,7 @@ jobs:
 
       - name: Build migrator
         id: migrator
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/backend.Dockerfile
@@ -124,7 +128,7 @@ jobs:
 
       - name: Build web
         id: web
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/web.Dockerfile
@@ -177,7 +181,7 @@ jobs:
 
       - name: Attest build provenance
         if: inputs.push
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/testinbox-api
           subject-digest: ${{ steps.api.outputs.digest }}
@@ -192,7 +196,7 @@ jobs:
       - name: Container vulnerability scan (informational)
         if: inputs.push
         continue-on-error: true
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ env.REGISTRY }}/testinbox-api@${{ steps.api.outputs.digest }}
           format: table
