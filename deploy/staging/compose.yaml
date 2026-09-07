@@ -1,0 +1,159 @@
+# TestInbox staging topology — the provider-neutral reference implementation
+# (ADR-030 Option A). Every image is referenced by DIGEST, never by a mutable
+# tag: `ghcr.io/…/testinbox-api@sha256:…` is what a deployment records and what
+# a rollback names (ADR-028).
+#
+# This file describes only the application: PostgreSQL and object storage come
+# either from compose.data.yaml (self-hosted case) or from the environment's
+# managed services (set TESTINBOX_DB_URL / TESTINBOX_S3_ENDPOINT and omit the
+# overlay). Nothing here containerises a datastore into an application image.
+#
+#   docker compose -f compose.yaml -f compose.data.yaml up -d      # self-hosted
+#   docker compose -f compose.yaml up -d                           # managed data
+#
+# Use deploy.sh rather than raw `up`: the migration job must run to completion,
+# and gate the deployment on its exit code, before any service starts (ADR-029).
+
+name: testinbox-staging
+
+x-jvm-common: &jvm-common
+  restart: unless-stopped
+  environment: &jvm-env
+    SPRING_PROFILES_ACTIVE: staging
+    TESTINBOX_ENVIRONMENT: ${TESTINBOX_ENVIRONMENT:?set in .env}
+    TESTINBOX_MAIL_DOMAIN: ${TESTINBOX_MAIL_DOMAIN:?set in .env}
+    TESTINBOX_DB_URL: ${TESTINBOX_DB_URL:?set in .env}
+    TESTINBOX_DB_USER: ${TESTINBOX_DB_USER:?set in .env}
+    TESTINBOX_DB_PASSWORD: ${TESTINBOX_DB_PASSWORD:?set in .env}
+    TESTINBOX_S3_ENDPOINT: ${TESTINBOX_S3_ENDPOINT:?set in .env}
+    TESTINBOX_S3_ACCESS_KEY: ${TESTINBOX_S3_ACCESS_KEY:?set in .env}
+    TESTINBOX_S3_SECRET_KEY: ${TESTINBOX_S3_SECRET_KEY:?set in .env}
+    TESTINBOX_S3_BUCKET: ${TESTINBOX_S3_BUCKET:-testinbox-mime}
+    TESTINBOX_S3_CREATE_BUCKET: ${TESTINBOX_S3_CREATE_BUCKET:-true}
+    TESTINBOX_WAIT_WINDOW_CAP: ${TESTINBOX_WAIT_WINDOW_CAP:-60s}
+    # Declared so a mismatch with the edge fails startup rather than producing
+    # intermittent 504s on full-window waits (DeploymentSafety).
+    TESTINBOX_PROXY_READ_TIMEOUT: ${TESTINBOX_PROXY_READ_TIMEOUT_SECONDS:-120}s
+    TESTINBOX_GIT_SHA: ${TESTINBOX_GIT_SHA:-unknown}
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+services:
+  # One-shot. `deploy.sh` runs it to completion and aborts on a non-zero exit;
+  # it is never part of `up`, and it must never be scaled (ADR-029 §1).
+  migrator:
+    image: ${TESTINBOX_MIGRATOR_IMAGE:?set to a ghcr.io/...@sha256:... reference}
+    restart: "no"
+    environment:
+      TESTINBOX_DB_URL: ${TESTINBOX_DB_URL:?set in .env}
+      TESTINBOX_DB_USER: ${TESTINBOX_DB_USER:?set in .env}
+      TESTINBOX_DB_PASSWORD: ${TESTINBOX_DB_PASSWORD:?set in .env}
+    networks: [internal]
+
+  api:
+    <<: *jvm-common
+    image: ${TESTINBOX_API_IMAGE:?set to a ghcr.io/...@sha256:... reference}
+    environment:
+      <<: *jvm-env
+      TESTINBOX_PUBLIC_BASE_URL: ${TESTINBOX_PUBLIC_BASE_URL:?set in .env}
+      TESTINBOX_BOOTSTRAP_API_KEY: ${TESTINBOX_BOOTSTRAP_API_KEY:-}
+      TESTINBOX_IMAGE_DIGEST: ${TESTINBOX_API_IMAGE:-unknown}
+      TESTINBOX_MANAGEMENT_PORT: "9090"
+    # Traffic and management ports are both internal: the edge reaches 8080,
+    # and 9090 is reachable only from inside the compose network.
+    expose: ["8080", "9090"]
+    healthcheck:
+      # Readiness, not liveness: "can this instance correctly serve TestInbox
+      # traffic?" — database, a schema it recognises, object storage, and the
+      # session-scoped LISTEN connection (ADR-020).
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9090/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    stop_grace_period: 90s
+    networks: [internal]
+
+  ingestion:
+    <<: *jvm-common
+    image: ${TESTINBOX_INGESTION_IMAGE:?set to a ghcr.io/...@sha256:... reference}
+    environment:
+      <<: *jvm-env
+      TESTINBOX_IMAGE_DIGEST: ${TESTINBOX_INGESTION_IMAGE:-unknown}
+      TESTINBOX_MANAGEMENT_PORT: "9091"
+      TESTINBOX_SMTP_PORT: "2525"
+    ports:
+      # Bound to a specific interface, NOT 0.0.0.0. Staging SMTP exists only to
+      # validate our own stack (§22: no public MX, no arbitrary internet mail);
+      # host firewall or private network is what actually restricts it, and this
+      # binding is the second lock.
+      - "${TESTINBOX_SMTP_BIND:-127.0.0.1}:${TESTINBOX_SMTP_PUBLISHED_PORT:-2525}:2525"
+    expose: ["9091"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9091/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    stop_grace_period: 60s
+    networks: [internal]
+
+  web:
+    image: ${TESTINBOX_WEB_IMAGE:?set to a ghcr.io/...@sha256:... reference}
+    restart: unless-stopped
+    environment:
+      # Server-side only: the browser talks to the same-origin /api/backend
+      # proxy, so no API key ever crosses an origin or lands in a URL.
+      TESTINBOX_API_URL: http://api:8080
+      NODE_ENV: production
+    expose: ["3000"]
+    depends_on:
+      api:
+        condition: service_healthy
+    stop_grace_period: 30s
+    networks: [internal]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  edge:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    environment:
+      TESTINBOX_SERVER_NAME: ${TESTINBOX_SERVER_NAME:?set in .env}
+      # Same variable the applications validate against — one source of truth
+      # for the long-poll timeout relationship.
+      TESTINBOX_PROXY_READ_TIMEOUT_SECONDS: ${TESTINBOX_PROXY_READ_TIMEOUT_SECONDS:-120}
+      TESTINBOX_EDGE_RATE_PER_SECOND: ${TESTINBOX_EDGE_RATE_PER_SECOND:-50}
+      TESTINBOX_EDGE_BURST: ${TESTINBOX_EDGE_BURST:-100}
+      TESTINBOX_EDGE_CONN_LIMIT: ${TESTINBOX_EDGE_CONN_LIMIT:-128}
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ${TESTINBOX_TLS_DIR:?set in .env}:/etc/nginx/tls:ro
+      - certbot-webroot:/var/www/certbot
+    ports:
+      - "${TESTINBOX_HTTP_BIND:-0.0.0.0}:${TESTINBOX_HTTP_PUBLISHED_PORT:-80}:80"
+      - "${TESTINBOX_HTTPS_BIND:-0.0.0.0}:${TESTINBOX_HTTPS_PUBLISHED_PORT:-443}:443"
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_started
+    networks: [internal]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  certbot-webroot:

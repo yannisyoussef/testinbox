@@ -1,0 +1,16 @@
+{
+  "name": "testinbox-synthetic",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Post-deployment synthetic verification: a real TestInbox workflow through a deployed environment, driven by the public TypeScript SDK.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@testinbox/client": "file:../../sdk/typescript"
+  }
+}

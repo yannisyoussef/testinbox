@@ -1,0 +1,80 @@
+# Self-hosted data services for ADR-030 Option A. Overlay onto compose.yaml:
+#
+#   docker compose -f compose.yaml -f compose.data.yaml up -d
+#
+# Omit it when the environment supplies managed PostgreSQL and object storage;
+# the applications only ever see TESTINBOX_DB_URL / TESTINBOX_S3_ENDPOINT.
+#
+# CAPABILITY 2 OF ADR-030 lives here: the API connects to PostgreSQL DIRECTLY.
+# No PgBouncer, no transaction-mode pooler. `LISTEN` needs a session-scoped
+# connection (ADR-020), and a transaction-mode pooler accepts LISTEN and then
+# silently never delivers a notification — the symptom is a latency regression,
+# not an error, which is why it is called out here rather than left implicit.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${TESTINBOX_DB_NAME:-testinbox}
+      POSTGRES_USER: ${TESTINBOX_DB_USER:?set in .env}
+      POSTGRES_PASSWORD: ${TESTINBOX_DB_PASSWORD:?set in .env}
+    command:
+      - postgres
+      # Comfortably above API pool + ingestion pool + LISTEN sessions + the
+      # migration job, so a deployment never fails on connection exhaustion.
+      - -c
+      - max_connections=100
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TESTINBOX_DB_USER}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # Never published to a host interface: reachable only on the compose
+    # network (§10 — no public PostgreSQL port).
+    expose: ["5432"]
+    networks: [internal]
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${TESTINBOX_S3_ACCESS_KEY:?set in .env}
+      MINIO_ROOT_PASSWORD: ${TESTINBOX_S3_SECRET_KEY:?set in .env}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # The API and console are internal only — the console in particular is an
+    # administrative surface and is never exposed publicly (§10).
+    expose: ["9000", "9001"]
+    networks: [internal]
+
+  migrator:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  ingestion:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  minio-data:
