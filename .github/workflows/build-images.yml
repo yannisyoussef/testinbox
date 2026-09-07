@@ -30,8 +30,11 @@ on:
       web-digest:
         value: ${{ jobs.build.outputs.web-digest }}
 
-permissions:
-  contents: read
+# No `permissions:` here, at either level. A called workflow cannot request
+# more than its caller grants — a job-level block asking for `packages: write`
+# fails the whole run at startup when invoked from the pull-request call site,
+# which grants only `contents: read`. Each call site in deploy-staging.yml
+# declares exactly what that path needs.
 
 # Action versions are the current majors: buildx v4, login v4, build-push v7,
 # attest-build-provenance v4. trivy-action publishes only `v`-prefixed tags and
@@ -41,13 +44,6 @@ jobs:
   build:
     name: Build ${{ inputs.push && 'and push' || '(no push)' }} OCI images
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # Least privilege, and only the workflow's own short-lived identity —
-      # no long-lived registry password exists anywhere (ADR-028 §3).
-      packages: write
-      id-token: write
-      attestations: write
     outputs:
       api-digest: ${{ steps.api.outputs.digest }}
       ingestion-digest: ${{ steps.ingestion.outputs.digest }}
