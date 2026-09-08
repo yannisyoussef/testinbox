@@ -55,7 +55,7 @@ gate.
 | Gate | Tool | Fails CI? |
 |---|---|---|
 | Formatting | Spotless/ktlint | Yes |
-| Kotlin static analysis | Detekt (backend + JVM SDK) | Yes |
+| Kotlin static analysis | Detekt (backend + JVM SDK) | Yes. Run it locally with `./gradlew detekt --no-daemon -Dorg.gradle.java.home=<jdk-21>`; `JAVA_HOME` alone leaves the daemon on Java 25 and Detekt aborts with a bare `> 25.0.3` |
 | Test execution evidence | `verify-test-results.sh` | Yes |
 | Verifier self-test | `verify-test-results.test.sh` | Yes |
 | Architecture boundaries | ArchUnit | Yes |

@@ -43,7 +43,6 @@ class JdbcApiKeyRepositoryTest : PersistenceIntegrationTest() {
         scopes: Set<ApiScope> = setOf(ApiScope.MESSAGES_READ),
         createdAt: Instant = now,
         expiresAt: Instant? = null,
-        revokedAt: Instant? = null,
         name: String? = "ci",
         createdBy: ApiKeyId? = null,
     ): Pair<ApiKey, email.testinbox.domain.tenant.ApiKeyCredential> {
@@ -56,7 +55,9 @@ class JdbcApiKeyRepositoryTest : PersistenceIntegrationTest() {
                 keyHash = sha256(credential.secret),
                 scopes = scopes,
                 createdAt = createdAt,
-                revokedAt = revokedAt,
+                // Always minted usable; the tests that need a revoked key go
+                // through `revoke`, which is the path a client actually takes.
+                revokedAt = null,
                 kind = ApiKeyKind.MANAGED,
                 publicId = credential.publicId,
                 name = name,

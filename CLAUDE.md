@@ -179,9 +179,16 @@ All backend commands run from `backend/` (Gradle wrapper committed there):
 ```
 
 Detekt is detached from `check` on purpose: its current stable line cannot run
-on a Java 25 runtime, so `./gradlew detekt` must be invoked with `JAVA_HOME`
-pointing at a Java 21 JDK (the CI static-analysis job does exactly this).
-Everything else builds and runs on Java 25.
+on a Java 25 runtime, so it must be invoked with **Gradle itself** on a Java 21
+JDK. `JAVA_HOME` alone is not enough on a machine whose default JVM is 25 — the
+daemon keeps running on 25 and Detekt aborts with a bare `> 25.0.3`:
+
+```
+./gradlew detekt --no-daemon -Dorg.gradle.java.home=/path/to/jdk-21
+```
+
+CI gets this for free because its runner has only Java 21 installed. Everything
+else builds and runs on Java 25.
 
 Local dependencies: `docker compose up -d` from the repo root (Postgres 16 +
 MinIO). SDKs: `sdk/kotlin` has its own `./gradlew build`; `sdk/typescript`
