@@ -1,8 +1,16 @@
 # TI-004 — Inbound provider: application-side analysis
 
-**Status of this document:** decision input, independent of the Ops brief.
-**ADR-004 remains `Proposed` and is not marked Accepted here.** §10 supplies
-replacement text for the owner to adopt.
+**Status of this document:** decision input. **Acted on — the owner decided on
+2026-09-08 and [ADR-004](0004-initial-inbound-provider-strategy.md) is now
+Accepted** (dedicated self-hosted Postfix relay edge; ADR-025 kept and not
+weakened; managed providers retained as a documented fallback).
+
+This document is retained unchanged below as the reasoning the decision was made
+against, and because the conditions that would reopen the choice live here. It
+is a record, not a live proposal: where it says "recommend" or "proposed", read
+it as what was put to the owner, not as something still pending. §10's ADR text
+was the input to the accepted ADR rather than its final wording — the ADR itself
+is authoritative.
 
 **Scope:** the production inbound-mail provider choice, judged against what the
 application actually promises and actually does. No provider implemented, no
@@ -626,7 +634,12 @@ being reaffirmed rather than superseded.
 ## 10. Proposed ADR-004 text
 
 > Mine, not a copy of the Ops draft. Supplied for the owner to adopt.
-> **Not applied. ADR-004 remains `Proposed`.**
+>
+> **Outcome:** adopted in substance on 2026-09-08. The accepted wording lives in
+> [ADR-004](0004-initial-inbound-provider-strategy.md) and differs from the draft
+> below — it carries the owner's product boundary, the EU residency requirement,
+> the six preconditions on a public MX, and the DNS/backup constraints, none of
+> which this draft could have known. The draft is left as written.
 
 ```markdown
 # ADR-004: Inbound Provider Strategy
@@ -761,12 +774,17 @@ trustworthy.
 
 ## What was NOT done
 
-No provider implemented. No AWS resource created. No MX or DNS record created.
-No production deployment. **ADR-004 not marked Accepted** — `0004-initial-inbound-provider-strategy.md`
-is untouched by this branch. No ingestion or idempotency semantics changed. No
-legal advice given.
+*As written, before the owner decision:* no provider implemented, no AWS
+resource created, no MX or DNS record created, no production deployment, no
+ingestion or idempotency semantics changed, no legal advice given.
 
-**Stop for owner decision.** The decisions required are the brief's §16 list,
-plus one the brief does not surface: the owner must be told that choosing an
-accept-then-store provider changes the scope of the VISION.md §2 question they
-are being asked to answer (§6.4 item 11).
+**Still true after the decision.** ADR-004 is now Accepted on this branch, and
+the ADR is explicit that it decides architecture only: it authorises no
+production deployment, no public MX, and no DNS. Six preconditions remain open,
+including a named human owner for the edge and the relay hop joining the
+automated rehearsal.
+
+The point this analysis asked the owner to notice — that an accept-then-store
+provider would widen the scope of the VISION.md §2 question (§6.4 item 11) — was
+answered directly: ADR-025 is kept, not superseded, and adopting such a provider
+later needs a fresh owner decision and an ADR supersession.
