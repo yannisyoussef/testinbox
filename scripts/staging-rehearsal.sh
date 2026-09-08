@@ -34,7 +34,7 @@ SYNTHETIC_MINIMUM=13
 # The credential-lifecycle product suite (TI-002 §19). Counted separately
 # because it is a separate verdict: "the deployment is broken" and "the
 # credential lifecycle is broken on a healthy deployment" are different things.
-PRODUCT_SYNTHETIC_MINIMUM=4
+PRODUCT_SYNTHETIC_MINIMUM=5
 HTTP_PORT="${REHEARSAL_HTTP_PORT:-8080}"
 SMTP_PORT="${REHEARSAL_SMTP_PORT:-2525}"
 KEEP=false
@@ -255,12 +255,50 @@ test "${FAILED:-0}" -eq 0 || { echo "synthetic tests failed" >&2; exit 1; }
 test "${SKIPPED:-0}" -eq 0 || { echo "synthetic tests were skipped" >&2; exit 1; }
 
 step "9/9 product synthetic: the credential lifecycle (ADR-032)"
-# The bootstrap credential administers keys here. That is faithful rather than
-# convenient: the keys this suite mints carry only `inboxes:write` and
-# `messages:read`, so no managed ADMINISTRATOR is ever created and the ADR-032
-# §8 bootstrap window stays open for the rest of the run — which is exactly the
-# behaviour a fresh installation has before its first handover.
-NODE_EXTRA_CA_CERTS="$WORK/tls/ca.pem" TESTINBOX_BASE_URL="https://localhost:$HTTPS_PORT" TESTINBOX_HTTP_BASE_URL="http://localhost:$HTTP_PORT" TESTINBOX_API_KEY="$TESTINBOX_BOOTSTRAP_API_KEY" TESTINBOX_ADMIN_API_KEY="$TESTINBOX_BOOTSTRAP_API_KEY" TESTINBOX_SMTP_HOST=127.0.0.1 TESTINBOX_SMTP_PORT="$SMTP_PORT" TESTINBOX_WAIT_WINDOW_SECONDS=60 TESTINBOX_EDGE=nginx-reference   npm run test:product:junit
+# First, the handover a real environment performs exactly once: the bootstrap
+# credential mints the first managed administrator and thereby retires itself
+# (ADR-032 §8). Doing it here rather than handing the suite the bootstrap key
+# means CI exercises the transition itself, and lets the suite assert that the
+# environment is running on managed credentials — the check that turns
+# "staging must not rely forever on the bootstrap key" from a docs statement
+# into a gate.
+ADMIN_KEY_JSON=$(
+  curl -fsS --cacert "$WORK/tls/ca.pem" \
+    -X POST "https://localhost:$HTTPS_PORT/v1/api-keys" \
+    -H "Authorization: Bearer $TESTINBOX_BOOTSTRAP_API_KEY" \
+    -H 'Content-Type: application/json' \
+    -d '{"name":"rehearsal-admin","scopes":["api-keys:manage","inboxes:write","messages:read"]}'
+)
+# The top-level "key" member only, so a nested field cannot be picked up by
+# accident. The credential's own alphabet is [a-z2-7_], which is why the class
+# is that narrow.
+TESTINBOX_ADMIN_API_KEY=$(printf '%s' "$ADMIN_KEY_JSON" | sed -n 's/.*"key":"\(ti_[a-z0-9_]*\)".*/\1/p')
+test -n "$TESTINBOX_ADMIN_API_KEY" || {
+  echo "the bootstrap credential could not mint the first managed administrator" >&2; exit 1; }
+
+# And the window must now be shut. Asserted rather than trusted: it is the one
+# behaviour that stops the bootstrap credential becoming permanent, and it is
+# invisible everywhere else — nothing changes, a credential simply stops working.
+BOOTSTRAP_AFTER=$(
+  curl -s -o /dev/null -w '%{http_code}' --cacert "$WORK/tls/ca.pem" \
+    -H "Authorization: Bearer $TESTINBOX_BOOTSTRAP_API_KEY" \
+    "https://localhost:$HTTPS_PORT/v1/api-keys"
+)
+test "$BOOTSTRAP_AFTER" = "401" || {
+  echo "bootstrap credential still authenticates after handover (got $BOOTSTRAP_AFTER, expected 401)" >&2
+  exit 1; }
+echo "ok — the bootstrap credential retired itself once a managed administrator existed"
+
+NODE_EXTRA_CA_CERTS="$WORK/tls/ca.pem" \
+TESTINBOX_BASE_URL="https://localhost:$HTTPS_PORT" \
+TESTINBOX_HTTP_BASE_URL="http://localhost:$HTTP_PORT" \
+TESTINBOX_API_KEY="$TESTINBOX_ADMIN_API_KEY" \
+TESTINBOX_ADMIN_API_KEY="$TESTINBOX_ADMIN_API_KEY" \
+TESTINBOX_SMTP_HOST=127.0.0.1 \
+TESTINBOX_SMTP_PORT="$SMTP_PORT" \
+TESTINBOX_WAIT_WINDOW_SECONDS=60 \
+TESTINBOX_EDGE=nginx-reference \
+  npm run test:product:junit
 
 PRODUCT_REPORT="$REPO_ROOT/deploy/synthetic/build/test-results/synthetic-product.xml"
 test -f "$PRODUCT_REPORT" || { echo "product synthetic produced no report" >&2; exit 1; }

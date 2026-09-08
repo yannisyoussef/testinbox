@@ -8,6 +8,8 @@ import email.testinbox.application.Sha256
 import email.testinbox.application.port.ApiKeyOperation
 import email.testinbox.application.port.AuditEvent
 import email.testinbox.application.port.RevokeApiKeyOutcome
+import email.testinbox.application.query.ApiKeyPaging
+import email.testinbox.application.query.ApiKeyQueries
 import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId

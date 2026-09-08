@@ -1,7 +1,6 @@
 package email.testinbox.application.usecase
 
 import email.testinbox.application.Sha256
-import email.testinbox.application.port.ApiKeyCursor
 import email.testinbox.application.port.ApiKeyMetrics
 import email.testinbox.application.port.ApiKeyOperation
 import email.testinbox.application.port.ApiKeyRepository
@@ -17,6 +16,7 @@ import email.testinbox.domain.tenant.ApiScope
 import java.security.SecureRandom
 import java.time.Clock
 import java.time.Duration
+import java.time.Instant
 import java.util.UUID
 
 /**
@@ -55,6 +55,14 @@ class CreateApiKey(
         data object NoScopesRequested : Result
 
         /**
+         * The caller may not administer credentials at all. Checked here and
+         * not only in the HTTP adapter: ADR-027 §3 makes the same point about
+         * limits — an authorization rule that lives in a filter protects only
+         * the callers that go through that filter.
+         */
+        data object NotPermitted : Result
+
+        /**
          * The caller asked for a scope it does not itself hold. Without this,
          * a key with only `api-keys:manage` could mint itself an
          * `inboxes:write` key and escalate — the management scope would become
@@ -71,14 +79,20 @@ class CreateApiKey(
         data class ExpiryTooSoon(
             val minimum: Duration,
         ) : Result
+
+        data class ExpiryTooLong(
+            val maximum: Duration,
+        ) : Result
     }
 
     fun execute(command: Command): Result {
+        if (!command.actor.hasScope(ApiScope.API_KEYS_MANAGE)) return Result.NotPermitted
         if (command.scopes.isEmpty()) return Result.NoScopesRequested
         val missing = command.scopes - command.actor.scopes
         if (missing.isNotEmpty()) return Result.ScopeEscalation(missing)
         if ((command.name?.length ?: 0) > MAX_NAME_LENGTH) return Result.NameTooLong(MAX_NAME_LENGTH)
         if (command.expiresIn != null && command.expiresIn < MIN_EXPIRY) return Result.ExpiryTooSoon(MIN_EXPIRY)
+        if (command.expiresIn != null && command.expiresIn > MAX_EXPIRY) return Result.ExpiryTooLong(MAX_EXPIRY)
 
         val now = clock.instant()
         val credential = ApiKeyFormat.generate(random)
@@ -95,7 +109,7 @@ class CreateApiKey(
                 kind = ApiKeyKind.MANAGED,
                 publicId = credential.publicId,
                 name = command.name?.takeIf { it.isNotBlank() },
-                expiresAt = command.expiresIn?.let(now::plus),
+                expiresAt = expiryFor(command, now),
                 lastUsedAt = null,
                 createdByApiKeyId = command.actor.id,
             )
@@ -116,6 +130,27 @@ class CreateApiKey(
         return Result.Created(key, credential)
     }
 
+    /**
+     * A key may not outlive the credential that minted it.
+     *
+     * Without this, a deliberately short-lived break-glass administrator is
+     * not actually short-lived: whoever holds it — or steals it inside the
+     * window — mints a non-expiring successor and the bound is gone. It is the
+     * same escalation [Result.ScopeEscalation] prevents, on the other axis.
+     */
+    private fun expiryFor(
+        command: Command,
+        now: Instant,
+    ): Instant? {
+        val requested = command.expiresIn?.let(now::plus)
+        val actorExpiry = command.actor.expiresAt
+        return when {
+            requested == null -> actorExpiry
+            actorExpiry == null -> requested
+            else -> minOf(requested, actorExpiry)
+        }
+    }
+
     companion object {
         const val MAX_NAME_LENGTH = 100
 
@@ -125,6 +160,15 @@ class CreateApiKey(
          * someone's pipeline rather than as an error at creation time.
          */
         val MIN_EXPIRY: Duration = Duration.ofSeconds(60)
+
+        /**
+         * A ceiling mostly so the arithmetic cannot overflow: `now.plus(...)`
+         * throws on a `Long.MAX_VALUE` duration, and an uncaught
+         * `ArithmeticException` is a 500 with a stack trace — cheap error-log
+         * amplification for any authenticated caller, and the wrong answer:
+         * an out-of-range lifetime is a bad request.
+         */
+        val MAX_EXPIRY: Duration = Duration.ofDays(3650)
     }
 }
 
@@ -168,34 +212,4 @@ class RevokeApiKey(
         }
         return outcome
     }
-}
-
-/**
- * Read side of the management API. Every query is workspace-scoped from the
- * authenticated key, so a key belonging to another tenant is simply absent —
- * indistinguishable from one that never existed (anti-enumeration).
- */
-class ApiKeyQueries(
-    private val apiKeys: ApiKeyRepository,
-) {
-    fun get(
-        actor: ApiKey,
-        id: ApiKeyId,
-    ): ApiKey? = apiKeys.findById(actor.workspaceId, id)
-
-    fun list(
-        actor: ApiKey,
-        after: ApiKeyCursor?,
-        limit: Int,
-    ): List<ApiKey> = apiKeys.listPage(actor.workspaceId, after, limit)
-}
-
-/** Shared page-size bounds for the management list endpoint. */
-object ApiKeyPaging {
-    const val DEFAULT_LIMIT = 50
-    const val MAX_LIMIT = 200
-
-    fun bound(limit: Int): Int = limit.coerceIn(1, MAX_LIMIT)
-
-    fun cursorOf(key: ApiKey): ApiKeyCursor = ApiKeyCursor(key.createdAt, key.id)
 }

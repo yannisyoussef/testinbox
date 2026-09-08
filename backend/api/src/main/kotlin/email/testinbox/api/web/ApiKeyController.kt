@@ -3,8 +3,8 @@ package email.testinbox.api.web
 import email.testinbox.api.auth.AuthAttributes
 import email.testinbox.api.auth.requireScope
 import email.testinbox.application.port.RevokeApiKeyOutcome
-import email.testinbox.application.usecase.ApiKeyPaging
-import email.testinbox.application.usecase.ApiKeyQueries
+import email.testinbox.application.query.ApiKeyPaging
+import email.testinbox.application.query.ApiKeyQueries
 import email.testinbox.application.usecase.CreateApiKey
 import email.testinbox.application.usecase.RevokeApiKey
 import email.testinbox.domain.ApiKeyId
@@ -84,6 +84,27 @@ class ApiKeyController(
                 badRequest(request, "expiresInSeconds must be at least ${result.minimum.toSeconds()}")
             }
 
+            is CreateApiKey.Result.ExpiryTooLong -> {
+                badRequest(request, "expiresInSeconds must be at most ${result.maximum.toSeconds()}")
+            }
+
+            // Unreachable through this controller, which already required the
+            // scope — but the use case owns the rule (ADR-027 §3 makes the same
+            // point about limits: a check that lives in an adapter protects
+            // only the callers that go through that adapter), so the adapter
+            // has to be able to render its refusal.
+            CreateApiKey.Result.NotPermitted -> {
+                Problems.respond(
+                    Problems.of(
+                        HttpStatus.FORBIDDEN,
+                        "missing-scope",
+                        "Missing scope",
+                        "This operation requires the '${ApiScope.API_KEYS_MANAGE.wire}' scope",
+                        request,
+                    ),
+                )
+            }
+
             is CreateApiKey.Result.ScopeEscalation -> {
                 Problems.respond(
                     Problems.of(
@@ -105,12 +126,12 @@ class ApiKeyController(
     @GetMapping
     fun list(
         @RequestParam(required = false) cursor: String?,
-        @RequestParam(required = false, defaultValue = "50") limit: Int,
+        @RequestParam(required = false) limit: Int?,
         request: HttpServletRequest,
     ): ResponseEntity<*> {
         val actor = AuthAttributes.principal(request)
         actor.requireScope(ApiScope.API_KEYS_MANAGE)
-        val boundedLimit = ApiKeyPaging.bound(limit)
+        val boundedLimit = ApiKeyPaging.bound(limit ?: ApiKeyPaging.DEFAULT_LIMIT)
         val after =
             cursor?.let {
                 Cursors.decodeApiKey(it) ?: return badRequest(request, "Malformed cursor")

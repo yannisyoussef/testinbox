@@ -259,7 +259,9 @@ holds a key that can create keys. See
 It stops authenticating the moment the workspace holds a managed key with
 `api-keys:manage`, and reopens only if every such key is revoked. Keep it
 configured — an environment without one has no recovery path if its last
-administrative key is lost.
+administrative key is lost — and rotate it by changing
+`TESTINBOX_BOOTSTRAP_API_KEY` and restarting, which retires the previous value
+on the next request.
 
 Secrets appear in **no** Dockerfile, compose file, workflow literal, container
 label, build arg, image, or log line. `DeploymentSafety` reports setting names

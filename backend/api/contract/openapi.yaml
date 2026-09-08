@@ -20,7 +20,11 @@ components:
     apiKey:
       type: http
       scheme: bearer
-      description: Opaque workspace/project-scoped API key (ADR-010).
+      description: >
+        Workspace/project-scoped API key (ADR-010, ADR-032). Structured rather
+        than fully opaque — `ti_k1_<publicId>_<secret>_<check>` — so a
+        credential is recognisable to a secret scanner and a truncated paste is
+        detectable. Only the `publicId` segment is non-secret.
   parameters:
     inboxId:
       name: id
@@ -285,7 +289,7 @@ components:
     ApiScope:
       type: string
       description: >
-        Permission carried by an API key (ADR-010, ADR-032 §9). Clients must
+        Permission carried by an API key (ADR-010, ADR-032 §10). Clients must
         tolerate unknown future values.
       enum: ["inboxes:write", "messages:read", "api-keys:manage"]
     ApiKey:
@@ -326,7 +330,12 @@ components:
         createdByApiKeyId:
           type: string
           format: uuid
-          description: The credential that minted this one; absent for the first key of a workspace.
+          description: >
+            The credential that minted this one. It may reference a credential
+            this API does not expose: a workspace's first managed key is minted
+            with the bootstrap credential, and `GET /v1/api-keys/{id}` answers
+            `404` for that id. Treat it as an audit breadcrumb to correlate
+            with the `testinbox.audit` log, not as a followable link.
       required: [id, publicId, scopes, createdAt]
     CreatedApiKey:
       type: object
@@ -369,7 +378,7 @@ components:
           description: >
             Least privilege — request only what the holder needs. A key cannot
             grant a scope the caller does not itself hold, so a CI key can
-            never escalate. Immutable once created (ADR-032 §9).
+            never escalate. Immutable once created (ADR-032 §10).
         expiresInSeconds:
           type: integer
           format: int64
@@ -588,8 +597,9 @@ paths:
               schema: { $ref: "#/components/schemas/CreatedApiKey" }
         "400":
           description: >
-            Unknown or empty scope
-            (`type: https://testinbox.email/problems/invalid-request`).
+            `type: https://testinbox.email/problems/invalid-request` — an
+            unknown or empty scope, a name over 100 characters, or an
+            `expiresInSeconds` outside the supported range.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
@@ -618,6 +628,10 @@ paths:
         - name: limit
           in: query
           required: false
+          description: >
+            Clamped, not validated: values below 1 or above 200 are adjusted to
+            the nearest bound rather than refused, so a client need not encode
+            the server's page-size policy.
           schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
       responses:
         "200":
@@ -633,6 +647,11 @@ paths:
     get:
       operationId: getApiKey
       summary: Metadata for one key. Never returns the secret.
+      description: >
+        Requires the `api-keys:manage` scope. A **revoked** key is still
+        returned — revocation is a state change, not a deletion — and is
+        identified by a present `revokedAt`. "Delete then expect 404" is
+        therefore the wrong check; read `revokedAt` instead.
       parameters:
         - name: id
           in: path

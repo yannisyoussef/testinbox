@@ -1,5 +1,6 @@
 package email.testinbox.domain.tenant
 
+import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldStartWith
@@ -91,13 +92,16 @@ class ApiKeyFormatTest {
             "ti_k1__",
             "ti_k1_short_secret_abcd",
             "xx_k1_${good.publicId}_${good.secret}_abcd",
-            "ti_k1_UPPERCASENOTBASE3_${good.secret}_abcd",
+            // 16 chars, so it is rejected for the alphabet rather than for
+            // length — the earlier fixture was 17 and never reached isBase32.
+            "ti_k1_UPPERCASENOTBAS_${good.secret}_abcd",
             // '0', '1' and '8' are outside the base32 alphabet.
             "ti_k1_0000000000000000_${good.secret}_abcd",
             "ti_k1_${good.publicId}_${good.secret}_ab_cd",
         ).forEach { token ->
-            ApiKeyFormat.parse(token).shouldBeInstanceOf<ParsedCredential>()
-            (ApiKeyFormat.parse(token) is ParsedCredential.Valid) shouldBe false
+            // The `shouldBeInstanceOf<ParsedCredential>` that used to be here
+            // was a tautology on the declared return type.
+            withClue(token) { (ApiKeyFormat.parse(token) is ParsedCredential.Valid) shouldBe false }
         }
     }
 

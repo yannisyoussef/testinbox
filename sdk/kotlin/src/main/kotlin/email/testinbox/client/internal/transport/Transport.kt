@@ -248,9 +248,11 @@ internal class Transport(
             (problem.retryAfterSeconds ?: headers.firstValue("Retry-After").orElse(null)?.toLongOrNull())
                 ?.let(java.time.Duration::ofSeconds)
         return when {
-            status == 401 -> TestInboxAuthException(detail, problem.correlationId)
-            status == 403 -> TestInboxForbiddenException(detail, problem.correlationId)
-            status == 404 -> TestInboxNotFoundException(detail, problem.correlationId)
+            status == 401 -> TestInboxAuthException(detail, problem.correlationId, problem.type, status)
+            // 403 carries two meanings — `missing-scope` and
+            // `scope-escalation` — so the problem type travels with it.
+            status == 403 -> TestInboxForbiddenException(detail, problem.correlationId, problem.type, status)
+            status == 404 -> TestInboxNotFoundException(detail, problem.correlationId, problem.type, status)
             // Two distinct 409s share this status (ADR-021 vs ADR-027), so the
             // problem type — not the status code — decides which error this is.
             status == 409 && problem.type?.endsWith("/quota-exceeded") == true ->
@@ -262,7 +264,7 @@ internal class Transport(
                     current = problem.current,
                 )
             status == 409 -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
-            status == 410 -> TestInboxInboxGoneException(detail, problem.correlationId)
+            status == 410 -> TestInboxInboxGoneException(detail, problem.correlationId, problem.type, status)
             status == 429 ->
                 TestInboxRateLimitException(
                     detail,

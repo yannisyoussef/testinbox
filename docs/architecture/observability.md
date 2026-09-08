@@ -61,6 +61,28 @@ have queried a series that does not exist. `MetricCardinalityTest` asserts the
 | `testinbox_wait_slot_rejected_total` | counter | — | Concurrent-wait admission refusal |
 | `testinbox_wait_slots_active` | gauge | — | Held wait slots |
 | `testinbox_build` | gauge (=1) | `service`, `git_sha`, `version` | Once per process — "what is running?" |
+| `testinbox_api_key_auth_total` | counter | `outcome` | Every authentication attempt (ADR-032) |
+| `testinbox_api_key_lifecycle_total` | counter | `operation` | A credential is created or revoked |
+| `testinbox_api_key_last_used_writes_total` | counter | — | A coalesced `last_used_at` write actually reached the database |
+
+### Two credential signals worth watching
+
+`testinbox_api_key_auth_total{outcome="REVOKED"}` climbing means something is
+still presenting a credential that was retired — a pipeline that missed a
+rotation, or an attacker replaying a leaked key. Both are worth knowing and
+neither is visible anywhere else: the client just sees a `401`, identical to
+every other authentication failure.
+
+`testinbox_api_key_last_used_writes_total` tracking request volume means the
+ADR-032 §7 coalescing has stopped working and the authentication path has
+silently acquired a per-request database write. In the steady state this
+counter moves at most once per credential per five minutes.
+
+The failure outcomes are distinguished from one another here and nowhere else.
+The HTTP answer is one byte-identical `401` for all of them, because a response
+that told the client *why* would be an enumeration oracle; the scrape endpoint
+is not client-reachable, so the same distinction is safe — and necessary — for
+an operator.
 
 ### The one to alert on
 

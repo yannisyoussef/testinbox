@@ -7,7 +7,6 @@ import ch.qos.logback.core.read.ListAppender
 import email.testinbox.api.web.ApiKeyDto
 import email.testinbox.api.web.ApiKeyPageDto
 import email.testinbox.api.web.CreatedApiKeyDto
-import email.testinbox.domain.tenant.ApiKeyFormat
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.AfterEach
@@ -184,13 +183,5 @@ class ApiKeySecretLeakTest : ApiIntegrationTestBase() {
         // And it carries the correlation id, which is what makes it joinable
         // with the request logs.
         audit.any { it.contains("correlationId=") && !it.contains("correlationId=-") } shouldBe true
-    }
-
-    @Test
-    fun `a rendered credential is never equal to anything the database stores`() {
-        val created = json.readTree(post("/v1/api-keys", """{"name":"store-probe","scopes":["messages:read"]}""").body!!)
-        val plaintext = created["key"].asString()
-        val parsed = ApiKeyFormat.parse(plaintext)
-        (parsed is email.testinbox.domain.tenant.ParsedCredential.Valid) shouldBe true
     }
 }

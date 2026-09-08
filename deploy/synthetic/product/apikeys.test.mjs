@@ -101,6 +101,22 @@ test("a revoked credential stops working while another valid one keeps working",
   assert.ok(after.revokedAt instanceof Date, "the revoked key is retained with its revocation time");
 });
 
+test("the deployment is running on managed credentials, not the bootstrap one", async () => {
+  // "Staging must not accidentally continue relying forever on the bootstrap
+  // key" was a statement in the docs and nothing else. This makes it a check:
+  // a usable managed administrator existing is exactly the condition that
+  // closes the ADR-032 §8 window, so asserting it proves the handover happened
+  // — and does so without this suite needing to know the bootstrap secret.
+  const page = await admin.apiKeys.list({ limit: 200 });
+  const administrators = page.items.filter(
+    (key) => !key.revokedAt && key.scopes.includes("api-keys:manage"),
+  );
+  assert.ok(
+    administrators.length > 0,
+    "no usable managed administrator: this environment is still authenticating with its bootstrap credential",
+  );
+});
+
 test("revocation is idempotent, so a retried cleanup is not an error", async () => {
   const throwaway = await mint("idempotent");
   await admin.apiKeys.revoke(throwaway.apiKey.id);

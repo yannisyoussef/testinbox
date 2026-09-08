@@ -42,7 +42,11 @@ export interface ApiKeyMetadata {
   createdAt: Date;
   /** Absent when the key does not expire. */
   expiresAt?: Date;
-  /** Absent while the key is usable. Revoked keys are retained, never deleted. */
+  /**
+   * Absent while the key is usable. Revoked keys are **retained, never
+   * deleted**, so `get` keeps returning them — "revoke then expect a 404" is
+   * the wrong check; read this field instead.
+   */
   revokedAt?: Date;
   /**
    * Approximate — refreshed at most once per coalescing interval and may lag
@@ -71,6 +75,14 @@ export interface ApiKeyPage {
   items: ApiKeyMetadata[];
   /** Opaque; absent when no further page exists. */
   nextCursor?: string;
+}
+
+/** Options for `TestInboxClient#apiKeys.list`. */
+export interface ListApiKeysOptions {
+  /** Opaque cursor from a previous page's `nextCursor`. */
+  cursor?: string;
+  /** Page size. Clamped to 1..200 by the server rather than refused. */
+  limit?: number;
 }
 
 /** Options for `TestInboxClient#apiKeys.create`. */

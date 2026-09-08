@@ -35,6 +35,25 @@ import java.time.Clock
 class AuthenticateApiKey(
     private val apiKeys: ApiKeyRepository,
     private val clock: Clock,
+    /**
+     * `SHA-256` of the bootstrap credential this process is **currently
+     * configured** with, or null when none is.
+     *
+     * This is what makes the bootstrap credential retirable, and it is the
+     * whole reason the configured value reaches the use case at all. Resolving
+     * it from storage alone — as the first implementation did — meant a
+     * bootstrap row, once provisioned, authenticated forever: changing the
+     * configured secret after a leak provisioned a *second* row and left the
+     * first live, and removing the setting disabled nothing. No management
+     * endpoint can revoke a bootstrap row either (they are all
+     * `kind = 'MANAGED'`), so there was no path back short of manual SQL.
+     *
+     * Requiring a match means configuration is the retirement mechanism:
+     * rotate it and the old credential is dead on the next request; unset it
+     * and there is genuinely no break-glass, exactly as `docs/dev/api-keys.md`
+     * promises (ADR-032 §8).
+     */
+    private val configuredBootstrapKeyHash: String? = null,
     private val metrics: ApiKeyMetrics = ApiKeyMetrics.NOOP,
     private val lastUsed: LastUsedRecorder = LastUsedRecorder.NOOP,
     private val audit: AuditLog = AuditLog.NOOP,
@@ -99,8 +118,16 @@ class AuthenticateApiKey(
      * a restart silently resurrect the credential.
      */
     private fun verifyBootstrap(presented: String): Verification {
+        val configured = configuredBootstrapKeyHash ?: return Verification(null, AuthOutcome.UNKNOWN_KEY)
+        val presentedHash = Sha256.hex(presented)
+        // Constant-time, and *before* the lookup: a bootstrap row that is no
+        // longer the configured credential must be indistinguishable from one
+        // that never existed.
+        if (!constantTimeEquals(configured, presentedHash)) {
+            return Verification(null, AuthOutcome.UNKNOWN_KEY)
+        }
         val stored =
-            apiKeys.findBootstrapByHash(Sha256.hex(presented))
+            apiKeys.findBootstrapByHash(presentedHash)
                 ?: return Verification(null, AuthOutcome.UNKNOWN_KEY)
         val now = clock.instant()
         if (stored.isRevoked()) return Verification(null, AuthOutcome.REVOKED)

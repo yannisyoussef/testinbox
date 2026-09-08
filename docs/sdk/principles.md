@@ -40,3 +40,22 @@
     expose plain data (`message.subject`, `message.links`) so callers use
     whatever assertion library they already have; TestInbox does not ship
     its own `assertThat`.
+
+11. **A credential the SDK hands back is modelled so it is hard to leak**
+    (ADR-032). `create` returns a `CreatedApiKey` whose secret sits *beside*
+    the metadata rather than inside it, so the metadata type — the one that
+    gets logged, stored and passed around — has no field that could hold a
+    credential at all. The Kotlin type keeps the secret out of `toString`.
+    Metadata is mapped field by field rather than spread from the wire
+    response, so a future server field cannot land on a type documented as
+    never carrying secret material.
+
+12. **Java interop is compiled, not asserted.** The JVM SDK's blocking facades
+    exist for plain-Java callers (ADR-023), so `sdk/kotlin/src/test/java`
+    contains real Java source compiled against the built classes. It earns its
+    place: it caught a scope type declared as a `@JvmInline value class`, whose
+    constants compile to name-mangled accessors and whose constructor compiles
+    to `box-impl` — no legal Java expression could produce one, making the
+    key-creation call uninvokable from the language it was added for. No Kotlin
+    test could have noticed.
+

@@ -709,3 +709,19 @@ describe("api key lifecycle", () => {
     });
   });
 });
+
+describe("api key namespace identity", () => {
+  it("exposes a stable namespace object so it can be spied on", () => {
+    const c = client();
+    // A fresh instance per property access silently defeats
+    // `vi.spyOn(client.apiKeys, "create")`: the spy patches a throwaway, never
+    // fires, and the real fetch runs — a false pass rather than an error.
+    expect(c.apiKeys).toBe(c.apiKeys);
+
+    const spy = vi.spyOn(c.apiKeys, "revoke").mockResolvedValue(undefined);
+    return c.apiKeys.revoke("id").then(() => {
+      expect(spy).toHaveBeenCalledWith("id");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+});

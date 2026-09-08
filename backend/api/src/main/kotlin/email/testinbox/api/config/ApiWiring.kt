@@ -1,6 +1,7 @@
 package email.testinbox.api.config
 
 import email.testinbox.application.LimitsConfig
+import email.testinbox.application.Sha256
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.port.ApiKeyMetrics
@@ -20,9 +21,9 @@ import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.WaitMetrics
 import email.testinbox.application.port.WaitSlots
 import email.testinbox.application.port.WorkspaceQuotaState
+import email.testinbox.application.query.ApiKeyQueries
 import email.testinbox.application.query.InboxQueries
 import email.testinbox.application.query.MessageQueries
-import email.testinbox.application.usecase.ApiKeyQueries
 import email.testinbox.application.usecase.AuthenticateApiKey
 import email.testinbox.application.usecase.CoalescingLastUsedRecorder
 import email.testinbox.application.usecase.CreateApiKey
@@ -264,7 +265,22 @@ class ApiWiring(
     fun authenticateApiKey(
         apiKeys: ApiKeyRepository,
         lastUsed: CoalescingLastUsedRecorder,
-    ): AuthenticateApiKey = AuthenticateApiKey(apiKeys, clock, apiKeyMetrics, lastUsed.asRecorder(), audit)
+    ): AuthenticateApiKey =
+        AuthenticateApiKey(
+            apiKeys,
+            clock,
+            // Configuration is what retires a bootstrap credential: rotate the
+            // setting and the previous one stops authenticating on the next
+            // request; unset it and there is genuinely no break-glass
+            // (ADR-032 §8).
+            configuredBootstrapKeyHash =
+                properties.bootstrap.apiKey
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let(Sha256::hex),
+            metrics = apiKeyMetrics,
+            lastUsed = lastUsed.asRecorder(),
+            audit = audit,
+        )
 
     @Bean
     fun createApiKey(apiKeys: ApiKeyRepository): CreateApiKey = CreateApiKey(apiKeys, clock, audit, apiKeyMetrics)

@@ -70,22 +70,33 @@ class MessageMatcher private constructor(
 }
 
 /**
- * Permission carried by an API key. Modelled as a value class over the wire
- * string rather than an enum so a key granted a scope this SDK version does
- * not know about still round-trips instead of failing to deserialise.
+ * Permission carried by an API key. A wrapper over the wire string rather than
+ * an enum, so a key granted a scope this SDK version predates still
+ * round-trips instead of failing to deserialise.
+ *
+ * A plain class, deliberately **not** `@JvmInline value class`: the value-class
+ * form compiles the constants to a private field plus a name-mangled accessor
+ * (`getINBOXES_WRITE-XqM_LWM`) and the constructor to `box-impl`, none of
+ * which is a legal Java identifier. That made `apiKeys.create` — whose blocking
+ * facade exists precisely for plain-Java callers (ADR-023) — impossible to call
+ * from Java at all. `JavaInteropTest` compiles real Java source against the
+ * built classes so the claim is a gate rather than a comment.
  */
-@JvmInline
-value class ApiScope(val wire: String) {
+class ApiScope(
+    val wire: String,
+) {
     override fun toString(): String = wire
 
+    override fun equals(other: Any?): Boolean = this === other || (other is ApiScope && other.wire == wire)
+
+    override fun hashCode(): Int = wire.hashCode()
+
     companion object {
-        // Not @JvmField: a value-class property cannot be one. Java callers
-        // reach these through the generated static getters.
-        @JvmStatic val INBOXES_WRITE: ApiScope = ApiScope("inboxes:write")
+        @JvmField val INBOXES_WRITE: ApiScope = ApiScope("inboxes:write")
 
-        @JvmStatic val MESSAGES_READ: ApiScope = ApiScope("messages:read")
+        @JvmField val MESSAGES_READ: ApiScope = ApiScope("messages:read")
 
-        @JvmStatic val API_KEYS_MANAGE: ApiScope = ApiScope("api-keys:manage")
+        @JvmField val API_KEYS_MANAGE: ApiScope = ApiScope("api-keys:manage")
     }
 }
 
@@ -105,7 +116,12 @@ class ApiKeyMetadata internal constructor(dto: ApiKeyDto) {
     val publicId: String = dto.publicId
     val name: String? = dto.name
     val scopes: List<ApiScope> = dto.scopes.map(::ApiScope)
-    val createdAt: Instant? = dto.createdAt?.let(Instant::parse)
+    /**
+     * Non-null: the contract marks it required, so a caller must not have to
+     * null-check it — and an absent value is a contract violation worth
+     * reporting rather than papering over with a fabricated instant.
+     */
+    val createdAt: Instant = parseRequiredInstant(dto.createdAt, "createdAt")
     val expiresAt: Instant? = dto.expiresAt?.let(Instant::parse)
     val revokedAt: Instant? = dto.revokedAt?.let(Instant::parse)
 
@@ -116,6 +132,15 @@ class ApiKeyMetadata internal constructor(dto: ApiKeyDto) {
     val isRevoked: Boolean get() = revokedAt != null
 
     override fun toString(): String = "ApiKeyMetadata(id=$id, publicId=$publicId, name=$name, scopes=$scopes)"
+}
+
+private fun parseRequiredInstant(
+    raw: String?,
+    field: String,
+): Instant {
+    if (raw == null) throw TestInboxProtocolException("the server omitted required field '$field'")
+    return runCatching { Instant.parse(raw) }
+        .getOrElse { throw TestInboxProtocolException("the server sent an unparseable '$field'") }
 }
 
 /**
@@ -348,6 +373,7 @@ class ApiKeys internal constructor(
         expiresIn: Duration? = null,
     ): CreatedApiKey = runBlocking { create(scopes, name, expiresIn) }
 
+    /** Newest first. Revoked keys are included; they are retained for audit. */
     @JvmOverloads
     suspend fun list(cursor: String? = null, limit: Int? = null): ApiKeyPage {
         val page = transport.listApiKeys(cursor, limit)
@@ -357,6 +383,11 @@ class ApiKeys internal constructor(
     @JvmOverloads
     fun listBlocking(cursor: String? = null, limit: Int? = null): ApiKeyPage = runBlocking { list(cursor, limit) }
 
+    /**
+     * Metadata only, and a revoked key is still returned — revocation is a
+     * state change, not a deletion. "Revoke then expect a not-found" is the
+     * wrong check; read [ApiKeyMetadata.isRevoked].
+     */
     suspend fun get(id: String): ApiKeyMetadata = ApiKeyMetadata(transport.getApiKey(id))
 
     fun getBlocking(id: String): ApiKeyMetadata = runBlocking { get(id) }

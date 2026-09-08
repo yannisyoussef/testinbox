@@ -19,7 +19,7 @@ data class Project(
 )
 
 /**
- * Permission scopes carried by an API key (ADR-010, ADR-032 §9).
+ * Permission scopes carried by an API key (ADR-010, ADR-032 §10).
  *
  * Deliberately coarse. The property that matters is that an ordinary CI
  * credential cannot mint or revoke credentials; endpoint-shaped scopes grow

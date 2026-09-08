@@ -1,5 +1,6 @@
 package email.testinbox.application.deployment
 
+import email.testinbox.domain.tenant.ApiKeyFormat
 import java.time.Duration
 
 /**
@@ -75,8 +76,25 @@ object DeploymentSafety {
     /** Host of a `//host`, `//[v6]` or `@host` authority — bracketed IPv6 included. */
     private val AUTHORITY = Regex("""(?://|@)(\[[^\]]*]|[^/@\[\]:?#]+)(?::\d+)?(?:[/?#]|$)""")
 
-    /** Minimum length for a bootstrap key in a deployed environment (ADR-010: it is a bearer credential). */
-    const val MIN_BOOTSTRAP_KEY_LENGTH = 32
+    /**
+     * Minimum length for a bootstrap key in a deployed environment.
+     *
+     * 43 characters is `base64(32 bytes)`. The figure is a floor on *encoded
+     * randomness*, not on typing effort: ADR-032 §2's argument for SHA-256
+     * over a password KDF rests on the secret being high-entropy, and that
+     * argument covers managed keys by construction but covers the bootstrap
+     * credential only if the operator supplies real entropy. At 32 characters
+     * a human-chosen passphrase satisfied the check and would have been the
+     * one crackable row in the table — and the highest-privilege one.
+     */
+    const val MIN_BOOTSTRAP_KEY_LENGTH = 43
+
+    /**
+     * A crude but honest entropy proxy. It cannot measure entropy, but it does
+     * reject the shapes that have none — a repeated character, a short word
+     * padded to length — without pretending to more rigour than it has.
+     */
+    const val MIN_BOOTSTRAP_KEY_DISTINCT_CHARS = 16
 
     /**
      * How much longer the proxy must wait than the server's own maximum wait
@@ -177,6 +195,28 @@ object DeploymentSafety {
     private fun checkBootstrapKey(settings: DeploymentSettings): List<DeploymentViolation> {
         val key = settings.bootstrapApiKey?.takeIf { it.isNotBlank() } ?: return emptyList()
         return buildList {
+            if (ApiKeyFormat.looksLikeCredential(key)) {
+                // It would be routed to the managed-credential path, which only
+                // ever resolves `kind = 'MANAGED'` rows, so the break-glass
+                // credential would be silently dead — discovered during the
+                // outage it exists to resolve.
+                add(
+                    DeploymentViolation(
+                        "testinbox.bootstrap.api-key",
+                        "starts with the reserved '${ApiKeyFormat.PRODUCT_MARKER}_' prefix, which routes it to the " +
+                            "managed-credential path where it can never authenticate",
+                    ),
+                )
+            }
+            if (key.toSet().size < MIN_BOOTSTRAP_KEY_DISTINCT_CHARS) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.bootstrap.api-key",
+                        "uses only ${key.toSet().size} distinct characters; a deployed bootstrap key must be " +
+                            "generated randomly (openssl rand -base64 32), not chosen",
+                    ),
+                )
+            }
             if (key.length < MIN_BOOTSTRAP_KEY_LENGTH) {
                 // Length only — never the value, never a hash of it (ADR-010).
                 add(

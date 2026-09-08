@@ -25,6 +25,7 @@ import type {
   CreateApiKeyOptions,
   CreatedApiKey,
   CreateInboxOptions,
+  ListApiKeysOptions,
   EmailHeader,
   EmailLink,
   Inbox,
@@ -55,6 +56,7 @@ function readEnv(name: string): string | undefined {
  */
 export class TestInboxClient {
   readonly #transport: Transport;
+  #apiKeys?: ApiKeys;
 
   constructor(options: TestInboxClientOptions = {}) {
     const apiKey = options.apiKey ?? readEnv("TESTINBOX_API_KEY");
@@ -100,7 +102,12 @@ export class TestInboxClient {
    * revoke — is what this API expresses.
    */
   get apiKeys(): ApiKeys {
-    return new ApiKeysImpl(this.#transport);
+    // Memoised, so `client.apiKeys === client.apiKeys`. A fresh instance per
+    // access silently defeats `vi.spyOn(client.apiKeys, "create")` — the spy
+    // patches a throwaway, never fires, and the real fetch runs, which is a
+    // false pass rather than an error.
+    this.#apiKeys ??= new ApiKeysImpl(this.#transport);
+    return this.#apiKeys;
   }
 }
 
@@ -111,7 +118,9 @@ export interface ApiKeys {
    * it is not stored and cannot be retrieved again (ADR-032 §4).
    */
   create(options: CreateApiKeyOptions): Promise<CreatedApiKey>;
-  list(options?: { cursor?: string; limit?: number }): Promise<ApiKeyPage>;
+  /** Newest first. Revoked keys are included; they are retained for audit. */
+  list(options?: ListApiKeysOptions): Promise<ApiKeyPage>;
+  /** Metadata only, and a revoked key is still returned — check `revokedAt`. */
   get(id: string): Promise<ApiKeyMetadata>;
   /** Idempotent: revoking an already-revoked key succeeds. */
   revoke(id: string): Promise<void>;
@@ -138,7 +147,7 @@ class ApiKeysImpl implements ApiKeys {
     return { apiKey: toApiKeyMetadata(dto.apiKey), secret: dto.key };
   }
 
-  async list(options: { cursor?: string; limit?: number } = {}): Promise<ApiKeyPage> {
+  async list(options: ListApiKeysOptions = {}): Promise<ApiKeyPage> {
     const page = await this.#transport.listApiKeys(options.cursor, options.limit);
     return {
       items: (page.items ?? []).map(toApiKeyMetadata),

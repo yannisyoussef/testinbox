@@ -30,6 +30,7 @@
 /backend/domain/src/main/kotlin/email/testinbox/domain/tenant/     @yannisyoussef
 /backend/application/src/main/kotlin/email/testinbox/application/usecase/AuthenticateApiKey.kt @yannisyoussef
 /backend/application/src/main/kotlin/email/testinbox/application/usecase/ApiKeyLifecycle.kt    @yannisyoussef
+/backend/application/src/main/kotlin/email/testinbox/application/deployment/DeploymentSafety.kt @yannisyoussef
 /backend/api/src/main/kotlin/email/testinbox/api/auth/             @yannisyoussef
 
 # The hand-authored REST contract is the source of truth (ADR-022); the

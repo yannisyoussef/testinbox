@@ -82,10 +82,13 @@ interface ApiKeyRepository {
     ): List<ApiKey>
 
     /**
-     * Revokes in one guarded statement. The already-revoked distinction is
-     * derived from what the UPDATE matched, never from a preceding SELECT:
-     * a read-then-write would let two concurrent revocations both report a
-     * fresh revocation, and would let a revocation race a lookup.
+     * Revokes in one guarded statement: [RevokeApiKeyOutcome.Revoked] must be
+     * decided by what that statement matched, never by a preceding `SELECT`,
+     * or two concurrent revocations would both report a fresh one.
+     *
+     * Separating [RevokeApiKeyOutcome.AlreadyRevoked] from
+     * [RevokeApiKeyOutcome.NotFound] may take a second read; both are "nothing
+     * changed", so that read cannot produce a wrong verdict.
      */
     fun revoke(
         workspaceId: WorkspaceId,

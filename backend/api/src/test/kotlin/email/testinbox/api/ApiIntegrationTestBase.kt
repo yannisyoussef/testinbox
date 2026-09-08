@@ -63,7 +63,8 @@ import java.util.UUID
         // The shipped KEY_ADMIN budget is deliberately tight (a rotation is a
         // handful of calls); a suite that mints dozens of fixture credentials
         // would exhaust it and fail on the limit rather than on the behaviour
-        // under test. RateLimitApiTest asserts the real budget instead.
+        // under test. The shipped budget itself is exercised by
+        // `RateLimitApiTest.the key-admin budget refuses a minting loop`.
         "testinbox.limits.key-admin.capacity=100000",
         "testinbox.limits.key-admin.refill-per-second=10000",
         // Here rather than in @DynamicPropertySource so a subclass can override

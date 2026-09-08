@@ -34,7 +34,17 @@ class AuthenticateApiKeyTest {
     private val audit = RecordingAuditLog()
     private val random = SecureRandom.getInstance("SHA1PRNG").apply { setSeed(7L) }
 
-    private val auth = AuthenticateApiKey(apiKeys, clock, metrics, audit = audit)
+    /** The bootstrap credential this "process" is configured with. */
+    private val bootstrapSecret = "a-configured-bootstrap-secret-value-with-entropy"
+
+    private val auth =
+        AuthenticateApiKey(
+            apiKeys,
+            clock,
+            configuredBootstrapKeyHash = Sha256.hex(bootstrapSecret),
+            metrics = metrics,
+            audit = audit,
+        )
 
     private fun managed(
         scopes: Set<ApiScope> = setOf(ApiScope.MESSAGES_READ),
@@ -163,7 +173,7 @@ class AuthenticateApiKeyTest {
 
     @Test
     fun `the bootstrap credential works while no managed administrator exists`() {
-        val plaintext = "a-configured-bootstrap-secret-value"
+        val plaintext = bootstrapSecret
         val key = bootstrap(plaintext)
         auth.authenticate(plaintext)!!.id shouldBe key.id
         metrics.auth shouldContainExactly listOf(AuthOutcome.BOOTSTRAP)
@@ -171,7 +181,7 @@ class AuthenticateApiKeyTest {
 
     @Test
     fun `minting the first managed administrator closes the bootstrap window with no restart`() {
-        val plaintext = "a-configured-bootstrap-secret-value"
+        val plaintext = bootstrapSecret
         bootstrap(plaintext)
         auth.authenticate(plaintext).shouldNotBeNull()
 
@@ -185,7 +195,7 @@ class AuthenticateApiKeyTest {
 
     @Test
     fun `a non-administrative managed key does not close the bootstrap window`() {
-        val plaintext = "a-configured-bootstrap-secret-value"
+        val plaintext = bootstrapSecret
         bootstrap(plaintext)
         // A CI key exists, but nobody can manage credentials with it — closing
         // the window here would lock the workspace out of ever minting one.
@@ -195,7 +205,7 @@ class AuthenticateApiKeyTest {
 
     @Test
     fun `the window reopens when every managed administrator is revoked`() {
-        val plaintext = "a-configured-bootstrap-secret-value"
+        val plaintext = bootstrapSecret
         bootstrap(plaintext)
         val (_, admin) = managed(scopes = setOf(ApiScope.API_KEYS_MANAGE))
         auth.authenticate(plaintext).shouldBeNull()
@@ -208,7 +218,7 @@ class AuthenticateApiKeyTest {
 
     @Test
     fun `an expired managed administrator does not keep the window closed`() {
-        val plaintext = "a-configured-bootstrap-secret-value"
+        val plaintext = bootstrapSecret
         bootstrap(plaintext)
         managed(scopes = setOf(ApiScope.API_KEYS_MANAGE), expiresAt = clock.now.plusSeconds(30))
         auth.authenticate(plaintext).shouldBeNull()
@@ -220,7 +230,7 @@ class AuthenticateApiKeyTest {
 
     @Test
     fun `a bootstrap secret cannot be presented as a managed credential, or the reverse`() {
-        val plaintext = "a-configured-bootstrap-secret-value"
+        val plaintext = bootstrapSecret
         val bootstrapKey = bootstrap(plaintext)
         val (credential, _) = managed()
 
@@ -233,11 +243,32 @@ class AuthenticateApiKeyTest {
 
     @Test
     fun `a revoked bootstrap credential does not authenticate`() {
-        val plaintext = "a-configured-bootstrap-secret-value"
+        val plaintext = bootstrapSecret
         val key = bootstrap(plaintext)
         apiKeys.put(key.copy(revokedAt = clock.now))
         auth.authenticate(plaintext).shouldBeNull()
         metrics.auth shouldContainExactly listOf(AuthOutcome.REVOKED)
+    }
+
+    @Test
+    fun `a bootstrap credential that is no longer the configured one does not authenticate`() {
+        // Rotating the setting is what retires the old credential. Before this,
+        // a provisioned bootstrap row authenticated forever: changing the
+        // configured secret after a leak provisioned a SECOND row and left the
+        // first live, and no management endpoint can revoke a bootstrap row.
+        val retired = "a-previous-bootstrap-secret-value-with-entropy"
+        bootstrap(retired)
+        auth.authenticate(retired).shouldBeNull()
+        metrics.auth shouldContainExactly listOf(AuthOutcome.UNKNOWN_KEY)
+    }
+
+    @Test
+    fun `with no bootstrap credential configured there is genuinely no break-glass`() {
+        bootstrap(bootstrapSecret)
+        val unconfigured = AuthenticateApiKey(apiKeys, clock, configuredBootstrapKeyHash = null, metrics = metrics)
+        // `docs/dev/api-keys.md` promises exactly this, and it has to be true
+        // of the row that already exists, not only of one never provisioned.
+        unconfigured.authenticate(bootstrapSecret).shouldBeNull()
     }
 
     @Test

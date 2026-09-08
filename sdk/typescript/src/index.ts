@@ -26,6 +26,7 @@ export type {
   ApiScope,
   CreateApiKeyOptions,
   CreatedApiKey,
+  ListApiKeysOptions,
   AttachmentMeta,
   CreateInboxOptions,
   EmailHeader,

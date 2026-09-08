@@ -121,11 +121,40 @@ bootstrap credential starts working again. That is the recovery path, and it is
 why revoking a compromised last administrator is allowed. It follows that:
 
 - Keep `testinbox.bootstrap.api-key` configured in any environment you would
-  need to recover. `DeploymentSafety` already refuses to start a deployed node
-  whose bootstrap key is short or is a known development fixture.
+  need to recover.
 - **An environment with no bootstrap key configured has no break-glass.**
   Revoking its last administrative key locks the workspace out of key
   management permanently, and there is no server-side path back in.
+
+### Retiring or rotating the bootstrap credential
+
+A bootstrap credential authenticates only when the presented token matches the
+value the process is **currently configured** with. Configuration is therefore
+the retirement mechanism, and it is the whole mechanism:
+
+- **Rotate:** set `testinbox.bootstrap.api-key` to a new value and restart. The
+  previous credential stops authenticating on the next request. (Its row stays
+  in the table — revoked keys always do — but it is inert, because it can never
+  again match a configured value.)
+- **Retire entirely:** unset the setting and restart. There is then no
+  break-glass at all, which is exactly what the line above promises.
+
+There is deliberately no API for this. A bootstrap credential is never returned
+by `GET /v1/api-keys` and cannot be revoked through `DELETE` — the management
+API describes managed credentials, and offering a control over one it does not
+otherwise expose would be worse than the configuration path being the only one.
+
+**Generate it randomly.** ADR-032 §2's argument for SHA-256 over a password
+hash rests on the secret being high-entropy; managed keys get that by
+construction, and the bootstrap credential gets it only from you. A deployed
+node refuses to start with a bootstrap key shorter than 43 characters, one
+using fewer than 16 distinct characters, one matching a known development
+fixture, or one beginning `ti_` (which would route it to the managed-credential
+path, where it could never authenticate). Use:
+
+```bash
+openssl rand -base64 32
+```
 
 The transition is audited: `event=bootstrap.superseded` is logged at WARN every
 time the bootstrap credential is presented after a managed administrator

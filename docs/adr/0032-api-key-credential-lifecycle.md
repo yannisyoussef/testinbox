@@ -59,10 +59,18 @@ have been ~20% shorter and would have made the separator ambiguous.
   **nothing** — not the workspace, not the project, not the scopes.
 - **The checksum is integrity, not security.** CRC-32 is used precisely
   *because* it is not cryptographic: it catches a truncated paste or a
-  transposed character and rejects it locally, before a lookup, and nobody can
-  mistake it for a security control. It is worth having because the failure it
-  prevents — a silently truncated key producing an indistinguishable `401` —
-  is otherwise very expensive to diagnose in someone else's CI.
+  transposed character before any lookup, and nobody can mistake it for a
+  security control.
+
+  It does **not** change what the client sees. Every authentication failure is
+  one byte-identical `401`, deliberately — a response that distinguished
+  "malformed" from "no such key" would be an enumeration oracle, and that
+  property is worth more than the diagnostic. What the checksum buys is a
+  *server-side* signal: `testinbox_api_key_auth_total{outcome="CHECKSUM_MISMATCH"}`
+  separates "someone is truncating the key in a CI variable" from "someone is
+  presenting a credential we revoked", and those have completely different
+  remedies. An operator can answer the question; the client still cannot ask
+  it.
 
 **Nothing authorization-bearing is encoded in the token.** Scopes, workspace
 and project are read from the row the public id resolves to. A key that
@@ -77,7 +85,7 @@ because human-chosen passwords come from a distribution small enough to
 enumerate. That premise does not hold here. The secret is 260 bits from a
 CSPRNG; there is no dictionary, no reuse across sites and no structure. An
 attacker holding the full database and hashing at 10¹² SHA-256/s needs on the
-order of 10⁶⁵ years to find one secret. Stretching that by 10⁵ changes nothing
+order of 10⁵⁸ years to find one secret. Stretching that by 10⁵ changes nothing
 an operator would ever notice.
 
 What it *would* change is the cost of every authenticated request. Every
@@ -174,6 +182,13 @@ issued that statement for a key, so the steady state is **zero** database
 writes rather than one no-op write per request. The map holds timestamps only;
 losing it costs at most one extra write per key.
 
+That coalescer lives in the application layer rather than in an adapter, which
+is a deliberate exception worth naming: it is framework-free policy — "how
+often is often enough?" — and the half that must be correct across nodes is the
+SQL `WHERE` guard, which is in the adapter where it belongs. The in-memory half
+is an optimisation that may be empty, stale or discarded at any moment without
+affecting the answer.
+
 The documented semantic is therefore: *`lastUsedAt` is accurate to within the
 coalescing interval, and may lag by that much after a burst.* It must never be
 used as an authorization input or an audit record — the audit log is (§8).
@@ -208,13 +223,62 @@ Two consequences are deliberate:
 Bootstrap keys are marked as such in storage (`kind = 'BOOTSTRAP'`), are never
 returned by the management API, and cannot be created through it.
 
-### 9. Scopes stay coarse
+**Configuration is what retires one.** A bootstrap credential authenticates
+only when the presented token hashes to the value this process is *currently*
+configured with. That sentence is doing real work, and the first implementation
+of this ADR did not have it: it resolved the credential from storage alone,
+which meant a bootstrap row, once provisioned, authenticated forever. Rotating
+the setting after a leak provisioned a *second* row and left the first live;
+removing the setting disabled nothing; and because every management query
+filters `kind = 'MANAGED'`, no endpoint could revoke either one. The credential
+that holds `api-keys:manage` unconditionally was the only one in the system
+that could not be retired — precisely the "temporary mechanism quietly becomes
+permanent" failure this section exists to prevent, one level down.
+
+With the match required, the operational story is the obvious one: rotate the
+setting and the previous credential is dead on the next request; unset it and
+there is genuinely no break-glass. Stale rows may linger in the table, but they
+are inert — they can never again match a configured value.
+
+### 9. Credential administration gets its own rate category
+
+`RateCategory.KEY_ADMIN` is added to the ADR-027 control table, with its own
+`testinbox.limits.key-admin.*` budget, deliberately tighter than any other
+(burst 20, ~1 per 5s sustained): a legitimate rotation is a handful of calls,
+and a workload that mints credentials in a loop is a bug or an attack.
+
+It gets its own category rather than borrowing `INBOX_CREATE` because
+**ADR-027 puts the category name in the `429` body**. Telling a caller that
+minting a key exceeded an "INBOX_CREATE" limit would be a plain untruth in an
+error message, and the client is expected to discriminate on that field.
+
+Everything ADR-027 requires still holds: the budget keys on the workspace
+derived from the authenticated credential, the decision lives in the
+application layer, the adapter only renders it, and classification stays
+default-deny.
+
+**Per-key rate limiting remains rejected**, and ADR-027 §"Alternatives" already
+rejected it, for a reason this ADR does not disturb: keying budgets on the API
+key would let a tenant mint N keys for N× allowance, and rotation would reset
+the bucket. The follow-up recorded in `docs/security/abuse-model.md` is a
+*different* shape and is compatible with that rejection — a per-key **safety**
+budget strictly below the workspace budget, checked first and never additive,
+exactly the relationship `ingestPerInbox` already has with the workspace-wide
+`INGEST` policy. It bounds one key's share of an allowance it can never
+increase. It is not built here because it needs a second bucket dimension, its
+own configuration surface and a decision about how it interacts with quotas —
+a policy change rather than a lifecycle one.
+
+### 10. Scopes stay coarse
 
 `ApiScope` gains exactly one value: `api-keys:manage`, covering the whole
 lifecycle surface.
 
 The property that matters is that **a CI key cannot mint or revoke
-credentials**, and one scope delivers it. Splitting read from write was
+credentials**, and one scope delivers it. The check lives in the use case, not
+only in the HTTP adapter, for the reason ADR-027 §3 gives about limits: an
+authorization rule enforced in a filter protects exactly the callers that go
+through that filter, and this project already has two entry points. Splitting read from write was
 considered and deferred: listing credentials and revoking them are both
 administrative acts, and a reader who can enumerate a workspace's keys is
 already positioned for targeted disruption. Endpoint-shaped scopes were

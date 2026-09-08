@@ -60,7 +60,12 @@ class JdbcApiKeyRepository(
                  WHERE workspace_id = :workspaceId
                    AND kind = 'MANAGED'
                    AND revoked_at IS NULL
-                   AND (expires_at IS NULL OR expires_at > :at)
+                   -- `>=`, matching ApiKey.isExpired: `expiresAt` is the last
+                   -- moment of validity, not the first moment of expiry. `>`
+                   -- left a one-microsecond window where the domain called an
+                   -- admin key usable and this query did not — and this query
+                   -- is what holds the bootstrap door shut.
+                   AND (expires_at IS NULL OR expires_at >= :at)
                    AND :adminScope = ANY (scopes)
                  LIMIT 1
                 """.trimIndent(),
@@ -140,10 +145,15 @@ class JdbcApiKeyRepository(
     }
 
     /**
-     * One guarded statement decides both the effect and the answer. A
-     * `SELECT` followed by an `UPDATE` would let two concurrent revocations
-     * each report a fresh revocation, and would let the row change underneath
-     * the decision.
+     * The **effect** is one guarded statement: a `SELECT` then `UPDATE` would
+     * let two concurrent revocations each report a fresh revocation.
+     *
+     * Distinguishing "already revoked" from "not yours" does take a second
+     * read, and that read is not atomic with the update — deliberately, and it
+     * cannot mislead: `Revoked` is decided entirely by what the `UPDATE`
+     * matched, and the follow-up only separates two answers that are both
+     * "nothing changed". It stays workspace-scoped so it cannot become an
+     * existence oracle.
      */
     override fun revoke(
         workspaceId: WorkspaceId,

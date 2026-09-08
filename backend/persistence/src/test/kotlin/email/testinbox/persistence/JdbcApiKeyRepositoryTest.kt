@@ -210,11 +210,10 @@ class JdbcApiKeyRepositoryTest : PersistenceIntegrationTest() {
         apiKeys.revoke(workspaceId, key.id, now) shouldBe RevokeApiKeyOutcome.Revoked
         apiKeys.revoke(workspaceId, key.id, now.plusSeconds(1)) shouldBe RevokeApiKeyOutcome.AlreadyRevoked
 
+        // The first revocation is the fact the audit trail refers to, so a
+        // second must not move the timestamp.
         val after = apiKeys.findById(workspaceId, key.id).shouldNotBeNull()
-        after.revokedAt shouldBe now
-        // A second revoke must not move the timestamp — the first revocation
-        // is the fact the audit trail refers to.
-        after.name shouldBe key.name
+        after shouldBe key.copy(revokedAt = now)
     }
 
     @Test
@@ -271,6 +270,7 @@ class JdbcApiKeyRepositoryTest : PersistenceIntegrationTest() {
             cursor = page.lastOrNull()?.let { ApiKeyCursor(it.createdAt, it.id) }
         } while (page.size == 2)
 
+        all shouldHaveSize 5
         all.map { it.id }.toSet() shouldHaveSize 5
         all.last().id shouldBe older.id
         all.none { it.name == "not-mine" } shouldBe true
@@ -291,6 +291,41 @@ class JdbcApiKeyRepositoryTest : PersistenceIntegrationTest() {
         // Once the threshold moves past the stored value, a write happens again.
         apiKeys.touchLastUsed(key.id, now.plusSeconds(600), now.plusSeconds(300)) shouldBe true
         apiKeys.findById(workspaceId, key.id)!!.lastUsedAt shouldBe now.plusSeconds(600)
+    }
+
+    @Test
+    fun `the last-used refresh writes nothing but the timestamp`() {
+        // Asserted here rather than against the in-memory double, whose
+        // `touchLastUsed` is a `copy(lastUsedAt = ...)` and so cannot fail.
+        val (workspaceId, projectId) = tenant()
+        val (key, _) = managed(workspaceId, projectId, scopes = setOf(ApiScope.INBOXES_WRITE))
+
+        apiKeys.touchLastUsed(key.id, now, now.minusSeconds(300)) shouldBe true
+
+        val after = apiKeys.findById(workspaceId, key.id).shouldNotBeNull()
+        after shouldBe key.copy(lastUsedAt = now)
+    }
+
+    @Test
+    fun `the expiry boundary agrees with the domain, so the bootstrap door opens at one instant`() {
+        // `ApiKey.isExpired` treats `expiresAt` as the last moment of validity.
+        // The SQL used `expires_at > :at`, which excluded equality — a
+        // one-microsecond window in which the domain called an admin key usable
+        // and the query that closes the bootstrap door did not.
+        val (workspaceId, projectId) = tenant()
+        val admin =
+            managed(
+                workspaceId,
+                projectId,
+                scopes = setOf(ApiScope.API_KEYS_MANAGE),
+                expiresAt = now.plusSeconds(60),
+            ).first
+
+        val boundary = now.plusSeconds(60)
+        admin.isUsableAt(boundary) shouldBe true
+        apiKeys.hasUsableManagedAdmin(workspaceId, boundary) shouldBe true
+        admin.isUsableAt(boundary.plusMillis(1)) shouldBe false
+        apiKeys.hasUsableManagedAdmin(workspaceId, boundary.plusMillis(1)) shouldBe false
     }
 
     @Test

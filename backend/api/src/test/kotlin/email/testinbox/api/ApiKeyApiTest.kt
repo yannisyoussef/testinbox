@@ -1,5 +1,7 @@
 package email.testinbox.api
 
+import email.testinbox.api.web.RateCategories
+import email.testinbox.domain.limits.RateCategory
 import email.testinbox.domain.tenant.ApiKeyFormat
 import email.testinbox.domain.tenant.ApiScope
 import email.testinbox.domain.tenant.ParsedCredential
@@ -122,7 +124,7 @@ class ApiKeyApiTest : ApiIntegrationTestBase() {
     fun `an ordinary CI key cannot manage credentials`() {
         val ciKey = body(createKey("""{"name":"ci-only","scopes":["inboxes:write","messages:read"]}"""))["key"].asString()
 
-        // The entire point of a separate scope (ADR-032 §9).
+        // The entire point of a separate scope (ADR-032 §10).
         createKey("""{"scopes":["inboxes:write"]}""", ciKey).statusCode shouldBe HttpStatus.FORBIDDEN
         get("/v1/api-keys", ciKey).statusCode shouldBe HttpStatus.FORBIDDEN
         delete("/v1/api-keys/${UUID.randomUUID()}", ciKey).statusCode shouldBe HttpStatus.FORBIDDEN
@@ -258,8 +260,17 @@ class ApiKeyApiTest : ApiIntegrationTestBase() {
 
     @Test
     fun `key management is charged against its own rate category`() {
-        val response = createKey("""{"scopes":["messages:read"]}""")
-        // Borrowing INBOX_CREATE would put a plain untruth in the 429 body.
-        response.headers.getFirst("RateLimit-Limit").shouldBeInstanceOf<String>()
+        // The category name is reported to the client in the 429 body, so
+        // borrowing INBOX_CREATE would put a plain untruth in an error message.
+        // Asserting only that a RateLimit-Limit header exists was true of every
+        // category — remapping the route to DOWNLOAD left that version green.
+        RateCategories.of("POST", "/v1/api-keys") shouldBe RateCategory.KEY_ADMIN
+        RateCategories.of("GET", "/v1/api-keys") shouldBe RateCategory.KEY_ADMIN
+        RateCategories.of(
+            "DELETE",
+            "/v1/api-keys/11111111-1111-1111-1111-111111111111",
+        ) shouldBe RateCategory.KEY_ADMIN
+
+        createKey("""{"scopes":["messages:read"]}""").headers.getFirst("RateLimit-Limit").shouldBeInstanceOf<String>()
     }
 }

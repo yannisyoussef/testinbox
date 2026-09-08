@@ -19,7 +19,11 @@ class DeploymentSafetyTest {
             storageAccessKey = "fixture-not-a-real-s3-access-key",
             storageSecretKey = "fixture-not-a-real-s3-secret----1",
             publicBaseUrl = "https://api.staging.testinbox.email",
-            bootstrapApiKey = "tk_stg_" + "x".repeat(40),
+            // Long enough and varied enough to pass the entropy floor, while
+            // reading unmistakably as a fixture: a base64-shaped literal here
+            // satisfies the rule but trips the secret scanner, and allowlisting
+            // the file would blunt a gate over a test constant.
+            bootstrapApiKey = "not-a-real-secret-ABCDEFGHIJKLMNOP-0123456789",
             waitWindowCap = Duration.ofSeconds(60),
             proxyReadTimeout = Duration.ofSeconds(120),
             edgeRequestCeiling = null,
@@ -83,10 +87,37 @@ class DeploymentSafetyTest {
 
     @Test
     fun `a short or fixture bootstrap key is refused`() {
-        settingsOf(DeploymentSafety.validate(safe.copy(bootstrapApiKey = "short"))) shouldBe
-            listOf("testinbox.bootstrap.api-key")
-        settingsOf(DeploymentSafety.validate(safe.copy(bootstrapApiKey = "tk_e2e_" + "x".repeat(40)))) shouldBe
-            listOf("testinbox.bootstrap.api-key")
+        // A distinct set, not a list: "short" is both too short and too
+        // repetitive, and reporting every problem at once is the point — an
+        // operator should not have to fix them one restart at a time.
+        settingsOf(DeploymentSafety.validate(safe.copy(bootstrapApiKey = "short"))).toSet() shouldBe
+            setOf("testinbox.bootstrap.api-key")
+        settingsOf(DeploymentSafety.validate(safe.copy(bootstrapApiKey = "tk_e2e_" + "x".repeat(40)))).toSet() shouldBe
+            setOf("testinbox.bootstrap.api-key")
+    }
+
+    @Test
+    fun `a long but low-entropy bootstrap key is refused`() {
+        // ADR-032 §2's case for SHA-256 over a password KDF rests on the secret
+        // being high-entropy. Managed keys get that by construction; the
+        // bootstrap credential gets it only if the operator supplies it, and it
+        // is the one row with unconditional `api-keys:manage`.
+        settingsOf(DeploymentSafety.validate(safe.copy(bootstrapApiKey = "a".repeat(60)))).toSet() shouldBe
+            setOf("testinbox.bootstrap.api-key")
+        settingsOf(DeploymentSafety.validate(safe.copy(bootstrapApiKey = "correcthorse".repeat(5)))).toSet() shouldBe
+            setOf("testinbox.bootstrap.api-key")
+    }
+
+    @Test
+    fun `a bootstrap key using the reserved credential prefix is refused`() {
+        // It would be routed to the managed-credential path, which resolves
+        // only `kind = 'MANAGED'` rows — so the break-glass credential would be
+        // silently dead, discovered during the outage it exists to resolve.
+        settingsOf(
+            DeploymentSafety.validate(
+                safe.copy(bootstrapApiKey = "ti_staging_bootstrap_Qm9vdHN0cmFwU2VjcmV0RXhhbXBsZTQ3Wg"),
+            ),
+        ).toSet() shouldBe setOf("testinbox.bootstrap.api-key")
     }
 
     @Test

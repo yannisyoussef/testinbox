@@ -8,7 +8,6 @@ import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiKeyKind
 import email.testinbox.domain.tenant.ApiScope
-import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -97,14 +96,35 @@ class CoalescingLastUsedRecorderTest {
     }
 
     @Test
-    fun `the tracking map is bounded and stays correct when it is discarded`() {
+    fun `the tracking map is bounded, and discarding it costs only extra statements`() {
         val recorder = recorder(maxTracked = 4)
-        val keys = (1..20).map { key() }
-        keys.forEach { recorder.record(it, start) }
-        // Every key still got its first write; dropping the map only costs
-        // extra guarded UPDATEs, never correctness.
-        keys.forEach { apiKeys.keys.getValue(it.id).lastUsedAt shouldBe start }
-        metrics.lastUsedWrites.get() shouldBe 20
+        val tracked = key()
+
+        // First use: written, and remembered locally.
+        recorder.record(tracked, start)
+        apiKeys.touchAttempts.get() shouldBe 1
+
+        // A repeat inside the interval is answered from the map — no statement.
+        recorder.record(tracked, start.plusSeconds(1))
+        apiKeys.touchAttempts.get() shouldBe 1
+
+        // Now push past the ceiling with other keys, which discards the map.
+        val others = (1..20).map { key() }
+        others.forEach { recorder.record(it, start) }
+
+        // The same key again, still inside the interval. The map no longer
+        // remembers it, so a statement IS issued — that is the observable
+        // consequence of the bound, and asserting only "each key got its first
+        // write" (as this test used to) held whether or not the map was ever
+        // cleared, so removing the bound left it green.
+        val before = apiKeys.touchAttempts.get()
+        recorder.record(tracked, start.plusSeconds(2))
+        (apiKeys.touchAttempts.get() > before) shouldBe true
+
+        // …and the database still refuses the redundant write, which is what
+        // keeps correctness independent of the map.
+        metrics.lastUsedWrites.get() shouldBe 1 + others.size
+        others.forEach { apiKeys.keys.getValue(it.id).lastUsedAt shouldBe start }
     }
 
     @Test
@@ -153,13 +173,17 @@ class CoalescingLastUsedRecorderTest {
     }
 
     @Test
-    fun `recording never touches anything but the timestamp`() {
+    fun `the recorder asks for a timestamp update and nothing else`() {
+        // Scoped to what this level can actually establish: the fake's
+        // `touchLastUsed` is `copy(lastUsedAt = ...)`, so asserting the other
+        // fields here would be asserting the fake. That the real `UPDATE`
+        // touches one column is proven against Postgres in
+        // `JdbcApiKeyRepositoryTest.the last-used refresh writes nothing but
+        // the timestamp`.
         val recorder = recorder()
         val stored = key()
         recorder.record(stored, start)
-        val after = apiKeys.keys.getValue(stored.id)
-        after.revokedAt.shouldBeNull()
-        after.scopes shouldBe stored.scopes
-        after.keyHash shouldBe stored.keyHash
+        apiKeys.keys.getValue(stored.id).lastUsedAt shouldBe start
+        apiKeys.touchAttempts.get() shouldBe 1
     }
 }

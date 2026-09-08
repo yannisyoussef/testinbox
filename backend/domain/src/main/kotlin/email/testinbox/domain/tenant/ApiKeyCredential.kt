@@ -40,6 +40,9 @@ object ApiKeyFormat {
     /** 20 bits of CRC-32. Integrity against truncation and typos — never security. */
     const val CHECK_LENGTH = 4
 
+    /** `ti`, version, public id, secret, checksum. */
+    const val SEGMENTS = 5
+
     private const val ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
     private val ALPHABET_SET = ALPHABET.toSet()
 
@@ -105,8 +108,9 @@ object ApiKeyFormat {
      */
     fun parse(presented: String): ParsedCredential {
         val parts = presented.split('_')
-        if (parts.size != 5) return ParsedCredential.Malformed
-        val (marker, version, publicId, secret) = parts
+        if (parts.size != SEGMENTS) return ParsedCredential.Malformed
+        val (marker, version, publicId) = parts
+        val secret = parts[3]
         val check = parts[4]
         if (marker != PRODUCT_MARKER) return ParsedCredential.Malformed
         if (version != VERSION) return ParsedCredential.UnsupportedVersion

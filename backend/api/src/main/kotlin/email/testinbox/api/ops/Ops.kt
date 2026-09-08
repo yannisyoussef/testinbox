@@ -105,7 +105,15 @@ class BootstrapFixture(
         provisioning.ensureProject(Project(projectId, workspaceId, "bootstrap", now))
         provisioning.ensureApiKey(
             ApiKey(
-                id = ApiKeyId(UUID.nameUUIDFromBytes(Sha256.hex(plaintext).toByteArray())),
+                // Random, NOT a digest of the secret. The previous
+                // `nameUUIDFromBytes(sha256(plaintext))` made the row id an
+                // unsalted, unstretched function of the credential — and this
+                // increment publishes that id, as `createdByApiKeyId` on the
+                // first managed key and as `actorApiKeyId` on every audit line.
+                // Anyone holding one could grind candidate passphrases offline.
+                // `ON CONFLICT (key_hash)` keeps the first id, so it is still
+                // stable across restarts.
+                id = ApiKeyId(UUID.randomUUID()),
                 workspaceId = workspaceId,
                 projectId = projectId,
                 keyHash = Sha256.hex(plaintext),
