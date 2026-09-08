@@ -8,7 +8,12 @@
    [ADR-015](../adr/0015-rest-compatibility-versioning.md).
 3. **Errors follow RFC 7807** (`application/problem+json`) with a stable
    `type` per error category, human-readable `detail`, and a `correlationId`
-   for support/debugging.
+   for support/debugging. This includes the transport-level refusals — an
+   unknown path, a wrong method, a rejected content type. They are `4xx` with a
+   problem body, never `5xx`: **a `500` from this API means a server fault**,
+   and that is what makes it worth alerting on. A catch-all exception handler
+   that swallows the framework's own dispatch failures breaks this quietly,
+   which is exactly how it was broken until `UnmatchedRouteTest` pinned it.
 4. **Authentication**: `Authorization: Bearer <api-key>` on every call except
    health checks. No cookie-based auth for the API surface (dashboard may use
    session cookies against its own backend-for-frontend, out of scope here).
