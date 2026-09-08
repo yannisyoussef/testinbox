@@ -513,3 +513,32 @@ class RecordingAuditLog : email.testinbox.application.port.AuditLog {
         events += event
     }
 }
+
+/**
+ * An [email.testinbox.application.port.IdempotencyRecords] for call sites that
+ * never present a key. Refuses loudly rather than pretending, so a test that
+ * starts exercising idempotency cannot silently get a no-op.
+ */
+object NoIdempotencyRecords : email.testinbox.application.port.IdempotencyRecords {
+    override fun claim(
+        scope: email.testinbox.application.port.IdempotencyScope,
+        keyHash: String,
+        fingerprint: String,
+        claimedByApiKeyId: email.testinbox.domain.ApiKeyId?,
+        now: Instant,
+        expiresAt: Instant,
+        waitFor: java.time.Duration,
+    ): email.testinbox.application.port.ClaimOutcome =
+        error("this fixture has no idempotency records; construct Idempotency with a real one to test claims")
+
+    override fun complete(
+        scope: email.testinbox.application.port.IdempotencyScope,
+        keyHash: String,
+        snapshot: email.testinbox.application.port.IdempotencySnapshot,
+    ) = error("this fixture has no idempotency records")
+
+    override fun deleteExpired(
+        now: Instant,
+        batchSize: Int,
+    ): Int = 0
+}

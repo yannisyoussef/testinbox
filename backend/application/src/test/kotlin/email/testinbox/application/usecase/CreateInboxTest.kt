@@ -5,8 +5,10 @@ import email.testinbox.application.InMemoryMessageRepository
 import email.testinbox.application.InMemoryQuotaState
 import email.testinbox.application.InMemoryReservations
 import email.testinbox.application.MutableClock
+import email.testinbox.application.NoIdempotencyRecords
 import email.testinbox.application.NoopTx
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.idempotency.Idempotency
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.inbox.AddressMode
@@ -48,7 +50,20 @@ class CreateInboxTest {
         reservations = InMemoryReservations()
         clock = MutableClock(Instant.parse("2026-08-29T12:00:00Z"))
         quotas = InMemoryQuotaState(inboxes, InMemoryMessageRepository())
-        useCase = CreateInbox(inboxes, reservations, NoopTx, quotas, quotaPolicy, clock, config, inboxMetrics = metrics)
+        useCase =
+            CreateInbox(
+                inboxes,
+                reservations,
+                quotas,
+                quotaPolicy,
+                clock,
+                config,
+                inboxMetrics = metrics,
+                // The coordinator owns the transaction boundary now, with or
+                // without a key, so the fake runner goes here rather than into
+                // the use case.
+                idempotency = Idempotency(NoIdempotencyRecords, NoopTx, clock),
+            )
     }
 
     private fun command(

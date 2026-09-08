@@ -194,7 +194,7 @@ class SchemaUpgradeTest : PersistenceIntegrationTest() {
     fun `every bundled migration is discoverable from the artifact`() {
         // If this scan silently found nothing, the compatibility policy would
         // read "no migrations bundled" and wave every schema through.
-        BundledMigrations.versions().map { it.raw } shouldBe listOf("1", "2", "3", "4")
+        BundledMigrations.versions().map { it.raw } shouldBe listOf("1", "2", "3", "4", "5")
     }
 
     @Test

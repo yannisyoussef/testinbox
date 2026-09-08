@@ -16,6 +16,40 @@ import java.time.Duration
 object Problems {
     private const val BASE = "https://testinbox.email/problems"
 
+    /**
+     * The two idempotency refusals a client must tell apart (ADR-033 §7).
+     * Collapsing them into one type would invert the correct action in one of
+     * the two cases: one is terminal, the other is a retry.
+     */
+    fun keyReused(request: jakarta.servlet.http.HttpServletRequest): ProblemDetail =
+        of(
+            HttpStatus.CONFLICT,
+            "idempotency-key-reused",
+            "Idempotency key reused",
+            "This Idempotency-Key is already bound to a different request. Retrying with it cannot succeed; " +
+                "use a new key.",
+            request,
+        )
+
+    fun inProgress(request: jakarta.servlet.http.HttpServletRequest): ProblemDetail =
+        of(
+            HttpStatus.CONFLICT,
+            "idempotency-request-in-progress",
+            "Idempotency request in progress",
+            "An identical request with this Idempotency-Key is still running. Retry with the same key.",
+            request,
+        )
+
+    fun replayUnavailable(request: jakarta.servlet.http.HttpServletRequest): ProblemDetail =
+        of(
+            HttpStatus.CONFLICT,
+            "idempotency-replay-unavailable",
+            "Idempotency replay unavailable",
+            "This Idempotency-Key is bound to a committed request whose result this server cannot reproduce. " +
+                "Use a new key.",
+            request,
+        )
+
     fun of(
         status: HttpStatus,
         type: String,

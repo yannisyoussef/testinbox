@@ -25,6 +25,13 @@ services:
       # migration job, so a deployment never fails on connection exhaustion.
       - -c
       - max_connections=100
+      # Bounds how long a hung or partitioned API node can hold an idempotency
+      # claim (ADR-033). The default is disabled, which makes the real bound the
+      # TCP keepalive interval — hours, during which that one key is unusable.
+      # No duplicate mutation is possible either way: this is liveness, and it
+      # is the one part of the guarantee the application cannot enforce itself.
+      - -c
+      - idle_in_transaction_session_timeout=30s
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:

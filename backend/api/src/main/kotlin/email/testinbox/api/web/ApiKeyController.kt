@@ -42,6 +42,12 @@ class ApiKeyController(
     ): ResponseEntity<*> {
         val actor = AuthAttributes.principal(request)
         actor.requireScope(ApiScope.API_KEYS_MANAGE)
+        val idempotency =
+            when (val header = IdempotencyHeader.read(request, actor.id)) {
+                is IdempotencyHeader.Outcome.Invalid -> return badRequest(request, header.reason)
+                IdempotencyHeader.Outcome.Absent -> null
+                is IdempotencyHeader.Outcome.Present -> header.request
+            }
 
         val requested = body.scopes.orEmpty()
         val resolved = requested.map { it to ApiScope.fromWire(it) }
@@ -57,7 +63,7 @@ class ApiKeyController(
                 scopes = resolved.mapNotNull { it.second }.toSet(),
                 expiresIn = body.expiresInSeconds?.let(Duration::ofSeconds),
             )
-        return when (val result = createApiKey.execute(command)) {
+        return when (val result = createApiKey.execute(command, idempotency)) {
             is CreateApiKey.Result.Created -> {
                 ResponseEntity
                     .status(HttpStatus.CREATED)
@@ -74,6 +80,37 @@ class ApiKeyController(
 
             CreateApiKey.Result.NoScopesRequested -> {
                 badRequest(request, "At least one scope is required")
+            }
+
+            is CreateApiKey.Result.AlreadyCreated -> {
+                // Duplicate suppression, not replay (ADR-033 §8). A 200 with
+                // the credential omitted would let a client write `undefined`
+                // into its secret store and fail somewhere else, hours later; a
+                // refusal fails at the right moment, in every client.
+                val problem =
+                    Problems.of(
+                        HttpStatus.CONFLICT,
+                        "idempotency-secret-not-replayable",
+                        "Credential already created",
+                        "This request already created a credential. Its secret was returned once and nothing " +
+                            "retains it, so it cannot be re-issued: revoke this key and mint another.",
+                        request,
+                    )
+                problem.setProperty("apiKeyId", result.apiKeyId.value)
+                problem.setProperty("publicId", result.publicId)
+                Problems.respond(problem)
+            }
+
+            CreateApiKey.Result.IdempotencyKeyReused -> {
+                Problems.respond(Problems.keyReused(request))
+            }
+
+            CreateApiKey.Result.IdempotencyInProgress -> {
+                Problems.respond(Problems.inProgress(request), retryAfter = Duration.ofSeconds(1))
+            }
+
+            CreateApiKey.Result.IdempotencyReplayUnavailable -> {
+                Problems.respond(Problems.replayUnavailable(request))
             }
 
             is CreateApiKey.Result.NameTooLong -> {

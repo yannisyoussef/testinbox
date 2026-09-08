@@ -6,6 +6,8 @@ import email.testinbox.application.port.AuthOutcome
 import email.testinbox.application.port.BlobOperation
 import email.testinbox.application.port.BlobOutcome
 import email.testinbox.application.port.BlobStoreMetrics
+import email.testinbox.application.port.IdempotencyMetrics
+import email.testinbox.application.port.IdempotencyOutcome
 import email.testinbox.application.port.InboundMetrics
 import email.testinbox.application.port.InboxMetrics
 import email.testinbox.application.port.NotifierMetrics
@@ -13,6 +15,7 @@ import email.testinbox.application.port.SmtpMetrics
 import email.testinbox.application.port.SmtpRejection
 import email.testinbox.application.port.WaitMetrics
 import email.testinbox.application.port.WaitOutcome
+import email.testinbox.domain.idempotency.IdempotentOperation
 import email.testinbox.domain.inbox.AddressMode
 import email.testinbox.domain.message.ParseStatus
 import io.micrometer.core.instrument.Gauge
@@ -290,5 +293,37 @@ class MicrometerApiKeyMetrics(
          * working and the hot path has silently acquired a database write.
          */
         const val LAST_USED = "testinbox_api_key_last_used_writes_total"
+    }
+}
+
+/**
+ * Idempotent mutations (ADR-033 §10).
+ *
+ * The idempotency key appears in no label, hashed or otherwise: it is chosen
+ * by the caller, so labelling by it would let a caller decide how much memory
+ * the metrics backend spends. Both labels are closed enums.
+ */
+class MicrometerIdempotencyMetrics(
+    private val registry: MeterRegistry,
+) : IdempotencyMetrics {
+    init {
+        // Registered at zero so `increase()` works over a window containing
+        // process start.
+        IdempotentOperation.entries.forEach { operation ->
+            IdempotencyOutcome.entries.forEach { outcome ->
+                registry.counter(NAME, "operation", operation.name, "outcome", outcome.name)
+            }
+        }
+    }
+
+    override fun completed(
+        operation: IdempotentOperation,
+        outcome: IdempotencyOutcome,
+    ) {
+        registry.counter(NAME, "operation", operation.name, "outcome", outcome.name).increment()
+    }
+
+    private companion object {
+        const val NAME = "testinbox_idempotency_total"
     }
 }

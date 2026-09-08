@@ -1,7 +1,6 @@
 # ADR-027: Rate Limiting and Resource Quota Strategy
 
-**Status:** Accepted
-
+**Status:** Accepted (§6 amended by [ADR-033](0033-idempotent-mutations.md))
 > Accepted after architecture and security review of the design. The first
 > draft deferred inbound mail with `452` when a recipient's workspace was over
 > quota; both reviews independently rejected that, and §1 records why. The

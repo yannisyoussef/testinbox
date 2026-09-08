@@ -1,6 +1,6 @@
 # ADR-021: Inbox Addressing — Generated and Exact Modes
 
-**Status:** Accepted (supersedes [ADR-008](0008-inbox-addressing-reservation.md))
+**Status:** Accepted (supersedes [ADR-008](0008-inbox-addressing-reservation.md); amended by [ADR-033](0033-idempotent-mutations.md))
 
 ## Context
 

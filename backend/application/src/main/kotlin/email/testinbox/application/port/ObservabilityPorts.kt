@@ -259,3 +259,39 @@ interface ApiKeyMetrics {
         val NOOP: ApiKeyMetrics = object : ApiKeyMetrics {}
     }
 }
+
+/**
+ * How an idempotent mutation resolved (ADR-033 §10). A closed enum: the
+ * idempotency key is caller-chosen and must never reach a label.
+ */
+enum class IdempotencyOutcome {
+    /** The claim was taken and the mutation ran. */
+    EXECUTED,
+
+    /** An identical request had already committed; the stored result was returned. */
+    REPLAYED,
+
+    /** The key was bound to a different logical request. */
+    CONFLICT,
+
+    /** A concurrent identical claim did not resolve within the bounded wait. */
+    IN_PROGRESS,
+
+    /**
+     * The mutation was refused, so its claim was rolled back and the key is
+     * free again. Worth counting separately: a run of these means clients are
+     * burning keys on requests that never commit.
+     */
+    ROLLED_BACK,
+}
+
+interface IdempotencyMetrics {
+    fun completed(
+        operation: email.testinbox.domain.idempotency.IdempotentOperation,
+        outcome: IdempotencyOutcome,
+    ) {}
+
+    companion object {
+        val NOOP: IdempotencyMetrics = object : IdempotencyMetrics {}
+    }
+}

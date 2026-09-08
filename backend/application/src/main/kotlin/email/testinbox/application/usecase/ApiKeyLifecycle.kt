@@ -1,13 +1,19 @@
 package email.testinbox.application.usecase
 
 import email.testinbox.application.Sha256
+import email.testinbox.application.idempotency.ApiKeySnapshot
+import email.testinbox.application.idempotency.Idempotency
+import email.testinbox.application.idempotency.IdempotencyRequest
+import email.testinbox.application.idempotency.RequestFingerprint
 import email.testinbox.application.port.ApiKeyMetrics
 import email.testinbox.application.port.ApiKeyOperation
 import email.testinbox.application.port.ApiKeyRepository
 import email.testinbox.application.port.AuditEvent
 import email.testinbox.application.port.AuditLog
+import email.testinbox.application.port.IdempotencyScope
 import email.testinbox.application.port.RevokeApiKeyOutcome
 import email.testinbox.domain.ApiKeyId
+import email.testinbox.domain.idempotency.IdempotentOperation
 import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiKeyCredential
 import email.testinbox.domain.tenant.ApiKeyFormat
@@ -33,6 +39,7 @@ class CreateApiKey(
     private val audit: AuditLog = AuditLog.NOOP,
     private val metrics: ApiKeyMetrics = ApiKeyMetrics.NOOP,
     private val random: SecureRandom = SecureRandom(),
+    private val idempotency: Idempotency = Idempotency.disabled(),
 ) {
     data class Command(
         /** The credential performing the operation — the source of workspace, project and ceiling. */
@@ -83,9 +90,33 @@ class CreateApiKey(
         data class ExpiryTooLong(
             val maximum: Duration,
         ) : Result
+
+        /**
+         * This exact request already created a credential (ADR-033 §8).
+         *
+         * **Duplicate suppression, not idempotent replay** — the deliberate
+         * deviation from TI-003 §15. The secret was returned once and nothing
+         * in the system retains it (ADR-032 §4), so the honest answer names the
+         * credential rather than pretending to reproduce it: revoke it and mint
+         * again under a fresh key.
+         */
+        data class AlreadyCreated(
+            val apiKeyId: ApiKeyId,
+            val publicId: String,
+        ) : Result
+
+        data object IdempotencyKeyReused : Result
+
+        data object IdempotencyInProgress : Result
+
+        data object IdempotencyReplayUnavailable : Result
     }
 
-    fun execute(command: Command): Result {
+    @JvmOverloads
+    fun execute(
+        command: Command,
+        request: IdempotencyRequest? = null,
+    ): Result {
         if (!command.actor.hasScope(ApiScope.API_KEYS_MANAGE)) return Result.NotPermitted
         if (command.scopes.isEmpty()) return Result.NoScopesRequested
         val missing = command.scopes - command.actor.scopes
@@ -113,21 +144,55 @@ class CreateApiKey(
                 lastUsedAt = null,
                 createdByApiKeyId = command.actor.id,
             )
-        apiKeys.insert(key)
-        metrics.lifecycle(ApiKeyOperation.CREATED)
-        audit.record(
-            AuditEvent.ApiKeyCreated(
-                at = now,
-                workspaceId = key.workspaceId,
-                actorApiKeyId = command.actor.id,
-                apiKeyId = key.id,
-                publicId = credential.publicId,
-                name = key.name,
-                scopes = key.scopes,
-                expiresAt = key.expiresAt,
-            ),
-        )
-        return Result.Created(key, credential)
+        val scope =
+            IdempotencyScope(key.workspaceId, key.projectId, IdempotentOperation.CREATE_API_KEY)
+        val result =
+            idempotency.around(
+                request = request,
+                scope = { scope },
+                fingerprint = { RequestFingerprint.of(command) },
+                outcomes =
+                    Idempotency.Outcomes(
+                        replay = { snapshot ->
+                            ApiKeySnapshot.toCreated(snapshot)?.let { (id, publicId) ->
+                                Result.AlreadyCreated(id, publicId)
+                            } ?: Result.IdempotencyReplayUnavailable
+                        },
+                        keyReused = { Result.IdempotencyKeyReused },
+                        inProgress = { Result.IdempotencyInProgress },
+                        snapshotOf = { r ->
+                            (r as? Result.Created)?.let { ApiKeySnapshot.of(it.apiKey.id, it.credential.publicId) }
+                        },
+                    ),
+                // ADR-033 §4a. `AlreadyCreated` names a credential for the
+                // caller to revoke, so it must never name one minted by a
+                // different credential in the same workspace.
+                replayBoundToActor = true,
+            ) {
+                apiKeys.insert(key)
+                Result.Created(key, credential)
+            }
+
+        // AFTER the transaction, deliberately. Emitting inside it would let a
+        // rolled-back claim log that a credential was created that does not
+        // exist — in the audit trail ADR-032 §5 relies on as evidence — because
+        // neither SLF4J nor Micrometer participates in a rollback.
+        if (result is Result.Created) {
+            metrics.lifecycle(ApiKeyOperation.CREATED)
+            audit.record(
+                AuditEvent.ApiKeyCreated(
+                    at = now,
+                    workspaceId = key.workspaceId,
+                    actorApiKeyId = command.actor.id,
+                    apiKeyId = key.id,
+                    publicId = credential.publicId,
+                    name = key.name,
+                    scopes = key.scopes,
+                    expiresAt = key.expiresAt,
+                ),
+            )
+        }
+        return result
     }
 
     /**

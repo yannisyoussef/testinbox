@@ -72,12 +72,15 @@ export class TestInboxClient {
 
   /** Create an ephemeral inbox (GENERATED or EXACT addressing, ADR-021). */
   async createInbox(options: CreateInboxOptions = {}): Promise<Inbox> {
-    const dto = await this.#transport.createInbox({
-      ...(options.addressMode !== undefined && { addressMode: options.addressMode }),
-      ...(options.ttlSeconds !== undefined && { ttlSeconds: options.ttlSeconds }),
-      ...(options.aliasHint !== undefined && { aliasHint: options.aliasHint }),
-      ...(options.localPart !== undefined && { localPart: options.localPart }),
-    });
+    const dto = await this.#transport.createInbox(
+      {
+        ...(options.addressMode !== undefined && { addressMode: options.addressMode }),
+        ...(options.ttlSeconds !== undefined && { ttlSeconds: options.ttlSeconds }),
+        ...(options.aliasHint !== undefined && { aliasHint: options.aliasHint }),
+        ...(options.localPart !== undefined && { localPart: options.localPart }),
+      },
+      options.idempotencyKey,
+    );
     return new InboxImpl(this.#transport, dto);
   }
 
@@ -116,6 +119,21 @@ export interface ApiKeys {
   /**
    * Mints a key. The returned `secret` is the only copy that will ever exist:
    * it is not stored and cannot be retrieved again (ADR-032 §4).
+   *
+   * `idempotencyKey` is sent verbatim and is strongly recommended here
+   * (ADR-033 §8): a lost response otherwise leaves an **orphan credential** —
+   * one that exists, has real authority, and that nobody holds and nobody
+   * knows to revoke. With a key, the retry throws
+   * {@link TestInboxCredentialAlreadyCreatedError}, which names the credential
+   * already created (`apiKeyId`/`publicId`) so it can be revoked, rather than
+   * minting a second.
+   *
+   * **This protection is opt-in.** The SDK deliberately does not invent a key
+   * for you: one generated inside a process that then dies protects nothing,
+   * because the retry comes from somewhere that never saw it. Pass no key and
+   * a dropped response can still orphan a credential. Derive it from something
+   * your own retry boundary can reproduce — a CI job id, a deployment id, a row
+   * in your own queue.
    */
   create(options: CreateApiKeyOptions): Promise<CreatedApiKey>;
   /** Newest first. Revoked keys are included; they are retained for audit. */
@@ -139,11 +157,14 @@ class ApiKeysImpl implements ApiKeys {
   }
 
   async create(options: CreateApiKeyOptions): Promise<CreatedApiKey> {
-    const dto = await this.#transport.createApiKey({
-      scopes: options.scopes.map((scope) => String(scope)),
-      ...(options.name !== undefined && { name: options.name }),
-      ...(options.expiresInSeconds !== undefined && { expiresInSeconds: options.expiresInSeconds }),
-    });
+    const dto = await this.#transport.createApiKey(
+      {
+        scopes: options.scopes.map((scope) => String(scope)),
+        ...(options.name !== undefined && { name: options.name }),
+        ...(options.expiresInSeconds !== undefined && { expiresInSeconds: options.expiresInSeconds }),
+      },
+      options.idempotencyKey,
+    );
     return { apiKey: toApiKeyMetadata(dto.apiKey), secret: dto.key };
   }
 

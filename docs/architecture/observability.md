@@ -64,6 +64,27 @@ have queried a series that does not exist. `MetricCardinalityTest` asserts the
 | `testinbox_api_key_auth_total` | counter | `outcome` | Every authentication attempt (ADR-032) |
 | `testinbox_api_key_lifecycle_total` | counter | `operation` | A credential is created or revoked |
 | `testinbox_api_key_last_used_writes_total` | counter | — | A coalesced `last_used_at` write actually reached the database |
+| `testinbox_idempotency_total` | counter | `operation`, `outcome` | Every request carrying an `Idempotency-Key` resolves (ADR-033) |
+
+### Reading the idempotency outcomes
+
+Both labels are closed enums (`IdempotentOperation`, `IdempotencyOutcome`); the
+key itself is never a label, hashed or otherwise. The five outcomes answer
+different questions, and only two of them are ever interesting:
+
+- `EXECUTED` / `REPLAYED` — the feature working. A healthy client retrying a
+  lost response shows up here, so a rising `REPLAYED` is not a problem signal;
+  it is evidence that clients are protected.
+- `IN_PROGRESS` — **the one to watch.** It means a duplicate arrived while the
+  first was still running and did not resolve inside the claim wait. A sustained
+  rise is either genuine client contention or a slow mutation, and it is also
+  the signal that would move if the retention sweep ever started contending with
+  claims (ADR-033 §9), which is otherwise invisible.
+- `CONFLICT` — a client reusing one key for different requests, or a second
+  credential replaying a key-creation. Client-side bug, not ours; it never
+  executes anything.
+- `ROLLED_BACK` — the mutation was refused, so the key is free again. A run of
+  these means clients are burning keys on requests that never commit.
 
 ### Two credential signals worth watching
 

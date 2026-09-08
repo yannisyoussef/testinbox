@@ -27,6 +27,9 @@ import kotlin.reflect.full.memberProperties
  */
 class ApiKeySecretLeakTest : ApiIntegrationTestBase() {
     private val json = ObjectMapper()
+
+    @org.springframework.beans.factory.annotation.Autowired
+    lateinit var dataSource: javax.sql.DataSource
     private lateinit var appender: ListAppender<ILoggingEvent>
     private lateinit var root: Logger
     private lateinit var jdkHttpClient: Logger
@@ -184,4 +187,65 @@ class ApiKeySecretLeakTest : ApiIntegrationTestBase() {
         // with the request logs.
         audit.any { it.contains("correlationId=") && !it.contains("correlationId=-") } shouldBe true
     }
+
+    @Test
+    fun `the idempotency record holds neither the credential nor the raw key`() {
+        // ADR-033 §6 and §10. The record is a new place that a future change
+        // could put credential material into — it is written on the same
+        // transaction as the mutation and carries a JSON payload — and nothing
+        // else looks there. The raw `Idempotency-Key` matters too: it is
+        // customer-generated, may carry their identifiers, and the design
+        // stores only a salted digest of it.
+        val idempotencyKey = "leak-probe-${java.util.UUID.randomUUID()}"
+        val created =
+            json.readTree(
+                postWithIdempotencyKey(
+                    """{"name":"leak-probe","scopes":["messages:read"]}""",
+                    idempotencyKey,
+                ).body!!,
+            )
+        val plaintext = created["key"].asString()
+        val secret = plaintext.split('_')[3]
+
+        val rows =
+            dataSource.connection.use { connection ->
+                connection.createStatement().use { statement ->
+                    statement
+                        .executeQuery(
+                            "SELECT coalesce(snapshot::text, '') || '|' || key_hash || '|' || fingerprint " +
+                                "FROM idempotency_record",
+                        ).use { rs ->
+                            buildList { while (rs.next()) add(rs.getString(1)) }
+                        }
+                }
+            }
+
+        // Guard the guard: with no rows every assertion below is vacuous.
+        (rows.isNotEmpty()) shouldBe true
+        rows.none { it.contains(plaintext) } shouldBe true
+        rows.none { it.contains(secret) } shouldBe true
+        // The key itself is hashed, never stored: an unsalted or absent digest
+        // would make a low-entropy key like a CI job id readable from a dump.
+        rows.none { it.contains(idempotencyKey) } shouldBe true
+
+        // And the key never reaches a log line, at any level. The redaction
+        // that makes this true is a single `toString()` override on a value
+        // class, one deletion away from putting a customer identifier into our
+        // logs and theirs at once.
+        appender.list.map { it.formattedMessage }.none { it.contains(idempotencyKey) } shouldBe true
+        (appender.list.size > 0) shouldBe true
+    }
+
+    private fun postWithIdempotencyKey(
+        body: String,
+        idempotencyKey: String,
+    ) = rest.exchange(
+        url("/v1/api-keys"),
+        org.springframework.http.HttpMethod.POST,
+        org.springframework.http.HttpEntity(
+            body,
+            headers().apply { set("Idempotency-Key", idempotencyKey) },
+        ),
+        String::class.java,
+    )
 }

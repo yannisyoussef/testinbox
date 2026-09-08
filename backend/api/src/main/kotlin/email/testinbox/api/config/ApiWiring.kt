@@ -4,12 +4,15 @@ import email.testinbox.application.LimitsConfig
 import email.testinbox.application.Sha256
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.deployment.SchemaCompatibility
+import email.testinbox.application.idempotency.Idempotency
 import email.testinbox.application.port.ApiKeyMetrics
 import email.testinbox.application.port.ApiKeyRepository
 import email.testinbox.application.port.AuditLog
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.BlobStoreMetrics
 import email.testinbox.application.port.ExactAddressReservations
+import email.testinbox.application.port.IdempotencyMetrics
+import email.testinbox.application.port.IdempotencyRecords
 import email.testinbox.application.port.InboxMetrics
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.LimitMetrics
@@ -38,6 +41,7 @@ import email.testinbox.notification.PgListenNotifierConfig
 import email.testinbox.observability.BuildInfoMetric
 import email.testinbox.observability.MicrometerApiKeyMetrics
 import email.testinbox.observability.MicrometerBlobStoreMetrics
+import email.testinbox.observability.MicrometerIdempotencyMetrics
 import email.testinbox.observability.MicrometerInboxMetrics
 import email.testinbox.observability.MicrometerLimitMetrics
 import email.testinbox.observability.MicrometerNotifierMetrics
@@ -88,6 +92,9 @@ class ApiMetricsWiring {
     @Bean
     fun apiKeyMetrics(registry: MeterRegistry): ApiKeyMetrics = MicrometerApiKeyMetrics(registry)
 
+    @Bean
+    fun idempotencyMetrics(registry: MeterRegistry): IdempotencyMetrics = MicrometerIdempotencyMetrics(registry)
+
     /** Credential lifecycle audit trail (TI-002 §14) on its own `testinbox.audit` logger. */
     @Bean
     fun auditLog(): AuditLog = Slf4jAuditLog()
@@ -125,8 +132,29 @@ class ApiWiring(
     private val inboxMetrics: InboxMetrics,
     private val waitMetrics: WaitMetrics,
     private val apiKeyMetrics: ApiKeyMetrics,
+    private val idempotencyMetrics: IdempotencyMetrics,
     private val audit: AuditLog,
 ) {
+    /**
+     * One coordinator, shared by both idempotent use cases. The retention and
+     * claim wait are deployment policy (ADR-033 §3/§9), so they are configured
+     * rather than hardcoded at the call sites.
+     */
+    @Bean
+    fun idempotency(
+        records: IdempotencyRecords,
+        tx: TransactionRunner,
+        properties: TestInboxProperties,
+    ): Idempotency =
+        Idempotency(
+            records = records,
+            tx = tx,
+            clock = clock,
+            retention = properties.idempotency.retention,
+            claimWait = properties.idempotency.claimWait,
+            metrics = idempotencyMetrics,
+        )
+
     @Bean
     fun testInboxConfig(properties: TestInboxProperties): TestInboxConfig = properties.toConfig()
 
@@ -204,11 +232,22 @@ class ApiWiring(
     fun createInbox(
         inboxes: InboxRepository,
         reservations: ExactAddressReservations,
-        tx: TransactionRunner,
         quotas: WorkspaceQuotaState,
         limits: LimitsConfig,
         config: TestInboxConfig,
-    ): CreateInbox = CreateInbox(inboxes, reservations, tx, quotas, limits.quotas, clock, config, limitMetrics, inboxMetrics)
+        idempotency: Idempotency,
+    ): CreateInbox =
+        CreateInbox(
+            inboxes,
+            reservations,
+            quotas,
+            limits.quotas,
+            clock,
+            config,
+            limitMetrics,
+            inboxMetrics,
+            idempotency,
+        )
 
     @Bean
     fun deleteInbox(
@@ -283,7 +322,10 @@ class ApiWiring(
         )
 
     @Bean
-    fun createApiKey(apiKeys: ApiKeyRepository): CreateApiKey = CreateApiKey(apiKeys, clock, audit, apiKeyMetrics)
+    fun createApiKey(
+        apiKeys: ApiKeyRepository,
+        idempotency: Idempotency,
+    ): CreateApiKey = CreateApiKey(apiKeys, clock, audit, apiKeyMetrics, idempotency = idempotency)
 
     @Bean
     fun revokeApiKey(apiKeys: ApiKeyRepository): RevokeApiKey = RevokeApiKey(apiKeys, clock, audit, apiKeyMetrics)

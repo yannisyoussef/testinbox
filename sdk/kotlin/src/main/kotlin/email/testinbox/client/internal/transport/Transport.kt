@@ -3,6 +3,9 @@ package email.testinbox.client.internal.transport
 import email.testinbox.client.TestInboxApiException
 import email.testinbox.client.TestInboxAuthException
 import email.testinbox.client.TestInboxConflictException
+import email.testinbox.client.TestInboxCredentialAlreadyCreatedException
+import email.testinbox.client.TestInboxIdempotencyConflictException
+import email.testinbox.client.TestInboxIdempotencyInProgressException
 import email.testinbox.client.TestInboxForbiddenException
 import email.testinbox.client.TestInboxInboxGoneException
 import email.testinbox.client.TestInboxNotFoundException
@@ -146,6 +149,8 @@ internal data class ProblemDto(
     val quota: String? = null,
     val limit: Long? = null,
     val current: Long? = null,
+    val apiKeyId: String? = null,
+    val publicId: String? = null,
 )
 
 /**
@@ -170,11 +175,15 @@ internal class Transport(
     // Forward compatibility: unknown fields and enum values must never break parsing.
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 
-    suspend fun createInbox(request: CreateInboxRequestDto): InboxDto =
+    suspend fun createInbox(request: CreateInboxRequestDto, idempotencyKey: String? = null): InboxDto =
         json.decodeFromString(
             InboxDto.serializer(),
-            execute("POST", "/v1/inboxes", json.encodeToString(CreateInboxRequestDto.serializer(), request))
-                .let { String(it) },
+            execute(
+                "POST",
+                "/v1/inboxes",
+                json.encodeToString(CreateInboxRequestDto.serializer(), request),
+                idempotencyKey,
+            ).let { String(it) },
         )
 
     suspend fun getInbox(id: String): InboxDto =
@@ -207,10 +216,20 @@ internal class Transport(
 
     suspend fun rawMime(messageId: String): ByteArray = execute("GET", "/v1/messages/$messageId/raw")
 
-    suspend fun createApiKey(request: CreateApiKeyRequestDto): CreatedApiKeyDto =
+    suspend fun createApiKey(
+        request: CreateApiKeyRequestDto,
+        idempotencyKey: String? = null,
+    ): CreatedApiKeyDto =
         json.decodeFromString(
             CreatedApiKeyDto.serializer(),
-            String(execute("POST", "/v1/api-keys", json.encodeToString(CreateApiKeyRequestDto.serializer(), request))),
+            String(
+                execute(
+                    "POST",
+                    "/v1/api-keys",
+                    json.encodeToString(CreateApiKeyRequestDto.serializer(), request),
+                    idempotencyKey,
+                ),
+            ),
         )
 
     suspend fun listApiKeys(cursor: String?, limit: Int?): ApiKeyPageDto {
@@ -232,12 +251,19 @@ internal class Transport(
         execute("DELETE", "/v1/api-keys/$id")
     }
 
-    private suspend fun execute(method: String, path: String, body: String? = null): ByteArray {
+    private suspend fun execute(
+        method: String,
+        path: String,
+        body: String? = null,
+        idempotencyKey: String? = null,
+    ): ByteArray {
         val builder =
             HttpRequest.newBuilder(URI.create(baseUrl.trimEnd('/') + path))
                 .header("Authorization", "Bearer $apiKey")
                 .header("Accept", "application/json, message/rfc822, application/octet-stream")
                 .header("User-Agent", USER_AGENT)
+        // Sent verbatim; never generated or rewritten here (ADR-033).
+        idempotencyKey?.let { builder.header("Idempotency-Key", it) }
         if (body != null) {
             builder.header("Content-Type", "application/json")
             builder.method(method, HttpRequest.BodyPublishers.ofString(body))
@@ -268,17 +294,7 @@ internal class Transport(
             // `scope-escalation` — so the problem type travels with it.
             status == 403 -> TestInboxForbiddenException(detail, problem.correlationId, problem.type, status)
             status == 404 -> TestInboxNotFoundException(detail, problem.correlationId, problem.type, status)
-            // Two distinct 409s share this status (ADR-021 vs ADR-027), so the
-            // problem type — not the status code — decides which error this is.
-            status == 409 && problem.type?.endsWith("/quota-exceeded") == true ->
-                TestInboxQuotaExceededException(
-                    detail,
-                    problem.correlationId,
-                    quota = problem.quota,
-                    limit = problem.limit,
-                    current = problem.current,
-                )
-            status == 409 -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
+            status == 409 -> mapConflict(problem, detail, retryAfter)
             status == 410 -> TestInboxInboxGoneException(detail, problem.correlationId, problem.type, status)
             status == 429 ->
                 TestInboxRateLimitException(
@@ -290,6 +306,51 @@ internal class Transport(
                     remaining = headers.firstValue("RateLimit-Remaining").orElse(null)?.toLongOrNull(),
                 )
             else -> TestInboxApiException(status, problem.type, detail, problem.correlationId)
+        }
+    }
+
+    /**
+     * Several distinct `409`s share that status (ADR-021, ADR-027, ADR-033)
+     * and their correct client actions differ — free capacity, wait out a
+     * cooldown, retry with the same key, never reuse the key, or revoke and
+     * re-mint. Discriminating on the problem type rather than the status code
+     * is what `docs/api/principles.md` #3 asks of a client.
+     *
+     * Split out of [mapError] because the conflict family alone carries more
+     * branches than every other status put together.
+     */
+    private fun mapConflict(
+        problem: ProblemDto,
+        detail: String,
+        retryAfter: java.time.Duration?,
+    ): RuntimeException {
+        val type = problem.type
+        return when {
+            type?.endsWith("/quota-exceeded") == true ->
+                TestInboxQuotaExceededException(
+                    detail,
+                    problem.correlationId,
+                    quota = problem.quota,
+                    limit = problem.limit,
+                    current = problem.current,
+                )
+            type?.endsWith("/idempotency-request-in-progress") == true ->
+                TestInboxIdempotencyInProgressException(detail, problem.correlationId, retryAfter)
+            type?.endsWith("/idempotency-secret-not-replayable") == true ->
+                TestInboxCredentialAlreadyCreatedException(
+                    detail,
+                    problem.correlationId,
+                    problem.apiKeyId,
+                    problem.publicId,
+                )
+            // The two terminal types share one exception because they ask the
+            // same thing of a caller, but `problemType` is carried so "my key
+            // scheme is wrong" stays distinguishable from "an artifact
+            // rollback ate my record".
+            type?.endsWith("/idempotency-key-reused") == true ||
+                type?.endsWith("/idempotency-replay-unavailable") == true ->
+                TestInboxIdempotencyConflictException(detail, problem.correlationId, type)
+            else -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
         }
     }
 }

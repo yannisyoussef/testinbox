@@ -34,7 +34,7 @@ SYNTHETIC_MINIMUM=13
 # The credential-lifecycle product suite (TI-002 §19). Counted separately
 # because it is a separate verdict: "the deployment is broken" and "the
 # credential lifecycle is broken on a healthy deployment" are different things.
-PRODUCT_SYNTHETIC_MINIMUM=5
+PRODUCT_SYNTHETIC_MINIMUM=8
 HTTP_PORT="${REHEARSAL_HTTP_PORT:-8080}"
 SMTP_PORT="${REHEARSAL_SMTP_PORT:-2525}"
 KEEP=false
@@ -254,7 +254,7 @@ test "${RAN:-0}" -ge "$SYNTHETIC_MINIMUM" || {
 test "${FAILED:-0}" -eq 0 || { echo "synthetic tests failed" >&2; exit 1; }
 test "${SKIPPED:-0}" -eq 0 || { echo "synthetic tests were skipped" >&2; exit 1; }
 
-step "9/9 product synthetic: the credential lifecycle (ADR-032)"
+step "9/9 product synthetics: credential lifecycle (ADR-032) and idempotency (ADR-033)"
 # First, the handover a real environment performs exactly once: the bootstrap
 # credential mints the first managed administrator and thereby retires itself
 # (ADR-032 §8). Doing it here rather than handing the suite the bootstrap key

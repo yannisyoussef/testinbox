@@ -2,6 +2,7 @@ package email.testinbox.api.ops
 
 import email.testinbox.api.config.TestInboxProperties
 import email.testinbox.application.Sha256
+import email.testinbox.application.port.IdempotencyRecords
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.ProvisioningRepository
 import email.testinbox.application.port.WaitSlots
@@ -31,7 +32,38 @@ class SweepScheduler(
     private val expireInboxes: ExpireInboxes,
     private val orphanBlobSweep: OrphanBlobSweep,
     private val waitSlots: WaitSlots,
+    private val idempotencyRecords: IdempotencyRecords,
+    private val clock: Clock,
 ) {
+    /**
+     * Retention sweep for idempotency records (ADR-033 §9).
+     *
+     * On a slow cadence and in bounded batches, unlike the lifecycle sweep: an
+     * unbounded delete of every expired row on a five-second tick is its own
+     * write-ahead-log problem. It can never remove an in-flight operation,
+     * because an uncommitted claim is invisible to this statement's snapshot.
+     *
+     * **Deliberately not `@Transactional`, and it must stay that way.** Each
+     * `deleteExpired` is its own autocommit statement, so its row locks are
+     * released at the end of every pass. Wrapping this loop in one transaction
+     * would hold locks on up to `BATCH × MAX_PASSES` rows until the last pass
+     * finished, and a claim landing on any of them would block there and be
+     * reported to the client as `idempotency-request-in-progress` when nothing
+     * is in progress — the ADR-033 §9 contention the `SKIP LOCKED` in
+     * `deleteExpired` exists to avoid, reintroduced from the other side.
+     */
+    @Scheduled(fixedDelayString = "\${testinbox.idempotency.sweep-interval:5m}")
+    fun idempotencySweep() {
+        runCatching {
+            var removed: Int
+            var passes = 0
+            do {
+                removed = idempotencyRecords.deleteExpired(clock.instant(), IDEMPOTENCY_SWEEP_BATCH)
+                passes++
+            } while (removed == IDEMPOTENCY_SWEEP_BATCH && passes < IDEMPOTENCY_SWEEP_MAX_PASSES)
+        }.onFailure { log.warn("idempotency sweep failed", it) }
+    }
+
     @Scheduled(fixedDelayString = "\${testinbox.sweep-interval:5s}")
     fun lifecycleSweep() {
         runCatching { expireInboxes.sweep() }
@@ -59,6 +91,11 @@ class SweepScheduler(
     }
 
     private companion object {
+        const val IDEMPOTENCY_SWEEP_BATCH = 500
+
+        /** Bounds one tick's work; the next tick continues where this stopped. */
+        const val IDEMPOTENCY_SWEEP_MAX_PASSES = 20
+
         val log = LoggerFactory.getLogger(SweepScheduler::class.java)
     }
 }

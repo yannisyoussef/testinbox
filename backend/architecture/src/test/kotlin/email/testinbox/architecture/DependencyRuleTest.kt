@@ -449,4 +449,43 @@ class DependencyRuleTest {
             }
         }
     }
+
+    @Test
+    fun `only the idempotency coordinator claims or completes a record (ADR-033)`() {
+        // ADR-033 §6 justifies the whole snapshot design on the premise that
+        // the record is written by the application layer, in the same
+        // transaction as the mutation. An adapter calling `claim` or
+        // `complete` directly would put the only write that guarantees
+        // "committed ⇒ recorded" outside that layer — against ADR-024, and
+        // silently, because nothing about it would fail.
+        //
+        // `deleteExpired` is deliberately NOT covered: it writes no invariant,
+        // and the retention sweep drives it from the API adapter the same way
+        // it drives `WaitSlots.reapExpired`.
+        val guarded = setOf("claim", "complete")
+        val writers =
+            allClasses
+                .flatMap { it.methods + it.constructors }
+                .filter { member ->
+                    member.callsFromSelf.any { call ->
+                        call.targetOwner.name ==
+                            email.testinbox.application.port.IdempotencyRecords::class.java.name &&
+                            call.name in guarded
+                    }
+                }.map { it.owner.name }
+                .toSet()
+
+        val coordinator = email.testinbox.application.idempotency.Idempotency::class.java.name
+        // Guard the guard: if call resolution found nothing, the assertion
+        // below would pass while proving nothing at all.
+        check(coordinator in writers) {
+            "no caller of IdempotencyRecords.claim/complete was found — this rule is not actually checking anything"
+        }
+        val unexpected = writers.filterNot { it == coordinator || it.startsWith("$coordinator$") }
+        check(unexpected.isEmpty()) {
+            "$unexpected claims or completes an idempotency record. Only Idempotency may: it is what keeps the " +
+                "claim and the mutation in one transaction, so a committed mutation cannot exist without its " +
+                "record (ADR-033 §2, §6)."
+        }
+    }
 }

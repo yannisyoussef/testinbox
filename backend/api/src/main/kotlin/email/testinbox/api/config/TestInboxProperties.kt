@@ -19,6 +19,7 @@ data class TestInboxProperties(
     val orphanSweepInterval: Duration = Duration.ofMinutes(30),
     val orphanMinAge: Duration = Duration.ofHours(1),
     val limits: LimitsProperties = LimitsProperties(),
+    val idempotency: Idempotency = Idempotency(),
     val storage: Storage = Storage(),
     val bootstrap: Bootstrap = Bootstrap(),
     val deployment: Deployment = Deployment(),
@@ -63,6 +64,53 @@ data class TestInboxProperties(
         /** Digest of the running image — knowable only at deploy time (ADR-028). */
         val imageDigest: String = "unknown",
     )
+
+    /**
+     * ADR-033. Both values are deployment policy rather than product
+     * behaviour, so they are configurable: retention trades a privacy cost
+     * that grows linearly against a benefit that saturates in minutes, and the
+     * claim wait bounds how long a blocked duplicate holds a connection.
+     */
+    data class Idempotency(
+        val retention: Duration = Duration.ofHours(6),
+        val claimWait: Duration = Duration.ofSeconds(2),
+        val sweepInterval: Duration = Duration.ofMinutes(5),
+    ) {
+        init {
+            // `claimWait` becomes `SET LOCAL lock_timeout`, where Postgres
+            // reads 0 as *disabled* rather than "give up immediately". A
+            // configured zero would therefore invert ADR-033 §3 exactly: the
+            // bounded wait becomes unbounded, and a blocked duplicate pins a
+            // servlet thread, a pooled connection and an open transaction
+            // until something else reaps it — which
+            // `idle_in_transaction_session_timeout` will not do, because the
+            // session is waiting on a lock rather than idle. A negative value
+            // is a syntax error on every keyed request. Neither is reachable
+            // by accident, and both are silent, so they are refused at startup.
+            require(claimWait >= MIN_CLAIM_WAIT) {
+                "testinbox.idempotency.claim-wait must be at least $MIN_CLAIM_WAIT (0 disables the timeout)"
+            }
+            require(claimWait <= MAX_CLAIM_WAIT) {
+                "testinbox.idempotency.claim-wait must not exceed $MAX_CLAIM_WAIT"
+            }
+            require(!retention.isNegative && !retention.isZero) {
+                "testinbox.idempotency.retention must be positive"
+            }
+            require(!sweepInterval.isNegative && !sweepInterval.isZero) {
+                "testinbox.idempotency.sweep-interval must be positive"
+            }
+        }
+
+        private companion object {
+            val MIN_CLAIM_WAIT: Duration = Duration.ofMillis(1)
+
+            /**
+             * A claim that waits longer than this holds a connection for longer
+             * than any client is still listening, so the refusal is cheaper.
+             */
+            val MAX_CLAIM_WAIT: Duration = Duration.ofSeconds(30)
+        }
+    }
 
     data class Bootstrap(
         /** Local/dev fixture API key. Hashed before storage; the plaintext never persists (ADR-010). */
