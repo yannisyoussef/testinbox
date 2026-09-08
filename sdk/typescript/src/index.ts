@@ -5,7 +5,7 @@
  * nothing under `internal/` is part of the public API surface.
  */
 
-export { TestInboxClient } from "./client";
+export { TestInboxClient, type ApiKeys } from "./client";
 export {
   TestInboxApiError,
   TestInboxQuotaExceededError,
@@ -21,6 +21,11 @@ export {
 } from "./errors";
 export type {
   AddressMode,
+  ApiKeyMetadata,
+  ApiKeyPage,
+  ApiScope,
+  CreateApiKeyOptions,
+  CreatedApiKey,
   AttachmentMeta,
   CreateInboxOptions,
   EmailHeader,

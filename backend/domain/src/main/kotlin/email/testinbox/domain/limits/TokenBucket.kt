@@ -32,6 +32,17 @@ enum class RateCategory {
      * Charged only after a recipient resolves, which keeps ADR-025 intact.
      */
     INGEST,
+
+    /**
+     * Credential lifecycle (ADR-032). Its own class rather than borrowing
+     * INBOX_CREATE, because the category name is reported to the client in the
+     * `429` body: telling a caller that minting a key exceeded an
+     * "INBOX_CREATE" limit would be a plain untruth in an error message.
+     *
+     * Tight on purpose. Legitimate use is a handful of calls during a rotation;
+     * a workload that mints credentials in a loop is a bug or an attack.
+     */
+    KEY_ADMIN,
 }
 
 /**

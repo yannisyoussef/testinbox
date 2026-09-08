@@ -17,6 +17,23 @@ Security posture (ADR-011, `docs/security/threat-model.md`):
   proxy (`/api/backend/[...path]`), which forwards it as
   `Authorization: Bearer` to the backend. Keys never appear in URLs.
 
+## API key management is deliberately not here
+
+TestInbox now has a managed credential lifecycle
+([ADR-032](../docs/adr/0032-api-key-credential-lifecycle.md)), and this UI does
+**not** expose it. That is a decision, not a gap.
+
+This page has no authenticated workspace context: its "login" is a pasted API
+key held in `sessionStorage`. A key-management screen built on that would have
+to render a freshly minted credential in the browser — the one value that is
+shown exactly once and can never be recovered — with nowhere safe to put it and
+every incentive for the page to persist it "so you do not lose it". That is
+precisely the insecure browser persistence the increment set out to avoid.
+
+Key management is therefore API-first (`docs/dev/api-keys.md`). A screen here
+becomes reasonable once the dashboard has real human login and a workspace
+session of its own, which ADR-010 scopes as separate work.
+
 ## Run
 
 Requires Node >= 20.

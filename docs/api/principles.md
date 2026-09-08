@@ -12,11 +12,17 @@
 4. **Authentication**: `Authorization: Bearer <api-key>` on every call except
    health checks. No cookie-based auth for the API surface (dashboard may use
    session cookies against its own backend-for-frontend, out of scope here).
-5. **Authorization**: API keys carry scopes (e.g., `inboxes:write`,
-   `messages:read`) plus an implicit workspace/project binding; every
+5. **Authorization**: API keys carry scopes (`inboxes:write`, `messages:read`,
+   `api-keys:manage`) plus an implicit workspace/project binding; every
    resource fetch is authorized against the caller's workspace, never by
    trusting a path parameter alone (see
-   [ADR-010](../adr/0010-authentication-api-keys.md)).
+   [ADR-010](../adr/0010-authentication-api-keys.md)). Keys are managed
+   credentials (implemented,
+   [ADR-032](../adr/0032-api-key-credential-lifecycle.md)): a workspace holds
+   many, each is independently revocable, and the plaintext is returned by
+   exactly one response — `POST /v1/api-keys` — and never stored, so it cannot
+   be shown again or recovered. A key can never grant a scope its creator does
+   not hold. Operating guide: [`docs/dev/api-keys.md`](../dev/api-keys.md).
 6. **Pagination**: cursor-based (`?cursor=...&limit=...`), never offset-based,
    for `GET /v1/inboxes/{id}/messages` and similar list endpoints — offset
    pagination is unstable under concurrent inserts, which is the common case

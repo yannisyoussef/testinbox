@@ -29,9 +29,39 @@
    inboxes it already holds is still accepted. The residual overshoot is
    bounded by the ingestion rate limit and the ADR-009 TTL cap. Quota state is
    deliberately invisible over SMTP — see below.
+
+   Credential administration (`POST`/`DELETE /v1/api-keys`) is charged against
+   its own `KEY_ADMIN` category rather than borrowing `INBOX_CREATE`. The
+   category name appears in the `429` body, so borrowing one would have put a
+   plain untruth in an error message; and the honest budget is much tighter,
+   because a legitimate rotation is a handful of calls and a workload that
+   mints credentials in a loop is a bug or an attack.
+
+   **Not implemented: per-key rate limiting.** Budgets remain workspace-scoped,
+   so minting keys still cannot increase a workspace's aggregate capacity —
+   that property is the one that matters and it holds. What is missing is the
+   ability to stop one runaway key exhausting its workspace's share while its
+   siblings starve. Doing it properly needs a second bucket dimension keyed by
+   credential, its own configuration surface, and a decision about how it
+   interacts with quotas; that is a policy change rather than a lifecycle one,
+   and half-building it would have produced a limit whose behaviour nobody
+   could state. It is a follow-up
+   ([ADR-032](../adr/0032-api-key-credential-lifecycle.md) Consequences), and
+   the shape it should take is: a per-key *safety* budget strictly below the
+   workspace budget, checked first, never additive — the same relationship
+   `ingestPerInbox` already has with the workspace-wide `INGEST` policy.
 5. **No reply/threading UI or API.** Even the debugging dashboard only
    displays received mail; it cannot be used to carry on a conversation.
-6. **Unknown-recipient mail is discarded immediately and never stored**
+6. **Credentials are managed, scoped and revocable individually**
+   ([ADR-032](../adr/0032-api-key-credential-lifecycle.md)). A workspace holds
+   many keys, so a leaked CI credential is revoked on its own rather than by
+   changing a secret every pipeline shares. Revocation takes effect on the next
+   request on every node — no authorization state is cached — and the
+   `api-keys:manage` scope is separate, so an ordinary CI credential cannot
+   mint or revoke others. Credential lifecycle events are audited on a
+   dedicated `testinbox.audit` logger, which never carries the credential, the
+   `Authorization` header or the stored verifier.
+7. **Unknown-recipient mail is discarded immediately and never stored**
    (metadata-only logging, [ADR-025](../adr/0025-unknown-recipient-handling.md))
    — no unauthenticated write path into storage, and no incentive to
    probe/enumerate addresses for a persistent-storage side effect

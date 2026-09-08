@@ -246,6 +246,21 @@ The synthetic credential is dedicated to synthetic testing — never a personal
 or administrative key — and the applications refuse to start with a bootstrap
 key shorter than 32 characters or one matching a known fixture.
 
+Since TI-002 that credential is a **managed** key (ADR-032) carrying only
+`inboxes:write` and `messages:read`, so it can be revoked on its own without
+touching anything else, and a leak does not hand over the ability to mint
+further credentials. The credential-lifecycle product synthetic needs a second,
+separate key with `api-keys:manage` (`TESTINBOX_ADMIN_API_KEY`); it is
+deliberately not required by the deployment gate, so the gate's runner never
+holds a key that can create keys. See
+[`docs/dev/api-keys.md`](api-keys.md) for both.
+
+**Staging's bootstrap credential is break-glass, not the working credential.**
+It stops authenticating the moment the workspace holds a managed key with
+`api-keys:manage`, and reopens only if every such key is revoked. Keep it
+configured — an environment without one has no recovery path if its last
+administrative key is lost.
+
 Secrets appear in **no** Dockerfile, compose file, workflow literal, container
 label, build arg, image, or log line. `DeploymentSafety` reports setting names
 and problems, never values; the migrator logs versions, never its JDBC URL; and

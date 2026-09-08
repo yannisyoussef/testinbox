@@ -282,6 +282,100 @@ components:
           type: integer
           description: Messages that became visible during the window with parseStatus FAILED.
       required: [status, elapsedMs]
+    ApiScope:
+      type: string
+      description: >
+        Permission carried by an API key (ADR-010, ADR-032 §9). Clients must
+        tolerate unknown future values.
+      enum: ["inboxes:write", "messages:read", "api-keys:manage"]
+    ApiKey:
+      type: object
+      description: >
+        API-key metadata. This schema **never** carries secret material — the
+        credential itself exists only in the `key` field of a CreatedApiKey,
+        returned exactly once (ADR-032 §4).
+      properties:
+        id: { type: string, format: uuid }
+        publicId:
+          type: string
+          description: >
+            Non-secret handle embedded in the credential. Safe to display, log
+            and quote in a support ticket; grants nothing on its own.
+        name:
+          type: string
+          description: Operator-chosen label, e.g. the CI system that holds it.
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/ApiScope" }
+        createdAt: { type: string, format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absent when the key does not expire.
+        revokedAt:
+          type: string
+          format: date-time
+          description: Absent while the key is usable. A revoked key is retained, never deleted.
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: >
+            Approximate — refreshed at most once per coalescing interval
+            (5 minutes) and may lag by that much after a burst (ADR-032 §7).
+            Intended for "is this still in use?", never as an audit record.
+        createdByApiKeyId:
+          type: string
+          format: uuid
+          description: The credential that minted this one; absent for the first key of a workspace.
+      required: [id, publicId, scopes, createdAt]
+    CreatedApiKey:
+      type: object
+      description: >
+        The one and only response that ever contains a credential. The
+        plaintext is not stored, so it cannot be shown again or recovered —
+        there is no "show key" endpoint and there can be no "recover key"
+        (ADR-032 §4). A lost key is replaced by minting a new one and revoking
+        the old.
+      properties:
+        apiKey: { $ref: "#/components/schemas/ApiKey" }
+        key:
+          type: string
+          description: >
+            The full credential, e.g. `ti_k1_<publicId>_<secret>_<check>`.
+            Present here and nowhere else, ever.
+          examples: ["ti_k1_a3f7q2mzk4x9b6dt_REDACTED-SECRET-COMPONENT-NEVER-SHOWN-IN-DOCS_7h2q"]
+      required: [apiKey, key]
+    ApiKeyPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ApiKey" }
+        nextCursor:
+          type: string
+          description: Opaque cursor; absent when no further page exists.
+      required: [items]
+    CreateApiKeyRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          description: Operator-chosen label. Not a secret and not unique.
+        scopes:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ApiScope" }
+          description: >
+            Least privilege — request only what the holder needs. A key cannot
+            grant a scope the caller does not itself hold, so a CI key can
+            never escalate. Immutable once created (ADR-032 §9).
+        expiresInSeconds:
+          type: integer
+          format: int64
+          minimum: 60
+          description: Optional lifetime. Omit for a key that does not expire.
+      required: [scopes]
 paths:
   /inboxes:
     post:
@@ -467,5 +561,124 @@ paths:
             application/octet-stream:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api-keys:
+    post:
+      operationId: createApiKey
+      summary: Mint a managed API key; the credential is returned exactly once.
+      description: >
+        Requires the `api-keys:manage` scope. The response is the only place
+        the credential ever appears — it is not stored and cannot be shown
+        again (ADR-032 §4). The new key belongs to the caller's own workspace
+        and project, which are derived from the authenticated credential and
+        can never be supplied by the client.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateApiKeyRequest" }
+      responses:
+        "201":
+          description: Key created; `key` carries the plaintext for the first and last time.
+          headers:
+            X-Correlation-Id: { $ref: "#/components/headers/correlationId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedApiKey" }
+        "400":
+          description: >
+            Unknown or empty scope
+            (`type: https://testinbox.email/problems/invalid-request`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403":
+          description: >
+            The caller lacks `api-keys:manage`
+            (`type: https://testinbox.email/problems/missing-scope`), or asked
+            for a scope it does not itself hold
+            (`type: https://testinbox.email/problems/scope-escalation`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      operationId: listApiKeys
+      summary: List the workspace's API keys, newest first. Never returns secret material.
+      description: >
+        Requires the `api-keys:manage` scope. Revoked keys are included — they
+        are retained for audit — and are identified by a present `revokedAt`.
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: A page of key metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKeyPage" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api-keys/{id}:
+    get:
+      operationId: getApiKey
+      summary: Metadata for one key. Never returns the secret.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Key metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKey" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404":
+          description: >
+            No such key **in the caller's workspace**. A key belonging to
+            another workspace is reported identically, so the endpoint cannot
+            be used to probe for credentials elsewhere.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    delete:
+      operationId: revokeApiKey
+      summary: Revoke a key. The row is retained; only its usability changes.
+      description: >
+        Requires the `api-keys:manage` scope. Revocation takes effect on the
+        next request on every node — no authorization state is cached
+        (ADR-032 §5). **Idempotent**: revoking an already-revoked key is `204`,
+        so a client retrying after a network failure is never told its own
+        successful call failed. Whether a key was already revoked is visible
+        in its `revokedAt`.
+
+        Revoking the last key holding `api-keys:manage` is permitted: refusing
+        it would forbid revoking a compromised administrative credential. The
+        break-glass path is the bootstrap credential, which reopens exactly
+        when no usable managed admin key remains (ADR-032 §8).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: The key is revoked and no longer authenticates.
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "429": { $ref: "#/components/responses/RateLimited" }

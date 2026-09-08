@@ -86,6 +86,42 @@ export interface MessagePageDto {
   [key: string]: unknown;
 }
 
+export interface ApiKeyDto {
+  id: string;
+  publicId: string;
+  name?: string | null;
+  scopes?: string[];
+  createdAt?: string;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+  lastUsedAt?: string | null;
+  createdByApiKeyId?: string | null;
+  [key: string]: unknown;
+}
+
+/**
+ * The one wire shape that carries a credential. The secret sits beside the
+ * metadata rather than inside it, which is what lets the public
+ * `ApiKeyMetadata` type have no field for it at all (ADR-032 §4).
+ */
+export interface CreatedApiKeyDto {
+  apiKey: ApiKeyDto;
+  key: string;
+  [key: string]: unknown;
+}
+
+export interface ApiKeyPageDto {
+  items?: ApiKeyDto[];
+  nextCursor?: string | null;
+  [key: string]: unknown;
+}
+
+export interface CreateApiKeyRequestDto {
+  name?: string;
+  scopes: string[];
+  expiresInSeconds?: number;
+}
+
 export interface HeaderMatcherDto {
   name: string;
   value?: string;
@@ -241,6 +277,29 @@ export class Transport {
       accept: "message/rfc822",
     });
     return new Uint8Array(await res.arrayBuffer());
+  }
+
+  async createApiKey(request: CreateApiKeyRequestDto): Promise<CreatedApiKeyDto> {
+    const res = await this.#request("POST", "/v1/api-keys", { body: request });
+    return (await res.json()) as CreatedApiKeyDto;
+  }
+
+  async listApiKeys(cursor?: string, limit?: number): Promise<ApiKeyPageDto> {
+    const params = new URLSearchParams();
+    if (cursor !== undefined) params.set("cursor", cursor);
+    if (limit !== undefined) params.set("limit", String(limit));
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    const res = await this.#request("GET", `/v1/api-keys${query}`, {});
+    return (await res.json()) as ApiKeyPageDto;
+  }
+
+  async getApiKey(id: string): Promise<ApiKeyDto> {
+    const res = await this.#request("GET", `/v1/api-keys/${encodeURIComponent(id)}`, {});
+    return (await res.json()) as ApiKeyDto;
+  }
+
+  async revokeApiKey(id: string): Promise<void> {
+    await this.#request("DELETE", `/v1/api-keys/${encodeURIComponent(id)}`, {});
   }
 
   async #request(method: string, path: string, options: RequestOptions): Promise<Response> {

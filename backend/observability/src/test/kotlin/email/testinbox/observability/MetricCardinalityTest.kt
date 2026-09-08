@@ -1,5 +1,7 @@
 package email.testinbox.observability
 
+import email.testinbox.application.port.ApiKeyOperation
+import email.testinbox.application.port.AuthOutcome
 import email.testinbox.application.port.BlobOperation
 import email.testinbox.application.port.BlobOutcome
 import email.testinbox.application.port.SmtpRejection
@@ -75,6 +77,11 @@ class MetricCardinalityTest {
         RateCategory.entries.forEach { limits.rateDecision(it, allowed = false) }
         QuotaDimension.entries.forEach { limits.quotaRejected(it) }
 
+        val apiKeys = MicrometerApiKeyMetrics(registry)
+        AuthOutcome.entries.forEach { apiKeys.authCompleted(it) }
+        ApiKeyOperation.entries.forEach { apiKeys.lifecycle(it) }
+        apiKeys.lastUsedPersisted()
+
         BuildInfoMetric(registry, service = "testinbox-api", gitSha = "abc1234", version = "0.1.0")
     }
 
@@ -89,8 +96,11 @@ class MetricCardinalityTest {
             "outcome" to
                 WaitOutcome.entries.map { it.name }.toSet() +
                 BlobOutcome.entries.map { it.name.lowercase() }.toSet() +
+                AuthOutcome.entries.map { it.name }.toSet() +
                 setOf("allowed", "rejected"),
-            "operation" to BlobOperation.entries.map { it.name }.toSet(),
+            "operation" to
+                BlobOperation.entries.map { it.name }.toSet() +
+                ApiKeyOperation.entries.map { it.name }.toSet(),
             "reason" to SmtpRejection.entries.map { it.name }.toSet(),
             "category" to RateCategory.entries.map { it.name }.toSet(),
             "quota" to QuotaDimension.entries.map { it.name }.toSet(),
@@ -125,7 +135,23 @@ class MetricCardinalityTest {
             }
         }
         // And the keys a reviewer would most expect to find by accident.
-        val forbidden = setOf("workspace", "workspace_id", "inbox", "inbox_id", "message_id", "api_key", "address", "correlation_id")
+        val forbidden =
+            setOf(
+                "workspace",
+                "workspace_id",
+                "inbox",
+                "inbox_id",
+                "message_id",
+                "api_key",
+                "api_key_id",
+                "public_id",
+                "key_id",
+                "scope",
+                "scopes",
+                "address",
+                "correlation_id",
+                "client_ip",
+            )
         registry.meters.flatMap { it.id.tags }.map { it.key }.forEach { key ->
             (key in forbidden) shouldBe false
         }
@@ -184,6 +210,9 @@ class MetricCardinalityTest {
             "testinbox_wait_slot_rejected_total",
             "testinbox_wait_slots_active",
             "testinbox_build",
+            "testinbox_api_key_auth_total",
+            "testinbox_api_key_lifecycle_total",
+            "testinbox_api_key_last_used_writes_total",
         ).forEach { name -> scrape shouldContain name }
     }
 

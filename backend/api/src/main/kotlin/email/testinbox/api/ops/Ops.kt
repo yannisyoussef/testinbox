@@ -11,6 +11,7 @@ import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.tenant.ApiKey
+import email.testinbox.domain.tenant.ApiKeyKind
 import email.testinbox.domain.tenant.ApiScope
 import email.testinbox.domain.tenant.Project
 import email.testinbox.domain.tenant.Workspace
@@ -79,9 +80,15 @@ class NotifierHealthIndicator(
 }
 
 /**
- * Local/dev fixture provisioning: creates a workspace/project and an API
- * key from configuration. Only the SHA-256 hash of the configured key is
- * stored; the plaintext value is never persisted or logged (ADR-010).
+ * Provisions the workspace, project and **bootstrap credential** from
+ * configuration. Only the SHA-256 hash of the configured token is stored; the
+ * plaintext is never persisted or logged (ADR-010).
+ *
+ * The credential is marked `BOOTSTRAP` and carries `api-keys:manage` so it can
+ * mint the first managed key — which is the act that closes its own window
+ * (ADR-032 §8). It authenticates only while the workspace holds no usable
+ * managed administrator, and that condition is re-evaluated on every request,
+ * so provisioning it here does not re-enable it after a handover.
  */
 @Component
 class BootstrapFixture(
@@ -102,12 +109,13 @@ class BootstrapFixture(
                 workspaceId = workspaceId,
                 projectId = projectId,
                 keyHash = Sha256.hex(plaintext),
-                scopes = setOf(ApiScope.INBOXES_WRITE, ApiScope.MESSAGES_READ),
+                scopes = setOf(ApiScope.INBOXES_WRITE, ApiScope.MESSAGES_READ, ApiScope.API_KEYS_MANAGE),
                 createdAt = now,
                 revokedAt = null,
+                kind = ApiKeyKind.BOOTSTRAP,
             ),
         )
-        log.info("bootstrap fixture provisioned (workspace={})", workspaceId)
+        log.info("bootstrap credential provisioned (workspace={})", workspaceId)
     }
 
     private companion object {

@@ -31,6 +31,14 @@ object E2eStack {
      */
     const val QUOTA_API_KEY = "tk_e2e_quota_key"
     const val RATE_API_KEY = "tk_e2e_rate_key"
+
+    /**
+     * Credential-lifecycle scenarios get their own node and workspace because
+     * minting a managed administrator is what closes the bootstrap window
+     * (ADR-032 §8). Doing it in the shared acceptance workspace would revoke
+     * [API_KEY] out from under every other test in this module.
+     */
+    const val KEY_ADMIN_BOOTSTRAP_KEY = "tk_e2e_key_admin_bootstrap"
     const val MAIL_DOMAIN = "testinbox.local"
 
     val postgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:16-alpine").also { it.start() }
@@ -134,6 +142,32 @@ object E2eStack {
 
     val rateApiBaseUrl: String =
         "http://localhost:${rateApiContext.environment.getProperty("local.server.port")!!}"
+
+    val keyAdminApiContext: ConfigurableApplicationContext =
+        restrictedNode(
+            KEY_ADMIN_BOOTSTRAP_KEY,
+            "00000000-0000-0000-0000-0000000000c1",
+            mapOf(
+                "testinbox.wait-window-cap" to "10s",
+                "testinbox.limits.max-active-inboxes" to "1000",
+                "testinbox.limits.inbox-create.capacity" to "1000",
+                "testinbox.limits.inbox-create.refill-per-second" to "1000",
+                "testinbox.limits.wait.capacity" to "1000",
+                "testinbox.limits.wait.refill-per-second" to "1000",
+                "testinbox.limits.ingest.capacity" to "1000",
+                "testinbox.limits.ingest.refill-per-second" to "1000",
+                "testinbox.limits.ingest-per-inbox.capacity" to "1000",
+                "testinbox.limits.ingest-per-inbox.refill-per-second" to "1000",
+                // The shipped KEY_ADMIN budget is deliberately tight; a
+                // rotation rehearsal is a handful of calls but the fixtures
+                // around it are not.
+                "testinbox.limits.key-admin.capacity" to "1000",
+                "testinbox.limits.key-admin.refill-per-second" to "1000",
+            ),
+        )
+
+    val keyAdminApiBaseUrl: String =
+        "http://localhost:${keyAdminApiContext.environment.getProperty("local.server.port")!!}"
 
     val ingestionContext: ConfigurableApplicationContext =
         SpringApplicationBuilder(IngestionApplication::class.java)

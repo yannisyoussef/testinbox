@@ -17,6 +17,72 @@ export type InboxState = "ACTIVE" | "EXPIRING" | "EXPIRED" | "DELETED" | (string
 /** MIME parse outcome for a message. Unknown future values are passed through. */
 export type ParseStatus = "OK" | "FAILED" | (string & {});
 
+/**
+ * Permission carried by an API key (ADR-032 §9). Unknown future values are
+ * passed through rather than rejected, so a key granted a scope this SDK
+ * version predates still round-trips.
+ */
+export type ApiScope = "inboxes:write" | "messages:read" | "api-keys:manage" | (string & {});
+
+/**
+ * Metadata about an API key.
+ *
+ * There is deliberately **no** field here that could carry the credential —
+ * not an optional one, not a nullable one. The secret exists only on
+ * {@link CreatedApiKey}, and only for the single call that mints it
+ * (ADR-032 §4). Code holding an `ApiKeyMetadata` cannot log, serialise or
+ * transmit a key, because it does not have one.
+ */
+export interface ApiKeyMetadata {
+  id: string;
+  /** Non-secret handle embedded in the credential; safe to display and log. */
+  publicId: string;
+  name?: string;
+  scopes: ApiScope[];
+  createdAt: Date;
+  /** Absent when the key does not expire. */
+  expiresAt?: Date;
+  /** Absent while the key is usable. Revoked keys are retained, never deleted. */
+  revokedAt?: Date;
+  /**
+   * Approximate — refreshed at most once per coalescing interval and may lag
+   * by that much after a burst (ADR-032 §7). For "is this still in use?",
+   * never as an authorization input.
+   */
+  lastUsedAt?: Date;
+  createdByApiKeyId?: string;
+}
+
+/**
+ * The result of minting a key.
+ *
+ * `secret` is the only copy that will ever exist: the server does not store
+ * it, so it cannot be shown again or recovered. Hand it to whatever needs it
+ * and drop it — a lost key is replaced by minting a new one and revoking the
+ * old.
+ */
+export interface CreatedApiKey {
+  apiKey: ApiKeyMetadata;
+  secret: string;
+}
+
+/** One page of key metadata. */
+export interface ApiKeyPage {
+  items: ApiKeyMetadata[];
+  /** Opaque; absent when no further page exists. */
+  nextCursor?: string;
+}
+
+/** Options for `TestInboxClient#apiKeys.create`. */
+export interface CreateApiKeyOptions {
+  /** Least privilege — request only what the holder needs. Immutable once created. */
+  scopes: ApiScope[];
+  /** Operator-chosen label, e.g. the CI system that will hold it. */
+  name?: string;
+  /** Optional lifetime; omit for a key that does not expire. Minimum 60 seconds. */
+  expiresInSeconds?: number;
+}
+
 /** A single email header (headers can repeat; order preserved). */
 export interface EmailHeader {
   name: string;

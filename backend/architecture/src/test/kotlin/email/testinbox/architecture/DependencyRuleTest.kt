@@ -204,6 +204,7 @@ class DependencyRuleTest {
                 email.testinbox.application.port.NotifierMetrics::class.java,
                 email.testinbox.application.port.BlobStoreMetrics::class.java,
                 email.testinbox.application.port.SmtpMetrics::class.java,
+                email.testinbox.application.port.ApiKeyMetrics::class.java,
             )
         val allowed =
             setOf(
@@ -297,5 +298,91 @@ class DependencyRuleTest {
                         target.packageName.startsWith("org.subethamail")
                 },
             ).check(allClasses)
+    }
+
+    @Test
+    fun `the plaintext credential is rendered in exactly one place (ADR-032 §4)`() {
+        // "Returned exactly once" is only true if exactly one call site can
+        // produce the string at all. Any other caller — a log line, an error
+        // message, a debug endpoint — would be a leak that compiles.
+        val renderers =
+            allClasses
+                .flatMap { it.methods + it.constructors }
+                .filter { member ->
+                    member.callsFromSelf.any { call ->
+                        call.targetOwner.name == email.testinbox.domain.tenant.ApiKeyCredential::class.java.name &&
+                            call.name == "render"
+                    }
+                }.map { it.owner.name }
+                .toSet()
+
+        // The DTO assembly in the controller, and the format object itself.
+        val allowed =
+            setOf(
+                "email.testinbox.api.web.ApiKeyController",
+                email.testinbox.domain.tenant.ApiKeyCredential::class.java.name,
+            )
+        // Guard the guard: if call resolution silently found nothing, every
+        // assertion below would pass while proving nothing at all.
+        check("email.testinbox.api.web.ApiKeyController" in renderers) {
+            "no caller of ApiKeyCredential.render() was found — this rule is not actually checking anything"
+        }
+        val unexpected = renderers - allowed
+        check(unexpected.isEmpty()) {
+            "$unexpected renders a plaintext API credential. Only the single 201 response may (ADR-032 §4)."
+        }
+    }
+
+    @Test
+    fun `no adapter mints credentials behind the use case's back (ADR-032)`() {
+        // Minting is where provenance, scope checks, the audit record and the
+        // metric all happen. A second minting path would be a credential with
+        // no audit trail.
+        val minters =
+            allClasses
+                .flatMap { it.methods + it.constructors }
+                .filter { member ->
+                    member.callsFromSelf.any { call ->
+                        call.targetOwner.name == email.testinbox.domain.tenant.ApiKeyFormat::class.java.name &&
+                            call.name == "generate"
+                    }
+                }.map { it.owner.name }
+                .toSet()
+
+        check(email.testinbox.application.usecase.CreateApiKey::class.java.name in minters) {
+            "no caller of ApiKeyFormat.generate() was found — this rule is not actually checking anything"
+        }
+        val unexpected =
+            minters.filterNot {
+                it == email.testinbox.application.usecase.CreateApiKey::class.java.name ||
+                    it.startsWith("email.testinbox.domain.tenant.")
+            }
+        check(unexpected.isEmpty()) {
+            "$unexpected generates API credentials directly. Minting belongs to CreateApiKey, which is " +
+                "what records provenance, enforces scopes and writes the audit event (ADR-032)."
+        }
+    }
+
+    @Test
+    fun `audit events cannot carry credential material (TI-002 §14)`() {
+        // The same argument as the metric-port rule, for the other sink: the
+        // guarantee is structural — there is no field to put a secret in — and
+        // this is what keeps it structural.
+        val forbidden = listOf("secret", "hash", "verifier", "token", "credential", "password")
+        val events =
+            listOf(
+                email.testinbox.application.port.AuditEvent.ApiKeyCreated::class.java,
+                email.testinbox.application.port.AuditEvent.ApiKeyRevoked::class.java,
+                email.testinbox.application.port.AuditEvent.BootstrapSuperseded::class.java,
+            )
+        for (event in events) {
+            for (field in event.declaredFields.filterNot { it.isSynthetic }) {
+                val name = field.name.lowercase()
+                check(forbidden.none { name.endsWith(it) }) {
+                    "${event.simpleName}.${field.name} looks like credential material. Audit events carry " +
+                        "identifiers an operator can act on, never anything that grants access (TI-002 §14)."
+                }
+            }
+        }
     }
 }

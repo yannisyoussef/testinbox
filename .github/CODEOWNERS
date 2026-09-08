@@ -21,3 +21,17 @@
 # Accepted ADRs are authoritative (CLAUDE.md); they are amended by new ADRs,
 # not edited in passing.
 /docs/adr/                                            @yannisyoussef
+
+# The credential path (ADR-032). A change here can weaken authentication in
+# ways no gate can see: the format's entropy claim, the constant-time
+# comparison, the bootstrap window that closes itself, or the single response
+# allowed to carry a plaintext credential. The tests assert today's behaviour;
+# only a human can judge whether a change to that behaviour is intended.
+/backend/domain/src/main/kotlin/email/testinbox/domain/tenant/     @yannisyoussef
+/backend/application/src/main/kotlin/email/testinbox/application/usecase/AuthenticateApiKey.kt @yannisyoussef
+/backend/application/src/main/kotlin/email/testinbox/application/usecase/ApiKeyLifecycle.kt    @yannisyoussef
+/backend/api/src/main/kotlin/email/testinbox/api/auth/             @yannisyoussef
+
+# The hand-authored REST contract is the source of truth (ADR-022); the
+# compatibility gate catches breaking shapes, not breaking meanings.
+/backend/api/contract/openapi.yaml                                 @yannisyoussef

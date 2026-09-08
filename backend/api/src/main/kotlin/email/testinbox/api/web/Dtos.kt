@@ -1,6 +1,8 @@
 package email.testinbox.api.web
 
+import email.testinbox.application.port.ApiKeyCursor
 import email.testinbox.application.port.MessageCursor
+import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.message.Message
@@ -150,24 +152,83 @@ data class WaitResultDto(
     val parseFailedCount: Int?,
 )
 
-/** Opaque cursor: base64url of `<epochMicros>:<messageId>`. */
+/** Opaque cursor: base64url of `<epochMicros>:<id>`. */
 object Cursors {
     fun encode(
-        receivedAt: Instant,
+        at: Instant,
         id: UUID,
     ): String {
-        val micros = receivedAt.epochSecond * 1_000_000 + receivedAt.nano / 1_000
+        val micros = at.epochSecond * 1_000_000 + at.nano / 1_000
         return Base64.getUrlEncoder().withoutPadding().encodeToString("$micros:$id".toByteArray())
     }
 
-    fun decode(cursor: String): MessageCursor? =
+    private fun decodePosition(cursor: String): Pair<Instant, UUID>? =
         runCatching {
             val decoded = String(Base64.getUrlDecoder().decode(cursor))
             val (micros, id) = decoded.split(':', limit = 2)
             val microsLong = micros.toLong()
-            MessageCursor(
-                receivedAt = Instant.ofEpochSecond(microsLong / 1_000_000, (microsLong % 1_000_000) * 1_000),
-                id = MessageId(UUID.fromString(id)),
-            )
+            Instant.ofEpochSecond(microsLong / 1_000_000, (microsLong % 1_000_000) * 1_000) to UUID.fromString(id)
         }.getOrNull()
+
+    fun decode(cursor: String): MessageCursor? =
+        decodePosition(cursor)?.let { (at, id) -> MessageCursor(receivedAt = at, id = MessageId(id)) }
+
+    fun decodeApiKey(cursor: String): ApiKeyCursor? =
+        decodePosition(cursor)?.let { (at, id) -> ApiKeyCursor(createdAt = at, id = ApiKeyId(id)) }
 }
+
+data class CreateApiKeyRequest(
+    val name: String? = null,
+    val scopes: List<String>? = null,
+    val expiresInSeconds: Long? = null,
+)
+
+/**
+ * API-key metadata. There is deliberately **no** secret-bearing field on this
+ * type — not an optional one, not a nullable one. `ApiKeySerializationTest`
+ * asserts that property by reflection, so a field added later that happens to
+ * be named like a credential fails the build rather than shipping.
+ */
+data class ApiKeyDto(
+    val id: UUID,
+    val publicId: String,
+    val name: String?,
+    val scopes: List<String>,
+    val createdAt: Instant,
+    val expiresAt: Instant?,
+    val revokedAt: Instant?,
+    val lastUsedAt: Instant?,
+    val createdByApiKeyId: UUID?,
+) {
+    companion object {
+        fun from(key: email.testinbox.domain.tenant.ApiKey): ApiKeyDto =
+            ApiKeyDto(
+                id = key.id.value,
+                // Managed keys always carry one; the management API never
+                // returns a bootstrap row (ADR-032 §8).
+                publicId = key.publicId.orEmpty(),
+                name = key.name,
+                scopes = key.scopes.map { it.wire }.sorted(),
+                createdAt = key.createdAt,
+                expiresAt = key.expiresAt,
+                revokedAt = key.revokedAt,
+                lastUsedAt = key.lastUsedAt,
+                createdByApiKeyId = key.createdByApiKeyId?.value,
+            )
+    }
+}
+
+/**
+ * The one and only representation that carries a credential (ADR-032 §4).
+ * The secret sits in its own field beside the metadata rather than inside it,
+ * so "does this response contain a key?" is answerable by looking at the type.
+ */
+data class CreatedApiKeyDto(
+    val apiKey: ApiKeyDto,
+    val key: String,
+)
+
+data class ApiKeyPageDto(
+    val items: List<ApiKeyDto>,
+    val nextCursor: String?,
+)

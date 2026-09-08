@@ -48,6 +48,21 @@ export const config = Object.freeze({
 });
 
 /**
+ * The key-administration credential, resolved lazily.
+ *
+ * Deliberately NOT part of `config`: the deployment gate must not require it.
+ * The gate's own credential stays least-privilege — `inboxes:write` and
+ * `messages:read` — because it lives in an automated runner, and a credential
+ * that can mint credentials is a much larger thing to leave there. The product
+ * suite that exercises the lifecycle asks for this one only when it runs, and
+ * fails loudly rather than skipping if it is absent: a suite that silently
+ * skips is a suite nobody notices has stopped running.
+ */
+export function adminApiKey() {
+  return required("TESTINBOX_ADMIN_API_KEY");
+}
+
+/**
  * No opt-out. A plaintext run would send `TESTINBOX_API_KEY` in the clear while
  * proving nothing about the TLS termination it is supposed to be exercising —
  * and an escape hatch for that is the kind that ends up set in CI.

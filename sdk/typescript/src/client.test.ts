@@ -583,3 +583,129 @@ describe("messages", () => {
     expect(init.method).toBe("DELETE");
   });
 });
+
+describe("api key lifecycle", () => {
+  const KEY_ID = "33333333-3333-4333-8333-333333333333";
+  const PLAINTEXT =
+    "ti_k1_abcdefghijklmnop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_bbbb";
+
+  const metadataDto = {
+    id: KEY_ID,
+    publicId: "abcdefghijklmnop",
+    name: "github-ci",
+    scopes: ["inboxes:write"],
+    createdAt: "2026-09-08T12:00:00Z",
+    expiresAt: null,
+    revokedAt: null,
+    lastUsedAt: null,
+    createdByApiKeyId: "44444444-4444-4444-8444-444444444444",
+    // A newer server may send fields this SDK predates.
+    someFutureField: { nested: true },
+  };
+
+  it("returns the credential once, on a type separate from the metadata", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { apiKey: metadataDto, key: PLAINTEXT }));
+
+    const created = await client().apiKeys.create({
+      scopes: ["inboxes:write"],
+      name: "github-ci",
+    });
+
+    expect(created.secret).toBe(PLAINTEXT);
+    expect(created.apiKey.publicId).toBe("abcdefghijklmnop");
+    // The metadata half must not carry the credential in any form: this is
+    // what makes it safe to log, store or hand around (ADR-032 §4).
+    expect(JSON.stringify(created.apiKey)).not.toContain(PLAINTEXT);
+    expect(JSON.stringify(created.apiKey)).not.toContain(PLAINTEXT.split("_")[3]);
+  });
+
+  it("maps metadata field by field, so an unexpected server field cannot land on it", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        ...metadataDto,
+        // Exactly the accident the explicit mapping exists to prevent: a
+        // spread would have copied this straight onto a type documented as
+        // never holding secret material.
+        secret: "SHOULD-NEVER-APPEAR",
+        keyHash: "SHOULD-NEVER-APPEAR-EITHER",
+      }),
+    );
+
+    const metadata = await client().apiKeys.get(KEY_ID);
+
+    expect(JSON.stringify(metadata)).not.toContain("SHOULD-NEVER-APPEAR");
+    expect(Object.keys(metadata).sort()).toEqual(
+      ["createdAt", "createdByApiKeyId", "id", "name", "publicId", "scopes"].sort(),
+    );
+  });
+
+  it("passes an unknown future scope through instead of rejecting it", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, { ...metadataDto, scopes: ["messages:read", "inboxes:delete"] }),
+    );
+    const metadata = await client().apiKeys.get(KEY_ID);
+    expect(metadata.scopes).toEqual(["messages:read", "inboxes:delete"]);
+  });
+
+  it("parses timestamps and reports revocation", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        ...metadataDto,
+        revokedAt: "2026-09-08T13:00:00Z",
+        lastUsedAt: "2026-09-08T12:30:00Z",
+        expiresAt: "2026-09-09T12:00:00Z",
+      }),
+    );
+    const metadata = await client().apiKeys.get(KEY_ID);
+    expect(metadata.revokedAt?.toISOString()).toBe("2026-09-08T13:00:00.000Z");
+    expect(metadata.lastUsedAt?.toISOString()).toBe("2026-09-08T12:30:00.000Z");
+    expect(metadata.expiresAt?.toISOString()).toBe("2026-09-09T12:00:00.000Z");
+  });
+
+  it("pages the listing and omits nextCursor when there is none", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200, { items: [metadataDto], nextCursor: "cur-1" }))
+      .mockResolvedValueOnce(jsonResponse(200, { items: [metadataDto], nextCursor: null }));
+
+    const first = await client().apiKeys.list({ limit: 1 });
+    expect(first.nextCursor).toBe("cur-1");
+    const second = await client().apiKeys.list({ cursor: first.nextCursor, limit: 1 });
+    expect(second.nextCursor).toBeUndefined();
+
+    const [url] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/v1/api-keys?cursor=cur-1&limit=1`);
+  });
+
+  it("revokes with DELETE and tolerates an empty 204", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await client().apiKeys.revoke(KEY_ID);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/v1/api-keys/${KEY_ID}`);
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("surfaces a missing management scope as a typed forbidden error", async () => {
+    fetchMock.mockResolvedValueOnce(problemResponse(403));
+    // Typed, so a caller distinguishes "wrong credential" from "this
+    // credential may not do that" without parsing strings.
+    await expect(client().apiKeys.list()).rejects.toBeInstanceOf(TestInboxForbiddenError);
+  });
+
+  it("surfaces a revoked credential as an auth error, not a transport failure", async () => {
+    fetchMock.mockResolvedValueOnce(problemResponse(401));
+    await expect(client().apiKeys.list()).rejects.toBeInstanceOf(TestInboxAuthError);
+  });
+
+  it("sends the caller's own credential as a bearer token and never in the body", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { apiKey: metadataDto, key: PLAINTEXT }));
+    await client().apiKeys.create({ scopes: ["api-keys:manage"], expiresInSeconds: 3600 });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${API_KEY}`);
+    expect(init.body).not.toContain(API_KEY);
+    expect(JSON.parse(init.body as string)).toEqual({
+      scopes: ["api-keys:manage"],
+      expiresInSeconds: 3600,
+    });
+  });
+});

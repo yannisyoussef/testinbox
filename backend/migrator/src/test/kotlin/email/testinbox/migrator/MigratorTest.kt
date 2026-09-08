@@ -47,6 +47,30 @@ class MigratorTest {
     private fun jdbcFor(url: String) =
         JdbcClient.create(SimpleDriverDataSource(org.postgresql.Driver(), url, postgres.username, postgres.password))
 
+    /**
+     * Highest migration version this artifact actually bundles, read from the
+     * classpath resources rather than hardcoded.
+     *
+     * Two tests used a literal `3` and a literal `'4'`; the first had to be
+     * edited with every migration, and the second — which fabricates a *failed*
+     * history row — silently collided with the real V4 the moment one existed.
+     * Deriving both removes a recurring edit and a booby trap.
+     *
+     * Read as resources, not via `BundledMigrations`: this deployable must not
+     * reference a single class from `persistence` (ADR-029).
+     */
+    private fun bundledVersions(): List<Int> =
+        org.springframework.core.io.support
+            .PathMatchingResourcePatternResolver()
+            .getResources("classpath*:db/migration/V*__*.sql")
+            .mapNotNull {
+                it.filename
+                    ?.removePrefix("V")
+                    ?.substringBefore("__")
+                    ?.toIntOrNull()
+            }.sorted()
+            .also { check(it.isNotEmpty()) { "no bundled migrations found — this test would prove nothing" } }
+
     private fun runMigrator(
         url: String,
         vararg extra: String,
@@ -68,7 +92,7 @@ class MigratorTest {
         jdbc
             .sql("SELECT max(version::int) FROM flyway_schema_history WHERE success AND version IS NOT NULL")
             .query(Int::class.java)
-            .single() shouldBe 3
+            .single() shouldBe bundledVersions().max()
         // The migrator is the sole executor (ADR-029 §1): the tables the
         // application needs exist afterwards, without any application running.
         jdbc.sql("SELECT to_regclass('public.message') IS NOT NULL").query(Boolean::class.java).single() shouldBe true
@@ -114,14 +138,19 @@ class MigratorTest {
     fun `a failed migration recorded in history exits non-zero`() {
         val url = freshDatabaseUrl()
         runMigrator(url).use { reportOutcome(it.getBean(Flyway::class.java)) shouldBe 0 }
+        // One past everything this artifact bundles, so the fabricated failure
+        // can never collide with a real migration added later.
+        val fabricated = bundledVersions().max() + 1
         jdbcFor(url)
             .sql(
                 """
                 INSERT INTO flyway_schema_history
                     (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success)
-                VALUES (99, '4', 'broken', 'SQL', 'V4__broken.sql', 0, 'test', 1, false)
+                VALUES (99, :version, 'broken', 'SQL', :script, 0, 'test', 1, false)
                 """.trimIndent(),
-            ).update()
+            ).param("version", fabricated.toString())
+            .param("script", "V${fabricated}__broken.sql")
+            .update()
         runMigrator(url, "--spring.flyway.validate-on-migrate=false", "--spring.flyway.ignore-migration-patterns=*:*").use {
             reportOutcome(it.getBean(Flyway::class.java)) shouldBe EXIT_FAILED_HISTORY
         }

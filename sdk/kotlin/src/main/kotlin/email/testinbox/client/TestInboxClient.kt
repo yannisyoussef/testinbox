@@ -1,5 +1,7 @@
 package email.testinbox.client
 
+import email.testinbox.client.internal.transport.ApiKeyDto
+import email.testinbox.client.internal.transport.CreateApiKeyRequestDto
 import email.testinbox.client.internal.transport.CreateInboxRequestDto
 import email.testinbox.client.internal.transport.HeaderMatcherDto
 import email.testinbox.client.internal.transport.InboxDto
@@ -66,6 +68,76 @@ class MessageMatcher private constructor(
         @JvmStatic val ANY: MessageMatcher = Builder().build()
     }
 }
+
+/**
+ * Permission carried by an API key. Modelled as a value class over the wire
+ * string rather than an enum so a key granted a scope this SDK version does
+ * not know about still round-trips instead of failing to deserialise.
+ */
+@JvmInline
+value class ApiScope(val wire: String) {
+    override fun toString(): String = wire
+
+    companion object {
+        // Not @JvmField: a value-class property cannot be one. Java callers
+        // reach these through the generated static getters.
+        @JvmStatic val INBOXES_WRITE: ApiScope = ApiScope("inboxes:write")
+
+        @JvmStatic val MESSAGES_READ: ApiScope = ApiScope("messages:read")
+
+        @JvmStatic val API_KEYS_MANAGE: ApiScope = ApiScope("api-keys:manage")
+    }
+}
+
+/**
+ * Metadata about an API key.
+ *
+ * There is no property here that could hold the credential — not an optional
+ * one, not a nullable one. The secret exists only on [CreatedApiKey], and only
+ * for the one call that mints it (ADR-032 §4). A caller who has an
+ * [ApiKeyMetadata] cannot accidentally log, serialise or transmit a key,
+ * because it does not have one.
+ */
+class ApiKeyMetadata internal constructor(dto: ApiKeyDto) {
+    val id: String = dto.id
+
+    /** Non-secret handle, safe to display and to quote in a support ticket. */
+    val publicId: String = dto.publicId
+    val name: String? = dto.name
+    val scopes: List<ApiScope> = dto.scopes.map(::ApiScope)
+    val createdAt: Instant? = dto.createdAt?.let(Instant::parse)
+    val expiresAt: Instant? = dto.expiresAt?.let(Instant::parse)
+    val revokedAt: Instant? = dto.revokedAt?.let(Instant::parse)
+
+    /** Approximate — see ADR-032 §7. Never use it as an authorization input. */
+    val lastUsedAt: Instant? = dto.lastUsedAt?.let(Instant::parse)
+    val createdByApiKeyId: String? = dto.createdByApiKeyId
+
+    val isRevoked: Boolean get() = revokedAt != null
+
+    override fun toString(): String = "ApiKeyMetadata(id=$id, publicId=$publicId, name=$name, scopes=$scopes)"
+}
+
+/**
+ * The result of minting a key: the metadata, plus the credential — which the
+ * server will never return again and does not store.
+ *
+ * [secret] is deliberately not part of [toString], so a log line, a test
+ * failure message or a debugger dump of this object cannot leak it. Read it
+ * once, hand it to whatever needs it, and drop it.
+ */
+class CreatedApiKey internal constructor(
+    val apiKey: ApiKeyMetadata,
+    val secret: String,
+) {
+    override fun toString(): String = "CreatedApiKey(apiKey=$apiKey, secret=<redacted>)"
+}
+
+/** One page of key metadata. */
+class ApiKeyPage internal constructor(
+    val items: List<ApiKeyMetadata>,
+    val nextCursor: String?,
+)
 
 data class EmailLink(val href: String, val text: String?)
 
@@ -224,7 +296,75 @@ class TestInboxClient
 
         fun getMessageBlocking(id: String): Message = runBlocking { getMessage(id) }
 
+        /**
+         * Credential administration. Requires a key holding
+         * `api-keys:manage`; an ordinary CI credential deliberately does not
+         * carry it and receives [TestInboxForbiddenException] here.
+         */
+        val apiKeys: ApiKeys = ApiKeys(transport)
+
         companion object {
             const val DEFAULT_BASE_URL: String = "https://api.testinbox.email"
         }
     }
+
+/**
+ * The key-management surface (ADR-032).
+ *
+ * There is no `rotate` call, and that is a design decision rather than an
+ * omission: rotation's hard part is the interval during which the client has
+ * not yet picked up the new credential, and no server call can shorten it. The
+ * correct sequence is [create] → deploy → verify → [revoke], which this API
+ * expresses directly.
+ */
+class ApiKeys internal constructor(
+    private val transport: email.testinbox.client.internal.transport.Transport,
+) {
+    /**
+     * Mints a key. The returned [CreatedApiKey.secret] is the only copy that
+     * will ever exist — it is not stored and cannot be retrieved again.
+     */
+    @JvmOverloads
+    suspend fun create(
+        scopes: List<ApiScope>,
+        name: String? = null,
+        expiresIn: Duration? = null,
+    ): CreatedApiKey {
+        val dto =
+            transport.createApiKey(
+                CreateApiKeyRequestDto(
+                    name = name,
+                    scopes = scopes.map { it.wire },
+                    expiresInSeconds = expiresIn?.seconds,
+                ),
+            )
+        return CreatedApiKey(ApiKeyMetadata(dto.apiKey), dto.key)
+    }
+
+    @JvmOverloads
+    fun createBlocking(
+        scopes: List<ApiScope>,
+        name: String? = null,
+        expiresIn: Duration? = null,
+    ): CreatedApiKey = runBlocking { create(scopes, name, expiresIn) }
+
+    @JvmOverloads
+    suspend fun list(cursor: String? = null, limit: Int? = null): ApiKeyPage {
+        val page = transport.listApiKeys(cursor, limit)
+        return ApiKeyPage(page.items.map(::ApiKeyMetadata), page.nextCursor)
+    }
+
+    @JvmOverloads
+    fun listBlocking(cursor: String? = null, limit: Int? = null): ApiKeyPage = runBlocking { list(cursor, limit) }
+
+    suspend fun get(id: String): ApiKeyMetadata = ApiKeyMetadata(transport.getApiKey(id))
+
+    fun getBlocking(id: String): ApiKeyMetadata = runBlocking { get(id) }
+
+    /** Idempotent: revoking an already-revoked key succeeds. */
+    suspend fun revoke(id: String) {
+        transport.revokeApiKey(id)
+    }
+
+    fun revokeBlocking(id: String): Unit = runBlocking { revoke(id) }
+}
