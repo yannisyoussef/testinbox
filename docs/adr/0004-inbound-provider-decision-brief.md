@@ -161,10 +161,19 @@ answer**, and it is a real design task, not a detail.
 
 ### Patching and monitoring burden
 
-Real and ongoing: Postfix + OS security updates on an Internet-facing daemon,
-queue-depth and disk alerting, rDNS validity, TLS certificate for STARTTLS, and
-log shipping off-host. Estimate a few hours to build and under an hour a month
-to run — but it is a *new class* of thing to run, not more of an existing one.
+Real and ongoing: queue-depth and disk alerting, rDNS validity, TLS certificate
+for STARTTLS, and log shipping off-host.
+
+**Correction to an earlier draft of this brief:** it asserted the estate has no
+automated patching. It does — `unattended-upgrades` is installed and enabled on
+both audited hosts (`Update-Package-Lists "1"`, `Unattended-Upgrade "1"`), so an
+edge built to the same standard inherits automatic security updates rather than
+needing a new process. That materially reduces the "unpatched internet-facing
+daemon" risk this brief weighs in §14.
+
+What remains genuinely new is not patching but *mail* operations: queue health,
+rDNS, blocklist watch. Estimate a few hours to build and under an hour a month
+to run.
 
 ---
 
@@ -427,26 +436,43 @@ that receives strangers' email is acceptable to this business.
 
 ---
 
-## 11. Ops handoff — questions Ops must answer, not guess
+## 11. Ops answers
 
-These gate the Postfix option. **Do not assume any of them.**
+**Corrected framing.** An earlier draft wrote this section as questions *for*
+Ops. Ops is the author of this brief, so they are answered here. Only the items
+marked **OWNER** are genuinely outside Ops' authority; everything else was
+determined against the live estate.
 
-| # | Question | Why it decides something |
+| # | Question | Answer |
 |---|---|---|
-| 1 | Is a dedicated SMTP-edge VPS available/approved (budget, provider, region)? | Postfix is NO-GO without it — colocating on OVH is refused in §1 |
-| 2 | Does the provider permit **inbound** port 25, and is it blocked by default? | Many providers block **outbound** 25 by default and permit inbound; the two are separate policies and both must be confirmed |
-| 3 | Can we set **reverse DNS (PTR)** for the edge IP? | Some senders reject or downgrade mail from hosts without matching rDNS |
-| 4 | Is the IP clean on major blocklists, and is its history known? | A recycled IP can arrive pre-blocked |
-| 5 | What DDoS protection exists at the provider for `:25`? | Cloudflare does not proxy SMTP; the edge is directly exposed |
-| 6 | How is the edge patched, and on what cadence? | Internet-facing daemon; the estate has no automated patching today |
-| 7 | Can edge logs ship off-host to the existing Loki? | A compromised edge must not own its own evidence |
-| 8 | Is WireGuard (or mTLS) between edge and OVH acceptable, and who operates it? | The trust boundary of the whole design |
-| 9 | Does OVH permit the inbound tunnel port, and does `DOCKER-USER` need a rule? | The known estate gap — the firewall must actually apply |
-| 10 | Spool/backup policy for the edge — is a transient queue acceptable unbacked-up? | Consistent with the deliberate no-backup stance for message content |
-| 11 | Who is on call for a mail-flow outage, and what is the expected response? | Mail failures are silent to users; nobody notices without monitoring |
-| 12 | Is there an existing AWS account, or would SES require creating one? | If SES needs a new account, its operational cost is materially higher than §8 implies |
+| 1 | Dedicated SMTP-edge VPS available? | **No spare host exists.** The estate is Contabo US `217.216.48.97` (shared control plane: GitLab, registry, monitoring, Vault, Keycloak, nkama-prod, TestInbox staging), Contabo EU `62.169.27.217` (privileged DinD runner — excluded by the brief), OVH `149.202.83.201` (production). A fourth host must be purchased. **OWNER** — procurement |
+| 2 | Inbound port 25 permitted? | **Outbound 25 verified open** from both Contabo US and OVH (a public MX returned a `220` banner). **Inbound is a separate provider policy and is not determinable for a host that does not exist yet.** Testing it on an existing host would mean opening `:25` on the control-plane or production machine, which is not a measurement worth that exposure. **Confirm with the provider at purchase, before committing.** |
+| 3 | Reverse DNS control? | Current PTRs are provider defaults — `vmi2932906.contaboserver.net`, `ns3019390.ip-149-202-83.eu`. Both Contabo and OVH expose PTR editing in their control panels, so this is **Ops-controllable once the host exists**. |
+| 4 | Are the IPs clean on blocklists? | **Both estate IPs are not listed** on `zen.spamhaus.org`, `bl.spamcop.net` or `b.barracudacentral.org`. *Method note:* an initial check via a public resolver returned `127.255.255.254`, which is Spamhaus's **query-refused** code, not a listing — public resolvers are blocked. Re-run against a non-public resolver. **The new edge IP must be re-checked at purchase**: a recycled IP can arrive pre-listed, and that is a reason to reject an allocation. |
+| 5 | DDoS protection for `:25`? | **Cloudflare cannot help — it does not proxy SMTP.** OVH includes anti-DDoS on dedicated servers; Contabo provides basic volumetric filtering. Neither is application-layer SMTP protection, so **connection and rate limiting must live on the edge itself** (§3). |
+| 6 | Patching cadence? | **Already automated.** `unattended-upgrades` installed and enabled on both audited hosts. An edge built to the same standard inherits it. **Separate finding, unrelated to TI-004:** Contabo US also has `Automatic-Reboot "true"` at `04:30` — see §11a. |
+| 7 | Can edge logs ship to the existing Loki? | **Not today.** Loki has no published port, sits on `monitoring_monitoring` only, and has no Traefik route. Options: run promtail on the edge pushing **over the WireGuard tunnel** (preferred — no new public surface), or expose Loki behind Traefik with authentication (adds public surface). **Ops design; tunnel-first.** |
+| 8 | WireGuard or mTLS, and who operates it? | **Ops decision: WireGuard, operated by Ops**, with mTLS as a hardening follow-up (§1). |
+| 9 | OVH tunnel port and `DOCKER-USER`? | `DOCKER-USER` on OVH is **still empty** (re-verified). WireGuard is a host-level UDP listener, so `DOCKER-USER` does not apply to it — but the **ingestion port is Docker-published, so it does**. Concrete constraint: the tunnel must be arranged so ingestion is reachable from the peer **without a `0.0.0.0` publish**, and the `DOCKER-USER` gap must be closed on OVH first (already an open production blocker). |
+| 10 | Spool/backup policy for the edge? | **Ops decision: not backed up.** The queue is transient by design and short-lived by configuration, consistent with the deliberate no-backup stance for message content (ADR-009/025). |
+| 11 | Who is on call for a mail-flow outage? | **No on-call exists.** There is no rota and no paging; alerting is Grafana → Brevo SMTP → `team@` email only. Mail failures are silent to users, so this is a real gap for an internet-facing edge. **OWNER** — see §14 condition 2 |
+| 12 | Does an AWS account exist? | **No.** No AWS credentials, no `~/.aws`, no `AWS_*` in `/opt/infinity/secrets`. SES would require creating an account, IAM, and billing ownership from scratch — so §14's strongest SES-flipping condition is **definitively not met today**. |
 
----
+### 11a. Incidental finding — automatic reboot on the shared host
+
+Not a TI-004 matter, raised because it was found while answering Q6.
+
+`Automatic-Reboot "true"` at `04:30` is set on Contabo US, which runs GitLab, the
+container registry, monitoring, **Vault**, Keycloak, nkama-prod and TestInbox
+staging. On an unattended reboot:
+
+- containers return via `restart: unless-stopped`;
+- **Vault returns sealed** — it is unsealed by `deploy.sh` reconcile, not at boot;
+- TestInbox's **migrator does not run**, which ADR-029 §4 explicitly anticipates
+  and is exactly why the request-time schema refusal exists.
+
+The applications are designed for it. The unsealed-Vault window is the part
+worth an owner decision, and it is independent of this brief.
 
 ## 12. Weighted decision matrix
 
@@ -521,8 +547,10 @@ Any **one** of these should flip it to SES:
    posture for third-party content. AWS supplies that; a VPS does not.
 4. **Volume grows past a single edge**, or abuse traffic becomes a sustained
    operational load.
-5. **An AWS account already exists** with owned billing and IAM — this removes
-   most of SES's operability cost and is the single biggest scoring swing.
+5. **An AWS account already exists** with owned billing and IAM — the single
+   biggest scoring swing. **Checked: none exists** (§11 Q12), so this condition
+   is not met today and SES currently carries the full cost of standing up a
+   cloud estate from nothing.
 6. **Availability becomes a hard requirement** (e.g. an SLA), where AWS's
    buffering beats a single spool and running two edges is not wanted.
 
