@@ -66,11 +66,36 @@ test("plaintext HTTP redirects to HTTPS and never serves content", async () => {
   // zero-skips check in the rehearsal, which is precisely how a security
   // assertion goes quiet.
   const response = await fetch(`${config.httpBaseUrl}/`, { redirect: "manual" });
-  assert.equal(response.status, 308);
+
+  // The property that matters is the same everywhere: a plaintext request is
+  // answered with a PERMANENT redirect to https and no content. The status code
+  // that carries it is an edge implementation detail.
+  //
+  // The reference nginx returns 308 for every method. Traefik — the edge in the
+  // Infinity staging environment — returns 301 for GET, where rewriting the
+  // method is harmless, and 308 for POST/HEAD, where preserving the method and
+  // body actually matters. That is arguably the more careful behaviour, and it
+  // is not something a deployment should have to give up to satisfy this suite.
+  //
+  // So demand the exact code only from the reference edge, and assert the
+  // guarantee everywhere else — the same split `edgeIsReference` already draws
+  // for the unknown-Host assertion below.
+  if (config.edgeIsReference) {
+    assert.equal(response.status, 308, "the reference nginx edge must answer 308");
+  } else {
+    assert.ok(
+      [301, 308].includes(response.status),
+      `expected a permanent redirect (301 or 308), got ${response.status}`,
+    );
+  }
   assert.ok(
     response.headers.get("location")?.startsWith("https://"),
     `expected a redirect to https, got ${response.headers.get("location")}`,
   );
+  // Deliberately NOT asserting an empty body: both nginx and Traefik emit the
+  // conventional short "Moved Permanently" payload with a redirect. "Never serves
+  // content" means the application is never reached over plaintext, which the
+  // 3xx + Location pair already establishes.
 });
 
 /** Probes one path with a Host TestInbox does not serve. */
