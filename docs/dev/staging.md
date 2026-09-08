@@ -296,6 +296,22 @@ by challenging clients — or keep it and document a required `User-Agent`.
 Leaving it undecided is the bad outcome, because the failure mode is a
 confusing HTML page in someone's terminal.
 
+## Idempotency needs one database setting
+
+`idle_in_transaction_session_timeout` bounds how long a hung or partitioned API
+node can hold an idempotency claim (ADR-033). Without it the bound is the TCP
+keepalive interval — hours — during which that one key is unavailable. No
+duplicate mutation is possible either way; this is a liveness setting, not a
+correctness one.
+
+Set it a few seconds above the longest legitimate mutation:
+
+```
+idle_in_transaction_session_timeout = 30s
+```
+
+See [`idempotency.md`](idempotency.md) for the rest of the operating notes.
+
 ## Metrics
 
 Both deployables expose `/actuator/prometheus` on the private management port

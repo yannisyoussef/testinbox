@@ -32,16 +32,32 @@
    for `GET /v1/inboxes/{id}/messages` and similar list endpoints — offset
    pagination is unstable under concurrent inserts, which is the common case
    here (mail arriving while a test paginates).
-7. **Idempotency**: *planned, not implemented.* The intent is that mutating
-   POSTs which create a resource (`POST /v1/inboxes`) accept an optional
-   `Idempotency-Key` header whose replays return the original result rather
-   than creating a duplicate. Until the semantics below are implemented and
-   tested, the header is **absent from the public contract** rather than
-   advertised-but-ignored — a documented header that silently does nothing is
-   worse than no header. Implementation must define and test: scope
-   (workspace/project), key retention, same-key/same-request replay,
-   same-key/different-request conflict (`409`), concurrent same-key creation,
-   behaviour when the original request failed, response replay, and cleanup.
+7. **Idempotency** (implemented, [ADR-033](../adr/0033-idempotent-mutations.md)):
+   `POST /v1/inboxes` and `POST /v1/api-keys` accept an optional
+   `Idempotency-Key`, so a client that loses a response can retry without
+   creating a second resource. It is **optional** — requiring it would be a
+   breaking change to a published contract — and **refused** on operations that
+   do not honour it, because accepting and ignoring it would grant retry
+   protection that does not exist.
+   - Same key, same request → the committed result, with
+     `Idempotency-Replayed: true`. Same status as the original: the resource
+     exists because of this logical request, which is what the status describes.
+   - Same key, **changed** request → `409 idempotency-key-reused`. Terminal;
+     the original request is never disclosed.
+   - A concurrent identical request → `409 idempotency-request-in-progress`
+     with `Retry-After`. The opposite action to the one above, which is why
+     they are different types rather than one status code.
+   - **Only a committed success binds a key.** A validation error, a quota
+     refusal or an address conflict leaves it free, so a corrected retry with
+     the same key executes normally.
+   - A replay is a record of what the request **created**, not an assertion
+     that it still exists: replaying an inbox creation after the inbox expired
+     returns the creation, and a subsequent fetch returns `404`.
+   - `POST /v1/api-keys` is the exception, and deliberately: it **suppresses
+     the duplicate rather than replaying the response**. The credential is
+     returned exactly once and nothing retains it (ADR-032 §4), so a replay is
+     `409 idempotency-secret-not-replayable` naming the key that was created.
+     Revoke it and mint again under a fresh key.
 8. **Correlation IDs**: every response includes a `correlationId` (also
    present in error bodies), propagated into logs/traces — see
    [`docs/architecture/observability.md`](../architecture/observability.md).

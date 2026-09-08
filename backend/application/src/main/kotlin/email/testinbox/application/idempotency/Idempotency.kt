@@ -38,22 +38,33 @@ class Idempotency(
     private val metrics: IdempotencyMetrics = IdempotencyMetrics.NOOP,
 ) {
     /**
+     * How a caller renders each outcome. Grouped rather than passed as five
+     * loose lambdas: they are one cohesive thing — the caller's vocabulary for
+     * the four ways a claim can resolve — and a call site with five adjacent
+     * function literals is where the wrong one gets supplied.
+     */
+    data class Outcomes<T>(
+        val replay: (IdempotencySnapshot) -> T,
+        val keyReused: () -> T,
+        val inProgress: () -> T,
+        /** Null for any result that must NOT bind the key — every refusal. */
+        val snapshotOf: (T) -> IdempotencySnapshot?,
+    )
+
+    /**
      * Runs [mutation] in a transaction, claiming [scope] first when the caller
      * supplied a key.
      *
-     * [snapshotOf] returns null for any result that must NOT bind the key —
-     * every rejection. The claim is then rolled back by throwing out of the
-     * transaction and unwrapping outside it, which is the only way to abort a
-     * Spring transaction whose use case reports refusals as *values*.
+     * [Outcomes.snapshotOf] returns null for any result that must NOT bind the
+     * key — every rejection. The claim is then rolled back by throwing out of
+     * the transaction and unwrapping outside it, which is the only way to abort
+     * a Spring transaction whose use case reports refusals as *values*.
      */
     fun <T> around(
         request: IdempotencyRequest?,
         scope: () -> IdempotencyScope,
         fingerprint: () -> String,
-        replay: (IdempotencySnapshot) -> T,
-        keyReused: () -> T,
-        inProgress: () -> T,
-        snapshotOf: (T) -> IdempotencySnapshot?,
+        outcomes: Outcomes<T>,
         mutation: () -> T,
     ): T {
         if (request == null) return tx.required(mutation)
@@ -80,7 +91,7 @@ class Idempotency(
                     ClaimOutcome.Claimed -> {
                         val result = mutation()
                         val snapshot =
-                            snapshotOf(result)
+                            outcomes.snapshotOf(result)
                                 // A refusal. Undo the claim so a corrected retry
                                 // with the same key executes normally.
                                 ?: throw Rollback(result, IdempotencyOutcome.EXECUTED)
@@ -91,17 +102,17 @@ class Idempotency(
 
                     is ClaimOutcome.Replay -> {
                         metrics.completed(resolvedScope.operation, IdempotencyOutcome.REPLAYED)
-                        replay(outcome.snapshot)
+                        outcomes.replay(outcome.snapshot)
                     }
 
                     ClaimOutcome.FingerprintMismatch -> {
                         metrics.completed(resolvedScope.operation, IdempotencyOutcome.CONFLICT)
-                        keyReused()
+                        outcomes.keyReused()
                     }
 
                     ClaimOutcome.Contended -> {
                         metrics.completed(resolvedScope.operation, IdempotencyOutcome.IN_PROGRESS)
-                        inProgress()
+                        outcomes.inProgress()
                     }
                 }
             }

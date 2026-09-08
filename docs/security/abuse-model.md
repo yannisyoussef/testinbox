@@ -52,7 +52,26 @@
    `ingestPerInbox` already has with the workspace-wide `INGEST` policy.
 5. **No reply/threading UI or API.** Even the debugging dashboard only
    displays received mail; it cannot be used to carry on a conversation.
-6. **Credentials are managed, scoped and revocable individually**
+6. **Idempotency records are bounded by successful mutations, not by traffic**
+   ([ADR-033](../adr/0033-idempotent-mutations.md) §4). A refusal rolls its
+   claim back, so a workspace pinned at its inbox quota creates no records at
+   all — quota keeps bounding the tenant's footprint, which is the one thing it
+   is for. Were rejections recorded, that workspace could mint tens of
+   thousands of rows a day while creating nothing.
+
+   This is still the first table in the schema whose row count grows with
+   traffic rather than with tenant count — `V3__rate_limits_and_quotas.sql`
+   states that property for the limiter tables — and it is safe only because
+   **workspaces are operator-created**. There is no self-service signup, so the
+   multiplier is controlled. A future signup feature invalidates this analysis
+   and must revisit it.
+
+   Keys are stored hashed and salted with their scope. ADR-032 §2 rejected a
+   pepper for a 260-bit random secret; that reasoning does not transfer here,
+   because idempotency keys are low-entropy and structured — CI job ids, branch
+   names — so an unsalted digest would be confirmable by anyone with read
+   access, and the same value would be correlatable across workspaces.
+7. **Credentials are managed, scoped and revocable individually**
    ([ADR-032](../adr/0032-api-key-credential-lifecycle.md)). A workspace holds
    many keys, so a leaked CI credential is revoked on its own rather than by
    changing a secret every pipeline shares. Revocation takes effect on the next
@@ -61,7 +80,7 @@
    mint or revoke others. Credential lifecycle events are audited on a
    dedicated `testinbox.audit` logger, which never carries the credential, the
    `Authorization` header or the stored verifier.
-7. **Unknown-recipient mail is discarded immediately and never stored**
+8. **Unknown-recipient mail is discarded immediately and never stored**
    (metadata-only logging, [ADR-025](../adr/0025-unknown-recipient-handling.md))
    — no unauthenticated write path into storage, and no incentive to
    probe/enumerate addresses for a persistent-storage side effect

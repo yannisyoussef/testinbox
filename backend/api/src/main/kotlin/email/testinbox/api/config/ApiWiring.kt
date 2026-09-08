@@ -232,7 +232,6 @@ class ApiWiring(
     fun createInbox(
         inboxes: InboxRepository,
         reservations: ExactAddressReservations,
-        tx: TransactionRunner,
         quotas: WorkspaceQuotaState,
         limits: LimitsConfig,
         config: TestInboxConfig,
@@ -241,7 +240,6 @@ class ApiWiring(
         CreateInbox(
             inboxes,
             reservations,
-            tx,
             quotas,
             limits.quotas,
             clock,

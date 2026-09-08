@@ -24,6 +24,10 @@ export interface ProblemDetails {
   retryAfterSeconds?: number;
   /** Rate category that refused the request (ADR-027). */
   category?: string;
+  /** On `idempotency-secret-not-replayable`, the credential already created. */
+  apiKeyId?: string;
+  /** That credential's non-secret handle. */
+  publicId?: string;
   /** Quota dimension that is exhausted, on quota-exceeded (ADR-027). */
   quota?: string;
   /** Configured allowance for the exceeded limit. */
@@ -192,3 +196,57 @@ export class TestInboxTimeoutError extends TestInboxError {
     this.parseFailedCount = diagnostics.parseFailedCount;
   }
 }
+
+/**
+ * The `Idempotency-Key` is bound to a different request, or to one whose result
+ * this server cannot reproduce (ADR-033 §7).
+ *
+ * **Terminal.** Retrying with the same key cannot succeed; use a new one. Its
+ * own type rather than a plain conflict because four distinct `409`s now share
+ * that status and the correct action differs for each.
+ */
+export class TestInboxIdempotencyConflictError extends TestInboxApiError {
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxIdempotencyConflictError";
+  }
+}
+
+/**
+ * An identical request with the same key is still running (ADR-033 §7).
+ *
+ * **Transient**, and the opposite action to
+ * {@link TestInboxIdempotencyConflictError}: retry with the same key, and once
+ * the first request commits the retry replays its result.
+ */
+export class TestInboxIdempotencyInProgressError extends TestInboxApiError {
+  /** Seconds the server suggests waiting, when it sent one. */
+  readonly retryAfterSeconds?: number;
+
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxIdempotencyInProgressError";
+    if (problem?.retryAfterSeconds !== undefined) this.retryAfterSeconds = problem.retryAfterSeconds;
+  }
+}
+
+/**
+ * This exact request already created a credential (ADR-033 §8).
+ *
+ * Duplicate suppression rather than replay: the secret was returned once and
+ * nothing retains it, so it cannot be re-issued. `apiKeyId` and `publicId` name
+ * what was created, so the caller can revoke it and mint again under a fresh
+ * key without a list call.
+ */
+export class TestInboxCredentialAlreadyCreatedError extends TestInboxApiError {
+  readonly apiKeyId?: string;
+  readonly publicId?: string;
+
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxCredentialAlreadyCreatedError";
+    if (typeof problem?.apiKeyId === "string") this.apiKeyId = problem.apiKeyId;
+    if (typeof problem?.publicId === "string") this.publicId = problem.publicId;
+  }
+}
+

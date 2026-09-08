@@ -17,6 +17,9 @@ import {
   TestInboxRateLimitError,
   TestInboxAuthError,
   TestInboxConflictError,
+  TestInboxCredentialAlreadyCreatedError,
+  TestInboxIdempotencyConflictError,
+  TestInboxIdempotencyInProgressError,
   TestInboxError,
   TestInboxForbiddenError,
   TestInboxInboxGoneError,
@@ -176,6 +179,8 @@ function asProblemDetails(status: number, body: unknown): ProblemDetails {
     quota: typeof body.quota === "string" ? body.quota : undefined,
     limit: typeof body.limit === "number" ? body.limit : undefined,
     current: typeof body.current === "number" ? body.current : undefined,
+    apiKeyId: typeof body.apiKeyId === "string" ? body.apiKeyId : undefined,
+    publicId: typeof body.publicId === "string" ? body.publicId : undefined,
   };
 }
 
@@ -191,12 +196,24 @@ function errorForStatus(status: number, problem: ProblemDetails): TestInboxError
       return new TestInboxForbiddenError(message, problem);
     case 404:
       return new TestInboxNotFoundError(message, problem);
-    case 409:
-      // Two distinct 409 meanings share this status (ADR-021 vs ADR-027), so
-      // the problem type decides which error this is — never the status code.
-      return problem.type?.endsWith("/quota-exceeded")
-        ? new TestInboxQuotaExceededError(message, problem)
-        : new TestInboxConflictError(message, problem);
+    case 409: {
+      // Five distinct meanings now share this status (ADR-021, ADR-027,
+      // ADR-033), and their correct client actions differ — free capacity,
+      // wait for a cooldown, retry with the same key, never reuse the key, or
+      // revoke and re-mint. The problem type decides, never the status code.
+      const type = problem.type ?? "";
+      if (type.endsWith("/quota-exceeded")) return new TestInboxQuotaExceededError(message, problem);
+      if (type.endsWith("/idempotency-request-in-progress")) {
+        return new TestInboxIdempotencyInProgressError(message, problem);
+      }
+      if (type.endsWith("/idempotency-secret-not-replayable")) {
+        return new TestInboxCredentialAlreadyCreatedError(message, problem);
+      }
+      if (type.endsWith("/idempotency-key-reused") || type.endsWith("/idempotency-replay-unavailable")) {
+        return new TestInboxIdempotencyConflictError(message, problem);
+      }
+      return new TestInboxConflictError(message, problem);
+    }
     case 410:
       return new TestInboxInboxGoneError(message, problem);
     case 429:
@@ -216,6 +233,8 @@ export interface TransportOptions {
 }
 
 interface RequestOptions {
+  /** Sent verbatim as `Idempotency-Key`; never generated or rewritten here. */
+  idempotencyKey?: string;
   body?: unknown;
   accept?: string;
   signal?: AbortSignal;
@@ -235,8 +254,11 @@ export class Transport {
     this.#baseUrl = options.baseUrl.replace(/\/+$/, "");
   }
 
-  async createInbox(request: CreateInboxRequestDto): Promise<InboxDto> {
-    const res = await this.#request("POST", "/v1/inboxes", { body: request });
+  async createInbox(request: CreateInboxRequestDto, idempotencyKey?: string): Promise<InboxDto> {
+    const res = await this.#request("POST", "/v1/inboxes", {
+      body: request,
+      ...(idempotencyKey !== undefined && { idempotencyKey }),
+    });
     return (await res.json()) as InboxDto;
   }
 
@@ -279,8 +301,14 @@ export class Transport {
     return new Uint8Array(await res.arrayBuffer());
   }
 
-  async createApiKey(request: CreateApiKeyRequestDto): Promise<CreatedApiKeyDto> {
-    const res = await this.#request("POST", "/v1/api-keys", { body: request });
+  async createApiKey(
+    request: CreateApiKeyRequestDto,
+    idempotencyKey?: string,
+  ): Promise<CreatedApiKeyDto> {
+    const res = await this.#request("POST", "/v1/api-keys", {
+      body: request,
+      ...(idempotencyKey !== undefined && { idempotencyKey }),
+    });
     return (await res.json()) as CreatedApiKeyDto;
   }
 
@@ -307,6 +335,10 @@ export class Transport {
       authorization: `Bearer ${this.#apiKey}`,
       accept: options.accept ?? "application/json, application/problem+json",
     };
+    // Sent verbatim; never generated or rewritten here (ADR-033).
+    if (options.idempotencyKey !== undefined) {
+      headers["idempotency-key"] = options.idempotencyKey;
+    }
     let body: string | undefined;
     if (options.body !== undefined) {
       headers["content-type"] = "application/json";

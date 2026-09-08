@@ -4,6 +4,9 @@ import {
   TestInboxAuthError,
   TestInboxClient,
   TestInboxConflictError,
+  TestInboxCredentialAlreadyCreatedError,
+  TestInboxIdempotencyConflictError,
+  TestInboxIdempotencyInProgressError,
   TestInboxError,
   TestInboxForbiddenError,
   TestInboxInboxGoneError,
@@ -723,5 +726,103 @@ describe("api key namespace identity", () => {
       expect(spy).toHaveBeenCalledWith("id");
       expect(fetchMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("idempotency (ADR-033)", () => {
+  it("sends the caller's key verbatim, and only when given one", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { id: INBOX_ID, address: "a@b.test" }));
+    await client().createInbox({ idempotencyKey: "ci-job-4711-attempt" });
+    const [, withKey] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((withKey.headers as Record<string, string>)["idempotency-key"]).toBe("ci-job-4711-attempt");
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { id: INBOX_ID, address: "a@b.test" }));
+    await client().createInbox();
+    const [, without] = fetchMock.mock.calls[1] as [string, RequestInit];
+    // The SDK must never invent one: a key regenerated per attempt defeats the
+    // feature, and one generated in a process that then dies protects nothing.
+    expect((without.headers as Record<string, string>)["idempotency-key"]).toBeUndefined();
+  });
+
+  it("distinguishes the transient conflict from the terminal one", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        409,
+        {
+          type: "https://testinbox.email/problems/idempotency-request-in-progress",
+          title: "Idempotency request in progress",
+          status: 409,
+          retryAfterSeconds: 1,
+        },
+        "application/problem+json",
+      ),
+    );
+    const inProgress = await client()
+      .createInbox({ idempotencyKey: "k".repeat(20) })
+      .catch((e: unknown) => e);
+    expect(inProgress).toBeInstanceOf(TestInboxIdempotencyInProgressError);
+    expect((inProgress as TestInboxIdempotencyInProgressError).retryAfterSeconds).toBe(1);
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        409,
+        {
+          type: "https://testinbox.email/problems/idempotency-key-reused",
+          title: "Idempotency key reused",
+          status: 409,
+        },
+        "application/problem+json",
+      ),
+    );
+    const reused = await client()
+      .createInbox({ idempotencyKey: "k".repeat(20) })
+      .catch((e: unknown) => e);
+    // Opposite actions behind one status code: retry, versus never retry.
+    expect(reused).toBeInstanceOf(TestInboxIdempotencyConflictError);
+  });
+
+  it("surfaces a suppressed duplicate key creation with what it already created", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        409,
+        {
+          type: "https://testinbox.email/problems/idempotency-secret-not-replayable",
+          title: "Credential already created",
+          status: 409,
+          apiKeyId: "22222222-2222-4222-8222-222222222222",
+          publicId: "abcdefghijklmnop",
+        },
+        "application/problem+json",
+      ),
+    );
+    const error = await client()
+      .apiKeys.create({ scopes: ["messages:read"], idempotencyKey: "mint-once-abcdef" })
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(TestInboxCredentialAlreadyCreatedError);
+    const typed = error as TestInboxCredentialAlreadyCreatedError;
+    // Named, so the caller revokes and re-mints without a list call — and this
+    // is never confused with an address conflict or a quota refusal.
+    expect(typed.apiKeyId).toBe("22222222-2222-4222-8222-222222222222");
+    expect(typed.publicId).toBe("abcdefghijklmnop");
+  });
+
+  it("does not confuse an ordinary conflict with an idempotency one", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        409,
+        {
+          type: "https://testinbox.email/problems/address-already-reserved",
+          title: "Address already reserved",
+          status: 409,
+        },
+        "application/problem+json",
+      ),
+    );
+    const error = await client()
+      .createInbox({ addressMode: "EXACT", localPart: "taken", idempotencyKey: "k".repeat(20) })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(TestInboxConflictError);
+    expect(error).not.toBeInstanceOf(TestInboxIdempotencyConflictError);
   });
 });

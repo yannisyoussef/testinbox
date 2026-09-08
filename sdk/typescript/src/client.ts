@@ -72,12 +72,15 @@ export class TestInboxClient {
 
   /** Create an ephemeral inbox (GENERATED or EXACT addressing, ADR-021). */
   async createInbox(options: CreateInboxOptions = {}): Promise<Inbox> {
-    const dto = await this.#transport.createInbox({
-      ...(options.addressMode !== undefined && { addressMode: options.addressMode }),
-      ...(options.ttlSeconds !== undefined && { ttlSeconds: options.ttlSeconds }),
-      ...(options.aliasHint !== undefined && { aliasHint: options.aliasHint }),
-      ...(options.localPart !== undefined && { localPart: options.localPart }),
-    });
+    const dto = await this.#transport.createInbox(
+      {
+        ...(options.addressMode !== undefined && { addressMode: options.addressMode }),
+        ...(options.ttlSeconds !== undefined && { ttlSeconds: options.ttlSeconds }),
+        ...(options.aliasHint !== undefined && { aliasHint: options.aliasHint }),
+        ...(options.localPart !== undefined && { localPart: options.localPart }),
+      },
+      options.idempotencyKey,
+    );
     return new InboxImpl(this.#transport, dto);
   }
 
@@ -139,11 +142,14 @@ class ApiKeysImpl implements ApiKeys {
   }
 
   async create(options: CreateApiKeyOptions): Promise<CreatedApiKey> {
-    const dto = await this.#transport.createApiKey({
-      scopes: options.scopes.map((scope) => String(scope)),
-      ...(options.name !== undefined && { name: options.name }),
-      ...(options.expiresInSeconds !== undefined && { expiresInSeconds: options.expiresInSeconds }),
-    });
+    const dto = await this.#transport.createApiKey(
+      {
+        scopes: options.scopes.map((scope) => String(scope)),
+        ...(options.name !== undefined && { name: options.name }),
+        ...(options.expiresInSeconds !== undefined && { expiresInSeconds: options.expiresInSeconds }),
+      },
+      options.idempotencyKey,
+    );
     return { apiKey: toApiKeyMetadata(dto.apiKey), secret: dto.key };
   }
 

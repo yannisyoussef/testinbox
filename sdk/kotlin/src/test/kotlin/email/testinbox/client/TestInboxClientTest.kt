@@ -24,7 +24,13 @@ class TestInboxClientTest {
     private lateinit var server: HttpServer
     private lateinit var client: TestInboxClient
 
-    data class RecordedRequest(val method: String, val path: String, val auth: String?, val body: String)
+    data class RecordedRequest(
+        val method: String,
+        val path: String,
+        val auth: String?,
+        val body: String,
+        val idempotencyKey: String? = null,
+    )
 
     data class ScriptedResponse(val status: Int, val body: String, val delayMillis: Long = 0)
 
@@ -42,6 +48,7 @@ class TestInboxClientTest {
                     exchange.requestURI.path,
                     exchange.requestHeaders.getFirst("Authorization"),
                     body,
+                    exchange.requestHeaders.getFirst("Idempotency-Key"),
                 )
             val scripted = responses.poll() ?: ScriptedResponse(500, """{"title":"unscripted"}""")
             if (scripted.delayMillis > 0) Thread.sleep(scripted.delayMillis)
@@ -374,5 +381,58 @@ class TestInboxClientTest {
         // The request body carries the *requested scopes*, never a credential.
         assertFalse(request.body.contains("tk_unit"))
         assertTrue(request.body.contains("api-keys:manage"))
+    }
+
+    @Test
+    fun `an idempotency key is sent verbatim and only when the caller supplies one`() {
+        script(201, inboxJson)
+        runBlocking { client.createInbox(CreateInboxOptions(idempotencyKey = "ci-job-4711-attempt")) }
+        assertEquals("ci-job-4711-attempt", requests.last().idempotencyKey)
+
+        script(201, inboxJson)
+        runBlocking { client.createInbox() }
+        // Absent by default: the SDK must not invent a key, because one
+        // generated per attempt defeats the feature and one generated inside a
+        // process that then dies protects nothing.
+        assertNull(requests.last().idempotencyKey)
+    }
+
+    @Test
+    fun `the same key is reused across calls rather than regenerated`() {
+        val key = "stable-operation-key-01"
+        script(201, inboxJson)
+        script(201, inboxJson)
+        runBlocking {
+            client.createInbox(CreateInboxOptions(idempotencyKey = key))
+            client.createInbox(CreateInboxOptions(idempotencyKey = key))
+        }
+        assertEquals(listOf(key, key), requests.map { it.idempotencyKey }.filterNotNull())
+    }
+
+    @Test
+    fun `key creation forwards the caller's key`() {
+        script(201, createdKeyJson)
+        runBlocking { client.apiKeys.create(listOf(ApiScope.MESSAGES_READ), idempotencyKey = "mint-once-abcdef") }
+        assertEquals("mint-once-abcdef", requests.last().idempotencyKey)
+    }
+
+    @Test
+    fun `a suppressed duplicate key creation surfaces as a typed conflict`() {
+        script(
+            409,
+            """{"type":"https://testinbox.email/problems/idempotency-secret-not-replayable",
+                "title":"Credential already created","status":409,
+                "detail":"This request already created a credential.",
+                "apiKeyId":"22222222-2222-2222-2222-222222222222","publicId":"abcdefghijklmnop"}""",
+        )
+        val error =
+            assertThrows(TestInboxCredentialAlreadyCreatedException::class.java) {
+                runBlocking { client.apiKeys.create(listOf(ApiScope.MESSAGES_READ), idempotencyKey = "mint-once-abcdef") }
+            }
+        // Its own type, carrying what was created: the caller revokes and mints
+        // again without a list call, and never confuses this with an address
+        // conflict or a quota refusal, which are also 409.
+        assertEquals("22222222-2222-2222-2222-222222222222", error.apiKeyId)
+        assertEquals("abcdefghijklmnop", error.publicId)
     }
 }

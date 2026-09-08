@@ -151,16 +151,19 @@ class CreateApiKey(
                 request = request,
                 scope = { scope },
                 fingerprint = { RequestFingerprint.of(command) },
-                replay = { snapshot ->
-                    ApiKeySnapshot.toCreated(snapshot)?.let { (id, publicId) ->
-                        Result.AlreadyCreated(id, publicId)
-                    } ?: Result.IdempotencyReplayUnavailable
-                },
-                keyReused = { Result.IdempotencyKeyReused },
-                inProgress = { Result.IdempotencyInProgress },
-                snapshotOf = { r ->
-                    (r as? Result.Created)?.let { ApiKeySnapshot.of(it.apiKey.id, it.credential.publicId) }
-                },
+                outcomes =
+                    Idempotency.Outcomes(
+                        replay = { snapshot ->
+                            ApiKeySnapshot.toCreated(snapshot)?.let { (id, publicId) ->
+                                Result.AlreadyCreated(id, publicId)
+                            } ?: Result.IdempotencyReplayUnavailable
+                        },
+                        keyReused = { Result.IdempotencyKeyReused },
+                        inProgress = { Result.IdempotencyInProgress },
+                        snapshotOf = { r ->
+                            (r as? Result.Created)?.let { ApiKeySnapshot.of(it.apiKey.id, it.credential.publicId) }
+                        },
+                    ),
             ) {
                 apiKeys.insert(key)
                 Result.Created(key, credential)

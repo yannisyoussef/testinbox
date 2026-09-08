@@ -12,7 +12,6 @@ import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
 import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.ReserveOutcome
-import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
@@ -41,14 +40,20 @@ import java.util.UUID
 class CreateInbox(
     private val inboxes: InboxRepository,
     private val reservations: ExactAddressReservations,
-    private val tx: TransactionRunner,
     private val quotas: WorkspaceQuotaState,
     private val policy: QuotaPolicy,
     private val clock: Clock,
     private val config: TestInboxConfig,
     private val metrics: LimitMetrics = LimitMetrics.NOOP,
     private val inboxMetrics: InboxMetrics = InboxMetrics.NOOP,
-    private val idempotency: Idempotency = Idempotency.disabled(),
+    /**
+     * Owns the transaction boundary, with or without an idempotency key —
+     * which is why this use case no longer takes a `TransactionRunner` of its
+     * own. Exactly one thing deciding where the transaction begins is what
+     * makes "the claim and the mutation commit together" true by construction
+     * rather than by every call site remembering (ADR-033 §2).
+     */
+    private val idempotency: Idempotency,
 ) {
     data class Command(
         val workspaceId: WorkspaceId,
@@ -137,15 +142,18 @@ class CreateInbox(
             request = request,
             scope = { IdempotencyScope(command.workspaceId, command.projectId, IdempotentOperation.CREATE_INBOX) },
             fingerprint = { RequestFingerprint.of(command) },
-            replay = { snapshot ->
-                InboxSnapshot.toInbox(snapshot)?.let { Result.Created(it, replayed = true) }
-                    ?: Result.IdempotencyReplayUnavailable
-            },
-            keyReused = { Result.IdempotencyKeyReused },
-            inProgress = { Result.IdempotencyInProgress },
-            // Only a committed creation binds the key; every refusal returns
-            // null here and rolls the claim back with it (ADR-033 §4).
-            snapshotOf = { result -> (result as? Result.Created)?.let { InboxSnapshot.of(it.inbox) } },
+            outcomes =
+                Idempotency.Outcomes(
+                    replay = { snapshot ->
+                        InboxSnapshot.toInbox(snapshot)?.let { Result.Created(it, replayed = true) }
+                            ?: Result.IdempotencyReplayUnavailable
+                    },
+                    keyReused = { Result.IdempotencyKeyReused },
+                    inProgress = { Result.IdempotencyInProgress },
+                    // Only a committed creation binds the key; every refusal
+                    // returns null and rolls the claim back (ADR-033 §4).
+                    snapshotOf = { result -> (result as? Result.Created)?.let { InboxSnapshot.of(it.inbox) } },
+                ),
         ) {
             quotas.guardAdmission(command.workspaceId)
             admit(command.workspaceId)?.let {
@@ -224,7 +232,8 @@ class CreateInbox(
                 }
             }
         val inbox = newInbox(command, now, ttl, AddressMode.EXACT, localPart)
-        return tx.required {
+        // Already inside the transaction `Idempotency.around` opened.
+        return run {
             val reservation =
                 ExactReservation(
                     id = UUID.randomUUID(),

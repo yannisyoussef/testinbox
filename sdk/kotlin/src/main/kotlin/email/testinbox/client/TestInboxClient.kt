@@ -23,6 +23,17 @@ data class CreateInboxOptions
         val aliasHint: String? = null,
         val addressMode: AddressMode = AddressMode.GENERATED,
         val localPart: String? = null,
+        /**
+         * An idempotency key the caller owns (ADR-033), sent verbatim.
+         *
+         * The SDK never generates or rewrites one, and that is the only
+         * behaviour that makes the feature work: a key regenerated per attempt
+         * defeats it entirely, and one generated inside a process that then
+         * dies protects nothing — the retry comes from somewhere that never saw
+         * it. Derive it from something your own retry boundary can reproduce: a
+         * CI job id, a test name, a row in your own queue.
+         */
+        val idempotencyKey: String? = null,
     )
 
 /**
@@ -305,6 +316,7 @@ class TestInboxClient
                         aliasHint = options.aliasHint,
                         localPart = options.localPart,
                     ),
+                    options.idempotencyKey,
                 )
             return Inbox(transport, serverWaitCap, dto)
         }
@@ -349,11 +361,20 @@ class ApiKeys internal constructor(
      * Mints a key. The returned [CreatedApiKey.secret] is the only copy that
      * will ever exist — it is not stored and cannot be retrieved again.
      */
+    /**
+     * [idempotencyKey] is sent verbatim and is strongly recommended here
+     * (ADR-033 §8): a lost response otherwise leaves an **orphan credential** —
+     * one that exists, has real authority, and that nobody holds and nobody
+     * knows to revoke. With a key, the retry is refused by
+     * [TestInboxConflictException] naming the credential already created,
+     * rather than minting a second.
+     */
     @JvmOverloads
     suspend fun create(
         scopes: List<ApiScope>,
         name: String? = null,
         expiresIn: Duration? = null,
+        idempotencyKey: String? = null,
     ): CreatedApiKey {
         val dto =
             transport.createApiKey(
@@ -362,6 +383,7 @@ class ApiKeys internal constructor(
                     scopes = scopes.map { it.wire },
                     expiresInSeconds = expiresIn?.seconds,
                 ),
+                idempotencyKey,
             )
         return CreatedApiKey(ApiKeyMetadata(dto.apiKey), dto.key)
     }
@@ -371,7 +393,8 @@ class ApiKeys internal constructor(
         scopes: List<ApiScope>,
         name: String? = null,
         expiresIn: Duration? = null,
-    ): CreatedApiKey = runBlocking { create(scopes, name, expiresIn) }
+        idempotencyKey: String? = null,
+    ): CreatedApiKey = runBlocking { create(scopes, name, expiresIn, idempotencyKey) }
 
     /** Newest first. Revoked keys are included; they are retained for audit. */
     @JvmOverloads

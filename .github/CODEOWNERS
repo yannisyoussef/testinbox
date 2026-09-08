@@ -36,3 +36,11 @@
 # The hand-authored REST contract is the source of truth (ADR-022); the
 # compatibility gate catches breaking shapes, not breaking meanings.
 /backend/api/contract/openapi.yaml                                 @yannisyoussef
+
+# The idempotency claim (ADR-033). Its correctness rests on properties of one
+# SQL statement that no unit test can see: that the claim and the mutation
+# share a transaction, that the conflicting row is locked rather than merely
+# detected, and that the lock timeout bounds the claim and nothing else.
+# Changing any of them silently reintroduces duplicate mutations.
+/backend/application/src/main/kotlin/email/testinbox/application/idempotency/ @yannisyoussef
+/backend/persistence/src/main/kotlin/email/testinbox/persistence/JdbcIdempotencyRecords.kt @yannisyoussef

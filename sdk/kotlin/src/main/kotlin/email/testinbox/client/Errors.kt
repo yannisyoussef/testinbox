@@ -123,3 +123,45 @@ class TestInboxTimeoutException(
         "No matching message within ${elapsedMs}ms " +
             "(arrivedButUnmatched=$arrivedButUnmatchedCount, parseFailed=$parseFailedCount)",
     )
+
+/**
+ * The `Idempotency-Key` is bound to a different request, or to one whose result
+ * this server cannot reproduce (ADR-033 §7).
+ *
+ * **Terminal.** Retrying with the same key cannot succeed; use a new one.
+ * Its own type rather than a plain conflict because four distinct `409`s now
+ * share that status and the correct action differs for each.
+ */
+class TestInboxIdempotencyConflictException(
+    message: String,
+    correlationId: String? = null,
+    problemType: String? = null,
+) : TestInboxException(message, correlationId, problemType, 409)
+
+/**
+ * An identical request with the same key is still running (ADR-033 §7).
+ *
+ * **Transient**, and the opposite action to
+ * [TestInboxIdempotencyConflictException]: retry with the same key, and once
+ * the first request commits the retry replays its result.
+ */
+class TestInboxIdempotencyInProgressException(
+    message: String,
+    correlationId: String? = null,
+    val retryAfter: java.time.Duration? = null,
+) : TestInboxException(message, correlationId, "idempotency-request-in-progress", 409)
+
+/**
+ * This exact request already created a credential (ADR-033 §8).
+ *
+ * Duplicate suppression rather than replay: the secret was returned once and
+ * nothing retains it, so it cannot be re-issued. [apiKeyId] and [publicId] name
+ * what was created, so the caller can revoke it and mint again under a fresh
+ * key without a list call.
+ */
+class TestInboxCredentialAlreadyCreatedException(
+    message: String,
+    correlationId: String? = null,
+    val apiKeyId: String? = null,
+    val publicId: String? = null,
+) : TestInboxException(message, correlationId, "idempotency-secret-not-replayable", 409)

@@ -86,7 +86,7 @@ export interface ListApiKeysOptions {
 }
 
 /** Options for `TestInboxClient#apiKeys.create`. */
-export interface CreateApiKeyOptions {
+export interface CreateApiKeyOptions extends IdempotencyOptions {
   /** Least privilege — request only what the holder needs. Immutable once created. */
   scopes: ApiScope[];
   /** Operator-chosen label, e.g. the CI system that will hold it. */
@@ -121,8 +121,22 @@ export interface HeaderMatcher {
   value?: string;
 }
 
+/**
+ * An idempotency key the caller owns (ADR-033).
+ *
+ * The SDK sends it verbatim and never generates or rewrites one, which is the
+ * only behaviour that makes the feature work: a key regenerated per attempt
+ * defeats it entirely, and a key generated inside a process that then dies
+ * provides no protection at all — the retry comes from somewhere that never
+ * saw it. Derive it from something your own retry boundary can reproduce: a CI
+ * job id, a test name, a row in your own queue.
+ */
+export interface IdempotencyOptions {
+  idempotencyKey?: string;
+}
+
 /** Options for `TestInboxClient#createInbox`. */
-export interface CreateInboxOptions {
+export interface CreateInboxOptions extends IdempotencyOptions {
   /** Inbox time-to-live; defaults to the deployment default, capped at the deployment maximum. */
   ttlSeconds?: number;
   /** GENERATED mode only — human-readable prefix; the address always carries a random token. */
