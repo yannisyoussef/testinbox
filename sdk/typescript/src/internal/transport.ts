@@ -24,6 +24,26 @@ import {
   type ProblemDetails,
 } from "../errors";
 
+/**
+ * Identifies this SDK in the server's access logs.
+ *
+ * Until now no shipped SDK sent one, so requests were attributed to whatever
+ * the runtime happened to default to. Staging Ops found the consequence: the
+ * deployment gate's ability to reach its own API rested on an unexamined
+ * interaction between Node's default `User-Agent` and a Cloudflare heuristic.
+ * Nothing was broken, and nothing would have predicted or quickly diagnosed it
+ * if it had been.
+ *
+ * Declaring it turns an accidental dependency into a stated one, and makes SDK
+ * traffic separable from ad-hoc calls when debugging a customer's report.
+ *
+ * Kept in step with package.json by `client.test.ts`; a browser would ignore
+ * this header (it is forbidden there), which is harmless — this SDK targets
+ * Node (ADR-023).
+ */
+export const SDK_VERSION = "0.1.0";
+const USER_AGENT = `testinbox-sdk-ts/${SDK_VERSION}`;
+
 // ---------------------------------------------------------------------------
 // Wire DTOs (request/response shapes of the REST contract)
 // ---------------------------------------------------------------------------
@@ -306,6 +326,7 @@ export class Transport {
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.#apiKey}`,
       accept: options.accept ?? "application/json, application/problem+json",
+      "user-agent": USER_AGENT,
     };
     let body: string | undefined;
     if (options.body !== undefined) {
