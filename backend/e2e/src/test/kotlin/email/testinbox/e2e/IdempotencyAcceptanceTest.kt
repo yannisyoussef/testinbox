@@ -74,13 +74,24 @@ class IdempotencyAcceptanceTest {
     }
 
     @Test
-    fun `a key is scoped to its operation, so one job id serves every call it makes`() {
+    fun `a key reused by a fresh client process still replays, not being held in memory anywhere`() {
+        // Named for what it actually proves. Each `client()` is a new SDK
+        // instance with its own connection, so a replay here cannot be coming
+        // from client-side memoisation — the durability is the server's, which
+        // is the property a CI job restarting on a new runner depends on.
+        //
+        // The key's *operation* scoping (the same value being independently
+        // valid on `POST /v1/inboxes` and `POST /v1/api-keys`) is proven in
+        // `IdempotencyApiTest`, which can mint credentials without consuming
+        // the bootstrap credential this stack's rotation test depends on. An
+        // earlier version of this test claimed to cover that and did not: it
+        // called `createInbox` twice, so deleting the operation from the scope
+        // key would not have failed it.
         val key = "e2e-shared-${UUID.randomUUID()}"
         val inbox = client().createInboxBlocking(CreateInboxOptions(ttl = Duration.ofMinutes(5), idempotencyKey = key))
-        // A CI job that uses its build id everywhere must not have its second
-        // endpoint call refused as a reuse of the first.
         val second = client().createInboxBlocking(CreateInboxOptions(ttl = Duration.ofMinutes(5), idempotencyKey = key))
         second.id shouldBe inbox.id
+        second.address shouldBe inbox.address
         inbox.deleteBlocking()
     }
 }

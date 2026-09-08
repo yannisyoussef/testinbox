@@ -4,8 +4,10 @@ import email.testinbox.application.port.ApiKeyOperation
 import email.testinbox.application.port.AuthOutcome
 import email.testinbox.application.port.BlobOperation
 import email.testinbox.application.port.BlobOutcome
+import email.testinbox.application.port.IdempotencyOutcome
 import email.testinbox.application.port.SmtpRejection
 import email.testinbox.application.port.WaitOutcome
+import email.testinbox.domain.idempotency.IdempotentOperation
 import email.testinbox.domain.inbox.AddressMode
 import email.testinbox.domain.limits.QuotaDimension
 import email.testinbox.domain.limits.RateCategory
@@ -82,6 +84,11 @@ class MetricCardinalityTest {
         ApiKeyOperation.entries.forEach { apiKeys.lifecycle(it) }
         apiKeys.lastUsedPersisted()
 
+        val idempotency = MicrometerIdempotencyMetrics(registry)
+        IdempotentOperation.entries.forEach { operation ->
+            IdempotencyOutcome.entries.forEach { idempotency.completed(operation, it) }
+        }
+
         BuildInfoMetric(registry, service = "testinbox-api", gitSha = "abc1234", version = "0.1.0")
     }
 
@@ -97,10 +104,12 @@ class MetricCardinalityTest {
                 WaitOutcome.entries.map { it.name }.toSet() +
                 BlobOutcome.entries.map { it.name.lowercase() }.toSet() +
                 AuthOutcome.entries.map { it.name }.toSet() +
+                IdempotencyOutcome.entries.map { it.name }.toSet() +
                 setOf("allowed", "rejected"),
             "operation" to
                 BlobOperation.entries.map { it.name }.toSet() +
-                ApiKeyOperation.entries.map { it.name }.toSet(),
+                ApiKeyOperation.entries.map { it.name }.toSet() +
+                IdempotentOperation.entries.map { it.name }.toSet(),
             "reason" to SmtpRejection.entries.map { it.name }.toSet(),
             "category" to RateCategory.entries.map { it.name }.toSet(),
             "quota" to QuotaDimension.entries.map { it.name }.toSet(),
@@ -213,6 +222,7 @@ class MetricCardinalityTest {
             "testinbox_api_key_auth_total",
             "testinbox_api_key_lifecycle_total",
             "testinbox_api_key_last_used_writes_total",
+            "testinbox_idempotency_total",
         ).forEach { name -> scrape shouldContain name }
     }
 
