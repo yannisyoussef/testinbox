@@ -12,6 +12,15 @@ info:
     Pre-v1 stability is signalled via the `X-API-Stability: experimental`
     response header rather than by breaking silently.
 
+    **Idempotency.** `POST /v1/inboxes` and `POST /v1/api-keys` accept an
+    optional `Idempotency-Key` header (ADR-033) so a client that loses a
+    response can retry without creating a second resource. Records are retained
+    for a bounded window (six hours by default) and then expire. Note that
+    `POST /v1/api-keys` **suppresses the duplicate rather than replaying the
+    response**: the credential is returned exactly once and is unrecoverable,
+    so a replay is `409 idempotency-secret-not-replayable` naming the key that
+    was created.
+
     **Transport-level refusals apply to every operation** and are therefore not
     repeated on each one. All use `application/problem+json` with a stable
     `type` and a `correlationId`:
@@ -42,6 +51,35 @@ components:
         credential is recognisable to a secret scanner and a truncated paste is
         detectable. Only the `publicId` segment is non-secret.
   parameters:
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        Opaque, client-chosen key making a retry of *this* logical request safe
+        (ADR-033). 16–255 printable ASCII characters; not required to be a
+        UUID, and the server infers nothing from its content.
+
+        Scoped to the caller's workspace and this operation, so the same value
+        is safe for unrelated tenants and for a different endpoint. It survives
+        credential rotation: retrying with a different key of the same
+        workspace still replays.
+
+        The key is bound to the *semantic* content of the request. Retrying the
+        same request replays the committed result; sending a different request
+        under the same key is `409 idempotency-key-reused` and never executes.
+
+        Only a **committed success** binds the key. A validation error, a quota
+        refusal or an address conflict leaves it unbound, so a corrected retry
+        with the same key executes normally.
+
+        Sending it to an operation that does not support it is refused rather
+        than ignored — see `idempotency-not-supported`.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 255
+        pattern: "^[\\x21-\\x7e]+$"
     inboxId:
       name: id
       in: path
@@ -58,6 +96,11 @@ components:
       required: true
       schema: { type: string, format: uuid }
   headers:
+    idempotencyReplayed:
+      description: >
+        Present and `true` when this response replays a previously committed
+        result rather than performing the mutation (ADR-033).
+      schema: { type: boolean }
     correlationId:
       description: Correlation id echoed in logs/traces and RFC 7807 bodies.
       schema: { type: string }
@@ -127,6 +170,17 @@ components:
           type: integer
           format: int64
           description: Current consumption of the exceeded quota dimension.
+        apiKeyId:
+          type: string
+          format: uuid
+          description: >
+            On `idempotency-secret-not-replayable`, the credential this request
+            already created.
+        publicId:
+          type: string
+          description: >
+            On `idempotency-secret-not-replayable`, that credential's non-secret
+            handle.
       required: [type, title, status]
     AddressMode:
       type: string
@@ -406,6 +460,8 @@ paths:
     post:
       operationId: createInbox
       summary: Create an inbox (GENERATED or EXACT addressing, ADR-021).
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
       requestBody:
         required: true
         content:
@@ -413,9 +469,15 @@ paths:
             schema: { $ref: "#/components/schemas/CreateInboxRequest" }
       responses:
         "201":
-          description: Inbox created.
+          description: >
+            Inbox created — or, when `Idempotency-Replayed` is true, the inbox
+            a previous identical request created. A replay reports the resource
+            as it was at creation; it is a record of what the request did, not
+            an assertion that the inbox still exists, so a replay followed by a
+            fetch may yield `404` once the inbox has expired.
           headers:
             X-Correlation-Id: { $ref: "#/components/headers/correlationId" }
+            Idempotency-Replayed: { $ref: "#/components/headers/idempotencyReplayed" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Inbox" }
@@ -431,6 +493,14 @@ paths:
             Clients must discriminate on the problem `type`, never on the
             status code. Quota exhaustion carries no `Retry-After`: waiting
             does not help, the caller must free capacity.
+
+            With an `Idempotency-Key`, two further types are possible:
+            `idempotency-key-reused` (the key is bound to a different logical
+            request — retrying with it can never succeed) and
+            `idempotency-request-in-progress` (a concurrent identical request
+            is still running — carries `Retry-After`, and retrying is correct).
+
+            Neither an address conflict nor a quota refusal binds the key.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
@@ -598,6 +668,8 @@ paths:
         again (ADR-032 §4). The new key belongs to the caller's own workspace
         and project, which are derived from the authenticated credential and
         can never be supplied by the client.
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
       requestBody:
         required: true
         content:
@@ -626,6 +698,27 @@ paths:
             (`type: https://testinbox.email/problems/missing-scope`), or asked
             for a scope it does not itself hold
             (`type: https://testinbox.email/problems/scope-escalation`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "409":
+          description: >
+            Only with an `Idempotency-Key`, and this endpoint **suppresses the
+            duplicate rather than replaying the response** (ADR-033 §8).
+
+            `type: https://testinbox.email/problems/idempotency-secret-not-replayable`
+            — this exact request already created a credential. It is named by
+            `apiKeyId` and `publicId` so it can be revoked without a list call,
+            but its secret was returned once and cannot be re-issued: nothing
+            in the system retains it (ADR-032 §4). Revoke it and mint again
+            under a fresh key.
+
+            A refusal rather than a `200` with the credential omitted, so a
+            client cannot write an absent secret into its store and fail
+            somewhere else later.
+
+            Also possible: `idempotency-key-reused` and
+            `idempotency-request-in-progress`, as for inbox creation.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
