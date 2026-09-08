@@ -294,41 +294,7 @@ internal class Transport(
             // `scope-escalation` — so the problem type travels with it.
             status == 403 -> TestInboxForbiddenException(detail, problem.correlationId, problem.type, status)
             status == 404 -> TestInboxNotFoundException(detail, problem.correlationId, problem.type, status)
-            // Two distinct 409s share this status (ADR-021 vs ADR-027), so the
-            // problem type — not the status code — decides which error this is.
-            status == 409 && problem.type?.endsWith("/quota-exceeded") == true ->
-                TestInboxQuotaExceededException(
-                    detail,
-                    problem.correlationId,
-                    quota = problem.quota,
-                    limit = problem.limit,
-                    current = problem.current,
-                )
-            // Several distinct 409s share this status (ADR-021, ADR-027,
-            // ADR-033) and their correct client actions differ — free
-            // capacity, wait out a cooldown, retry with the same key, never
-            // reuse the key, or revoke and re-mint. Discriminating on the
-            // problem type is what docs/api/principles.md #3 asks of a client.
-            status == 409 && problem.type?.endsWith("/idempotency-request-in-progress") == true ->
-                TestInboxIdempotencyInProgressException(detail, problem.correlationId, retryAfter)
-            status == 409 && problem.type?.endsWith("/idempotency-secret-not-replayable") == true ->
-                TestInboxCredentialAlreadyCreatedException(
-                    detail,
-                    problem.correlationId,
-                    problem.apiKeyId,
-                    problem.publicId,
-                )
-            status == 409 &&
-                (
-                    problem.type?.endsWith("/idempotency-key-reused") == true ||
-                        problem.type?.endsWith("/idempotency-replay-unavailable") == true
-                ) ->
-                // The two terminal types share one exception because they ask
-                // the same thing of a caller, but `problemType` is carried so
-                // "my key scheme is wrong" stays distinguishable from "an
-                // artifact rollback ate my record".
-                TestInboxIdempotencyConflictException(detail, problem.correlationId, problem.type)
-            status == 409 -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
+            status == 409 -> mapConflict(problem, detail, retryAfter)
             status == 410 -> TestInboxInboxGoneException(detail, problem.correlationId, problem.type, status)
             status == 429 ->
                 TestInboxRateLimitException(
@@ -340,6 +306,51 @@ internal class Transport(
                     remaining = headers.firstValue("RateLimit-Remaining").orElse(null)?.toLongOrNull(),
                 )
             else -> TestInboxApiException(status, problem.type, detail, problem.correlationId)
+        }
+    }
+
+    /**
+     * Several distinct `409`s share that status (ADR-021, ADR-027, ADR-033)
+     * and their correct client actions differ — free capacity, wait out a
+     * cooldown, retry with the same key, never reuse the key, or revoke and
+     * re-mint. Discriminating on the problem type rather than the status code
+     * is what `docs/api/principles.md` #3 asks of a client.
+     *
+     * Split out of [mapError] because the conflict family alone carries more
+     * branches than every other status put together.
+     */
+    private fun mapConflict(
+        problem: ProblemDto,
+        detail: String,
+        retryAfter: java.time.Duration?,
+    ): RuntimeException {
+        val type = problem.type
+        return when {
+            type?.endsWith("/quota-exceeded") == true ->
+                TestInboxQuotaExceededException(
+                    detail,
+                    problem.correlationId,
+                    quota = problem.quota,
+                    limit = problem.limit,
+                    current = problem.current,
+                )
+            type?.endsWith("/idempotency-request-in-progress") == true ->
+                TestInboxIdempotencyInProgressException(detail, problem.correlationId, retryAfter)
+            type?.endsWith("/idempotency-secret-not-replayable") == true ->
+                TestInboxCredentialAlreadyCreatedException(
+                    detail,
+                    problem.correlationId,
+                    problem.apiKeyId,
+                    problem.publicId,
+                )
+            // The two terminal types share one exception because they ask the
+            // same thing of a caller, but `problemType` is carried so "my key
+            // scheme is wrong" stays distinguishable from "an artifact
+            // rollback ate my record".
+            type?.endsWith("/idempotency-key-reused") == true ||
+                type?.endsWith("/idempotency-replay-unavailable") == true ->
+                TestInboxIdempotencyConflictException(detail, problem.correlationId, type)
+            else -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
         }
     }
 }
