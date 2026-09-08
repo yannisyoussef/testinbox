@@ -1,7 +1,11 @@
 # TI-004 — Inbound provider decision brief
 
-**Status of this document:** decision input. **ADR-004 remains `Proposed`** and is
-not marked Accepted here — §15 supplies replacement text for the owner to adopt.
+**Status of this document:** decision input — **now decided.** The owner issued an
+authoritative decision on 2026-09-08; it is recorded verbatim in scope at the top
+of §17 and it selects the recommendation below. **ADR-004 is still `Proposed` in
+this repository** and Ops is not the party that changes it — per owner decision
+item 13, the application team updates ADR-004 to `Accepted`. §15 supplies text;
+the owner's decision supersedes it where they differ.
 
 **Scope:** the production inbound-mail provider choice, and the internet-ingress
 hardening that follows from it. No provider is implemented. No AWS resource is
@@ -857,3 +861,200 @@ answer; everything above is an owner decision.
 
 No provider implemented. No AWS resource created. No MX record created. No
 production deployment. ADR-004 not marked Accepted. No legal advice given.
+
+---
+
+## 17. Owner decision, and the Ops work it authorises
+
+**Decided 2026-09-08.** The owner reviewed both analyses and the reconciliation
+and issued an authoritative 13-point decision. Summarised here so this document
+is self-contained; the decision itself governs.
+
+| # | Decision | Effect on this brief |
+|---|---|---|
+| 1 | Internet-originated mail **approved in principle**, within the existing product boundary (inbound-only; tenant-owned inboxes; ephemeral content; not a disposable-mail service; not a relay; unknown-recipient mail not retained). Public activation still gated on privacy policy, terms, abuse process, retention documentation and legal review | §10 checkpoint is **cleared for design and implementation**, not for public activation |
+| 2 | **Keep ADR-025.** Do not supersede or weaken it | Errata 3 / §2 / §12a decide the provider question. No accept-then-store provider is admissible |
+| 3 | **Self-hosted Postfix**, dedicated SMTP edge, first production inbound provider. Managed inbound documented as fallback, not permanently rejected; adopting one later needs a new owner decision and an ADR supersession | §13 recommendation adopted, with its fallback framing intact |
+| 4 | Edge topology: Internet → dedicated EU SMTP edge VPS → Postfix → authenticated private relay → ingestion on OVH. Minimum state and privilege. **Not** Contabo US staging, **not** the Contabo EU privileged CI runner, **not** the shared OVH application host | §1 architecture adopted, with the host exclusions made explicit |
+| 5 | New small EU VPS **approved in principle**; Ops must confirm inbound TCP/25, stable public IPv4, PTR/rDNS control, firewall/network control and mail-compatible provider terms **before** provisioning. ~2 vCPU / 2–4 GB / 40–80 GB, capability over size | §11 Q1–Q3 are now an Ops action item. Answered in §18 |
+| 6 | The edge **must have a named human operational owner** before public MX. The Ops agent may implement and operate through automation but is not the accountable owner. Runbooks required | §13 precondition confirmed as a hard gate. **Still unfilled** |
+| 7 | EU residency: edge in EU, data plane on OVH France. Production raw MIME must not traverse the US staging host | §11 Q7 constraint tightened |
+| 8 | `testinbox.email MX 10 mx1.testinbox.email`, `mx1` A → edge IP. No MX during design/implementation. DNS-only, never Cloudflare-proxied | See §19 — this interacts with decision 9 and needs one more owner call before any record is created |
+| 9 | `abuse@`, `security@`, `postmaster@testinbox.email` prepared and **monitored** before public ingress. Operational contacts, not tenant inboxes | See §19 |
+| 10 | Raw MIME and attachments deliberately not backed up; configuration and operational state may be. No backup may silently retain content beyond the documented window | §10 item 10 answered |
+| 11 | Public MX blocked until the Postfix relay hop is in the automated rehearsal, proving: active recipient accepted; nonexistent recipient body never persisted; multi-recipient behaviour; downstream 451/retry; size limits; connection/recipient abuse limits; end-to-end delivery | §13 precondition confirmed, and **strengthened** — the "nonexistent recipient never persisted" case makes ADR-025 an executable test rather than a claim |
+| 12 | **Does not authorise production deployment.** TI-DEPLOY-001 blockers remain independent: OVH monitoring, backups, `DOCKER-USER`, storage isolation/quota, production secrets, deployment validation. No production MX, no public SMTP, no production traffic | Unchanged |
+| 13 | Application team may move ADR-004 `Proposed` → `Accepted`, preserving the managed-provider analysis, the revisit conditions, and the original Proposed history | Not Ops's to action |
+
+**What this authorises Ops to do now:** confirm an edge host provider (§18),
+design the edge and its relay, build the rehearsal harness for decision 11, and
+write the runbooks decision 6 requires.
+
+**What it does not authorise:** purchasing or provisioning before §18's
+confirmations are closed, creating any MX or `mx1` record, enabling public SMTP,
+or any production deployment.
+
+---
+
+## 18. Decision 5 — edge host provider confirmation
+
+### 18.1 The criterion that cannot be confirmed from documentation
+
+Decision 5 asks Ops to confirm **inbound TCP/25** before provisioning. No
+provider publishes an inbound-25 statement, because inbound 25 is the normal
+case — what providers publish, uniformly, is **outbound** policy, since outbound
+25 is the spam vector. Every "port 25 blocked" result for Hetzner, OVH and
+Contabo refers to egress.
+
+That has two consequences and they should be stated plainly rather than papered
+over:
+
+1. **Inbound 25 can only be confirmed empirically, on the real IP, after
+   provisioning.** Any pre-purchase claim is inference. The honest way to satisfy
+   decision 5 is therefore to confirm the four *documentable* criteria first,
+   then provision into a **cancellation or short-billing window** and make
+   inbound 25 the first test performed — before any DNS, any configuration, and
+   before the host is treated as committed.
+2. **Outbound 25 is not a requirement for this edge, and its absence is a
+   safety property.** TestInbox never sends (`v=spf1 -all`, DMARC reject). The
+   edge relays over a private authenticated channel, not over port 25. An edge
+   that physically cannot open an outbound SMTP connection cannot be conscripted
+   as a spam source if it is ever compromised — which is the single most likely
+   bad outcome for an internet-facing MTA. **Recommend leaving outbound 25
+   blocked and never requesting an unblock.** See §18.4 for the one thing that
+   depends on it.
+
+### 18.2 The four documentable criteria
+
+| Criterion | Hetzner Cloud (Falkenstein/Nuremberg/Helsinki) | OVHcloud VPS (Gravelines/Strasbourg) | Contabo VPS (EU) |
+|---|---|---|---|
+| Stable public IPv4 | Yes — Primary IP is a separate resource that survives server rebuild | Yes — fixed for the VPS lifetime | Yes — fixed |
+| PTR / rDNS control | Yes — Cloud Console → Networking, self-service | Yes — Manager, self-service | Yes — Customer Control Panel → Reverse DNS Management, self-service |
+| Firewall / network control | **Yes, and best in class** — Cloud Firewalls are stateful and enforced *outside* the VM, so they hold even if the host is compromised | Partial — host-level only for VPS in practice; OVH's network firewall is oriented at dedicated/Additional IP | **No provider-level firewall** — host `ufw`/nftables only |
+| Terms compatible with inbound mail | Yes — mail servers permitted; egress 25 gated behind an account-age + limit-request process | Yes — mail servers permitted; egress subject to an anti-spam system that can re-block a flagged IP, escalating to permanent | Yes — mail servers permitted; egress rate-limited (~25 msg/min reported) |
+| EU region | Yes | Yes (and same country as the data plane) | Yes |
+
+**Empirically established, not inferred:** outbound TCP/25 is **currently
+unblocked** from the Contabo US host — verified by direct TCP connect to two
+unrelated public MX hosts on 2026-09-08 (`142.250.31.27:25`,
+`188.165.47.122:25`, both established; `1.1.1.1:25` timed out, as a negative
+control). That establishes Contabo's account-level posture. It says nothing
+about a *new* EU instance's inbound path, which is §18.1's point.
+
+### 18.3 Recommendation
+
+**Hetzner Cloud, EU region (Falkenstein or Helsinki), CX23-class or equivalent
+(2 vCPU / 4 GB / 40 GB).** Reasons, in order:
+
+1. **Provider-enforced firewalling outside the VM.** This is the only criterion
+   on which the candidates genuinely differ, and it is the one that matters most
+   for the single internet-facing daemon in the estate. Decision 4 requires the
+   edge to hold minimum privilege; a firewall the host cannot edit is the
+   strongest available expression of that, and it is the control that still holds
+   in the scenario we are actually defending against.
+2. **Hourly billing and minutes-to-destroy.** This is what makes decision 5's
+   "confirm before committing" achievable rather than a formality: provision,
+   test inbound 25, destroy if it fails, at trivial cost. Neither OVH nor Contabo
+   offers a comparable window.
+3. **Outbound 25 blocked by default on a new account** — a drawback everywhere
+   else, a feature here (§18.1 point 2), and one we get without configuring
+   anything.
+4. **Supplier separation.** The data plane is OVH. Putting the edge on a
+   different provider means a single provider incident cannot take out both the
+   edge and the application at once. This cuts against the "no new supplier"
+   instinct and I think it wins: the edge exists precisely to be the thing that
+   absorbs failure.
+
+**Runner-up: a new Contabo EU VPS.** Cheapest, an existing supplier
+relationship, rDNS self-service, outbound 25 already proven open on our account.
+Rejected as the default on one criterion: **no provider-level firewall**, so
+every network control on the edge would be host-resident and therefore inside
+the blast radius of the daemon it is protecting.
+
+**Not recommended: OVHcloud VPS.** It would satisfy EU residency in the same
+country as the data plane and keep the supplier count unchanged, but it
+concentrates the edge and the entire production data plane behind one provider,
+and OVH's anti-spam system can re-block a flagged IP with escalation to
+permanent — an availability dependency on an egress-reputation mechanism we do
+not otherwise need, on the one host whose whole job is to be reachable.
+
+**Decision 5 is therefore *not yet closed*.** The four documentable criteria are
+confirmed for all three candidates. The fifth — inbound 25 — is confirmable only
+after provisioning, so the recommendation is: approve Hetzner, provision one
+instance, and treat the first hour as the confirmation step with destruction as
+the defined outcome if inbound 25 does not arrive.
+
+### 18.4 A design point that decision 5 surfaces: the edge must never bounce
+
+Postfix's default behaviour when a queued message exceeds `maximal_queue_lifetime`
+is to return a non-delivery notification to the envelope sender. That is wrong
+for this edge on three separate grounds, and it is worth fixing in the design
+rather than discovering the first time ingestion is down for a long weekend:
+
+- it **requires outbound 25**, which §18.1 recommends never enabling;
+- it is **backscatter** to an address we have not verified, which is precisely
+  the behaviour that gets a young MX blocklisted;
+- it is a **weak information leak** against ADR-025 — an NDN tells the sender
+  something about what happened downstream, where the uniform `250` was designed
+  to tell them nothing.
+
+The edge configuration must therefore suppress sender-directed NDNs and convert
+queue expiry into an **operational alert** instead — a queue-age and queue-depth
+signal into the existing Prometheus/Uptime Kuma path, firing well before the
+lifetime expires. I have not fixed the exact Postfix parameters here because I
+have not verified them against a running instance, and this document has already
+been corrected once for asserting a mechanism that was not there; they belong in
+the edge build with a test behind them. Recorded as a **required property of the
+edge**, not a preference.
+
+---
+
+## 19. One conflict between decisions 8 and 9, needing an owner call before any DNS
+
+Decision 8 puts `MX 10 mx1.testinbox.email` on the **apex**. Decision 9 requires
+`abuse@`, `security@` and `postmaster@testinbox.email` to be monitored operational
+addresses before public ingress. Those two cannot both hold as written, because
+once the apex MX points at the edge, **every** address at `testinbox.email`
+resolves to the edge — including the three operational ones — and the edge's
+correct behaviour for a non-tenant address, under decisions 2 and 11, is to
+accept with a uniform `250` and never persist it.
+
+The result would be that `abuse@testinbox.email` silently discards. That is the
+worst available outcome: RFC 2142 makes `postmaster@` mandatory, an unreachable
+`abuse@` is how a new MX gets escalated to blocklisting rather than contacted,
+and it fails decision 9's word "monitored" while appearing to satisfy it.
+
+Two ways out. Both are cheap **now** and expensive after tenant addresses exist.
+
+**Option A — tenant inboxes on a subdomain (recommended).**
+
+```
+inbox.testinbox.email   MX 10 mx1.testinbox.email   # tenant mail → edge
+testinbox.email         MX …                        # apex → ordinary mailbox provider
+mx1.testinbox.email     A  <edge-ip>                # DNS-only, never proxied
+```
+
+The edge is then authoritative only for tenant mail, so uniform-`250`-and-discard
+is unambiguously correct and ADR-025 is enforced on exactly the traffic it was
+written for. The apex keeps working through a conventional provider, so the three
+operational addresses are real monitored mailboxes with no edge special-casing,
+no aliases, and no outbound 25. It also means a future managed-provider decision
+touches one subdomain rather than the company's whole mail identity.
+
+Cost: tenant addresses become `something@inbox.testinbox.email`. That is a
+**product** decision, not an Ops one — the address is customer-visible and
+appears in every SDK example.
+
+**Option B — keep the apex, special-case the three addresses at the edge.**
+Tenant addresses stay `something@testinbox.email`. The edge carries a small,
+explicitly-audited alias map for exactly `abuse`, `security` and `postmaster`,
+diverting them before the ingestion relay. Costs: those three local-parts must be
+permanently reserved against ADR-021 exact-address reservation, so the
+application must know about them too; the divert path needs somewhere to go that
+does not require outbound 25; and the edge grows a recipient-conditional branch,
+which is the exact class of configuration §3 warns about — get it wrong in the
+other direction and it becomes an enumeration oracle.
+
+**Ops recommends Option A** and will not create any DNS record until the owner
+chooses. Neither analysis covered this, and it is the one item in the decision
+that gets materially harder to change later.
