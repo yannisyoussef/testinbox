@@ -24,7 +24,13 @@ class TestInboxClientTest {
     private lateinit var server: HttpServer
     private lateinit var client: TestInboxClient
 
-    data class RecordedRequest(val method: String, val path: String, val auth: String?, val body: String)
+    data class RecordedRequest(
+        val method: String,
+        val path: String,
+        val auth: String?,
+        val body: String,
+        val userAgent: String? = null,
+    )
 
     data class ScriptedResponse(val status: Int, val body: String, val delayMillis: Long = 0)
 
@@ -42,6 +48,7 @@ class TestInboxClientTest {
                     exchange.requestURI.path,
                     exchange.requestHeaders.getFirst("Authorization"),
                     body,
+                    exchange.requestHeaders.getFirst("User-Agent"),
                 )
             val scripted = responses.poll() ?: ScriptedResponse(500, """{"title":"unscripted"}""")
             if (scripted.delayMillis > 0) Thread.sleep(scripted.delayMillis)
@@ -374,5 +381,15 @@ class TestInboxClientTest {
         // The request body carries the *requested scopes*, never a credential.
         assertFalse(request.body.contains("tk_unit"))
         assertTrue(request.body.contains("api-keys:manage"))
+    }
+
+    @Test
+    fun `every request identifies this SDK rather than the runtime`() {
+        script(201, inboxJson)
+        runBlocking { client.createInbox() }
+        assertEquals(
+            "testinbox-sdk-jvm/${email.testinbox.client.internal.transport.SDK_VERSION}",
+            requests.last().userAgent,
+        )
     }
 }
