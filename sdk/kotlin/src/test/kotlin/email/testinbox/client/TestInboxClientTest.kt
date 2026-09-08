@@ -30,6 +30,7 @@ class TestInboxClientTest {
         val auth: String?,
         val body: String,
         val idempotencyKey: String? = null,
+        val userAgent: String? = null,
     )
 
     data class ScriptedResponse(val status: Int, val body: String, val delayMillis: Long = 0)
@@ -49,6 +50,7 @@ class TestInboxClientTest {
                     exchange.requestHeaders.getFirst("Authorization"),
                     body,
                     exchange.requestHeaders.getFirst("Idempotency-Key"),
+                    exchange.requestHeaders.getFirst("User-Agent"),
                 )
             val scripted = responses.poll() ?: ScriptedResponse(500, """{"title":"unscripted"}""")
             if (scripted.delayMillis > 0) Thread.sleep(scripted.delayMillis)
@@ -434,5 +436,15 @@ class TestInboxClientTest {
         // conflict or a quota refusal, which are also 409.
         assertEquals("22222222-2222-2222-2222-222222222222", error.apiKeyId)
         assertEquals("abcdefghijklmnop", error.publicId)
+    }
+
+    @Test
+    fun `every request identifies this SDK rather than the runtime`() {
+        script(201, inboxJson)
+        runBlocking { client.createInbox() }
+        assertEquals(
+            "testinbox-sdk-jvm/${email.testinbox.client.internal.transport.SDK_VERSION}",
+            requests.last().userAgent,
+        )
     }
 }

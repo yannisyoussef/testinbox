@@ -269,32 +269,50 @@ and problems, never values; the migrator logs versions, never its JDBC URL; and
 the handoff script keeps the trigger token out of argv and out of every message
 it prints.
 
-## The edge applies bot protection, and it does not know your script
+## The edge fingerprints clients, and one stdlib default matches a scraper
 
-Cloudflare's Browser Integrity Check sits in front of staging and answers some
-non-browser clients with **`Error 1010: Access denied`** before the request
-reaches Traefik. Observed: `Python-urllib/3.12` is refused on `POST`; `curl`
-and Node's `fetch` are not.
+Cloudflare's Browser Integrity Check sits in front of staging and answers a
+narrow set of client signatures with **`Error 1010: Access denied`** before the
+request reaches Traefik.
 
-This is a property of the **zone**, not of TestInbox — nothing in this
-repository can see it, and the synthetic suites do not exercise it because both
-shipped SDKs use clients that pass (Node `fetch` in TypeScript, `HttpClient` in
-the JVM SDK). It surfaces when someone writes an ad-hoc script.
+The measured behaviour, after Ops re-tested it properly:
+
+| Client | Result |
+|---|---|
+| `Python-urllib/3.12` (stdlib default UA) | refused |
+| `requests` / `httpx` | pass |
+| `curl`, Node `fetch`, JVM `HttpClient` | pass |
+| **no `User-Agent` at all** | pass |
+
+So it is **not** "bot protection blocks non-browser clients" — an earlier
+version of this page said that, and it was wrong. One notorious scraper
+signature is refused; the libraries anyone actually writes Python API code with
+are not, and neither is an empty `User-Agent`.
+
+**Browser Integrity Check stays on.** The trade that would have justified
+removing it does not exist: it would give up a working control to accommodate a
+single stdlib default that almost nobody uses directly.
 
 If you hit a `1010`:
 
 - It is not an authentication failure. A TestInbox refusal is
   `application/problem+json` with a `correlationId`; a `1010` is a Cloudflare
-  HTML page. If the body is HTML, the request never reached us.
-- Set an explicit `User-Agent`, or use a client the zone accepts.
+  HTML page. **If the body is HTML, the request never reached us.**
+- Send any explicit `User-Agent`, or use `requests`/`httpx`.
 
-The durable fix is an Ops decision about the zone, and there are two honest
-options: relax Browser Integrity Check for the API hostname — reasonable, since
-this is an API surface whose only credential is a bearer token and whose abuse
-model (`docs/security/abuse-model.md`) is handled by ADR-027 limits rather than
-by challenging clients — or keep it and document a required `User-Agent`.
-Leaving it undecided is the bad outcome, because the failure mode is a
-confusing HTML page in someone's terminal.
+### What this did surface
+
+No shipped SDK sent a `User-Agent`. They passed on their runtime's default,
+which meant the deployment gate's ability to reach its own API rested on an
+unexamined interaction between Node's default and a Cloudflare heuristic.
+Harmless — an empty UA passes, so even a runtime change was unlikely to break
+it — but nobody would have predicted that failure or diagnosed it quickly.
+
+Both SDKs now send one (`testinbox-sdk-ts/…`, `testinbox-sdk-jvm/…`), which is
+good practice independent of Cloudflare: it makes SDK traffic attributable in
+access logs and separable from ad-hoc calls when debugging a customer's report.
+A test in each SDK holds the advertised version to the one the package actually
+ships, because a stale version in someone else's log is worse than none.
 
 ## Idempotency needs one database setting
 

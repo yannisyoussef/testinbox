@@ -59,3 +59,12 @@
     key-creation call uninvokable from the language it was added for. No Kotlin
     test could have noticed.
 
+13. **Every request identifies the SDK.** Both clients send
+    `User-Agent: testinbox-sdk-<lang>/<version>`, and a test in each holds that
+    version to the one the package actually ships. Until TI-003 neither did, so
+    requests were attributed to whatever the runtime defaulted to — which meant
+    reaching a Cloudflare-fronted deployment depended on an unexamined
+    interaction between a runtime default and an edge heuristic. Declaring it
+    turns an accidental dependency into a stated one, and makes SDK traffic
+    separable from ad-hoc calls in an access log.
+

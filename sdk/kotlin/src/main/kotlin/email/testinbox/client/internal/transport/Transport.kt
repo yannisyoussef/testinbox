@@ -153,6 +153,20 @@ internal data class ProblemDto(
     val publicId: String? = null,
 )
 
+/**
+ * Identifies this SDK in the server's access logs.
+ *
+ * Until now no shipped SDK sent one, so requests were attributed to whatever
+ * the runtime defaulted to. Staging Ops found the consequence: reaching the
+ * deployed API depended on an unexamined interaction between a runtime default
+ * and a Cloudflare heuristic — harmless in practice, but nothing would have
+ * predicted or quickly diagnosed it if it had not been.
+ *
+ * Kept in step with the Gradle version by `SdkVersionTest`.
+ */
+internal const val SDK_VERSION = "0.1.0-SNAPSHOT"
+internal const val USER_AGENT = "testinbox-sdk-jvm/$SDK_VERSION"
+
 internal class Transport(
     private val baseUrl: String,
     private val apiKey: String,
@@ -247,6 +261,7 @@ internal class Transport(
             HttpRequest.newBuilder(URI.create(baseUrl.trimEnd('/') + path))
                 .header("Authorization", "Bearer $apiKey")
                 .header("Accept", "application/json, message/rfc822, application/octet-stream")
+                .header("User-Agent", USER_AGENT)
         // Sent verbatim; never generated or rewritten here (ADR-033).
         idempotencyKey?.let { builder.header("Idempotency-Key", it) }
         if (body != null) {

@@ -1,4 +1,6 @@
+import { readFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { SDK_VERSION } from "./internal/transport";
 import {
   TestInboxApiError,
   TestInboxAuthError,
@@ -441,7 +443,10 @@ describe("rate limits and quotas (ADR-027)", () => {
           retryAfterSeconds: 7,
           correlationId: "c-429",
         },
-        { "content-type": "application/problem+json" },
+        // A string, not an object: `jsonResponse` takes the content type
+        // directly, so the object form silently produced `[object Object]` and
+        // this test was not exercising `application/problem+json` at all.
+        "application/problem+json",
       ),
     );
 
@@ -824,5 +829,25 @@ describe("idempotency (ADR-033)", () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(TestInboxConflictError);
     expect(error).not.toBeInstanceOf(TestInboxIdempotencyConflictError);
+  });
+});
+
+describe("user agent", () => {
+  it("identifies the SDK on every request", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { id: INBOX_ID, address: "a@b.test" }));
+    await client().createInbox();
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["user-agent"]).toBe(
+      `testinbox-sdk-ts/${SDK_VERSION}`,
+    );
+  });
+
+  it("declares the version the package actually ships", async () => {
+    // The point of the header is attribution in someone else's access log, so
+    // a version that drifts from the published package is worse than none.
+    const pkg = JSON.parse(
+      await readFile(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+    expect(SDK_VERSION).toBe(pkg.version);
   });
 });
