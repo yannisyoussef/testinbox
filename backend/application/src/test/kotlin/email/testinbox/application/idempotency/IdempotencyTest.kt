@@ -111,7 +111,7 @@ class IdempotencyTest {
         metrics: IdempotencyMetrics,
     ) = Idempotency(records, tx, Clock.fixed(Instant.parse("2026-09-08T12:00:00Z"), ZoneOffset.UTC), metrics = metrics)
 
-    private fun outcomes(mutationResult: Result) =
+    private fun outcomes() =
         Idempotency.Outcomes<Result>(
             replay = { Result.Replayed },
             keyReused = { Result.Reused },
@@ -133,7 +133,7 @@ class IdempotencyTest {
                 request = request,
                 scope = { scope },
                 fingerprint = { "fp" },
-                outcomes = outcomes(mutationResult),
+                outcomes = outcomes(),
                 replayBoundToActor = replayBoundToActor,
             ) { mutationResult }
         return Triple(result, records, metrics)
