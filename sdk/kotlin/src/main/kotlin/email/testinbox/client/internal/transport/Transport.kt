@@ -103,6 +103,38 @@ internal data class WaitResultDto(
 )
 
 @Serializable
+internal data class ApiKeyDto(
+    val id: String,
+    val publicId: String,
+    val name: String? = null,
+    val scopes: List<String> = emptyList(),
+    val createdAt: String? = null,
+    val expiresAt: String? = null,
+    val revokedAt: String? = null,
+    val lastUsedAt: String? = null,
+    val createdByApiKeyId: String? = null,
+)
+
+/**
+ * The wire shape of the one response that carries a credential. The secret
+ * sits beside the metadata rather than inside it, which is what lets the
+ * public [email.testinbox.client.ApiKeyMetadata] type have no field for it at
+ * all (ADR-032 §4).
+ */
+@Serializable
+internal data class CreatedApiKeyDto(val apiKey: ApiKeyDto, val key: String)
+
+@Serializable
+internal data class ApiKeyPageDto(val items: List<ApiKeyDto> = emptyList(), val nextCursor: String? = null)
+
+@Serializable
+internal data class CreateApiKeyRequestDto(
+    val name: String? = null,
+    val scopes: List<String>,
+    val expiresInSeconds: Long? = null,
+)
+
+@Serializable
 internal data class ProblemDto(
     val type: String? = null,
     val title: String? = null,
@@ -161,6 +193,31 @@ internal class Transport(
 
     suspend fun rawMime(messageId: String): ByteArray = execute("GET", "/v1/messages/$messageId/raw")
 
+    suspend fun createApiKey(request: CreateApiKeyRequestDto): CreatedApiKeyDto =
+        json.decodeFromString(
+            CreatedApiKeyDto.serializer(),
+            String(execute("POST", "/v1/api-keys", json.encodeToString(CreateApiKeyRequestDto.serializer(), request))),
+        )
+
+    suspend fun listApiKeys(cursor: String?, limit: Int?): ApiKeyPageDto {
+        val query =
+            listOfNotNull(
+                cursor?.let { "cursor=" + java.net.URLEncoder.encode(it, Charsets.UTF_8) },
+                limit?.let { "limit=$it" },
+            ).joinToString("&")
+        return json.decodeFromString(
+            ApiKeyPageDto.serializer(),
+            String(execute("GET", "/v1/api-keys" + if (query.isEmpty()) "" else "?$query")),
+        )
+    }
+
+    suspend fun getApiKey(id: String): ApiKeyDto =
+        json.decodeFromString(ApiKeyDto.serializer(), String(execute("GET", "/v1/api-keys/$id")))
+
+    suspend fun revokeApiKey(id: String) {
+        execute("DELETE", "/v1/api-keys/$id")
+    }
+
     private suspend fun execute(method: String, path: String, body: String? = null): ByteArray {
         val builder =
             HttpRequest.newBuilder(URI.create(baseUrl.trimEnd('/') + path))
@@ -191,9 +248,11 @@ internal class Transport(
             (problem.retryAfterSeconds ?: headers.firstValue("Retry-After").orElse(null)?.toLongOrNull())
                 ?.let(java.time.Duration::ofSeconds)
         return when {
-            status == 401 -> TestInboxAuthException(detail, problem.correlationId)
-            status == 403 -> TestInboxForbiddenException(detail, problem.correlationId)
-            status == 404 -> TestInboxNotFoundException(detail, problem.correlationId)
+            status == 401 -> TestInboxAuthException(detail, problem.correlationId, problem.type, status)
+            // 403 carries two meanings — `missing-scope` and
+            // `scope-escalation` — so the problem type travels with it.
+            status == 403 -> TestInboxForbiddenException(detail, problem.correlationId, problem.type, status)
+            status == 404 -> TestInboxNotFoundException(detail, problem.correlationId, problem.type, status)
             // Two distinct 409s share this status (ADR-021 vs ADR-027), so the
             // problem type — not the status code — decides which error this is.
             status == 409 && problem.type?.endsWith("/quota-exceeded") == true ->
@@ -205,7 +264,7 @@ internal class Transport(
                     current = problem.current,
                 )
             status == 409 -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
-            status == 410 -> TestInboxInboxGoneException(detail, problem.correlationId)
+            status == 410 -> TestInboxInboxGoneException(detail, problem.correlationId, problem.type, status)
             status == 429 ->
                 TestInboxRateLimitException(
                     detail,

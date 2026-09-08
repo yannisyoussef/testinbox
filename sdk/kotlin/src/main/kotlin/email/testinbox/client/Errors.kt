@@ -1,19 +1,54 @@
 package email.testinbox.client
 
-/** Base type for every TestInbox SDK failure (docs/sdk/principles.md #6). */
+/**
+ * Base type for every TestInbox SDK failure (docs/sdk/principles.md #6).
+ *
+ * [problemType] carries the RFC 7807 `type` URI whenever the server sent one.
+ * It is on the base rather than only on [TestInboxApiException] because one
+ * status can carry two meanings: `403` is either `missing-scope` ("use a
+ * different key") or `scope-escalation` ("ask for fewer scopes"), and without
+ * this a caller would have to substring-match a human-readable `detail` to
+ * tell them apart. The TypeScript SDK has always exposed it this way.
+ */
 open class TestInboxException(
     message: String,
     val correlationId: String? = null,
+    /** Stable RFC 7807 `type` URI, when the server sent a problem body. */
+    val problemType: String? = null,
+    /** HTTP status, when the failure came from a response. */
+    val status: Int? = null,
 ) : RuntimeException(message)
 
-class TestInboxAuthException(message: String, correlationId: String? = null) :
-    TestInboxException(message, correlationId)
+/**
+ * The server's response did not match the committed contract — a required
+ * field absent, or a timestamp that will not parse.
+ *
+ * Typed rather than an escaping `DateTimeParseException`: an untyped exception
+ * from a dependency's internals is not something a caller can reasonably
+ * handle, and it violates principle #6.
+ */
+class TestInboxProtocolException(message: String) : TestInboxException(message)
 
-class TestInboxForbiddenException(message: String, correlationId: String? = null) :
-    TestInboxException(message, correlationId)
+class TestInboxAuthException(
+    message: String,
+    correlationId: String? = null,
+    problemType: String? = null,
+    status: Int? = null,
+) : TestInboxException(message, correlationId, problemType, status)
 
-class TestInboxNotFoundException(message: String, correlationId: String? = null) :
-    TestInboxException(message, correlationId)
+class TestInboxForbiddenException(
+    message: String,
+    correlationId: String? = null,
+    problemType: String? = null,
+    status: Int? = null,
+) : TestInboxException(message, correlationId, problemType, status)
+
+class TestInboxNotFoundException(
+    message: String,
+    correlationId: String? = null,
+    problemType: String? = null,
+    status: Int? = null,
+) : TestInboxException(message, correlationId, problemType, status)
 
 class TestInboxConflictException(
     message: String,
@@ -22,8 +57,12 @@ class TestInboxConflictException(
     val retryAfterSeconds: Long? = null,
 ) : TestInboxException(message, correlationId)
 
-class TestInboxInboxGoneException(message: String, correlationId: String? = null) :
-    TestInboxException(message, correlationId)
+class TestInboxInboxGoneException(
+    message: String,
+    correlationId: String? = null,
+    problemType: String? = null,
+    status: Int? = null,
+) : TestInboxException(message, correlationId, problemType, status)
 
 /**
  * The workspace's request budget for this operation is exhausted (HTTP 429,
@@ -58,12 +97,18 @@ class TestInboxQuotaExceededException(
     val current: Long? = null,
 ) : TestInboxException(message, correlationId)
 
+/**
+ * Any failure the SDK does not model more specifically.
+ *
+ * [statusCode] is retained as a distinct name for source compatibility; it is
+ * the same value as the inherited [status].
+ */
 class TestInboxApiException(
     val statusCode: Int,
-    val problemType: String?,
+    problemType: String?,
     message: String,
     correlationId: String? = null,
-) : TestInboxException(message, correlationId)
+) : TestInboxException(message, correlationId, problemType, statusCode)
 
 /**
  * The caller's overall wait timeout expired (distinct from a chainable

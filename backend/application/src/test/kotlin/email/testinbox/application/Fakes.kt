@@ -371,3 +371,145 @@ class FakeWaitSlots : WaitSlots {
 
     override fun reapExpired(): Int = 0
 }
+
+/**
+ * In-memory [email.testinbox.application.port.ApiKeyRepository].
+ *
+ * It reproduces the *contract* the JDBC adapter is written to — managed-only
+ * lookups, an atomic revoke that reports what it matched, and a guarded
+ * `last_used_at` refresh — rather than being a permissive map. A fake that
+ * ignored those restrictions would let the use-case tests pass against
+ * behaviour the real adapter does not have.
+ */
+class InMemoryApiKeyRepository : email.testinbox.application.port.ApiKeyRepository {
+    val keys = java.util.concurrent.ConcurrentHashMap<email.testinbox.domain.ApiKeyId, email.testinbox.domain.tenant.ApiKey>()
+
+    /** Counts every statement the coalescing recorder actually issued. */
+    val touchAttempts =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
+    fun put(key: email.testinbox.domain.tenant.ApiKey): email.testinbox.domain.tenant.ApiKey {
+        keys[key.id] = key
+        return key
+    }
+
+    override fun findByPublicId(publicId: String): email.testinbox.domain.tenant.ApiKey? =
+        keys.values.firstOrNull {
+            it.publicId == publicId && it.kind == email.testinbox.domain.tenant.ApiKeyKind.MANAGED
+        }
+
+    override fun findBootstrapByHash(keyHash: String): email.testinbox.domain.tenant.ApiKey? =
+        keys.values.firstOrNull {
+            it.keyHash == keyHash && it.kind == email.testinbox.domain.tenant.ApiKeyKind.BOOTSTRAP
+        }
+
+    override fun hasUsableManagedAdmin(
+        workspaceId: WorkspaceId,
+        at: Instant,
+    ): Boolean =
+        keys.values.any {
+            it.workspaceId == workspaceId &&
+                it.kind == email.testinbox.domain.tenant.ApiKeyKind.MANAGED &&
+                it.isUsableAt(at) &&
+                it.hasScope(email.testinbox.domain.tenant.ApiScope.API_KEYS_MANAGE)
+        }
+
+    override fun insert(apiKey: email.testinbox.domain.tenant.ApiKey) {
+        require(keys.putIfAbsent(apiKey.id, apiKey) == null) { "duplicate api key id" }
+    }
+
+    override fun findById(
+        workspaceId: WorkspaceId,
+        id: email.testinbox.domain.ApiKeyId,
+    ): email.testinbox.domain.tenant.ApiKey? =
+        keys[id]?.takeIf {
+            it.workspaceId == workspaceId && it.kind == email.testinbox.domain.tenant.ApiKeyKind.MANAGED
+        }
+
+    override fun listPage(
+        workspaceId: WorkspaceId,
+        after: email.testinbox.application.port.ApiKeyCursor?,
+        limit: Int,
+    ): List<email.testinbox.domain.tenant.ApiKey> =
+        keys.values
+            .filter { it.workspaceId == workspaceId && it.kind == email.testinbox.domain.tenant.ApiKeyKind.MANAGED }
+            .sortedWith(compareByDescending<email.testinbox.domain.tenant.ApiKey> { it.createdAt }.thenByDescending { it.id.value })
+            .dropWhile {
+                after != null &&
+                    !(it.createdAt < after.createdAt || (it.createdAt == after.createdAt && it.id.value < after.id.value))
+            }.take(limit)
+
+    override fun revoke(
+        workspaceId: WorkspaceId,
+        id: email.testinbox.domain.ApiKeyId,
+        at: Instant,
+    ): email.testinbox.application.port.RevokeApiKeyOutcome {
+        var outcome: email.testinbox.application.port.RevokeApiKeyOutcome =
+            email.testinbox.application.port.RevokeApiKeyOutcome.NotFound
+        // computeIfPresent is the fake's stand-in for the guarded UPDATE: the
+        // decision and the mutation happen under one lock, so two concurrent
+        // revocations cannot both report a fresh revocation.
+        keys.computeIfPresent(id) { _, existing ->
+            if (existing.workspaceId != workspaceId || existing.kind != email.testinbox.domain.tenant.ApiKeyKind.MANAGED) {
+                existing
+            } else if (existing.isRevoked()) {
+                outcome = email.testinbox.application.port.RevokeApiKeyOutcome.AlreadyRevoked
+                existing
+            } else {
+                outcome = email.testinbox.application.port.RevokeApiKeyOutcome.Revoked
+                existing.copy(revokedAt = at)
+            }
+        }
+        return outcome
+    }
+
+    override fun touchLastUsed(
+        id: email.testinbox.domain.ApiKeyId,
+        at: Instant,
+        onlyIfOlderThan: Instant,
+    ): Boolean {
+        touchAttempts.incrementAndGet()
+        var written = false
+        keys.computeIfPresent(id) { _, existing ->
+            val previous = existing.lastUsedAt
+            if (previous == null || previous < onlyIfOlderThan) {
+                written = true
+                existing.copy(lastUsedAt = at)
+            } else {
+                existing
+            }
+        }
+        return written
+    }
+}
+
+/** Records what the application layer reported about credentials. */
+class RecordingApiKeyMetrics : email.testinbox.application.port.ApiKeyMetrics {
+    val auth = java.util.Collections.synchronizedList(mutableListOf<email.testinbox.application.port.AuthOutcome>())
+    val lifecycle = java.util.Collections.synchronizedList(mutableListOf<email.testinbox.application.port.ApiKeyOperation>())
+    val lastUsedWrites =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
+    override fun authCompleted(outcome: email.testinbox.application.port.AuthOutcome) {
+        auth += outcome
+    }
+
+    override fun lifecycle(operation: email.testinbox.application.port.ApiKeyOperation) {
+        lifecycle += operation
+    }
+
+    override fun lastUsedPersisted() {
+        lastUsedWrites.incrementAndGet()
+    }
+}
+
+/** Captures audit events so tests can assert what they do — and do not — carry. */
+class RecordingAuditLog : email.testinbox.application.port.AuditLog {
+    val events = java.util.Collections.synchronizedList(mutableListOf<email.testinbox.application.port.AuditEvent>())
+
+    override fun record(event: email.testinbox.application.port.AuditEvent) {
+        events += event
+    }
+}

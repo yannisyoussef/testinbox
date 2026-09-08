@@ -33,15 +33,24 @@ resolve_oasdiff() {
   fi
   local binary="$CACHE_DIR/oasdiff"
   if [[ ! -x "$binary" ]]; then
-    local arch
+    local arch os
     case "$(uname -m)" in
       x86_64) arch=amd64 ;;
       aarch64 | arm64) arch=arm64 ;;
       *) echo "unsupported architecture: $(uname -m)" >&2; exit 2 ;;
     esac
+    # The OS was hardcoded to linux, so on a developer machine this silently
+    # downloaded a Linux binary and failed with "cannot execute binary file".
+    # A gate that only CI can run is a gate discovered too late.
+    case "$(uname -s)" in
+      Linux) os=linux ;;
+      # oasdiff ships one universal macOS archive rather than per-arch ones.
+      Darwin) os=darwin; arch=all ;;
+      *) echo "unsupported operating system: $(uname -s)" >&2; exit 2 ;;
+    esac
     mkdir -p "$CACHE_DIR"
     curl -fsSL \
-      "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_${arch}.tar.gz" |
+      "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_${os}_${arch}.tar.gz" |
       tar xz -C "$CACHE_DIR" oasdiff
   fi
   echo "$binary"

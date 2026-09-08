@@ -28,6 +28,7 @@ object RateCategories {
     private val WAIT = Regex("^/v1/inboxes/[^/]+/messages/wait$")
     private val DOWNLOAD = Regex("^/v1/messages/[^/]+/(raw|attachments/[^/]+)$")
     private val INBOX_CREATE = Regex("^/v1/inboxes$")
+    private val KEY_ADMIN = Regex("^/v1/api-keys(/[^/]+)?$")
 
     /** The category charged when nothing matches — deliberately the tightest. */
     val DEFAULT: RateCategory = RateCategory.INBOX_CREATE
@@ -51,6 +52,7 @@ object RateCategories {
         path: String,
     ): RateCategory =
         when {
+            KEY_ADMIN.matches(path) -> RateCategory.KEY_ADMIN
             WAIT.matches(path) -> RateCategory.WAIT
             DOWNLOAD.matches(path) -> RateCategory.DOWNLOAD
             INBOX_CREATE.matches(path) && method.equals("POST", ignoreCase = true) -> RateCategory.INBOX_CREATE

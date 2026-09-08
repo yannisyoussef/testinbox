@@ -1,6 +1,6 @@
 # ADR-010: Authentication/API Keys
 
-**Status:** Accepted
+**Status:** Accepted (elaborated by [ADR-032](0032-api-key-credential-lifecycle.md))
 
 ## Context
 

@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -262,5 +263,116 @@ class TestInboxClientTest {
             val message = inbox.awaitMessage(Duration.ofSeconds(10)) { subjectContains("Verify") }
             assertEquals("no-reply@example.com", message.from)
         }
+    }
+    private val createdKeyJson =
+        """
+        {"apiKey":{"id":"22222222-2222-2222-2222-222222222222","publicId":"abcdefghijklmnop",
+          "name":"github-ci","scopes":["inboxes:write"],"createdAt":"2026-09-08T12:00:00Z",
+          "expiresAt":null,"revokedAt":null,"lastUsedAt":null,
+          "createdByApiKeyId":"33333333-3333-3333-3333-333333333333","futureField":1},
+         "key":"ti_k1_abcdefghijklmnop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_bbbb"}
+        """.trimIndent()
+
+    @Test
+    fun `creating a key surfaces the credential once, on a type that keeps it out of toString`() {
+        script(201, createdKeyJson)
+        val created =
+            runBlocking {
+                client.apiKeys.create(listOf(ApiScope.INBOXES_WRITE), name = "github-ci")
+            }
+
+        assertEquals("ti_k1_abcdefghijklmnop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_bbbb", created.secret)
+        // Rendering the object must never render the credential: a test
+        // failure message, a log line and a debugger dump all go through here.
+        assertFalse(created.toString().contains(created.secret))
+        assertTrue(created.toString().contains("redacted"))
+        assertEquals("abcdefghijklmnop", created.apiKey.publicId)
+        assertEquals(listOf(ApiScope.INBOXES_WRITE), created.apiKey.scopes)
+    }
+
+    @Test
+    fun `the metadata type has no property that could hold a credential`() {
+        script(200, """{"id":"22222222-2222-2222-2222-222222222222","publicId":"abcdefghijklmnop",
+             "scopes":["messages:read"],"createdAt":"2026-09-08T12:00:00Z"}""")
+        val metadata = runBlocking { client.apiKeys.get("22222222-2222-2222-2222-222222222222") }
+
+        // Structural, not a spot check: a property added later that could hold
+        // secret material fails here rather than leaking through an SDK type.
+        // Java reflection on purpose — kotlin-reflect is not a dependency this
+        // SDK has, and adding one for a test would be the wrong trade.
+        val suspicious = listOf("secret", "key", "hash", "verifier", "token", "credential", "password")
+        val offending =
+            ApiKeyMetadata::class.java.declaredFields
+                .filter { it.type == String::class.java }
+                .map { it.name }
+                .filter { name -> suspicious.any { name.lowercase().endsWith(it) } }
+        assertEquals(emptyList<String>(), offending)
+        // Guard the guard: reflection that found no fields at all would pass.
+        assertTrue(ApiKeyMetadata::class.java.declaredFields.isNotEmpty())
+        assertFalse(metadata.toString().contains("secret"))
+    }
+
+    @Test
+    fun `an unknown future scope round-trips instead of failing to deserialise`() {
+        script(200, """{"id":"22222222-2222-2222-2222-222222222222","publicId":"abcdefghijklmnop",
+             "scopes":["messages:read","inboxes:delete"],"createdAt":"2026-09-08T12:00:00Z"}""")
+        val metadata = runBlocking { client.apiKeys.get("22222222-2222-2222-2222-222222222222") }
+        // Modelled as a value class over the wire string rather than an enum
+        // precisely so a server ahead of this SDK does not break the client.
+        assertEquals(listOf(ApiScope.MESSAGES_READ, ApiScope("inboxes:delete")), metadata.scopes)
+    }
+
+    @Test
+    fun `listing pages and never carries a credential`() {
+        script(
+            200,
+            """{"items":[{"id":"22222222-2222-2222-2222-222222222222","publicId":"abcdefghijklmnop",
+              "scopes":[],"createdAt":"2026-09-08T12:00:00Z","revokedAt":"2026-09-08T13:00:00Z"}],
+              "nextCursor":"abc"}""",
+        )
+        val page = runBlocking { client.apiKeys.list(limit = 1) }
+        assertEquals("abc", page.nextCursor)
+        assertTrue(page.items.single().isRevoked)
+        assertEquals("GET", requests.last().method)
+        assertEquals("/v1/api-keys", requests.last().path)
+    }
+
+    @Test
+    fun `revocation is a DELETE and tolerates an empty body`() {
+        script(204, "")
+        runBlocking { client.apiKeys.revoke("22222222-2222-2222-2222-222222222222") }
+        val request = requests.last()
+        assertEquals("DELETE", request.method)
+        assertEquals("/v1/api-keys/22222222-2222-2222-2222-222222222222", request.path)
+    }
+
+    @Test
+    fun `a key without the management scope gets a typed authorization failure`() {
+        script(403, """{"type":"https://testinbox.email/problems/missing-scope","title":"Missing scope",
+             "status":403,"detail":"This operation requires the 'api-keys:manage' scope"}""")
+        // Typed, so a caller can distinguish "wrong credential" from "this
+        // credential is not allowed to do that" without parsing strings.
+        assertThrows(TestInboxForbiddenException::class.java) {
+            runBlocking { client.apiKeys.list() }
+        }
+    }
+
+    @Test
+    fun `a revoked credential surfaces as an auth failure, not a transport error`() {
+        script(401, """{"type":"https://testinbox.email/problems/unauthorized","title":"Unauthorized","status":401}""")
+        assertThrows(TestInboxAuthException::class.java) {
+            runBlocking { client.apiKeys.list() }
+        }
+    }
+
+    @Test
+    fun `the credential is sent as a bearer token and nowhere else`() {
+        script(201, createdKeyJson)
+        runBlocking { client.apiKeys.create(listOf(ApiScope.API_KEYS_MANAGE)) }
+        val request = requests.last()
+        assertEquals("Bearer tk_unit", request.auth)
+        // The request body carries the *requested scopes*, never a credential.
+        assertFalse(request.body.contains("tk_unit"))
+        assertTrue(request.body.contains("api-keys:manage"))
     }
 }

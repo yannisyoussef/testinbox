@@ -11,7 +11,7 @@
 | [0007](0007-event-coordination-strategy.md) | Event/coordination strategy | Accepted (amended by 0020) |
 | [0008](0008-inbox-addressing-reservation.md) | Inbox addressing/reservation | Superseded by 0021 |
 | [0009](0009-retention-lifecycle.md) | Retention/lifecycle | Accepted |
-| [0010](0010-authentication-api-keys.md) | Authentication/API keys | Accepted |
+| [0010](0010-authentication-api-keys.md) | Authentication/API keys | Accepted (elaborated by 0032) |
 | [0011](0011-html-rendering-security.md) | HTML rendering security | Accepted |
 | [0012](0012-wait-for-message-semantics.md) | Wait-for-message semantics | Accepted (amended by 0020) |
 | [0013](0013-repository-module-architecture.md) | Repository/module architecture | Accepted |
@@ -33,6 +33,7 @@
 | [0029](0029-schema-migration-execution.md) | Schema migration execution model | Accepted |
 | [0030](0030-staging-deployment-target.md) | Staging deployment target | Accepted |
 | [0031](0031-vulnerability-policy-by-environment.md) | Container vulnerability policy by environment | Accepted |
+| [0032](0032-api-key-credential-lifecycle.md) | API key credential format, verification and lifecycle | Accepted |
 
 `Proposed` ADRs require a human decision (see `VISION.md` §Human Decisions
 Required Before Implementation) before they can move to `Accepted`.

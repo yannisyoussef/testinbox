@@ -12,6 +12,28 @@ This is the gate that decides whether a staging deployment succeeded — not
 | `synthetic.test.mjs` — full workflow | The deployed API, gateway, PostgreSQL, object store, parser or ingress |
 | `longpoll.test.mjs` — full window through the ingress | The reverse-proxy read timeout is shorter than the wait window (§13) |
 | `longpoll.test.mjs` — parked wait woken by SMTP | `LISTEN/NOTIFY` is not reaching waiters — e.g. the database is behind a transaction-mode pooler (ADR-020) |
+| `edge.test.mjs` — edge invariants | The ingress is serving what it must refuse, or refusing what it must serve |
+
+## The product suite is separate
+
+`product/apikeys.test.mjs` exercises the credential lifecycle (ADR-032) and is
+**not** part of the deployment gate. Two reasons:
+
+- It needs a credential that can administer keys
+  (`TESTINBOX_ADMIN_API_KEY`). The gate's own credential stays least-privilege,
+  because a key that can mint keys is a much larger thing to leave in an
+  automated runner.
+- "The credential lifecycle is broken on an otherwise healthy deployment" is a
+  different verdict from "do not ship this artifact". Conflating them would
+  make the gate noisier without making it stronger.
+
+```bash
+TESTINBOX_ADMIN_API_KEY=… npm run test:product
+```
+
+It mints two short-lived credentials, proves one authenticates, revokes it,
+proves another still works, then revokes everything it created. Revoked keys
+are retained by design (ADR-032 §5), so each run leaves two inert rows behind.
 
 ## Running it
 

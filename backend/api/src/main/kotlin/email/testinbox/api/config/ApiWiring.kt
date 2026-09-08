@@ -1,9 +1,12 @@
 package email.testinbox.api.config
 
 import email.testinbox.application.LimitsConfig
+import email.testinbox.application.Sha256
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.deployment.SchemaCompatibility
+import email.testinbox.application.port.ApiKeyMetrics
 import email.testinbox.application.port.ApiKeyRepository
+import email.testinbox.application.port.AuditLog
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.BlobStoreMetrics
 import email.testinbox.application.port.ExactAddressReservations
@@ -18,22 +21,28 @@ import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.WaitMetrics
 import email.testinbox.application.port.WaitSlots
 import email.testinbox.application.port.WorkspaceQuotaState
+import email.testinbox.application.query.ApiKeyQueries
 import email.testinbox.application.query.InboxQueries
 import email.testinbox.application.query.MessageQueries
 import email.testinbox.application.usecase.AuthenticateApiKey
+import email.testinbox.application.usecase.CoalescingLastUsedRecorder
+import email.testinbox.application.usecase.CreateApiKey
 import email.testinbox.application.usecase.CreateInbox
 import email.testinbox.application.usecase.DeleteInbox
 import email.testinbox.application.usecase.ExpireInboxes
 import email.testinbox.application.usecase.OrphanBlobSweep
+import email.testinbox.application.usecase.RevokeApiKey
 import email.testinbox.application.usecase.WaitForMessage
 import email.testinbox.notification.PgListenNotifier
 import email.testinbox.notification.PgListenNotifierConfig
 import email.testinbox.observability.BuildInfoMetric
+import email.testinbox.observability.MicrometerApiKeyMetrics
 import email.testinbox.observability.MicrometerBlobStoreMetrics
 import email.testinbox.observability.MicrometerInboxMetrics
 import email.testinbox.observability.MicrometerLimitMetrics
 import email.testinbox.observability.MicrometerNotifierMetrics
 import email.testinbox.observability.MicrometerWaitMetrics
+import email.testinbox.observability.Slf4jAuditLog
 import email.testinbox.persistence.BundledMigrations
 import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.persistence.JdbcSchemaHistory
@@ -76,6 +85,13 @@ class ApiMetricsWiring {
     @Bean
     fun notifierMetrics(registry: MeterRegistry): NotifierMetrics = MicrometerNotifierMetrics(registry)
 
+    @Bean
+    fun apiKeyMetrics(registry: MeterRegistry): ApiKeyMetrics = MicrometerApiKeyMetrics(registry)
+
+    /** Credential lifecycle audit trail (TI-002 §14) on its own `testinbox.audit` logger. */
+    @Bean
+    fun auditLog(): AuditLog = Slf4jAuditLog()
+
     /**
      * "Which build is this?" answered from the same place Ops reads everything
      * else. The image digest is deliberately not a label: an image cannot know
@@ -108,6 +124,8 @@ class ApiWiring(
     private val limitMetrics: LimitMetrics,
     private val inboxMetrics: InboxMetrics,
     private val waitMetrics: WaitMetrics,
+    private val apiKeyMetrics: ApiKeyMetrics,
+    private val audit: AuditLog,
 ) {
     @Bean
     fun testInboxConfig(properties: TestInboxProperties): TestInboxConfig = properties.toConfig()
@@ -235,8 +253,43 @@ class ApiWiring(
         messages: MessageRepository,
     ): OrphanBlobSweep = OrphanBlobSweep(blobs, messages, clock, properties.orphanMinAge)
 
+    /**
+     * Coalesces `last_used_at` writes (ADR-032 §7). One instance per process,
+     * because the in-memory half of the coalescing is per-process state.
+     */
     @Bean
-    fun authenticateApiKey(apiKeys: ApiKeyRepository): AuthenticateApiKey = AuthenticateApiKey(apiKeys)
+    fun lastUsedRecorder(apiKeys: ApiKeyRepository): CoalescingLastUsedRecorder =
+        CoalescingLastUsedRecorder(apiKeys, metrics = apiKeyMetrics)
+
+    @Bean
+    fun authenticateApiKey(
+        apiKeys: ApiKeyRepository,
+        lastUsed: CoalescingLastUsedRecorder,
+    ): AuthenticateApiKey =
+        AuthenticateApiKey(
+            apiKeys,
+            clock,
+            // Configuration is what retires a bootstrap credential: rotate the
+            // setting and the previous one stops authenticating on the next
+            // request; unset it and there is genuinely no break-glass
+            // (ADR-032 §8).
+            configuredBootstrapKeyHash =
+                properties.bootstrap.apiKey
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let(Sha256::hex),
+            metrics = apiKeyMetrics,
+            lastUsed = lastUsed.asRecorder(),
+            audit = audit,
+        )
+
+    @Bean
+    fun createApiKey(apiKeys: ApiKeyRepository): CreateApiKey = CreateApiKey(apiKeys, clock, audit, apiKeyMetrics)
+
+    @Bean
+    fun revokeApiKey(apiKeys: ApiKeyRepository): RevokeApiKey = RevokeApiKey(apiKeys, clock, audit, apiKeyMetrics)
+
+    @Bean
+    fun apiKeyQueries(apiKeys: ApiKeyRepository): ApiKeyQueries = ApiKeyQueries(apiKeys)
 
     @Bean
     fun inboxQueries(inboxes: InboxRepository): InboxQueries = InboxQueries(inboxes)

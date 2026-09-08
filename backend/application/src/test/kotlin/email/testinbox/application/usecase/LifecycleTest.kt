@@ -7,11 +7,8 @@ import email.testinbox.application.InMemoryReservations
 import email.testinbox.application.MutableClock
 import email.testinbox.application.NoopTx
 import email.testinbox.application.ObjectKeys
-import email.testinbox.application.Sha256
 import email.testinbox.application.TestInboxConfig
-import email.testinbox.application.port.ApiKeyRepository
 import email.testinbox.application.port.ReserveOutcome
-import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.ProjectId
@@ -21,8 +18,6 @@ import email.testinbox.domain.inbox.ExactReservation
 import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.inbox.InboxState
 import email.testinbox.domain.inbox.ReservationStatus
-import email.testinbox.domain.tenant.ApiKey
-import email.testinbox.domain.tenant.ApiScope
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import org.junit.jupiter.api.BeforeEach
@@ -179,32 +174,6 @@ class LifecycleTest {
         val sweep = OrphanBlobSweep(blobs, messages, clock, Duration.ofHours(1))
         sweep.sweep() shouldBe 1
         blobs.blobs.keys.toSet() shouldBe setOf(referencedKey, freshOrphanKey)
-    }
-
-    @Test
-    fun `api key authentication hashes the presented token and honors revocation`() {
-        val plaintext = "tk_secret"
-        val record =
-            ApiKey(
-                id = ApiKeyId(UUID.randomUUID()),
-                workspaceId = workspaceId,
-                projectId = projectId,
-                keyHash = Sha256.hex(plaintext),
-                scopes = setOf(ApiScope.INBOXES_WRITE),
-                createdAt = clock.now,
-                revokedAt = null,
-            )
-        var stored: ApiKey? = record
-        val repo =
-            object : ApiKeyRepository {
-                override fun findActiveByHash(keyHash: String): ApiKey? = stored?.takeIf { it.keyHash == keyHash && it.revokedAt == null }
-            }
-        val auth = AuthenticateApiKey(repo)
-        auth.authenticate(plaintext)?.workspaceId shouldBe workspaceId
-        auth.authenticate("wrong") shouldBe null
-        auth.authenticate("") shouldBe null
-        stored = record.copy(revokedAt = clock.now)
-        auth.authenticate(plaintext) shouldBe null
     }
 }
 

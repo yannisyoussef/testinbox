@@ -204,6 +204,7 @@ class DependencyRuleTest {
                 email.testinbox.application.port.NotifierMetrics::class.java,
                 email.testinbox.application.port.BlobStoreMetrics::class.java,
                 email.testinbox.application.port.SmtpMetrics::class.java,
+                email.testinbox.application.port.ApiKeyMetrics::class.java,
             )
         val allowed =
             setOf(
@@ -297,5 +298,155 @@ class DependencyRuleTest {
                         target.packageName.startsWith("org.subethamail")
                 },
             ).check(allClasses)
+    }
+
+    @Test
+    fun `the plaintext credential is rendered in exactly one place (ADR-032 §4)`() {
+        // "Returned exactly once" is only true if exactly one call site can
+        // produce the string at all. Any other caller — a log line, an error
+        // message, a debug endpoint — would be a leak that compiles.
+        val renderers =
+            allClasses
+                .flatMap { it.methods + it.constructors }
+                .filter { member ->
+                    member.callsFromSelf.any { call ->
+                        // Both spellings: `ApiKeyFormat.render(publicId, secret)`
+                        // produces the same string as the instance method, so
+                        // guarding one leaves a side door open.
+                        call.name == "render" &&
+                            call.targetOwner.name in
+                            setOf(
+                                email.testinbox.domain.tenant.ApiKeyCredential::class.java.name,
+                                email.testinbox.domain.tenant.ApiKeyFormat::class.java.name,
+                            )
+                    }
+                }.map { it.owner.name }
+                .toSet()
+
+        // The DTO assembly in the controller, and the format object itself.
+        val allowed =
+            setOf(
+                "email.testinbox.api.web.ApiKeyController",
+                email.testinbox.domain.tenant.ApiKeyCredential::class.java.name,
+            )
+        // Guard the guard: if call resolution silently found nothing, every
+        // assertion below would pass while proving nothing at all.
+        check("email.testinbox.api.web.ApiKeyController" in renderers) {
+            "no caller of ApiKeyCredential.render() was found — this rule is not actually checking anything"
+        }
+        val unexpected = renderers - allowed
+        check(unexpected.isEmpty()) {
+            "$unexpected renders a plaintext API credential. Only the single 201 response may (ADR-032 §4)."
+        }
+    }
+
+    @Test
+    fun `only the use case writes a managed credential (ADR-032)`() {
+        // Minting is where provenance, scope checks, the audit record and the
+        // metric all happen. A second minting path would be a credential with
+        // no audit trail.
+        //
+        // Two calls have to be guarded, not one: generating the secret AND
+        // writing the row. The rule originally covered only `generate`, so its
+        // name claimed more than it checked — an adapter calling
+        // `ApiKeyRepository.insert` directly would have passed.
+        val writers =
+            allClasses
+                .flatMap { it.methods + it.constructors }
+                .filter { member ->
+                    member.callsFromSelf.any { call ->
+                        call.targetOwner.name == email.testinbox.application.port.ApiKeyRepository::class.java.name &&
+                            call.name == "insert"
+                    }
+                }.map { it.owner.name }
+                .toSet()
+        check(email.testinbox.application.usecase.CreateApiKey::class.java.name in writers) {
+            "no caller of ApiKeyRepository.insert was found — this rule is not actually checking anything"
+        }
+        check(writers.size == 1) {
+            "$writers write managed credential rows. Only CreateApiKey may: it is what records provenance, " +
+                "enforces scopes and writes the audit event (ADR-032). Bootstrap provisioning goes through " +
+                "ProvisioningRepository.ensureApiKey instead, which cannot create a MANAGED row (V4 check " +
+                "constraint) and is covered by BootstrapTransitionTest."
+        }
+        val minters =
+            allClasses
+                .flatMap { it.methods + it.constructors }
+                .filter { member ->
+                    member.callsFromSelf.any { call ->
+                        call.targetOwner.name == email.testinbox.domain.tenant.ApiKeyFormat::class.java.name &&
+                            call.name == "generate"
+                    }
+                }.map { it.owner.name }
+                .toSet()
+
+        check(email.testinbox.application.usecase.CreateApiKey::class.java.name in minters) {
+            "no caller of ApiKeyFormat.generate() was found — this rule is not actually checking anything"
+        }
+        val unexpected =
+            minters.filterNot {
+                it == email.testinbox.application.usecase.CreateApiKey::class.java.name ||
+                    it.startsWith("email.testinbox.domain.tenant.")
+            }
+        check(unexpected.isEmpty()) {
+            "$unexpected generates API credentials directly. Minting belongs to CreateApiKey, which is " +
+                "what records provenance, enforces scopes and writes the audit event (ADR-032)."
+        }
+    }
+
+    @Test
+    fun `the verifier comparison is constant time (ADR-032 §3)`() {
+        // Replacing `MessageDigest.isEqual` with `a == b` left the whole
+        // application and architecture suite green, while `docs/quality/`
+        // claimed constant-time verification was covered. A statistical timing
+        // test would be flaky and prove little; pinning the call is cheap,
+        // deterministic, and fails on exactly the edit that matters.
+        val authenticator = email.testinbox.application.usecase.AuthenticateApiKey::class.java.name
+        val calls =
+            allClasses
+                .single { it.name == authenticator }
+                .methods
+                .flatMap { it.callsFromSelf }
+
+        val usesConstantTimeEquality =
+            calls.any { it.targetOwner.name == java.security.MessageDigest::class.java.name && it.name == "isEqual" }
+        check(usesConstantTimeEquality) {
+            "AuthenticateApiKey no longer calls MessageDigest.isEqual. The verifier comparison must be " +
+                "constant time (ADR-032 §3): String.equals returns early at the first differing byte, which " +
+                "leaks how much of a guessed verifier was correct."
+        }
+        // And it must not compare strings the ordinary way, which is how the
+        // constant-time call would quietly be replaced.
+        val stringEquals = calls.filter { it.targetOwner.name == String::class.java.name && it.name == "equals" }
+        check(stringEquals.isEmpty()) {
+            "AuthenticateApiKey calls String.equals. Credential comparison must go through " +
+                "MessageDigest.isEqual (ADR-032 §3)."
+        }
+    }
+
+    @Test
+    fun `audit events cannot carry credential material (TI-002 §14)`() {
+        // The same argument as the metric-port rule, for the other sink: the
+        // guarantee is structural — there is no field to put a secret in — and
+        // this is what keeps it structural.
+        val forbidden = listOf("secret", "hash", "verifier", "token", "credential", "password")
+        // Derived from the sealed hierarchy rather than hand-listed: an event
+        // type added later must be covered automatically, or the rule guards
+        // exactly the cases that were already safe.
+        val events = email.testinbox.application.port.AuditEvent::class.sealedSubclasses.map { it.java }
+        check(events.size >= 3) {
+            "found ${events.size} AuditEvent subtypes — this rule is not actually checking anything"
+        }
+        for (event in events) {
+            for (field in event.declaredFields.filterNot { it.isSynthetic }) {
+                val name = field.name.lowercase()
+                // `contains`, not `endsWith`: `keyPreview` and `secretMaterial`
+                // would both slip past a suffix match.
+                check(forbidden.none { name.contains(it) }) {
+                    "${event.simpleName}.${field.name} looks like credential material. Audit events carry " +
+                        "identifiers an operator can act on, never anything that grants access (TI-002 §14)."
+                }
+            }
+        }
     }
 }

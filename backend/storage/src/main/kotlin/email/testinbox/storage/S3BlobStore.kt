@@ -9,6 +9,7 @@ import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
 import software.amazon.awssdk.core.sync.RequestBody
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
+import software.amazon.awssdk.services.s3.model.BucketAlreadyOwnedByYouException
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest
 import software.amazon.awssdk.services.s3.model.Delete
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest
@@ -59,11 +60,28 @@ class S3BlobStore(
         if (config.createBucket) ensureBucket()
     }
 
+    /**
+     * Check-then-act against a shared bucket, so it must tolerate losing the
+     * race. The API and ingestion deployables start simultaneously and both
+     * run this: both see no bucket, both create it, and the loser gets a 409.
+     * Treating that as a failure made the loser refuse to start — an outage
+     * caused entirely by the convenience feature, and one that reproduces only
+     * under concurrent startup.
+     *
+     * Both 409s mean the bucket exists, which is the postcondition this
+     * function is for. `BucketAlreadyExists` (someone else owns the name)
+     * still propagates: continuing would mean writing raw MIME into a bucket
+     * this deployment does not control.
+     */
     private fun ensureBucket() {
         try {
             s3.headBucket(HeadBucketRequest.builder().bucket(config.bucket).build())
         } catch (_: NoSuchBucketException) {
-            s3.createBucket(CreateBucketRequest.builder().bucket(config.bucket).build())
+            try {
+                s3.createBucket(CreateBucketRequest.builder().bucket(config.bucket).build())
+            } catch (_: BucketAlreadyOwnedByYouException) {
+                // Another process of this deployment created it first.
+            }
         }
     }
 

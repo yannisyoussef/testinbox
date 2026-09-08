@@ -18,6 +18,8 @@ after it.
 | UI | Playwright | Dashboard: message inspection renders safely (sandboxed HTML, no script execution), core admin flows (API key creation, project management). |
 | Deployment | Container build, `staging-rehearsal.sh`, synthetic suite | The deployment path itself: images build and run non-root, one migration job applies exactly what the artifact bundles, readiness reflects database/schema/object store/`LISTEN`, and a real inbound workflow succeeds through a real TLS ingress. A full server wait window is parked through the actual reverse proxy, because a proxy read timeout shorter than the wait window is invisible to every other layer. |
 | Architecture | ArchUnit | Enforces module boundaries from `docs/architecture/component-architecture.md` (e.g., `domain` module must not depend on Spring/JPA/provider-specific types). |
+| Credential lifecycle | Domain + application + Postgres integration + API + e2e + product synthetic | ADR-032: format parsing (truncation, transposition, an unknown future version), revocation taking effect on the next request with no cache to wait out, expiry, scope enforcement and the refusal to grant a scope the creator lacks, the bootstrap window closing and reopening *and* the configured value being what retires it, coalesced `last_used_at` writes across nodes, and the negative proofs — no representation but the single `201` carries a credential, and nothing reaches the logs at debug level. |
+| Properties a runtime test cannot see | ArchUnit source rules | Some invariants have no observable failure: constant-time verification produces identical outputs either way, and a second credential-minting path would work perfectly. These are pinned as rules over call sites — `MessageDigest.isEqual` is called and `String.equals` is not; the plaintext is rendered in exactly one place; only `CreateApiKey` writes a managed row; no audit event has a field that could hold a secret. Each carries a guard-the-guard check, because a rule that resolves nothing passes silently. |
 | Resource limits | Postgres integration + API + e2e | Rate/quota decisions (ADR-027): capacity boundaries, multi-node budget sharing across two limiter instances, per-workspace and per-inbox isolation, derived usage surviving a cascade delete, the `429`/`409` split, and that no limiter key derives from a request header. |
 | Concurrency | Targeted tests | Concurrent `createInbox()` token collisions, concurrent `EXACT` reservations racing to `409` (ADR-021), concurrent waiters on one inbox, wait-request cancellation/resource cleanup, inbox-expiry-vs-inbound-delivery race (`docs/architecture/inbound-mail-flow.md`), persist+`pg_notify` single-transaction atomicity, and a kill-the-`LISTEN`-connection test proving parked waiters still resolve after reconnect (ADR-020). |
 | Security | Dependency/SCA scanning, SAST, targeted tests for the threat-model mitigations (XSS sandbox escape attempts, SSRF attempt via extracted links, cross-tenant access attempts) | Tied directly to `docs/security/threat-model.md` — each mitigation there should have a corresponding test, not just a design statement. |
@@ -53,10 +55,11 @@ gate.
 | Gate | Tool | Fails CI? |
 |---|---|---|
 | Formatting | Spotless/ktlint | Yes |
-| Kotlin static analysis | Detekt (backend + JVM SDK) | Yes |
+| Kotlin static analysis | Detekt (backend + JVM SDK) | Yes. Run it locally with `./gradlew detekt --no-daemon -Dorg.gradle.java.home=<jdk-21>`; `JAVA_HOME` alone leaves the daemon on Java 25 and Detekt aborts with a bare `> 25.0.3` |
 | Test execution evidence | `verify-test-results.sh` | Yes |
 | Verifier self-test | `verify-test-results.test.sh` | Yes |
 | Architecture boundaries | ArchUnit | Yes |
+| JVM SDK usable from plain Java | `JavaInteropTest` (Java source compiled against the built SDK) | Yes — it caught `ApiScope` as a `@JvmInline value class`, whose constants compile to name-mangled accessors no Java caller can reference |
 | OpenAPI structure/style | Spectral | Yes |
 | OpenAPI backwards compatibility | oasdiff vs. the PR base spec | Yes on ERR; warnings (e.g. removing an optional parameter) are reported only |
 | Compatibility-gate self-test | `openapi-breaking-check.test.sh` | Yes |
@@ -66,6 +69,7 @@ gate.
 | Edge invariant classifier | `deploy/synthetic/unit` | Yes |
 | Container build + non-root runtime | `build-images.yml` | Yes |
 | Ephemeral staging rehearsal + synthetic suite | `staging-rehearsal.sh` | Yes |
+| Credential-lifecycle product synthetic | `staging-rehearsal.sh` step 9 / `npm run test:product` | Yes in the rehearsal. Against a **deployed** environment it is a separate run from the deployment gate: it needs a credential that can administer keys, and "the credential lifecycle is broken on an otherwise healthy deployment" is a different verdict from "do not ship this artifact" |
 | Container vulnerabilities | Trivy (`scan-images.sh`) | **No on develop/PR — informational.** **Yes on promotion to `master`**, for HIGH/CRITICAL *with a fix available* |
 | Dependency vulnerabilities | OSV-Scanner (npm lockfiles) | **No — informational** |
 | Dependency updates | Dependabot (grouped, weekly) | n/a — opens PRs |

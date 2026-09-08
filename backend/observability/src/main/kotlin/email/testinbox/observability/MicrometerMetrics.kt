@@ -1,5 +1,8 @@
 package email.testinbox.observability
 
+import email.testinbox.application.port.ApiKeyMetrics
+import email.testinbox.application.port.ApiKeyOperation
+import email.testinbox.application.port.AuthOutcome
 import email.testinbox.application.port.BlobOperation
 import email.testinbox.application.port.BlobOutcome
 import email.testinbox.application.port.BlobStoreMetrics
@@ -242,5 +245,50 @@ class BuildInfoMetric(
             .tags(Tags.of("service", service, "git_sha", gitSha, "version", version))
             .strongReference(true)
             .register(registry)
+    }
+}
+
+/**
+ * Credential authentication and lifecycle (ADR-032, TI-002 §21).
+ *
+ * Nothing identifying a *particular* credential appears here — not the public
+ * id, not the key id, not the workspace, not the scope set. The public id is
+ * safe to display and safe to log, but as a metric label it would be unbounded
+ * and caller-chosen: an attacker presenting fabricated credentials would be
+ * deciding how many series the metrics backend allocates. Per-credential
+ * attribution belongs in the audit log, which is access-controlled.
+ */
+class MicrometerApiKeyMetrics(
+    private val registry: MeterRegistry,
+) : ApiKeyMetrics {
+    init {
+        // Registered at zero so `increase()` over a window containing process
+        // start reports the real number rather than nothing.
+        AuthOutcome.entries.forEach { registry.counter(AUTH, "outcome", it.name) }
+        ApiKeyOperation.entries.forEach { registry.counter(LIFECYCLE, "operation", it.name) }
+    }
+
+    override fun authCompleted(outcome: AuthOutcome) {
+        registry.counter(AUTH, "outcome", outcome.name).increment()
+    }
+
+    override fun lifecycle(operation: ApiKeyOperation) {
+        registry.counter(LIFECYCLE, "operation", operation.name).increment()
+    }
+
+    override fun lastUsedPersisted() {
+        registry.counter(LAST_USED).increment()
+    }
+
+    private companion object {
+        const val AUTH = "testinbox_api_key_auth_total"
+        const val LIFECYCLE = "testinbox_api_key_lifecycle_total"
+
+        /**
+         * How often the coalescing in ADR-032 §7 actually let a write through.
+         * If this ever tracks request volume, the coalescing has stopped
+         * working and the hot path has silently acquired a database write.
+         */
+        const val LAST_USED = "testinbox_api_key_last_used_writes_total"
     }
 }

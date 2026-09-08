@@ -23,6 +23,8 @@ data class LimitsProperties(
     val ingest: RateProperties = RateProperties(capacity = 300, refillPerSecond = 10.0),
     /** Per-inbox share of the inbound budget; must not exceed [ingest]. */
     val ingestPerInbox: RateProperties = RateProperties(capacity = 60, refillPerSecond = 2.0),
+    /** Credential lifecycle (ADR-032). A rotation is a few calls, not a loop. */
+    val keyAdmin: RateProperties = RateProperties(capacity = 20, refillPerSecond = 0.2),
 ) {
     data class RateProperties(
         val capacity: Long,
@@ -50,6 +52,7 @@ data class LimitsProperties(
                         RateCategory.READ to read.toPolicy(),
                         RateCategory.DOWNLOAD to download.toPolicy(),
                         RateCategory.INGEST to ingest.toPolicy(),
+                        RateCategory.KEY_ADMIN to keyAdmin.toPolicy(),
                     ),
                 perInboxIngest = ingestPerInbox.toPolicy(),
             )

@@ -44,20 +44,26 @@ fi
 ROOT="${VERIFY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # module:minimum-expected-test-count
+#
+# Ratcheted whenever tests are added. That is the whole point of the numbers:
+# a green exit code proves a suite ran, and only the floor proves it did not
+# quietly shrink. TI-002 added ~70 tests across these modules and the floors
+# were initially left alone, which meant every one of them could have been
+# deleted with CI still green.
 BACKEND_MODULES=(
-  "backend/architecture:16"
-  "backend/domain:33"
-  "backend/application:76"
-  "backend/persistence:37"
-  "backend/storage:3"
+  "backend/architecture:20"
+  "backend/domain:51"
+  "backend/application:121"
+  "backend/persistence:56"
+  "backend/storage:4"
   "backend/notification:6"
-  "backend/observability:27"
+  "backend/observability:32"
   "backend/ingestion:33"
-  "backend/api:49"
+  "backend/api:77"
   "backend/migrator:6"
 )
 E2E_MODULES=(
-  "backend/e2e:12"
+  "backend/e2e:14"
 )
 
 case "$SCOPE" in

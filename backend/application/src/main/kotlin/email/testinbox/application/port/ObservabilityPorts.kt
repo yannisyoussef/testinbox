@@ -198,3 +198,64 @@ interface SmtpMetrics {
         val NOOP: SmtpMetrics = object : SmtpMetrics {}
     }
 }
+
+/**
+ * Why an authentication attempt ended the way it did (ADR-032). A closed enum,
+ * so the label can never carry a public id, a workspace or anything else a
+ * caller chooses.
+ *
+ * The failure reasons are distinguished from each other on purpose. They are
+ * exported only on the private management port, which is never routed by the
+ * edge (`docs/architecture/observability.md`), and the difference between
+ * "nobody is using that credential any more" and "someone is presenting a
+ * revoked one" is exactly what an operator needs after a leak.
+ */
+enum class AuthOutcome {
+    SUCCESS,
+
+    /** Authenticated by the configured bootstrap credential (ADR-032 §8). */
+    BOOTSTRAP,
+
+    /** Bootstrap presented, but a managed administrator now exists — the window has closed. */
+    BOOTSTRAP_SUPERSEDED,
+
+    /** Not a parseable credential of any known format. */
+    MALFORMED,
+
+    /** A TestInbox credential whose format version this build does not implement. */
+    UNSUPPORTED_VERSION,
+
+    /** Well-shaped but self-inconsistent — almost always a truncated paste. */
+    CHECKSUM_MISMATCH,
+
+    /** No row for that public id (or that bootstrap hash). */
+    UNKNOWN_KEY,
+
+    /** The public id resolved but the secret did not verify. */
+    BAD_SECRET,
+
+    REVOKED,
+    EXPIRED,
+}
+
+/** Lifecycle operations on a credential. */
+enum class ApiKeyOperation {
+    CREATED,
+    REVOKED,
+
+    /** A revoke that matched an already-revoked key — a retry, not a new event. */
+    REVOKE_NOOP,
+}
+
+interface ApiKeyMetrics {
+    fun authCompleted(outcome: AuthOutcome) {}
+
+    fun lifecycle(operation: ApiKeyOperation) {}
+
+    /** A `last_used_at` write actually reached the database (ADR-032 §7). */
+    fun lastUsedPersisted() {}
+
+    companion object {
+        val NOOP: ApiKeyMetrics = object : ApiKeyMetrics {}
+    }
+}

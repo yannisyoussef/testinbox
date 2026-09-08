@@ -129,3 +129,29 @@ and readiness alone would not achieve that in this topology (see
 Staging holds no data worth preserving (see
 [staging.md](staging.md#data-retention-and-reset)). If it is badly wedged, drop
 the volumes and redeploy rather than repairing by hand.
+
+## Rolling back across TI-002 (schema V4) revokes every managed credential
+
+The V4 migration is expand-only and an older artifact starts cleanly against
+it — `SchemaUpgradeTest` proves both. The *behavioural* consequence is not
+covered by that, and it is severe:
+
+**A pre-TI-002 artifact cannot authenticate any managed API key.** It looks up
+`SHA-256` of the whole presented token; TI-002 stores `SHA-256` of the secret
+component only, and resolves by public id. The verifiers hash different inputs,
+so every `ti_k1_...` credential minted since TI-002 stops working the moment
+the older artifact is running. Only the configured bootstrap credential
+survives, because its verifier hashes the whole token in both versions.
+
+So a rollback across V4 is an **outage for every API client**, not a silent
+degradation, and it is not fixed by rolling forward alone — clients keep
+working once the newer artifact returns, but everything in between fails with
+`401`.
+
+Before rolling back across V4:
+
+1. Confirm `testinbox.bootstrap.api-key` is configured and known, or you will
+   have no working credential at all.
+2. Expect and announce client-visible `401`s for the duration.
+3. Prefer rolling forward with a fix. This is one of the cases the ADR-028
+   promote-by-digest model makes cheap.

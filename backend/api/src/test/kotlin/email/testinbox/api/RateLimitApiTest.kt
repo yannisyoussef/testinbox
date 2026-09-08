@@ -257,3 +257,63 @@ class ConcurrentWaitLimitApiTest : ApiIntegrationTestBase() {
         }
     }
 }
+
+/**
+ * The shipped `KEY_ADMIN` budget, which every other suite deliberately raises
+ * out of the way. Without this nothing exercised the real numbers, or the
+ * `429` body's `category` — the field whose honesty is the entire reason the
+ * category exists rather than borrowing `INBOX_CREATE`.
+ */
+@TestPropertySource(
+    properties = [
+        "testinbox.limits.key-admin.capacity=2",
+        // Slow refill: the boundary must not heal mid-test.
+        "testinbox.limits.key-admin.refill-per-second=0.01",
+    ],
+)
+class KeyAdminRateLimitTest : ApiIntegrationTestBase() {
+    private val json = jacksonObjectMapper()
+
+    @Test
+    fun `the key-admin budget refuses a minting loop, and says which budget it was`() {
+        val tenant = provisionIsolatedWorkspace("key-admin-rl")
+        val admin =
+            mintKey(
+                tenant.workspaceId,
+                tenant.projectId,
+                email.testinbox.domain.tenant.ApiScope.entries
+                    .toSet(),
+            )
+        val body = """{"scopes":["messages:read"]}"""
+
+        post("/v1/api-keys", body, key = admin).statusCode.value() shouldBe 201
+        post("/v1/api-keys", body, key = admin).statusCode.value() shouldBe 201
+
+        val limited = post("/v1/api-keys", body, key = admin)
+        limited.statusCode.value() shouldBe 429
+        val problem = json.readTree(limited.body)
+        problem["type"].asText() shouldBe "https://testinbox.email/problems/rate-limit-exceeded"
+        // The load-bearing assertion: a caller minting a key is told the
+        // KEY_ADMIN budget refused it, not the INBOX_CREATE one.
+        problem["category"].asText() shouldBe "KEY_ADMIN"
+        limited.headers.getFirst("Retry-After")!!.toLong() shouldBe 100L
+    }
+
+    @Test
+    fun `the key-admin budget does not consume the inbox-create budget`() {
+        val tenant = provisionIsolatedWorkspace("key-admin-isolation")
+        val admin =
+            mintKey(
+                tenant.workspaceId,
+                tenant.projectId,
+                email.testinbox.domain.tenant.ApiScope.entries
+                    .toSet(),
+            )
+        repeat(2) { post("/v1/api-keys", """{"scopes":["messages:read"]}""", key = admin) }
+        post("/v1/api-keys", """{"scopes":["messages:read"]}""", key = admin).statusCode.value() shouldBe 429
+
+        // Exhausting one category must not throttle another, or the split
+        // buys nothing.
+        post("/v1/inboxes", "{}", key = admin).statusCode.value() shouldBe 201
+    }
+}

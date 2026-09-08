@@ -9,6 +9,7 @@
 import { TestInboxError, TestInboxTimeoutError } from "./errors";
 import {
   Transport,
+  type ApiKeyDto,
   type AttachmentMetaDto,
   type EmailHeaderDto,
   type EmailLinkDto,
@@ -17,8 +18,14 @@ import {
   type MessageMatcherDto,
 } from "./internal/transport";
 import type {
+  ApiKeyMetadata,
+  ApiKeyPage,
+  ApiScope,
   AttachmentMeta,
+  CreateApiKeyOptions,
+  CreatedApiKey,
   CreateInboxOptions,
+  ListApiKeysOptions,
   EmailHeader,
   EmailLink,
   Inbox,
@@ -49,6 +56,7 @@ function readEnv(name: string): string | undefined {
  */
 export class TestInboxClient {
   readonly #transport: Transport;
+  #apiKeys?: ApiKeys;
 
   constructor(options: TestInboxClientOptions = {}) {
     const apiKey = options.apiKey ?? readEnv("TESTINBOX_API_KEY");
@@ -82,12 +90,100 @@ export class TestInboxClient {
   async deleteInbox(id: string): Promise<void> {
     await this.#transport.deleteInbox(id);
   }
+
+  /**
+   * Credential administration (ADR-032). Requires a key holding
+   * `api-keys:manage`; an ordinary CI credential deliberately does not carry
+   * it and receives a `TestInboxForbiddenError` here.
+   *
+   * There is no `rotate` call, and that is deliberate: rotation's hard part is
+   * the interval before the client picks up the new credential, which no
+   * server call can shorten. The correct sequence — create, deploy, verify,
+   * revoke — is what this API expresses.
+   */
+  get apiKeys(): ApiKeys {
+    // Memoised, so `client.apiKeys === client.apiKeys`. A fresh instance per
+    // access silently defeats `vi.spyOn(client.apiKeys, "create")` — the spy
+    // patches a throwaway, never fires, and the real fetch runs, which is a
+    // false pass rather than an error.
+    this.#apiKeys ??= new ApiKeysImpl(this.#transport);
+    return this.#apiKeys;
+  }
+}
+
+/** Key-management surface of {@link TestInboxClient}. */
+export interface ApiKeys {
+  /**
+   * Mints a key. The returned `secret` is the only copy that will ever exist:
+   * it is not stored and cannot be retrieved again (ADR-032 §4).
+   */
+  create(options: CreateApiKeyOptions): Promise<CreatedApiKey>;
+  /** Newest first. Revoked keys are included; they are retained for audit. */
+  list(options?: ListApiKeysOptions): Promise<ApiKeyPage>;
+  /** Metadata only, and a revoked key is still returned — check `revokedAt`. */
+  get(id: string): Promise<ApiKeyMetadata>;
+  /** Idempotent: revoking an already-revoked key succeeds. */
+  revoke(id: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
 // Implementation classes (not exported; the public surface is the interfaces
 // in ./types, so no internal transport type ever appears in the public API).
 // ---------------------------------------------------------------------------
+
+class ApiKeysImpl implements ApiKeys {
+  readonly #transport: Transport;
+
+  constructor(transport: Transport) {
+    this.#transport = transport;
+  }
+
+  async create(options: CreateApiKeyOptions): Promise<CreatedApiKey> {
+    const dto = await this.#transport.createApiKey({
+      scopes: options.scopes.map((scope) => String(scope)),
+      ...(options.name !== undefined && { name: options.name }),
+      ...(options.expiresInSeconds !== undefined && { expiresInSeconds: options.expiresInSeconds }),
+    });
+    return { apiKey: toApiKeyMetadata(dto.apiKey), secret: dto.key };
+  }
+
+  async list(options: ListApiKeysOptions = {}): Promise<ApiKeyPage> {
+    const page = await this.#transport.listApiKeys(options.cursor, options.limit);
+    return {
+      items: (page.items ?? []).map(toApiKeyMetadata),
+      ...(page.nextCursor != null && { nextCursor: page.nextCursor }),
+    };
+  }
+
+  async get(id: string): Promise<ApiKeyMetadata> {
+    return toApiKeyMetadata(await this.#transport.getApiKey(id));
+  }
+
+  async revoke(id: string): Promise<void> {
+    await this.#transport.revokeApiKey(id);
+  }
+}
+
+/**
+ * Maps the wire shape to the public metadata type, field by field.
+ *
+ * Explicit rather than a spread: a spread would copy whatever the server sent,
+ * so a future response that carried credential material would silently land on
+ * a type documented as never holding any.
+ */
+function toApiKeyMetadata(dto: ApiKeyDto): ApiKeyMetadata {
+  return {
+    id: dto.id,
+    publicId: dto.publicId,
+    ...(dto.name != null && { name: dto.name }),
+    scopes: (dto.scopes ?? []) as ApiScope[],
+    createdAt: new Date(dto.createdAt ?? NaN),
+    ...(dto.expiresAt != null && { expiresAt: new Date(dto.expiresAt) }),
+    ...(dto.revokedAt != null && { revokedAt: new Date(dto.revokedAt) }),
+    ...(dto.lastUsedAt != null && { lastUsedAt: new Date(dto.lastUsedAt) }),
+    ...(dto.createdByApiKeyId != null && { createdByApiKeyId: dto.createdByApiKeyId }),
+  };
+}
 
 class InboxImpl implements Inbox {
   readonly id: string;

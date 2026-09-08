@@ -61,4 +61,45 @@ class S3BlobStoreTest {
             .shouldContainExactly("ws3/in/m/raw.eml")
         store.listKeysOlderThan("ws3/", Instant.now().minusSeconds(3600)) shouldBe emptyList()
     }
+
+    @Test
+    fun `two deployables starting at once both come up, whichever creates the bucket`() {
+        // The API and ingestion containers start simultaneously and both run
+        // `ensureBucket`. Before this was tolerated, the loser of that race got
+        // a 409 and refused to start — an outage caused entirely by the
+        // convenience flag, reproducible only under concurrent startup.
+        val bucket = "race-${System.nanoTime()}"
+        val racers = 6
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val pool =
+            java.util.concurrent.Executors
+                .newFixedThreadPool(racers)
+        try {
+            val futures =
+                (1..racers).map {
+                    pool.submit<S3BlobStore> {
+                        gate.await()
+                        S3BlobStore(
+                            S3BlobStoreConfig(
+                                endpoint = minio.s3URL,
+                                accessKey = "testinbox",
+                                secretKey = "testinbox123",
+                                bucket = bucket,
+                            ),
+                        )
+                    }
+                }
+            gate.countDown()
+            // Every one of them must construct: none may fail because another
+            // won.
+            val stores = futures.map { it.get(30, java.util.concurrent.TimeUnit.SECONDS) }
+            stores.forEach { store ->
+                store.put("probe/raw.eml", byteArrayOf(7), "message/rfc822")
+                store.get("probe/raw.eml")?.toList() shouldBe listOf<Byte>(7)
+                store.close()
+            }
+        } finally {
+            pool.shutdownNow()
+        }
+    }
 }

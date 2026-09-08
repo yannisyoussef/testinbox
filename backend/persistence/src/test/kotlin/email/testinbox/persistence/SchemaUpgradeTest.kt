@@ -194,6 +194,62 @@ class SchemaUpgradeTest : PersistenceIntegrationTest() {
     fun `every bundled migration is discoverable from the artifact`() {
         // If this scan silently found nothing, the compatibility policy would
         // read "no migrations bundled" and wave every schema through.
-        BundledMigrations.versions().map { it.raw } shouldBe listOf("1", "2", "3")
+        BundledMigrations.versions().map { it.raw } shouldBe listOf("1", "2", "3", "4")
+    }
+
+    @Test
+    fun `the V4 upgrade labels an existing api key as BOOTSTRAP rather than MANAGED`() {
+        val dataSource = freshDatabase()
+        val jdbc = JdbcClient.create(dataSource)
+        flyway(dataSource, target = "3").migrate()
+        val (workspace, _, _) = seedV1Data(jdbc)
+        val keyId = UUID.randomUUID()
+        jdbc
+            .sql(
+                """
+                INSERT INTO api_key (id, workspace_id, project_id, key_hash, scopes, created_at)
+                VALUES (?, ?, (SELECT id FROM project LIMIT 1), 'legacy-hash',
+                        ARRAY['inboxes:write','messages:read'], now())
+                """.trimIndent(),
+            ).params(keyId, workspace)
+            .update()
+
+        flyway(dataSource).migrate()
+
+        // Every key that predates the management API is a bootstrap fixture —
+        // that code had no other way to create one. Labelling it MANAGED would
+        // make it permanently usable and would defeat ADR-032 §8 entirely.
+        jdbc
+            .sql("SELECT kind FROM api_key WHERE id = ?")
+            .param(keyId)
+            .query(String::class.java)
+            .single() shouldBe "BOOTSTRAP"
+    }
+
+    @Test
+    fun `an artifact that predates V4 can still insert an api key after the migration`() {
+        // The ADR-029 rollback contract: a schema ahead of the artifact must
+        // stay usable. Pre-TI-002 code writes no `kind` and no `public_id`, so
+        // a DEFAULT of MANAGED would leave that insert violating the check
+        // constraint and a rolled-back node would fail to start.
+        val dataSource = freshDatabase()
+        val jdbc = JdbcClient.create(dataSource)
+        flyway(dataSource).migrate()
+        val (workspace, _, _) = seedV1Data(jdbc)
+
+        jdbc
+            .sql(
+                """
+                INSERT INTO api_key (id, workspace_id, project_id, key_hash, scopes, created_at, revoked_at)
+                VALUES (?, ?, (SELECT id FROM project LIMIT 1), 'old-artifact-hash',
+                        ARRAY['inboxes:write'], now(), NULL)
+                """.trimIndent(),
+            ).params(UUID.randomUUID(), workspace)
+            .update()
+
+        jdbc
+            .sql("SELECT count(*) FROM api_key WHERE key_hash = 'old-artifact-hash' AND kind = 'BOOTSTRAP'")
+            .query(Int::class.java)
+            .single() shouldBe 1
     }
 }
