@@ -69,8 +69,9 @@ class TestInboxInboxGoneException(
  * ADR-027). Waiting helps: [retryAfter] is the server's own estimate.
  *
  * Deliberately *not* retried automatically by the SDK. `POST /v1/inboxes`
- * creates a resource and `Idempotency-Key` is not implemented, so an
- * automatic retry could create duplicate inboxes; the caller decides.
+ * creates a resource and the SDK does not choose your `Idempotency-Key` for
+ * you (a key it invented would be lost with the process that invented it), so
+ * an automatic retry could create duplicate inboxes; the caller decides.
  */
 class TestInboxRateLimitException(
     message: String,
@@ -129,8 +130,14 @@ class TestInboxTimeoutException(
  * this server cannot reproduce (ADR-033 §7).
  *
  * **Terminal.** Retrying with the same key cannot succeed; use a new one.
- * Its own type rather than a plain conflict because four distinct `409`s now
+ * Its own type rather than a plain conflict because several distinct `409`s
  * share that status and the correct action differs for each.
+ *
+ * The two terminal types share this one exception because they ask the same
+ * thing of a caller. [problemType] tells them apart when it matters:
+ * `.../idempotency-key-reused` is the client's own key scheme colliding,
+ * `.../idempotency-replay-unavailable` is this server unable to reproduce a
+ * result it did commit.
  */
 class TestInboxIdempotencyConflictException(
     message: String,

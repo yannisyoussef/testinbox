@@ -7,6 +7,7 @@ import email.testinbox.application.port.RateLimiter
 import email.testinbox.domain.limits.RateCategory
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
+import org.springframework.core.annotation.Order
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
@@ -125,11 +126,37 @@ class RateLimitInterceptor(
     }
 }
 
+/**
+ * Ordered explicitly, and first among the `/v1` interceptors.
+ *
+ * Without an order, relative position is component-scan order — undefined, and
+ * able to flip between filesystems, JDKs and jar-versus-exploded layouts. An
+ * interceptor that short-circuits ahead of this one makes its refusals free:
+ * the request never reaches the limiter and consumes no workspace budget,
+ * which is ADR-027's "every /v1 route is charged something" defeated by a
+ * request header. `RateLimitOrderingTest` pins it.
+ */
 @Component
+@Order(RATE_LIMIT_INTERCEPTOR_ORDER)
 class RateLimitWebConfig(
     private val interceptor: RateLimitInterceptor,
 ) : WebMvcConfigurer {
     override fun addInterceptors(registry: InterceptorRegistry) {
-        registry.addInterceptor(interceptor).addPathPatterns("/v1/**")
+        registry
+            .addInterceptor(interceptor)
+            .addPathPatterns("/v1/**")
+            .order(RATE_LIMIT_INTERCEPTOR_ORDER)
     }
 }
+
+/**
+ * Charging comes before any other `/v1` interceptor may refuse a request.
+ *
+ * Set on the *registration* as well as the configurer bean, because only the
+ * registration is authoritative: `InterceptorRegistry.getInterceptors()` sorts
+ * by it. `@Order` on the `WebMvcConfigurer` alone merely fixes the sequence in
+ * which registrations are appended, which decides the chain only while every
+ * registration shares the default order — true today, and silently untrue the
+ * first time someone gives one an explicit order.
+ */
+const val RATE_LIMIT_INTERCEPTOR_ORDER: Int = 0

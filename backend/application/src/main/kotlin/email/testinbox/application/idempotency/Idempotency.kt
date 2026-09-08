@@ -65,6 +65,21 @@ class Idempotency(
         scope: () -> IdempotencyScope,
         fingerprint: () -> String,
         outcomes: Outcomes<T>,
+        /**
+         * ADR-033 §4a: bind a replay to the credential that claimed the key,
+         * not just to the workspace.
+         *
+         * Off by default, and that default is the deliberate one — §4a scopes
+         * the key to the workspace precisely so rotating a credential inside a
+         * retry window does not defeat the guarantee. It is switched on only
+         * where the *result* depends on the actor, which today is
+         * `CreateApiKey`: scopes are ceilinged by the actor's and expiry is
+         * clamped to it, so replaying to a different credential would report
+         * "your request created key X" for a key that credential could not
+         * have minted — and the documented client action for that answer is to
+         * revoke X, which would be another credential's live key.
+         */
+        replayBoundToActor: Boolean = false,
         mutation: () -> T,
     ): T {
         if (request == null) return tx.required(mutation)
@@ -74,48 +89,66 @@ class Idempotency(
         val print = fingerprint()
         val now = clock.instant()
 
+        // Recorded inside the transaction, emitted after it commits. Micrometer
+        // does not participate in a rollback, so counting an EXECUTED from
+        // inside would attribute a mutation to a transaction that then failed
+        // to commit — the same reason `CreateApiKey` moved its audit line out.
+        var recorded: IdempotencyOutcome? = null
         return try {
-            tx.required {
-                when (
-                    val outcome =
-                        records.claim(
-                            scope = resolvedScope,
-                            keyHash = keyHash,
-                            fingerprint = print,
-                            claimedByApiKeyId = request.actorApiKeyId,
-                            now = now,
-                            expiresAt = now.plus(retention),
-                            waitFor = claimWait,
-                        )
-                ) {
-                    ClaimOutcome.Claimed -> {
-                        val result = mutation()
-                        val snapshot =
-                            outcomes.snapshotOf(result)
-                                // A refusal. Undo the claim so a corrected retry
-                                // with the same key executes normally.
-                                ?: throw Rollback(result, IdempotencyOutcome.EXECUTED)
-                        records.complete(resolvedScope, keyHash, snapshot)
-                        metrics.completed(resolvedScope.operation, IdempotencyOutcome.EXECUTED)
-                        result
-                    }
+            val result =
+                tx.required {
+                    when (
+                        val outcome =
+                            records.claim(
+                                scope = resolvedScope,
+                                keyHash = keyHash,
+                                fingerprint = print,
+                                claimedByApiKeyId = request.actorApiKeyId,
+                                now = now,
+                                expiresAt = now.plus(retention),
+                                waitFor = claimWait,
+                            )
+                    ) {
+                        ClaimOutcome.Claimed -> {
+                            val executed = mutation()
+                            val snapshot =
+                                outcomes.snapshotOf(executed)
+                                    // A refusal. Undo the claim so a corrected
+                                    // retry with the same key executes normally.
+                                    ?: throw Rollback(executed, IdempotencyOutcome.EXECUTED)
+                            records.complete(resolvedScope, keyHash, snapshot)
+                            recorded = IdempotencyOutcome.EXECUTED
+                            executed
+                        }
 
-                    is ClaimOutcome.Replay -> {
-                        metrics.completed(resolvedScope.operation, IdempotencyOutcome.REPLAYED)
-                        outcomes.replay(outcome.snapshot)
-                    }
+                        is ClaimOutcome.Replay -> {
+                            if (replayBoundToActor && outcome.claimedByApiKeyId != request.actorApiKeyId) {
+                                // Reported as a reuse rather than a replay, and
+                                // counted as one: the key is bound to a request
+                                // this caller did not make, and the correct
+                                // client action is the same — never retry with
+                                // this key.
+                                recorded = IdempotencyOutcome.CONFLICT
+                                outcomes.keyReused()
+                            } else {
+                                recorded = IdempotencyOutcome.REPLAYED
+                                outcomes.replay(outcome.snapshot)
+                            }
+                        }
 
-                    ClaimOutcome.FingerprintMismatch -> {
-                        metrics.completed(resolvedScope.operation, IdempotencyOutcome.CONFLICT)
-                        outcomes.keyReused()
-                    }
+                        ClaimOutcome.FingerprintMismatch -> {
+                            recorded = IdempotencyOutcome.CONFLICT
+                            outcomes.keyReused()
+                        }
 
-                    ClaimOutcome.Contended -> {
-                        metrics.completed(resolvedScope.operation, IdempotencyOutcome.IN_PROGRESS)
-                        outcomes.inProgress()
+                        ClaimOutcome.Contended -> {
+                            recorded = IdempotencyOutcome.IN_PROGRESS
+                            outcomes.inProgress()
+                        }
                     }
                 }
-            }
+            recorded?.let { metrics.completed(resolvedScope.operation, it) }
+            result
         } catch (rollback: Rollback) {
             // The transaction is gone; the refusal it carried is still the
             // right answer, and the key is unbound again.

@@ -46,7 +46,7 @@ object IdempotencyHeader {
             IdempotencyKey.of(values.single())
                 ?: return Outcome.Invalid(
                     "$NAME must be ${IdempotencyKey.MIN_LENGTH}-${IdempotencyKey.MAX_LENGTH} printable " +
-                        "ASCII characters",
+                        "ASCII characters with no spaces",
                 )
         return Outcome.Present(IdempotencyRequest(key, actorApiKeyId))
     }

@@ -42,6 +42,15 @@ class SweepScheduler(
      * unbounded delete of every expired row on a five-second tick is its own
      * write-ahead-log problem. It can never remove an in-flight operation,
      * because an uncommitted claim is invisible to this statement's snapshot.
+     *
+     * **Deliberately not `@Transactional`, and it must stay that way.** Each
+     * `deleteExpired` is its own autocommit statement, so its row locks are
+     * released at the end of every pass. Wrapping this loop in one transaction
+     * would hold locks on up to `BATCH × MAX_PASSES` rows until the last pass
+     * finished, and a claim landing on any of them would block there and be
+     * reported to the client as `idempotency-request-in-progress` when nothing
+     * is in progress — the ADR-033 §9 contention the `SKIP LOCKED` in
+     * `deleteExpired` exists to avoid, reintroduced from the other side.
      */
     @Scheduled(fixedDelayString = "\${testinbox.idempotency.sweep-interval:5m}")
     fun idempotencySweep() {

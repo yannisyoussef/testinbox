@@ -150,6 +150,22 @@ class JdbcIdempotencyRecords(
      * Batched on purpose: an unbounded delete of every expired row on a fast
      * tick is its own write-ahead-log problem. It can never remove an in-flight
      * operation, because an uncommitted claim is invisible to this snapshot.
+     *
+     * `FOR UPDATE SKIP LOCKED` is not an optimisation (ADR-033 §9), and it is
+     * worth being precise about which direction it protects. `claim` takes a
+     * row lock deliberately (`ON CONFLICT DO UPDATE`), so the two genuinely
+     * contend. Without `SKIP LOCKED` this statement **waits** on whichever row
+     * a live claim holds — and while it waits it keeps the locks it has already
+     * taken on the rest of the batch, so every claim landing on any of those
+     * rows queues behind a deletion. Those claims then exhaust their
+     * `lock_timeout` and are reported to the client as
+     * `idempotency-request-in-progress` when no request is in progress, which
+     * self-heals on retry but pollutes the one metric operators are told to
+     * read as retry pressure.
+     *
+     * Skipping the contended row keeps this statement short and leaves that row
+     * for the next tick. It is already expired, so nothing about removing it is
+     * urgent.
      */
     override fun deleteExpired(
         now: Instant,
@@ -160,7 +176,10 @@ class JdbcIdempotencyRecords(
                 """
                 DELETE FROM idempotency_record
                  WHERE id IN (
-                     SELECT id FROM idempotency_record WHERE expires_at < :now LIMIT :batchSize
+                     SELECT id FROM idempotency_record
+                      WHERE expires_at < :now
+                      LIMIT :batchSize
+                      FOR UPDATE SKIP LOCKED
                  )
                 """.trimIndent(),
             ).param("now", Timestamps.toDb(now))

@@ -164,6 +164,10 @@ class CreateApiKey(
                             (r as? Result.Created)?.let { ApiKeySnapshot.of(it.apiKey.id, it.credential.publicId) }
                         },
                     ),
+                // ADR-033 §4a. `AlreadyCreated` names a credential for the
+                // caller to revoke, so it must never name one minted by a
+                // different credential in the same workspace.
+                replayBoundToActor = true,
             ) {
                 apiKeys.insert(key)
                 Result.Created(key, credential)

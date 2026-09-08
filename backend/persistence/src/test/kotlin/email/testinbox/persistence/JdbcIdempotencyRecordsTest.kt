@@ -9,6 +9,7 @@ import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.idempotency.IdempotentOperation
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import org.awaitility.Awaitility.await
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.jdbc.core.simple.JdbcClient
@@ -97,7 +98,7 @@ class JdbcIdempotencyRecordsTest : PersistenceIntegrationTest() {
     fun `a concurrent duplicate blocks on the claim and then replays — no IN_PROGRESS state needed`() {
         val scope = scope()
         val firstHasClaimed = CountDownLatch(1)
-        val secondIsWaiting = CountDownLatch(1)
+        val secondIsBlocked = CountDownLatch(1)
         val pool = Executors.newFixedThreadPool(2)
         try {
             val first =
@@ -105,9 +106,9 @@ class JdbcIdempotencyRecordsTest : PersistenceIntegrationTest() {
                     tx.required {
                         claim(scope, "k1") shouldBe ClaimOutcome.Claimed
                         firstHasClaimed.countDown()
-                        // Hold the transaction open while the duplicate arrives.
-                        secondIsWaiting.await(5, TimeUnit.SECONDS)
-                        Thread.sleep(300)
+                        // Hold the transaction open until the duplicate is
+                        // provably blocked on this row, then commit.
+                        secondIsBlocked.await(15, TimeUnit.SECONDS)
                         records.complete(scope, "k1", IdempotencySnapshot(1, mapOf("inboxId" to "winner")))
                     }
                 }
@@ -115,9 +116,23 @@ class JdbcIdempotencyRecordsTest : PersistenceIntegrationTest() {
 
             val second =
                 pool.submit<ClaimOutcome> {
-                    secondIsWaiting.countDown()
                     tx.required { claim(scope, "k1", waitFor = Duration.ofSeconds(10)) }
                 }
+
+            // Asked of Postgres rather than assumed after a sleep. A latch
+            // counted down *before* the claim call (the earlier shape) proves
+            // only that the thread started, and a `Thread.sleep` widens the
+            // race rather than removing it: if the second thread were slow to
+            // schedule, the test would quietly degenerate into the sequential
+            // replay already covered above and still pass, leaving the headline
+            // claim — that it *waited on the index* — unproven.
+            await().atMost(Duration.ofSeconds(10)).until {
+                jdbc
+                    .sql("SELECT count(*) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0")
+                    .query(Int::class.java)
+                    .single() > 0
+            }
+            secondIsBlocked.countDown()
             first.get(15, TimeUnit.SECONDS)
 
             // It did not execute, and it did not see a half-written record: it
@@ -185,11 +200,19 @@ class JdbcIdempotencyRecordsTest : PersistenceIntegrationTest() {
             }
             held.await(5, TimeUnit.SECONDS) shouldBe true
 
+            // No `runCatching` here, deliberately. Swallowing the exception
+            // and substituting `Contended` would make this test pass if the
+            // claim threw, if committing the poisoned transaction threw, or if
+            // the pool refused the connection — i.e. it would assert nothing
+            // about the one property it is named for. ADR-033 §3 claims the
+            // lock timeout is rendered as a value rather than an error, and
+            // that Postgres turns a COMMIT on an aborted transaction into a
+            // silent ROLLBACK; this is the only test that would notice either
+            // being false, so it must be able to fail.
             val contended =
                 pool
                     .submit<ClaimOutcome> {
-                        runCatching { tx.required { claim(scope, "k1", waitFor = Duration.ofMillis(250)) } }
-                            .getOrElse { ClaimOutcome.Contended }
+                        tx.required { claim(scope, "k1", waitFor = Duration.ofMillis(250)) }
                     }.get(15, TimeUnit.SECONDS)
             // Transient, and distinguishable from a fingerprint conflict: the
             // correct client action for one is retry and for the other is never.
@@ -262,5 +285,59 @@ class JdbcIdempotencyRecordsTest : PersistenceIntegrationTest() {
             .sql("SELECT count(*) FROM idempotency_record WHERE key_hash = 'live'")
             .query(Int::class.java)
             .single() shouldBe 1
+    }
+
+    @Test
+    fun `the sweep skips a row a live claim holds, rather than blocking behind it`() {
+        // ADR-033 §9. `claim` takes a row lock deliberately (`ON CONFLICT DO
+        // UPDATE`), so the sweep and a claim genuinely contend. Without
+        // `SKIP LOCKED` the sweep blocks on the holder; worse, a claim landing
+        // on a row the sweep already locked exhausts its `lock_timeout` and is
+        // reported to the client as `idempotency-request-in-progress` when no
+        // request is in progress.
+        val scope = scope()
+        // Committed and already expired: exactly what the sweep targets.
+        tx.required {
+            records.claim(
+                scope = scope,
+                keyHash = "contended",
+                fingerprint = "fp",
+                claimedByApiKeyId = null,
+                now = now.minusSeconds(7200),
+                expiresAt = now.minusSeconds(3600),
+                waitFor = Duration.ofSeconds(2),
+            )
+        }
+
+        val holding = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val holder = Executors.newSingleThreadExecutor()
+        val sweeper = Executors.newSingleThreadExecutor()
+        try {
+            holder.submit {
+                tx.required {
+                    claim(scope, "contended")
+                    holding.countDown()
+                    release.await(10, TimeUnit.SECONDS)
+                }
+            }
+            holding.await(10, TimeUnit.SECONDS) shouldBe true
+
+            // The assertion is that this *returns at all* while the lock is
+            // held. It skips the one row it could have taken, so nothing is
+            // removed and the next tick picks it up — the record is expired,
+            // so nothing about deleting it is urgent.
+            val removed = sweeper.submit<Int> { records.deleteExpired(now, batchSize = 10) }
+            removed.get(5, TimeUnit.SECONDS) shouldBe 0
+        } finally {
+            release.countDown()
+            holder.shutdown()
+            sweeper.shutdown()
+        }
+
+        // And once the holder is gone the row is collectable as normal, so the
+        // skip defers the delete rather than losing it.
+        holder.awaitTermination(10, TimeUnit.SECONDS)
+        records.deleteExpired(now, batchSize = 10) shouldBe 1
     }
 }

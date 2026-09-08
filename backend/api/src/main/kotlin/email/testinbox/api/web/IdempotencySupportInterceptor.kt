@@ -2,6 +2,7 @@ package email.testinbox.api.web
 
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
+import org.springframework.core.annotation.Order
 import org.springframework.http.HttpStatus
 import org.springframework.http.MediaType
 import org.springframework.stereotype.Component
@@ -51,11 +52,20 @@ class IdempotencySupportInterceptor(
     }
 }
 
+/**
+ * Ordered *after* the rate limiter. This refusal short-circuits the request, so
+ * running first would let any authenticated caller spend nothing by attaching
+ * an `Idempotency-Key` to any `/v1` route — an ADR-027 bypass through a header.
+ */
 @Component
+@Order(RATE_LIMIT_INTERCEPTOR_ORDER + 10)
 class IdempotencySupportWebConfig(
     private val interceptor: IdempotencySupportInterceptor,
 ) : WebMvcConfigurer {
     override fun addInterceptors(registry: InterceptorRegistry) {
-        registry.addInterceptor(interceptor).addPathPatterns("/v1/**")
+        registry
+            .addInterceptor(interceptor)
+            .addPathPatterns("/v1/**")
+            .order(RATE_LIMIT_INTERCEPTOR_ORDER + 10)
     }
 }

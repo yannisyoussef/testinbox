@@ -289,10 +289,11 @@ internal class Transport(
                     limit = problem.limit,
                     current = problem.current,
                 )
-            // Four distinct 409s now share the status, and their correct
-            // client actions differ — retry, never retry, or revoke and
-            // re-mint. Discriminating on the problem type is what
-            // docs/api/principles.md #3 asks of a client.
+            // Several distinct 409s share this status (ADR-021, ADR-027,
+            // ADR-033) and their correct client actions differ — free
+            // capacity, wait out a cooldown, retry with the same key, never
+            // reuse the key, or revoke and re-mint. Discriminating on the
+            // problem type is what docs/api/principles.md #3 asks of a client.
             status == 409 && problem.type?.endsWith("/idempotency-request-in-progress") == true ->
                 TestInboxIdempotencyInProgressException(detail, problem.correlationId, retryAfter)
             status == 409 && problem.type?.endsWith("/idempotency-secret-not-replayable") == true ->
@@ -306,7 +307,12 @@ internal class Transport(
                 (
                     problem.type?.endsWith("/idempotency-key-reused") == true ||
                         problem.type?.endsWith("/idempotency-replay-unavailable") == true
-                ) -> TestInboxIdempotencyConflictException(detail, problem.correlationId)
+                ) ->
+                // The two terminal types share one exception because they ask
+                // the same thing of a caller, but `problemType` is carried so
+                // "my key scheme is wrong" stays distinguishable from "an
+                // artifact rollback ate my record".
+                TestInboxIdempotencyConflictException(detail, problem.correlationId, problem.type)
             status == 409 -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
             status == 410 -> TestInboxInboxGoneException(detail, problem.correlationId, problem.type, status)
             status == 429 ->

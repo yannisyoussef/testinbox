@@ -36,19 +36,23 @@ client.createInboxBlocking(CreateInboxOptions(idempotencyKey = key))
 
 ## Choosing a key
 
-- **16–255 printable ASCII.** Opaque: the server infers nothing from it, so a
-  UUID, a ULID or your own job id are equally valid.
+- **16–255 printable ASCII, and no spaces** (`0x21`–`0x7e`). Opaque otherwise:
+  the server infers nothing from it, so a UUID, a ULID or your own job id are
+  equally valid. A test name works as a key only once it is slugified — `sends
+  welcome email` is rejected, `sends-welcome-email` is not.
 - **Derive it from something your own retry boundary can reproduce.** This is
   the part people get wrong. A key generated per *attempt* defeats the feature
   entirely, and a key generated inside a process that then dies protects
   nothing — the retry comes from somewhere that never saw it. A CI job id, a
-  test name plus a run id, or a row in your own queue all work.
+  test name plus a run id (slugified), or a row in your own queue all work.
 - **Unique per workspace, per operation.** Two CI systems in one workspace both
   using `build-${BUILD_NUMBER}` will collide with each other. That collision is
   an accident rather than an attack — anyone who can bind a key is already
   inside the tenancy boundary — but it is a confusing one, so prefix your keys.
 - The SDKs deliberately do **not** generate one for you. A key you did not
-  choose is a key you cannot reproduce.
+  choose is a key you cannot reproduce. **Orphan-credential protection on
+  `POST /v1/api-keys` is therefore opt-in**: a client that passes no key gets
+  exactly the pre-TI-003 behaviour.
 
 ## What each answer means
 
@@ -57,13 +61,27 @@ client.createInboxBlocking(CreateInboxOptions(idempotencyKey = key))
 | `201` + `Idempotency-Replayed: false` | It ran | Nothing |
 | `201` + `Idempotency-Replayed: true` | Already done; this is that result | Nothing — you have the resource |
 | `409 idempotency-key-reused` | Bound to a *different* request | **Never** retry with this key; use a new one |
+| `409 idempotency-replay-unavailable` | Bound to a committed request this server cannot reproduce | **Never** retry with this key; use a new one |
 | `409 idempotency-request-in-progress` | A concurrent identical request is running | Retry with the **same** key |
 | `409 idempotency-secret-not-replayable` | Key creation only — already created | Revoke the named key, mint again with a fresh key |
+
+`Idempotency-Replayed` is sent on `POST /v1/inboxes` only. `POST /v1/api-keys`
+has no replayed `201` to mark: a duplicate there is always the
+`409 idempotency-secret-not-replayable` above, because the secret cannot be
+re-issued (ADR-033 §8).
 | `400` | Malformed or repeated header, or an unsupported operation | Fix the request |
 
-Discriminate on the problem `type`, never on the status code: four different
-`409` meanings now share it, and their correct actions are mutually exclusive.
-Both SDKs map them to distinct exception types for exactly that reason.
+Discriminate on the problem `type`, never on the status code: the four
+idempotency meanings above share it with `address-already-reserved` and
+`quota-exceeded`, and their correct actions are mutually exclusive.
+
+Both SDKs give the *actions* distinct exception types — in-progress (retry),
+secret-not-replayable (revoke and re-mint) and terminal (use a new key) — so a
+`catch` can branch without string matching. The two terminal types deliberately
+share one exception, because they ask a caller to do the same thing; the
+problem type is carried on it (`problemType` in Kotlin, `problem.type` in
+TypeScript) for when you want to tell a key-scheme collision from a server that
+could not reproduce its own result.
 
 ## Things worth knowing
 

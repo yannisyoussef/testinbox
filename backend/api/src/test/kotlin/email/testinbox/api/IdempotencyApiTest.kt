@@ -3,6 +3,7 @@ package email.testinbox.api
 import email.testinbox.domain.tenant.ApiScope
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.string.shouldNotContain
 import org.junit.jupiter.api.Test
 import org.springframework.http.HttpEntity
 import org.springframework.http.HttpHeaders
@@ -253,5 +254,39 @@ class IdempotencyApiTest : ApiIntegrationTestBase() {
 
     private infix fun String.shouldNotBe0(other: String) {
         (this == other) shouldBe false
+    }
+
+    @Test
+    fun `a key-creation replay is bound to the credential that claimed it`() {
+        // ADR-033 §4a. Inbox creation deliberately replays across credentials
+        // in a workspace, so rotation inside a retry window does not defeat the
+        // guarantee. Key creation must not: its result depends on the actor
+        // (scopes are ceilinged by the actor's, expiry clamped to it), and the
+        // refusal names a credential for the caller to revoke.
+        val tenant = provisionIsolatedWorkspace("idem-actor")
+        val first = mintKey(tenant.workspaceId, tenant.projectId, ApiScope.entries.toSet(), name = "ci-a")
+        val second = mintKey(tenant.workspaceId, tenant.projectId, ApiScope.entries.toSet(), name = "ci-b")
+        val k = key()
+        val body = """{"name":"shared","scopes":["messages:read"]}"""
+
+        val mine = postWithKey("/v1/api-keys", body, k, apiKey = first)
+        mine.statusCode shouldBe HttpStatus.CREATED
+        val mineId = json.readTree(mine.body!!)["apiKey"]["id"].asString()
+
+        val theirs = postWithKey("/v1/api-keys", body, k, apiKey = second)
+        theirs.statusCode shouldBe HttpStatus.CONFLICT
+        val problem = json.readTree(theirs.body!!)
+        // Reused, NOT secret-not-replayable. The bug this pins: the second
+        // credential being told "your request created key X" for a key it
+        // never minted and could not have minted — whose documented
+        // remediation is to revoke X, i.e. another pipeline's live credential.
+        problem["type"].asString() shouldContain "idempotency-key-reused"
+        theirs.body!! shouldNotContain mineId
+
+        // And the claiming credential still replays normally, so the binding
+        // narrowed nothing it should not have.
+        val retry = postWithKey("/v1/api-keys", body, k, apiKey = first)
+        retry.statusCode shouldBe HttpStatus.CONFLICT
+        json.readTree(retry.body!!)["apiKeyId"].asString() shouldBe mineId
     }
 }

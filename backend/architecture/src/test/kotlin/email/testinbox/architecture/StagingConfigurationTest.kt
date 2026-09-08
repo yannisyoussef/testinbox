@@ -111,4 +111,37 @@ class StagingConfigurationTest {
                 "a full-window long poll would intermittently become a 504",
         )
     }
+
+    @Test
+    fun `the data topology bounds how long a hung node can hold an idempotency claim`() {
+        // ADR-033 Consequences names this a deployment requirement, and it is
+        // the one part of the guarantee the application genuinely cannot
+        // enforce for itself: a node that is partitioned mid-claim holds the
+        // row until something server-side reaps it, and Postgres disables that
+        // reaping by default — which makes the real bound the TCP keepalive
+        // interval, hours, during which that one key is unusable.
+        //
+        // Asserted here because nothing else would notice its removal: no
+        // request fails, no test goes red, and the symptom is a single wedged
+        // key long after the deploy that dropped the flag.
+        val data = File(repoRoot, "deploy/staging/compose.data.yaml").readText()
+        val timeout =
+            Regex("""idle_in_transaction_session_timeout=(\d+)s""")
+                .find(data)
+                ?.groupValues
+                ?.get(1)
+                ?.toInt()
+        assertTrue(
+            timeout != null,
+            "deploy/staging/compose.data.yaml no longer sets idle_in_transaction_session_timeout; " +
+                "ADR-033 requires it, and Postgres defaults it to disabled",
+        )
+        // Long enough to clear any legitimate claim wait (capped at 30s by
+        // TestInboxProperties.Idempotency), short enough to be a bound at all.
+        assertTrue(
+            timeout!! in 30..300,
+            "idle_in_transaction_session_timeout is ${timeout}s; below the 30s claim-wait ceiling it would " +
+                "reap healthy transactions, and far above it stops bounding a partitioned node usefully",
+        )
+    }
 }

@@ -197,7 +197,7 @@ function errorForStatus(status: number, problem: ProblemDetails): TestInboxError
     case 404:
       return new TestInboxNotFoundError(message, problem);
     case 409: {
-      // Five distinct meanings now share this status (ADR-021, ADR-027,
+      // Several distinct meanings share this status (ADR-021, ADR-027,
       // ADR-033), and their correct client actions differ — free capacity,
       // wait for a cooldown, retry with the same key, never reuse the key, or
       // revoke and re-mint. The problem type decides, never the status code.

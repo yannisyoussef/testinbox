@@ -51,7 +51,8 @@ BEGIN
   INSERT INTO idempotency_record (...)
     ON CONFLICT (workspace_id, operation, key_hash)
     DO UPDATE SET key_hash = idempotency_record.key_hash      -- no-op, takes the row lock
-    RETURNING (xmax = 0) AS claimed, fingerprint, snapshot
+    RETURNING id, fingerprint, snapshot_version, snapshot
+  claimed := (returned id = the id we generated)
   if claimed:  run the mutation, write the snapshot
   else:        replay, or conflict
 COMMIT
@@ -82,12 +83,26 @@ experiment rather than reasoning:
   the conflicting row*, so the retention sweep can delete that row between the
   failed claim and the follow-up read — leaving a request that neither claimed
   nor found anything, a state with no correct branch. The no-op `DO UPDATE`
-  locks the row and returns it in the same statement. `xmax = 0` distinguishes
-  the insert from the conflict. The cost is one dead tuple per replay.
+  locks the row and returns it in the same statement. The cost is one dead
+  tuple per replay.
+- **The insert and the conflict are told apart by our own id, not by `xmax`.**
+  The widely-repeated `RETURNING (xmax = 0) AS claimed` trick is not reliable
+  here: under eight-way concurrency it reported three winners out of eight,
+  because the tuple version returned by the update path can carry `xmax = 0`
+  too. Generating the id client-side and checking whether it came back depends
+  on nothing but the row, and is what the implementation does. This is recorded
+  because the `xmax` form is what most references suggest, and adopting it
+  reintroduces duplicate mutations — the exact failure this ADR exists to
+  prevent.
 - **READ COMMITTED is a precondition, not an accident.** Under REPEATABLE READ
-  the same statement raises `40001` instead of conflicting. The application
-  asserts the isolation level it runs under rather than inheriting whatever a
-  Postgres configuration happens to set.
+  the same statement raises `40001` instead of conflicting, which would surface
+  as a `500` on every concurrent duplicate rather than the `409` §7 promises.
+  The application therefore *asserts* the isolation level it runs under —
+  `SpringTransactionRunner` sets it explicitly — rather than inheriting
+  whatever `default_transaction_isolation` a Postgres configuration happens to
+  set. It matches the Postgres default, so asserting it changes nothing today;
+  the point is that a server-side tuning change cannot silently break the
+  claim.
 
 ### 3. The bounded wait covers the claim, and only the claim
 
@@ -109,8 +124,16 @@ observable damage, in both cases, is that a *correct* request fails:
   told "in progress". The feature would make the endpoint less reliable
   precisely for the clients careful enough to use it.
 
-A lock timeout raises an error, which poisons the transaction. The refusal is
-therefore rendered *after* rollback, never from inside the aborted transaction.
+A lock timeout raises an error, which poisons the transaction: no further
+statement in it can succeed. The refusal is therefore assembled from values
+already in hand and the transaction is allowed to unwind — Postgres turns a
+`COMMIT` on an aborted transaction into a silent `ROLLBACK`, so nothing is
+believed committed that is not.
+
+That is safe here for one specific reason, and it is worth stating because it
+would stop being true if the order changed: the claim is the **first** statement
+of the transaction, so an abort at that point discards nothing the caller was
+told about. An operation that did work before claiming could not rely on this.
 
 ### 4. Only a committed success is recorded
 
@@ -130,10 +153,18 @@ chosen independently:
   exactly the "committed X, missing Y" class §2 exists to eliminate.
 
 It also decides the storage bound. Records are created only by successful
-mutations, which rate limits and quotas already bound. Were rejections
-recorded, a workspace pinned at its inbox quota would still mint ~86,000
-records a day while creating nothing — quota would stop bounding the tenant's
-footprint, which is the one thing it is for.
+mutations, so the bound is **the ADR-027 creation rate multiplied by the
+retention window** — not the quota. That distinction matters: a quota bounds a
+*stock* (200 active inboxes), while records are a *flow*, and a workspace
+creating one-second inboxes never approaches its quota while sustaining the
+full rate. At 60 burst / 1 per second over six hours that is roughly 21,600
+rows per workspace, which is fine — but the number moves if
+`inbox-create.refill-per-second` moves, and nothing connects those two knobs
+today.
+
+Were rejections recorded the flow would be unbounded by anything at all: a
+workspace pinned at its quota would mint tens of thousands of rows a day while
+creating nothing.
 
 **A departure worth naming:** `V3__rate_limits_and_quotas.sql` states that
 limiter table row counts are "bounded by tenant count rather than by traffic".
@@ -158,6 +189,25 @@ Uniqueness is `workspace_id + operation + sha256(workspace ‖ operation ‖ key
   digest is confirmable by anyone with database read access, which defeats the
   reason for hashing them at all. Salting also stops the same key value being
   correlatable across workspaces.
+
+**A pepper is deliberately not used, and the residual risk is named rather than
+implied.** The salt is the workspace id in the adjacent column, so it is not
+secret: it defeats precomputation and cross-workspace correlation, not a
+dictionary attack by someone holding a dump. A server-side pepper would defeat
+that too, and it would be cheap — unlike ADR-032's verifier this digest is
+computed once per mutation rather than once per authenticated request, so no
+amount of key stretching would show up on the hot path.
+
+It is not built because the failure mode is worse than the exposure. A pepper
+is a secret that every API node and the migrator must agree on; if it is
+rotated or lost, every unexpired record becomes unmatchable at once and every
+in-flight retry executes a second time — the feature inverting into precisely
+the duplicate-mutation bug it exists to prevent. Against that, the exposure it
+buys back is an attacker who *already holds database read access* learning that
+a workspace ran `build-1234`; the same access already discloses the inboxes and
+their messages, which is the far greater compromise. Revisit this if
+idempotency records ever outlive a breach-notification window or start carrying
+caller-supplied content.
 
 `CreateApiKey` replay is additionally bound to the credential that claimed it
 (`created_by_api_key_id`). Its result depends on the actor — scopes are
@@ -212,17 +262,25 @@ still exists.** A replayed inbox snapshot carries the state at creation; a
 client that replays and then fetches may get `404`. That is correct — the
 alternative is a retry that can no longer learn what it created.
 
-### 7. Two refusals, deliberately distinguishable
+### 7. Three refusals, deliberately distinguishable
 
-Both are `409`, and the type is what a client must branch on
+All are `409`, and the type is what a client must branch on
 (`docs/api/principles.md` #3):
 
 | type | meaning | retry? |
 |---|---|---|
 | `idempotency-key-reused` | bound to a different logical request | **never** with this key |
 | `idempotency-request-in-progress` | a concurrent claim is still running | **yes**, carries `Retry-After` |
+| `idempotency-replay-unavailable` | bound to a committed request whose result this artifact cannot decode | **never** with this key |
 
-Collapsing them would invert the correct client action in one of the two cases.
+The third exists for one reachable case and no other: an ADR-028 rollback
+across a snapshot version bump, where a newer artifact wrote a projection an
+older one cannot read. Re-executing would duplicate the mutation and guessing
+would lie, so the honest answer is that the key is spent. It is separate from
+`idempotency-key-reused` because that one means the *client* sent something
+different, which is a client bug; this one is entirely ours.
+
+Collapsing the first two would invert the correct client action in one of them.
 The in-progress refusal is also the one interleaving where a client can hold a
 `409` for an operation that subsequently commits — which is recoverable only
 because retrying with the same key then replays.
@@ -276,8 +334,18 @@ it for a defect.
 
 **The header stays optional**, including here. Requiring it would break the
 published contract and the ADR-015 compatibility gate for an endpoint that
-shipped days ago; the SDKs instead always send one, which achieves the same
-protection for every client that uses them without a breaking change.
+shipped days ago.
+
+The SDKs do **not** compensate by generating one, and that is deliberate rather
+than an omission: a key the SDK invents per call is lost with the process that
+invented it, so the retry — which by definition comes from somewhere that never
+saw it — is unprotected. An auto-generated key would look like a safety feature
+while providing none.
+
+The consequence has to be stated plainly rather than implied: **orphan-credential
+protection is opt-in.** A client that does not pass a key gets exactly the
+behaviour it had before this ADR. `docs/dev/api-keys.md` and both SDK surfaces
+say so where a caller will see it.
 
 ### 9. Retention and cleanup
 
@@ -293,8 +361,27 @@ different problems, and the overlap is documented rather than shared.
 The sweep runs on a slow cadence in batched deletes — an unbounded delete of
 every expired row on a fast tick is its own write-ahead-log problem — and can
 never remove an in-flight operation, because an uncommitted claim is invisible
-to its snapshot. Replays read without `FOR UPDATE`, so they never contend with
-it.
+to its snapshot.
+
+It does, however, **contend** with claims, and an earlier draft of this section
+wrongly said it did not. §2 chose `ON CONFLICT DO UPDATE` precisely to take a
+row lock, so the sweep and a claim compete for the same rows.
+
+The sweep therefore selects with `FOR UPDATE SKIP LOCKED`, and the direction of
+the protection is worth stating exactly, because it is easy to describe
+backwards. `SKIP LOCKED` does not stop a claim blocking on the sweep; it stops
+the *sweep* blocking on a claim. That is what matters, because a sweep parked on
+one contended row goes on holding its locks on every other row in the batch —
+so a single live claim converts one deletion into a queue of them, and the
+claims that land on those rows exhaust their wait against a *deletion* and are
+reported as "another request is in progress" when none is. Self-healing on
+retry, but it pollutes the one metric operators are told to read as retry
+pressure.
+
+The residual window — a claim arriving while the sweep holds a row it did take —
+is bounded by a single batched `DELETE` and needs nothing further. The sweep
+must also stay in autocommit for this to hold; `SweepScheduler.idempotencySweep`
+says so where someone might wrap it in a transaction.
 
 ### 10. Limits, observability, and the key itself
 
@@ -337,6 +424,19 @@ it.
   but the key is unavailable for that window. `idle_in_transaction_session_timeout`
   on the deployed database is what bounds it, and it is a deployment
   requirement rather than a code comment (`docs/dev/staging.md`).
+
+  **Known gap, stated rather than implied:** this is enforced only for the
+  self-hosted reference topology, where `StagingConfigurationTest` fails if
+  `deploy/staging/compose.data.yaml` stops setting it. The deployed host is
+  reconciled by GitLab `infinity/infinity-core`, and nothing in this repository
+  asserts the setting there — unlike the proxy read timeout, which
+  `DeploymentSafety` refuses to start on. Closing it means a startup or
+  readiness check that reads `SHOW idle_in_transaction_session_timeout` and
+  refuses on `0`; it is deliberately not in TI-003 because the deployed value
+  lives in another repository, and it should be picked up with the next
+  deployment increment. The consequence of leaving it open is bounded and
+  narrow: one wedged key per hung node, no duplicate mutation, self-clearing at
+  the retention horizon.
 - Audit and metric emission moves after commit. Emitting inside the transaction
   would let a rolled-back claim log that a credential was created that does not
   exist, in the trail ADR-032 §5 relies on as evidence.

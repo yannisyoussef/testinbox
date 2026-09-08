@@ -54,10 +54,11 @@
    displays received mail; it cannot be used to carry on a conversation.
 6. **Idempotency records are bounded by successful mutations, not by traffic**
    ([ADR-033](../adr/0033-idempotent-mutations.md) §4). A refusal rolls its
-   claim back, so a workspace pinned at its inbox quota creates no records at
-   all — quota keeps bounding the tenant's footprint, which is the one thing it
-   is for. Were rejections recorded, that workspace could mint tens of
-   thousands of rows a day while creating nothing.
+   claim back, so the bound is the ADR-027 **creation rate multiplied by the
+   retention window** — roughly 21,600 rows per workspace at the shipped
+   defaults. Not the quota: a quota bounds a stock, records are a flow, and a
+   workspace creating one-second inboxes never approaches its quota. Were
+   rejections recorded the flow would be bounded by nothing at all.
 
    This is still the first table in the schema whose row count grows with
    traffic rather than with tenant count — `V3__rate_limits_and_quotas.sql`
@@ -66,11 +67,13 @@
    multiplier is controlled. A future signup feature invalidates this analysis
    and must revisit it.
 
-   Keys are stored hashed and salted with their scope. ADR-032 §2 rejected a
-   pepper for a 260-bit random secret; that reasoning does not transfer here,
-   because idempotency keys are low-entropy and structured — CI job ids, branch
-   names — so an unsalted digest would be confirmable by anyone with read
-   access, and the same value would be correlatable across workspaces.
+   Keys are stored hashed and salted with their scope. The salt is the
+   workspace id in the adjacent column, so it is not secret: what it buys is
+   resistance to *precomputation* and to *cross-workspace correlation* of the
+   same key value, not secrecy against a reader of a dump. Idempotency keys are
+   low-entropy and structured, so a dictionary attack against a known workspace
+   still works — see ADR-033 §4a for why a pepper is cheap here and why it is
+   nonetheless not built.
 7. **Credentials are managed, scoped and revocable individually**
    ([ADR-032](../adr/0032-api-key-credential-lifecycle.md)). A workspace holds
    many keys, so a leaked CI credential is revoked on its own rather than by

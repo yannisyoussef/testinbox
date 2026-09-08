@@ -57,13 +57,22 @@ components:
       required: false
       description: >
         Opaque, client-chosen key making a retry of *this* logical request safe
-        (ADR-033). 16–255 printable ASCII characters; not required to be a
-        UUID, and the server infers nothing from its content.
+        (ADR-033). 16–255 printable ASCII characters and no spaces
+        (`0x21`–`0x7e`); not required to be a UUID, and the server infers
+        nothing from its content.
 
         Scoped to the caller's workspace and this operation, so the same value
-        is safe for unrelated tenants and for a different endpoint. It survives
-        credential rotation: retrying with a different key of the same
-        workspace still replays.
+        is safe for unrelated tenants and for a different endpoint. On
+        `POST /v1/inboxes` it survives credential rotation: retrying with a
+        different API key of the same workspace still replays.
+
+        `POST /v1/api-keys` is the exception (ADR-033 §4a). A replay there is
+        additionally bound to the credential that claimed the key, because the
+        result depends on the actor — scopes are ceilinged by the actor's and
+        expiry is clamped to it — and the refusal names a credential for you to
+        revoke. A different credential replaying the same key is answered
+        `idempotency-key-reused`, so it can never be pointed at a key another
+        pipeline minted.
 
         The key is bound to the *semantic* content of the request. Retrying the
         same request replays the committed result; sending a different request
@@ -73,8 +82,13 @@ components:
         refusal or an address conflict leaves it unbound, so a corrected retry
         with the same key executes normally.
 
-        Sending it to an operation that does not support it is refused rather
-        than ignored — see `idempotency-not-supported`.
+          Sending it to an operation that does not support it is refused rather
+        than ignored — `400 idempotency-not-supported`, on any `/v1` route.
+        Refused rather than ignored because a route that accepted and silently
+        dropped the header would tell a client, by saying nothing, that its
+        retries are safe. A client that stamps the header onto every outbound
+        request must therefore expect this `400` on operations that do not list
+        the parameter.
       schema:
         type: string
         minLength: 16
@@ -494,11 +508,20 @@ paths:
             status code. Quota exhaustion carries no `Retry-After`: waiting
             does not help, the caller must free capacity.
 
-            With an `Idempotency-Key`, two further types are possible:
+            With an `Idempotency-Key`, three further types are possible:
             `idempotency-key-reused` (the key is bound to a different logical
-            request — retrying with it can never succeed) and
+            request — retrying with it can never succeed),
             `idempotency-request-in-progress` (a concurrent identical request
-            is still running — carries `Retry-After`, and retrying is correct).
+            is still running — carries `Retry-After`, and retrying is correct)
+            and `idempotency-replay-unavailable` (the key is bound to a
+            committed request whose stored result this server cannot decode —
+            retrying with it can never succeed; use a new key).
+
+            `idempotency-replay-unavailable` is reachable only after an
+            ADR-028 artifact rollback across a snapshot version bump, where a
+            newer artifact wrote a record an older one cannot read. The
+            mutation it names *did* commit; re-executing would duplicate it,
+            so the key is reported spent rather than replayed or re-run.
 
             Neither an address conflict nor a quota refusal binds the key.
           content:
@@ -717,8 +740,9 @@ paths:
             client cannot write an absent secret into its store and fail
             somewhere else later.
 
-            Also possible: `idempotency-key-reused` and
-            `idempotency-request-in-progress`, as for inbox creation.
+            Also possible: `idempotency-key-reused`,
+            `idempotency-request-in-progress` and
+            `idempotency-replay-unavailable`, as for inbox creation.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }

@@ -34,6 +34,33 @@ exist anywhere in the system.
 **A lost key is replaced, not recovered:** mint a new one, deploy it, then
 revoke the old one.
 
+## Orphaned credentials, and the opt-in protection against them
+
+The dangerous failure here is not a lost key but a create whose *response* was
+lost. If `POST /v1/api-keys` commits and the connection then drops, a real
+credential exists in the workspace and nobody has ever seen its secret. It
+counts against nothing you can see going wrong, it cannot be used, and it can
+only be found by listing keys and reasoning about timestamps.
+
+Sending an `Idempotency-Key` is what prevents it
+([ADR-033](../adr/0033-idempotent-mutations.md)). The retry is recognised as
+the same logical request, so it does not mint a second credential; because a
+secret is returned exactly once, the retry is answered
+`409 idempotency-secret-not-replayable` **naming** the key it created
+(`apiKeyId` and `publicId`), which is enough to revoke it without a list call
+and mint again under a fresh key.
+
+**This protection is opt-in, and it is worth being blunt about that.** The
+header is optional, and the SDKs deliberately do not invent a key for you — a
+key generated inside the process that then dies protects nothing, since the
+retry comes from somewhere that never saw it, and an auto-generated one would
+look like a safety feature while providing none. A client that passes no key
+gets exactly the pre-TI-003 behaviour: a dropped response can leave an orphan.
+
+Derive the key from something your own retry boundary can reproduce — a CI job
+id, a deployment id, a row in your own queue. `docs/dev/idempotency.md` covers
+the key rules and every response you can get back.
+
 ## Scopes
 
 | Scope | Grants |
