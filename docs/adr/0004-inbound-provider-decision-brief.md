@@ -12,6 +12,29 @@ real estate (Contabo US, Contabo EU, OVH).
 
 ---
 
+## Errata — corrections after the application-side review
+
+The application team analysed the same question independently
+(`docs/adr/0004-inbound-provider-application-analysis.md`). They reached the same
+recommendation for partly different reasons and found three errors in this
+document. Two are material. They are corrected in place below; they are also
+listed here so a reader who has the earlier revision knows what moved.
+
+| # | What this brief said | Correction | Where |
+|---|---|---|---|
+| 1 | "`providerMessageId` is what stops a 4xx retry becoming a duplicate", and a message with no `Message-ID` is an unsolved dedup gap | **Wrong, and the gap does not exist.** `SmtpGateway` passes `providerMessageId = null` unconditionally; the uniqueness index is partial on `WHERE provider_message_id IS NOT NULL`; ADR-019 already decided that a message retried after a `451` is the *first successful delivery*, so there is nothing to deduplicate. | §"Replay and dedup", §5 |
+| 2 | "The edge stamping a `Message-ID` when absent is the correct answer" | **Withdrawn — do not implement.** It would key suppression on a sender-controlled header, hiding exactly the duplicate-send defects the product exists to expose, and letting a third party choose our dedup key. | §"Replay and dedup", §5, §13, §15 |
+| 3 | Unknown-recipient discard (ADR-025) listed as an available ingestion control under **both** options | **Wrong for SES and it is the strongest argument this brief had.** SES receipt requires an S3 write action, so mail to non-existent addresses is stored under our account before TestInbox can decide anything. ADR-025's "never stored" is structurally unavailable under any accept-then-store provider, and its loss re-widens the VISION.md §2 compliance question the owner is being asked. | §2, §3, §13 |
+
+Two further points from that review are accepted as corrections of emphasis
+rather than of fact, and are reflected in the text: the `451`/sender-owned-retry
+argument (§0, §6) is real but carries roughly half the weight this brief gave
+it, since what actually changes owner is liveness and observability rather than
+durability; and flip-condition 2 in §14 ("the edge would be unowned") is
+arguably **already met** by §11 Q11 — see §14.
+
+---
+
 ## 0. The constraint that decides most of this
 
 The comparison is usually run as "self-hosted mail is painful vs. SES is a
@@ -40,7 +63,7 @@ the recipient resolves (ADR-025), `451` when the schema is unavailable
 (ADR-029 §4) or persistence fails, `552` when oversized, `553` only for
 syntactic recipient rejection.
 
-**Four properties follow, and they are the axis the two options differ on:**
+**Five properties follow, and they are the axis the two options differ on:**
 
 1. **One SMTP `DATA` transaction is one inbound event**, committed atomically
    across all its recipients (ADR-026).
@@ -48,11 +71,28 @@ syntactic recipient rejection.
    store, and the *sending MTA* — not TestInbox — owns the retry.
 3. **Raw MIME is what the sender sent** (ADR-005 stores it before parsing).
 4. **The production adapter is the adapter CI rehearses.** `SmtpGateway` is
-   exercised on every pipeline run.
+   exercised on every pipeline run — though note this is true of the *ingestion*
+   hop only; a relay edge in front of it is unrehearsed unless deliberately
+   brought into CI (§13).
+5. **Mail to an inbox that does not exist is never stored** (ADR-025). This
+   property was missing from the original list and it is the one that decides
+   the comparison — it presupposes property 2, because you can only decline to
+   store what you were the one to accept.
 
-Postfix preserves all four. SES preserves (1) and (3) only partially and
-structurally cannot preserve (2) or (4). That is not a reason to reject SES — it
-is the trade being made, and it should be made deliberately.
+Postfix preserves all five. SES preserves (1) and (3) only partially, and
+structurally cannot preserve (2), (4) or (5). Properties 2 and 4 are trades.
+**Property 5 is not a trade** — ADR-025 is Accepted, and an option that cannot
+satisfy it is asking for a superseding ADR and a re-opened owner decision, not
+offering a different balance of costs. That distinction is what §12a and §13
+turn on.
+
+The reframing that follows from this: the real axis is not *Postfix vs SES* but
+**does TestInbox control acceptance, or does a provider accept on its behalf?**
+Every managed inbound option — SES, Mailgun Routes, Postmark inbound, Cloudflare
+Email Routing — sits on the same side of that line, and several avoid the
+cloud-estate cost this brief scores heavily against SES specifically. They lose
+to the same ADR-025 argument, and this brief should have named and dismissed
+them on that ground rather than leaving "managed" reading as "AWS".
 
 ---
 
@@ -124,19 +164,39 @@ loud rather than subtle.
 
 ### Replay and dedup
 
-Postfix retries on 4xx. A retry replays the same message, and `providerMessageId`
-is what stops that becoming a duplicate. **Postfix's queue ID is not stable
-enough to use directly** — it can change across a queue-file rewrite. The
-durable identity is the original `Message-ID:` header, which the edge must not
-rewrite, plus the envelope recipient. ADR-026 already scopes dedup to
-`(provider, providerMessageId, recipient)`, which fits.
+**Corrected — see Errata 1 and 2.** An earlier revision of this brief treated
+this as an open design gap. It is not one, and the fix proposed here was harmful.
 
-Gap to close in implementation: a message with **no** `Message-ID` (legal, and
-common from crude senders) has no stable identity. Options are to have the edge
-stamp one before relaying, or to fall back to a content hash — note that a
-content hash would be *content-based* suppression, which ADR-019 forbids as a
-dedup mechanism. **The edge stamping a `Message-ID` when absent is the correct
-answer**, and it is a real design task, not a detail.
+**No provider message identity is required on the Postfix path.**
+`providerMessageId` stays `null` for `local-smtp`-class providers, the
+uniqueness index stays inert (it is partial, `WHERE provider_message_id IS NOT
+NULL`), and no `Message-ID` is stamped, read or trusted. ADR-019 already settled
+each case the edge can produce:
+
+| Situation | Behaviour | ADR-019 |
+|---|---|---|
+| Ingestion `451`s | Transaction rolled back, nothing committed; Postfix retries; the retry **is** the first successful delivery | Context case 2 — no dedup needed |
+| Two genuinely separate byte-identical sends | Two rows, second annotated `possibleDuplicateOfMessageId` | Decision 4 |
+| Commit succeeded, `250` lost in transit | Postfix retries, a second row appears | Decision 3 — "presenting both rows is the faithful outcome" |
+
+The relay hop widens the third window slightly (a WireGuard hop can drop a `250`
+more readily than loopback can). It does not create a new class of duplicate,
+and ADR-019 deliberately chose to surface that window rather than risk
+suppressing a real duplicate-send.
+
+**Do not stamp `Message-ID`, and do not use it as a dedup key at all.** It is
+sender-controlled: a sender that supplies one chooses our suppression key, and
+duplicate `Message-ID`s across genuinely separate sends are precisely the
+system-under-test defect ADR-019 exists to expose. A content hash is likewise
+forbidden as a suppression key (ADR-019), which is why it appears only as an
+annotation.
+
+If the lost-`250` window is ever judged unacceptable, the mechanism to reach for
+is an **edge-assigned transport identity** — the queue token in the *topmost*
+`Received:` header, accepted only when that header names the trusted edge —
+because it is assigned by us rather than by the sender, and is transport
+metadata rather than content. Recorded as a contingency; not proposed for
+adoption.
 
 ### Backpressure and failure
 
@@ -234,8 +294,11 @@ bytes ADR-005 exists to preserve verbatim.
 
 ### Message identity, recipients, retries, duplicates
 
-- **Identity**: SES `messageId` is stable and purpose-built. Better than the
-  Postfix case — no `Message-ID`-absent problem.
+- **Identity**: SES `messageId` is stable and purpose-built. Note what this is
+  and is not: SES *needs* it because SNS/SQS is at-least-once and genuinely
+  re-presents the same provider event (ADR-019 Context case 1, which names SES).
+  Postfix needs nothing because it does not re-present events. This is a
+  requirement SES has and meets, not an axis on which it is ahead.
 - **Recipients**: `receipt.recipients` carries the envelope recipients, so
   ADR-026's one-event-many-recipients property is preserved.
 - **Retries**: SNS/SQS deliver **at least once**. Duplicates are expected, not
@@ -257,8 +320,24 @@ runs, the sending MTA has been told `250` and is gone. Three consequences:
    AWS documentation) rather than `testinbox.maxRawSizeBytes`.
 3. The production ingestion path is a **different adapter from the one CI
    rehearses**. The ephemeral rehearsal exercises `SmtpGateway`; an SES adapter
-   would need recorded-event fixtures, which test the parser but not the
-   provider's real behaviour.
+   would need recorded-event fixtures which, with LocalStack for S3/SQS, would
+   in fact cover most of the adapter's risk surface — the residue is SES's own
+   *receipt* behaviour (injected headers, unusual local-parts, its size limit),
+   which is real but smaller than "never meets its provider outside production"
+   suggests.
+4. **ADR-025 cannot hold.** This is the largest consequence and an earlier
+   revision of this brief missed it. An SES receipt rule must terminate in an
+   action, and the action that yields raw MIME is `S3Action`. So mail addressed
+   to a *non-existent* inbox is written to a bucket in our account, retained
+   under our control, before TestInbox is invoked at all. ADR-025 is Accepted and
+   says such content is never stored; under SES the strongest reachable
+   guarantee is *stored, then deleted*. That is not a tuning question — it
+   requires a superseding ADR, and it re-widens the VISION.md §2 compliance
+   decision, which was narrowed on precisely the never-stored property. The same
+   applies to Mailgun Routes, Postmark inbound and Cloudflare Email Routing: the
+   real axis is not Postfix-vs-SES but **whether TestInbox controls acceptance
+   or a provider accepts on its behalf**, and every managed option sits on the
+   far side of that line.
 
 ### Regional constraint
 
@@ -292,18 +371,35 @@ can enforce them *cheapest and earliest*.
 | Cross-tenant multi-recipient | — | one transaction, all-or-nothing (ADR-026) | workspace scoping | per-workspace prefix |
 | Disk / spool exhaustion | short queue lifetime, disk alarm | — | — | — |
 | Object-storage exhaustion | — | — | storage quota (ADR-027), TTL sweep (ADR-009) | **bucket quota + disk alarm** |
-| Unknown-recipient content liability | — | **discard in-process, never store (ADR-025)** | — | never written |
+| Unknown-recipient content liability | **Postfix: —. SES: control unavailable** | **discard in-process, never store (ADR-025)** — reachable only when TestInbox controls acceptance | — | Postfix: never written. **SES: already written before we decide** |
 
 Three placements are worth calling out because getting them wrong is subtle:
 
 - **Anti-enumeration is an INGESTION property, not an edge one.** The edge must
   not perform recipient existence checks, because a `550` for unknown recipients
   is exactly the oracle ADR-025 removes. The edge may only reject on *syntax*.
+  Name the footgun concretely: **`relay_recipient_maps` must be left unset.** It
+  is the *normal* configuration for a Postfix relay host — its documented purpose
+  is to reject unknown recipients at the edge instead of generating backscatter —
+  and switching it on silently reinstates the enumeration oracle. It belongs in
+  the edge configuration review as an explicit prohibition, not as an omission.
+  The residual that cannot be removed this way is a **timing side-channel**:
+  the `250` is uniform but the latency behind it is not. Weak over internet SMTP
+  and not worth engineering against today; recorded as a known residual so it is
+  not rediscovered as a finding.
 - **Archive bombs are defended by not decompressing.** There is no size check
   that saves you if you expand archives; the control is the decision not to.
 - **SSRF is defended by not fetching.** Mail contains attacker-chosen URLs; any
   server-side fetch (link preview, image proxy, unfurl) turns every inbound
   message into an SSRF primitive. This should be an explicit non-goal.
+- **The last row is not symmetric between the options, and an earlier revision
+  of this table wrongly showed it as if it were** (Errata 3). ADR-025's control
+  is *discard before storage*, and it presupposes that TestInbox decides whether
+  to accept. Under SES, receipt requires an S3 write action, so every message to
+  every non-existent address is written to a bucket in our account before our
+  adapter is invoked; the earliest we can act is *delete after storage*, which is
+  a different guarantee. This is structural, not a configuration gap, and it
+  applies to every accept-then-store provider, not only SES.
 
 ---
 
@@ -315,6 +411,7 @@ Three placements are worth calling out because getting them wrong is subtle:
 | Multi-recipient atomicity | **exact** | preserved |
 | Uniform `250` for unknown recipients | **exact** — same code path | preserved (domain-level rule accepts all) |
 | TestInbox controls acceptance | **yes** | **no** — SES accepts first |
+| ADR-025 "never stored" for unknown recipients | **holds** | **cannot hold** — S3 write precedes us |
 | `451` reaches the sending MTA | **yes** | **no** — sender already got `250` |
 | Retry owner | sending MTA (standard, free) | our SQS consumer (ours to build) |
 | Size limit authority | `testinbox.maxRawSizeBytes` | SES's limit (~40 MB) |
@@ -325,19 +422,23 @@ Three placements are worth calling out because getting them wrong is subtle:
 
 ## 5. Dedup implications
 
-Both work with ADR-026's `(provider, providerMessageId, recipient)` scope, but
-the identity source differs in quality:
+**Corrected — see Errata 1 and 2.** This section previously called SES "cleanly
+ahead" on identity and described a Postfix dedup gap that does not exist.
 
-- **SES**: `messageId` is provider-generated, always present, stable. Duplicates
-  are *expected* (SNS/SQS at-least-once) and dedup is load-bearing on the happy
-  path.
-- **Postfix**: identity is the `Message-ID:` header. Duplicates are *rare* (only
-  on 4xx retry). But **the header is optional**, and a message without one has no
-  stable identity — an unsolved design point requiring the edge to stamp one
-  before relaying. A content hash is **not** an acceptable fallback: ADR-019
-  explicitly forbids content-based suppression.
+- **SES**: `messageId` is provider-generated, always present, stable, and
+  **load-bearing on the happy path** — SNS/SQS is at-least-once, so the same
+  provider event is genuinely re-presented. Dedup is not a nicety here; the
+  adapter is incorrect without it.
+- **Postfix**: `providerMessageId` is `null`, the partial uniqueness index never
+  engages, and **no mechanism is required**. A post-`451` retry is the first
+  successful delivery (ADR-019 Context case 2); a lost-`250` retry produces a
+  second row that ADR-019 decided to surface rather than suppress.
 
-SES is cleaner here. It is one of the few axes where it is clearly ahead.
+So this is not an axis on which SES is ahead. It is an axis on which SES carries
+a requirement Postfix does not have, and satisfies it. The only genuine cost on
+the Postfix side is the slightly wider lost-`250` window described in §1, which
+ADR-019 already accepts. **This is no longer a blocking condition on the
+recommendation.**
 
 ---
 
@@ -429,6 +530,9 @@ deliberately:
 | 8 | Customer terms | Legal | — | Customers must warrant they only direct mail they are entitled to |
 | 9 | Mail from non-customers | Legal | — | The core question. Everything else is downstream |
 | 10 | Retention in backups | Owner | Postgres/MIME **deliberately not backed up** (ADR-009/025 reasoning) | Confirm that no-backup is acceptable, not an accident |
+| 11 | **Does the provider choice change the *scope* of item 9?** | Owner + legal | **Yes.** VISION.md §2 narrowed the third-party-mail question on ADR-025's never-stored guarantee; an accept-then-store provider re-widens it to include mail to inboxes that do not exist | The owner must be told which question they are answering **before** they answer item 9. Added after the application review (Errata 3) |
+| 12 | Provider spam/virus verdicts as retained annotations | Owner | SES only | If stored, we are recording a third party's judgement about a customer's mail. Harmless, but a conscious inclusion rather than a side effect |
+| 13 | `possibleDuplicateOfMessageId` links messages across senders within one inbox | Owner | Existing behaviour, both options | A content-derived relationship stored about third-party mail; belongs on the retention list rather than being discovered later |
 
 **Technical vs. legal, stated plainly:** the architecture can minimise what is
 retained, for how long, and where. It cannot decide whether operating a service
@@ -501,6 +605,30 @@ therefore **not** be read as "Postfix wins" — it should be read as *the decisi
 is not determined by the criteria; it is determined by the unknowns in §11 and
 the checkpoint in §10.*
 
+### 12a. What the matrix looks like once Errata 3 is included
+
+The table above is left as originally scored, because rescoring one's own matrix
+after seeing the answer is worth nothing. But the reading beneath it does not
+survive the correction, and that should be said plainly.
+
+"Fit with TestInbox architecture" (weight 15, 5 vs 2) was scored on the `451`,
+parity and fidelity arguments — the three the application review found
+overweighted — and did **not** include the ADR-025 finding, because this brief
+did not have it. That finding is of a different kind from the rest of the table:
+every other row is a trade, and this one is a statement that one option cannot
+satisfy an Accepted ADR at all, so choosing it requires a superseding ADR and a
+re-opened human decision.
+
+Scored independently by the application team, with *preservation of Accepted-ADR
+invariants* as its own criterion at weight 22, the result is **74.4 vs 61.8** —
+a margin that survives moving any single weight by one class, and collapses only
+if that criterion is deleted.
+
+**I accept that reading over my own.** The decision is determined — not by the
+criteria I chose, but by whether the owner is willing to supersede ADR-025 and
+widen the VISION.md §2 question. My "effectively a tie" conclusion stands only
+inside a criteria set that omits the strongest fact in the comparison.
+
 ---
 
 ## 13. Recommendation
@@ -508,30 +636,64 @@ the checkpoint in §10.*
 **Recommend: self-hosted Postfix edge on a dedicated VPS — conditional**, with
 SES as a pre-analysed fallback rather than a rejected option.
 
-The reasoning is not the matrix. It is three things the matrix compresses too
-much:
+The reasoning is not the matrix. It is four things, **reordered after the
+application review** — the argument that now carries the recommendation is the
+one this brief originally did not have, and the one it originally led with has
+been demoted:
 
-1. **The application is built around controlling acceptance.** `451` reaching the
-   sending MTA is how TestInbox guarantees "never a silent drop" without owning a
-   retry loop. SES structurally removes that and replaces a battle-tested MTA
-   retry with one we write and operate. That is a real transfer of risk to us,
-   in exchange for a better buffer.
-2. **Parity with the rehearsed path.** With Postfix, production ingestion is the
-   `SmtpGateway` that CI exercises on every run. With SES it is an adapter that
-   only ever meets its provider in production. Given how much of this project's
-   quality comes from gates that actually fire, that is worth a lot.
-3. **The usual objection to self-hosted mail does not apply.** "Self-hosted mail
+1. **ADR-025 is unavailable under any accept-then-store provider, and losing it
+   re-opens a decision VISION.md records as settled.** SES receipt must write to
+   S3, so mail to non-existent inboxes is stored under our account before we are
+   invoked. This is structural and permanent; it converts an architecture choice
+   into a compliance-scope change the owner has not been asked about. **This is
+   the decisive argument** (Errata 3, §2, §12a).
+2. **Parity with the rehearsed path — conditional on rehearsing the edge.** With
+   Postfix, production ingestion is the `SmtpGateway` CI exercises on every run;
+   with SES it is an adapter that meets its provider only in production. But the
+   *edge itself* is unrehearsed under this proposal, and the edge is where the
+   new risk lives. Worth having; not worth claiming until the relay hop is in the
+   ephemeral rehearsal, which is why it is now a precondition rather than a
+   bonus.
+3. **The intake path is the worst thing in the system to migrate.** ADR-003's
+   port keeps the *code* portable either way; what is not portable is the MX.
+   Postfix keeps that ours.
+4. **The usual objection to self-hosted mail does not apply.** "Self-hosted mail
    is a reputation nightmare" is about **sending** — SPF/DKIM alignment,
    blocklists, warm-up. TestInbox is **inbound-only**. It publishes
    `v=spf1 -all` and a DMARC reject policy precisely *because* it never sends,
    which is a strong, cheap, static posture. What remains is rDNS and port-25
    reachability — real, but far smaller than the reputation argument implies.
 
+**Demoted:** the `451`/sender-owned-retry argument, which this brief originally
+led with. It is mechanically accurate — SES does return `250` before we see the
+message — but it is worth roughly half the weight given here. SQS redelivery is
+queue configuration rather than a retry contract we design and build, and what
+genuinely changes owner is *liveness and observability* of that queue, not
+durability. It remains a reason; it is no longer the reason.
+
+**Also demoted:** raw-MIME fidelity. Byte-exactness is unavailable under every
+relay, Postfix included; the useful test is whether an addition could be
+mistaken for system-under-test behaviour, by which SES's injected headers are a
+minor cost — and this brief's own withdrawn `Message-ID` proposal would have
+been the disqualifying one.
+
 **This recommendation is conditional and should not be actioned until:**
 
-- §10 compliance checkpoint is **approved** — otherwise both options are NO-GO;
+- §10 compliance checkpoint is **approved** — otherwise both options are NO-GO —
+  and the owner is told, before answering, that choosing an accept-then-store
+  provider *widens the question being asked*, because ADR-025's never-stored
+  guarantee cannot hold under one (Errata 3);
 - Ops answers §11 Q1–Q3 affirmatively (edge VPS, inbound 25, rDNS);
-- the missing-`Message-ID` dedup design (§5) is resolved.
+- an **owner is named for the edge** as an operational class — §11 Q11 records
+  that no on-call exists today, which makes this the condition most likely to
+  fire (see §14 condition 2);
+- the **edge joins the ephemeral CI rehearsal** before it carries production
+  mail. The "production path is the rehearsed path" argument is true of the
+  ingestion hop and false of the relay hop, which is where the new risk sits;
+  a Postfix container in `scripts/staging-rehearsal.sh` earns the claim.
+
+~~the missing-`Message-ID` dedup design (§5) is resolved~~ — **withdrawn.** There
+is no such gap (Errata 1).
 
 ---
 
@@ -543,19 +705,46 @@ Any **one** of these should flip it to SES:
 2. **No appetite for a fourth host.** If the edge would be unowned and unpatched,
    SES is safer than a neglected Internet-facing daemon — an unpatched edge is
    worse than any lock-in.
+
+   **This brief established the fact and then failed to apply its own condition**
+   (Errata, closing note). §11 Q11 records that **no on-call exists today**, and
+   §11 Q13 records that the shared host reboots automatically at 04:30 leaving
+   Vault sealed with nobody paged. On the evidence in this document, condition 2
+   is arguably **already met**. It does not flip the recommendation, for one
+   reason and one reason only: Errata 3 shows the alternative cannot preserve an
+   Accepted ADR, so the flip is not available without a superseding ADR and an
+   owner decision. What it does mean is that **"name an owner for the edge" is a
+   hard precondition rather than a nice-to-have** — it is promoted into §13, and
+   it is the condition most likely to fire.
 3. **Legal requires a named processor** with contractual guarantees and audit
    posture for third-party content. AWS supplies that; a VPS does not.
 4. **Volume grows past a single edge**, or abuse traffic becomes a sustained
    operational load.
-5. **An AWS account already exists** with owned billing and IAM — the single
-   biggest scoring swing. **Checked: none exists** (§11 Q12), so this condition
-   is not met today and SES currently carries the full cost of standing up a
-   cloud estate from nothing.
+5. **An AWS account already exists** with owned billing and IAM. **Checked: none
+   exists** (§11 Q12), so this condition is not met today and SES currently
+   carries the full cost of standing up a cloud estate from nothing.
+   *Downgraded:* this brief called it "the single biggest scoring swing". It is
+   not. It lowers SES's setup cost and does nothing about ADR-025, so on the
+   corrected reading (§12a) it is not close to decisive. The application review
+   declines to list it as a flip condition at all, and that is the better call.
+
+7. **The owner decides to accept the wider compliance scope** — i.e. answers
+   VISION.md §2 in a way that permits storing mail addressed to non-existent
+   inboxes. This is the condition that actually matters, and it was missing from
+   this list. It deletes the primary argument (Errata 3), and with that
+   neutralised the matrix returns to something near the tie originally reported.
+
+   Note this is a genuine *decision*, not a technicality: it is the owner's to
+   make, and it must be put to them as "do you want to supersede ADR-025?", not
+   discovered afterwards as a consequence of a provider choice.
 6. **Availability becomes a hard requirement** (e.g. an SLA), where AWS's
    buffering beats a single spool and running two edges is not wanted.
 
-And one that would flip it *back* to Postfix even if SES were chosen: **a
-requirement for byte-exact raw MIME**, which SES cannot provide.
+And two that would flip it *back* to Postfix even if a managed provider were
+chosen: **a requirement for byte-exact raw MIME**, which no relay can provide but
+which SES degrades furthest; and **ADR-025 being reaffirmed rather than
+superseded** — i.e. a decision that unknown-recipient mail must never be
+persisted, which no accept-then-store provider can honour.
 
 ---
 
@@ -588,9 +777,17 @@ Adopt a **self-hosted Postfix edge on a dedicated host**, relaying over a
 private authenticated channel to the existing ingestion listener, conditional on:
 
 1. the VISION.md compliance decision on receiving third-party mail being
-   approved;
+   approved — noting that an accept-then-store provider would widen that
+   decision's scope, because ADR-025's never-stored guarantee is structurally
+   unavailable under one;
 2. Ops confirming inbound port 25, reverse DNS control and a dedicated edge host;
-3. a resolved dedup identity for messages lacking a Message-ID header.
+3. a named owner for the edge as an operational class;
+4. the edge being exercised by the ephemeral CI rehearsal before it carries
+   production mail.
+
+No new dedup mechanism is required: ADR-019 already governs every duplicate case
+the relay path can produce, `providerMessageId` remains `null` for this provider
+class, and `Message-ID` is neither stamped nor used as a dedup key.
 
 The edge holds no application state, no credentials, and no route to the
 application, database or object-storage networks. Public SMTP is NOT colocated
@@ -601,13 +798,23 @@ option. The TI-004 brief records the exact conditions that select it.
 
 ## Alternatives considered
 
-- **AWS SES receiving.** Stronger buffering, no port-25 exposure, better message
-  identity, and it scales without us. Rejected as the default because it moves
-  acceptance to AWS — so 451 can no longer reach the sender and the retry
-  contract becomes ours to operate — it injects X-SES-* headers into the raw
-  MIME the product exists to preserve, it makes the production adapter one CI
-  cannot rehearse, and it points the product's intake path at a provider the
-  estate does not otherwise use.
+- **AWS SES receiving.** Stronger buffering, no port-25 exposure, a provider
+  message identity its own at-least-once delivery requires, and it scales
+  without us. Rejected as the default primarily because **ADR-025 cannot hold
+  under it**: SES receipt must terminate in an S3 write, so mail to inboxes that
+  do not exist is stored under our account before TestInbox is invoked, and
+  adopting it therefore requires superseding an Accepted ADR and widening the
+  compliance decision this ADR is conditional on. Secondarily because it moves
+  acceptance to AWS — so 451 no longer reaches the sender and queue liveness
+  becomes ours to watch — it injects X-SES-* headers into the raw MIME the
+  product exists to preserve, and it points the product's intake path at a
+  provider the estate does not otherwise use.
+- **Managed inbound routing generally** (Mailgun Routes, Postmark inbound,
+  Cloudflare Email Routing). Cheaper to adopt than SES — webhook delivery, no
+  IAM, no bucket policy, no second control plane — and they neutralise most of
+  what is scored against SES. Rejected for the same reason as SES and only that
+  reason: each accepts on our behalf and stores before we see the message, so
+  ADR-025 falls to all of them.
 - **Public SMTP colocated on the production host.** Rejected: it places an
   unauthenticated, internet-facing, attacker-reachable parser on the same host
   as unrelated production applications, identity and secret services.
@@ -638,6 +845,8 @@ option. The TI-004 brief records the exact conditions that select it.
 | 7 | Abuse contact address and response commitment | Owner | Public MX |
 | 8 | Production hostname and MX naming | Owner + product | DNS |
 | 9 | Confirm content is deliberately unbacked-up | Owner | Retention posture |
+| 10 | **Supersede ADR-025, or reaffirm it?** Choosing any accept-then-store provider (SES, Mailgun Routes, Postmark, Cloudflare Email Routing) requires superseding it, and *widens the scope of decision 1* to include mail addressed to inboxes that do not exist. The owner must be told this **before** answering decision 1, not after. | Owner + legal | Decisions 1 and 2 |
+| 11 | Accept that provider spam/virus verdicts, if stored, are a third party's judgement about a customer's mail retained by us | Owner | SES option |
 
 **Ops has answered none of these and should not.** §11 lists what Ops *can*
 answer; everything above is an owner decision.
