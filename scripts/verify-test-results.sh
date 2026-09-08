@@ -59,7 +59,7 @@ BACKEND_MODULES=(
   "backend/notification:6"
   "backend/observability:32"
   "backend/ingestion:33"
-  "backend/api:77"
+  "backend/api:82"
   "backend/migrator:6"
 )
 E2E_MODULES=(

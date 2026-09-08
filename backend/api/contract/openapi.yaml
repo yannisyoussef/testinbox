@@ -11,6 +11,22 @@ info:
 
     Pre-v1 stability is signalled via the `X-API-Stability: experimental`
     response header rather than by breaking silently.
+
+    **Transport-level refusals apply to every operation** and are therefore not
+    repeated on each one. All use `application/problem+json` with a stable
+    `type` and a `correlationId`:
+
+    - `401 unauthorized` — no or invalid credential. Returned *before* routing,
+      so an unknown path is indistinguishable from a known one to an
+      unauthenticated caller.
+    - `404 not-found` — no such path.
+    - `405 method-not-allowed` — known path, wrong method. Carries `Allow`.
+    - `406 not-acceptable` / `415 unsupported-media-type` — content negotiation.
+    - `503 schema-unavailable` — the node's schema is behind its artifact
+      (ADR-029); carries `Retry-After`.
+
+    None of these is a `5xx`. A `500` from this API means a server fault, which
+    is what makes it worth alerting on.
 servers:
   - url: /v1
 security:

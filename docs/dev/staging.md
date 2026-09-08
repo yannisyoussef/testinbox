@@ -269,6 +269,33 @@ and problems, never values; the migrator logs versions, never its JDBC URL; and
 the handoff script keeps the trigger token out of argv and out of every message
 it prints.
 
+## The edge applies bot protection, and it does not know your script
+
+Cloudflare's Browser Integrity Check sits in front of staging and answers some
+non-browser clients with **`Error 1010: Access denied`** before the request
+reaches Traefik. Observed: `Python-urllib/3.12` is refused on `POST`; `curl`
+and Node's `fetch` are not.
+
+This is a property of the **zone**, not of TestInbox — nothing in this
+repository can see it, and the synthetic suites do not exercise it because both
+shipped SDKs use clients that pass (Node `fetch` in TypeScript, `HttpClient` in
+the JVM SDK). It surfaces when someone writes an ad-hoc script.
+
+If you hit a `1010`:
+
+- It is not an authentication failure. A TestInbox refusal is
+  `application/problem+json` with a `correlationId`; a `1010` is a Cloudflare
+  HTML page. If the body is HTML, the request never reached us.
+- Set an explicit `User-Agent`, or use a client the zone accepts.
+
+The durable fix is an Ops decision about the zone, and there are two honest
+options: relax Browser Integrity Check for the API hostname — reasonable, since
+this is an API surface whose only credential is a bearer token and whose abuse
+model (`docs/security/abuse-model.md`) is handled by ADR-027 limits rather than
+by challenging clients — or keep it and document a required `User-Agent`.
+Leaving it undecided is the bad outcome, because the failure mode is a
+confusing HTML page in someone's terminal.
+
 ## Metrics
 
 Both deployables expose `/actuator/prometheus` on the private management port
