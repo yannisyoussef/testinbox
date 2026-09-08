@@ -46,6 +46,22 @@ class InboxController(
     ): ResponseEntity<*> {
         val key = AuthAttributes.principal(request)
         key.requireScope(ApiScope.INBOXES_WRITE)
+        val idempotency =
+            when (val header = IdempotencyHeader.read(request, key.id)) {
+                is IdempotencyHeader.Outcome.Invalid -> {
+                    return Problems.respond(
+                        Problems.of(HttpStatus.BAD_REQUEST, "invalid-request", "Invalid request", header.reason, request),
+                    )
+                }
+
+                IdempotencyHeader.Outcome.Absent -> {
+                    null
+                }
+
+                is IdempotencyHeader.Outcome.Present -> {
+                    header.request
+                }
+            }
         val mode =
             when (body.addressMode) {
                 null, "GENERATED" -> {
@@ -78,10 +94,33 @@ class InboxController(
                     aliasHint = body.aliasHint,
                     localPart = body.localPart,
                 ),
+                idempotency,
             )
         return when (result) {
             is CreateInbox.Result.Created -> {
-                ResponseEntity.status(HttpStatus.CREATED).body(InboxDto.from(result.inbox))
+                // 201 either way: the resource exists because of this logical
+                // request, which is what the status describes. The header is
+                // the signal, so a client never has to branch for correctness.
+                ResponseEntity
+                    .status(HttpStatus.CREATED)
+                    .apply {
+                        // Only when the caller opted in: a header on every
+                        // creation would imply the endpoint is always
+                        // idempotent, which it is not.
+                        if (idempotency != null) header(IdempotencyHeader.REPLAYED, result.replayed.toString())
+                    }.body(InboxDto.from(result.inbox))
+            }
+
+            CreateInbox.Result.IdempotencyKeyReused -> {
+                Problems.respond(Problems.keyReused(request))
+            }
+
+            CreateInbox.Result.IdempotencyInProgress -> {
+                Problems.respond(Problems.inProgress(request), retryAfter = Duration.ofSeconds(1))
+            }
+
+            CreateInbox.Result.IdempotencyReplayUnavailable -> {
+                Problems.respond(Problems.replayUnavailable(request))
             }
 
             is CreateInbox.Result.QuotaRejected -> {

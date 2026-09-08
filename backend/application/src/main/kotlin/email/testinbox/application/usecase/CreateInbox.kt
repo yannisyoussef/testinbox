@@ -1,7 +1,12 @@
 package email.testinbox.application.usecase
 
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.idempotency.Idempotency
+import email.testinbox.application.idempotency.IdempotencyRequest
+import email.testinbox.application.idempotency.InboxSnapshot
+import email.testinbox.application.idempotency.RequestFingerprint
 import email.testinbox.application.port.ExactAddressReservations
+import email.testinbox.application.port.IdempotencyScope
 import email.testinbox.application.port.InboxMetrics
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
@@ -12,6 +17,7 @@ import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.idempotency.IdempotentOperation
 import email.testinbox.domain.inbox.AddressMode
 import email.testinbox.domain.inbox.ExactReservation
 import email.testinbox.domain.inbox.GeneratedAddress
@@ -42,6 +48,7 @@ class CreateInbox(
     private val config: TestInboxConfig,
     private val metrics: LimitMetrics = LimitMetrics.NOOP,
     private val inboxMetrics: InboxMetrics = InboxMetrics.NOOP,
+    private val idempotency: Idempotency = Idempotency.disabled(),
 ) {
     data class Command(
         val workspaceId: WorkspaceId,
@@ -55,6 +62,8 @@ class CreateInbox(
     sealed interface Result {
         data class Created(
             val inbox: Inbox,
+            /** True when this replays a previously committed creation (ADR-033). */
+            val replayed: Boolean = false,
         ) : Result
 
         /** EXACT local-part already reserved or in cooldown — maps to 409 (ADR-021). */
@@ -74,9 +83,26 @@ class CreateInbox(
         data class InvalidRequest(
             val reason: String,
         ) : Result
+
+        /** The idempotency key is bound to a different logical request. Terminal. */
+        data object IdempotencyKeyReused : Result
+
+        /** A concurrent identical request is still running. Transient; retrying is correct. */
+        data object IdempotencyInProgress : Result
+
+        /**
+         * The key is bound, but this artifact cannot read the stored snapshot —
+         * reachable only after an ADR-028 rollback across a snapshot version
+         * bump. Re-executing would duplicate; guessing would lie.
+         */
+        data object IdempotencyReplayUnavailable : Result
     }
 
-    fun execute(command: Command): Result {
+    @JvmOverloads
+    fun execute(
+        command: Command,
+        request: IdempotencyRequest? = null,
+    ): Result {
         val now = clock.instant()
         val ttl =
             when {
@@ -101,11 +127,30 @@ class CreateInbox(
         // inserting is check-then-act, so without it N concurrent creates all
         // observe capacity for one. The guard must precede any inbox write, or
         // it closes a lock-order cycle with the retention sweep's DELETE.
-        return tx.required {
+        // The claim precedes the ADR-027 guard, and must: if it came after,
+        // a replay of a request that succeeded when the workspace had room
+        // would be answered `quota-exceeded` once the workspace filled — a
+        // replay giving a different answer than the original is the feature
+        // failing. The resulting lock order (claim, workspace, reservation,
+        // inbox) is total and acquired in that order on every path.
+        return idempotency.around(
+            request = request,
+            scope = { IdempotencyScope(command.workspaceId, command.projectId, IdempotentOperation.CREATE_INBOX) },
+            fingerprint = { RequestFingerprint.of(command) },
+            replay = { snapshot ->
+                InboxSnapshot.toInbox(snapshot)?.let { Result.Created(it, replayed = true) }
+                    ?: Result.IdempotencyReplayUnavailable
+            },
+            keyReused = { Result.IdempotencyKeyReused },
+            inProgress = { Result.IdempotencyInProgress },
+            // Only a committed creation binds the key; every refusal returns
+            // null here and rolls the claim back with it (ADR-033 §4).
+            snapshotOf = { result -> (result as? Result.Created)?.let { InboxSnapshot.of(it.inbox) } },
+        ) {
             quotas.guardAdmission(command.workspaceId)
             admit(command.workspaceId)?.let {
                 metrics.quotaRejected(it.dimension)
-                return@required Result.QuotaRejected(it)
+                return@around Result.QuotaRejected(it)
             }
             when (command.addressMode) {
                 AddressMode.GENERATED -> createGenerated(command, now, ttl)

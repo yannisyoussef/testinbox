@@ -19,6 +19,7 @@ data class TestInboxProperties(
     val orphanSweepInterval: Duration = Duration.ofMinutes(30),
     val orphanMinAge: Duration = Duration.ofHours(1),
     val limits: LimitsProperties = LimitsProperties(),
+    val idempotency: Idempotency = Idempotency(),
     val storage: Storage = Storage(),
     val bootstrap: Bootstrap = Bootstrap(),
     val deployment: Deployment = Deployment(),
@@ -62,6 +63,18 @@ data class TestInboxProperties(
         val gitSha: String = "unknown",
         /** Digest of the running image — knowable only at deploy time (ADR-028). */
         val imageDigest: String = "unknown",
+    )
+
+    /**
+     * ADR-033. Both values are deployment policy rather than product
+     * behaviour, so they are configurable: retention trades a privacy cost
+     * that grows linearly against a benefit that saturates in minutes, and the
+     * claim wait bounds how long a blocked duplicate holds a connection.
+     */
+    data class Idempotency(
+        val retention: Duration = Duration.ofHours(6),
+        val claimWait: Duration = Duration.ofSeconds(2),
+        val sweepInterval: Duration = Duration.ofMinutes(5),
     )
 
     data class Bootstrap(
