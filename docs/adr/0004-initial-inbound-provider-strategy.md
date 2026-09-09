@@ -80,8 +80,34 @@ shared OVH application host are all **excluded** as the public edge.
 recipient existence checks. Concretely, Postfix's `relay_recipient_maps` must
 remain **unset**: it is the normal configuration for a relay host and it rejects
 unknown recipients at RCPT, which rebuilds precisely the enumeration oracle
-ADR-025 removes. The resulting backscatter is the accepted, deliberate cost of
-ADR-025.
+ADR-025 removes.
+
+**4a. The edge is receive-only and never emits a delivery-status notification.**
+ADR-025 does not require a bounce, and the uniform `250` exists to *prevent*
+backscatter rather than to accept it. The delivery path is:
+
+```
+edge accepts → ingestion receives → unknown-recipient content discarded
+             → ingestion returns uniform success → edge considers delivery complete
+```
+
+If a queued message ultimately expires because ingestion stayed unavailable, the
+edge **discards it and raises an operational alert**. It must **not** send a DSN
+to the envelope sender. Four reasons, each sufficient on its own: a DSN to a
+forged sender *is* backscatter; it leaks downstream availability state to
+anyone who can send mail; it requires outbound SMTP capability the edge is
+deliberately denied; and it converts a receive-only boundary into one that can
+be induced to emit traffic.
+
+**Outbound TCP/25 is therefore blocked at the edge, deliberately and
+permanently.** The edge does not send Internet mail. Its relay to the
+application travels the private authenticated path, not public port 25 — so
+blocking outbound 25 costs nothing and removes the edge's value as a relay if it
+is ever compromised.
+
+This ADR states the invariant only. The exact configuration that achieves it is
+identified, configured and tested in TI-005; no Postfix parameter is prescribed
+here.
 
 **5. No provider message identity is introduced for this path.**
 `providerMessageId` remains `null` for SMTP-class providers and the partial
@@ -94,6 +120,16 @@ committed, so a retry is the *first successful delivery*, not a duplicate. No
 **6. Data residency.** Initial production mail processing and storage remain in
 the EU: the edge in the EU, the application and data plane on OVH France.
 Production raw MIME is not routed through the US staging host.
+
+**6a. The tenant recipient domain is a subdomain, not the apex.** Tenant inboxes
+are issued under **`inbox.testinbox.email`**. The apex `testinbox.email` stays
+available for the website and an ordinary operational mailbox provider, which is
+what keeps the two concerns separable: a mail edge that receives arbitrary
+third-party mail should not also be the MX for the company's own correspondence.
+
+This is production configuration, not code — the recipient domain is already
+supplied per environment through `TESTINBOX_MAIL_DOMAIN`, so no application
+change follows from it.
 
 **7. Managed inbound providers remain a documented fallback**, pre-analysed and
 not rejected. The conditions that would select one are recorded below and in
@@ -108,17 +144,48 @@ this decision:
 | # | Gate | Owner |
 |---|---|---|
 | 1 | A **named human operational owner** for the edge, with runbooks covering patching, queue/spool growth, disk pressure, abuse reports, provider incidents, SMTP flood/DoS, emergency disablement and CVE response. No public Internet daemon without an assigned owner. | Owner + Ops |
-| 2 | Provider confirmation of inbound TCP/25, stable public IPv4, PTR/rDNS control, firewall control, and terms compatible with inbound mail infrastructure — **before** provisioning. | Ops |
+| 2 | **Network suitability proven externally on a disposable candidate host** — see [Proving the edge host](#proving-the-edge-host). Inbound TCP/25 cannot be established from published provider policy, so it is validated by test rather than asserted in advance. | Ops |
 | 3 | The **Postfix relay hop is part of the automated rehearsal**, proving end to end: active recipient accepted; nonexistent recipient body never persisted; multi-recipient behaviour; downstream `451`/retry semantics; message-size limits; connection/recipient abuse limits; successful delivery. | Application |
-| 4 | Monitored `abuse@`, `security@` and `postmaster@` operational addresses — these are operational contacts, never tenant inboxes. | Ops |
+| 4 | Monitored `abuse@`, `security@` and `postmaster@` at the **apex**, served by an ordinary mailbox provider — these are operational contacts, never tenant inboxes. | Ops |
+| 4a | A monitored **`postmaster@inbox.testinbox.email`** on the *receiving tenant domain*, which RFC-conformant senders and operators will try. Its external SMTP acceptance behaviour must be **indistinguishable** from any other recipient on that domain — reserving it must not become the one address that answers differently, which would rebuild the enumeration oracle ADR-025 removes. Routing mechanism is a TI-005 implementation detail and must be tested. | Ops + Application |
 | 5 | Public-production activation prerequisites: privacy policy, terms, abuse process, retention documentation and appropriate legal review. | Owner + legal |
 | 6 | Existing production-readiness blockers, which are independent of this ADR: OVH monitoring, backups, `DOCKER-USER`/origin isolation, storage isolation and quota, production secrets, deployment validation. | Ops |
 
-DNS is not created during design or implementation. When enabled, the initial
-naming is `testinbox.email MX 10 mx1.testinbox.email` with
-`mx1.testinbox.email A <edge-ip>`, and the SMTP host is **DNS-only, never
-Cloudflare HTTP-proxied** — Cloudflare does not proxy SMTP, so proxying it would
-break mail rather than protect it.
+DNS is not created during design or implementation. When enabled, the target is:
+
+```
+inbox.testinbox.email    MX 10 mx1.testinbox.email
+mx1.testinbox.email      A     <edge IPv4>
+```
+
+The MX is on the **tenant subdomain**, not the apex. `mx1` is **DNS-only and
+never Cloudflare HTTP-proxied** — Cloudflare does not proxy SMTP, so proxying it
+would break mail rather than protect it.
+
+### Proving the edge host
+
+Inbound TCP/25 cannot be confirmed from published provider policy, so it is not
+treated as a precondition that can be met on paper. A **temporary, disposable
+candidate VM may be provisioned solely to validate network suitability.**
+
+Before that host is treated as committed infrastructure, and before any
+production DNS or MX exists, Ops must prove **externally** that:
+
+- inbound TCP/25 works;
+- a stable public IPv4 exists;
+- PTR/rDNS control works;
+- provider-level firewall control works;
+- provider terms permit this inbound-only service.
+
+**Failure of inbound TCP/25 means destroy the candidate and select another
+provider.** Provisioning a candidate is explicitly not a commitment to it.
+
+Provider selection belongs to Ops documentation, not to this ADR: the durable
+architectural invariants are *dedicated host*, *EU*, *not colocated*, *inbound 25
+reachable*, *rDNS controllable* and *outbound 25 blocked*. The current preferred
+first implementation is **Hetzner Cloud EU**, recorded here as intent rather than
+as an architectural commitment — changing provider does not require amending this
+ADR, and this ADR must not be read as ratifying one.
 
 Raw MIME and attachments remain **deliberately not backed up**, which is what
 makes the TTL and deletion semantics of
@@ -144,6 +211,15 @@ retain message content beyond the documented retention window.
 - **Public SMTP colocated on the production host.** Rejected: it places an
   unauthenticated, internet-facing, attacker-reachable parser on the same host
   as unrelated production applications and secret services.
+- **Bouncing on queue expiry (a DSN to the envelope sender).** This is the
+  *default* behaviour of a normal MTA, so it is recorded as rejected rather than
+  merely omitted — otherwise it arrives by inheritance. Rejected because the
+  envelope sender of unwanted mail is routinely forged, so the DSN would be
+  backscatter aimed at an innocent third party; because it would tell any sender
+  whether our ingestion was down; because it would require the outbound SMTP
+  capability decision 4a removes; and because a receive-only boundary that can be
+  induced to emit traffic is no longer receive-only. Queue expiry is an
+  operational alert and a discard.
 - **Edge-stamped `Message-ID` as a dedup identity.** Proposed in an early
   revision of the Ops brief and **withdrawn** in its errata. Rejected, and
   recorded here so it is not re-proposed: ADR-019 names a *"buggy fixed
@@ -187,8 +263,15 @@ reopens the provider choice:
   ADR-005's guarantee is that we store what arrived without rewriting it.
 - ADR-019 and ADR-025 hold unchanged. **No new deduplication mechanism is
   introduced by this decision.**
-- Backscatter to forged senders is accepted, deliberately, as the cost of
-  ADR-025's uniform `250`.
+- **No backscatter is produced.** The uniform `250` of ADR-025 exists precisely
+  to avoid it, and the edge emits no DSN — including when a queued message
+  expires, which is an alert-and-discard rather than a notification. An earlier
+  revision of this ADR asserted the opposite ("backscatter is the accepted cost
+  of ADR-025"); that was backwards, and ADR-025 itself names the uniform reply as
+  *anti-backscatter*.
+- Because nothing is ever bounced, the edge needs **no outbound SMTP**, and
+  outbound TCP/25 stays blocked. Senders learn nothing about downstream
+  availability, and a compromised edge cannot be used to send mail.
 - A residual timing side-channel survives the uniform reply — a resolved
   recipient costs a blob write and a transaction, an unknown one does not. It is
   weak over internet SMTP and is recorded as a known residual rather than

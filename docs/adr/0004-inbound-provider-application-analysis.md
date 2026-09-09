@@ -12,6 +12,16 @@ it as what was put to the owner, not as something still pending. §10's ADR text
 was the input to the accepted ADR rather than its final wording — the ADR itself
 is authoritative.
 
+**Errata.** One claim in this document was wrong and is corrected in place,
+marked where it appears: it asserted that *"backscatter is the accepted cost of
+ADR-025"*. The opposite is true — ADR-025's uniform `250` is explicitly
+*anti-backscatter*, and the accepted architecture emits no DSN at all, including
+on queue expiry (ADR-004 §4a). Three other statements were superseded rather than
+wrong: the edge provider gate is now proven on a disposable candidate host rather
+than confirmed in advance, tenant inboxes are issued under
+`inbox.testinbox.email` rather than the apex, and outbound TCP/25 is blocked at
+the edge permanently.
+
 **Scope:** the production inbound-mail provider choice, judged against what the
 application actually promises and actually does. No provider implemented, no
 AWS resource created, no MX record created, no production deployment, no
@@ -445,9 +455,14 @@ name.** The brief says the edge "may only reject on syntax", which is right but
 abstract. The concrete footgun is Postfix's `relay_recipient_maps`: the *normal*
 configuration for a relay host, recommended everywhere to avoid backscatter, and
 it rejects unknown recipients at RCPT with `550`. That is exactly the oracle
-ADR-025 removes. It must be explicitly **unset**, and accepting the backscatter
-trade-off is the deliberate cost of ADR-025. This belongs in the edge
+ADR-025 removes. It must be explicitly **unset**. This belongs in the edge
 configuration as a commented prohibition, not as tribal knowledge.
+
+> **Corrected 2026-09-08.** This paragraph originally added "and accepting the
+> backscatter trade-off is the deliberate cost of ADR-025". That was backwards.
+> ADR-025's uniform `250` is *anti*-backscatter — the ADR says so in its own
+> Decision — and nothing in this architecture bounces: the edge emits no DSN,
+> and an expired queue entry is an alert and a discard. See ADR-004 §4a.
 
 **(b) A timing side-channel survives the uniform `250`, and no document mentions
 it.** A resolved recipient costs a blob write plus a database transaction; an
@@ -637,9 +652,20 @@ being reaffirmed rather than superseded.
 >
 > **Outcome:** adopted in substance on 2026-09-08. The accepted wording lives in
 > [ADR-004](0004-initial-inbound-provider-strategy.md) and differs from the draft
-> below — it carries the owner's product boundary, the EU residency requirement,
-> the six preconditions on a public MX, and the DNS/backup constraints, none of
-> which this draft could have known. The draft is left as written.
+> below in ways this draft could not have known — the owner's product boundary,
+> EU residency, the preconditions on a public MX, and the DNS and backup
+> constraints. Four differences are worth naming because the draft below states
+> them differently and **the ADR governs**:
+>
+> - **no DSN, ever**, and queue expiry is an alert-and-discard — the draft's
+>   "backscatter is the accepted cost" was wrong, not merely superseded;
+> - **outbound TCP/25 blocked** at the edge, permanently;
+> - the edge host is proven on a **disposable candidate VM**, not confirmed from
+>   provider policy in advance, which is why the draft's condition 2 reads as an
+>   assertion it turned out nobody can make;
+> - tenant inboxes are issued under **`inbox.testinbox.email`**, not the apex.
+>
+> The draft is otherwise left as written.
 
 ```markdown
 # ADR-004: Inbound Provider Strategy
@@ -674,8 +700,9 @@ existing ingestion listener.
 The edge holds no application state, no credentials, and no route to the
 application, database or object-storage networks. It rejects on RCPT **syntax
 only** — `relay_recipient_maps` must remain unset, because recipient
-verification at the edge rebuilds the enumeration oracle ADR-025 removes, and
-the resulting backscatter is the accepted cost of that ADR.
+verification at the edge rebuilds the enumeration oracle ADR-025 removes.
+[Corrected: the draft continued "and the resulting backscatter is the accepted
+cost of that ADR", which was wrong — see the note in §6.2(a) and ADR-004 §4a.]
 
 Public SMTP is NOT colocated with the production application stack.
 
@@ -735,8 +762,8 @@ detail.
   condition 4 extends that to the relay hop.
 - Raw MIME stays faithful apart from the Received: header every hop adds.
 - ADR-019 and ADR-025 hold unchanged. No new dedup mechanism is introduced.
-- Backscatter to forged senders is accepted, deliberately, as the cost of
-  ADR-025.
+- No backscatter is produced: the uniform `250` exists to prevent it and the
+  edge emits no DSN. [Corrected — the draft said the opposite.]
 - Migration to a managed provider later is an adapter plus a DNS change —
   ADR-003's port keeps the application indifferent — but it is not purely
   technical, because it requires superseding ADR-025.
