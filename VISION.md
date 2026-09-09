@@ -99,9 +99,22 @@ they are not resolvable by further internal analysis alone.
    obligations for an inbound-mail service open to any authenticated user).
    Narrowed by ADR-025: unknown-recipient content is never stored, so this
    decision now covers only mail attributed to a tenant's inbox.
-3. **Which inbound provider to build first in production** (self-hosted
-   Postfix vs. AWS SES) — affects deployment/ops investment ordering
-   (ADR-004).
+   — **APPROVED IN PRINCIPLE** (2026-09-08) for the product boundary
+   recorded in [ADR-004](docs/adr/0004-initial-inbound-provider-strategy.md):
+   inbound-only, tenant-owned inboxes, ephemeral content, not a human
+   disposable-mail service, not an SMTP relay, and no retention for addresses
+   with no active inbox. This is the product/architecture approval that
+   unblocks implementation. It is **not** legal advice, and **public
+   production activation remains gated** on the privacy policy, terms, abuse
+   process, retention documentation and appropriate legal review.
+3. ~~**Which inbound provider to build first in production**~~ —
+   **DECIDED** (2026-09-08) by
+   [ADR-004](docs/adr/0004-initial-inbound-provider-strategy.md) (Accepted):
+   a dedicated self-hosted **Postfix relay edge**, on its own EU host, relaying
+   over an authenticated private channel to production ingestion. Managed
+   accept-then-store providers are retained as a documented fallback; adopting
+   one would conflict with ADR-025 and requires a new owner decision and an ADR
+   supersession.
 4. **Maven Central and npm publishing ownership**: who holds the Sonatype
    namespace (`email.testinbox`) and npm org (`@testinbox`), and who controls
    signing keys / npm 2FA — required before ADR-017 can move past "Proposed."
