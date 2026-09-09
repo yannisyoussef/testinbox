@@ -876,7 +876,7 @@ is self-contained; the decision itself governs.
 | 2 | **Keep ADR-025.** Do not supersede or weaken it | Errata 3 / §2 / §12a decide the provider question. No accept-then-store provider is admissible |
 | 3 | **Self-hosted Postfix**, dedicated SMTP edge, first production inbound provider. Managed inbound documented as fallback, not permanently rejected; adopting one later needs a new owner decision and an ADR supersession | §13 recommendation adopted, with its fallback framing intact |
 | 4 | Edge topology: Internet → dedicated EU SMTP edge VPS → Postfix → authenticated private relay → ingestion on OVH. Minimum state and privilege. **Not** Contabo US staging, **not** the Contabo EU privileged CI runner, **not** the shared OVH application host | §1 architecture adopted, with the host exclusions made explicit |
-| 5 | New small EU VPS **approved in principle**; Ops must confirm inbound TCP/25, stable public IPv4, PTR/rDNS control, firewall/network control and mail-compatible provider terms **before** provisioning. ~2 vCPU / 2–4 GB / 40–80 GB, capability over size | §11 Q1–Q3 are now an Ops action item. Answered in §18 |
+| 5 | New small EU VPS **approved in principle**; Ops must confirm inbound TCP/25, stable public IPv4, PTR/rDNS control, firewall/network control and mail-compatible provider terms **before** provisioning. ~2 vCPU / 2–4 GB / 40–80 GB, capability over size | §11 Q1–Q3 are now an Ops action item. Answered in §18 — recommendation **a new Contabo EU VPS**, revised from an earlier Hetzner recommendation that rested on a factual error (§18.3) |
 | 6 | The edge **must have a named human operational owner** before public MX. The Ops agent may implement and operate through automation but is not the accountable owner. Runbooks required | §13 precondition confirmed as a hard gate. **Still unfilled** |
 | 7 | EU residency: edge in EU, data plane on OVH France. Production raw MIME must not traverse the US staging host | §11 Q7 constraint tightened |
 | 8 | `testinbox.email MX 10 mx1.testinbox.email`, `mx1` A → edge IP. No MX during design/implementation. DNS-only, never Cloudflare-proxied | See §19 — this interacts with decision 9 and needs one more owner call before any record is created |
@@ -930,7 +930,7 @@ over:
 |---|---|---|---|
 | Stable public IPv4 | Yes — Primary IP is a separate resource that survives server rebuild | Yes — fixed for the VPS lifetime | Yes — fixed |
 | PTR / rDNS control | Yes — Cloud Console → Networking, self-service | Yes — Manager, self-service | Yes — Customer Control Panel → Reverse DNS Management, self-service |
-| Firewall / network control | **Yes, and best in class** — Cloud Firewalls are stateful and enforced *outside* the VM, so they hold even if the host is compromised | Partial — host-level only for VPS in practice; OVH's network firewall is oriented at dedicated/Additional IP | **No provider-level firewall** — host `ufw`/nftables only |
+| Firewall / network control | Cloud Firewalls: stateful, enforced *outside* the VM, free, **inbound and outbound rules** | Partial — host-level only for VPS in practice; OVH's network firewall is oriented at dedicated/Additional IP | Contabo Firewall: network-level, in front of the server, free, deny-all inbound by default, port ranges and source CIDRs, one firewall attachable to many instances — **inbound only; outgoing traffic explicitly unrestricted** |
 | Terms compatible with inbound mail | Yes — mail servers permitted; egress 25 gated behind an account-age + limit-request process | Yes — mail servers permitted; egress subject to an anti-spam system that can re-block a flagged IP, escalating to permanent | Yes — mail servers permitted; egress rate-limited (~25 msg/min reported) |
 | EU region | Yes | Yes (and same country as the data plane) | Yes |
 
@@ -943,33 +943,62 @@ about a *new* EU instance's inbound path, which is §18.1's point.
 
 ### 18.3 Recommendation
 
-**Hetzner Cloud, EU region (Falkenstein or Helsinki), CX23-class or equivalent
-(2 vCPU / 4 GB / 40 GB).** Reasons, in order:
+> **Revised.** An earlier revision of this section recommended Hetzner Cloud and
+> made Contabo the runner-up, rejected on the grounds that it has no
+> provider-level firewall. **That was factually wrong.** Contabo shipped a free
+> network-level firewall on 2026-04-02 — in front of the server, deny-all inbound
+> by default, port ranges and source CIDRs, attachable to multiple instances,
+> covering new *and* existing VPS/VDS. It is the sole criterion the earlier
+> recommendation rested on, so the recommendation is replaced rather than
+> adjusted. What follows is the corrected version.
 
-1. **Provider-enforced firewalling outside the VM.** This is the only criterion
-   on which the candidates genuinely differ, and it is the one that matters most
-   for the single internet-facing daemon in the estate. Decision 4 requires the
-   edge to hold minimum privilege; a firewall the host cannot edit is the
-   strongest available expression of that, and it is the control that still holds
-   in the scenario we are actually defending against.
-2. **Hourly billing and minutes-to-destroy.** This is what makes decision 5's
-   "confirm before committing" achievable rather than a formality: provision,
-   test inbound 25, destroy if it fails, at trivial cost. Neither OVH nor Contabo
-   offers a comparable window.
-3. **Outbound 25 blocked by default on a new account** — a drawback everywhere
-   else, a feature here (§18.1 point 2), and one we get without configuring
-   anything.
-4. **Supplier separation.** The data plane is OVH. Putting the edge on a
-   different provider means a single provider incident cannot take out both the
-   edge and the application at once. This cuts against the "no new supplier"
-   instinct and I think it wins: the edge exists precisely to be the thing that
-   absorbs failure.
+**A new Contabo EU VPS (Nuremberg), Cloud VPS class, ~2 vCPU / 4–8 GB / 50 GB.**
+Reasons, in order:
 
-**Runner-up: a new Contabo EU VPS.** Cheapest, an existing supplier
-relationship, rDNS self-service, outbound 25 already proven open on our account.
-Rejected as the default on one criterion: **no provider-level firewall**, so
-every network control on the edge would be host-resident and therefore inside
-the blast radius of the daemon it is protecting.
+1. **It does not add a fourth supplier to an estate that cannot staff its
+   third.** Decision 6 requires a named human owner for the edge and there is not
+   one yet; both analyses identified the unowned edge as *the condition most
+   likely to actually fire*. A new provider means a new account, a new billing
+   owner, new credentials, a new support relationship and a new status page —
+   all of which land on the ownership gap that is already the largest open risk.
+   Contabo is an existing relationship with a control panel this estate has
+   already used, including rDNS self-service.
+2. **The differentiator is gone.** Provider-enforced, network-level inbound
+   filtering — deny-all by default, outside the VM, so it holds even with root on
+   the host — is now available on both. For an edge whose entire public surface
+   is one port, that closes the gap that the earlier recommendation turned on.
+3. **The account's network posture is measured, not assumed.** Outbound TCP/25
+   is verified open from our existing Contabo host (§18.2). A new Hetzner account
+   would start with no history and a documented ~1-month probation on the mail
+   ports. Neither fact decides anything on its own; the difference is that one is
+   evidence and the other is a forecast.
+4. **The resource target sits squarely in Contabo's range**, and cost is the
+   least important criterion in this comparison — noted only so its irrelevance
+   is on the record.
+
+**What we give up, stated plainly, because it is real.** Contabo's firewall is
+**inbound only** — outgoing traffic is explicitly unrestricted — whereas
+Hetzner's supports egress rules *and* blocks outbound 25 by default on a new
+account. §18.1 recommends the edge never be able to open an outbound SMTP
+connection, precisely so that a compromised edge cannot be conscripted as a spam
+source. On Contabo that control must be **host-resident** (an nftables egress
+DROP on 25), which puts it inside the blast radius of the daemon it is
+protecting: root on the edge can remove it.
+
+That residual is accepted, on this reasoning: an attacker with root already has
+outbound 443 — which we must allow for updates and monitoring — so egress
+filtering does not prevent command-and-control or exfiltration either way. Its
+unique value is narrow: it prevents one specific harm, spam emission, which is a
+reputation and abuse-liability cost rather than a data one. Mitigations are a
+host-level egress DROP on 25, a monitored abuse contact (§19), and
+egress-connection alerting from the existing Prometheus path. **Recorded as an
+accepted residual with a named mitigation, not as an absence.**
+
+**Runner-up: Hetzner Cloud EU (Falkenstein or Helsinki).** Genuinely better on
+egress control, and its hourly billing makes decision 5's "confirm before
+committing" literal rather than approximate. It becomes the recommendation if
+the owner weighs provider-enforced egress control above supplier consolidation,
+or if §18.5 comes back negative.
 
 **Not recommended: OVHcloud VPS.** It would satisfy EU residency in the same
 country as the data plane and keep the supplier count unchanged, but it
@@ -978,11 +1007,33 @@ and OVH's anti-spam system can re-block a flagged IP with escalation to
 permanent — an availability dependency on an egress-reputation mechanism we do
 not otherwise need, on the one host whose whole job is to be reachable.
 
-**Decision 5 is therefore *not yet closed*.** The four documentable criteria are
-confirmed for all three candidates. The fifth — inbound 25 — is confirmable only
-after provisioning, so the recommendation is: approve Hetzner, provision one
-instance, and treat the first hour as the confirmation step with destruction as
-the defined outcome if inbound 25 does not arrive.
+### 18.5 One thing to confirm in the Contabo panel before provisioning
+
+The firewall announcement says the feature covers "all new and existing VPS/VDS
+instances", but this estate holds no Contabo API credential, so I have not
+verified it against our own account. **Confirm in the Customer Panel under
+Network Services → Firewall that the feature is present on this account** before
+treating criterion 4 as met. If it is not — for example if it is gated to a
+newer product line than our existing instances — the recommendation reverts to
+Hetzner, because the sole reason Contabo displaced it would be false again.
+
+### 18.6 Status of decision 5
+
+**Not yet closed.** The four documentable criteria are confirmed for all three
+candidates, subject to §18.5. The fifth — inbound 25 — is confirmable only after
+provisioning. The sequence to close it:
+
+1. Confirm the firewall feature on our Contabo account (§18.5).
+2. Provision one Contabo EU instance and set its PTR.
+3. **Test inbound 25 first**, before any DNS record, any Postfix configuration,
+   and before the host is treated as committed.
+4. If inbound 25 does not arrive, cancel and provision on Hetzner instead, where
+   hourly billing makes the same test free.
+
+The cost of being wrong at step 4 is one month of a small VPS. That is the real
+reason the earlier revision's "hourly billing" argument was overweighted: it is
+a genuine advantage measured in single-digit euros, and it was allowed to
+outrank an argument about who will own the host.
 
 ### 18.4 A design point that decision 5 surfaces: the edge must never bounce
 
