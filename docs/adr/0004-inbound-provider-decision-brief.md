@@ -1109,3 +1109,107 @@ other direction and it becomes an enumeration oracle.
 **Ops recommends Option A** and will not create any DNS record until the owner
 chooses. Neither analysis covered this, and it is the one item in the decision
 that gets materially harder to change later.
+
+---
+
+## 20. Owner finalization, 2026-09-09
+
+A second owner decision closed the questions §18 and §19 left open. It governs;
+where it differs from anything above, it wins.
+
+| Clarification | Effect |
+|---|---|
+| **Hetzner Cloud EU is the preferred first edge provider** | §18.3's revision is overruled on the conclusion, and the runner-up becomes the choice. The correction in §18.3 stands as a record — the Contabo firewall fact was wrong when first written and the retracted arguments were genuinely weak — but the owner weighs **provider-enforced egress control** above supplier consolidation, which §18.3 itself named as the condition under which Hetzner is right |
+| **A disposable VM may be provisioned solely to probe inbound TCP/25 and the network prerequisites; destroy immediately on failure; no DNS/MX during the probe** | Closes §18.6's sequencing question. The probe is specified in §21 |
+| **Outbound TCP/25 stays blocked and must never be requested or unblocked** | §18.1 point 2 is now a standing rule rather than a recommendation, and §18.4's "the edge must never bounce" stops being a design preference and becomes a hard constraint — with egress 25 permanently unavailable, a DSN cannot be delivered even if Postfix tried |
+| **Tenant mail domain is `inbox.testinbox.email`; apex stays on an ordinary operational mailbox provider** | §19 Option A adopted. The edge is authoritative only for tenant mail, so uniform-`250`-and-discard is unambiguously correct and ADR-025 is enforced on exactly the traffic it was written for |
+| **The edge must never emit DSNs or bounces** | Confirms §18.4 |
+| **Queue expiry is an operational alert plus discard** | Confirms §18.4's mechanism and settles what happens to the message: it is dropped, not returned. The alert must therefore fire far enough ahead of expiry that expiry is a bug rather than a routine event |
+| **`postmaster@inbox.testinbox.email` must eventually be monitored, without introducing a recipient-enumeration response difference** | New constraint. Design consequence in §20.1 |
+
+### 20.1 `postmaster@` on the tenant domain, without an enumeration oracle
+
+The constraint is exactly right and it is the subtle part of decision 9. RFC 2142
+makes `postmaster@` mandatory at any domain that receives mail, and
+`inbox.testinbox.email` receives mail — so the subdomain split in §19 does not
+remove the obligation, it moves it.
+
+The trap is that the obvious implementation reintroduces the oracle ADR-025
+exists to remove. If the edge learns to treat `postmaster@` specially *at SMTP
+time* — a different code, a different timing, a `RCPT TO` that behaves unlike
+every other recipient — then a prober can distinguish a handled address from an
+unhandled one, and the uniform `250` stops being uniform.
+
+**The property that makes this safe: the divert happens after acceptance, never
+during it.** The edge's SMTP conversation is unchanged — every `RCPT TO` at
+`inbox.testinbox.email` gets the same uniform `250` after DATA, whether it names
+`postmaster`, a live tenant inbox, or an address that has never existed. Only
+once the message is accepted and queued does the edge decide where it goes:
+
+| Recipient | SMTP response | Post-acceptance disposition |
+|---|---|---|
+| `postmaster@inbox.testinbox.email` | uniform `250` | local Maildir on the edge |
+| live tenant inbox | uniform `250` | relayed over the private channel to ingestion |
+| unknown address | uniform `250` | discarded in ingestion, never persisted (ADR-025) |
+
+Three properties follow, and all three should be asserted by the decision-11
+rehearsal rather than assumed:
+
+1. **No response difference.** The three rows are indistinguishable to the
+   sender. This is testable directly — drive all three cases and assert the SMTP
+   transcripts are byte-identical apart from the queue token.
+2. **No timing difference that a remote attacker can use.** Local delivery and
+   relay-to-ingestion are not equally fast. §3 already records the timing
+   side-channel as a known residual over internet SMTP; adding one more
+   disposition does not change its character, but the rehearsal should record
+   the measured spread so it is a known quantity rather than a discovered one.
+3. **No outbound 25 required.** `postmaster@` is delivered *locally* on the
+   edge, not forwarded to an external mailbox — forwarding would need egress
+   SMTP, which is now permanently unavailable. "Monitored" is then satisfied by
+   shipping a notification over the existing HTTPS alerting path when the local
+   mailbox is written to, not by relaying the mail itself. The mail stays on the
+   edge; the alert travels.
+
+`postmaster` must also be **permanently reserved** against ADR-021's exact-address
+reservation on the `inbox.` domain, so no tenant can ever claim it. That is an
+application change and belongs to the app team, not to the edge configuration —
+if the edge alone knows the address is special, a tenant can reserve it and the
+two views disagree.
+
+---
+
+## 21. The inbound-25 probe (owner-authorised, 2026-09-09)
+
+Authorised scope: provision a minimum EU instance, prove inbound TCP/25 reaches
+it from a genuinely external network, prove the provider firewall can block and
+restore that path, confirm stable IPv4 and PTR control, confirm outbound 25 is
+blocked, record evidence, and **stop**. No Postfix, no MX, no DNS, no production.
+
+**Blocked on a prerequisite the owner must supply.** This estate holds no Hetzner
+account: no `hcloud` CLI, no Terraform or OpenTofu state, and no `HCLOUD_*`
+credential in `~/.config/infinity`, `/opt/infinity/secrets` or the stack tree.
+Provisioning needs an account with a payment method and identity verification,
+which Ops cannot create. The probe is written and ready to run unattended the
+moment a read-write Cloud API token exists — see
+`/opt/infinity/workspace/ti004-edge-probe.sh`.
+
+**External vantage point.** Step 4 requires a genuinely external network. The
+Contabo US host qualifies — different provider, different autonomous system,
+different continent — so the inbound test is a real internet path, not a
+same-provider shortcut.
+
+**PTR proof without touching our DNS.** A PTR record lives in Hetzner's reverse
+zone for the address they allocated, not in `testinbox.email`. Proving PTR
+control therefore creates no production DNS and does not breach "no DNS/MX during
+the probe". The probe sets a deliberately non-production value, verifies it by
+reverse lookup, and clears it before teardown.
+
+**Retention.** The probe VM must not become the production edge — it will have
+had an unauthenticated listener bound to :25 and a throwaway key, with no
+configuration management. The recommendation is to destroy it. There is one
+question worth the owner's attention: Hetzner's Primary IP is a resource separate
+from the server and can be kept after the server is deleted, for roughly €0.60 a
+month. Keeping it would let TI-006 start on an address whose inbound 25, PTR
+control and reputation are already verified, instead of re-probing a fresh one.
+Ops defaults to destroying everything, per "disposable", and will retain the IP
+only if asked.
