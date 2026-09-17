@@ -6,6 +6,7 @@ import org.springframework.boot.builder.SpringApplicationBuilder
 import org.springframework.context.ConfigurableApplicationContext
 import org.testcontainers.containers.MinIOContainer
 import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.utility.DockerImageName
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.ServerSocket
@@ -43,8 +44,14 @@ object E2eStack {
 
     val postgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:16-alpine").also { it.start() }
     val minio: MinIOContainer =
-        MinIOContainer("minio/minio:latest")
-            .withUserName("testinbox")
+        MinIOContainer(
+            // minio/minio is no longer anonymously pullable from Docker Hub;
+            // quay.io is MinIO's public mirror. Pinned to the release staging
+            // runs (deploy/staging/compose.data.yaml) so tests prove that version.
+            DockerImageName
+                .parse("quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z")
+                .asCompatibleSubstituteFor("minio/minio"),
+        ).withUserName("testinbox")
             .withPassword("testinbox123")
             .also { it.start() }
 
