@@ -73,7 +73,9 @@ sequenceDiagram
    before returning `250`, so the only at-least-once residue is a sender
    retry after a crash in that narrow window; such a message appears as a
    second row annotated `possibleDuplicateOfMessageId` (shared content
-   fingerprint), never silently collapsed. See
+   fingerprint — transport-insensitive, so the `Received:` trace fields each
+   hop adds do not hide the match; ADR-019 §4 as amended), never silently
+   collapsed. See
    [`message-lifecycle.md`](message-lifecycle.md).
 5. **Storage before parsing**: raw MIME is written to object storage before
    parsing is attempted, so a parser crash or poison-message never loses the
