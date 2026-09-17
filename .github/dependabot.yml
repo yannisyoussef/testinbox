@@ -3,8 +3,15 @@
 # ignored, which is worse than no bot.
 version: 2
 updates:
+  # target-branch: develop on every ecosystem — `develop` is the integration
+  # branch; `master` only moves on release. Left at the default, Dependabot
+  # opened every PR against `master` and they aged out against a baseline
+  # 50 commits behind, with stale green checks that predated a third-party
+  # registry change. Note this file is read from the DEFAULT branch, so a
+  # change here only takes effect once it reaches `master`.
   - package-ecosystem: gradle
     directory: /backend
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -15,6 +22,7 @@ updates:
 
   - package-ecosystem: gradle
     directory: /sdk/kotlin
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
@@ -25,6 +33,7 @@ updates:
 
   - package-ecosystem: npm
     directory: /sdk/typescript
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
@@ -35,6 +44,7 @@ updates:
 
   - package-ecosystem: npm
     directory: /web
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
@@ -45,6 +55,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
