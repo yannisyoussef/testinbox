@@ -297,7 +297,11 @@ components:
           items: { $ref: "#/components/schemas/AttachmentMeta" }
         contentFingerprint:
           type: string
-          description: SHA-256 of raw MIME — informational annotation, never a dedup key (ADR-019).
+          description: >-
+            SHA-256 of the message with `Received:` trace fields excluded, so the same
+            content fingerprints alike however many transport hops stamped it (ADR-019 §4,
+            amended 2026-09-17). Informational annotation, never a dedup key. The raw bytes
+            served by `/raw` are unchanged and still carry every trace header.
         possibleDuplicateOfMessageId:
           type: string
           format: uuid

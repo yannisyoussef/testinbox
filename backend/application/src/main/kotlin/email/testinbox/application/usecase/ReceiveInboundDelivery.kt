@@ -1,5 +1,6 @@
 package email.testinbox.application.usecase
 
+import email.testinbox.application.ContentFingerprint
 import email.testinbox.application.ObjectKeys
 import email.testinbox.application.Sha256
 import email.testinbox.application.port.AppendOutcome
@@ -93,7 +94,11 @@ class ReceiveInboundDelivery(
     fun execute(command: Command): Result {
         val now = clock.instant()
         val recipients = command.recipients.map { it.trim().lowercase() }.distinct()
-        val fingerprint = Sha256.hex(command.raw)
+        // Transport-insensitive by ADR-019 §4 as amended: the gateway (and any
+        // relay ahead of it) stamps a Received: field whose timestamp and queue
+        // id would otherwise make two identical sends fingerprint differently.
+        // The stored raw keeps every trace header (ADR-005).
+        val fingerprint = ContentFingerprint.of(command.raw)
         // One event, one parse: recipients of the same event share the bytes.
         val parseStartedAt = System.nanoTime()
         val parseResult = parser.parse(command.raw)

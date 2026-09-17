@@ -18,6 +18,7 @@ import email.testinbox.domain.message.ParseStatus
 import email.testinbox.persistence.JdbcMessageRepository
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContain
+import io.kotest.matchers.ints.shouldBeGreaterThan
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
@@ -258,6 +259,43 @@ class SmtpIngestionIntegrationTest {
         val original = received.single { it.possibleDuplicateOfMessageId == null }
         val annotated = received.single { it.possibleDuplicateOfMessageId != null }
         annotated.possibleDuplicateOfMessageId shouldBe original.id
+    }
+
+    @Test
+    fun `the fingerprint survives the trace headers transport adds (ADR-019 4)`() {
+        // Regression for #27. The gateway stamps its own Received: field on every
+        // DATA transaction, carrying a second-resolution timestamp and a queue id.
+        // Hashing the stored bytes made these two sends fingerprint differently
+        // whenever they straddled a second — reducing the §4 annotation to the
+        // one-second heuristic the ADR rejects. The relayed twin carries two
+        // further hops, so this also proves the fingerprint is not keyed on hop
+        // count, hostnames or the current Postfix topology (TI-005).
+        val inbox = provisionInbox()
+        val direct = corpus("simple-text.eml")
+        val relayed = corpus("simple-text-relayed.eml")
+        relayed.size shouldBeGreaterThan direct.size
+        client().use { smtp ->
+            smtp.send("no-reply@example.com", listOf(inbox.address), direct).code shouldBe 250
+            smtp.send("no-reply@example.com", listOf(inbox.address), relayed).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(inbox.id).size shouldBe 2
+        }
+        val received = messages.listVisible(inbox.id)
+
+        // Same content through a different number of hops: one fingerprint.
+        received.map { it.contentFingerprint }.distinct().size shouldBe 1
+        val original = received.single { it.possibleDuplicateOfMessageId == null }
+        val annotated = received.single { it.possibleDuplicateOfMessageId != null }
+        annotated.possibleDuplicateOfMessageId shouldBe original.id
+
+        // ...and ADR-005 is untouched: the raw bytes still differ, so the
+        // transport evidence behind the matching fingerprints stays visible,
+        // trace headers and all.
+        val rawBytes = received.map { blobs.get(it.rawObjectKey)!!.toString(Charsets.UTF_8) }
+        rawBytes.distinct().size shouldBe 2
+        rawBytes.forEach { it shouldContain "Received:" }
+        rawBytes.single { it.contains("relay.example.net") } shouldContain "0A1B2C3D4E"
     }
 
     @Test
