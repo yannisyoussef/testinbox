@@ -7,13 +7,20 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.testcontainers.containers.MinIOContainer
+import org.testcontainers.utility.DockerImageName
 import java.time.Instant
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class S3BlobStoreTest {
     private val minio =
-        MinIOContainer("minio/minio:latest")
-            .withUserName("testinbox")
+        MinIOContainer(
+            // minio/minio is no longer anonymously pullable from Docker Hub;
+            // quay.io is MinIO's public mirror. Pinned to the release staging
+            // runs (deploy/staging/compose.data.yaml) so tests prove that version.
+            DockerImageName
+                .parse("quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z")
+                .asCompatibleSubstituteFor("minio/minio"),
+        ).withUserName("testinbox")
             .withPassword("testinbox123")
             .also { it.start() }
 
