@@ -5,7 +5,7 @@
 | [0001](0001-architecture-style.md) | Architecture style | Accepted (amended by 0024, 0029) |
 | [0002](0002-domain-boundaries.md) | Domain boundaries | Accepted (amended by 0024) |
 | [0003](0003-inbound-mail-abstraction.md) | Inbound mail abstraction | Accepted (amended by 0019) |
-| [0004](0004-initial-inbound-provider-strategy.md) | Initial inbound provider strategy | Proposed |
+| [0004](0004-initial-inbound-provider-strategy.md) | Initial inbound provider strategy | Accepted (2026-09-08) |
 | [0005](0005-message-raw-mime-storage.md) | Message/raw MIME storage | Accepted |
 | [0006](0006-persistence-strategy.md) | Persistence strategy | Accepted |
 | [0007](0007-event-coordination-strategy.md) | Event/coordination strategy | Accepted (amended by 0020) |

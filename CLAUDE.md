@@ -9,7 +9,7 @@ changing anything.
 - **Accepted ADRs in `docs/adr/` are authoritative.** `docs/architecture/`,
   `docs/api/`, `docs/sdk/`, `docs/security/`, `docs/quality/` are the
   normative elaboration. Code serves the ADRs, not the other way around.
-- `Proposed` ADRs (currently 0004, 0016, 0017, 0018) require a human
+- `Proposed` ADRs (currently 0016, 0017, 0018) require a human
   decision before implementation may rely on them. **Never silently promote
   a Proposed ADR to Accepted.**
 - If an Accepted ADR appears impossible/contradictory during implementation:
