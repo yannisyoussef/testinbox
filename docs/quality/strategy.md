@@ -76,7 +76,25 @@ gate.
 | Credential-lifecycle product synthetic | `staging-rehearsal.sh` step 9 / `npm run test:product` | Yes in the rehearsal. Against a **deployed** environment it is a separate run from the deployment gate: it needs a credential that can administer keys, and "the credential lifecycle is broken on an otherwise healthy deployment" is a different verdict from "do not ship this artifact" |
 | Container vulnerabilities | Trivy (`scan-images.sh`) | **No on develop/PR — informational.** **Yes on promotion to `master`**, for HIGH/CRITICAL *with a fix available* |
 | Dependency vulnerabilities | OSV-Scanner (npm lockfiles) | **No — informational** |
-| Dependency updates | Dependabot (grouped, weekly) | n/a — opens PRs |
+| Dependency updates | Dependabot (grouped, weekly, `target-branch: develop`) | n/a — opens PRs |
+
+The container build and the ephemeral rehearsal are **required status checks on
+`develop`**, and `deploy-staging.yml` runs on every pull request with no path
+filter. That is deliberate and costs CI minutes on changes that plainly do not
+need an image build — a documentation edit pays for one.
+
+The filter was removed because a required check that never runs is never
+*reported*, and branch protection cannot tell an absent check from a pending
+one: it blocks the merge forever. While `deploy-staging.yml` filtered on
+`deploy|backend|web|sdk|scripts`, every docs-only and config-only pull request
+to `develop` was unmergeable without an admin bypass — in a repository whose
+ADRs are authoritative, that is a routine shape of change, not an edge case.
+
+The two rejected alternatives are worth recording, because both look cheaper:
+dropping the checks from the required list demotes a gate the deployment path
+depends on, which this document forbids doing silently; and skipping the jobs
+from inside the workflow reports them green without running them, which is the
+failure mode named at the top of this section.
 
 **Trivy is environment-sensitive** (ADR-028 §6, as amended). On develop and
 pull requests it is non-blocking for the same reason as OSV-Scanner, one layer

@@ -61,7 +61,7 @@ backend/            # Kotlin/Spring Boot modular monolith (Gradle multi-module)
   e2e/               # Black-box acceptance: SMTP + REST + Karate + both SDKs
 sdk/
   kotlin/            # email.testinbox:testinbox-client (JVM, Java 17 baseline)
-  typescript/        # @testinbox/client (npm, Node >= 20)
+  typescript/        # @testinbox/client (npm, Node >= 22)
 web/                 # Next.js inspection UI (sandboxed HTML preview, ADR-011)
 deploy/
   docker/            # Production-grade container definitions (ADR-028)

@@ -65,6 +65,14 @@ jobs:
           ./scripts/deploy-preflight.test.sh
           ./scripts/gitlab-handoff.test.sh
           ./scripts/check-migration-safety.test.sh
+          ./scripts/check-node-types-floor.test.sh
+      # ADR-023: @types/node is a compile-time ceiling. Above the floor it lets
+      # TypeScript accept an API the oldest supported runtime does not have, and
+      # nothing fails until a consumer on that runtime calls it — which no green
+      # build can reveal. A routine-looking Dependabot major is exactly how it
+      # would arrive (#33, #36).
+      - name: Node types stay within the supported floor (ADR-023)
+        run: ./scripts/check-node-types-floor.sh
       # ADR-029 §6: artifact rollback holds only while migrations are
       # expand-only. This is the gate; CODEOWNERS covers what it cannot see.
       #
@@ -228,7 +236,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node: [20, 22, 24]
+        # ADR-023: the floor, the current LTS, and the line becoming LTS.
+        # Node 20 reached end-of-life 2026-04-30 and is no longer a supported floor.
+        node: [22, 24, 26]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
