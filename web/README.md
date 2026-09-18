@@ -36,7 +36,9 @@ session of its own, which ADR-010 scopes as separate work.
 
 ## Run
 
-Requires Node >= 20.
+Requires Node >= 22.12, matching the repository development toolchain
+(`docs/dev/local-setup.md`). Node 20 reached end-of-life on 2026-04-30.
+The deployed container runs Node 22 (`deploy/docker/web.Dockerfile`).
 
 ```sh
 npm ci

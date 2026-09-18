@@ -6,7 +6,12 @@ Everything runs locally — no AWS credentials, no cloud dependency (ADR-004).
 
 - JDK 25 (Temurin recommended)
 - Docker (for Postgres, MinIO, and Testcontainers-based tests)
-- Node.js >= 20 (TypeScript SDK and web UI)
+- Node.js >= 22.12 (TypeScript SDK and web UI). This is the **development**
+  toolchain floor, set by vitest 5 (`^22.12.0 || ^24 || >=26`); Next 16 needs
+  only >= 20.9. It is deliberately *not* the SDK's published support floor,
+  which is `engines: node >= 22` — consumers never install our dev
+  dependencies, so a test-runner requirement must not become a consumer one
+  (ADR-023).
 
 ## 1. Start dependencies
 
