@@ -134,7 +134,9 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
   (`./gradlew spotlessCheck` / `spotlessApply`).
 - Backend runtime Java 25, Spring Boot 4.x. JVM SDK (`sdk/kotlin`) is an
   independent build with **Java 17 bytecode baseline** (ADR-023) — do not
-  raise it or leak backend deps into it. TS SDK targets Node ≥ 20.
+  raise it or leak backend deps into it. TS SDK targets Node ≥ 22
+  (ADR-023 as amended; Node 20 is EOL). `@types/node` tracks that floor, not
+  the newest tested line — `scripts/check-node-types-floor.sh` enforces it.
 - Persistence is plain SQL via Spring `JdbcClient` + Flyway migrations in
   `backend/persistence/src/main/resources/db/migration`. Never edit an
   applied migration; add a new one.
