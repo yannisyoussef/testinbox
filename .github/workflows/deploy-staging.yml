@@ -27,15 +27,21 @@ on:
   # Feature PRs are never deployed to shared staging (§6). They do run the
   # image build and the ephemeral rehearsal, because a deployment path that is
   # only exercised after merge is a deployment path that breaks after merge.
+  #
+  # Deliberately unfiltered by path. Both checks this workflow reports are
+  # REQUIRED on develop, and a required check that never runs is never reported,
+  # which branch protection cannot distinguish from one still pending: it blocks
+  # the merge forever. A path filter therefore made every docs-only and
+  # config-only pull request unmergeable without an admin bypass (#41) — and in
+  # this repository, where docs/adr/ is authoritative, those are common.
+  #
+  # The cost is that a documentation change now builds images and runs the
+  # rehearsal. That is the deliberate trade: paying CI minutes on PRs that do
+  # not need them, rather than holding a required gate that some PRs can never
+  # satisfy. Skipping the jobs from inside the workflow would report the checks
+  # green without running them, which is the worse failure — a gate that cannot
+  # fail is not a gate.
   pull_request:
-    paths:
-      - "deploy/**"
-      - "backend/**"
-      - "web/**"
-      - "sdk/**"
-      - "scripts/**"
-      - ".github/workflows/deploy-staging.yml"
-      - ".github/workflows/build-images.yml"
   workflow_dispatch:
     inputs:
       api_image:
