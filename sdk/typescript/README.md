@@ -3,7 +3,9 @@
 Official TestInbox SDK for TypeScript/JavaScript: ephemeral email inboxes,
 real SMTP ingestion, and deterministic `waitForMessage` for automated tests.
 
-- Node >= 20, zero runtime dependencies (uses the global `fetch`).
+- Node >= 22, zero runtime dependencies (uses the global `fetch`).
+  Tested on Node 22, 24 and 26. Node 20 is end-of-life (2026-04-30) and is no
+  longer a supported floor.
 - Async/await only; dual ESM/CJS build with bundled type definitions.
 - Hand-designed public API (ADR-014) over the v1 REST contract.
 
