@@ -46,7 +46,7 @@ ownership).
 - **Dependency policy**: minimize runtime dependencies in both SDKs (a test
   library that drags in a large dependency tree is a real adoption cost);
   prefer the platform's built-in HTTP client (`java.net.http` on JVM,
-  global `fetch` on Node ≥20/browsers) over adding an HTTP library
+  global `fetch` on Node ≥22/browsers) over adding an HTTP library
   dependency, revisited only if a concrete gap is found.
 - **Reproducible builds / supply chain**: dependency lockfiles committed
   (`package-lock.json`/`gradle.lockfile` or verification metadata),

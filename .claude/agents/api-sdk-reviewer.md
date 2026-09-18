@@ -25,7 +25,7 @@ SDK review (ADR-014, ADR-023, docs/sdk/):
    header matchers).
 2. JVM SDK: Java 17 bytecode baseline (no post-17 APIs), usable from plain
    Java (blocking facade) and idiomatic Kotlin (suspend). No backend
-   dependencies. TS SDK: Node ≥ 20, `fetch`-based, async/await only,
+   dependencies. TS SDK: Node ≥ 22, `fetch`-based, async/await only,
    ESM+CJS, no callback API.
 3. Long-poll chaining is an SDK responsibility: a caller timeout larger
    than the server cap chains `TIMEOUT` responses; the caller's overall
