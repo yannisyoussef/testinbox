@@ -1,0 +1,17 @@
+# TestInbox SMTP edge — transport map. RENDERED by deploy/mail-edge/render.sh.
+#
+# Anything not matched here falls through to `default_transport = discard`
+# (main.cf), so an empty map means the edge accepts nothing onward and emits
+# nothing. That is the intended DORMANT state of the real host.
+#
+# The postmaster line routes postmaster@ to a LOCAL Maildir. The lookup happens
+# at DELIVERY time, after the message is accepted and queued, so the SMTP
+# conversation is byte-identical to any other recipient.
+__EDGE_POSTMASTER_LINE__
+# The relay line points at TestInbox ingestion. The real host writes it only
+# when EDGE_RELAY_TARGET is set, and today leaves it absent — which renders
+# `<domain> discard:` and is why the dormant host cannot prove ADR-025.
+# The rehearsal MUST render the production relay form, or an unknown-recipient
+# test proves nothing: the edge would discard the message itself instead of
+# relaying it for ingestion to discard. Brackets suppress MX lookup.
+__EDGE_RELAY_LINE__

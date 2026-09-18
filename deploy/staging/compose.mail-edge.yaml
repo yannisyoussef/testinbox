@@ -1,0 +1,46 @@
+# TestInbox SMTP edge — rehearsal overlay (TI-005).
+#
+# Adds the Postfix relay in front of ingestion so the rehearsal exercises the
+# production topology:
+#
+#   sender ──:25──> mail-edge ──edge-internal:2525──> ingestion ──> Postgres/MinIO
+#
+# The edge is NOT part of the deployed staging estate: the real edge is a
+# separate dormant Contabo host that Ops owns, and nothing here deploys it. This
+# overlay exists so the contract it must satisfy is executable before any public
+# traffic is ever allowed.
+services:
+  mail-edge:
+    build:
+      context: ../..
+      dockerfile: deploy/mail-edge/Dockerfile
+    image: testinbox-mail-edge:rehearsal
+    restart: "no"
+    environment:
+      EDGE_PROFILE: ${EDGE_PROFILE:-ci}
+      # Points at the ephemeral ingestion service, NOT the dormant discard form.
+      # An edge that discards tenant mail itself cannot prove ADR-025, because
+      # nothing would reach ingestion to be discarded there.
+      EDGE_RELAY_TARGET: ingestion:2525
+      EDGE_MAIL_DOMAIN: ${TESTINBOX_MAIL_DOMAIN:?set by the rehearsal}
+      EDGE_MYHOSTNAME: ${EDGE_MYHOSTNAME:-edge.rehearsal.invalid}
+    ports:
+      # Published to loopback only, and only so the synthetic suite can act as
+      # an EXTERNAL sender. The source address Postfix sees is the bridge
+      # gateway, which is deliberately outside mynetworks — a relay probe from
+      # inside mynetworks would be permitted by permit_mynetworks and prove
+      # nothing. The suite asserts the observed client address rather than
+      # assuming this.
+      - "${TESTINBOX_EDGE_SMTP_BIND:-127.0.0.1}:${TESTINBOX_EDGE_SMTP_PORT:-2526}:25"
+    healthcheck:
+      # The banner, not the process: a configuration can pass `postfix check`,
+      # start master, and still leave smtpd throttled and answering nothing.
+      test: ["CMD-SHELL", "printf 'QUIT\\r\\n' | nc -w 3 127.0.0.1 25 | grep -q '^220 '"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    depends_on:
+      ingestion:
+        condition: service_healthy
+    networks: [internal]

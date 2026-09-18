@@ -1,0 +1,35 @@
+# TestInbox SMTP edge — Postfix master.cf
+# RENDERED by deploy/mail-edge/render.sh. Do not edit a rendered copy.
+#
+# __EDGE_SMTP_BIND__ is "0.0.0.0:25" when the edge is live, else "127.0.0.1:25".
+# On the real host, dormant (loopback) is the default: it is one configuration
+# change from live and accepts no Internet mail until it is made. The rehearsal
+# binds 0.0.0.0:25 inside an isolated compose network — reachable only by the
+# test sender and never published to the host (asserted by the socket check).
+#
+# service type  private unpriv  chroot  wakeup  maxproc command + args
+__EDGE_SMTP_BIND__ inet  n       -       y       -       -       smtpd
+pickup     unix  n       -       y       60      1       pickup
+cleanup    unix  n       -       y       -       0       cleanup
+qmgr       unix  n       -       n       300     1       qmgr
+tlsmgr     unix  -       -       y       1000?   1       tlsmgr
+rewrite    unix  -       -       y       -       -       trivial-rewrite
+bounce     unix  -       -       y       -       0       bounce
+defer      unix  -       -       y       -       0       bounce
+trace      unix  -       -       y       -       0       bounce
+verify     unix  -       -       y       -       1       verify
+flush      unix  n       -       y       1000?   0       flush
+proxymap   unix  -       -       n       -       -       proxymap
+proxywrite unix  -       -       n       -       1       proxymap
+smtp       unix  -       -       y       -       -       smtp
+relay      unix  -       -       y       -       -       smtp
+showq      unix  n       -       y       -       -       showq
+error      unix  -       -       y       -       -       error
+retry      unix  -       -       y       -       -       error
+discard    unix  -       -       y       -       -       discard
+local      unix  -       n       n       -       -       local
+virtual    unix  -       n       n       -       -       virtual
+lmtp       unix  -       -       y       -       -       lmtp
+anvil      unix  -       -       y       -       1       anvil
+scache     unix  -       -       y       -       1       scache
+postlog    unix-dgram n  -       n       -       1       postlogd

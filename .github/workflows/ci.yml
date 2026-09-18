@@ -66,6 +66,13 @@ jobs:
           ./scripts/gitlab-handoff.test.sh
           ./scripts/check-migration-safety.test.sh
           ./scripts/check-node-types-floor.test.sh
+      # TI-005. Separate step because the 220-banner mutation needs Docker: its
+      # whole point is that static validation cannot see a configuration which
+      # passes `postfix check` and then leaves smtpd answering nothing. The
+      # script FAILS rather than skips when Docker is unavailable — a mutation
+      # suite that quietly skips is the failure it exists to prevent.
+      - name: Self-test the mail-edge gates (TI-005 mutation proofs)
+        run: ./scripts/check-mail-edge-contract.test.sh
       # ADR-023: @types/node is a compile-time ceiling. Above the floor it lets
       # TypeScript accept an API the oldest supported runtime does not have, and
       # nothing fails until a consumer on that runtime calls it — which no green
