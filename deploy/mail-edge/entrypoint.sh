@@ -51,6 +51,12 @@ if [[ -n "$RELAY_TARGET" ]]; then
 fi
 
 render_args=(--profile "$PROFILE" --out "$CONF" --myhostname "$MYHOSTNAME")
+# The rehearsal binds all interfaces INSIDE its isolated compose network so the
+# sender container can reach it; the port is published to loopback only. Asked
+# for explicitly, because the renderer now defaults to the dormant listener and
+# a container that forgot would simply not be reachable — a visible failure
+# rather than an invisible exposure.
+[[ "$PROFILE" == "ci" ]] && render_args+=(--smtp-bind "$(/opt/mail-edge/contract.py get listener.live)")
 [[ -n "$RELAY_TARGET" ]] && render_args+=(--relay-target "$RELAY_TARGET")
 [[ -n "$MAIL_DOMAIN" ]] && render_args+=(--mail-domain "$MAIL_DOMAIN")
 /opt/mail-edge/render.sh "${render_args[@]}"
@@ -66,6 +72,14 @@ fi
 
 say "A. compile maps"
 postmap "$CONF/transport"
+# The alias map is declared as hash:/etc/aliases (the Ops canonical path), but
+# the generation renders it inside $CONF. Without this install step `newaliases`
+# compiles Ubuntu's STOCK /etc/aliases — which maps postmaster to root — and the
+# rendered file is never read: postmaster@ mail silently lands in root's mailbox
+# while the log says "delivered", and the unprivileged edgepm account exists for
+# nothing. Installing it keeps the generation the single source and the declared
+# path the real one.
+install -m 0644 "$CONF/aliases" /etc/aliases
 newaliases
 
 say "A. postfix check"
@@ -116,6 +130,23 @@ assert_running relayhost                     "$(C required.relayhost)"
 assert_running mynetworks                    "$(C required.mynetworks)"
 assert_running message_size_limit            "$(C required.message_size_limit)"
 assert_running smtpd_relay_restrictions      "$(C required.smtpd_relay_restrictions)"
+# The ADR-026 control, asserted HERE specifically: postconf expands
+# $default_destination_recipient_limit, so this is the only layer that sees the
+# value Postfix will actually apply to the relay transport.
+assert_running relay_destination_recipient_limit "$(C required.relay_destination_recipient_limit)"
+# The COMPILED alias map, not the file: postmaster@ is delivered through
+# alias expansion, and a rendered file that was never compiled looks identical
+# on disk to one that was. This is the assertion that catches the stock-aliases
+# shadowing above.
+expected_pm="$(/opt/mail-edge/contract.py get operational_recipient_account 2>/dev/null || echo edgepm)"
+resolved_pm="$(postalias -q postmaster hash:/etc/aliases 2>/dev/null || true)"
+if [[ "$resolved_pm" == "$expected_pm" ]]; then
+  printf '  ok   %-38s -> %s\n' "alias postmaster (compiled)" "$resolved_pm"
+else
+  printf '  FAIL %-38s -> %s (want: %s)\n' "alias postmaster (compiled)" "${resolved_pm:-<unresolved>}" "$expected_pm" >&2
+  fail=1
+fi
+
 (( fail == 0 )) || die "running configuration does not match the contract"
 
 say "ready"

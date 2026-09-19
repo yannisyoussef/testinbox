@@ -352,7 +352,11 @@ step "10/10 mail-edge contract (TI-005): sender -> Postfix -> ingestion"
 # deploy.sh about a Postfix container would make the rehearsal's deployment step
 # stop being a faithful copy of the real one, which is the property that makes it
 # worth running at all.
-"${COMPOSE[@]}" up -d --wait --wait-timeout 120 mail-edge || {
+# --build, always: the edge image COPYs render.sh, the templates and the
+# contract, so without it a change to any of them silently validates the
+# previously built image. That is how a queue-lifetime change appeared to
+# have no effect.
+"${COMPOSE[@]}" up -d --build --wait --wait-timeout 180 mail-edge || {
   echo "the mail edge did not become healthy" >&2
   "${COMPOSE[@]}" logs --tail=60 mail-edge || true
   exit 1
@@ -408,7 +412,16 @@ test "${EDGE_SKIPPED:-0}" -eq 0 || { echo "mail-edge contract tests were skipped
 
 # The storage-side half of ADR-025, which the network suite cannot see: an
 # unknown recipient must leave NO row and NO object anywhere, not merely a 404.
-"$REPO_ROOT/scripts/mail-edge-storage-proof.sh"
+REHEARSAL_HTTPS_PORT="$HTTPS_PORT" \
+TESTINBOX_EDGE_API_KEY="$TESTINBOX_EDGE_API_KEY" \
+  "$REPO_ROOT/scripts/mail-edge-storage-proof.sh"
+
+# ADR-026: one DATA with several recipients must reach ingestion as ONE inbound
+# event. Final state cannot show that — two separate deliveries also fill both
+# inboxes — so this reads the accepted-transaction counter across the send.
+REHEARSAL_HTTPS_PORT="$HTTPS_PORT" \
+TESTINBOX_EDGE_API_KEY="$TESTINBOX_EDGE_API_KEY" \
+  "$REPO_ROOT/scripts/mail-edge-atomicity-proof.sh"
 
 # The queue proofs need to stop and start ingestion, which a network client
 # cannot do. They run last because they deliberately take the gateway down.

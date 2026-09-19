@@ -38,6 +38,22 @@ apex_domain: testinbox.email
 # LocalPartPolicy.DENYLIST (ADR-021) and routed to local delivery AFTER SMTP
 # acceptance, so it is indistinguishable on the SMTP path.
 operational_recipient: postmaster
+# The local account postmaster@ is aliased to. Ops creates the equivalent on the
+# real host; it is named here so the compiled alias map can be asserted rather
+# than assumed — a rendered aliases file that was never compiled looks identical
+# on disk to one that was.
+operational_recipient_account: edgepm
+
+# The smtpd listener. DORMANT IS THE DEFAULT, and going live is an explicit,
+# reviewable act rather than an omission: this is the single switch that exposes
+# the edge to Internet mail, and CLAUDE.md's "no public SMTP" rests on it.
+#
+# The rehearsal binds all interfaces because its compose network is isolated and
+# the port is published to loopback only — but it must ASK for that, so a render
+# that forgets cannot silently produce a world-listening MTA.
+listener:
+  dormant: 127.0.0.1:25
+  live: 0.0.0.0:25
 
 # Settings whose value must be exactly this in every profile. A CI override of
 # any of these is a gate failure, not an allowed difference.
@@ -57,6 +73,17 @@ required:
   mynetworks: 127.0.0.0/8 [::1]/128
   smtpd_relay_restrictions: permit_mynetworks, reject_unauth_destination
   disable_vrfy_command: "yes"
+  # [ADR-026] The control that keeps one DATA transaction one inbound event.
+  #
+  # It must be relay_* , not smtp_* . Postfix derives per-transport overrides
+  # from the master.cf SERVICE name, and tenant mail is routed `relay:[addr]`,
+  # so the smtp_* value governs a transport this path never uses. Verified:
+  # setting smtp_destination_recipient_limit=1 leaves
+  # relay_destination_recipient_limit at 50, while setting
+  # default_destination_recipient_limit=1 drops it to 1. Pinning relay_*
+  # explicitly removes that indirection, so the invariant no longer rests on an
+  # unpinned default a future "hardening" diff could move.
+  relay_destination_recipient_limit: "50"
   # The externally accepted ceiling. 15 MiB — owner decision 2026-09-18,
   # superseding the 26214400 the Ops handoff carried. It must never exceed what
   # ingestion accepts: the edge emits no DSN, so an over-ceiling message would
@@ -76,6 +103,14 @@ production:
   minimal_backoff_time: 120s
   maximal_backoff_time: 600s
   queue_run_delay: 120s
+  # Present here so the gate's drift loop actually asserts it. Listed in
+  # ci_overridable below, but a key that appears only there is checked in no
+  # profile at all — which is how the largest security delta in the CI profile
+  # came to be the one parameter nothing verified.
+  smtpd_tls_security_level: may
+  smtpd_tls_protocols: '>=TLSv1.2'
+  smtpd_tls_loglevel: '1'
+  tls_preempt_cipherlist: 'no'
 
 # The ONLY parameters a non-production profile may change, each with the reason.
 # Anything else differing between the rendered configuration and `production`
@@ -89,6 +124,9 @@ ci_overridable:
   smtpd_client_connection_rate_limit: same
   smtpd_client_message_rate_limit: same
   smtpd_tls_security_level: the rehearsal has no certificate material and no TLS invariant to prove
+  smtpd_tls_protocols: dropped with the TLS block when TLS is off in CI
+  smtpd_tls_loglevel: dropped with the TLS block when TLS is off in CI
+  tls_preempt_cipherlist: dropped with the TLS block when TLS is off in CI
 
 # OPS ACTIVATION PREREQUISITES — drift between this contract and the real
 # dormant edge that must be reconciled by Ops BEFORE public SMTP or MX is ever

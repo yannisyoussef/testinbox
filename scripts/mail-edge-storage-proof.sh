@@ -31,13 +31,11 @@ MAIL_DOMAIN="${TESTINBOX_MAIL_DOMAIN:?set by the rehearsal}"
 MARKER="ADR025-$(head -c 400 /dev/urandom | LC_ALL=C tr -dc 'A-Z0-9' | cut -c1-20)"
 UNKNOWN="nobody-$(head -c 400 /dev/urandom | LC_ALL=C tr -dc 'a-z0-9' | cut -c1-10)@${MAIL_DOMAIN}"
 
-echo "  marker    $MARKER"
-echo "  recipient $UNKNOWN (syntactically valid, resolves to no inbox)"
-
-# --- send through the edge ---------------------------------------------------
-# Deliberately not via the SDK: this is an unauthenticated sender on the wire,
-# which is what a real unknown-recipient delivery looks like.
-python3 - "$EDGE_PORT" "$UNKNOWN" "$MARKER" <<'PY'
+# --- helpers ------------------------------------------------------------------
+# Deliberately not the SDK: this is an unauthenticated sender on the wire, which
+# is what a real unknown-recipient delivery looks like.
+send_via_edge() {
+python3 - "$EDGE_PORT" "$1" "$2" <<'PY'
 import socket, sys, time
 
 port, recipient, marker = int(sys.argv[1]), sys.argv[2], sys.argv[3]
@@ -74,60 +72,150 @@ accepted = expect("250")
 print(f"  edge reply {accepted}")
 sock.sendall(b"QUIT\r\n")
 PY
+}
 
-# --- wait for the relay to actually complete ---------------------------------
 # Asserting "nothing was stored" before the relay has run would pass for the
-# wrong reason. Wait for the queue to drain instead of sleeping blindly.
+# wrong reason, so this waits on the queue rather than sleeping. It fails CLOSED:
+# an exec failure returns no count, and an unreadable queue must never be
+# mistaken for an empty one.
+wait_for_drain() {
+  local queued
+  for _ in $(seq 1 60); do
+    queued="$("${COMPOSE[@]}" exec -T mail-edge sh -c 'postqueue -p 2>/dev/null | grep -cE "^[0-9A-F]" || true' 2>/dev/null | tr -d ' \r\n')"
+    if [[ -z "$queued" ]]; then
+      echo "  the edge queue could not be read; refusing to treat that as drained" >&2
+      return 1
+    fi
+    [[ "$queued" == "0" ]] && return 0
+    sleep 1
+  done
+  echo "  the edge queue did not drain; the relay never completed" >&2
+  return 1
+}
+
+echo "  marker    $MARKER"
+echo "  recipient $UNKNOWN (syntactically valid, resolves to no inbox)"
+send_via_edge "$UNKNOWN" "$MARKER"
 echo "  waiting for the edge queue to drain..."
-drained=false
-for _ in $(seq 1 60); do
-  queued="$("${COMPOSE[@]}" exec -T mail-edge sh -c 'postqueue -p 2>/dev/null | grep -cE "^[0-9A-F]" || true' 2>/dev/null | tr -d ' \r\n')"
-  if [[ "${queued:-0}" == "0" ]]; then
-    drained=true
-    break
-  fi
-  sleep 1
-done
-[[ "$drained" == true ]] || { echo "the edge queue did not drain; the relay never completed" >&2; exit 1; }
+wait_for_drain || exit 1
 # The relay is asynchronous on the ingestion side too: give the delivery a
 # bounded moment to be processed (and discarded) before looking for traces.
 sleep 3
 
 fail=0
-report() {
-  if [[ -z "$2" ]]; then
-    printf '  ok   %s\n' "$1"
-  else
-    printf '  FAIL %s -> %s\n' "$1" "$2" >&2
-    fail=1
+ok()  { printf '  ok   %s\n' "$1"; }
+bad() { printf '  FAIL %s\n' "$1" >&2; fail=1; }
+
+# --- PostgreSQL ---------------------------------------------------------------
+# FAIL CLOSED. Every probe here previously swallowed errors: psql writes to
+# stderr, stdout comes back empty, and "no rows matched" is indistinguishable
+# from "the query never ran". A renamed column or a wrong database name turned
+# the whole ADR-025 storage half green.
+psql_count() {
+  local sql="$1" out status
+  out="$("${COMPOSE[@]}" exec -T postgres psql -U "${TESTINBOX_DB_USER:?}" -d "${TESTINBOX_DB_NAME:?}" -tAc "$sql" 2>&1)"
+  status=$?
+  out="$(tr -d ' \r\n' <<<"$out")"
+  if (( status != 0 )) || ! [[ "$out" =~ ^[0-9]+$ ]]; then
+    echo "QUERY-FAILED: ${out:-exit $status}"
+    return 1
   fi
+  echo "$out"
 }
 
-# --- PostgreSQL --------------------------------------------------------------
-# Every table that could plausibly retain content, not just `message`.
-psql() { "${COMPOSE[@]}" exec -T postgres psql -U "${TESTINBOX_DB_USER:?}" -d "${TESTINBOX_DB_NAME:?}" -tAc "$1"; }
+assert_absent_pg() {
+  local label="$1" sql="$2" count
+  if ! count="$(psql_count "$sql")"; then
+    bad "$label — the query itself failed, so absence proves nothing: $count"
+    return
+  fi
+  [[ "$count" == "0" ]] && ok "$label" || bad "$label (found $count)"
+}
 
-report "no message row mentions the marker" \
-  "$(psql "SELECT count(*) FROM message WHERE envelope_to LIKE '%${UNKNOWN%%@*}%';" | tr -d ' \n' | grep -v '^0$' || true)"
-report "no inbox was created for the unknown recipient" \
-  "$(psql "SELECT count(*) FROM inbox WHERE address = '${UNKNOWN}';" | tr -d ' \n' | grep -v '^0$' || true)"
-report "no parsed content carries the marker" \
-  "$(psql "SELECT count(*) FROM message WHERE subject LIKE '%${MARKER}%' OR text_body LIKE '%${MARKER}%' OR html_body LIKE '%${MARKER}%';" 2>/dev/null | tr -d ' \n' | grep -v '^0$' || true)"
-report "no attachment row was created for it" \
-  "$(psql "SELECT count(*) FROM attachment a JOIN message m ON m.id = a.message_id WHERE m.envelope_to LIKE '%${UNKNOWN%%@*}%';" 2>/dev/null | tr -d ' \n' | grep -v '^0$' || true)"
+# --- MinIO --------------------------------------------------------------------
+# Also fail closed: `mc alias set … || exit 0` previously turned a missing
+# client, a renamed bucket or an auth failure into "zero objects", reported ok.
+minio_marker_hits() {
+  local marker="$1" out status
+  # The scan runs mc INSIDE the container and greps on the HOST. The minio image
+  # ships sh, cat and mc but no grep and no awk, so an in-container pipeline
+  # fails with "grep: command not found" — which the previous fail-open version
+  # reported as "zero objects", i.e. as a pass. The positive control caught that
+  # on its first run; without it this assertion had never once executed.
+  out="$("${COMPOSE[@]}" exec -T minio sh -c '
+    set -e
+    mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
+    mc find "local/'"${TESTINBOX_S3_BUCKET:?}"'" --exec "mc cat {}"
+  ' 2>/dev/null | grep -c "$marker" || true)"
+  status="${PIPESTATUS[0]:-0}"
+  out="$(tr -d ' \r\n' <<<"$out")"
+  # grep -c prints 0 and exits 1 when nothing matches, which is a legitimate
+  # result; only a failure of the mc side means the scan did not run.
+  if (( status != 0 )) || ! [[ "$out" =~ ^[0-9]+$ ]]; then
+    echo "SCAN-FAILED: mc exited $status"
+    return 1
+  fi
+  echo "$out"
+}
 
-# --- MinIO -------------------------------------------------------------------
-# Raw MIME is written BEFORE the database row (ADR-005), so an object with no
-# row is exactly the residue this proof exists to exclude. Scan object bodies,
-# not just keys: a discarded message would not be keyed by anything guessable.
-objects_with_marker="$(
-  "${COMPOSE[@]}" exec -T minio sh -c '
-    mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1 || exit 0
-    mc find "local/'"${TESTINBOX_S3_BUCKET:?}"'" --exec "mc cat {}" 2>/dev/null | grep -c "'"$MARKER"'" || true
-  ' 2>/dev/null | tr -d ' \r\n' || echo 0
+# --- the positive control -----------------------------------------------------
+# Before trusting these probes to find NOTHING for an unknown recipient, prove
+# they can find SOMETHING for a known one. Without this the strongest ADR-025
+# gate is indistinguishable from a gate that examines nothing at all.
+echo
+echo "  positive control: the same probes must FIND a message that was stored"
+CONTROL_MARKER="ADR025CTL-$(head -c 400 /dev/urandom | LC_ALL=C tr -dc 'A-Z0-9' | cut -c1-16)"
+CONTROL_LOCAL="ctl-$(head -c 400 /dev/urandom | LC_ALL=C tr -dc 'a-z0-9' | cut -c1-10)"
+CONTROL_ADDR="${CONTROL_LOCAL}@${MAIL_DOMAIN}"
+CONTROL_INBOX="$(
+  curl -fsS --cacert "${TESTINBOX_TLS_DIR:?}/ca.pem" \
+    -X POST "https://localhost:${REHEARSAL_HTTPS_PORT:-8443}/v1/inboxes" \
+    -H "Authorization: Bearer ${TESTINBOX_EDGE_API_KEY:?}" \
+    -H 'content-type: application/json' -d '{"ttlSeconds":600}'
 )"
-report "no object in the raw bucket contains the marker" \
-  "$(echo "${objects_with_marker:-0}" | grep -v '^0$' || true)"
+CONTROL_ADDR="$(sed -n 's/.*"address":"\([^"]*\)".*/\1/p' <<<"$CONTROL_INBOX")"
+CONTROL_ID="$(sed -n 's/.*"id":"\([^"]*\)".*/\1/p' <<<"$CONTROL_INBOX")"
+[[ -n "$CONTROL_ADDR" ]] || { echo "could not provision the control inbox" >&2; exit 1; }
+send_via_edge "$CONTROL_ADDR" "$CONTROL_MARKER"
+wait_for_drain
+sleep 3
+
+CTL_ROWS="$(psql_count "SELECT count(*) FROM message WHERE subject LIKE '%${CONTROL_MARKER}%';")" || {
+  echo "  FAIL the control query failed: $CTL_ROWS" >&2; exit 1; }
+[[ "$CTL_ROWS" == "1" ]] && ok "the Postgres probe finds a stored message (control)" \
+  || bad "the Postgres probe did NOT find a message that was definitely stored (found $CTL_ROWS) — every absence assertion below is worthless"
+
+CTL_OBJ="$(minio_marker_hits "$CONTROL_MARKER")" || {
+  echo "  FAIL the control object scan failed: $CTL_OBJ" >&2; exit 1; }
+(( CTL_OBJ >= 1 )) && ok "the MinIO probe finds the stored raw object (control)" \
+  || bad "the MinIO probe did NOT find an object that was definitely stored — the object-storage assertion below is worthless"
+
+curl -fsS --cacert "${TESTINBOX_TLS_DIR}/ca.pem" -X DELETE \
+  -H "Authorization: Bearer ${TESTINBOX_EDGE_API_KEY}" \
+  "https://localhost:${REHEARSAL_HTTPS_PORT:-8443}/v1/inboxes/${CONTROL_ID}" >/dev/null 2>&1 || true
+
+# --- the assertions that matter -----------------------------------------------
+echo
+echo "  the unknown recipient must have left nothing"
+assert_absent_pg "no message row mentions the unknown recipient" \
+  "SELECT count(*) FROM message WHERE envelope_to LIKE '%${UNKNOWN%%@*}%';"
+assert_absent_pg "no inbox was created for the unknown recipient" \
+  "SELECT count(*) FROM inbox WHERE address = '${UNKNOWN}';"
+assert_absent_pg "no parsed content carries the marker" \
+  "SELECT count(*) FROM message WHERE subject LIKE '%${MARKER}%' OR text_body LIKE '%${MARKER}%' OR html_body LIKE '%${MARKER}%';"
+# Attachments are keyed by file_name and object_key; a discarded message would
+# leave an orphan in either. Joining through `message` would be circular — the
+# assertion above already proves no such message row exists — so this looks at
+# the attachment table on its own terms.
+assert_absent_pg "no attachment row carries the marker" \
+  "SELECT count(*) FROM attachment WHERE file_name LIKE '%${MARKER}%' OR object_key LIKE '%${MARKER}%';"
+
+OBJ_HITS="$(minio_marker_hits "$MARKER")" || {
+  bad "the object-storage scan failed, so absence proves nothing: $OBJ_HITS"
+  OBJ_HITS="scan-failed"
+}
+[[ "$OBJ_HITS" == "0" ]] && ok "no object in the raw bucket contains the marker" \
+  || { [[ "$OBJ_HITS" == "scan-failed" ]] || bad "an object in the raw bucket contains the marker ($OBJ_HITS)"; }
 
 echo "----"
 if (( fail )); then

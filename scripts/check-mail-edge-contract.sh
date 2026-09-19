@@ -58,6 +58,10 @@ value_of() {
 
 assert_value() {
   local key="$1" want="$2" got
+  if ! grep -qE "^${key}[[:space:]]*=" "$MAIN"; then
+    bad "$key is ABSENT from main.cf — Postfix would apply its own default, which is not the contract's value"
+    return
+  fi
   got="$(value_of "$key")"
   if [[ "$got" == "$want" ]]; then
     ok "$key = ${got:-<empty>}"
@@ -69,9 +73,10 @@ assert_value() {
 echo "mail-edge contract gate — $DIR (profile=$PROFILE)"
 
 # --- the invariants that hold in EVERY profile -------------------------------
-for key in relay_recipient_maps local_header_rewrite_clients always_add_missing_headers \
-           default_transport notify_classes bounce_queue_lifetime relayhost \
-           mynetworks smtpd_relay_restrictions disable_vrfy_command message_size_limit; do
+# Derived from the manifest, never hardcoded: a fixed list here silently stops
+# gating anything later added to the contract, which is not a failure anyone
+# would notice — the gate would keep passing and simply check less.
+for key in $("$CONTRACT" keys required); do
   assert_value "$key" "$(C "required.$key")"
 done
 
@@ -113,12 +118,18 @@ fi
 
 # Specific-address lookups must precede the domain lookup, or postmaster@ relays
 # downstream like any tenant recipient and its local disposition never happens.
-PM_LINE="$(grep -nE "^${POSTMASTER}@" "$TRANSPORT" | head -1 | cut -d: -f1)"
-DOMAIN_LINE="$(grep -nE "^${TENANT}[[:space:]]" "$TRANSPORT" | head -1 | cut -d: -f1)"
+# `|| true` on both: a dormant transport map has NO tenant-domain line, and
+# under `set -e` a non-matching grep aborted the gate silently — no FAIL line,
+# no summary, exit 1. That made the gate unusable against the real edge's actual
+# dormant configuration, which is the one state Ops would most want to check.
+PM_LINE="$(grep -nE "^${POSTMASTER}@" "$TRANSPORT" | head -1 | cut -d: -f1 || true)"
+DOMAIN_LINE="$(grep -nE "^${TENANT}[[:space:]]" "$TRANSPORT" | head -1 | cut -d: -f1 || true)"
 if [[ -n "$PM_LINE" && -n "$DOMAIN_LINE" && "$PM_LINE" -lt "$DOMAIN_LINE" ]]; then
   ok "the ${POSTMASTER}@ entry precedes the tenant-domain entry"
 elif [[ -z "$DOMAIN_LINE" ]]; then
-  : # handled by the relay-form check below
+  # No tenant-domain line at all: the dormant form. Valid for production (the
+  # real edge is dormant today), and refused for ci by the relay-form check.
+  ok "no tenant-domain transport entry (dormant); ordering is not applicable"
 else
   bad "the ${POSTMASTER}@ entry must precede the tenant-domain entry"
 fi
@@ -137,6 +148,33 @@ if [[ "$PROFILE" == "ci" ]]; then
     bad "the tenant domain is set to discard: — that is the DORMANT form, never valid in the rehearsal"
   fi
 fi
+
+# --- the listener -------------------------------------------------------------
+# master.cf was previously opened only to check it EXISTS. It carries the single
+# switch that decides whether the edge is reachable from the Internet, and it is
+# the file in the mixed-generation defect that motivated the whole renderer, so
+# leaving it unread made the gate blind to the one change that matters most.
+MASTER="$DIR/master.cf"
+LISTENER="$(awk '$NF == "smtpd" && $2 == "inet" { print $1; exit }' "$MASTER")"
+DORMANT="$(C listener.dormant)"
+LIVE="$(C listener.live)"
+case "$PROFILE" in
+  production)
+    if [[ "$LISTENER" == "$DORMANT" ]]; then
+      ok "smtpd listens on $LISTENER (dormant)"
+    else
+      bad "smtpd listens on ${LISTENER:-<none>} in a production render — the contract's dormant listener is $DORMANT. A public listener is how 'no public SMTP' stops being true."
+    fi
+    ;;
+  ci)
+    # The rehearsal legitimately binds all interfaces inside an isolated network.
+    if [[ "$LISTENER" == "$LIVE" || "$LISTENER" == "$DORMANT" ]]; then
+      ok "smtpd listens on $LISTENER"
+    else
+      bad "smtpd listens on an unexpected address: ${LISTENER:-<none>}"
+    fi
+    ;;
+esac
 
 # --- production contract values ----------------------------------------------
 # CI may differ only where the manifest sanctions it. The production values are

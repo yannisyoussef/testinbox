@@ -76,19 +76,31 @@ tls_preempt_cipherlist = no"
 # against the manifest so the allowlist cannot rot away from the code.
 declare -a OVERRIDDEN=()
 if [[ "$PROFILE" == "ci" ]]; then
-  QUEUE_LIFETIME="${EDGE_CI_QUEUE_LIFETIME:-20s}";      OVERRIDDEN+=(maximal_queue_lifetime)
+  # Long enough that a message survives an ingestion restart (the retry proof
+  # needs that), not short enough to make the expiry proof slow — which is why
+  # the expiry proof shortens it for its own message rather than sharing one
+  # value that cannot satisfy both.
+  QUEUE_LIFETIME="${EDGE_CI_QUEUE_LIFETIME:-300s}";     OVERRIDDEN+=(maximal_queue_lifetime)
   MIN_BACKOFF="${EDGE_CI_MIN_BACKOFF:-2s}";             OVERRIDDEN+=(minimal_backoff_time)
   MAX_BACKOFF="${EDGE_CI_MAX_BACKOFF:-4s}";             OVERRIDDEN+=(maximal_backoff_time)
   QUEUE_RUN_DELAY="${EDGE_CI_QUEUE_RUN_DELAY:-2s}";     OVERRIDDEN+=(queue_run_delay)
   # Anvil limits are per client IP and the rehearsal has one sender container,
   # so ordinary tests would exhaust the production ceilings and fail for a
-  # reason that is not the thing under test. The abuse tests render their own
-  # profile at production values instead.
+  # reason that is not the thing under test.
+  #
+  # The production values are asserted statically and are NOT exercised
+  # behaviourally: no test drives the edge to its connection or rate ceilings.
+  # That gap is recorded in docs/architecture/mail-edge-contract.md rather than
+  # implied to be covered here.
   CONN_LIMIT="${EDGE_CI_CONN_LIMIT:-200}";              OVERRIDDEN+=(smtpd_client_connection_count_limit)
   CONN_RATE="${EDGE_CI_CONN_RATE:-600}";                OVERRIDDEN+=(smtpd_client_connection_rate_limit)
   MSG_RATE="${EDGE_CI_MSG_RATE:-1000}";                 OVERRIDDEN+=(smtpd_client_message_rate_limit)
   # No certificate material in the rehearsal, and no TLS invariant to prove.
-  TLS_LEVEL="none"; TLS_BLOCK="";                       OVERRIDDEN+=(smtpd_tls_security_level)
+  # The whole block goes, not just the level — declaring only the level while
+  # silently dropping two more parameters is exactly the undeclared divergence
+  # the allowlist exists to prevent.
+  TLS_LEVEL="none"; TLS_BLOCK=""
+  OVERRIDDEN+=(smtpd_tls_security_level smtpd_tls_protocols smtpd_tls_loglevel tls_preempt_cipherlist)
 fi
 
 # Refuse an override the manifest does not sanction. This is what keeps "CI may
@@ -104,7 +116,16 @@ done
 
 # --- runtime substitutions ---------------------------------------------------
 : "${MAIL_DOMAIN:=$TENANT_DOMAIN}"
-: "${SMTP_BIND:=0.0.0.0:25}"
+# Fail CLOSED. An omitted --smtp-bind renders the dormant loopback listener, so
+# a forgotten flag cannot produce a world-listening smtpd. Going live is an
+# explicit argument, which is what makes it reviewable.
+: "${SMTP_BIND:=$(c listener.dormant)}"
+LIVE_BIND="$(c listener.live)"
+if [[ "$SMTP_BIND" == "$LIVE_BIND" && "$PROFILE" == "production" ]]; then
+  # Not refused — Ops will legitimately need it one day — but never silent.
+  echo "render: WARNING — rendering the LIVE listener ($LIVE_BIND) for the production profile." >&2
+  echo "render: this exposes the edge to Internet mail. No MX and no public SMTP are sanctioned yet." >&2
+fi
 
 # The postmaster line must precede the domain line: a specific-address lookup
 # has to win over the tenant-domain lookup, or postmaster@ relays downstream

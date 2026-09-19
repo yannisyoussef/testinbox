@@ -122,9 +122,17 @@ relayhost =
 message_size_limit = __EDGE_MESSAGE_SIZE_LIMIT__
 mailbox_size_limit = 0
 smtpd_recipient_limit = __EDGE_RECIPIENT_LIMIT__
-# [INVARIANT] Must be >= the recipient count under test, or Postfix splits one
-# logical transaction into several downstream deliveries and the ADR-026
+# [INVARIANT] Must be >= the recipient count in one transaction, or Postfix
+# splits one logical delivery into several downstream ones and the ADR-026
 # atomicity proof silently stops testing atomicity while still passing.
+#
+# relay_* is the load-bearing one: Postfix derives per-transport overrides from
+# the master.cf SERVICE name, and tenant mail is routed `relay:[addr]:port`, so
+# smtp_* governs a transport this path never uses. Left unpinned, relay_*
+# resolves to $default_destination_recipient_limit — an unpinned default that a
+# plausible hardening change could set to 1 while every gate stayed green.
+relay_destination_recipient_limit = __EDGE_DEST_RECIPIENT_LIMIT__
+# Kept for the smtp transport, which nothing in this topology routes to today.
 smtp_destination_recipient_limit = __EDGE_DEST_RECIPIENT_LIMIT__
 smtpd_client_connection_count_limit = __EDGE_CONN_LIMIT__
 smtpd_client_connection_rate_limit = __EDGE_CONN_RATE__
@@ -138,7 +146,10 @@ anvil_rate_time_unit = 60s
 # --- inbound TLS ------------------------------------------------------------
 # The real edge offers opportunistic STARTTLS with host-managed certificates.
 # The rehearsal has no certificate material and no TLS invariant to prove, so
-# this is one of the allowlisted CI differences (deploy/mail-edge/profiles/).
+# the whole TLS block is an allowlisted CI difference — declared in
+# contract.yaml's ci_overridable and checked structurally by the profile-diff
+# case in scripts/check-mail-edge-contract.test.sh. (There is no profiles/
+# directory; profiles are branches in render.sh.)
 smtpd_tls_security_level = __EDGE_TLS_LEVEL__
 __EDGE_TLS_BLOCK__
 # The edge never initiates SMTP to the Internet; outbound TLS settings are

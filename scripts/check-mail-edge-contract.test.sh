@@ -101,15 +101,55 @@ mutate "the dormant discard: transport is rejected in the ci profile" 1 \
   "edit transport 's|^inbox.testinbox.email[[:space:]]*relay:.*|inbox.testinbox.email\tdiscard:|'"
 
 # Ops §P.4 — splitting one logical transaction into several downstream
-# deliveries. The atomicity test would still pass while testing nothing, so the
-# limit is pinned in the contract and is not CI-overridable.
-mutate "smtp_destination_recipient_limit = 1 is rejected" 1 \
-  "edit main.cf 's|^smtp_destination_recipient_limit = .*|smtp_destination_recipient_limit = 1|'"
+# deliveries, so the ADR-026 atomicity proof passes while testing nothing.
+#
+# The mutation targets relay_* because that is what governs the transport tenant
+# mail actually uses. An earlier version mutated smtp_*, whose stated premise was
+# simply false: smtp_destination_recipient_limit=1 leaves
+# relay_destination_recipient_limit at 50 and splits nothing.
+mutate "relay_destination_recipient_limit = 1 is rejected" 1 \
+  "edit main.cf 's|^relay_destination_recipient_limit = .*|relay_destination_recipient_limit = 1|'"
+
+# And the indirection itself: with relay_* pinned explicitly, a default_* change
+# can no longer reach the relay path — but if the explicit pin were ever removed,
+# relay_* would fall back to $default_destination_recipient_limit. This asserts
+# the pin is present rather than trusting it.
+mutate "removing the explicit relay recipient limit is rejected" 1 \
+  "edit main.cf '/^relay_destination_recipient_limit /d'"
 
 # Ops §P.3, static half — the value that passes `postfix check` and then kills
 # smtpd. The runtime half is below.
 mutate "an empty *_notice_recipient is rejected" 1 \
   "printf 'bounce_notice_recipient =\n' >> main.cf"
+
+# A public listener in a production render. This is the defect the renderer was
+# built for — Ops' per-file rollback restored a stock master.cf with a public
+# 0.0.0.0:25 listener while the rest of the configuration was current — and
+# until now master.cf was opened by the gate only to check it existed.
+mutate "a public listener in a production render is rejected" 1 \
+  "edit master.cf 's|^127.0.0.1:25 |0.0.0.0:25 |'" \
+  production
+
+# The production profile must also PASS cleanly. Without this the production
+# assertions are only ever exercised in the must-fail direction, so a clean
+# production render that stopped conforming would go unnoticed.
+mutate "the production baseline passes" 0 "true" production
+
+# The real edge's ACTUAL current state: production profile, no relay target, so
+# the transport map carries no tenant-domain line. This is the configuration Ops
+# would point the gate at before activation, and it must be checkable — the gate
+# previously aborted on it with no output at all.
+dormant_dir="$TMP/dormantproduction"
+rm -rf "$dormant_dir"
+"$RENDER" --profile production --out "$dormant_dir" --mail-domain inbox.testinbox.email >/dev/null 2>&1
+if out="$("$GATE" "$dormant_dir" --profile production 2>&1)"; then
+  printf 'ok   — the dormant production render is checkable and conforms\n'
+  pass=$((pass + 1))
+else
+  printf 'FAIL — the dormant production render was rejected or aborted (exit %s)\n' "$?"
+  sed 's/^/       /' <<<"$out"
+  fail=$((fail + 1))
+fi
 
 # The size ceiling is the one the Ops handoff still records as 25 MiB. A drift
 # back to it would let the edge accept mail ingestion always refuses, answered
@@ -121,6 +161,40 @@ mutate "a 25 MiB message_size_limit is rejected" 1 \
 # legitimately changes for other parameters.
 mutate "a non-allowlisted production drift is rejected" 1 \
   "edit main.cf 's|^smtpd_recipient_limit = .*|smtpd_recipient_limit = 5000|'"
+
+# --- the allowlist, checked structurally -------------------------------------
+# render.sh only verifies the list it wrote itself, so it enforces "CI may
+# override what CI says it overrides" — which cannot catch a parameter dropped
+# without being declared. This renders both profiles and diffs them: every
+# differing key must be sanctioned by the manifest. It is the assertion that
+# makes "only ci_overridable may differ" true rather than merely stated.
+note ""
+note "--- the CI profile may differ ONLY where the manifest sanctions it ---"
+prod_dir="$TMP/diffprod"; ci_dir="$TMP/diffci"
+rm -rf "$prod_dir" "$ci_dir"
+"$RENDER" --profile production --out "$prod_dir" --relay-target 10.0.0.5:2525 --mail-domain inbox.testinbox.email >/dev/null 2>&1
+"$RENDER" --profile ci --out "$ci_dir" --relay-target 10.0.0.5:2525 --mail-domain inbox.testinbox.email >/dev/null 2>&1
+allowed="$("$REPO_ROOT/deploy/mail-edge/contract.py" keys ci_overridable)"
+undeclared=""
+# Keys present in one rendering and not the other count too: dropping a
+# parameter is a divergence, and it is the shape that slipped through before.
+for key in $( { grep -oE '^[a-z_0-9]+ *=' "$prod_dir/main.cf"; grep -oE '^[a-z_0-9]+ *=' "$ci_dir/main.cf"; } \
+              | tr -d ' =' | sort -u ); do
+  pv="$(awk -v k="$key" '$0 ~ "^"k"[[:space:]]*=" { sub("^"k"[[:space:]]*=[[:space:]]*",""); v=$0 } END { print v }' "$prod_dir/main.cf")"
+  cv="$(awk -v k="$key" '$0 ~ "^"k"[[:space:]]*=" { sub("^"k"[[:space:]]*=[[:space:]]*",""); v=$0 } END { print v }' "$ci_dir/main.cf")"
+  pp="$(grep -cE "^${key}[[:space:]]*=" "$prod_dir/main.cf" || true)"
+  cp="$(grep -cE "^${key}[[:space:]]*=" "$ci_dir/main.cf" || true)"
+  if [[ "$pv" != "$cv" || "$pp" != "$cp" ]]; then
+    grep -qx "$key" <<<"$allowed" || undeclared="$undeclared $key"
+  fi
+done
+if [[ -z "$undeclared" ]]; then
+  printf 'ok   — every difference between the profiles is declared in ci_overridable\n'
+  pass=$((pass + 1))
+else
+  printf 'FAIL — the profiles differ in keys the manifest does not sanction:%s\n' "$undeclared"
+  fail=$((fail + 1))
+fi
 
 # --- the runtime mutation ----------------------------------------------------
 note ""

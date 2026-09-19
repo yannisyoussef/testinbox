@@ -29,8 +29,13 @@ services:
       # an EXTERNAL sender. The source address Postfix sees is the bridge
       # gateway, which is deliberately outside mynetworks — a relay probe from
       # inside mynetworks would be permitted by permit_mynetworks and prove
-      # nothing. The suite asserts the observed client address rather than
-      # assuming this.
+      # nothing.
+      #
+      # That property is relied on, not asserted. It fails SAFE: if the source
+      # ever appeared as loopback, permit_mynetworks would answer 250 and the
+      # foreign-domain test would fail loudly rather than pass vacuously. The
+      # mynetworks value itself is pinned by the contract and has its own
+      # mutation case.
       - "${TESTINBOX_EDGE_SMTP_BIND:-127.0.0.1}:${TESTINBOX_EDGE_SMTP_PORT:-2526}:25"
     healthcheck:
       # The banner, not the process: a configuration can pass `postfix check`,

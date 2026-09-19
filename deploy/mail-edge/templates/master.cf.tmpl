@@ -2,10 +2,14 @@
 # RENDERED by deploy/mail-edge/render.sh. Do not edit a rendered copy.
 #
 # __EDGE_SMTP_BIND__ is "0.0.0.0:25" when the edge is live, else "127.0.0.1:25".
-# On the real host, dormant (loopback) is the default: it is one configuration
-# change from live and accepts no Internet mail until it is made. The rehearsal
-# binds 0.0.0.0:25 inside an isolated compose network — reachable only by the
-# test sender and never published to the host (asserted by the socket check).
+# Dormant (loopback) is the DEFAULT in render.sh, so a forgotten flag cannot
+# produce a world-listening smtpd; going live is an explicit argument. The value
+# is asserted from this file by scripts/check-mail-edge-contract.sh, which
+# refuses a public listener in a production render.
+#
+# The rehearsal asks for 0.0.0.0:25 because its compose network is isolated and
+# the port is published to loopback only (127.0.0.1:2526) — a property of the
+# compose file, not of this template.
 #
 # service type  private unpriv  chroot  wakeup  maxproc command + args
 __EDGE_SMTP_BIND__ inet  n       -       y       -       -       smtpd

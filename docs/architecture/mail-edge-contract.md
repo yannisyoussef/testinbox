@@ -36,8 +36,9 @@ configuration a tenant-looking recipient and a nonexistent one share a code path
 The rehearsal therefore renders the **production relay form**. An unknown
 recipient is genuinely relayed, and ingestion is genuinely the component that
 resolves nothing and discards the body. That is the claim ADR-025 makes, and it
-is only testable against a relaying edge. `render.sh` refuses the dormant form in
-the `ci` profile for exactly this reason.
+is only testable against a relaying edge. The edge entrypoint refuses to start a
+`ci` profile without a relay target, and the contract gate rejects a `discard:`
+tenant line in that profile, for exactly this reason.
 
 ## Ownership boundary
 
@@ -94,7 +95,9 @@ mix two renders.
 | `relayhost` **empty** | normal operation must never require Internet SMTP egress |
 | `mynetworks` **loopback only** | `permit_mynetworks` is evaluated first; a container-derived value makes the test sender trusted and the open-relay proof vacuous |
 | `message_size_limit` = 15 MiB | see below |
-| `smtp_destination_recipient_limit` ≥ recipients under test | at 1, Postfix splits one transaction into several and the ADR-026 atomicity proof passes while testing nothing |
+| `relay_destination_recipient_limit` ≥ recipients under test | at 1, Postfix splits one transaction into several downstream deliveries and the ADR-026 atomicity proof passes while testing nothing. It must be `relay_*`: Postfix derives per-transport overrides from the master.cf **service name**, and tenant mail is routed `relay:`, so `smtp_*` governs a transport this path never uses |
+| the smtpd **listener** | `render.sh` defaults to the dormant loopback form so a forgotten flag cannot produce a world-listening MTA; the gate refuses a public listener in a production render |
+| the **compiled** postmaster alias | a rendered aliases file that was never compiled looks identical on disk to one that was — layer C asserts `postalias -q`, not the file |
 
 ### The size contract
 
@@ -141,7 +144,7 @@ queue defaults fails even while CI runs on short timers.
 
 | parameter | production | CI | why |
 |---|---|---|---|
-| `maximal_queue_lifetime` | 4h | 20s | a 4h expiry test cannot run in CI |
+| `maximal_queue_lifetime` | 4h | 300s | a 4h expiry test cannot run in CI. Long enough that a message outlives an ingestion restart, because the retry proof needs that; the expiry proof shortens it to 10s for its own message and restores it, since one value cannot satisfy both |
 | `minimal_backoff_time` | 120s | 2s | first retry would idle two minutes |
 | `maximal_backoff_time` | 600s | 4s | bounds the retry test |
 | `queue_run_delay` | 120s | 2s | the queue runner would not fire inside a test |
@@ -149,9 +152,15 @@ queue defaults fails even while CI runs on short timers.
 | `smtpd_client_connection_rate_limit` | 60 | 600 | as above |
 | `smtpd_client_message_rate_limit` | 100 | 1000 | as above |
 | `smtpd_tls_security_level` | may | none | the rehearsal has no certificate material and no TLS invariant to prove |
+| `smtpd_tls_protocols`, `smtpd_tls_loglevel`, `tls_preempt_cipherlist` | set | absent | they go with the TLS block. Declared explicitly: dropping a parameter is a divergence, and this one was found by the profile-diff check rather than by enumeration |
 
 Everything else — including `message_size_limit` — is identical, which is what
 makes the boundary proof meaningful.
+
+The allowlist is checked **structurally**, not merely declared: the mutation
+suite renders both profiles and requires every differing key to appear in
+`ci_overridable`. `render.sh` alone could only ever verify the list it wrote
+itself, which cannot catch a parameter dropped without being declared.
 
 **Not a config override:** the transport map carries an *address*, not a name.
 Postfix's `smtp(8)` runs chrooted and cannot read `/etc/hosts` or reach a
@@ -205,6 +214,22 @@ accepts: the edge emits no DSN, so an over-ceiling message would be answered
 | `scripts/mail-edge-queue-proofs.sh` | 451 → queue → retry, and expiry without DSN |
 
 All are blocking in the rehearsal, which is itself a required check.
+
+### Known gaps
+
+Recorded rather than implied to be covered. None blocks the increment; all
+matter before public SMTP.
+
+| gap | consequence |
+|---|---|
+| **Abuse limits are asserted statically, never exercised.** No test drives the edge to its connection-count, connection-rate or message-rate ceilings. The CI profile deliberately raises them so unrelated tests do not trip them, and no second profile at production values exists. | ADR-004's rehearsal gate for abuse limits is not discharged. The values are pinned and drift-checked; their *behaviour* is unproven. |
+| **`smtpd_recipient_restrictions` is not in the contract.** Only `smtpd_relay_restrictions` is pinned. Adding `reject_unverified_recipient` or `reject_unlisted_recipient` there is a plausible "anti-spam hardening" diff and a direct RCPT-time enumeration oracle. | Only the behavioural equivalence test would notice, and only in the rehearsal. |
+| **No VRFY/EXPN probe.** `disable_vrfy_command = yes` is asserted statically with no behavioural check. | VRFY is the canonical recipient-existence oracle. |
+| **Relay-bypass address shapes are untested.** The open-relay probe uses `user@foreign`; percent-hack, source-route and bang-path forms are not probed, and `allow_percent_hack`/`swap_bangpath` are unpinned. | Refused today by `reject_unauth_destination` operating on the resolved address — an inference about version-sensitive behaviour, which is the kind this document avoids relying on elsewhere. |
+| **`postmaster@`'s Maildir is unbounded.** `mailbox_size_limit = 0`, no rotation, no expiry, fed by unauthenticated senders at up to 15 MiB. | An attacker who knows the domain accepts mail could fill the edge's disk. Ops owns the host, but no invariant states the expectation. |
+| **The provenance record is not machine-checked.** The `infinity-core` ref, blob id and sha256 are constants no script compares against anything. | Drift is detectable by hand, not automatically. |
+| **The generation stamp is written but never read.** `render.sh` emits it; nothing verifies the rendered files match it. | The coherent-generation property rests on the atomicity of the move, not on a check. |
+| **The base image and Postfix version are unpinned.** `FROM ubuntu:24.04` with an unversioned `apt-get install postfix`; `provenance.postfix_version` is recorded but never compared. | The proven behaviours are version-sensitive by this document's own account. |
 
 ### Reading the logs
 

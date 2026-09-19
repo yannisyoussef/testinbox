@@ -34,9 +34,26 @@ fail=0
 ok()   { printf '  ok   %s\n' "$1"; }
 bad()  { printf '  FAIL %s\n' "$1" >&2; fail=1; }
 
-ingestion_ip() {
-  "${COMPOSE[@]}" exec -T mail-edge sh -c \
-    "postconf -h transport_maps >/dev/null; grep -oE 'relay:\[[0-9.]+\]' /etc/postfix/transport | head -1" 2>/dev/null
+# What the edge will actually dial, read from its transport map.
+relay_target_in_map() {
+  local out
+  out="$("${COMPOSE[@]}" exec -T mail-edge sh -c \
+    "grep -oE 'relay:\[[0-9.]+\]' /etc/postfix/transport | head -1" 2>/dev/null | tr -d ' \r\n')"
+  [[ -n "$out" ]] || return 1
+  sed -E 's/.*\[([0-9.]+)\].*/\1/' <<<"$out"
+}
+
+# Where ingestion ACTUALLY is right now, from the runtime rather than from the
+# file the edge rendered. Comparing the transport map against itself is true by
+# construction and would report ok even if the container had moved — which is
+# precisely the failure the stability assertion is supposed to catch.
+ingestion_runtime_ip() {
+  local cid out
+  cid="$("${COMPOSE[@]}" ps -q ingestion 2>/dev/null | head -1)"
+  [[ -n "$cid" ]] || return 1
+  out="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$cid" 2>/dev/null | awk '{print $1}')"
+  [[ -n "$out" ]] || return 1
+  echo "$out"
 }
 
 queue_count() {
@@ -78,50 +95,87 @@ ADDRESS="$(printf '%s' "$INBOX_JSON" | sed -n 's/.*"address":"\([^"]*\)".*/\1/p'
 test -n "$ADDRESS" || { echo "could not provision an inbox" >&2; exit 1; }
 echo "  inbox $ADDRESS"
 
-IP_BEFORE="$(ingestion_ip)"
-echo "  relay target before: ${IP_BEFORE:-<unresolved>}"
+MAP_TARGET="$(relay_target_in_map)" || { echo "could not read the edge's relay target" >&2; exit 1; }
+RUNTIME_IP="$(ingestion_runtime_ip)" || { echo "could not read ingestion's runtime address" >&2; exit 1; }
+echo "  relay target in the transport map: $MAP_TARGET"
+echo "  ingestion's actual address:        $RUNTIME_IP"
+[[ "$MAP_TARGET" == "$RUNTIME_IP" ]] && ok "the rendered relay target matches where ingestion actually is" \
+  || bad "the edge would dial $MAP_TARGET but ingestion is at $RUNTIME_IP"
 
 # Stop, do not remove: the container keeps its address, so what the retry test
 # exercises is Postfix's queue behaviour and not Docker's address allocation.
 "${COMPOSE[@]}" stop ingestion >/dev/null 2>&1
+LIFETIME_A="$("${COMPOSE[@]}" exec -T mail-edge postconf -h maximal_queue_lifetime 2>/dev/null | tr -d ' \r\n')"
 SUBJECT="retry-$(date +%s)"
-send_to "$ADDRESS" "$SUBJECT" | sed 's/^/  edge: /'
+SEND_REPLY="$(send_to "$ADDRESS" "$SUBJECT")"
+echo "  edge: $SEND_REPLY"
+# The queue id ties every later assertion to THIS message. A bare queue count
+# would be satisfied by anything left over from the preceding suites.
+QUEUE_ID="$(sed -nE 's/.*queued as ([0-9A-F]+).*/\1/p' <<<"$SEND_REPLY")"
+[[ -n "$QUEUE_ID" ]] || { echo "could not read the queue id from the edge reply" >&2; exit 1; }
+echo "  queue id: $QUEUE_ID (lifetime ${LIFETIME_A})"
 
 # The message must be IN the queue while ingestion is down — otherwise the test
 # proves nothing about queueing, only about eventual delivery.
 queued=false
 for _ in $(seq 1 30); do
-  [[ "$(queue_count)" -ge 1 ]] && { queued=true; break; }
+  if "${COMPOSE[@]}" exec -T mail-edge sh -c "postqueue -p 2>/dev/null | grep -q '^$QUEUE_ID'" 2>/dev/null; then
+    queued=true; break
+  fi
   sleep 1
 done
-[[ "$queued" == true ]] && ok "the message is held in the edge queue while ingestion is down" \
-  || bad "the message never appeared in the queue"
+[[ "$queued" == true ]] && ok "THIS message ($QUEUE_ID) is held in the edge queue while ingestion is down" \
+  || bad "message $QUEUE_ID never appeared in the queue"
 
 "${COMPOSE[@]}" start ingestion >/dev/null 2>&1
+recovered=false
 for _ in $(seq 1 60); do
-  "${COMPOSE[@]}" ps ingestion --format '{{.Status}}' 2>/dev/null | grep -q healthy && break
+  "${COMPOSE[@]}" ps ingestion --format '{{.Status}}' 2>/dev/null | grep -q healthy && { recovered=true; break; }
   sleep 2
 done
+# Asserted rather than assumed: proceeding here on an unhealthy gateway would
+# surface 90s later as "the queue never drained", blaming queue semantics for a
+# startup failure.
+[[ "$recovered" == true ]] && ok "ingestion recovered and reports healthy" \
+  || { bad "ingestion did not become healthy after start; the retry result below would be meaningless"; }
 
-IP_AFTER="$(ingestion_ip)"
-[[ "$IP_BEFORE" == "$IP_AFTER" ]] && ok "the resolved relay target is unchanged across the restart (${IP_AFTER:-?})" \
-  || bad "the relay target moved ($IP_BEFORE -> $IP_AFTER): a stale address would masquerade as a retry failure"
+# Compare against the RUNTIME address, not the file: stop/start is expected to
+# preserve the container's address, and this is the assertion that proves it did
+# rather than assuming it. If it ever moved, the retry below would fail on a
+# stale address and look like a queue-semantics defect.
+RUNTIME_AFTER="$(ingestion_runtime_ip)" || { bad "could not read ingestion's address after the restart"; RUNTIME_AFTER=""; }
+[[ -n "$RUNTIME_AFTER" && "$RUNTIME_AFTER" == "$MAP_TARGET" ]] \
+  && ok "ingestion kept its address across stop/start ($RUNTIME_AFTER), so the rendered target is still valid" \
+  || bad "ingestion moved to ${RUNTIME_AFTER:-<unknown>} but the edge still dials $MAP_TARGET: a stale address would masquerade as a retry failure"
 
 # Postfix retries on its own schedule; the CI profile shortens it so this is
 # seconds rather than minutes. Flushing would prove the queue can be drained on
 # demand, not that Postfix retries — so this waits for the retry.
-delivered=false
+#
+# Crucially it reads the OUTCOME from the log rather than inferring it from an
+# empty queue. An expired message also empties the queue, so a bare drain check
+# cannot tell "delivered" from "gave up" — and would report the timing failure
+# as a missing-message product defect three lines later.
+outcome=""
 for _ in $(seq 1 90); do
-  if [[ "$(queue_count)" == "0" ]]; then delivered=true; break; fi
+  log="$("${COMPOSE[@]}" exec -T mail-edge sh -c 'cat /var/log/mail.log' 2>/dev/null || true)"
+  if grep -qE "$QUEUE_ID.*status=sent" <<<"$log"; then outcome="sent"; break; fi
+  if grep -qE "$QUEUE_ID.*status=expired" <<<"$log"; then outcome="expired"; break; fi
   sleep 1
 done
-[[ "$delivered" == true ]] && ok "Postfix retried on its own and the queue drained" \
-  || bad "the queue never drained after ingestion recovered"
+case "$outcome" in
+  sent)    ok "Postfix retried on its own and delivered (status=sent for $QUEUE_ID)" ;;
+  expired) bad "the message EXPIRED before ingestion recovered. This is a test-environment timing failure, not a product defect: maximal_queue_lifetime (${LIFETIME_A}) was shorter than the restart took. Raise EDGE_CI_QUEUE_LIFETIME." ;;
+  *)       bad "no terminal status for $QUEUE_ID after 90s — neither delivered nor expired" ;;
+esac
 
 # Exactly one delivery: a retry must not produce two rows, and dedup must not
 # have suppressed the first (ADR-019 — neither Message-ID nor content hash).
 sleep 3
-COUNT="$(api "$API/v1/inboxes/$INBOX_ID/messages" | grep -o '"id":"' | wc -l | tr -d ' ')"
+# Counted by subject, not by a bare `"id":"` grep: AttachmentMeta also carries
+# an id, so that shape silently double-counts the moment a fixture gains an
+# attachment.
+COUNT="$(api "$API/v1/inboxes/$INBOX_ID/messages" | grep -c "\"subject\":\"$SUBJECT\"" || true)"
 [[ "$COUNT" == "1" ]] && ok "the retried message was delivered exactly once" \
   || bad "expected exactly one delivered message, found $COUNT"
 api -X DELETE "$API/v1/inboxes/$INBOX_ID" >/dev/null 2>&1 || true
@@ -133,11 +187,22 @@ echo "--- B. queue expiry discards with no DSN and no backscatter ---"
 # backscatter to an unverified address, would need outbound 25 which is blocked,
 # and would leak downstream disposition through the uniform 250.
 "${COMPOSE[@]}" stop ingestion >/dev/null 2>&1
+
+# Shorten the lifetime for THIS proof only. One value cannot serve both parts:
+# part A needs a message to outlive an ingestion restart, part B needs one to
+# expire while the test is still watching. Sharing a single short value is what
+# made part A race, and a single long one would make part B take minutes.
+#
+# Changed at runtime and restored afterwards, so the RENDERED contract — which
+# the static gate checks against production — is untouched.
+RESTORE_LIFETIME="$("${COMPOSE[@]}" exec -T mail-edge postconf -h maximal_queue_lifetime 2>/dev/null | tr -d ' \r\n')"
+"${COMPOSE[@]}" exec -T mail-edge sh -c 'postconf -e "maximal_queue_lifetime = 10s" && postfix reload' >/dev/null 2>&1
+LIFETIME="$("${COMPOSE[@]}" exec -T mail-edge postconf -h maximal_queue_lifetime 2>/dev/null | tr -d ' \r\n')"
+[[ "$LIFETIME" == "10s" ]] && ok "queue lifetime shortened to $LIFETIME for the expiry proof (was $RESTORE_LIFETIME)" \
+  || bad "could not shorten the queue lifetime for the expiry proof (got ${LIFETIME:-<unknown>})"
+
 EXPIRE_SUBJECT="expire-$(date +%s)"
 send_to "nobody-expire@${MAIL_DOMAIN}" "$EXPIRE_SUBJECT" | sed 's/^/  edge: /'
-
-LIFETIME="$("${COMPOSE[@]}" exec -T mail-edge postconf -h maximal_queue_lifetime 2>/dev/null | tr -d ' \r\n')"
-echo "  maximal_queue_lifetime = $LIFETIME (CI profile; production is asserted separately)"
 
 expired=false
 for _ in $(seq 1 120); do
@@ -190,7 +255,11 @@ fi
 # post-acceptance divert is the whole point of the transport map). Anything else
 # means the edge talked to something it should not know about.
 RELAY_TARGETS="$(grep -oE 'relay=[^,]+' <<<"$LOG" | sed 's/^relay=//' | sort -u)"
-INGESTION_ADDR="$(sed -E 's/.*\[([0-9.]+)\].*/\1/' <<<"$IP_BEFORE")"
+INGESTION_ADDR="$MAP_TARGET"
+# An empty value here would make the glob below `**`, matching every
+# destination including a real external MX — the allowlist would accept
+# anything while appearing to check.
+[[ -n "$INGESTION_ADDR" ]] || bad "the ingestion address is unknown, so the destination allowlist cannot be trusted"
 UNEXPECTED=""
 while IFS= read -r target; do
   [[ -z "$target" ]] && continue
@@ -205,6 +274,13 @@ if [[ -n "$UNEXPECTED" ]]; then
 else
   ok "the edge used only expected destinations (none, local, ingestion at $INGESTION_ADDR)"
 fi
+
+# Restore the contract's lifetime: a --keep run, or anything else pointed at
+# this edge afterwards, must not inherit the 10s value this proof needed.
+"${COMPOSE[@]}" exec -T mail-edge sh -c "postconf -e 'maximal_queue_lifetime = ${RESTORE_LIFETIME}' && postfix reload" >/dev/null 2>&1 || true
+RESTORED="$("${COMPOSE[@]}" exec -T mail-edge postconf -h maximal_queue_lifetime 2>/dev/null | tr -d ' \r\n')"
+[[ "$RESTORED" == "$RESTORE_LIFETIME" ]] && ok "queue lifetime restored to $RESTORED" \
+  || bad "queue lifetime was left at ${RESTORED:-<unknown>}, not the contract's $RESTORE_LIFETIME"
 
 "${COMPOSE[@]}" start ingestion >/dev/null 2>&1
 for _ in $(seq 1 60); do
