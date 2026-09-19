@@ -181,3 +181,5 @@ Also add `Synthetic unit tests (edge invariant classifier)` — it runs inside t
   **not** done. Ops correlates the handed-off digest set with its own
   staging record before deploying (ADR-034 §3); a cross-system credential
   for a green tick was judged not worth the trust boundary it crosses.
+
+<!-- proof: docs-only change from a feature branch; the promotion gate must refuse it (TI-006 §35) -->
