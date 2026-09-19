@@ -46,6 +46,14 @@ ENV NODE_ENV=production \
 COPY --from=build --chown=root:root /src/.next/standalone ./
 COPY --from=build --chown=root:root /src/.next/static ./.next/static
 
+# The base image bundles the npm CLI (and its own node_modules, which carry
+# their own CVEs — tar, brace-expansion, ...). The standalone server never
+# runs npm, and ADR-028 §5 says a runtime image contains no build tooling, so
+# it goes: the promotion scan blocked a release on findings in a tool the
+# container cannot even invoke. Corepack/yarn aliases go with it.
+RUN rm -rf /usr/local/lib/node_modules /usr/local/bin/npm /usr/local/bin/npx \
+           /usr/local/bin/corepack /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-v*
+
 # node:alpine ships an unprivileged `node` user (uid 1000).
 USER node
 
