@@ -219,10 +219,34 @@ case "$READINESS" in
   *) echo "the API is not holding a LISTEN connection (ADR-020); wait latency would silently degrade" >&2; exit 1 ;;
 esac
 
+# ADR-033/034: the database bounds a hung idempotency claim, and readiness
+# says so. compose.data.yaml sets the timeout; this proves the running node
+# reads it back as bounded — the same check a production node enforces.
+case "$READINESS" in
+  *'"bounded":true'*) echo "ok — idle_in_transaction_session_timeout is bounded (dbSession)" ;;
+  *) echo "the API does not report a bounded idle_in_transaction_session_timeout (ADR-033); readiness: $READINESS" >&2; exit 1 ;;
+esac
+
+# Deployment identity (ADR-028/034): the running build must be THIS commit,
+# on both deployables. This is what a dark production deployment asserts from
+# the host (deploy/synthetic/identity), exercised here on every pull request.
+for service in api:9090 ingestion:9091; do
+  name="${service%%:*}"; port="${service##*:}"
+  INFO=$("${COMPOSE[@]}" exec -T "$name" wget -q -O - "http://127.0.0.1:$port/actuator/info")
+  case "$INFO" in
+    *"\"gitSha\":\"$GIT_SHA\""*) echo "ok — $name reports gitSha $GIT_SHA" ;;
+    *) echo "$name does not report the deployed commit ($GIT_SHA): $INFO" >&2; exit 1 ;;
+  esac
+done
+
 # And that Ops can actually see it. A metric that exists in a unit test but is
 # not on the scrape endpoint of the running container is not observability.
+# The last three are Spring Boot's standard binders — the production alerting
+# contract (docs/dev/production.md) relies on them, so their presence is
+# asserted rather than assumed.
 SCRAPE=$("${COMPOSE[@]}" exec -T api wget -q -O - http://127.0.0.1:9090/actuator/prometheus)
-for metric in testinbox_build testinbox_wait_listen_degraded_polling testinbox_wait_requests_active; do
+for metric in testinbox_build testinbox_wait_listen_degraded_polling testinbox_wait_requests_active \
+              jvm_memory_used_bytes hikaricp_connections_active process_cpu_usage; do
   case "$SCRAPE" in
     *"$metric"*) echo "ok — $metric is on the scrape endpoint" ;;
     *) echo "$metric is missing from /actuator/prometheus" >&2; exit 1 ;;

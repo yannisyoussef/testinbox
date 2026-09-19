@@ -99,3 +99,36 @@ if (!config.baseUrl.startsWith("https://")) {
       `For a private CA, set NODE_EXTRA_CA_CERTS instead.`,
   );
 }
+
+/**
+ * Origin isolation (TI-006 §11). Supplied by Ops at run time; the address is
+ * never committed. Loud failure, never a skip.
+ */
+export function originConfig() {
+  const ports = (process.env.TESTINBOX_ORIGIN_PROBE_PORTS ?? "443,80")
+    .split(",")
+    .map((p) => Number.parseInt(p.trim(), 10))
+    .filter((p) => Number.isFinite(p));
+  if (ports.length === 0) throw new Error("TESTINBOX_ORIGIN_PROBE_PORTS must list at least one port");
+  return Object.freeze({
+    /** The approved path — the positive control. */
+    baseUrl: required("TESTINBOX_BASE_URL"),
+    /** The origin host's own address (IPv4/IPv6 literal), which must NOT answer. */
+    originAddress: required("TESTINBOX_ORIGIN_PROBE_ADDRESS"),
+    ports,
+    timeoutMs: optionalInt("TESTINBOX_ORIGIN_PROBE_TIMEOUT_MS", 8_000),
+  });
+}
+
+/**
+ * Build identity and readiness through the PRIVATE management ports (TI-006
+ * §20). Run on the host; the ingress never routes these.
+ */
+export function identityConfig() {
+  return Object.freeze({
+    apiManagementUrl: required("TESTINBOX_API_MANAGEMENT_URL").replace(/\/$/, ""),
+    ingestionManagementUrl: required("TESTINBOX_INGESTION_MANAGEMENT_URL").replace(/\/$/, ""),
+    expectedGitSha: required("TESTINBOX_EXPECTED_GIT_SHA"),
+    expectedEnvironment: required("TESTINBOX_EXPECTED_ENVIRONMENT"),
+  });
+}

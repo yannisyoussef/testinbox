@@ -35,6 +35,20 @@ It mints two short-lived credentials, proves one authenticates, revokes it,
 proves another still works, then revokes everything it created. Revoked keys
 are retained by design (ADR-032 §5), so each run leaves two inert rows behind.
 
+## Two host-side targets for a production estate (TI-006, ADR-034)
+
+Neither is part of the deployment gate, and neither may skip: each fails
+loudly when its variables are absent.
+
+| target | proves | where it runs |
+|---|---|---|
+| `npm run test:identity` | the running build on **both** deployables is the approved source commit, readiness is UP with `waitNotifier.listening`, and the database bounds a hung idempotency claim (`dbSession.bounded`; enforced in production) | on the host, against the private management ports (`TESTINBOX_API_MANAGEMENT_URL`, `TESTINBOX_INGESTION_MANAGEMENT_URL`, `TESTINBOX_EXPECTED_GIT_SHA`, `TESTINBOX_EXPECTED_ENVIRONMENT`) |
+| `npm run test:origin` | a direct connection to the origin's own address is **not answered** on 443/80, while the public hostname is (positive control) | from OUTSIDE the host; Ops supplies `TESTINBOX_ORIGIN_PROBE_ADDRESS` at run time — the address is never committed |
+
+The origin classifier (`src/origin.mjs`) is the deliberate mirror of the
+unknown-Host one: there a timeout proves nothing, here a timeout is exactly
+what a DROPping firewall produces and is the proof. Both have unit tests.
+
 ## Running it
 
 ```bash

@@ -66,6 +66,13 @@ jobs:
           ./scripts/gitlab-handoff.test.sh
           ./scripts/check-migration-safety.test.sh
           ./scripts/check-node-types-floor.test.sh
+          # TI-006 / ADR-034: the production promotion contract. Run on every
+          # pull request because they are cheap and static, while the gates
+          # they protect only ever run on a promotion pull request — where a
+          # broken verifier and a refused candidate look identical.
+          ./scripts/verify-production-candidate.test.sh
+          ./scripts/promotion-gate.test.sh
+          ./scripts/check-backup-scope.test.sh
       # TI-005. Separate step because the 220-banner mutation needs Docker: its
       # whole point is that static validation cannot see a configuration which
       # passes `postfix check` and then leaves smtpd answering nothing. The
