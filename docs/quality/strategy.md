@@ -100,7 +100,15 @@ depends on, which this document forbids doing silently; and skipping the jobs
 from inside the workflow reports them green without running them, which is the
 failure mode named at the top of this section.
 
-**Trivy is environment-sensitive** (ADR-028 §6, as amended). On develop and
+**Trivy is environment-sensitive** (ADR-028 §6, as amended). One thing the
+informational path taught, 2026-09-19: the pinned Trivy release's assets had
+been removed upstream, the install failed inside a `continue-on-error` step,
+and the informational scan **silently did not run on every `develop` push**
+while every step showed green. It surfaced only because the blocking
+promotion leg does not swallow the error. The install is now its own step
+whose failure annotates the run and writes "DID NOT RUN" into the summary —
+still not a deploy blocker, because an unreachable mirror is not a finding,
+but no longer invisible. On develop and
 pull requests it is non-blocking for the same reason as OSV-Scanner, one layer
 down: a CVE published in a base image is not a regression introduced by the
 merge that happens to run next, and making every historical CVE a deployment

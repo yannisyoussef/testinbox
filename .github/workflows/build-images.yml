@@ -230,19 +230,38 @@ jobs:
       # promotion path, against the digests that were actually published —
       # see `release-candidate.yml`. Policy and its self-tests live in
       # `scripts/scan-images.sh`.
-      - name: Container vulnerability scan (informational)
+      # The INSTALL is its own step with its own summary line. It sat inside the
+      # informational step before, where `continue-on-error` reported a failed
+      # download as a green step — and a pinned release whose assets had been
+      # removed meant the scan silently did not run on every develop push for
+      # weeks. It only surfaced because the blocking promotion leg does not
+      # swallow the error. A download outage must still not block a deploy
+      # (findings are informational here, and an unreachable mirror is not a
+      # finding), but it must be VISIBLE.
+      - name: Install Trivy (informational path)
+        id: trivy
         if: inputs.push
         continue-on-error: true
         env:
-          TRIVY_VERSION: 0.68.0
+          TRIVY_VERSION: 0.74.0
+        run: ./scripts/install-trivy.sh
+
+      - name: Container vulnerability scan (informational)
+        if: inputs.push && steps.trivy.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
-          ./scripts/install-trivy.sh
           ENFORCE=false TRIVY_BIN=/tmp/trivy ./scripts/scan-images.sh \
             "${REGISTRY}/testinbox-api@${{ steps.api.outputs.digest }}" \
             "${REGISTRY}/testinbox-ingestion@${{ steps.ingestion.outputs.digest }}" \
             "${REGISTRY}/testinbox-migrator@${{ steps.migrator.outputs.digest }}" \
             "${REGISTRY}/testinbox-web@${{ steps.web.outputs.digest }}"
+
+      - name: Record that the scan did not run
+        if: inputs.push && steps.trivy.outcome != 'success'
+        run: |
+          echo "::warning::Trivy could not be installed; the informational container scan DID NOT RUN for this build"
+          echo "### Container vulnerability scan: DID NOT RUN (Trivy install failed — see the step above)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record digests
         if: inputs.push

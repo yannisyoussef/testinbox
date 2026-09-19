@@ -154,7 +154,7 @@ jobs:
 
       - name: Install Trivy
         env:
-          TRIVY_VERSION: 0.68.0
+          TRIVY_VERSION: 0.74.0
         run: ./scripts/install-trivy.sh
 
       - name: Scan the promoted artifacts
