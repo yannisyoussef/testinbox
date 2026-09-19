@@ -19,7 +19,10 @@ name: testinbox-staging
 x-jvm-common: &jvm-common
   restart: unless-stopped
   environment: &jvm-env
-    SPRING_PROFILES_ACTIVE: staging
+    # `staging` and `production` are profile GROUPS that share one deployed
+    # layer (ADR-034); production adds its fail-closed overrides. The guard
+    # refuses a process whose profile and TESTINBOX_ENVIRONMENT disagree.
+    SPRING_PROFILES_ACTIVE: ${TESTINBOX_SPRING_PROFILES:-staging}
     TESTINBOX_ENVIRONMENT: ${TESTINBOX_ENVIRONMENT:?set in .env}
     TESTINBOX_MAIL_DOMAIN: ${TESTINBOX_MAIL_DOMAIN:?set in .env}
     TESTINBOX_DB_URL: ${TESTINBOX_DB_URL:?set in .env}
@@ -34,6 +37,9 @@ x-jvm-common: &jvm-common
     # Declared so a mismatch with the edge fails startup rather than producing
     # intermittent 504s on full-window waits (DeploymentSafety).
     TESTINBOX_PROXY_READ_TIMEOUT: ${TESTINBOX_PROXY_READ_TIMEOUT_SECONDS:-120}s
+    # The ingress's hard per-request ceiling, where it has one. Empty for the
+    # reference nginx topology (the edge is ours); production must set it.
+    TESTINBOX_EDGE_REQUEST_CEILING: ${TESTINBOX_EDGE_REQUEST_CEILING:-}
     TESTINBOX_GIT_SHA: ${TESTINBOX_GIT_SHA:-unknown}
   logging:
     driver: json-file

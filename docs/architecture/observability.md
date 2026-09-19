@@ -129,6 +129,13 @@ this state — `LISTEN` is accepted and no notification is ever delivered
 flapping, and is registered at zero so `increase()` works over a window that
 contains process start.
 
+The full **production alerting contract** — which of these signals Ops must
+alert on, from which source, at what threshold — is
+[`docs/dev/production.md`](../dev/production.md#observability--the-alerting-contract).
+It adds nothing to the registry: every production signal is one of the meters
+above or a standard Spring Boot binder, whose presence on the scrape endpoint
+the rehearsal asserts.
+
 ### Deliberately not implemented
 
 - **Image digest as a label on `testinbox_build`.** An image cannot know its

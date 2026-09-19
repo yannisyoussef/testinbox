@@ -148,7 +148,7 @@ returns 404 for `/actuator` as a second lock.
 | probe | question | contents |
 |---|---|---|
 | `/actuator/health/liveness` | is this process alive? | `livenessState` only — restart-worthy failures |
-| `/actuator/health/readiness` (api) | can this instance serve TestInbox traffic? | `readinessState`, `db`, `schema`, `objectStorage`, `waitNotifier` |
+| `/actuator/health/readiness` (api) | can this instance serve TestInbox traffic? | `readinessState`, `db`, `schema`, `objectStorage`, `waitNotifier`, `dbSession` (reported here, enforced only in production — ADR-034) |
 | `/actuator/health/readiness` (ingestion) | " | `readinessState`, `db`, `schema`, `objectStorage`, `smtpListener` |
 
 Readiness is what the container healthchecks and `deploy.sh --wait` gate on, so
@@ -192,8 +192,10 @@ ADR-020 amendment, not a note here.
 | Actuator 9090/9091 | compose network only, not routed by the edge |
 
 **There is no public MX record and none is created here.** Staging SMTP exists
-only to let the synthetic suite validate our own stack. Production inbound-mail
-provider selection is a separate decision (ADR-004, still `Proposed`).
+only to let the synthetic suite validate our own stack. The production inbound
+provider is decided (ADR-004, Accepted: a dedicated, dormant Postfix edge) and
+its activation is TI-007; the production application host is decided too
+(ADR-034, [production.md](production.md)).
 
 ## Edge protection
 
@@ -218,7 +220,7 @@ could not.
 
 | name | scope | what it can do |
 |---|---|---|
-| `GITLAB_TRIGGER_TOKEN` | `staging-handoff` environment | Start one pipeline in `infinity/infinity-core`. Nothing else. |
+| `GITLAB_TRIGGER_TOKEN` | `staging-handoff` environment | Start a pipeline in `infinity/infinity-core`. It is project-scoped, not ref-scoped: what keeps it from requesting a *production* reconcile is the production ref's protection in GitLab and the Ops pipeline deriving the environment from the ref, never from the trigger variable (ADR-034 §2). |
 
 That is the whole list, and the shrinkage is the point.
 

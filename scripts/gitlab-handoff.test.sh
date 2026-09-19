@@ -142,6 +142,21 @@ record "the wording says handoff accepted, never deployment succeeded" \
      && ! grep -qi 'deployment succeeded\|deployed successfully' "$STUB_DIR/stdout" "$STUB_DIR/stderr" \
      && echo ok || echo no)"
 
+# --- the environment allow-list (ADR-034) ------------------------------------
+ok_response
+status=$(run_handoff --environment production "${valid_args[@]}")
+record "a production handoff is accepted when asked for explicitly" "$([[ "$status" == 0 ]] && echo ok || echo no)"
+expect_field "and the environment field says production"  'variables[TESTINBOX_ENVIRONMENT]=production'
+record "the production wording still says accepted, never deployed" \
+  "$(grep -q 'RELEASE HANDOFF ACCEPTED' "$STUB_DIR/stdout" \
+     && ! grep -qi 'deployment succeeded\|deployed successfully' "$STUB_DIR/stdout" "$STUB_DIR/stderr" \
+     && echo ok || echo no)"
+
+ok_response
+status=$(run_handoff --environment staging "${valid_args[@]}")
+record "an explicit staging handoff is the same as the default" "$([[ "$status" == 0 ]] && echo ok || echo no)"
+expect_field "environment field is staging when asked for staging" 'variables[TESTINBOX_ENVIRONMENT]=staging'
+
 # --- refusals: nothing may leave the runner ----------------------------------
 refuses() {
   local name="$1"; shift
@@ -182,6 +197,11 @@ refuses "an image from another owner is refused" \
   --commit "$COMMIT" --api "ghcr.io/attacker/testinbox-api@$API_DIGEST" \
   --ingestion "ghcr.io/testowner/testinbox-ingestion@$ING_DIGEST" \
   --migrator "ghcr.io/testowner/testinbox-migrator@$DIGEST" --web "ghcr.io/testowner/testinbox-web@$WEB_DIGEST"
+
+for bad in prod dev "" "production; rm -rf /"; do
+  refuses "environment '$bad' is refused before any request" \
+    --environment "$bad" "${valid_args[@]}"
+done
 
 # Missing token: refused, and the refusal names the variable rather than a value.
 rm -f "$STUB_DIR/marker"

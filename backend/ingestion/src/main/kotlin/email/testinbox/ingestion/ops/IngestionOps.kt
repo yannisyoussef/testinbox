@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.boot.health.contributor.Health
 import org.springframework.boot.health.contributor.HealthIndicator
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties
+import org.springframework.core.env.Environment
 import org.springframework.stereotype.Component
 import java.time.Instant
 
@@ -24,9 +25,17 @@ import java.time.Instant
 class IngestionDeploymentSafetyCheck(
     properties: IngestionProperties,
     dataSourceProperties: DataSourceProperties,
+    springEnvironment: Environment,
 ) {
     init {
         val environment = properties.deployment.environment?.takeIf { it.isNotBlank() }
+        val deployedProfiles = springEnvironment.activeProfiles.toSet().intersect(DEPLOYED_PROFILES)
+        // A deployed profile with no environment name would skip every check
+        // below — a blank TESTINBOX_ENVIRONMENT must be a refusal, not a bypass.
+        check(environment != null || deployedProfiles.isEmpty()) {
+            "Refusing to start: deployed configuration is unsafe.\n  - testinbox.deployment.environment is not set " +
+                "although profile '${deployedProfiles.sorted().joinToString(",")}' is active"
+        }
         if (environment != null) {
             val violations =
                 DeploymentSafety.validate(
@@ -46,12 +55,17 @@ class IngestionDeploymentSafetyCheck(
                         proxyReadTimeout = properties.deployment.proxyReadTimeout,
                         edgeRequestCeiling = properties.deployment.edgeRequestCeiling,
                         limitsEnabled = properties.limits.enabled,
+                        activeProfiles = springEnvironment.activeProfiles.toSet(),
+                        // No public HTTP origin, so the production base-URL rule does not apply here.
+                        publicSurface = false,
+                        createBucket = properties.storage.createBucket,
                     ),
                 )
             check(violations.isEmpty()) { DeploymentSafety.describe(violations) }
             log.info(
-                "deployment configuration validated (environment={} gitSha={} imageDigest={})",
+                "deployment configuration validated (environment={} profiles={} gitSha={} imageDigest={})",
                 environment,
+                springEnvironment.activeProfiles.joinToString(","),
                 properties.deployment.gitSha,
                 properties.deployment.imageDigest,
             )
@@ -59,6 +73,7 @@ class IngestionDeploymentSafetyCheck(
     }
 
     private companion object {
+        val DEPLOYED_PROFILES = setOf("deployed", "staging", "production")
         val log = LoggerFactory.getLogger(IngestionDeploymentSafetyCheck::class.java)
     }
 }

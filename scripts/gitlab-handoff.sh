@@ -19,32 +19,47 @@
 #
 # Usage:
 #   GITLAB_TRIGGER_TOKEN=... scripts/gitlab-handoff.sh \
+#       [--environment staging|production] \
 #       --commit <40-hex> \
 #       --api <digest> --ingestion <digest> --migrator <digest> --web <digest>
+#
+# The environment is an ALLOW-LIST, not a free string, and it defaults to
+# staging. `production` is accepted only so the production-handoff workflow
+# (ADR-034) can hand a verified, master-approved candidate to the production
+# reconcile; nothing about this script decides whether a candidate deserves
+# that — `verify-production-candidate.sh` does, before this runs.
 set -euo pipefail
 
 GITLAB_API_URL="${GITLAB_API_URL:-https://gitlab.com/api/v4}"
 # URL-encoded namespaced path, or a numeric project id.
 GITLAB_PROJECT="${GITLAB_PROJECT:-infinity%2Finfinity-core}"
 GITLAB_REF="${GITLAB_REF:-develop}"
-# Fixed, not an input: this script hands off to staging. A production promotion
-# is a separate decision with its own pipeline, not a variable someone can flip.
-TESTINBOX_ENVIRONMENT="staging"
 EXPECTED_IMAGE_REPOSITORY="${EXPECTED_IMAGE_REPOSITORY:-ghcr.io/yannisyoussef}"
 
 commit="" api="" ingestion="" migrator="" web=""
+TESTINBOX_ENVIRONMENT="staging"
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --environment) TESTINBOX_ENVIRONMENT="${2:-}"; shift 2 ;;
     --commit)    commit="${2:-}"; shift 2 ;;
     --api)       api="${2:-}"; shift 2 ;;
     --ingestion) ingestion="${2:-}"; shift 2 ;;
     --migrator)  migrator="${2:-}"; shift 2 ;;
     --web)       web="${2:-}"; shift 2 ;;
-    *) echo "usage: $(basename "$0") --commit <sha> --api <digest> --ingestion <digest> --migrator <digest> --web <digest>" >&2; exit 2 ;;
+    *) echo "usage: $(basename "$0") [--environment staging|production] --commit <sha> --api <digest> --ingestion <digest> --migrator <digest> --web <digest>" >&2; exit 2 ;;
   esac
 done
 
 fail() { echo "HANDOFF REFUSED: $*" >&2; exit 1; }
+
+# Exactly two targets exist. Anything else — `prod`, `dev`, an empty string,
+# a typo — is refused before a single byte leaves the runner, because Ops
+# would otherwise receive a request for an environment it does not have and
+# the failure would surface as an opaque pipeline error in another system.
+case "$TESTINBOX_ENVIRONMENT" in
+  staging|production) ;;
+  *) fail "environment '$TESTINBOX_ENVIRONMENT' is not a handoff target (staging|production)" ;;
+esac
 
 # --- validate before anything leaves the runner ------------------------------
 # The three settings below are interpolated into a curl CONFIG FILE, which is

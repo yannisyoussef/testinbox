@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Post-deployment synthetic verification: a real TestInbox workflow through a deployed environment, driven by the public TypeScript SDK.",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "test:unit": "node --test unit/*.test.mjs",
@@ -14,7 +14,11 @@
     "test:product": "node --test --test-concurrency=1 product/*.test.mjs",
     "test:product:junit": "node --test --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=build/test-results/synthetic-product.xml product/*.test.mjs",
     "test:edge": "node --test --test-concurrency=1 edge/*.test.mjs",
-    "test:edge:junit": "node --test --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=build/test-results/synthetic-edge.xml edge/*.test.mjs"
+    "test:edge:junit": "node --test --test-concurrency=1 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=build/test-results/synthetic-edge.xml edge/*.test.mjs",
+    "test:origin": "node --test origin/*.test.mjs",
+    "test:origin:junit": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=build/test-results/synthetic-origin.xml origin/*.test.mjs",
+    "test:identity": "node --test identity/*.test.mjs",
+    "test:identity:junit": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=build/test-results/synthetic-identity.xml identity/*.test.mjs"
   },
   "dependencies": {
     "@testinbox/client": "file:../../sdk/typescript"

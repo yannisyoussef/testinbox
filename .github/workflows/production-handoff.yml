@@ -1,0 +1,165 @@
+name: Production handoff
+
+# Hands ONE production-approved candidate to the Infinity Ops platform for a
+# production reconcile (ADR-034). Dispatched by a human, on master, never on a
+# schedule and never from a merge.
+#
+# WHAT A GREEN RUN MEANS: Ops ACCEPTED the production deployment request. It
+# does not mean production deployed, migrated, became ready, or passed its
+# synthetics — all of that runs in `infinity/infinity-core`, which owns the
+# production verdict. The environment is `production-handoff`, not
+# `production`, so nothing renders this as a completed deployment.
+#
+# WHAT IS PROMOTED: the exact four digests the candidate commit's tags resolve
+# to, each verified to attest to that commit from build-images.yml. Nothing is
+# built. The candidate must be the head of a merged release pull request from
+# develop into master; a feature-branch commit, a commit with no artifacts, a
+# repointed tag or a rebuilt image are all refused by the verifier, whose
+# refusals are proven by scripts/verify-production-candidate.test.sh.
+#
+# Rollback is this same workflow with a previous approved candidate. The
+# verifier refuses a candidate that predates a rollback floor
+# (deploy/rollback-floors.txt) unless the hazard is acknowledged explicitly.
+#
+# REQUIRED REPOSITORY CONFIGURATION (docs/dev/production.md):
+#   * environment `production-handoff` with deployment branches restricted to
+#     `master` and required reviewers — the branch restriction is what stops a
+#     branch that edits this file from dispatching it;
+#   * on that environment: secret GITLAB_TRIGGER_TOKEN (a trigger token that
+#     can start one pipeline), variables GITLAB_OPS_API_URL and
+#     GITLAB_OPS_PRODUCTION_REF, optionally GITLAB_OPS_PROJECT.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "Production-approved source commit: the develop tip merged to master by a release PR (40 hex)."
+        required: true
+      acknowledge_rollback_hazard:
+        description: "Only for a rollback across a declared floor (deploy/rollback-floors.txt): I understand and have announced the consequence."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testinbox-production-handoff
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify the production candidate (never rebuilds)
+    # Belt: the workflow file on a feature branch could be edited; the
+    # environment's deployment-branch restriction is the braces.
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: read
+    outputs:
+      candidate: ${{ steps.verify.outputs.candidate }}
+      api: ${{ steps.verify.outputs.api }}
+      ingestion: ${{ steps.verify.outputs.ingestion }}
+      migrator: ${{ steps.verify.outputs.migrator }}
+      web: ${{ steps.verify.outputs.web }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Self-test the verifier and the handoff contract
+        run: |
+          ./scripts/verify-production-candidate.test.sh
+          ./scripts/gitlab-handoff.test.sh
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify approval, artifacts, provenance and rollback floors
+        id: verify
+        env:
+          CANDIDATE: ${{ inputs.candidate_sha }}
+          ACK: ${{ inputs.acknowledge_rollback_hazard }}
+        run: |
+          set -euo pipefail
+          args=(--candidate "$CANDIDATE" --mode promotion --manifest production-manifest.json)
+          [[ "$ACK" == "true" ]] && args+=(--acknowledge-rollback-hazard)
+          ./scripts/verify-production-candidate.sh "${args[@]}"
+      - name: Record the production manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: production-manifest-${{ inputs.candidate_sha }}
+          path: production-manifest.json
+
+  handoff:
+    name: Production handoff to GitLab Ops (accepted ≠ deployed)
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production-handoff
+    steps:
+      - uses: actions/checkout@v7
+      - name: Hand the approved candidate to the production reconcile
+        id: handoff
+        env:
+          GITLAB_TRIGGER_TOKEN: ${{ secrets.GITLAB_TRIGGER_TOKEN }}
+          # No fallback for either: an unset host would POST the token to the
+          # gitlab.com default, and an unset ref would trigger the wrong
+          # pipeline. Both must be set on the production-handoff environment.
+          GITLAB_API_URL: ${{ vars.GITLAB_OPS_API_URL }}
+          GITLAB_PROJECT: ${{ vars.GITLAB_OPS_PROJECT || 'infinity%2Finfinity-core' }}
+          GITLAB_REF: ${{ vars.GITLAB_OPS_PRODUCTION_REF }}
+          EXPECTED_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          for required in GITLAB_TRIGGER_TOKEN GITLAB_API_URL GITLAB_REF; do
+            if [[ -z "${!required:-}" ]]; then
+              echo "::error::$required is not set on the production-handoff environment; nothing was handed over"
+              exit 1
+            fi
+          done
+          ./scripts/gitlab-handoff.sh \
+            --environment production \
+            --commit "${{ needs.verify.outputs.candidate }}" \
+            --api "${{ needs.verify.outputs.api }}" \
+            --ingestion "${{ needs.verify.outputs.ingestion }}" \
+            --migrator "${{ needs.verify.outputs.migrator }}" \
+            --web "${{ needs.verify.outputs.web }}"
+      - name: Record the handoff
+        if: always()
+        run: |
+          {
+            if [[ "${{ steps.handoff.outcome }}" == "success" ]]; then
+              echo "## Production deployment request ACCEPTED by GitLab Ops"
+              echo
+              echo "This is a request, not a result. The production reconcile, the migration"
+              echo "job, readiness, and the post-deployment synthetic suite run in"
+              echo "\`infinity/infinity-core\`, and **the authoritative production verdict lives"
+              echo "there**. Ops also confirms, before deploying, that this digest set is the one"
+              echo "that passed staging (ADR-034 §3)."
+            else
+              echo "## Production handoff FAILED"
+              echo
+              echo "Nothing was handed to Ops; production continues to run what it was running."
+            fi
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| handoff target | production (deployed by Ops) |"
+            echo "| candidate | \`${{ needs.verify.outputs.candidate }}\` |"
+            echo "| dispatched by | ${{ github.actor }} |"
+            echo "| rollback hazard acknowledged | ${{ inputs.acknowledge_rollback_hazard }} |"
+            echo "| api | \`${{ needs.verify.outputs.api }}\` |"
+            echo "| ingestion | \`${{ needs.verify.outputs.ingestion }}\` |"
+            echo "| migrator | \`${{ needs.verify.outputs.migrator }}\` |"
+            echo "| web | \`${{ needs.verify.outputs.web }}\` |"
+            echo "| handoff result | ${{ steps.handoff.outcome }} |"
+            echo "| gitlab pipeline | ${{ steps.handoff.outputs.pipeline_url || 'n/a' }} |"
+            echo "| handed off at | $(date -u +%Y-%m-%dT%H:%M:%SZ) |"
+          } >> "$GITHUB_STEP_SUMMARY"

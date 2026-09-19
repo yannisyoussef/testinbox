@@ -4,6 +4,11 @@ server:
 spring:
   application:
     name: testinbox-ingestion
+  profiles:
+    # Same shape as the API (ADR-034): one deployed layer, two environments.
+    group:
+      staging: deployed
+      production: deployed
   datasource:
     url: ${TESTINBOX_DB_URL:jdbc:postgresql://localhost:5432/testinbox}
     username: ${TESTINBOX_DB_USER:testinbox}

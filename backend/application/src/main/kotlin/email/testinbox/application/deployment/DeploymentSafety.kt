@@ -46,7 +46,50 @@ data class DeploymentSettings(
      */
     val edgeRequestCeiling: Duration?,
     val limitsEnabled: Boolean,
+    /**
+     * The Spring profiles this process started with. Production's fail-closed
+     * overrides live in a profile-specific document, so "environment says
+     * production, profile does not" means those overrides were never loaded —
+     * a staging configuration wearing a production label.
+     */
+    val activeProfiles: Set<String> = emptySet(),
+    /** Whether this deployable serves a public HTTP origin (the API does; the SMTP gateway does not). */
+    val publicSurface: Boolean = true,
+    /** Whether the object-store adapter would create its bucket at startup. */
+    val createBucket: Boolean = false,
+    /**
+     * Whether an unbounded database session timeout takes this node out of
+     * readiness (ADR-033/034). Null where the deployable has no such
+     * indicator (the SMTP gateway); production requires true on the API.
+     */
+    val requireDatabaseSessionTimeout: Boolean? = null,
 )
+
+/**
+ * The facts about production that are decided, not configured (ADR-034).
+ *
+ * They live in code rather than in a profile document because a profile
+ * document can be overridden by an environment variable, and the point of a
+ * production invariant is that it cannot be. The domain is the tenant domain
+ * ADR-004 fixed for the public MX; the host fragments are the names of every
+ * environment that is not production.
+ */
+object ProductionPolicy {
+    const val ENVIRONMENT = "production"
+    const val PROFILE = "production"
+    const val MAIL_DOMAIN = "inbox.testinbox.email"
+
+    /**
+     * Names of every environment that is not production, matched as a
+     * substring of the host. Loopback is refused too, but by the exact
+     * authority check the deployed baseline already uses —
+     * `localhost.db.example.com` is a real remote host there and stays one here.
+     */
+    val NON_PRODUCTION_HOST_FRAGMENTS: List<String> = listOf("staging", "rehearsal", ".local")
+
+    /** Profiles that name an environment; none may be active alongside `production`. */
+    val OTHER_ENVIRONMENT_PROFILES: Set<String> = setOf("staging", "rehearsal", "local", "dev", "test")
+}
 
 data class DeploymentViolation(
     val setting: String,
@@ -119,6 +162,7 @@ object DeploymentSafety {
             addAll(checkProxyTimeout(settings))
             addAll(checkEdgeCeiling(settings))
             addAll(checkLimits(settings))
+            addAll(checkProduction(settings))
         }
 
     private fun checkMailDomain(settings: DeploymentSettings): List<DeploymentViolation> =
@@ -137,6 +181,10 @@ object DeploymentSafety {
         buildList {
             if (settings.databaseUrl.isBlank()) {
                 add(DeploymentViolation("spring.datasource.url", "is not set"))
+            } else if (!settings.databaseUrl.startsWith("jdbc:postgresql://", ignoreCase = true)) {
+                // `jdbc:postgresql:testinbox` is a valid URL for an implicit localhost, and
+                // it has no authority for the loopback check to see.
+                add(DeploymentViolation("spring.datasource.url", "must name its host explicitly (jdbc:postgresql://host:port/db)"))
             } else if (containsLocalHost(settings.databaseUrl)) {
                 add(
                     DeploymentViolation(
@@ -162,6 +210,8 @@ object DeploymentSafety {
         buildList {
             if (settings.storageEndpoint.isBlank()) {
                 add(DeploymentViolation("testinbox.storage.endpoint", "is not set"))
+            } else if (!settings.storageEndpoint.matches(Regex("(?i)https?://.+"))) {
+                add(DeploymentViolation("testinbox.storage.endpoint", "must be an absolute http(s):// URL"))
             } else if (containsLocalHost(settings.storageEndpoint)) {
                 add(
                     DeploymentViolation(
@@ -299,6 +349,142 @@ object DeploymentSafety {
                 ),
             )
         }
+
+    /**
+     * Production is the one environment where a misconfiguration is not
+     * recoverable by redeploying: it serves real tenants. So the checks here
+     * are stricter than the deployed baseline, and they are keyed on BOTH the
+     * declared environment and the active profile, because each can be set
+     * without the other and each mistake is silent on its own.
+     */
+    private fun checkProduction(settings: DeploymentSettings): List<DeploymentViolation> {
+        val declared = settings.environment.equals(ProductionPolicy.ENVIRONMENT, ignoreCase = true)
+        val profiled = ProductionPolicy.PROFILE in settings.activeProfiles
+        if (!declared && !profiled) return emptyList()
+        return buildList {
+            addAll(checkProductionIdentity(settings, declared, profiled))
+            addAll(checkProductionSurfaces(settings))
+            addAll(checkProductionStorage(settings))
+        }
+    }
+
+    private fun checkProductionIdentity(
+        settings: DeploymentSettings,
+        declared: Boolean,
+        profiled: Boolean,
+    ): List<DeploymentViolation> =
+        buildList {
+            if (declared && !profiled) {
+                add(
+                    DeploymentViolation(
+                        "spring.profiles.active",
+                        "does not include '${ProductionPolicy.PROFILE}' although TESTINBOX_ENVIRONMENT is " +
+                            "'${settings.environment}'; the production fail-closed overrides were never loaded",
+                    ),
+                )
+            }
+            if (profiled && !declared) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.deployment.environment",
+                        "is '${settings.environment}' while the '${ProductionPolicy.PROFILE}' profile is active; " +
+                            "a production process must declare itself as one",
+                    ),
+                )
+            }
+            if (!settings.environment.equals(ProductionPolicy.ENVIRONMENT) && declared) {
+                add(DeploymentViolation("testinbox.deployment.environment", "must be exactly '${ProductionPolicy.ENVIRONMENT}'"))
+            }
+            val mixed = settings.activeProfiles.intersect(ProductionPolicy.OTHER_ENVIRONMENT_PROFILES)
+            if (profiled && mixed.isNotEmpty()) {
+                // A later profile document overrides an earlier one; `production,staging`
+                // would let a resurrected staging document win over the production overrides.
+                add(
+                    DeploymentViolation(
+                        "spring.profiles.active",
+                        "activates '${mixed.sorted().joinToString(",")}' alongside '${ProductionPolicy.PROFILE}'; " +
+                            "no other environment profile may be active with it",
+                    ),
+                )
+            }
+            if (!settings.mailDomain.equals(ProductionPolicy.MAIL_DOMAIN, ignoreCase = true)) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.mail-domain",
+                        "must be '${ProductionPolicy.MAIL_DOMAIN}' in production (ADR-004); another value would " +
+                            "route tenant mail for a domain the public MX does not name",
+                    ),
+                )
+            }
+        }
+
+    private fun checkProductionSurfaces(settings: DeploymentSettings): List<DeploymentViolation> =
+        buildList {
+            if (settings.publicSurface && settings.publicBaseUrl.isNullOrBlank()) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.public-base-url",
+                        "is not set — a production node with a public surface must declare its HTTPS origin",
+                    ),
+                )
+            }
+            settings.publicBaseUrl?.let { url ->
+                namesNonProductionHost(url)?.let { fragment ->
+                    add(DeploymentViolation("testinbox.public-base-url", "names a non-production host ('$fragment')"))
+                }
+            }
+            if (settings.edgeRequestCeiling == null) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.deployment.edge-request-ceiling",
+                        "is not declared — production must state the ingress's hard per-request ceiling so the " +
+                            "wait window is proven to fit underneath it (ADR-030)",
+                    ),
+                )
+            }
+        }
+
+    private fun checkProductionStorage(settings: DeploymentSettings): List<DeploymentViolation> =
+        buildList {
+            if (settings.createBucket) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.storage.create-bucket",
+                        "is true — production runtime credentials must not hold CreateBucket; pre-provision the " +
+                            "bucket and let readiness fail if it is absent (ADR-034)",
+                    ),
+                )
+            }
+            namesNonProductionHost(settings.storageEndpoint)?.let { fragment ->
+                add(DeploymentViolation("testinbox.storage.endpoint", "names a non-production host ('$fragment')"))
+            }
+            namesNonProductionHost(settings.databaseUrl)?.let { fragment ->
+                add(DeploymentViolation("spring.datasource.url", "names a non-production host ('$fragment')"))
+            }
+            if (settings.requireDatabaseSessionTimeout == false) {
+                // The profile document sets true; an environment variable can flip it, and
+                // then an unbounded idle_in_transaction_session_timeout would be reported
+                // instead of taking the node out of readiness (ADR-033).
+                add(
+                    DeploymentViolation(
+                        "testinbox.deployment.require-database-session-timeout",
+                        "is false — production must enforce the database session bound, not merely report it",
+                    ),
+                )
+            }
+        }
+
+    /** The offending fragment, or null. Matched on the authority only, so a path or query cannot trip it. */
+    private fun namesNonProductionHost(value: String): String? {
+        val authority =
+            AUTHORITY
+                .find(value.lowercase())
+                ?.groupValues
+                ?.get(1)
+                ?.removeSurrounding("[", "]") ?: return null
+        if (authority in LOCAL_HOSTS) return authority
+        return ProductionPolicy.NON_PRODUCTION_HOST_FRAGMENTS.firstOrNull { authority.contains(it) }
+    }
 
     /** Renders violations for a startup failure. Setting *names* and problems only — no values. */
     fun describe(violations: List<DeploymentViolation>): String =

@@ -1,0 +1,12 @@
+# Rollback floors (ADR-034, docs/dev/rollback.md).
+#
+# A production candidate that does NOT contain one of these commits is a
+# rollback across a behavioural break: the previous artifact starts, the
+# schema is compatible (ADR-029 keeps migrations expand-only), and something
+# load-bearing still stops working. A gate that only checked the schema would
+# call such a rollback safe. `verify-production-candidate.sh` refuses it unless
+# the operator acknowledges the hazard explicitly.
+#
+# Format: <40-hex commit> <why this is a floor>
+# Order is irrelevant. Never remove a line; a floor is history.
+a2cb7ecc2e9a9067549003a85330bcdb55489dec V4 managed credentials (TI-002): an earlier artifact hashes the whole token and cannot authenticate any ti_k1_ key — every API client gets 401 until rolled forward

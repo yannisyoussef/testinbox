@@ -44,6 +44,17 @@ An orphan sweep reclaims blobs whose DB write never committed
 (storage-first write order, ADR-005): objects older than a threshold with
 no referencing `Message` row are deleted.
 
+## Backup scope
+
+Ownership decides what a backup may hold (ADR-034 §5). Durable control-plane
+tables — `workspace`, `project`, `api_key`, `exact_address_reservation`,
+`flyway_schema_history` — are backed up; tenant content (`inbox`, `message`,
+`attachment`), the idempotency projections and the limiter tables are never,
+and neither is any object in storage. `deploy/backup/scope.txt` classifies
+every table and `scripts/check-backup-scope.sh` refuses a dump that breaks the
+classification, so a backup cannot quietly outlive the TTL and deletion
+promises above.
+
 ## Why Postgres is the sole system of record
 
 Redis is explicitly *not* a system of record (ADR-006): it is used only for

@@ -63,6 +63,15 @@ data class TestInboxProperties(
         val gitSha: String = "unknown",
         /** Digest of the running image — knowable only at deploy time (ADR-028). */
         val imageDigest: String = "unknown",
+        /**
+         * Whether an unbounded `idle_in_transaction_session_timeout` on the
+         * database takes this node out of readiness (ADR-033, ADR-034). True in
+         * the production profile; elsewhere the value is reported, not
+         * enforced, so a staging estate that has not set it stays in service
+         * and visible rather than being removed by the deploy that added the
+         * check.
+         */
+        val requireDatabaseSessionTimeout: Boolean = false,
     )
 
     /**

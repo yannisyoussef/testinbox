@@ -3,6 +3,7 @@ package email.testinbox.api.config
 import email.testinbox.application.LimitsConfig
 import email.testinbox.application.Sha256
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.deployment.DatabaseSessionPolicy
 import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.idempotency.Idempotency
 import email.testinbox.application.port.ApiKeyMetrics
@@ -48,6 +49,7 @@ import email.testinbox.observability.MicrometerNotifierMetrics
 import email.testinbox.observability.MicrometerWaitMetrics
 import email.testinbox.observability.Slf4jAuditLog
 import email.testinbox.persistence.BundledMigrations
+import email.testinbox.persistence.JdbcDatabaseSessionSettings
 import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.persistence.JdbcSchemaHistory
 import email.testinbox.storage.S3BlobStore
@@ -213,6 +215,10 @@ class ApiWiring(
         }
         return SchemaCompatibility(JdbcSchemaHistory(jdbc), bundled)
     }
+
+    /** Backs the `dbSession` readiness indicator (ADR-033 deployment requirement, ADR-034). */
+    @Bean
+    fun databaseSessionPolicy(jdbc: JdbcClient): DatabaseSessionPolicy = DatabaseSessionPolicy(JdbcDatabaseSessionSettings(jdbc))
 
     @Bean(initMethod = "start", destroyMethod = "close")
     fun messageNotifier(

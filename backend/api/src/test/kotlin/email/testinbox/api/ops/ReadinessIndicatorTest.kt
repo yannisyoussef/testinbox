@@ -1,6 +1,8 @@
 package email.testinbox.api.ops
 
+import email.testinbox.api.config.TestInboxProperties
 import email.testinbox.application.deployment.AppliedSchema
+import email.testinbox.application.deployment.DatabaseSessionPolicy
 import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.deployment.SchemaHistory
 import email.testinbox.application.deployment.SchemaVersion
@@ -64,6 +66,54 @@ class ReadinessIndicatorTest {
         val health = ObjectStorageHealthIndicator(FakeBlobStore(failing = true)).health()
         health.status shouldBe Status.DOWN
         // An S3 exception message can carry the endpoint; only the type is surfaced.
+        health.details["detail"] shouldBe "IllegalStateException"
+    }
+
+    private fun dbSession(
+        raw: String,
+        required: Boolean,
+    ) = DatabaseSessionHealthIndicator(
+        DatabaseSessionPolicy { raw },
+        TestInboxProperties(deployment = TestInboxProperties.Deployment(requireDatabaseSessionTimeout = required)),
+    )
+
+    @Test
+    fun `a bounded session timeout is ready wherever it is checked`() {
+        for (required in listOf(true, false)) {
+            val health = dbSession("30s", required).health()
+            health.status shouldBe Status.UP
+            health.details["bounded"] shouldBe true
+            health.details["enforced"] shouldBe required
+        }
+    }
+
+    @Test
+    fun `production takes a node out of rotation while the database leaves a hung claim unbounded (ADR-033)`() {
+        val health = dbSession("0", required = true).health()
+        health.status shouldBe Status.OUT_OF_SERVICE
+        health.details["idleInTransactionSessionTimeout"] shouldBe "0"
+        health.details["bounded"] shouldBe false
+    }
+
+    @Test
+    fun `elsewhere the same condition is reported but does not remove the node`() {
+        // A staging estate that has not set the timeout must stay in service —
+        // and visible — rather than be removed by the deploy that added this.
+        val health = dbSession("0", required = false).health()
+        health.status shouldBe Status.UP
+        health.details["bounded"] shouldBe false
+        health.details["enforced"] shouldBe false
+    }
+
+    @Test
+    fun `a database that cannot be asked is down, and the detail carries only the exception type`() {
+        val failing =
+            DatabaseSessionHealthIndicator(
+                DatabaseSessionPolicy { error("connection refused to db.prod.internal:5432 (user=svc)") },
+                TestInboxProperties(deployment = TestInboxProperties.Deployment(requireDatabaseSessionTimeout = true)),
+            )
+        val health = failing.health()
+        health.status shouldBe Status.DOWN
         health.details["detail"] shouldBe "IllegalStateException"
     }
 

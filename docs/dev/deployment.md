@@ -18,7 +18,7 @@ Four systems, and confusing them is how a green tick comes to mean nothing:
 | **Artifact registry** | GHCR | Holds immutable images, addressed by digest. |
 | **CD / infrastructure** | GitLab `infinity/infinity-core` | Deploys. Reconciles the host. **Owns the deployment verdict.** |
 | **Staging** | Contabo US, shared Infinity estate | Runs `develop`. Live at `staging.testinbox.email`. |
-| **Production** | OVH — **not deployed** | Intended target only (ADR-030). |
+| **Production** | OVH dedicated host, France, Infinity estate | **Decided** (ADR-034). Dark-deployable through a manual handoff; **not live**, no MX, no public SMTP. |
 
 GitHub does **not** deploy and holds no credential for the staging host. It
 hands an immutable digest set to Ops and stops. The consequence is stated
@@ -30,14 +30,16 @@ release candidate was accepted, not that it was deployed.**
 ```
 feature/*  ──PR──▶  develop  ──▶  handoff to Ops  ──▶  STAGING
                        │
-                       └──release PR──▶  master  ──▶  PRODUCTION (not implemented)
+                       └──release PR──▶  master  ──▶  Production handoff (manual)  ──▶  PRODUCTION (Ops; dark)
 ```
 
 - **`develop` is the staging candidate.** A merge here builds immutable
   artifacts and deploys them to staging.
-- **`master` is the production-approved candidate.** It has no deployment
-  automation at all. `master` does **not** auto-deploy anything, and this
-  increment deliberately did not add a production pipeline.
+- **`master` is the production-approved candidate.** Merging the release PR
+  is the approval; it deploys nothing. A human then dispatches
+  `Production handoff` on `master`, which re-verifies the candidate and hands
+  the same digest set to Ops ([production.md](production.md), ADR-034).
+  `master` never auto-deploys.
 - Feature PRs are never deployed to shared staging. They build the images and
   run an ephemeral rehearsal of the whole deployment on the CI runner, because
   a deployment path only exercised after merge is one that breaks after merge.
@@ -89,8 +91,9 @@ and everything downstream deploys *those bytes*:
 commit ─▶ build 4 OCI images ─▶ push to GHCR ─▶ digest
                                                   │
                                                   ├─▶ staging deploys THIS digest
-                                                  └─▶ future production promotion
-                                                      deploys the SAME digest
+                                                  └─▶ production promotion deploys
+                                                      the SAME digest, verified by
+                                                      its provenance attestation
 ```
 
 | image | contents |
@@ -208,3 +211,5 @@ layers and assert a property of bytes that will never run anywhere.
 - [staging.md](staging.md) — the staging environment, its secrets and its network boundaries
 - [rollback.md](rollback.md) — rolling back artifacts, and when the schema makes that unsafe
 - [release-process.md](release-process.md) — how a change travels from feature branch to production-approved
+- [production.md](production.md) — the production contract: fail-closed configuration, promotion, rollback, backup scope, alerting
+- [production-ops-acceptance.md](production-ops-acceptance.md) — what Ops must prove on the production estate

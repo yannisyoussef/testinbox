@@ -167,6 +167,24 @@ class DependencyRuleTest {
     }
 
     @Test
+    fun `database session settings are read only by the persistence adapter (ADR-024, ADR-034)`() {
+        // The same shape as the schema history: `SHOW idle_in_transaction_session_timeout`
+        // is a database read, and an implementation anywhere else would be an
+        // adapter reaching past the port.
+        classes()
+            .that()
+            .implement(email.testinbox.application.deployment.DatabaseSessionSettings::class.java)
+            .and()
+            .areNotInterfaces()
+            .and()
+            .haveSimpleNameNotContaining("Test")
+            .should()
+            .resideInAPackage("email.testinbox.persistence..")
+            .because("the database session setting is a persistence concern (ADR-024, ADR-033/034)")
+            .check(allClasses)
+    }
+
+    @Test
     fun `entry points consume the schema verdict, never the raw versions (ADR-029)`() {
         // SchemaVersion and AppliedSchema are the inputs to the comparison, and
         // an adapter that holds them is an adapter about to redo it. Entry

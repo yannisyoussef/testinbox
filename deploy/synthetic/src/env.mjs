@@ -6,6 +6,8 @@
  * testing nothing, which is the exact failure mode it is meant to catch.
  */
 
+import net from "node:net";
+
 function required(name) {
   const value = process.env[name];
   if (!value || value.trim() === "") {
@@ -25,26 +27,61 @@ function optionalInt(name, fallback) {
   return value;
 }
 
-export const config = Object.freeze({
-  /** HTTPS origin of the deployed API, through the real ingress. */
-  baseUrl: required("TESTINBOX_BASE_URL"),
-  /** Dedicated synthetic credential — never a personal or admin key. */
-  apiKey: required("TESTINBOX_API_KEY"),
-  /** Staging SMTP ingress. Private by design (§10/§22); reachable from the runner only. */
-  smtpHost: required("TESTINBOX_SMTP_HOST"),
-  smtpPort: optionalInt("TESTINBOX_SMTP_PORT", 2525),
-  /** The deployment's server-side wait-window cap, in seconds. */
-  waitWindowSeconds: optionalInt("TESTINBOX_WAIT_WINDOW_SECONDS", 60),
-  /** How long a wait is left parked before the message is delivered (§18). */
-  parkedWaitSeconds: optionalInt("TESTINBOX_PARKED_WAIT_SECONDS", 10),
-  /** Plaintext origin — proven to only ever redirect. */
-  httpBaseUrl: required("TESTINBOX_HTTP_BASE_URL"),
-  /**
-   * True when the edge is this repository's own nginx (the CI rehearsal),
-   * which lets the unknown-Host assertion demand the stronger `return 444`
-   * behaviour instead of merely a refusal.
-   */
-  edgeIsReference: process.env.TESTINBOX_EDGE === "nginx-reference",
+let deployment;
+
+/**
+ * The deployment gate's configuration, resolved on first use rather than at
+ * import. The origin-isolation and build-identity suites import this module
+ * for their own config and must not be forced to carry the synthetic API key
+ * and the private SMTP host onto a machine that needs neither.
+ */
+export function deploymentConfig() {
+  if (deployment) return deployment;
+  const baseUrl = required("TESTINBOX_BASE_URL");
+  // No opt-out. A plaintext run would send `TESTINBOX_API_KEY` in the clear while
+  // proving nothing about the TLS termination it is supposed to be exercising —
+  // and an escape hatch for that is the kind that ends up set in CI. Against a
+  // private CA, trust the CA (`NODE_EXTRA_CA_CERTS`); never disable verification.
+  if (!baseUrl.startsWith("https://")) {
+    throw new Error(
+      `TESTINBOX_BASE_URL must be https:// (got ${baseUrl.split("://")[0]}://…). ` +
+        `For a private CA, set NODE_EXTRA_CA_CERTS instead.`,
+    );
+  }
+  deployment = Object.freeze({
+    /** HTTPS origin of the deployed API, through the real ingress. */
+    baseUrl,
+    /** Dedicated synthetic credential — never a personal or admin key. */
+    apiKey: required("TESTINBOX_API_KEY"),
+    /** Staging SMTP ingress. Private by design (§10/§22); reachable from the runner only. */
+    smtpHost: required("TESTINBOX_SMTP_HOST"),
+    smtpPort: optionalInt("TESTINBOX_SMTP_PORT", 2525),
+    /** The deployment's server-side wait-window cap, in seconds. */
+    waitWindowSeconds: optionalInt("TESTINBOX_WAIT_WINDOW_SECONDS", 60),
+    /** How long a wait is left parked before the message is delivered (§18). */
+    parkedWaitSeconds: optionalInt("TESTINBOX_PARKED_WAIT_SECONDS", 10),
+    /** Plaintext origin — proven to only ever redirect. */
+    httpBaseUrl: required("TESTINBOX_HTTP_BASE_URL"),
+    /**
+     * True when the edge is this repository's own nginx (the CI rehearsal),
+     * which lets the unknown-Host assertion demand the stronger `return 444`
+     * behaviour instead of merely a refusal.
+     */
+    edgeIsReference: process.env.TESTINBOX_EDGE === "nginx-reference",
+  });
+  return deployment;
+}
+
+/**
+ * The same object, as a property-lazy view, so existing suites keep writing
+ * `config.baseUrl` and pay for resolution on first access — which for them
+ * is still module load, exactly as before.
+ */
+export const config = new Proxy(Object.freeze({}), {
+  get: (_, key) => deploymentConfig()[key],
+  has: (_, key) => key in deploymentConfig(),
+  ownKeys: () => Reflect.ownKeys(deploymentConfig()),
+  getOwnPropertyDescriptor: (_, key) => Object.getOwnPropertyDescriptor(deploymentConfig(), key),
 });
 
 /**
@@ -86,16 +123,47 @@ export function adminApiKey() {
   return required("TESTINBOX_ADMIN_API_KEY");
 }
 
+
 /**
- * No opt-out. A plaintext run would send `TESTINBOX_API_KEY` in the clear while
- * proving nothing about the TLS termination it is supposed to be exercising —
- * and an escape hatch for that is the kind that ends up set in CI.
- * Against a private CA, trust the CA (`NODE_EXTRA_CA_CERTS`); do not drop to
- * plaintext and do not disable verification.
+ * Origin isolation (ADR-034 §6). Supplied by Ops at run time; the address is
+ * never committed. Loud failure, never a skip.
  */
-if (!config.baseUrl.startsWith("https://")) {
-  throw new Error(
-    `TESTINBOX_BASE_URL must be https:// (got ${config.baseUrl.split("://")[0]}://…). ` +
-      `For a private CA, set NODE_EXTRA_CA_CERTS instead.`,
-  );
+export function originConfig() {
+  // Every port that is a trust boundary (docs/dev/production.md): HTTPS, HTTP,
+  // both SMTP listeners, both management ports, PostgreSQL and the object
+  // store. None may answer a direct connection from outside.
+  const ports = (process.env.TESTINBOX_ORIGIN_PROBE_PORTS ?? "443,80,25,2525,9090,9091,5432,9000")
+    .split(",")
+    .map((p) => Number.parseInt(p.trim(), 10))
+    .filter((p) => Number.isFinite(p));
+  if (ports.length === 0) throw new Error("TESTINBOX_ORIGIN_PROBE_PORTS must list at least one port");
+  const originAddress = required("TESTINBOX_ORIGIN_PROBE_ADDRESS");
+  // An address, not a name: a hostname that resolves to nothing, or to the
+  // wrong family, would "prove" isolation by never reaching the origin.
+  const family = net.isIP(originAddress);
+  if (family === 0) {
+    throw new Error(`TESTINBOX_ORIGIN_PROBE_ADDRESS must be an IPv4 or IPv6 literal, got ${originAddress}`);
+  }
+  return Object.freeze({
+    /** The approved path — the positive control. */
+    baseUrl: required("TESTINBOX_BASE_URL"),
+    originAddress,
+    /** 4 or 6 — the positive control must reach the environment over the SAME family. */
+    family,
+    ports,
+    timeoutMs: optionalInt("TESTINBOX_ORIGIN_PROBE_TIMEOUT_MS", 8_000),
+  });
+}
+
+/**
+ * Build identity and readiness through the PRIVATE management ports (ADR-034
+ * §8). Run on the host; the ingress never routes these.
+ */
+export function identityConfig() {
+  return Object.freeze({
+    apiManagementUrl: required("TESTINBOX_API_MANAGEMENT_URL").replace(/\/$/, ""),
+    ingestionManagementUrl: required("TESTINBOX_INGESTION_MANAGEMENT_URL").replace(/\/$/, ""),
+    expectedGitSha: required("TESTINBOX_EXPECTED_GIT_SHA"),
+    expectedEnvironment: required("TESTINBOX_EXPECTED_ENVIRONMENT"),
+  });
 }

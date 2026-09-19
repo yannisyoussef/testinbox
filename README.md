@@ -40,6 +40,7 @@ val verificationUrl = message.links.first().href
 | Threat model and abuse prevention | [`docs/security/`](docs/security/), [`SECURITY.md`](SECURITY.md) |
 | Testing/quality strategy | [`docs/quality/`](docs/quality/) |
 | Deployment, staging, release and rollback | [`docs/dev/deployment.md`](docs/dev/deployment.md), [`docs/dev/staging.md`](docs/dev/staging.md), [`docs/dev/release-process.md`](docs/dev/release-process.md), [`docs/dev/rollback.md`](docs/dev/rollback.md) |
+| Production contract and Ops acceptance | [`docs/dev/production.md`](docs/dev/production.md), [`docs/dev/production-ops-acceptance.md`](docs/dev/production-ops-acceptance.md) |
 | Architecture decision records | [`docs/adr/`](docs/adr/README.md) |
 | Contribution and repo conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
@@ -65,7 +66,9 @@ sdk/
 web/                 # Next.js inspection UI (sandboxed HTML preview, ADR-011)
 deploy/
   docker/            # Production-grade container definitions (ADR-028)
-  staging/           # Staging topology: compose, nginx edge, deploy script
+  staging/           # Reference topology: compose, nginx edge, deploy script (staging and production profiles)
+  backup/            # Data-lifecycle backup scope: which tables a backup may hold (ADR-034)
+  rollback-floors.txt # Commits a production candidate must contain (ADR-034)
   synthetic/         # Post-deployment verification driven by the public SDK
 scripts/             # CI gates and their self-tests; the staging rehearsal
 docs/                # this documentation set

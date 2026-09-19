@@ -4,6 +4,15 @@ server:
 spring:
   application:
     name: testinbox-api
+  profiles:
+    # One deployed layer, two environments (ADR-034). `staging` and
+    # `production` each pull in `deployed`; production then adds its own
+    # fail-closed document on top. Activating `deployed` directly is not a
+    # supported configuration — DeploymentSafety refuses a process whose
+    # declared environment and active profile disagree.
+    group:
+      staging: deployed
+      production: deployed
   threads:
     virtual:
       enabled: true

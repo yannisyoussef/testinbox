@@ -1,0 +1,26 @@
+# The data-lifecycle contract for production backups (ADR-034 §5,
+# docs/dev/production.md). EVERY table in the schema is classified here, and
+# scripts/check-backup-scope.sh fails when the migrations contain a table this
+# file does not name — a new table forces a decision, it cannot drift in.
+#
+#   +  durable control-plane state: backed up. Losing it loses tenant identity.
+#   -  tenant content or transient state: NEVER backed up. Copying it would
+#      retain message content past the ADR-009 TTL and past explicit deletion,
+#      which is the promise the product makes to senders and tenants alike;
+#      transient state is rebuilt by the running system.
+#
+# api_key holds verifiers only (ADR-032 §4): no plaintext credential can be
+# recovered from a backup. idempotency_record carries request fingerprints and
+# a projection of what a request created, including inbox addresses — content
+# by another route, and it expires in hours.
++ workspace
++ project
++ api_key
++ exact_address_reservation
++ flyway_schema_history
+- inbox
+- message
+- attachment
+- idempotency_record
+- rate_bucket
+- wait_lease

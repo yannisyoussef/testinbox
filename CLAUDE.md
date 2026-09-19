@@ -81,7 +81,7 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
    query workspace-scoped; cross-tenant read is a security bug. Cross-tenant
    lookups return `404`, not `403`.
 
-## Deployment (ADR-028/029/030 — staging is LIVE)
+## Deployment (ADR-028/029/030/034 — staging is LIVE, production is DARK-DEPLOYABLE)
 
 - **Build once, promote many.** Images are built only by
   `.github/workflows/build-images.yml`; the **digest** is the deployment
@@ -126,7 +126,26 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
   id, key, address or correlation id. Watch
   `testinbox_wait_listen_degraded_polling`: it is the only signal that
   LISTEN/NOTIFY has failed, because everything else stays green.
-- No public MX record, no production deployment, no `master` auto-deploy.
+- **Production (ADR-034).** `staging` and `production` are profile GROUPS over
+  one `deployed` layer; the production overrides are the **second document of
+  `application-deployed.yaml`**, never a separate `application-production.yaml`
+  — Spring orders the group as `[production, deployed]` and the LATER profile
+  wins, so a separate file is silently shadowed (`DeployedProfileLayeringTest`
+  proves the real files). `DeploymentSafety` — not the document — enforces the
+  invariants (profile ↔ environment agreement, non-blank environment,
+  `inbox.testinbox.email`, no loopback/staging/rehearsal hosts,
+  `create-bucket=false`, a declared edge ceiling, session bound enforced).
+  Never copy the deployed layer into a second profile.
+- **A production candidate is a source SHA whose four digests each carry a
+  provenance attestation for that SHA from `build-images.yml`** — never a
+  merge commit's parent (squash/rebase are allowed), never a tag. `master`
+  requires ONE context, `Production promotion gate`; production is reached
+  only by the manual `Production handoff` on `master`, and green means Ops
+  *accepted the request*. Rollback floors live in `deploy/rollback-floors.txt`.
+- **Backups never contain tenant content**: `deploy/backup/scope.txt`
+  classifies every table and `check-backup-scope.sh` refuses a dump that
+  carries `message`/`inbox`/`attachment` rows — or that examines nothing.
+- No public MX record, no live production, no `master` auto-deploy.
 
 ## The Postfix mail edge (ADR-004, TI-005)
 

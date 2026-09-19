@@ -28,6 +28,23 @@ class DeploymentSafetyTest {
             proxyReadTimeout = Duration.ofSeconds(120),
             edgeRequestCeiling = null,
             limitsEnabled = true,
+            activeProfiles = setOf("staging"),
+            publicSurface = true,
+            createBucket = true,
+        )
+
+    /** A correctly configured production API node — every ADR-034 invariant satisfied at once. */
+    private val production =
+        safe.copy(
+            environment = "production",
+            activeProfiles = setOf("production", "deployed"),
+            mailDomain = ProductionPolicy.MAIL_DOMAIN,
+            publicBaseUrl = "https://api.testinbox.email",
+            databaseUrl = "jdbc:postgresql://db.prod.internal:5432/testinbox",
+            storageEndpoint = "https://objects.prod.internal",
+            edgeRequestCeiling = Duration.ofSeconds(100),
+            proxyReadTimeout = Duration.ofSeconds(100),
+            createBucket = false,
         )
 
     private fun settingsOf(violations: List<DeploymentViolation>) = violations.map { it.setting }
@@ -219,5 +236,136 @@ class DeploymentSafetyTest {
             .validate(
                 safe.copy(edgeRequestCeiling = null, waitWindowCap = Duration.ofSeconds(300), proxyReadTimeout = Duration.ofSeconds(400)),
             ).shouldBeEmpty()
+    }
+
+    // --- production (ADR-034) ---------------------------------------------------
+
+    @Test
+    fun `a fully configured production node has no violations`() {
+        DeploymentSafety.validate(production).shouldBeEmpty()
+    }
+
+    @Test
+    fun `a production environment without the production profile is refused - the overrides were never loaded`() {
+        // The canonical mistake: TESTINBOX_ENVIRONMENT=production on a process
+        // started with SPRING_PROFILES_ACTIVE=staging. Every staging default
+        // would apply, wearing a production label.
+        val mislabelled = production.copy(activeProfiles = setOf("staging", "deployed"))
+        settingsOf(DeploymentSafety.validate(mislabelled)) shouldBe listOf("spring.profiles.active")
+    }
+
+    @Test
+    fun `a production profile on a non-production environment is refused`() {
+        val violations = DeploymentSafety.validate(production.copy(environment = "staging"))
+        settingsOf(violations) shouldBe listOf("testinbox.deployment.environment")
+        violations.single().problem shouldContain "'staging'"
+    }
+
+    @Test
+    fun `production requires the exact environment name`() {
+        settingsOf(DeploymentSafety.validate(production.copy(environment = "Production"))).toSet() shouldBe
+            setOf("testinbox.deployment.environment")
+    }
+
+    @Test
+    fun `production must serve the tenant domain the MX names`() {
+        val violations = DeploymentSafety.validate(production.copy(mailDomain = "staging.testinbox.email"))
+        settingsOf(violations) shouldBe listOf("testinbox.mail-domain")
+        violations.single().problem shouldContain ProductionPolicy.MAIL_DOMAIN
+    }
+
+    @Test
+    fun `a production API node must declare its public HTTPS origin`() {
+        settingsOf(DeploymentSafety.validate(production.copy(publicBaseUrl = null))) shouldBe
+            listOf("testinbox.public-base-url")
+    }
+
+    @Test
+    fun `the SMTP gateway has no public origin and is not asked for one`() {
+        DeploymentSafety.validate(production.copy(publicBaseUrl = null, publicSurface = false)).shouldBeEmpty()
+    }
+
+    @Test
+    fun `staging or rehearsal hosts anywhere in production configuration are refused`() {
+        settingsOf(DeploymentSafety.validate(production.copy(publicBaseUrl = "https://staging.testinbox.email"))) shouldBe
+            listOf("testinbox.public-base-url")
+        settingsOf(DeploymentSafety.validate(production.copy(storageEndpoint = "https://minio.staging.internal"))) shouldBe
+            listOf("testinbox.storage.endpoint")
+        settingsOf(
+            DeploymentSafety.validate(production.copy(databaseUrl = "jdbc:postgresql://db.rehearsal.internal:5432/testinbox")),
+        ) shouldBe listOf("spring.datasource.url")
+    }
+
+    @Test
+    fun `a non-production fragment in a path or query does not trip the host check`() {
+        DeploymentSafety
+            .validate(production.copy(publicBaseUrl = "https://api.testinbox.email/?ref=staging"))
+            .shouldBeEmpty()
+    }
+
+    @Test
+    fun `production refuses to create its own bucket`() {
+        val violations = DeploymentSafety.validate(production.copy(createBucket = true))
+        settingsOf(violations) shouldBe listOf("testinbox.storage.create-bucket")
+        violations.single().problem shouldContain "CreateBucket"
+    }
+
+    @Test
+    fun `production must declare the ingress ceiling`() {
+        settingsOf(DeploymentSafety.validate(production.copy(edgeRequestCeiling = null))) shouldBe
+            listOf("testinbox.deployment.edge-request-ceiling")
+    }
+
+    @Test
+    fun `every production violation is reported at once, not one restart at a time`() {
+        val broken =
+            production.copy(
+                activeProfiles = setOf("staging"),
+                mailDomain = "staging.testinbox.email",
+                createBucket = true,
+                edgeRequestCeiling = null,
+            )
+        settingsOf(DeploymentSafety.validate(broken)).toSet() shouldBe
+            setOf(
+                "spring.profiles.active",
+                "testinbox.mail-domain",
+                "testinbox.storage.create-bucket",
+                "testinbox.deployment.edge-request-ceiling",
+            )
+    }
+
+    @Test
+    fun `another environment profile active alongside production is refused`() {
+        // A later profile document overrides an earlier one, so `production,staging`
+        // would let a resurrected staging document win over the production overrides.
+        val violations = DeploymentSafety.validate(production.copy(activeProfiles = setOf("production", "deployed", "staging")))
+        settingsOf(violations) shouldBe listOf("spring.profiles.active")
+        violations.single().problem shouldContain "'staging'"
+    }
+
+    @Test
+    fun `production must enforce the database session bound, not merely report it`() {
+        settingsOf(DeploymentSafety.validate(production.copy(requireDatabaseSessionTimeout = false))) shouldBe
+            listOf("testinbox.deployment.require-database-session-timeout")
+        // The gateway has no such indicator and is not asked for one.
+        DeploymentSafety.validate(production.copy(requireDatabaseSessionTimeout = null)).shouldBeEmpty()
+        DeploymentSafety.validate(production.copy(requireDatabaseSessionTimeout = true)).shouldBeEmpty()
+    }
+
+    @Test
+    fun `a URL without an explicit host cannot slip past the loopback check`() {
+        // `jdbc:postgresql:testinbox` is a valid URL for an implicit localhost; a
+        // scheme-less endpoint has no authority for the check to see.
+        settingsOf(DeploymentSafety.validate(safe.copy(databaseUrl = "jdbc:postgresql:testinbox"))) shouldBe
+            listOf("spring.datasource.url")
+        settingsOf(DeploymentSafety.validate(safe.copy(storageEndpoint = "objects.staging.internal:9000"))) shouldBe
+            listOf("testinbox.storage.endpoint")
+    }
+
+    @Test
+    fun `staging is untouched by the production rules`() {
+        // The whole staging fixture would fail several production invariants;
+        // none of them may apply to it.
+        DeploymentSafety.validate(safe.copy(createBucket = true, edgeRequestCeiling = null)).shouldBeEmpty()
     }
 }

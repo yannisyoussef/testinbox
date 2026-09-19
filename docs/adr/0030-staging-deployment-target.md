@@ -2,7 +2,9 @@
 
 **Status:** Accepted (2026-09-07). Replaces the Proposed form of this ADR; the
 options analysis below is retained because it is the reasoning the decision was
-made against.
+made against. The "Production" row and the closing consequences are superseded
+by [ADR-034](0034-production-platform-and-promotion.md) (2026-09-19); ADR-004
+has since been Accepted.
 
 > Persistent staging is live at **https://staging.testinbox.email**, deployed
 > from `develop` through the Infinity Ops platform. The provider-neutral

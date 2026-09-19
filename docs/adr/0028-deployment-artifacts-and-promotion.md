@@ -2,7 +2,8 @@
 
 **Status:** Accepted (§6 amended by
 [ADR-031](0031-vulnerability-policy-by-environment.md): container vulnerability
-scanning is informational on develop and blocking on promotion to `master`)
+scanning is informational on develop and blocking on promotion to `master`;
+§1's production promotion defined by [ADR-034](0034-production-platform-and-promotion.md))
 
 ## Context
 
