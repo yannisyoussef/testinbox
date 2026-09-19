@@ -128,20 +128,35 @@ ci_overridable:
   smtpd_tls_loglevel: dropped with the TLS block when TLS is off in CI
   tls_preempt_cipherlist: dropped with the TLS block when TLS is off in CI
 
-# OPS ACTIVATION PREREQUISITES — drift between this contract and the real
-# dormant edge that must be reconciled by Ops BEFORE public SMTP or MX is ever
-# enabled. This repository does not modify infinity-core; these are recorded so
-# the divergence is deliberate and visible rather than discovered later.
+# OPS ACTIVATION PREREQUISITES — drift between this contract and the real edge
+# that must be reconciled by Ops BEFORE public SMTP or MX is ever enabled. This
+# repository does not modify infinity-core; entries are recorded here so a
+# divergence is deliberate and visible rather than discovered later, and they
+# stay after closure as the record of what was reconciled and when.
 #
-#   message_size_limit
+# Nothing is outstanding. Closing these is necessary for public SMTP and nowhere
+# near sufficient: ADR-004's other gates — a named operational owner above all —
+# remain closed and production is NO-GO.
+#
+#   message_size_limit — RECONCILED, no longer outstanding.
 #     this contract   15728640   (15 MiB — owner decision 2026-09-18)
 #     dormant edge    26214400   (25 MiB — the value the Ops handoff recorded)
-#   The edge ceiling must never exceed what ingestion accepts: the edge emits no
-#   DSN, so an over-ceiling message is answered 250 and then silently discarded
-#   downstream. TI-005 changes the authoritative Postfix production contract;
-#   the application's own ingestion policy is unchanged.
+#     live edge       15728640   (Ops reconciled and live-verified 2026-09-19,
+#                                 infinity-core 1ad8932c)
+#
+#   The entry below is HISTORICAL RECONCILIATION EVIDENCE, not live-host state.
+#   This file states the contract the edge must satisfy; it does not track, and
+#   must never be read as asserting, what a host this repository does not own is
+#   running right now. Ops owns that, and re-verification is an Ops action.
+#
+#   The invariant itself is unchanged and stays pinned under `required:` at
+#   15728640. The direction is what matters: the edge ceiling must never exceed
+#   what ingestion accepts, because the edge emits no DSN, so an over-ceiling
+#   message is answered 250 and then silently discarded downstream. TI-005
+#   changed the authoritative Postfix production contract; the application's own
+#   ingestion policy is unchanged.
 ops_activation_prerequisites:
-  message_size_limit_reconcile: dormant edge is 26214400, must become 15728640 before public SMTP
+  message_size_limit_reconcile: discharged 2026-09-19 — Ops lowered the edge from 26214400 to 15728640 and live-verified it, infinity-core 1ad8932c
 
 # The ingestion ceiling. Equal to the edge ceiling, which the boundary proof in
 # the edge suite justifies: Postfix applies its limit to the message INCLUDING

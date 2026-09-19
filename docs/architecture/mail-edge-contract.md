@@ -189,19 +189,36 @@ defeats the drift detection it exists for.
 
 ## Ops activation prerequisites
 
-Drift between this contract and the real dormant edge, to be reconciled **by Ops,
-before public SMTP or MX is ever enabled**. This repository does not modify
-`infinity-core`.
+**Discharged.** The one outstanding divergence between this contract and the real
+dormant edge has been reconciled and live-verified by Ops. This repository does
+not modify `infinity-core`.
 
-| parameter | this contract | dormant edge |
-|---|---|---|
-| `message_size_limit` | `15728640` (15 MiB) | `26214400` (25 MiB) |
+| parameter | dormant edge, previously | application contract | live edge, now verified |
+|---|---|---|---|
+| `message_size_limit` | `26214400` (25 MiB) | `15728640` (15 MiB) | `15728640` (15 MiB) |
 
-TI-005 changes the authoritative Postfix **production contract** from the stale
+Ops ref `infinity-core 1ad8932c`, verified 2026-09-19.
+
+That row is **historical reconciliation evidence, not live-host state**. This
+document states the contract the edge must satisfy; it does not track what a host
+this repository does not own is running at any later moment. Re-verification is
+an Ops action, and a stale "verified" column is exactly the failure mode the
+executable gates exist to catch — which is why the invariant itself stays pinned
+at `15728640` under `required:` and is asserted on every render and every start.
+
+TI-005 changed the authoritative Postfix **production contract** from the stale
 25 MiB to 15 MiB, on the owner decision of 2026-09-18. The application's own
-ingestion policy is unchanged. The edge ceiling must never exceed what ingestion
-accepts: the edge emits no DSN, so an over-ceiling message would be answered
-`250` and then silently discarded downstream.
+ingestion policy is unchanged, and the direction of the inequality is the part
+that matters: **the edge ceiling must never exceed what ingestion accepts.** The
+edge emits no DSN by construction, so an over-ceiling message would be answered
+`250`, relayed, refused downstream, and silently discarded — the sender told it
+was delivered, with no bounce ever contradicting that. Raising the edge above
+ingestion reintroduces exactly that silent-loss window.
+
+Discharging this prerequisite does **not** authorise public SMTP. It closes one
+gate; ADR-004's remaining gates — a named operational owner above all, and the
+production-readiness and legal prerequisites — stay closed, and production
+remains NO-GO.
 
 ## What runs, and where
 

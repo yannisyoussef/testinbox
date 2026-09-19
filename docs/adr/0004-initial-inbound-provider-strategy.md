@@ -150,7 +150,7 @@ this decision:
 | 4a | A monitored **`postmaster@inbox.testinbox.email`** on the *receiving tenant domain*, which RFC-conformant senders and operators will try. Its external SMTP acceptance behaviour must be **indistinguishable** from any other recipient on that domain — reserving it must not become the one address that answers differently, which would rebuild the enumeration oracle ADR-025 removes. Routing mechanism is a TI-005 implementation detail and must be tested. | Ops + Application |
 | 5 | Public-production activation prerequisites: privacy policy, terms, abuse process, retention documentation and appropriate legal review. | Owner + legal |
 | 6 | Existing production-readiness blockers, which are independent of this ADR: OVH monitoring, backups, `DOCKER-USER`/origin isolation, storage isolation and quota, production secrets, deployment validation. | Ops |
-| 7 | **Edge configuration reconciled to the application-owned contract.** TI-005 makes that contract executable; the invariants and the current divergences are in [`docs/architecture/mail-edge-contract.md`](../architecture/mail-edge-contract.md). Outstanding at the time of writing: the dormant host's `message_size_limit` is `26214400` (25 MiB) and must become `15728640` (15 MiB) — the edge ceiling must never exceed what ingestion accepts, because the edge emits no DSN and an over-ceiling message would be answered `250` and then silently discarded. | Ops |
+| 7 | **Edge configuration reconciled to the application-owned contract.** TI-005 makes that contract executable; the invariants are in [`docs/architecture/mail-edge-contract.md`](../architecture/mail-edge-contract.md). **Discharged by Ops**, verified 2026-09-19 against `infinity-core 1ad8932c`: the edge's `message_size_limit` was lowered from `26214400` (25 MiB) to the contract's `15728640` (15 MiB). The edge ceiling must never exceed what ingestion accepts, because the edge emits no DSN and an over-ceiling message would be answered `250` and then silently discarded. Discharging this gate closes **only** this gate — it authorises no public SMTP, and gates 1, 5 and 6 in particular remain closed. | Ops |
 
 DNS is not created during design or implementation. When enabled, the target is:
 
@@ -183,10 +183,12 @@ provider.** Provisioning a candidate is explicitly not a commitment to it.
 
 Provider selection belongs to Ops documentation, not to this ADR: the durable
 architectural invariants are *dedicated host*, *EU*, *not colocated*, *inbound 25
-reachable*, *rDNS controllable* and *outbound 25 blocked*. The current preferred
-first implementation is **Hetzner Cloud EU**, recorded here as intent rather than
-as an architectural commitment — changing provider does not require amending this
-ADR, and this ADR must not be read as ratifying one.
+reachable*, *rDNS controllable* and *outbound 25 blocked*. This ADR names no
+provider. Which supplier satisfies those properties is an Ops decision that may
+change without amending this ADR, and naming one here would invite reading the
+choice as ratified architecture. The deployed dormant edge is a Contabo EU host;
+that is a fact about the current estate, recorded in Ops documentation, not a
+commitment made by this decision.
 
 Raw MIME and attachments remain **deliberately not backed up**, which is what
 makes the TTL and deletion semantics of
