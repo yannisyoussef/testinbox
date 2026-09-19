@@ -1,6 +1,10 @@
 [versions]
 kotlin = "2.4.20"
 springBoot = "4.1.1"
+# Spring Boot 4.1.1 manages Tomcat 11.0.24, which carries CVE-2026-65182 (CRITICAL,
+# fixed in 11.0.25). Pinned above the BOM until a Boot patch manages the fix;
+# the promotion vulnerability policy blocks a release on it (ADR-031).
+tomcatEmbed = "11.0.25"
 coroutines = "1.11.0"
 testcontainers = "1.21.4"
 archunit = "1.5.0"
