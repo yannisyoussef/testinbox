@@ -1,6 +1,6 @@
 # ADR-004: Initial Inbound Provider Strategy
 
-**Status:** Accepted (2026-09-08). Replaces the Proposed form of this ADR, which
+**Status:** Accepted (§6a mechanism amended by [ADR-034](0034-production-platform-and-promotion.md): the tenant domain is enforced in code for production, not only supplied by configuration) (2026-09-08). Replaces the Proposed form of this ADR, which
 deferred the production provider choice pending the human decision recorded in
 `VISION.md`. That decision has now been made. The original Proposed text is
 retained verbatim under [History](#history), because the deferral was correct

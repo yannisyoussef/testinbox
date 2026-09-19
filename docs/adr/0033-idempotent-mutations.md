@@ -1,6 +1,6 @@
 # ADR-033: Idempotent Mutations
 
-**Status:** Accepted
+**Status:** Accepted (the deployment-requirement gap in Consequences is closed for production by [ADR-034](0034-production-platform-and-promotion.md): readiness reads `SHOW idle_in_transaction_session_timeout`)
 (amends [ADR-021](0021-exact-address-reservation.md) §concurrency and
 [ADR-027](0027-rate-limiting-and-resource-quotas.md) §6 — see *Amendments*)
 

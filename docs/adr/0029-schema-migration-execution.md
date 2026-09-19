@@ -1,7 +1,8 @@
 # ADR-029: Schema Migration Execution Model
 
 **Status:** Accepted (amends [ADR-001](0001-architecture-style.md): a third,
-one-shot backend deployable)
+one-shot backend deployable; §4 readiness extended by
+[ADR-034](0034-production-platform-and-promotion.md) with the database session bound)
 
 ## Context
 

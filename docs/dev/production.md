@@ -33,25 +33,52 @@ The edge and the application host are separate trust boundaries and stay so.
 
 `SPRING_PROFILES_ACTIVE=production` and `TESTINBOX_ENVIRONMENT=production`,
 together. `production` is a profile **group** over the same `deployed` layer
-staging uses; `application-production.yaml` holds only what is stricter, and
-`DeploymentSafety` enforces it whatever an environment variable says
+staging uses; the production overrides are the second document of
+`application-deployed.yaml` (a separate file would be shadowed — the layering
+is proven by `DeployedProfileLayeringTest`), and `DeploymentSafety` enforces
+them whatever an environment variable says
 ([ADR-034 §4](../adr/0034-production-platform-and-promotion.md)):
 
 | refused | why |
 |---|---|
-| profile `production` without environment `production`, or the reverse | a staging configuration labelled production, or a production process that does not know it is one |
+| profile `production` without environment `production`, or the reverse; a blank environment with any deployed profile; another environment profile active alongside `production` | a staging configuration labelled production, a production process that does not know it is one, an environment variable set but empty (which used to skip every check), or a later profile document that could override the production one |
 | `testinbox.mail-domain` ≠ `inbox.testinbox.email` | the public MX will name that domain and no other (ADR-004) |
 | API without an `https://` `TESTINBOX_PUBLIC_BASE_URL` | a production API node has a public origin and must state it |
-| `staging`, `rehearsal`, `localhost`, `127.0.0.1` or `.local` in the base URL, `TESTINBOX_DB_URL` or `TESTINBOX_S3_ENDPOINT` | the environment's own data services, never another environment's |
+| a loopback authority, or `staging`/`rehearsal`/`.local` in the host, of the base URL, `TESTINBOX_DB_URL` or `TESTINBOX_S3_ENDPOINT`; a database URL or endpoint without an explicit host | the environment's own data services, never another environment's — and `jdbc:postgresql:testinbox` (implicit localhost) has no host for the check to see |
 | `TESTINBOX_S3_CREATE_BUCKET=true` | production credentials hold no `CreateBucket`; the bucket is pre-provisioned |
 | `TESTINBOX_EDGE_REQUEST_CEILING` unset | the ingress ceiling must be declared so the wait window is proven to fit (100 s behind Cloudflare; `TESTINBOX_WAIT_WINDOW_CAP` stays 60 s) |
 | `testinbox.limits.enabled=false` | a reachable deployment would be unprotected (ADR-027) |
+| `testinbox.deployment.require-database-session-timeout=false` | production must enforce the database session bound, not merely report it (below) |
 | a short, low-entropy or fixture bootstrap key | it is the highest-privilege row in the table (ADR-032 §8) |
 
 Plus everything the deployed baseline already refuses: local-development
 credentials, a plaintext base URL, a proxy read timeout that does not clear
 the wait window by 30 s. All violations are reported at once, by setting
 name, never by value.
+
+### The production environment, as Ops must set it
+
+Ops does not use this repository's compose file, so its defaults do not
+reach production. Every value below is set explicitly in the Ops secret
+store or reconcile; the two marked *fixed* are supplied by the profile
+document and an environment variable for them is ignored (and a
+relaxed-binding override of the underlying property is refused).
+
+| variable | value | note |
+|---|---|---|
+| `SPRING_PROFILES_ACTIVE` | `production` | the group; nothing else alongside it |
+| `TESTINBOX_ENVIRONMENT` | `production` | exact, lowercase, non-blank |
+| `TESTINBOX_PUBLIC_BASE_URL` | `https://<production host>` | API only |
+| `TESTINBOX_EDGE_REQUEST_CEILING` | `100s` | Cloudflare's per-request ceiling; required |
+| `TESTINBOX_PROXY_READ_TIMEOUT` | between `90s` and `100s` | must clear the 60 s window by 30 s and must not exceed the ceiling — the reference compose default of `120s` is **refused** here |
+| `TESTINBOX_WAIT_WINDOW_CAP` | `60s` | do not raise (ADR-030) |
+| `TESTINBOX_MAIL_DOMAIN` | *fixed*: `inbox.testinbox.email` | supplied by the profile |
+| `TESTINBOX_S3_CREATE_BUCKET` | *fixed*: `false` | supplied by the profile |
+| `TESTINBOX_DB_URL`, `_USER`, `_PASSWORD` | the production PostgreSQL, `jdbc:postgresql://host:5432/db` form | direct, no pooler |
+| `TESTINBOX_S3_ENDPOINT`, `_ACCESS_KEY`, `_SECRET_KEY`, `_BUCKET`, `_REGION` | the pre-provisioned bucket's scoped credentials | no `CreateBucket` |
+| `TESTINBOX_BOOTSTRAP_API_KEY` | ≥ 43 chars of real entropy | break-glass only |
+| `TESTINBOX_GIT_SHA`, `TESTINBOX_IMAGE_DIGEST` | the handed-off candidate and each image's own digest | identity on `/actuator/info` |
+| `TESTINBOX_MANAGEMENT_PORT`, `TESTINBOX_SMTP_PORT`, `TESTINBOX_SHUTDOWN_GRACE`, `TESTINBOX_DB_POOL_SIZE` | as staging | private management port; SMTP never public |
 
 ## Readiness, and one setting the application checks live
 
@@ -63,6 +90,14 @@ production a disabled value (`0`, PostgreSQL's default) takes the node
 stays up. The recommended value is `30s` — above the 30 s claim-wait ceiling,
 well below anything that stops bounding a partitioned node
 ([ADR-033](../adr/0033-idempotent-mutations.md), [idempotency.md](idempotency.md)).
+
+Two consequences worth knowing. The setting must be **persisted** on the
+database side (`ALTER SYSTEM` or `ALTER ROLE … SET`, not a session `SET`),
+because on a single production node a PostgreSQL restart that loses it takes
+the API out of readiness for a liveness property of one idempotency key; row
+F's proof includes surviving a restart. And this is the readiness-cascade
+shape ADR-030 already flags for any multi-node production — revisit before
+one exists.
 
 Still unverifiable from inside the application, and therefore Ops
 acceptance items rather than checks: that the database is reached
@@ -107,11 +142,23 @@ Nothing in 1–3 builds, pushes, or holds a host credential. What GitHub asserts
 is: built, attested, merged, verified. What only Ops can assert is: staging
 proved these bytes; production runs them.
 
+Two limits of the GitHub side, stated plainly. A `pull_request` workflow
+runs the pull request's **own** copy of the file, so the required status
+check guards against mistakes, not against a contributor who rewrites the
+gate in the same pull request; the hardened form is a repository ruleset
+requiring the workflow from `master`'s copy, possible once `master` holds it
+(see [release-process.md](release-process.md#master)). And a GitLab trigger
+token is **project-scoped**: the staging token could request a pipeline on
+the production ref with any variables, so the production boundary is
+GitLab's protected ref and the Ops pipeline deriving the environment from the
+ref it runs on — never from `TESTINBOX_ENVIRONMENT` — which is acceptance
+row H.
+
 ### Required GitHub configuration — HUMAN ACTION
 
 | item | value |
 |---|---|
-| Environment `production-handoff` | deployment branches restricted to `master`; required reviewers — this restriction is what stops a branch that edits the workflow from dispatching it |
+| Environment `production-handoff` | **exists** (created 2026-09-19): deployment branches restricted to `master`, required reviewer `yannisyoussef`. Verify with `gh api repos/yannisyoussef/testinbox/environments/production-handoff` — this restriction, not the workflow's own `if:`, is what stops a branch that edits the workflow from dispatching it |
 | secret `GITLAB_TRIGGER_TOKEN` on it | a trigger token for the production pipeline; can start one pipeline and nothing else |
 | variable `GITLAB_OPS_API_URL` | the Ops instance API root; no fallback, or the token would be posted to gitlab.com |
 | variable `GITLAB_OPS_PRODUCTION_REF` | the Ops ref whose pipeline deploys production; no fallback |
@@ -122,9 +169,13 @@ proved these bytes; production runs them.
 
 Artifact rollback is a `Production handoff` with the previous approved
 candidate SHA: the same verification, the same digests it had, no rebuild.
-The previous set is durably recorded twice — in the earlier handoff's run
-summary and manifest artifact on GitHub, and in Ops's own reconcile record —
-and Ops follows every rollback with readiness and the synthetic suite.
+The previous set is recorded in the earlier handoff's run summary and
+manifest artifact on GitHub — both subject to the repository's log/artifact
+retention (90 days by default) — and durably in Ops's own reconcile record.
+The genuinely durable identity is the candidate **SHA**: as long as the
+`:sha` tags and their attestations remain in GHCR, the verifier
+reconstructs the digest set from it. Ops follows every rollback with
+readiness and the synthetic suite.
 
 `deploy/rollback-floors.txt` names commits a candidate must contain. The
 first is the V4 credential lifecycle (TI-002, `a2cb7ecc`): an artifact from
@@ -142,10 +193,19 @@ alive past the ADR-009 TTL and past explicit deletion, in a copy nobody
 promised.
 
 `deploy/backup/scope.txt` classifies every table; `scripts/check-backup-scope.sh`
-checks a real dump (or a `pg_restore -l` table list) against it, and
-`check-backup-scope.test.sh` proves it refuses content rows, a missing
-control-plane table, an unclassified table, and a backup that examines
-nothing.
+checks a real dump (or a `pg_restore -l` table list, produced with
+`pg_restore -l dump | awk '/ TABLE DATA / {print $7}'`) against it, and
+`check-backup-scope.test.sh` proves it refuses content rows — however they
+are spelled — a missing control-plane table, an unclassified table, and a
+backup that examines nothing.
+
+**Only logical, table-scoped backups satisfy this contract.** Physical
+backups and WAL archiving (`pg_basebackup`, continuous archiving) copy every
+row of every table by construction, have no table filter, and leave nothing
+for the gate to examine; they are not an option. The dump is produced with
+`pg_dump --exclude-table-data` for every `-` table (or `--table` for every
+`+` table), and object storage is excluded by the backup job's configuration,
+which row B requires Ops to show alongside a listing of the backup target.
 
 | backed up | never |
 |---|---|
@@ -177,7 +237,7 @@ Not decided by this increment and not decidable by software:
 | decision | options | consequence |
 |---|---|---|
 | **Backup retention period** for the control-plane dump | 7 days · 30 days · 90 days | Longer keeps more restore points and holds credential *verifiers* and reservation history longer; nothing in the set is message content, so the privacy cost is bounded to tenant identity and hashed credentials. Any period above the 24 h `EXACT` cooldown (ADR-021) means a restore can revive a reservation whose cooldown has since elapsed — acceptable, but say so |
-| **RPO** (how much control-plane change may be lost) | daily dump · hourly dump · continuous archiving | Determines how recently created workspaces, projects and keys survive a disaster. Message content is out of scope of RPO by design |
+| **RPO** (how much control-plane change may be lost) | daily dump · hourly dump · dump on every credential change | Determines how recently created workspaces, projects and keys survive a disaster. Continuous archiving is not an option: it copies content by construction (above). Message content is out of scope of RPO by design |
 | **RTO** | hours · one hour · minutes | Determines whether Ops needs a rehearsed, scripted restore or a documented manual one; the drill above is the minimum for any answer |
 
 ## Secrets — names, not values
@@ -189,7 +249,7 @@ Not decided by this increment and not decidable by software:
 | `TESTINBOX_BOOTSTRAP_API_KEY` | Ops; break-glass only ([api-keys.md](api-keys.md#bootstrap-and-the-first-key)) | change the value and restart; retires the previous one on the next request |
 | production synthetic credential | Ops; a **managed** key with `inboxes:write`, `messages:read` only | revoke and mint through the API; never the bootstrap key |
 | production administrative credential (`api-keys:manage`) | Ops; **distinct** from the synthetic one, never on a runner | as above |
-| `GITLAB_TRIGGER_TOKEN` (production) | GitHub `production-handoff` environment | rotate in GitLab, update the environment |
+| `GITLAB_TRIGGER_TOKEN` (production) | GitHub `production-handoff` environment; project-scoped in GitLab — the production ref's protection is what bounds it | rotate in GitLab, update the environment |
 | TLS / origin certificate | Ops, at the edge | not application-owned |
 
 Rules the repository enforces or proves: no secret in Git (gitleaks), none
@@ -231,9 +291,13 @@ Required: the approved ingress path reaches TestInbox; a direct connection to
 the origin's own address does not. The repository does not own the host
 firewall and holds no OVH address. It ships the invariant as
 `deploy/synthetic/origin` (`npm run test:origin`), run from **outside** the
-host with the address supplied by Ops at run time, with a mandatory positive
-control through the public hostname. The result is Ops acceptance evidence;
-the `DOCKER-USER` chain being non-empty is not.
+host with the address supplied by Ops at run time as an IP literal, probing
+every trust-boundary port (443, 80, 25, 2525, 9090, 9091, 5432, 9000), with a
+mandatory positive control that reaches the public hostname **over the same
+address family** — so an IPv6 probe from an IPv4-only runner cannot pass for
+free. The result is Ops acceptance evidence; the `DOCKER-USER` chain being
+non-empty is not, and no test from outside can prove the probed address *is*
+the origin — that remains Ops's to show.
 
 ## Synthetics for a dark deployment
 
@@ -244,7 +308,7 @@ each target. No public Postfix edge is required or exercised.
 |---|---|---|
 | `npm test` (deployment gate) | on the host: public HTTPS + private SMTP | create, deliver, wait, retrieve, cleanup; a full 60 s window through the real ingress; a parked wait woken by LISTEN; edge invariants incl. `/actuator` not routed and unknown Host refused |
 | `npm run test:product` | on the host, with the administrative credential | credential lifecycle, idempotency |
-| `npm run test:identity` | on the host, management ports | both deployables run the approved commit and are ready; LISTEN live; DB session bounded and **enforced** |
+| `npm run test:identity` | on the host, management ports | both deployables run the approved commit and are ready; LISTEN live; DB session bound reported everywhere and, in production, **enforced and bounded** |
 | `npm run test:origin` | from outside | direct-origin isolation |
 
 ## Known limits of this contract

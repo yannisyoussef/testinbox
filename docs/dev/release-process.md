@@ -157,6 +157,16 @@ red on a feature-branch candidate — and only then required. If
 repository-admin access is unavailable, that is a named human action and #44
 stays open; nothing here claims it done.
 
+A required status check guards against mistakes, not adversaries: a
+`pull_request` workflow runs the pull request's **own** copy of
+`release-candidate.yml`, so a pull request can rewrite the gate it is judged
+by. The hardened form is a repository **ruleset** that requires the workflow
+from `master`'s copy ("Require workflows to pass", pinned to
+`refs/heads/master`). That is possible only once `master` holds the file —
+i.e. after the first release merge — and is the second step of #44, after the
+status check. The `production-handoff` environment's `master`-only branch
+policy and required reviewer already exist and are verifiable by API.
+
 Also add `Synthetic unit tests (edge invariant classifier)` — it runs inside the
 `Static analysis` job, so requiring that job covers it.
 

@@ -127,11 +127,15 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
   `testinbox_wait_listen_degraded_polling`: it is the only signal that
   LISTEN/NOTIFY has failed, because everything else stays green.
 - **Production (ADR-034).** `staging` and `production` are profile GROUPS over
-  one `deployed` layer; `application-production.yaml` holds only what is
-  stricter, and `DeploymentSafety` — not the file — enforces it (profile ↔
-  environment agreement, `inbox.testinbox.email`, no staging/rehearsal/loopback
-  hosts, `create-bucket=false`, a declared edge ceiling). Never copy the
-  deployed layer into a second profile.
+  one `deployed` layer; the production overrides are the **second document of
+  `application-deployed.yaml`**, never a separate `application-production.yaml`
+  — Spring orders the group as `[production, deployed]` and the LATER profile
+  wins, so a separate file is silently shadowed (`DeployedProfileLayeringTest`
+  proves the real files). `DeploymentSafety` — not the document — enforces the
+  invariants (profile ↔ environment agreement, non-blank environment,
+  `inbox.testinbox.email`, no loopback/staging/rehearsal hosts,
+  `create-bucket=false`, a declared edge ceiling, session bound enforced).
+  Never copy the deployed layer into a second profile.
 - **A production candidate is a source SHA whose four digests each carry a
   provenance attestation for that SHA from `build-images.yml`** — never a
   merge commit's parent (squash/rebase are allowed), never a tag. `master`

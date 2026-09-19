@@ -1,13 +1,17 @@
 # ADR-034: Production Platform, Promotion Contract and Data Lifecycle
 
-**Status:** Accepted (2026-09-19). Amends [ADR-028](0028-deployment-artifacts-and-promotion.md)
+**Status:** Accepted (2026-09-19, after architecture, security, deployment
+and quality review). Amends [ADR-028](0028-deployment-artifacts-and-promotion.md)
 §1 (the promotion is now defined), [ADR-029](0029-schema-migration-execution.md)
 §4 (readiness gains the database session bound), [ADR-030](0030-staging-deployment-target.md)
-(its "Production" row and the "not authorised" consequence), and closes the
-known gap named in [ADR-033](0033-idempotent-mutations.md) Consequences.
-Does **not** amend [ADR-004](0004-initial-inbound-provider-strategy.md) or
-[ADR-025](0025-unknown-recipient-handling.md): no MX, no public SMTP and no
-edge-to-production relay follow from anything here.
+(its "Production" row and the "not authorised" consequence), and closes — for
+production — the known gap named in [ADR-033](0033-idempotent-mutations.md)
+Consequences. Amends [ADR-004](0004-initial-inbound-provider-strategy.md) §6a
+in one respect only: the tenant domain it fixed is now enforced *in code* for
+production rather than supplied purely by configuration (§4 below); the
+decision itself — `inbox.testinbox.email`, no MX, no public SMTP, no
+edge-to-production relay — stands, and [ADR-025](0025-unknown-recipient-handling.md)
+is untouched.
 
 ## Context
 
@@ -64,9 +68,20 @@ raw MIME never traverses the US staging host.
 
 GitHub obtains **no** OVH SSH, Docker, database, object-storage or API
 credential. The only cross-system secret it holds for production is a GitLab
-pipeline trigger token that can start one pipeline, on a GitHub Environment
-named `production-handoff` — named for what a green run means: *Ops accepted
-the deployment request*. It never means production deployed.
+pipeline trigger token, on a GitHub Environment named `production-handoff` —
+named for what a green run means: *Ops accepted the deployment request*. It
+never means production deployed.
+
+Stated precisely, because the security review corrected an earlier wording: a
+GitLab trigger token is **project-scoped, not ref-scoped**. It can start a
+pipeline on any ref its creator may push to, with any variables. So the
+boundary that keeps a staging token from requesting a production reconcile
+is on the GitLab side — the production ref is protected, the staging token's
+creator cannot run pipelines on it, and the Ops pipeline derives the
+environment from the **ref it runs on, never from the `TESTINBOX_ENVIRONMENT`
+variable** — and that is an Ops acceptance item (row H), not a property of
+this repository. The GitHub environment's required reviewers protect the
+production token's *use*, not the staging token's capability.
 
 ### 3. Production promotes staging-proven digests and never rebuilds
 
@@ -116,30 +131,60 @@ rebuild, verified identically. `deploy/rollback-floors.txt` lists commits a
 candidate must contain; a candidate predating one is a rollback across a
 behavioural break — the first is the V4 credential lifecycle, across which an
 older artifact answers `401` to every managed key — and is refused unless the
-hazard is acknowledged explicitly, and then still shouted. Database rollback
-remains unautomated (ADR-029 §5).
+hazard is acknowledged explicitly, and then still shouted and recorded in the
+manifest. Database rollback remains unautomated (ADR-029 §5).
+
+**What the model depends on, stated so it is proven rather than assumed:**
+`gh pr list --json headRefOid` reporting the head SHA a merged pull request
+had *at merge time* (a rollback candidate is never the current develop tip);
+the attestation's signer being the reusable `build-images.yml` and its source
+ref the caller's `develop`; and the candidate SHA being present in a
+full-history checkout of `master` after a squash or rebase merge, which holds
+only because `develop` is fetched too and is never force-pushed. The first
+two are exercised against real attestations for the first time on the first
+real release pull request, which is why §7 proves the gate before requiring
+it. `--limit 200` bounds how far back a rollback candidate can be found; a
+release older than that is refused, not silently missed.
 
 ### 4. Configuration fails closed, and production is decided in code
 
 `staging` and `production` are Spring **profile groups** over one `deployed`
-layer. Production adds a short overrides document; there is one description
-of a deployed node and one list of differences, not two copies.
+layer. The production overrides are the **second document of the same
+`application-deployed.yaml`**, activated on the `production` profile — there
+is one description of a deployed node and one short list of differences, not
+two copies. They are not a separate `application-production.yaml`, and the
+reason is worth recording because two reviewers reproduced it independently:
+Spring expands `production` to `[production, deployed]` and the *later*
+profile wins, so a separate production file is silently shadowed by the
+deployed layer. A later document in one file wins regardless of group order.
+`DeployedProfileLayeringTest` loads the real files through Spring and proves
+the overrides take effect; the architecture test forbids a per-profile file
+from returning.
 
-A profile document can be overridden by an environment variable, so the
+A document can still be overridden by an environment variable, so the
 document is the default and `DeploymentSafety` is the enforcement. A
 production process refuses to start when: the production profile is absent
 while `TESTINBOX_ENVIRONMENT` says production (staging configuration wearing
-a production label), or the reverse; the mail domain is anything but
-`inbox.testinbox.email` (ADR-004); the API has no HTTPS public origin; any
-staging, rehearsal or loopback host appears in the base URL, database URL or
-object-store endpoint; bucket creation is on; the ingress ceiling is
-undeclared; limits are disabled; a bootstrap key is short, low-entropy or a
-fixture. Every violation is reported at once. Staging is untouched by the
-production rules, and its configuration is byte-for-byte what it was.
+a production label), or the reverse, or the environment is blank while any
+deployed profile is active; another environment profile is active alongside
+`production`; the mail domain is anything but `inbox.testinbox.email`
+(ADR-004); the API has no HTTPS public origin; a loopback authority, or a
+`staging`/`rehearsal`/`.local` host, appears in the base URL, database URL or
+object-store endpoint, or either of the latter lacks an explicit host; bucket
+creation is on; the ingress ceiling is undeclared; the database session
+bound is reported rather than enforced; limits are disabled; a bootstrap key
+is short, low-entropy or a fixture. Every violation is reported at once.
+Staging is untouched by the production rules; its behaviour is unchanged,
+and the only functional difference from before is that readiness now
+*reports* `dbSession`, unenforced.
 
 The constants — the environment name, the profile name, the tenant domain,
 the non-production host fragments — live in `ProductionPolicy`, in code,
 because the point of a production invariant is that no variable can move it.
+The consequence, accepted: the `production` profile is TestInbox's own; a
+self-hoster of the reference topology (ADR-030) runs `staging`, whose rules
+are environment-neutral, and does not get a `production` profile that names
+another tenant domain.
 
 ### 5. Data lifecycle: what a backup may contain
 
@@ -180,9 +225,20 @@ reports, depends on every promotion leg, and fails on a failed, cancelled,
 skipped, missing or *unlisted* leg — with a self-test proving each refusal.
 Its name does not move when a leg does, which is the whole difference from
 `develop`'s thirteen matrix-expanded contexts (#46, deliberately untouched).
-Protection is applied only after the gate has been proven red and green on a
-real pull request; if the permission to apply it is unavailable, that remains
-a named human action and #44 stays open.
+
+One limit is stated rather than hidden: a `pull_request` workflow runs the
+**pull request's own copy** of the file, so a required status check is, on its
+own, a control against mistakes, not against a contributor who rewrites the
+gate in the same pull request. The hardened form is a repository ruleset that
+requires the `Release candidate` workflow *from `master`'s copy* — which is
+possible only once `master` holds the file, i.e. after the first release
+merge. Sequencing is therefore: prove the gate red and green on a real
+release pull request; require it as a status check (accidents); after the
+first release merge, pin it as a required workflow (adversaries). If the
+permission to apply any of that is unavailable, it remains a named human
+action and #44 stays open. The `production-handoff` environment's
+`master`-only branch policy and required reviewer exist today and are
+checked by API, not asserted.
 
 ### 8. What this ADR does not authorise
 
