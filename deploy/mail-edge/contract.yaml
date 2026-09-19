@@ -1,0 +1,158 @@
+# TestInbox mail-edge contract — the application-owned Postfix invariants.
+#
+# This is the single source of truth for both deploy/mail-edge/render.sh and
+# scripts/check-mail-edge-contract.sh. Production values live here; the CI
+# profile may override ONLY the keys listed under `ci_overridable`, and the gate
+# fails on any other divergence.
+#
+# WHAT BELONGS HERE: non-secret product invariants — the relay domain, the
+# reserved operational recipient, size and recipient ceilings, which settings
+# must be empty or non-empty, and the production queue timers.
+#
+# WHAT MUST NEVER BE HERE (Ops owns these, infinity-core does): real host IPs,
+# WireGuard identity, secrets, nftables rules, systemd units, TLS material, or
+# any deployment plumbing. This manifest exists for App/Ops drift comparison,
+# not cross-repository configuration management.
+#
+# PROVENANCE of the configuration family this mirrors:
+#   infinity-core       develop @ 52462f4fa6d9dd59c4cd4053f54a4beb02e501cd
+#   reconcile.sh        blob   e383fddb95c699d65e17f58cea328c2603d9dd79
+#                       sha256 cc308038ab0b1ba00387ee9c45f77e57fa94b46c68e2cdb93f1e56fee332b67d
+#   live host           Postfix 3.8.6 on Ubuntu 24.04
+# The blob id was verified against infinity-core; see
+# docs/architecture/mail-edge-contract.md for the one-character correction to
+# the sha256 as supplied in the Ops handoff.
+
+provenance:
+  infinity_core_ref: 52462f4fa6d9dd59c4cd4053f54a4beb02e501cd
+  reconcile_blob: e383fddb95c699d65e17f58cea328c2603d9dd79
+  reconcile_sha256: cc308038ab0b1ba00387ee9c45f77e57fa94b46c68e2cdb93f1e56fee332b67d
+  postfix_version: "3.8.6"
+
+# The production tenant mail domain. The apex testinbox.email is deliberately
+# NOT a relay domain — it stays on an ordinary mailbox provider.
+tenant_domain: inbox.testinbox.email
+apex_domain: testinbox.email
+
+# The monitored operational recipient. Reserved from tenants by
+# LocalPartPolicy.DENYLIST (ADR-021) and routed to local delivery AFTER SMTP
+# acceptance, so it is indistinguishable on the SMTP path.
+operational_recipient: postmaster
+# The local account postmaster@ is aliased to. Ops creates the equivalent on the
+# real host; it is named here so the compiled alias map can be asserted rather
+# than assumed — a rendered aliases file that was never compiled looks identical
+# on disk to one that was.
+operational_recipient_account: edgepm
+
+# The smtpd listener. DORMANT IS THE DEFAULT, and going live is an explicit,
+# reviewable act rather than an omission: this is the single switch that exposes
+# the edge to Internet mail, and CLAUDE.md's "no public SMTP" rests on it.
+#
+# The rehearsal binds all interfaces because its compose network is isolated and
+# the port is published to loopback only — but it must ASK for that, so a render
+# that forgets cannot silently produce a world-listening MTA.
+listener:
+  dormant: 127.0.0.1:25
+  live: 0.0.0.0:25
+
+# Settings whose value must be exactly this in every profile. A CI override of
+# any of these is a gate failure, not an allowed difference.
+required:
+  # [ADR-025] Recipient validity is never checked at the edge.
+  relay_recipient_maps: ""
+  # [ADR-019] Postfix must not stamp Message-ID/Date/From.
+  local_header_rewrite_clients: ""
+  always_add_missing_headers: "no"
+  # Structural no-DSN: unmatched transports are discarded, never sent.
+  default_transport: discard
+  notify_classes: ""
+  bounce_queue_lifetime: "0"
+  # No smart host: normal operation requires no Internet SMTP egress.
+  relayhost: ""
+  # Pinned, never derived from the container subnet.
+  mynetworks: 127.0.0.0/8 [::1]/128
+  smtpd_relay_restrictions: permit_mynetworks, reject_unauth_destination
+  disable_vrfy_command: "yes"
+  # [ADR-026] The control that keeps one DATA transaction one inbound event.
+  #
+  # It must be relay_* , not smtp_* . Postfix derives per-transport overrides
+  # from the master.cf SERVICE name, and tenant mail is routed `relay:[addr]`,
+  # so the smtp_* value governs a transport this path never uses. Verified:
+  # setting smtp_destination_recipient_limit=1 leaves
+  # relay_destination_recipient_limit at 50, while setting
+  # default_destination_recipient_limit=1 drops it to 1. Pinning relay_*
+  # explicitly removes that indirection, so the invariant no longer rests on an
+  # unpinned default a future "hardening" diff could move.
+  relay_destination_recipient_limit: "50"
+  # The externally accepted ceiling. 15 MiB — owner decision 2026-09-18,
+  # superseding the 26214400 the Ops handoff carried. It must never exceed what
+  # ingestion accepts: the edge emits no DSN, so an over-ceiling message would
+  # be answered 250 and then silently discarded downstream.
+  message_size_limit: "15728640"
+
+# Production values that CI is permitted to override for determinism. Every key
+# here must appear in ci_overridable or the gate rejects the profile.
+production:
+  smtpd_recipient_limit: "50"
+  smtp_destination_recipient_limit: "50"
+  smtpd_client_connection_count_limit: "20"
+  smtpd_client_connection_rate_limit: "60"
+  smtpd_client_message_rate_limit: "100"
+  anvil_rate_time_unit: 60s
+  maximal_queue_lifetime: 4h
+  minimal_backoff_time: 120s
+  maximal_backoff_time: 600s
+  queue_run_delay: 120s
+  # Present here so the gate's drift loop actually asserts it. Listed in
+  # ci_overridable below, but a key that appears only there is checked in no
+  # profile at all — which is how the largest security delta in the CI profile
+  # came to be the one parameter nothing verified.
+  smtpd_tls_security_level: may
+  smtpd_tls_protocols: '>=TLSv1.2'
+  smtpd_tls_loglevel: '1'
+  tls_preempt_cipherlist: 'no'
+
+# The ONLY parameters a non-production profile may change, each with the reason.
+# Anything else differing between the rendered configuration and `production`
+# above is silent drift and fails the gate.
+ci_overridable:
+  maximal_queue_lifetime: a 4h expiry test cannot run in CI
+  minimal_backoff_time: first retry would idle for two minutes
+  maximal_backoff_time: bounds the retry test
+  queue_run_delay: the queue runner would not fire inside a test
+  smtpd_client_connection_count_limit: anvil limits are per client IP and CI has one sender
+  smtpd_client_connection_rate_limit: same
+  smtpd_client_message_rate_limit: same
+  smtpd_tls_security_level: the rehearsal has no certificate material and no TLS invariant to prove
+  smtpd_tls_protocols: dropped with the TLS block when TLS is off in CI
+  smtpd_tls_loglevel: dropped with the TLS block when TLS is off in CI
+  tls_preempt_cipherlist: dropped with the TLS block when TLS is off in CI
+
+# OPS ACTIVATION PREREQUISITES — drift between this contract and the real
+# dormant edge that must be reconciled by Ops BEFORE public SMTP or MX is ever
+# enabled. This repository does not modify infinity-core; these are recorded so
+# the divergence is deliberate and visible rather than discovered later.
+#
+#   message_size_limit
+#     this contract   15728640   (15 MiB — owner decision 2026-09-18)
+#     dormant edge    26214400   (25 MiB — the value the Ops handoff recorded)
+#   The edge ceiling must never exceed what ingestion accepts: the edge emits no
+#   DSN, so an over-ceiling message is answered 250 and then silently discarded
+#   downstream. TI-005 changes the authoritative Postfix production contract;
+#   the application's own ingestion policy is unchanged.
+ops_activation_prerequisites:
+  message_size_limit_reconcile: dormant edge is 26214400, must become 15728640 before public SMTP
+
+# The ingestion ceiling. Equal to the edge ceiling, which the boundary proof in
+# the edge suite justifies: Postfix applies its limit to the message INCLUDING
+# the trace header it is about to add, so its reserve grows as that header
+# grows, and the only residual is ingestion's own header — bounded by the
+# recipient and hostname, not by anything a sender controls.
+#
+# The property, not any measured byte count, is the contract:
+#   every message the public edge accepts must remain acceptable to ingestion
+#   after TestInbox-owned transport headers are added.
+ingestion:
+  # The internal hard cap. Equal to or above the edge ceiling; any excess is a
+  # transport-overhead allowance, NOT a larger public entitlement.
+  max_raw_size_bytes: "15728640"

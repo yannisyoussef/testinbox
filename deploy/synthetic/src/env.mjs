@@ -48,6 +48,30 @@ export const config = Object.freeze({
 });
 
 /**
+ * Everything the mail-edge contract suite needs.
+ *
+ * Deliberately NOT part of `config`: the deployed staging estate has no Postfix
+ * edge — the real one is a separate dormant Contabo host — so requiring these
+ * of every synthetic run would break the deployment gate. The edge suite is a
+ * separate target with its own minimum count, which is also why it must not be
+ * expressed as skips: a suite that silently skips is a suite nobody notices has
+ * stopped running.
+ */
+export function edgeConfig() {
+  return Object.freeze({
+    /** The Postfix edge's SMTP listener, reachable only inside the rehearsal. */
+    host: required("TESTINBOX_EDGE_SMTP_HOST"),
+    port: optionalInt("TESTINBOX_EDGE_SMTP_PORT", 2526),
+    /** The tenant domain the edge relays for. */
+    mailDomain: required("TESTINBOX_MAIL_DOMAIN"),
+    /** The externally accepted ceiling, from deploy/mail-edge/contract.yaml. */
+    messageSizeLimit: optionalInt("TESTINBOX_EDGE_MESSAGE_SIZE_LIMIT", 15728640),
+    /** The reserved operational recipient (ADR-021 denylist, routed local:). */
+    operationalRecipient: process.env.TESTINBOX_EDGE_POSTMASTER?.trim() || "postmaster",
+  });
+}
+
+/**
  * The key-administration credential, resolved lazily.
  *
  * Deliberately NOT part of `config`: the deployment gate must not require it.

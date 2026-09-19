@@ -1,0 +1,168 @@
+# ============================================================================
+# TestInbox SMTP edge — Postfix main.cf
+#
+# PROVENANCE. This template is the application-owned counterpart of the Ops
+# canonical configuration in infinity-core `infra/mail-edge/postfix/`, supplied
+# by the Ops handoff of 2026-09-17 and recorded in
+# docs/architecture/mail-edge-contract.md. The rendered *invariants* are owned
+# here; the substitution values for the real host (IPs, TLS paths, the
+# public-SMTP switch, WireGuard) are owned by Ops and never enter this repo.
+#
+# RENDERED by deploy/mail-edge/render.sh from a profile. Do not edit a rendered
+# copy: the next render overwrites it. Edit this template.
+#
+# Authority: ADR-004 (Accepted 2026-09-08), ADR-019, ADR-025, ADR-026.
+# Every block marked [INVARIANT] encodes a decision, not a preference, and is
+# asserted by scripts/check-mail-edge-contract.sh.
+# ============================================================================
+
+compatibility_level = 3.6
+myhostname = __EDGE_MYHOSTNAME__
+mydomain = __EDGE_MAIL_DOMAIN__
+myorigin = $myhostname
+smtpd_banner = $myhostname ESMTP
+
+# The edge is authoritative for nothing in the TENANT domain — that is what
+# relay_domains is for. mydestination lists ONLY this host's own name, which is
+# needed for one reason: postmaster@ is transported to local:, the local agent
+# expands the alias, and the resulting account must be recognised as local or it
+# routes straight back out to default_transport = discard and the mail is
+# silently dropped. It does NOT make the edge accept tenant mail locally.
+mydestination = $myhostname localhost.localdomain localhost
+local_recipient_maps =
+
+# [INVARIANT] Pinned to loopback, never derived. Postfix evaluates
+# permit_mynetworks BEFORE reject_unauth_destination, so a container-derived
+# mynetworks would make the test sender a trusted client and let it relay to
+# any domain — turning the open-relay proof green while the edge is open.
+mynetworks = 127.0.0.0/8 [::1]/128
+
+# [INVARIANT] Relay only for the tenant mail domain. The apex testinbox.email is
+# NOT here — it stays on an ordinary mailbox provider.
+relay_domains = __EDGE_MAIL_DOMAIN__
+
+# [INVARIANT] NO relay_recipient_maps. Recipient validity is never checked at
+# the edge. Every syntactically valid recipient at the relay domain is accepted
+# with the same uniform 250 (ADR-025). Defining a recipient map here would
+# create the enumeration oracle the whole design exists to remove.
+relay_recipient_maps =
+
+# [INVARIANT] Do not stamp Message-ID (or Date/From). ADR-019 forbids using
+# Message-ID as a dedup key, and providerMessageId stays null on this path.
+always_add_missing_headers = no
+# [INVARIANT] always_add_missing_headers is NOT sufficient on its own. Postfix
+# 2.6+ adds Message-ID/From/Date for clients matching local_header_rewrite_clients,
+# whose DEFAULT (permit_inet_interfaces) covers mail submitted on this host. A
+# remote test sender does not match that default, so a purely behavioural test
+# passes whether or not this is correct — which is why it is a static assertion.
+local_header_rewrite_clients =
+
+# --- acceptance policy ------------------------------------------------------
+# No recipient verification, no callouts, no sender probing: all of those leak
+# recipient existence. Reject only what is not ours (anti-open-relay).
+smtpd_relay_restrictions = permit_mynetworks, reject_unauth_destination
+smtpd_recipient_restrictions = permit_mynetworks, reject_unauth_destination
+smtpd_helo_required = yes
+smtpd_delay_reject = yes
+disable_vrfy_command = yes
+smtpd_reject_unlisted_recipient = no
+smtpd_reject_unlisted_sender = no
+
+# --- never bounce, never notify --------------------------------------------
+# [INVARIANT] The edge must never emit a DSN:
+#   - it would require outbound 25, which is permanently blocked on the host;
+#   - it is backscatter to an unverified address (blocklisting risk);
+#   - it leaks downstream disposition, defeating the uniform 250.
+notify_classes =
+# NOTE: do NOT set *_notice_recipient to an empty value. Postfix rejects a
+# zero-length string at smtpd startup ("bad string length 0 < 1") and the MTA
+# then throttles and accepts nothing — while `postfix check` still passes.
+# notify_classes above is the real switch. The 220 banner gate exists because
+# this exact mistake is invisible to static validation.
+#
+# Sender-directed DSNs are prevented STRUCTURALLY rather than by a flag: a
+# bounce is handed to the transport for the SENDER's domain, which is never in
+# transport_maps, so it falls to default_transport = discard and is dropped
+# before it can leave.
+bounce_queue_lifetime = 0
+soft_bounce = no
+
+# [INVARIANT] Queue expiry = operational signal + discard, never return-to-sender.
+# Short lifetime because TestInbox inboxes have minute-scale TTLs (ADR-009): a
+# message delivered hours late is worthless, and a short lifetime bounds
+# spool-exhaustion risk. The queue is a buffer, not a durability tier.
+maximal_queue_lifetime = __EDGE_QUEUE_LIFETIME__
+maximal_backoff_time = __EDGE_MAX_BACKOFF__
+minimal_backoff_time = __EDGE_MIN_BACKOFF__
+queue_run_delay = __EDGE_QUEUE_RUN_DELAY__
+
+# [INVARIANT] Defence in depth with the host's nftables egress DROP: anything
+# not matched by transport_maps is DISCARDED, never sent. The edge has exactly
+# one legitimate destination.
+transport_maps = hash:/etc/postfix/transport
+default_transport = discard
+
+# [INVARIANT] Identical in every profile. smtp(8) runs chrooted and therefore
+# cannot read /etc/hosts or reach a container runtime's embedded DNS, so the
+# transport map carries an ADDRESS rather than a name — which is also what the
+# real edge does across WireGuard. Leaving this at the production value is only
+# safe because of that; a name in the transport map would defer forever.
+smtp_host_lookup = dns
+
+# [INVARIANT] No smart host. The edge never initiates SMTP to the Internet, so
+# normal operation must not require Internet SMTP egress.
+relayhost =
+
+# --- limits (abuse ceilings) ------------------------------------------------
+# [INVARIANT] message_size_limit is the externally accepted ceiling and is
+# 15 MiB — the same number the product advertises. It must never exceed what
+# ingestion will accept: a larger edge ceiling means Postfix returns 250 for a
+# message ingestion will always refuse, and because the edge emits no DSN the
+# sender is told "accepted" while the mail is silently discarded.
+message_size_limit = __EDGE_MESSAGE_SIZE_LIMIT__
+mailbox_size_limit = 0
+smtpd_recipient_limit = __EDGE_RECIPIENT_LIMIT__
+# [INVARIANT] Must be >= the recipient count in one transaction, or Postfix
+# splits one logical delivery into several downstream ones and the ADR-026
+# atomicity proof silently stops testing atomicity while still passing.
+#
+# relay_* is the load-bearing one: Postfix derives per-transport overrides from
+# the master.cf SERVICE name, and tenant mail is routed `relay:[addr]:port`, so
+# smtp_* governs a transport this path never uses. Left unpinned, relay_*
+# resolves to $default_destination_recipient_limit — an unpinned default that a
+# plausible hardening change could set to 1 while every gate stayed green.
+relay_destination_recipient_limit = __EDGE_DEST_RECIPIENT_LIMIT__
+# Kept for the smtp transport, which nothing in this topology routes to today.
+smtp_destination_recipient_limit = __EDGE_DEST_RECIPIENT_LIMIT__
+smtpd_client_connection_count_limit = __EDGE_CONN_LIMIT__
+smtpd_client_connection_rate_limit = __EDGE_CONN_RATE__
+smtpd_client_message_rate_limit = __EDGE_MSG_RATE__
+smtpd_error_sleep_time = 5s
+smtpd_soft_error_limit = 5
+smtpd_hard_error_limit = 10
+smtpd_timeout = 120s
+anvil_rate_time_unit = 60s
+
+# --- inbound TLS ------------------------------------------------------------
+# The real edge offers opportunistic STARTTLS with host-managed certificates.
+# The rehearsal has no certificate material and no TLS invariant to prove, so
+# the whole TLS block is an allowlisted CI difference — declared in
+# contract.yaml's ci_overridable and checked structurally by the profile-diff
+# case in scripts/check-mail-edge-contract.test.sh. (There is no profiles/
+# directory; profiles are branches in render.sh.)
+smtpd_tls_security_level = __EDGE_TLS_LEVEL__
+__EDGE_TLS_BLOCK__
+# The edge never initiates SMTP to the Internet; outbound TLS settings are
+# deliberately absent.
+
+# --- local delivery (postmaster@ only) --------------------------------------
+# postmaster@ is the ONLY address delivered locally. The lookup happens at
+# DELIVERY time, after acceptance, so the SMTP conversation is byte-identical to
+# any other recipient — that post-acceptance divert is what lets postmaster@ be
+# monitored without creating a recipient-enumeration oracle.
+alias_maps = hash:/etc/aliases
+alias_database = hash:/etc/aliases
+home_mailbox = Maildir/
+
+# --- logging ----------------------------------------------------------------
+maillog_file = /var/log/mail.log

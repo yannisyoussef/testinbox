@@ -128,6 +128,38 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
   LISTEN/NOTIFY has failed, because everything else stays green.
 - No public MX record, no production deployment, no `master` auto-deploy.
 
+## The Postfix mail edge (ADR-004, TI-005)
+
+The inbound edge is a **dedicated, dormant** Postfix host Ops owns. The
+application repo owns its *behavioural contract* and proves it in the rehearsal;
+Ops owns the host, nftables, systemd, WireGuard and the substitution values.
+`deploy/mail-edge/contract.yaml` is the machine-readable invariant manifest, and
+must never acquire a host IP, secret or deployment detail. Full rationale:
+`docs/architecture/mail-edge-contract.md`.
+
+- The rehearsal renders the **production relay form**, never the dormant
+  `discard:` one. An unknown-recipient test against a discarding edge proves
+  nothing: the message must actually reach ingestion for ingestion to discard it.
+  `render.sh` refuses the dormant form in the `ci` profile.
+- **`postfix check` is not a health check.** It validates syntax, not values, and
+  passes configurations that leave smtpd answering nothing (a zero-length
+  `*_notice_recipient` is the known one). The `220` banner gate is what makes the
+  static gate trustworthy; both are blocking.
+- `mynetworks` is **pinned to loopback**, never derived. `permit_mynetworks` is
+  evaluated first, so a container-derived value makes the test sender trusted and
+  the open-relay proof vacuous.
+- CI may override **only** the keys under `ci_overridable`; `render.sh` refuses
+  anything else and the production values are asserted separately in every
+  profile. `message_size_limit` is deliberately NOT overridable.
+- The edge and ingestion ceilings are both 15 MiB. The contract is the property —
+  *everything the edge accepts must remain acceptable to ingestion after
+  TestInbox-owned transport headers are added* — never a measured byte reserve.
+- `scripts/check-mail-edge-contract.test.sh` is the mutation suite. It **fails**
+  rather than skips when Docker is absent: a mutation suite that quietly skips is
+  the failure it exists to prevent.
+- `deploy.sh` does not know about the edge, and must not. It is the script a real
+  host runs, and a real host does not deploy this.
+
 ## Coding conventions
 
 - Kotlin, 4-space indent, formatting enforced by Spotless/ktlint
