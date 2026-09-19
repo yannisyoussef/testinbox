@@ -69,7 +69,7 @@ gate.
 | Compatibility-gate self-test | `openapi-breaking-check.test.sh` | Yes |
 | Secret detection | gitleaks (working tree) | Yes |
 | Deployment-gate self-tests | `validate-image-digest.test.sh`, `deploy-preflight.test.sh`, `gitlab-handoff.test.sh`, `check-migration-safety.test.sh`, `scan-images.test.sh` | Yes |
-| Production-contract self-tests (ADR-034) | `verify-production-candidate.test.sh` (25 cases: non-develop or cross-repository head, no merged PR, one of four artifacts missing, a tag-shaped digest, artifacts attested to another commit / by another repository's workflow / from another ref, rollback floors incl. an absent floors file, and the positive controls — the stubbed `gh` refuses any attestation call missing a binding flag), `promotion-gate.test.sh` (11: failed/cancelled/skipped/missing/unlisted leg, zero legs, nothing to aggregate), `check-backup-scope.test.sh` (25: content rows in every spelling `pg_dump` and hand tooling produce, quoted/`UNLOGGED`/multiline/digit-suffixed `CREATE TABLE`, the documented `pg_restore -l` recipe, a missing control-plane table, a dump that examines nothing) | Yes — on every pull request, because the gates they protect run only on a promotion |
+| Production-contract self-tests (ADR-034) | `verify-production-candidate.test.sh` (25 cases: non-develop or cross-repository head, no merged PR, one of four artifacts missing, a tag-shaped digest, artifacts attested to another commit / by another repository's workflow / from another ref, rollback floors incl. an absent floors file, and the positive controls — the stubbed `gh` refuses any attestation call missing a binding flag), `promotion-gate.test.sh` (11: failed/cancelled/skipped/missing/unlisted leg, zero legs, nothing to aggregate), `await-candidate-build.test.sh` (10: a failed or cancelled develop build, a build that never comes, a build still running at the deadline, a feature-branch head refused without a query), `check-backup-scope.test.sh` (25: content rows in every spelling `pg_dump` and hand tooling produce, quoted/`UNLOGGED`/multiline/digit-suffixed `CREATE TABLE`, the documented `pg_restore -l` recipe, a missing control-plane table, a dump that examines nothing) | Yes — on every pull request, because the gates they protect run only on a promotion |
 | Candidate identity + `Production promotion gate` | `release-candidate.yml` | Yes, on a pull request to `master` only; the one context `master` requires |
 | Production fail-closed configuration | `DeploymentSafetyTest`, `DeploymentSafetyCheckTest`, `IngestionDeploymentSafetyCheckTest`, `DeployedConfigurationTest`, `DeployedProfileLayeringTest` (api + ingestion: the REAL profile documents loaded through Spring — the production overrides win, staging is untouched), `S3BlobStoreTest` | Yes — staging configuration labelled production, a blank environment under a deployed profile, an env var re-enabling bucket creation or demoting the session bound, a production node creating its bucket, a shadowed per-profile file, and profiles that drift |
 | Migration rollback safety | `check-migration-safety.sh` | Yes on an **undeclared** rollback-breaking migration; a **declared** one warns on develop and blocks promotion |
@@ -100,7 +100,15 @@ depends on, which this document forbids doing silently; and skipping the jobs
 from inside the workflow reports them green without running them, which is the
 failure mode named at the top of this section.
 
-**Trivy is environment-sensitive** (ADR-028 §6, as amended). On develop and
+**Trivy is environment-sensitive** (ADR-028 §6, as amended). One thing the
+informational path taught, 2026-09-19: the pinned Trivy release's assets had
+been removed upstream, the install failed inside a `continue-on-error` step,
+and the informational scan **silently did not run on every `develop` push**
+while every step showed green. It surfaced only because the blocking
+promotion leg does not swallow the error. The install is now its own step
+whose failure annotates the run and writes "DID NOT RUN" into the summary —
+still not a deploy blocker, because an unreachable mirror is not a finding,
+but no longer invisible. On develop and
 pull requests it is non-blocking for the same reason as OSV-Scanner, one layer
 down: a CVE published in a base image is not a regression introduced by the
 merge that happens to run next, and making every historical CVE a deployment

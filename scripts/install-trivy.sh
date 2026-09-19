@@ -8,7 +8,10 @@
 # with the ability to push images under the org and mint provenance for them.
 set -euo pipefail
 
-VERSION="${TRIVY_VERSION:-0.68.0}"
+# 0.68.0 was pinned until 2026-09-19; its release assets no longer exist (404),
+# and on the informational path that failed silently for weeks. Keep this at a
+# release whose assets you have just fetched.
+VERSION="${TRIVY_VERSION:-0.74.0}"
 DEST="${TRIVY_DEST:-/tmp}"
 ARCHIVE="trivy_${VERSION}_Linux-64bit.tar.gz"
 BASE="https://github.com/aquasecurity/trivy/releases/download/v${VERSION}"

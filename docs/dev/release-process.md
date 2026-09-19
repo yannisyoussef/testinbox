@@ -63,6 +63,15 @@ The `Release candidate` workflow runs three promotion legs and one aggregate:
 | Migration rollback safety | **Blocks** if any migration in the release range is rollback-breaking, including one that *declared* itself so. |
 | **`Production promotion gate`** | The one context `master` requires. `always()` reports; fails on a failed, cancelled, skipped, missing or unlisted leg (`scripts/promotion-gate.test.sh`). |
 
+Both digest-resolving legs first **wait for develop's build of the
+candidate** (`scripts/await-candidate-build.sh`, bounded at 25 min). A
+release pull request's head moves the instant `develop` does, so its run
+starts in the same second as the push run that publishes the images; the
+first real release pull request (#51) failed on exactly that — "no published
+image" — eight minutes before the images existed. A failed or cancelled
+develop build is a refusal (nothing to promote); a feature-branch head is
+refused immediately rather than waited for.
+
 After the merge, production is reached only by dispatching `Production
 handoff` on `master` with the approved candidate SHA — see
 [production.md](production.md#promotion-and-handoff).

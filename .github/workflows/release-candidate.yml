@@ -54,8 +54,14 @@ jobs:
         with:
           # Rollback floors are evaluated by ancestry.
           fetch-depth: 0
-      - name: Self-test the verifier (it must refuse what it must refuse)
-        run: ./scripts/verify-production-candidate.test.sh
+      - name: Self-test the verifier and the build wait (they must refuse what they must refuse)
+        run: |
+          ./scripts/verify-production-candidate.test.sh
+          ./scripts/await-candidate-build.test.sh
+      - name: Wait for develop's build of this commit
+        # Same race as the vulnerability leg; a feature-branch head is refused
+        # here immediately, so the negative proof stays fast.
+        run: ./scripts/await-candidate-build.sh --candidate "$CANDIDATE_SHA" --head-ref "$CANDIDATE_HEAD_REF"
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -102,11 +108,22 @@ jobs:
       # The develop tip being promoted, not the merge commit: the images were
       # tagged with this SHA when they were pushed.
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+      CANDIDATE_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Self-test the policy
-        run: ./scripts/scan-images.test.sh
+      - name: Self-test the policy and the build wait
+        run: |
+          ./scripts/scan-images.test.sh
+          ./scripts/await-candidate-build.test.sh
+
+      # A release pull request's head moves the instant develop does, so this
+      # run starts in the same second as the push run that publishes the
+      # candidate's images. Wait for that build, bounded, or the scan fails on
+      # timing rather than on a finding (the first real release PR did).
+      - name: Wait for develop's build of this commit
+        run: ./scripts/await-candidate-build.sh --candidate "$CANDIDATE_SHA" --head-ref "$CANDIDATE_HEAD_REF"
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -137,7 +154,7 @@ jobs:
 
       - name: Install Trivy
         env:
-          TRIVY_VERSION: 0.68.0
+          TRIVY_VERSION: 0.74.0
         run: ./scripts/install-trivy.sh
 
       - name: Scan the promoted artifacts

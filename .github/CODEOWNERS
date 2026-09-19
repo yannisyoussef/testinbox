@@ -20,6 +20,7 @@
 # production reconcile, and the one context master's protection requires.
 /scripts/verify-production-candidate.sh               @yannisyoussef
 /scripts/promotion-gate.sh                            @yannisyoussef
+/scripts/await-candidate-build.sh                     @yannisyoussef
 /scripts/check-backup-scope.sh                        @yannisyoussef
 /deploy/                                              @yannisyoussef
 
