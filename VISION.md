@@ -127,7 +127,10 @@ they are not resolvable by further internal analysis alone.
    [ADR-030](docs/adr/0030-staging-deployment-target.md) (Accepted): the
    existing Infinity shared dev/staging host, behind Cloudflare and the
    estate's Traefik, delivered pull-based through GitLab `infinity-core`.
-   Persistent staging is live. **Production remains undecided** beyond the
-   stated intention to target OVH, and needs its own increment — deciding
-   where staging runs did not decide where production runs, and it did not
-   decide the inbound mail provider (item 3 / ADR-004 is still open).
+   Persistent staging is live. **Production decided** (2026-09-19) by
+   [ADR-034](docs/adr/0034-production-platform-and-promotion.md) (Accepted):
+   the existing OVH dedicated host in France for the application/data plane,
+   operated through the same Ops estate, with the public SMTP edge on its own
+   EU host (item 3 / ADR-004). Production is dark-deployable and **not live**:
+   no MX, no public SMTP, no tenant traffic, pending TI-007 and the human
+   gates ADR-004 records.

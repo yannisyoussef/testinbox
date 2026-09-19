@@ -192,8 +192,10 @@ ADR-020 amendment, not a note here.
 | Actuator 9090/9091 | compose network only, not routed by the edge |
 
 **There is no public MX record and none is created here.** Staging SMTP exists
-only to let the synthetic suite validate our own stack. Production inbound-mail
-provider selection is a separate decision (ADR-004, still `Proposed`).
+only to let the synthetic suite validate our own stack. The production inbound
+provider is decided (ADR-004, Accepted: a dedicated, dormant Postfix edge) and
+its activation is TI-007; the production application host is decided too
+(ADR-034, [production.md](production.md)).
 
 ## Edge protection
 

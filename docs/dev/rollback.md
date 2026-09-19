@@ -36,6 +36,12 @@ cannot be handed to Ops this way.
 The handoff carries the digest set; **Ops performs the rollback**, and the
 result is visible there, not in the GitHub run.
 
+**Production** rolls back through `Production handoff` with the *previous
+approved candidate SHA*: the same verification, the same digests that
+candidate had, no rebuild ([production.md](production.md#rollback)). The
+previous set is recorded in the earlier handoff's run summary and manifest
+artifact, and in Ops's reconcile record.
+
 Or, for the self-hosted reference topology, on the host directly:
 
 ```bash
@@ -155,3 +161,10 @@ Before rolling back across V4:
 2. Expect and announce client-visible `401`s for the duration.
 3. Prefer rolling forward with a fix. This is one of the cases the ADR-028
    promote-by-digest model makes cheap.
+
+This is what `deploy/rollback-floors.txt` encodes: V4's commit is a **floor**,
+and `verify-production-candidate.sh` refuses a production candidate that does
+not contain it unless `acknowledge_rollback_hazard` is set on the dispatch —
+and then still warns in the log. A schema check alone would have called this
+rollback safe. Any future break of the same shape is added there, never
+removed.

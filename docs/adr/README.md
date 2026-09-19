@@ -29,12 +29,13 @@
 | [0025](0025-unknown-recipient-handling.md) | Unknown-recipient handling | Accepted |
 | [0026](0026-recipient-scoped-provider-delivery-identity.md) | Recipient-scoped provider delivery identity | Accepted |
 | [0027](0027-rate-limiting-and-resource-quotas.md) | Rate limiting and resource quota strategy | Accepted (§6 amended by 0033) |
-| [0028](0028-deployment-artifacts-and-promotion.md) | Deployment artifacts and promotion by digest | Accepted (§6 amended by 0031) |
-| [0029](0029-schema-migration-execution.md) | Schema migration execution model | Accepted |
-| [0030](0030-staging-deployment-target.md) | Staging deployment target | Accepted |
+| [0028](0028-deployment-artifacts-and-promotion.md) | Deployment artifacts and promotion by digest | Accepted (§6 amended by 0031; §1 promotion defined by 0034) |
+| [0029](0029-schema-migration-execution.md) | Schema migration execution model | Accepted (§4 readiness extended by 0034) |
+| [0030](0030-staging-deployment-target.md) | Staging deployment target | Accepted (production row superseded by 0034) |
 | [0031](0031-vulnerability-policy-by-environment.md) | Container vulnerability policy by environment | Accepted |
 | [0032](0032-api-key-credential-lifecycle.md) | API key credential format, verification and lifecycle | Accepted |
-| [0033](0033-idempotent-mutations.md) | Idempotent mutations | Accepted |
+| [0033](0033-idempotent-mutations.md) | Idempotent mutations | Accepted (deployment-requirement gap closed by 0034) |
+| [0034](0034-production-platform-and-promotion.md) | Production platform, promotion contract and data lifecycle | Accepted |
 
 `Proposed` ADRs require a human decision (see `VISION.md` §Human Decisions
 Required Before Implementation) before they can move to `Accepted`.

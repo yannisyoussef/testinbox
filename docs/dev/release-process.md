@@ -6,10 +6,11 @@
 |---|---|---|
 | `feature/*`, `feat/*`, `fix/*` | work in progress | CI on every PR: contract, static analysis, backend, e2e, SDKs, web, plus an image build and an ephemeral rehearsal of the full deployment |
 | `develop` | **staging candidate** | merge builds immutable artifacts, rehearses the deployment, and **hands the digest set to GitLab Ops**, which deploys |
-| `master` | **production-approved candidate** | the promotion gates (vulnerability policy, migration rollback safety) run. **No deployment.** No production pipeline exists |
+| `master` | **production-approved candidate** | a release PR runs the promotion legs — candidate identity, vulnerability policy, migration rollback safety — behind one required context, `Production promotion gate`. Merging is the approval; it deploys nothing. `Production handoff` is a separate, manual dispatch on `master` |
 
-Nothing in this repository deploys production. That is a separate increment
-and a separate decision.
+Nothing in this repository deploys production. `Production handoff` hands a
+verified candidate to Ops, which deploys and owns the verdict
+([production.md](production.md), ADR-034).
 
 ## Feature → develop
 
@@ -53,12 +54,18 @@ Open a release PR from `develop` to `master`. It is a human decision and a
 human review; merging it marks the commit production-approved. It deploys
 nothing today.
 
-The `Release candidate` workflow runs the two promotion gates automatically:
+The `Release candidate` workflow runs three promotion legs and one aggregate:
 
-| gate | policy |
+| leg | policy |
 |---|---|
+| Candidate identity | **Blocks** unless the PR head is `develop`, all four `:sha` images exist, and each digest carries a provenance attestation for that commit from `build-images.yml`. Uploads `release-manifest.json`. `scripts/verify-production-candidate.test.sh` proves its refusals. |
 | Container vulnerabilities | **Blocks** on HIGH/CRITICAL **with a fix available** (`--ignore-unfixed`). Informational on develop — see ADR-028's amendment for why the two differ. |
-| Migration rollback safety | **Blocks** if any migration in the tree is rollback-breaking, including one that *declared* itself so. |
+| Migration rollback safety | **Blocks** if any migration in the release range is rollback-breaking, including one that *declared* itself so. |
+| **`Production promotion gate`** | The one context `master` requires. `always()` reports; fails on a failed, cancelled, skipped, missing or unlisted leg (`scripts/promotion-gate.test.sh`). |
+
+After the merge, production is reached only by dispatching `Production
+handoff` on `master` with the approved candidate SHA — see
+[production.md](production.md#promotion-and-handoff).
 
 A **declared** rollback-unsafe migration (`-- testinbox:rollback-unsafe:` in the
 file) is allowed on develop — it is deliberate and visible — but it stops a
@@ -101,15 +108,15 @@ Optional repository **variables**, both with working defaults:
 `GITLAB_OPS_PROJECT` (default `infinity%2Finfinity-core` — URL-encoded; an
 unencoded path is rejected) and `GITLAB_OPS_REF` (default `develop`).
 
-## Required branch protection — HUMAN ACTION
+## Branch protection
 
-`develop` is currently **unprotected** (verified via the GitHub API on
-2026-09-07: `GET /repos/.../branches/develop` returns `"protected": false`).
-Nothing in this repository can configure that; it needs repository-admin
-access. Until it is set, a direct push to `develop` hands artifacts to Ops with
-no review and no CI.
+`develop` **is protected** (verified via the GitHub API on 2026-09-19):
+pull request required, thirteen required status checks with strict
+up-to-date, force pushes and deletion disabled, `enforce_admins` off. The
+matrix-expanded context names are a known coupling (#46, deliberately left
+for its own increment).
 
-Required settings on `develop`:
+Settings on `develop`:
 
 - require a pull request before merging;
 - prohibit direct pushes;
@@ -120,7 +127,7 @@ Required settings on `develop`:
   - `OpenAPI contract (lint + backwards compatibility)`
   - `Web UI (build + Playwright sandbox proofs)`
   - `JVM SDK (Java 17 baseline, consumer matrix) (17)` / `(21)` / `(25)`
-  - `TypeScript SDK (consumer matrix) (20)` / `(22)` / `(24)`
+  - `TypeScript SDK (consumer matrix) (22)` / `(24)` / `(26)`
   - `Ephemeral staging rehearsal + synthetic suite`
   - `Immutable artifacts (build only) / Build (no push) OCI images`
 - disable force pushes;
@@ -129,21 +136,38 @@ Required settings on `develop`:
 `Dependency vulnerabilities (informational)` is deliberately **not** in the
 list: it is non-blocking by design (ADR-028, `docs/quality/strategy.md`).
 
-The same protections should be applied to `master`, additionally requiring
-`Promotion vulnerability policy` and `Migration rollback safety`.
+### master
+
+`master` had **no protection** when TI-006 started (#44). It is the
+production-approved branch, so it gets the *promotion* gate, not a copy of
+`develop`'s list — a matrix-coupled name deadlocks a branch the day a runtime
+line changes (#46), and the develop tip already satisfied those thirteen to
+reach `develop`.
+
+Required on `master` (ADR-034 §7):
+
+- require a pull request before merging; no direct pushes;
+- required status check: **`Production promotion gate`** (strict);
+- force pushes disabled; deletion disabled;
+- `enforce_admins` off, as on `develop`.
+
+Sequencing is deliberate: the gate is first **proven** on a real release
+pull request — reported for a docs-only PR, green on a develop candidate,
+red on a feature-branch candidate — and only then required. If
+repository-admin access is unavailable, that is a named human action and #44
+stays open; nothing here claims it done.
 
 Also add `Synthetic unit tests (edge invariant classifier)` — it runs inside the
 `Static analysis` job, so requiring that job covers it.
 
-## Still to be decided
+## Decided since this document was first written
 
-- **The production inbound-mail provider** — ADR-004, still `Proposed`. There is
-  no public MX record for `testinbox.email`. Choosing a staging host did not
-  choose this.
-- **Production hosting and its promotion pipeline** — OVH is the stated
-  intention (ADR-030) and nothing is deployed there. `master` runs gates, not
-  a deployment.
-- **Propagating the Ops deployment verdict back to GitHub.** Today the
-  authoritative staging result lives only in `infinity-core`. Closing that gap
-  should not mean minting broad cross-system credentials for the sake of a
-  green tick; it needs a deliberate design.
+- **The production inbound-mail provider** — ADR-004 is **Accepted**: a
+  dedicated, dormant Postfix edge, reconciled to the application-owned
+  contract (TI-005). There is still no public MX; activation is TI-007.
+- **Production hosting and its promotion path** — ADR-034: the OVH dedicated
+  host in France, reached through `Production handoff`. Not live.
+- **Propagating the Ops deployment verdict back to GitHub** — deliberately
+  **not** done. Ops correlates the handed-off digest set with its own
+  staging record before deploying (ADR-034 §3); a cross-system credential
+  for a green tick was judged not worth the trust boundary it crosses.
