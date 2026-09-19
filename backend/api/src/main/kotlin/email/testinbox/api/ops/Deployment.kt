@@ -1,6 +1,7 @@
 package email.testinbox.api.ops
 
 import email.testinbox.api.config.TestInboxProperties
+import email.testinbox.application.deployment.DatabaseSessionPolicy
 import email.testinbox.application.deployment.DeploymentSafety
 import email.testinbox.application.deployment.DeploymentSettings
 import email.testinbox.application.deployment.SchemaCompatibility
@@ -9,6 +10,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.boot.health.contributor.Health
 import org.springframework.boot.health.contributor.HealthIndicator
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties
+import org.springframework.core.env.Environment
 import org.springframework.stereotype.Component
 import java.time.Instant
 
@@ -27,6 +29,7 @@ import java.time.Instant
 class DeploymentSafetyCheck(
     properties: TestInboxProperties,
     dataSourceProperties: DataSourceProperties,
+    springEnvironment: Environment,
 ) {
     init {
         val environment = properties.deployment.environment?.takeIf { it.isNotBlank() }
@@ -48,12 +51,16 @@ class DeploymentSafetyCheck(
                         proxyReadTimeout = properties.deployment.proxyReadTimeout,
                         edgeRequestCeiling = properties.deployment.edgeRequestCeiling,
                         limitsEnabled = properties.limits.enabled,
+                        activeProfiles = springEnvironment.activeProfiles.toSet(),
+                        publicSurface = true,
+                        createBucket = properties.storage.createBucket,
                     ),
                 )
             check(violations.isEmpty()) { DeploymentSafety.describe(violations) }
             log.info(
-                "deployment configuration validated (environment={} gitSha={} imageDigest={})",
+                "deployment configuration validated (environment={} profiles={} gitSha={} imageDigest={})",
                 environment,
+                springEnvironment.activeProfiles.joinToString(","),
                 properties.deployment.gitSha,
                 properties.deployment.imageDigest,
             )
@@ -62,6 +69,44 @@ class DeploymentSafetyCheck(
 
     private companion object {
         val log = LoggerFactory.getLogger(DeploymentSafetyCheck::class.java)
+    }
+}
+
+/**
+ * ADR-033's one deployment requirement, made observable (ADR-034): whether the
+ * database bounds a hung idempotency claim at all. Read on every probe, so a
+ * setting Ops changes shows up without a restart.
+ *
+ * Enforcement is a profile decision, not a code one. In production an
+ * unbounded claim is a liveness defect and the node is OUT_OF_SERVICE until
+ * Ops sets the timeout. Elsewhere the fact is reported and the node stays UP:
+ * a readiness check that removed every staging node the moment it shipped
+ * would be the fragile-health-check failure ADR-030 already warns about.
+ */
+@Component("dbSession")
+class DatabaseSessionHealthIndicator(
+    private val policy: DatabaseSessionPolicy,
+    private val properties: TestInboxProperties,
+) : HealthIndicator {
+    override fun health(): Health {
+        val required = properties.deployment.requireDatabaseSessionTimeout
+        val status =
+            runCatching { policy.status() }
+                .getOrElse {
+                    // The database itself is unreachable; `db` reports that. Only the type is surfaced.
+                    return Health
+                        .down()
+                        .withDetail("detail", it.javaClass.simpleName)
+                        .withDetail("enforced", required)
+                        .build()
+                }
+        val builder = if (status.bounded || !required) Health.up() else Health.outOfService()
+        return builder
+            .withDetail("idleInTransactionSessionTimeout", status.raw)
+            .withDetail("bounded", status.bounded)
+            .withDetail("enforced", required)
+            .withDetail("detail", status.detail)
+            .build()
     }
 }
 

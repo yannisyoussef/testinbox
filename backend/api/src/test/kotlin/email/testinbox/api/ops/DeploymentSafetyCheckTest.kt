@@ -11,6 +11,7 @@ import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.env.Environment
 
 /**
  * The startup guard has to be tested through Spring, not by calling the
@@ -33,7 +34,8 @@ class DeploymentSafetyCheckTest {
         fun deploymentSafetyCheck(
             properties: TestInboxProperties,
             dataSourceProperties: DataSourceProperties,
-        ) = DeploymentSafetyCheck(properties, dataSourceProperties)
+            environment: Environment,
+        ) = DeploymentSafetyCheck(properties, dataSourceProperties, environment)
     }
 
     private val runner = ApplicationContextRunner().withUserConfiguration(UnderTest::class.java)
@@ -115,6 +117,69 @@ class DeploymentSafetyCheckTest {
                 message shouldNotContain "tk_e2e_acceptance_key"
                 message shouldNotContain "testinbox123"
             }
+    }
+
+    /** A production node, as `application-production.yaml` plus a correct environment would configure it. */
+    private val production =
+        arrayOf(
+            "spring.profiles.active=production",
+            "testinbox.deployment.environment=production",
+            "testinbox.deployment.public-base-url=https://api.testinbox.email",
+            "testinbox.deployment.proxy-read-timeout=100s",
+            "testinbox.deployment.edge-request-ceiling=100s",
+            "testinbox.deployment.git-sha=abc123",
+            "testinbox.mail-domain=inbox.testinbox.email",
+            "testinbox.storage.create-bucket=false",
+            "spring.datasource.url=jdbc:postgresql://db.prod.internal:5432/testinbox",
+            "spring.datasource.username=testinbox_prod",
+            "spring.datasource.password=fixture-not-a-real-db-password--1",
+            "testinbox.storage.endpoint=https://objects.prod.internal",
+            "testinbox.storage.access-key=fixture-not-a-real-s3-access-key",
+            "testinbox.storage.secret-key=fixture-not-a-real-s3-secret----1",
+        )
+
+    @Test
+    fun `a correctly configured production node starts - and this pins the profile and bucket wiring`() {
+        runner.withPropertyValues(*production).run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean(TestInboxProperties::class.java).storage.createBucket shouldBe false
+        }
+    }
+
+    @Test
+    fun `staging configuration labelled as production fails startup (ADR-034)`() {
+        // The active profile is what the guard reads; a misspelt or absent
+        // profile would leave every staging default in force.
+        runner.withPropertyValues(*production, "spring.profiles.active=staging").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain "spring.profiles.active"
+        }
+    }
+
+    @Test
+    fun `an environment variable cannot re-enable bucket creation in production`() {
+        // The profile document sets false; the point is that an override does
+        // not win silently — it fails the node instead.
+        runner.withPropertyValues(*production, "testinbox.storage.create-bucket=true").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain "testinbox.storage.create-bucket"
+        }
+    }
+
+    @Test
+    fun `production on the staging mail domain fails startup`() {
+        runner.withPropertyValues(*production, "testinbox.mail-domain=staging.testinbox.email").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain "testinbox.mail-domain"
+        }
+    }
+
+    @Test
+    fun `production without a declared ingress ceiling fails startup`() {
+        runner.withPropertyValues(*production, "testinbox.deployment.edge-request-ceiling=").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain "testinbox.deployment.edge-request-ceiling"
+        }
     }
 
     @Test

@@ -10,6 +10,7 @@ import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.env.Environment
 
 /**
  * The gateway's own guard. Tested separately from the API's rather than
@@ -30,7 +31,8 @@ class IngestionDeploymentSafetyCheckTest {
         fun ingestionDeploymentSafetyCheck(
             properties: IngestionProperties,
             dataSourceProperties: DataSourceProperties,
-        ) = IngestionDeploymentSafetyCheck(properties, dataSourceProperties)
+            environment: Environment,
+        ) = IngestionDeploymentSafetyCheck(properties, dataSourceProperties, environment)
     }
 
     private val runner = ApplicationContextRunner().withUserConfiguration(UnderTest::class.java)
@@ -72,6 +74,45 @@ class IngestionDeploymentSafetyCheckTest {
         runner.withPropertyValues(*deployed, "testinbox.deployment.proxy-read-timeout=60s").run { context ->
             assertThat(context).hasFailed()
             context.startupFailure!!.stackTraceToString() shouldContain "testinbox.proxy-read-timeout"
+        }
+    }
+
+    private val production =
+        arrayOf(
+            "spring.profiles.active=production",
+            "testinbox.deployment.environment=production",
+            "testinbox.deployment.proxy-read-timeout=100s",
+            "testinbox.deployment.edge-request-ceiling=100s",
+            "testinbox.mail-domain=inbox.testinbox.email",
+            "testinbox.storage.create-bucket=false",
+            "spring.datasource.url=jdbc:postgresql://db.prod.internal:5432/testinbox",
+            "spring.datasource.username=testinbox_prod",
+            "spring.datasource.password=fixture-not-a-real-db-password--1",
+            "testinbox.storage.endpoint=https://objects.prod.internal",
+            "testinbox.storage.access-key=fixture-not-a-real-s3-access-key",
+            "testinbox.storage.secret-key=fixture-not-a-real-s3-secret----1",
+        )
+
+    @Test
+    fun `a correctly configured production gateway starts without a public base URL`() {
+        // The gateway terminates SMTP; the production public-origin rule is
+        // the API's, and must not be applied here by accident.
+        runner.withPropertyValues(*production).run { context -> assertThat(context).hasNotFailed() }
+    }
+
+    @Test
+    fun `a production gateway that would create its own bucket fails startup (ADR-034)`() {
+        runner.withPropertyValues(*production, "testinbox.storage.create-bucket=true").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain "testinbox.storage.create-bucket"
+        }
+    }
+
+    @Test
+    fun `a production gateway on staging configuration fails startup`() {
+        runner.withPropertyValues(*production, "spring.profiles.active=staging").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain "spring.profiles.active"
         }
     }
 

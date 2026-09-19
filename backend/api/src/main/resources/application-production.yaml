@@ -1,0 +1,26 @@
+# Production overrides for the REST API (ADR-034). Loaded ON TOP of the shared
+# `deployed` layer through the profile group in application.yaml; this file
+# holds only what is stricter in production, so there is one description of
+# a deployed node and one short list of differences, not two copies.
+#
+# A profile document can still be overridden by an environment variable, so
+# nothing here is the enforcement — `DeploymentSafety` refuses to start a
+# production process whose effective values contradict these, whichever source
+# they came from. This file makes the safe value the default; the guard makes
+# it the only value.
+testinbox:
+  # The tenant domain the public MX will name (ADR-004). Fixed, not injected.
+  mail-domain: inbox.testinbox.email
+  storage:
+    # Runtime credentials are scoped to the pre-provisioned bucket and hold no
+    # CreateBucket. An absent bucket is a readiness failure, never a silent
+    # creation under broader privileges.
+    create-bucket: false
+  deployment:
+    # No default: production must state the ingress's hard per-request
+    # ceiling so the wait window is proven to fit underneath it (ADR-030).
+    edge-request-ceiling: ${TESTINBOX_EDGE_REQUEST_CEILING}
+    # ADR-033: a hung idempotency claim must be bounded by the database.
+    # Reported in every deployed environment; here it takes the node out of
+    # readiness until Ops sets `idle_in_transaction_session_timeout`.
+    require-database-session-timeout: true

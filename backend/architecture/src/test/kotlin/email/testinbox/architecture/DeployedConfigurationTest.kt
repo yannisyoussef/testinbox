@@ -1,16 +1,17 @@
 package email.testinbox.architecture
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertAll
 import java.io.File
 
 /**
- * The staging profiles and the compose topology are one contract split across
- * four files, and nothing else in the build reads both halves.
+ * The deployed profiles and the compose topology are one contract split across
+ * several files, and nothing else in the build reads every half.
  *
- * Two failures live here and neither produces an error anywhere else:
+ * Failures that live here and nowhere else:
  *
  *  1. **A placeholder with no default that compose does not supply.** The
  *     no-default form is deliberate — an unset variable must fail startup
@@ -22,16 +23,32 @@ import java.io.File
  *     one deleted line away. It would not even be visible in a deployment: the
  *     migration job has already applied everything, so the application's own
  *     Flyway run finds nothing pending and looks identical to a correct one.
+ *  3. **The staging/production split drifting** (ADR-034). Both environments
+ *     are groups over ONE deployed layer; production is that layer plus a
+ *     short overrides document. If someone re-creates a full staging profile,
+ *     or puts a shared setting in the production overrides, the two start
+ *     diverging by edit distance — which is the failure the layering exists
+ *     to make impossible.
  *
  * Plain file parsing on purpose — no Spring, no Docker, no YAML dependency —
  * so it runs in the ordinary backend job.
  */
-class StagingConfigurationTest {
+class DeployedConfigurationTest {
     private val repoRoot = File(System.getProperty("user.dir")).parentFile.parentFile
-    private val stagingProfiles =
+    private val baseProfiles =
         listOf(
-            File(repoRoot, "backend/api/src/main/resources/application-staging.yaml"),
-            File(repoRoot, "backend/ingestion/src/main/resources/application-staging.yaml"),
+            File(repoRoot, "backend/api/src/main/resources/application.yaml"),
+            File(repoRoot, "backend/ingestion/src/main/resources/application.yaml"),
+        )
+    private val deployedProfiles =
+        listOf(
+            File(repoRoot, "backend/api/src/main/resources/application-deployed.yaml"),
+            File(repoRoot, "backend/ingestion/src/main/resources/application-deployed.yaml"),
+        )
+    private val productionProfiles =
+        listOf(
+            File(repoRoot, "backend/api/src/main/resources/application-production.yaml"),
+            File(repoRoot, "backend/ingestion/src/main/resources/application-production.yaml"),
         )
     private val composeFiles =
         listOf(
@@ -43,13 +60,13 @@ class StagingConfigurationTest {
     private val required = Regex("""\$\{([A-Z0-9_]+)}""")
 
     @Test
-    fun `every fail-fast placeholder in a staging profile is supplied by the compose topology`() {
+    fun `every fail-fast placeholder in a deployed or production profile is supplied by the compose topology`() {
         val composeText = composeFiles.joinToString("\n") { it.readText() }
         val rehearsal = File(repoRoot, "scripts/staging-rehearsal.sh").readText()
         val example = File(repoRoot, "deploy/staging/.env.example").readText()
 
         assertAll(
-            stagingProfiles.flatMap { profile ->
+            (deployedProfiles + productionProfiles).flatMap { profile ->
                 required.findAll(profile.readText()).map { it.groupValues[1] }.distinct().map { name ->
                     {
                         assertTrue(
@@ -70,7 +87,7 @@ class StagingConfigurationTest {
     @Test
     fun `no deployed profile migrates at startup (ADR-029)`() {
         assertAll(
-            stagingProfiles.map { profile ->
+            deployedProfiles.map { profile ->
                 {
                     val flyway = Regex("""flyway:\s*\n\s*enabled:\s*(\S+)""").find(profile.readText())
                     assertTrue(flyway != null, "${profile.name} must state spring.flyway.enabled explicitly")
@@ -82,6 +99,87 @@ class StagingConfigurationTest {
                     )
                 }
             },
+        )
+    }
+
+    @Test
+    fun `staging and production are profile groups over one deployed layer (ADR-034)`() {
+        assertAll(
+            baseProfiles.map { base ->
+                {
+                    val text = base.readText()
+                    assertTrue(
+                        Regex("""group:\s*\n\s*staging:\s*deployed\s*\n\s*production:\s*deployed""").containsMatchIn(text),
+                        "${base.parentFile.parentFile.parentFile.parentFile.name}: application.yaml must define " +
+                            "spring.profiles.group staging→deployed and production→deployed",
+                    )
+                }
+            } +
+                listOf("api", "ingestion").map { module ->
+                    {
+                        // A resurrected full staging profile would silently shadow the shared layer.
+                        assertFalse(
+                            File(repoRoot, "backend/$module/src/main/resources/application-staging.yaml").exists(),
+                            "backend/$module has an application-staging.yaml; staging is a group over the " +
+                                "deployed layer and must not carry its own copy",
+                        )
+                    }
+                },
+        )
+    }
+
+    @Test
+    fun `the production overrides carry only what is stricter in production (ADR-034)`() {
+        assertAll(
+            productionProfiles.map { profile ->
+                {
+                    val text = profile.readText()
+                    assertTrue(
+                        Regex("""mail-domain:\s*inbox\.testinbox\.email""").containsMatchIn(text),
+                        "${profile.name} must fix the tenant mail domain to inbox.testinbox.email (ADR-004)",
+                    )
+                    assertTrue(
+                        Regex("""create-bucket:\s*false""").containsMatchIn(text),
+                        "${profile.name} must turn bucket creation off; production credentials hold no CreateBucket",
+                    )
+                    assertTrue(
+                        text.contains("\${TESTINBOX_EDGE_REQUEST_CEILING}"),
+                        "${profile.name} must require the ingress ceiling with no default",
+                    )
+                    // Shared settings belong in the deployed layer. Their presence
+                    // here means production has started to diverge from staging.
+                    for (shared in listOf("datasource:", "flyway:", "management:", "logging:", "server:")) {
+                        assertFalse(
+                            text.contains(shared),
+                            "${profile.name} contains '$shared' — a shared setting in the production overrides " +
+                                "is the start of two configurations that drift",
+                        )
+                    }
+                }
+            },
+        )
+    }
+
+    @Test
+    fun `the API production profile enforces the database session bound (ADR-033)`() {
+        val api = productionProfiles.first { it.path.contains("/api/") }.readText()
+        assertTrue(
+            Regex("""require-database-session-timeout:\s*true""").containsMatchIn(api),
+            "the API's production overrides must make an unbounded idle_in_transaction_session_timeout a readiness failure",
+        )
+        val deployed = deployedProfiles.first { it.path.contains("/api/") }.readText()
+        assertTrue(
+            Regex("""readiness:\s*\n\s*#[^\n]*\n(?:\s*#[^\n]*\n)*\s*include:[^\n]*dbSession""").containsMatchIn(deployed),
+            "the API readiness group must include dbSession, or the production enforcement is never consulted",
+        )
+    }
+
+    @Test
+    fun `the compose topology selects the profile group and defaults it to staging`() {
+        val compose = File(repoRoot, "deploy/staging/compose.yaml").readText()
+        assertTrue(
+            compose.contains("SPRING_PROFILES_ACTIVE: \${TESTINBOX_SPRING_PROFILES:-staging}"),
+            "compose must activate the profile group from TESTINBOX_SPRING_PROFILES, defaulting to staging",
         )
     }
 
@@ -116,14 +214,8 @@ class StagingConfigurationTest {
     fun `the data topology bounds how long a hung node can hold an idempotency claim`() {
         // ADR-033 Consequences names this a deployment requirement, and it is
         // the one part of the guarantee the application genuinely cannot
-        // enforce for itself: a node that is partitioned mid-claim holds the
-        // row until something server-side reaps it, and Postgres disables that
-        // reaping by default — which makes the real bound the TCP keepalive
-        // interval, hours, during which that one key is unusable.
-        //
-        // Asserted here because nothing else would notice its removal: no
-        // request fails, no test goes red, and the symptom is a single wedged
-        // key long after the deploy that dropped the flag.
+        // enforce for itself. The reference topology sets it here; a deployed
+        // database is checked live by the `dbSession` readiness indicator.
         val data = File(repoRoot, "deploy/staging/compose.data.yaml").readText()
         val timeout =
             Regex("""idle_in_transaction_session_timeout=(\d+)s""")

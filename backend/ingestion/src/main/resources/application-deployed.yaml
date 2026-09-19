@@ -1,5 +1,7 @@
-# Staging / deployed profile for the inbound SMTP gateway (ADR-028/029).
-# See the API's application-staging.yaml for why nothing here has a default.
+# The DEPLOYED layer for the inbound SMTP gateway (ADR-028/029/034), pulled in
+# by the `staging` and `production` profile groups in application.yaml. See the
+# API's application-deployed.yaml for why nothing here has a default;
+# application-production.yaml adds only what is stricter in production.
 server:
   # HTTP here carries actuator only; it is never routed by the ingress.
   port: 8081

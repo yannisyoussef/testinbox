@@ -1,4 +1,8 @@
-# Staging / deployed profile for the REST API (ADR-028/029).
+# The DEPLOYED layer for the REST API (ADR-028/029/034): everything staging
+# and production have in common. It is never activated by name — the profile
+# groups in application.yaml pull it in under `staging` and `production`, so
+# the two environments cannot drift apart by editing one copy.
+# `application-production.yaml` adds only what is stricter in production.
 #
 # Everything here is deliberately WITHOUT a default: an unset variable must
 # fail startup, not silently fall back to the local-development value in
@@ -6,7 +10,7 @@
 # a deployed node quietly running on `testinbox/testinbox` against localhost.
 # `DeploymentSafetyCheck` catches the rest (values that resolve but are the
 # local defaults, plaintext public URLs, a proxy timeout shorter than the wait
-# window).
+# window, and in production the invariants ADR-034 fixes).
 server:
   port: 8080
   # A parked long poll is a live request: drain it rather than cutting it.
@@ -89,9 +93,11 @@ management:
           include: livenessState
         readiness:
           # "Can this instance correctly serve TestInbox traffic?" — the
-          # database, a schema it recognises, object storage, and the
-          # session-scoped LISTEN connection ADR-020 puts in readiness.
-          include: readinessState,db,schema,objectStorage,waitNotifier
+          # database, a schema it recognises, object storage, the
+          # session-scoped LISTEN connection ADR-020 puts in readiness, and
+          # whether the database bounds a hung idempotency claim (ADR-033;
+          # reported everywhere, enforced only where the profile says so).
+          include: readinessState,db,schema,objectStorage,waitNotifier,dbSession
   info:
     env:
       enabled: true

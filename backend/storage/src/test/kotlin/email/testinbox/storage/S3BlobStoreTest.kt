@@ -1,5 +1,6 @@
 package email.testinbox.storage
 
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
@@ -8,6 +9,14 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.testcontainers.containers.MinIOContainer
 import org.testcontainers.utility.DockerImageName
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
+import software.amazon.awssdk.regions.Region
+import software.amazon.awssdk.services.s3.S3Client
+import software.amazon.awssdk.services.s3.model.CreateBucketRequest
+import software.amazon.awssdk.services.s3.model.HeadBucketRequest
+import software.amazon.awssdk.services.s3.model.NoSuchBucketException
+import java.net.URI
 import java.time.Instant
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -107,6 +116,67 @@ class S3BlobStoreTest {
             }
         } finally {
             pool.shutdownNow()
+        }
+    }
+
+    /** An administrative client, standing in for the Ops provisioning step. */
+    private fun admin(): S3Client =
+        S3Client
+            .builder()
+            .endpointOverride(URI.create(minio.s3URL))
+            .region(Region.of("us-east-1"))
+            .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create("testinbox", "testinbox123")))
+            .forcePathStyle(true)
+            .build()
+
+    @Test
+    fun `with bucket creation off, an absent bucket stays absent and every operation reports it (ADR-034)`() {
+        // Production runtime credentials hold no CreateBucket. The adapter must
+        // not try — a try under scoped credentials would fail anyway, but a try
+        // under over-broad ones would silently paper over a provisioning gap.
+        val bucket = "preprovisioned-${System.nanoTime()}"
+        val store =
+            S3BlobStore(
+                S3BlobStoreConfig(
+                    endpoint = minio.s3URL,
+                    accessKey = "testinbox",
+                    secretKey = "testinbox123",
+                    bucket = bucket,
+                    createBucket = false,
+                ),
+            )
+        try {
+            // The readiness probe's call, and the raw-first write's call: both must fail loudly.
+            shouldThrow<NoSuchBucketException> { store.listKeysOlderThan("_probe/readiness/", Instant.EPOCH) }
+            shouldThrow<NoSuchBucketException> { store.put("ws/in/m/raw.eml", byteArrayOf(1), "message/rfc822") }
+            admin().use { s3 ->
+                shouldThrow<NoSuchBucketException> { s3.headBucket(HeadBucketRequest.builder().bucket(bucket).build()) }
+            }
+        } finally {
+            store.close()
+        }
+    }
+
+    @Test
+    fun `with bucket creation off, a pre-provisioned bucket works without any creation privilege`() {
+        val bucket = "preprovisioned-${System.nanoTime()}"
+        admin().use { s3 -> s3.createBucket(CreateBucketRequest.builder().bucket(bucket).build()) }
+        val store =
+            S3BlobStore(
+                S3BlobStoreConfig(
+                    endpoint = minio.s3URL,
+                    accessKey = "testinbox",
+                    secretKey = "testinbox123",
+                    bucket = bucket,
+                    createBucket = false,
+                ),
+            )
+        try {
+            store.put("ws/in/m/raw.eml", byteArrayOf(9), "message/rfc822")
+            store.get("ws/in/m/raw.eml")?.toList() shouldBe listOf<Byte>(9)
+            store.listKeysOlderThan("_probe/readiness/", Instant.EPOCH) shouldBe emptyList()
+        } finally {
+            store.close()
         }
     }
 }
