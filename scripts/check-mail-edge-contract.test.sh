@@ -262,6 +262,38 @@ else
   fi
 fi
 
+# --- the version mutation -----------------------------------------------------
+# CI must not silently start exercising a different Postfix while the contract
+# still claims 3.8.6 parity. The recorded version is only meaningful if a
+# mismatch stops the edge.
+note ""
+note "--- runtime mutation: a Postfix version mismatch must refuse to start ---"
+if ! docker info >/dev/null 2>&1; then
+  printf 'FAIL — the version mutation could not run: Docker is unavailable.\n'
+  fail=$((fail + 1))
+else
+  VNAME="mail-edge-version-$$"
+  docker rm -f "$VNAME" >/dev/null 2>&1
+  # Only the CONTRACT is altered; the binary is untouched. That is the drift
+  # being simulated: the recorded version no longer matches what is installed.
+  docker run --rm --name "$VNAME" \
+    -e EDGE_PROFILE=ci -e EDGE_RELAY_TARGET=127.0.0.1:2525 \
+    -e EDGE_MAIL_DOMAIN=inbox.testinbox.email \
+    --entrypoint /bin/bash "${MAIL_EDGE_IMAGE:-testinbox-mail-edge:rehearsal}" -c '
+      sed -i "s/^  postfix_version:.*/  postfix_version: \"9.9.9\"/" /opt/mail-edge/contract.yaml
+      exec /opt/mail-edge/entrypoint.sh
+    ' >"$TMP/version.out" 2>&1
+  vstatus=$?
+  if (( vstatus != 0 )) && grep -q "mail_version" "$TMP/version.out"; then
+    printf 'ok   — a Postfix version that does not match the contract refuses to start\n'
+    pass=$((pass + 1))
+  else
+    printf 'FAIL — the edge started despite a version mismatch (exit %s)\n' "$vstatus"
+    tail -8 "$TMP/version.out" | sed 's/^/       /'
+    fail=$((fail + 1))
+  fi
+fi
+
 echo "----"
 echo "check-mail-edge-contract.test.sh: $pass passed, $fail failed"
 (( fail == 0 ))

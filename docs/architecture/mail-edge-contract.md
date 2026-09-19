@@ -212,6 +212,8 @@ accepts: the edge emits no DSN, so an over-ceiling message would be answered
 | `deploy/synthetic/edge/contract.test.mjs` | the behavioural contract, through the edge, via the public SDK |
 | `scripts/mail-edge-storage-proof.sh` | ADR-025's storage half: no row, no attachment, no object |
 | `scripts/mail-edge-queue-proofs.sh` | 451 → queue → retry, and expiry without DSN |
+| `scripts/mail-edge-atomicity-proof.sh` | ADR-026: one `DATA` with two recipients is ONE inbound event |
+| `scripts/mail-edge-abuse-proofs.sh` | the abuse ceilings, driven to refusal at production values |
 
 All are blocking in the rehearsal, which is itself a required check.
 
@@ -222,7 +224,7 @@ matter before public SMTP.
 
 | gap | consequence |
 |---|---|
-| **Abuse limits are asserted statically, never exercised.** No test drives the edge to its connection-count, connection-rate or message-rate ceilings. The CI profile deliberately raises them so unrelated tests do not trip them, and no second profile at production values exists. | ADR-004's rehearsal gate for abuse limits is not discharged. The values are pinned and drift-checked; their *behaviour* is unproven. |
+| **`smtpd_client_message_rate_limit` is asserted statically, never exercised.** The recipient, connection-count and connection-rate ceilings are now driven to refusal at production values (`scripts/mail-edge-abuse-proofs.sh`); the message-rate ceiling is not — crossing it costs 101 accepted messages, which is load, not a boundary probe. | Its *value* is pinned and drift-checked; its *behaviour* is inferred from the other two anvil counters sharing the same enforcement path. |
 | **`smtpd_recipient_restrictions` is not in the contract.** Only `smtpd_relay_restrictions` is pinned. Adding `reject_unverified_recipient` or `reject_unlisted_recipient` there is a plausible "anti-spam hardening" diff and a direct RCPT-time enumeration oracle. | Only the behavioural equivalence test would notice, and only in the rehearsal. |
 | **No VRFY/EXPN probe.** `disable_vrfy_command = yes` is asserted statically with no behavioural check. | VRFY is the canonical recipient-existence oracle. |
 | **Relay-bypass address shapes are untested.** The open-relay probe uses `user@foreign`; percent-hack, source-route and bang-path forms are not probed, and `allow_percent_hack`/`swap_bangpath` are unpinned. | Refused today by `reject_unauth_destination` operating on the resolved address — an inference about version-sensitive behaviour, which is the kind this document avoids relying on elsewhere. |
@@ -243,3 +245,9 @@ proofs:
   behaviour.
 - A deferred message's file mtime is its *next retry* time, not its arrival, so
   it never grows. Queue age must come from `postqueue -j` `arrival_time`.
+- The two anvil ceilings are **indistinguishable in the SMTP reply**: exceeding
+  either `smtpd_client_connection_count_limit` or `smtpd_client_connection_rate_limit`
+  answers `421 4.7.0 <host> Error: too many connections from <ip>`. Only the
+  maillog separates them — `Connection concurrency limit exceeded: N` versus
+  `Connection rate limit exceeded: N`. A probe that asserts the reply alone
+  cannot say which limit it measured, so the abuse proofs assert the warning too.

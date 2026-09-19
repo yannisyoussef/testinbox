@@ -134,6 +134,21 @@ assert_running smtpd_relay_restrictions      "$(C required.smtpd_relay_restricti
 # $default_destination_recipient_limit, so this is the only layer that sees the
 # value Postfix will actually apply to the relay transport.
 assert_running relay_destination_recipient_limit "$(C required.relay_destination_recipient_limit)"
+# The Postfix version itself. The behaviours this rehearsal proves are
+# version-sensitive by design — local_header_rewrite_clients defaults, the
+# zero-length *_notice_recipient fatal, anvil accounting, and the size reserve
+# the equal-ceilings proof rests on. Recording 3.8.6 in the contract while
+# silently exercising another version would keep the parity claim while
+# invalidating the evidence behind it.
+want_version="$(/opt/mail-edge/contract.py get provenance.postfix_version)"
+got_version="$(postconf -h mail_version 2>/dev/null || true)"
+if [[ "$got_version" == "$want_version" ]]; then
+  printf '  ok   %-38s = %s\n' "mail_version" "$got_version"
+else
+  printf '  FAIL %-38s = %s (contract records: %s)\n' "mail_version" "${got_version:-<unknown>}" "$want_version" >&2
+  fail=1
+fi
+
 # The COMPILED alias map, not the file: postmaster@ is delivered through
 # alias expansion, and a rendered file that was never compiled looks identical
 # on disk to one that was. This is the assertion that catches the stock-aliases

@@ -429,6 +429,11 @@ REHEARSAL_HTTPS_PORT="$HTTPS_PORT" \
 TESTINBOX_EDGE_API_KEY="$TESTINBOX_EDGE_API_KEY" \
   "$REPO_ROOT/scripts/mail-edge-queue-proofs.sh"
 
+# TI-005 §16. Last, because it drives the edge to its ceilings and restarts
+# Postfix to clear anvil's per-IP counters — nothing after it should depend on
+# the edge being in the rehearsal's permissive state.
+"$REPO_ROOT/scripts/mail-edge-abuse-proofs.sh"
+
 step "rehearsal passed"
 echo "api:       $API_IMAGE"
 echo "ingestion: $INGESTION_IMAGE"
