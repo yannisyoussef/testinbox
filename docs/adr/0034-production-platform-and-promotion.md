@@ -144,7 +144,12 @@ only because `develop` is fetched too and is never force-pushed. The first
 two are exercised against real attestations for the first time on the first
 real release pull request, which is why §7 proves the gate before requiring
 it. `--limit 200` bounds how far back a rollback candidate can be found; a
-release older than that is refused, not silently missed.
+release older than that is refused, not silently missed. And the promotion
+legs **wait, bounded, for develop's push build of the candidate** before
+resolving digests: a release pull request re-evaluates in the same second
+`develop` moves, and the first real one failed on artifacts that were eight
+minutes from existing — a gate that fails on timing is a gate people re-run
+without reading. A failed develop build is a refusal.
 
 ### 4. Configuration fails closed, and production is decided in code
 

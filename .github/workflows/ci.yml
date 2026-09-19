@@ -73,6 +73,7 @@ jobs:
           ./scripts/verify-production-candidate.test.sh
           ./scripts/promotion-gate.test.sh
           ./scripts/check-backup-scope.test.sh
+          ./scripts/await-candidate-build.test.sh
       # TI-005. Separate step because the 220-banner mutation needs Docker: its
       # whole point is that static validation cannot see a configuration which
       # passes `postfix check` and then leaves smtpd answering nothing. The
