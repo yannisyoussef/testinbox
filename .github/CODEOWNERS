@@ -16,6 +16,11 @@
 /scripts/gitlab-handoff.sh                            @yannisyoussef
 /scripts/check-migration-safety.sh                    @yannisyoussef
 /scripts/validate-image-digest.sh                     @yannisyoussef
+# The production promotion contract (ADR-034): what may be handed to the
+# production reconcile, and the one context master's protection requires.
+/scripts/verify-production-candidate.sh               @yannisyoussef
+/scripts/promotion-gate.sh                            @yannisyoussef
+/scripts/check-backup-scope.sh                        @yannisyoussef
 /deploy/                                              @yannisyoussef
 
 # Accepted ADRs are authoritative (CLAUDE.md); they are amended by new ADRs,

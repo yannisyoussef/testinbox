@@ -1,21 +1,28 @@
 name: Release candidate
 
-# The production-promotion gates. They gate; they do NOT deploy — there is no
-# production deployment in this repository, and this workflow does not create
-# one (it never builds, never pushes, and never contacts Ops).
+# The production-promotion gates. They gate; they do NOT deploy. This workflow
+# never builds, never pushes, and never contacts Ops; the production handoff
+# is a separate, manually dispatched workflow on master (ADR-034).
 #
-# It exists because two policies are stricter on the promotion path than on
-# develop, and without something running here the stricter halves would be
-# paragraphs nobody enforces:
+# Three legs, one stable aggregate:
 #
+#   * Candidate identity — the pull request promotes the develop tip, all four
+#     artifacts exist for that exact commit, and each digest carries a
+#     provenance attestation binding it to that commit and to our build
+#     workflow. Nothing else can be promoted (ADR-034).
 #   * ADR-028 §6 (amended) — HIGH/CRITICAL vulnerabilities WITH a fix block a
 #     release, while the same findings are informational on develop.
 #   * ADR-029 §6 — a migration that declares itself rollback-breaking is
 #     allowed on develop, where it is visible and deliberate, but must not
 #     reach a release without explicit handling.
 #
+# `Production promotion gate` is the context master's branch protection
+# requires (#44). Its name never changes when a leg is added or renamed, and
+# `scripts/promotion-gate.test.sh` proves it fails on a failed, cancelled,
+# skipped, missing or unlisted leg.
+#
 # `master` is the production-approved candidate. Reaching it is a human
-# decision (docs/dev/release-process.md); this makes two of its preconditions
+# decision (docs/dev/release-process.md); this makes its preconditions
 # machine-checked.
 on:
   # Deliberately only on the PROMOTION PULL REQUEST. That is when the decision
@@ -29,6 +36,55 @@ permissions:
   contents: read
 
 jobs:
+  candidate-identity:
+    name: Candidate identity (source ↔ digests ↔ provenance)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Rollback floors are evaluated by ancestry.
+          fetch-depth: 0
+      - name: Self-test the verifier (it must refuse what it must refuse)
+        run: ./scripts/verify-production-candidate.test.sh
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify the candidate against the artifacts that already exist
+        id: verify
+        run: |
+          ./scripts/verify-production-candidate.sh \
+            --candidate "$CANDIDATE_SHA" \
+            --mode pr \
+            --head-ref "${{ github.event.pull_request.head.ref }}" \
+            --manifest release-manifest.json
+      - name: Record the release manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-manifest-${{ github.event.pull_request.head.sha }}
+          path: release-manifest.json
+      - name: Summarise
+        run: |
+          {
+            echo "## Production candidate identity"
+            echo
+            echo "Source commit \`$CANDIDATE_SHA\` (develop) ↔ these exact digests, each attested by"
+            echo "\`build-images.yml\` for that commit. A production handoff promotes **these bytes**;"
+            echo "nothing is rebuilt (ADR-028/034)."
+            echo
+            echo '```json'; cat release-manifest.json; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   vulnerability-policy:
     name: Promotion vulnerability policy
     runs-on: ubuntu-latest
@@ -128,3 +184,20 @@ jobs:
               echo "::error::migration rollback-safety gate did not pass for this release range"
               exit 1 ;;
           esac
+
+  # The one context master requires. `always()` so it reports whether the legs
+  # passed, failed, or never ran — a required check that is not reported blocks
+  # a pull request forever and looks identical to one still pending (#41).
+  promotion-gate:
+    name: Production promotion gate
+    needs: [candidate-identity, vulnerability-policy, migration-policy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Self-test the gate (it must be able to fail)
+        run: ./scripts/promotion-gate.test.sh
+      - name: Evaluate every promotion leg
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: ./scripts/promotion-gate.sh --expect candidate-identity,vulnerability-policy,migration-policy
