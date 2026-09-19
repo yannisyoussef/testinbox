@@ -4,7 +4,7 @@ import { identityConfig } from "../src/env.mjs";
 
 /**
  * Deployment identity and readiness, read from the PRIVATE management ports
- * (TI-006 §20; ADR-028/029/033/034). Run on the host by Ops after a
+ * (ADR-028/029/033/034 §8). Run on the host by Ops after a
  * reconcile — the management ports are never routed by the ingress, which is
  * why this is not part of the public synthetic suite.
  *
@@ -47,13 +47,16 @@ test("api: the wait notifier holds a live LISTEN connection (ADR-020)", async ()
   assert.equal(readiness.components?.waitNotifier?.details?.listening, true, "LISTEN is not live; waits would silently degrade");
 });
 
-test("api: the database bounds a hung idempotency claim (ADR-033)", async () => {
+test("api: the database session bound is reported, and in production enforced and bounded (ADR-033)", async () => {
   const readiness = await getJson(`${config.apiManagementUrl}/actuator/health/readiness`);
   const session = readiness.components?.dbSession;
   assert.ok(session, "dbSession is not in the readiness group");
-  assert.equal(session.details?.bounded, true, `idle_in_transaction_session_timeout is ${session.details?.idleInTransactionSessionTimeout}`);
+  console.log(`dbSession: idle_in_transaction_session_timeout=${session.details?.idleInTransactionSessionTimeout} bounded=${session.details?.bounded} enforced=${session.details?.enforced}`);
   if (config.expectedEnvironment === "production") {
+    // Elsewhere the value is reported; a staging estate that has not set it
+    // stays in service. Production must both enforce and satisfy it.
     assert.equal(session.details?.enforced, true, "production must enforce the session bound, not merely report it");
+    assert.equal(session.details?.bounded, true, `idle_in_transaction_session_timeout is ${session.details?.idleInTransactionSessionTimeout}`);
   }
 });
 

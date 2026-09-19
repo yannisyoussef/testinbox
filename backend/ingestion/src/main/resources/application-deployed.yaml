@@ -1,7 +1,8 @@
 # The DEPLOYED layer for the inbound SMTP gateway (ADR-028/029/034), pulled in
 # by the `staging` and `production` profile groups in application.yaml. See the
-# API's application-deployed.yaml for why nothing here has a default;
-# application-production.yaml adds only what is stricter in production.
+# API's application-deployed.yaml for why nothing here has a default, and for
+# why the production overrides are the second document of THIS file rather
+# than a separate profile file (which the group order would shadow).
 server:
   # HTTP here carries actuator only; it is never routed by the ingress.
   port: 8081
@@ -91,3 +92,16 @@ info:
     environment: ${TESTINBOX_ENVIRONMENT}
     gitSha: ${TESTINBOX_GIT_SHA:unknown}
     imageDigest: ${TESTINBOX_IMAGE_DIGEST:unknown}
+
+---
+# Production overrides (ADR-034 §4). Enforcement is `DeploymentSafety`, not
+# this document — see the API's application-deployed.yaml.
+spring:
+  config:
+    activate:
+      on-profile: production
+
+testinbox:
+  mail-domain: inbox.testinbox.email
+  storage:
+    create-bucket: false

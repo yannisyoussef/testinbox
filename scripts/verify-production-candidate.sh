@@ -66,7 +66,7 @@ note() { echo "ok — $*"; }
 [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || refuse "candidate '$candidate' is not a 40-character lowercase hex SHA"
 case "$mode" in
   pr|promotion) ;;
-  *) refuse "mode must be pr or promotion (got '$mode')" ;;
+  *) refuse "mode must be pr or promotion (got '${mode:-<unset>}')" ;;
 esac
 
 # --- 2. the candidate is approved for what this mode claims -----------------
@@ -81,12 +81,16 @@ else
   # the merged-PR list rather than from git ancestry: a squash or rebase merge
   # leaves the head SHA out of master's history, and this must not depend on
   # which merge method a human picked.
+  # `--limit 200` bounds how far back a rollback candidate may be found; it is
+  # generous for a repository whose releases are deliberate and infrequent,
+  # and a candidate older than that is refused rather than silently missed.
   merged="$("$GH" pr list --repo "$REPO" --base master --state merged --limit 200 \
-    --json number,headRefOid,headRefName 2>/dev/null)" || refuse "could not list merged pull requests for $REPO"
+    --json number,headRefOid,headRefName,isCrossRepository 2>/dev/null)" || refuse "could not list merged pull requests for $REPO"
   match="$(printf '%s' "$merged" | jq -r --arg sha "$candidate" \
-    '[.[] | select(.headRefOid == $sha)] | first // empty | "\(.number) \(.headRefName)"')"
+    '[.[] | select(.headRefOid == $sha)] | first // empty | "\(.number) \(.headRefName) \(.isCrossRepository)"')"
   [[ -n "$match" ]] || refuse "no merged pull request into master has $candidate as its head — it is not production-approved"
-  pr_number="${match%% *}"; pr_head_ref="${match#* }"
+  read -r pr_number pr_head_ref pr_cross <<< "$match"
+  [[ "$pr_cross" != "true" ]] || refuse "pull request #$pr_number came from another repository's '$pr_head_ref'; only this repository's develop is a release source"
   [[ "$pr_head_ref" == "develop" ]] || refuse "pull request #$pr_number was merged from '$pr_head_ref', not develop"
   note "approved by merged release pull request #$pr_number (head develop)"
 fi
@@ -110,18 +114,26 @@ note "four artifacts resolved by digest under $REGISTRY"
 # source ref (develop — the branch whose merges publish), and a GitHub-hosted
 # runner (a self-hosted runner could sign anything).
 for ref in "${refs[@]}"; do
-  "$GH" attestation verify "oci://${ref}" \
+  # stderr is kept: a Sigstore or API outage must read as an outage, not as a
+  # forged attestation, and the difference is only in that text.
+  if ! attestation_output="$("$GH" attestation verify "oci://${ref}" \
       --owner "$OWNER" \
       --source-digest "$candidate" \
       --signer-workflow "$SIGNER_WORKFLOW" \
       --source-ref "$SOURCE_REF" \
-      --deny-self-hosted-runners >/dev/null 2>&1 \
-    || refuse "$ref does not carry a provenance attestation for source commit $candidate from $SIGNER_WORKFLOW — the tag may have been repointed or the artifact rebuilt"
+      --deny-self-hosted-runners 2>&1)"; then
+    refuse "$ref does not verify as built from source commit $candidate by $SIGNER_WORKFLOW on $SOURCE_REF — the tag may have been repointed, the artifact rebuilt, or verification itself failed: $(printf '%s' "$attestation_output" | tail -3 | tr '\n' ' ')"
+  fi
 done
 note "every digest attests to source commit $candidate via $SIGNER_WORKFLOW"
 
 # --- 5. rollback floors -----------------------------------------------------
-if [[ -f "$FLOORS" ]]; then
+# The floors file is part of the contract; its absence is not "no floors", it
+# is a checkout that cannot evaluate them. Requires full history: after a
+# squash or rebase merge the candidate SHA is on develop, not master, and is
+# present only because develop is fetched too and never force-pushed.
+[[ -f "$FLOORS" ]] || refuse "rollback floors file not found at $FLOORS; the checkout cannot evaluate rollback hazards"
+{
   while IFS= read -r line; do
     line="${line%%#*}"; [[ -n "${line// /}" ]] || continue
     floor="${line%% *}"; why="${line#* }"
@@ -139,12 +151,12 @@ if [[ -f "$FLOORS" ]]; then
     fi
   done < "$FLOORS"
   note "rollback floors evaluated"
-fi
+}
 
 # --- 6. record the identity --------------------------------------------------
-json="$(jq -n --arg sha "$candidate" --arg mode "$mode" \
+json="$(jq -n --arg sha "$candidate" --arg mode "$mode" --argjson ack "$acknowledge" \
   --arg api "${refs[0]}" --arg ingestion "${refs[1]}" --arg migrator "${refs[2]}" --arg web "${refs[3]}" \
-  '{candidate: $sha, mode: $mode, images: {api: $api, ingestion: $ingestion, migrator: $migrator, web: $web}}')"
+  '{candidate: $sha, mode: $mode, acknowledgedRollbackHazard: $ack, images: {api: $api, ingestion: $ingestion, migrator: $migrator, web: $web}}')"
 [[ -n "$manifest" ]] && printf '%s\n' "$json" > "$manifest"
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {

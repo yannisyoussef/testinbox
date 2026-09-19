@@ -10,9 +10,23 @@ import { classifyOriginProbe } from "../src/origin.mjs";
  */
 
 test("a dropped, refused or unroutable connection proves isolation", () => {
-  for (const error of ["ETIMEDOUT", "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH"]) {
+  for (const error of ["ETIMEDOUT", "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN", "ENETDOWN"]) {
     const verdict = classifyOriginProbe({ error });
     assert.equal(verdict.isolated, true, `${error} should read as isolated`);
+  }
+});
+
+test("a routing failure is not isolation when the runner cannot route that family at all", () => {
+  // An IPv6 probe from an IPv4-only runner yields EHOSTUNREACH before any
+  // packet reaches the origin. Only with a same-family positive control does
+  // that count.
+  for (const error of ["EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN", "ENETDOWN"]) {
+    assert.equal(classifyOriginProbe({ error }, { sameFamilyReachable: false }).isolated, false, `${error} must not pass without the control`);
+    assert.equal(classifyOriginProbe({ error }, { sameFamilyReachable: true }).isolated, true);
+  }
+  // A timeout or refusal is the origin's answer, not the runner's routing.
+  for (const error of ["ETIMEDOUT", "ECONNREFUSED", "ECONNRESET"]) {
+    assert.equal(classifyOriginProbe({ error }, { sameFamilyReachable: false }).isolated, true);
   }
 });
 

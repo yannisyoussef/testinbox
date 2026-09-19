@@ -45,11 +45,28 @@ class DeployedConfigurationTest {
             File(repoRoot, "backend/api/src/main/resources/application-deployed.yaml"),
             File(repoRoot, "backend/ingestion/src/main/resources/application-deployed.yaml"),
         )
-    private val productionProfiles =
-        listOf(
-            File(repoRoot, "backend/api/src/main/resources/application-production.yaml"),
-            File(repoRoot, "backend/ingestion/src/main/resources/application-production.yaml"),
+
+    /**
+     * The production overrides are the SECOND document of each deployed file,
+     * activated on the `production` profile. A separate profile file would be
+     * shadowed by the deployed layer under Spring's group ordering — see
+     * `DeployedProfileLayeringTest` for the proof through Spring itself.
+     */
+    private fun productionDocument(deployed: File): String {
+        val documents = deployed.readText().split(Regex("(?m)^---\\s*$"))
+        assertEquals(
+            2,
+            documents.size,
+            "${deployed.name} must contain exactly two documents: the deployed layer and the production overrides",
         )
+        val production = documents[1]
+        assertTrue(
+            Regex("""activate:\s*\n\s*on-profile:\s*production""").containsMatchIn(production),
+            "${deployed.name}: the second document must be activated on the production profile",
+        )
+        return production
+    }
+
     private val composeFiles =
         listOf(
             File(repoRoot, "deploy/staging/compose.yaml"),
@@ -66,7 +83,7 @@ class DeployedConfigurationTest {
         val example = File(repoRoot, "deploy/staging/.env.example").readText()
 
         assertAll(
-            (deployedProfiles + productionProfiles).flatMap { profile ->
+            deployedProfiles.flatMap { profile ->
                 required.findAll(profile.readText()).map { it.groupValues[1] }.distinct().map { name ->
                     {
                         assertTrue(
@@ -115,14 +132,18 @@ class DeployedConfigurationTest {
                     )
                 }
             } +
-                listOf("api", "ingestion").map { module ->
-                    {
-                        // A resurrected full staging profile would silently shadow the shared layer.
-                        assertFalse(
-                            File(repoRoot, "backend/$module/src/main/resources/application-staging.yaml").exists(),
-                            "backend/$module has an application-staging.yaml; staging is a group over the " +
-                                "deployed layer and must not carry its own copy",
-                        )
+                listOf("api", "ingestion").flatMap { module ->
+                    listOf("staging", "production").map { profile ->
+                        {
+                            // A per-profile file is a trap either way: a staging one would
+                            // silently duplicate the layer, and a production one would be
+                            // silently SHADOWED by it (group order puts `deployed` last).
+                            assertFalse(
+                                File(repoRoot, "backend/$module/src/main/resources/application-$profile.yaml").exists(),
+                                "backend/$module has an application-$profile.yaml; $profile is a group over the " +
+                                    "deployed layer and its overrides belong in that file's second document",
+                            )
+                        }
                     }
                 },
         )
@@ -131,9 +152,9 @@ class DeployedConfigurationTest {
     @Test
     fun `the production overrides carry only what is stricter in production (ADR-034)`() {
         assertAll(
-            productionProfiles.map { profile ->
+            deployedProfiles.map { profile ->
                 {
-                    val text = profile.readText()
+                    val text = productionDocument(profile)
                     assertTrue(
                         Regex("""mail-domain:\s*inbox\.testinbox\.email""").containsMatchIn(text),
                         "${profile.name} must fix the tenant mail domain to inbox.testinbox.email (ADR-004)",
@@ -142,9 +163,13 @@ class DeployedConfigurationTest {
                         Regex("""create-bucket:\s*false""").containsMatchIn(text),
                         "${profile.name} must turn bucket creation off; production credentials hold no CreateBucket",
                     )
-                    assertTrue(
+                    // The ceiling is deliberately NOT redeclared without a default: the
+                    // shared layer resolves an unset variable to null and DeploymentSafety
+                    // refuses it in the aggregated report, where a bare placeholder
+                    // exception would have pre-empted every other violation.
+                    assertFalse(
                         text.contains("\${TESTINBOX_EDGE_REQUEST_CEILING}"),
-                        "${profile.name} must require the ingress ceiling with no default",
+                        "${profile.name}: do not redeclare the ceiling without a default in the production document",
                     )
                     // Shared settings belong in the deployed layer. Their presence
                     // here means production has started to diverge from staging.
@@ -162,7 +187,7 @@ class DeployedConfigurationTest {
 
     @Test
     fun `the API production profile enforces the database session bound (ADR-033)`() {
-        val api = productionProfiles.first { it.path.contains("/api/") }.readText()
+        val api = productionDocument(deployedProfiles.first { it.path.contains("/api/") })
         assertTrue(
             Regex("""require-database-session-timeout:\s*true""").containsMatchIn(api),
             "the API's production overrides must make an unbounded idle_in_transaction_session_timeout a readiness failure",

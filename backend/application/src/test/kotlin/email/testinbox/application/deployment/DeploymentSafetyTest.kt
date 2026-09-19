@@ -335,6 +335,34 @@ class DeploymentSafetyTest {
     }
 
     @Test
+    fun `another environment profile active alongside production is refused`() {
+        // A later profile document overrides an earlier one, so `production,staging`
+        // would let a resurrected staging document win over the production overrides.
+        val violations = DeploymentSafety.validate(production.copy(activeProfiles = setOf("production", "deployed", "staging")))
+        settingsOf(violations) shouldBe listOf("spring.profiles.active")
+        violations.single().problem shouldContain "'staging'"
+    }
+
+    @Test
+    fun `production must enforce the database session bound, not merely report it`() {
+        settingsOf(DeploymentSafety.validate(production.copy(requireDatabaseSessionTimeout = false))) shouldBe
+            listOf("testinbox.deployment.require-database-session-timeout")
+        // The gateway has no such indicator and is not asked for one.
+        DeploymentSafety.validate(production.copy(requireDatabaseSessionTimeout = null)).shouldBeEmpty()
+        DeploymentSafety.validate(production.copy(requireDatabaseSessionTimeout = true)).shouldBeEmpty()
+    }
+
+    @Test
+    fun `a URL without an explicit host cannot slip past the loopback check`() {
+        // `jdbc:postgresql:testinbox` is a valid URL for an implicit localhost; a
+        // scheme-less endpoint has no authority for the check to see.
+        settingsOf(DeploymentSafety.validate(safe.copy(databaseUrl = "jdbc:postgresql:testinbox"))) shouldBe
+            listOf("spring.datasource.url")
+        settingsOf(DeploymentSafety.validate(safe.copy(storageEndpoint = "objects.staging.internal:9000"))) shouldBe
+            listOf("testinbox.storage.endpoint")
+    }
+
+    @Test
     fun `staging is untouched by the production rules`() {
         // The whole staging fixture would fail several production invariants;
         // none of them may apply to it.

@@ -57,6 +57,12 @@ data class DeploymentSettings(
     val publicSurface: Boolean = true,
     /** Whether the object-store adapter would create its bucket at startup. */
     val createBucket: Boolean = false,
+    /**
+     * Whether an unbounded database session timeout takes this node out of
+     * readiness (ADR-033/034). Null where the deployable has no such
+     * indicator (the SMTP gateway); production requires true on the API.
+     */
+    val requireDatabaseSessionTimeout: Boolean? = null,
 )
 
 /**
@@ -72,7 +78,17 @@ object ProductionPolicy {
     const val ENVIRONMENT = "production"
     const val PROFILE = "production"
     const val MAIL_DOMAIN = "inbox.testinbox.email"
-    val NON_PRODUCTION_HOST_FRAGMENTS: List<String> = listOf("staging", "rehearsal", "localhost", "127.0.0.1", ".local")
+
+    /**
+     * Names of every environment that is not production, matched as a
+     * substring of the host. Loopback is refused too, but by the exact
+     * authority check the deployed baseline already uses —
+     * `localhost.db.example.com` is a real remote host there and stays one here.
+     */
+    val NON_PRODUCTION_HOST_FRAGMENTS: List<String> = listOf("staging", "rehearsal", ".local")
+
+    /** Profiles that name an environment; none may be active alongside `production`. */
+    val OTHER_ENVIRONMENT_PROFILES: Set<String> = setOf("staging", "rehearsal", "local", "dev", "test")
 }
 
 data class DeploymentViolation(
@@ -165,6 +181,10 @@ object DeploymentSafety {
         buildList {
             if (settings.databaseUrl.isBlank()) {
                 add(DeploymentViolation("spring.datasource.url", "is not set"))
+            } else if (!settings.databaseUrl.startsWith("jdbc:postgresql://", ignoreCase = true)) {
+                // `jdbc:postgresql:testinbox` is a valid URL for an implicit localhost, and
+                // it has no authority for the loopback check to see.
+                add(DeploymentViolation("spring.datasource.url", "must name its host explicitly (jdbc:postgresql://host:port/db)"))
             } else if (containsLocalHost(settings.databaseUrl)) {
                 add(
                     DeploymentViolation(
@@ -190,6 +210,8 @@ object DeploymentSafety {
         buildList {
             if (settings.storageEndpoint.isBlank()) {
                 add(DeploymentViolation("testinbox.storage.endpoint", "is not set"))
+            } else if (!settings.storageEndpoint.matches(Regex("(?i)https?://.+"))) {
+                add(DeploymentViolation("testinbox.storage.endpoint", "must be an absolute http(s):// URL"))
             } else if (containsLocalHost(settings.storageEndpoint)) {
                 add(
                     DeploymentViolation(
@@ -373,6 +395,18 @@ object DeploymentSafety {
             if (!settings.environment.equals(ProductionPolicy.ENVIRONMENT) && declared) {
                 add(DeploymentViolation("testinbox.deployment.environment", "must be exactly '${ProductionPolicy.ENVIRONMENT}'"))
             }
+            val mixed = settings.activeProfiles.intersect(ProductionPolicy.OTHER_ENVIRONMENT_PROFILES)
+            if (profiled && mixed.isNotEmpty()) {
+                // A later profile document overrides an earlier one; `production,staging`
+                // would let a resurrected staging document win over the production overrides.
+                add(
+                    DeploymentViolation(
+                        "spring.profiles.active",
+                        "activates '${mixed.sorted().joinToString(",")}' alongside '${ProductionPolicy.PROFILE}'; " +
+                            "no other environment profile may be active with it",
+                    ),
+                )
+            }
             if (!settings.mailDomain.equals(ProductionPolicy.MAIL_DOMAIN, ignoreCase = true)) {
                 add(
                     DeploymentViolation(
@@ -427,11 +461,28 @@ object DeploymentSafety {
             namesNonProductionHost(settings.databaseUrl)?.let { fragment ->
                 add(DeploymentViolation("spring.datasource.url", "names a non-production host ('$fragment')"))
             }
+            if (settings.requireDatabaseSessionTimeout == false) {
+                // The profile document sets true; an environment variable can flip it, and
+                // then an unbounded idle_in_transaction_session_timeout would be reported
+                // instead of taking the node out of readiness (ADR-033).
+                add(
+                    DeploymentViolation(
+                        "testinbox.deployment.require-database-session-timeout",
+                        "is false — production must enforce the database session bound, not merely report it",
+                    ),
+                )
+            }
         }
 
     /** The offending fragment, or null. Matched on the authority only, so a path or query cannot trip it. */
     private fun namesNonProductionHost(value: String): String? {
-        val authority = AUTHORITY.find(value.lowercase())?.groupValues?.get(1) ?: return null
+        val authority =
+            AUTHORITY
+                .find(value.lowercase())
+                ?.groupValues
+                ?.get(1)
+                ?.removeSurrounding("[", "]") ?: return null
+        if (authority in LOCAL_HOSTS) return authority
         return ProductionPolicy.NON_PRODUCTION_HOST_FRAGMENTS.firstOrNull { authority.contains(it) }
     }
 

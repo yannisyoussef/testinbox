@@ -25,16 +25,18 @@ fail() { echo "PROMOTION GATE FAILED: $*" >&2; exit 1; }
 [[ -n "${NEEDS_JSON:-}" ]] || fail "NEEDS_JSON is not set; the gate has nothing to evaluate"
 printf '%s' "$NEEDS_JSON" | jq -e 'type == "object"' >/dev/null 2>&1 || fail "NEEDS_JSON is not a JSON object"
 
+# bash 3.2 (macOS) treats an empty array expansion under `set -u` as unbound;
+# the `${arr[@]+"${arr[@]}"}` form is the portable spelling.
 IFS=',' read -r -a expected <<< "$expect"
 declare -a wanted=()
-for job in "${expected[@]}"; do
+for job in ${expected[@]+"${expected[@]}"}; do
   job="${job// /}"
   [[ -n "$job" ]] && wanted+=("$job")
 done
 (( ${#wanted[@]} > 0 )) || fail "no expected legs were listed; an aggregate over nothing proves nothing"
 
 failed=0
-for job in "${wanted[@]}"; do
+for job in ${wanted[@]+"${wanted[@]}"}; do
   result="$(printf '%s' "$NEEDS_JSON" | jq -r --arg j "$job" '.[$j].result // "missing"')"
   case "$result" in
     success) echo "ok   — $job: success" ;;

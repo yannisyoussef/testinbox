@@ -2,7 +2,15 @@
 # and production have in common. It is never activated by name — the profile
 # groups in application.yaml pull it in under `staging` and `production`, so
 # the two environments cannot drift apart by editing one copy.
-# `application-production.yaml` adds only what is stricter in production.
+#
+# The production overrides are the SECOND DOCUMENT of this file (below the
+# `---`), activated on the `production` profile. They are here and not in an
+# `application-production.yaml` for a precedence reason that is easy to get
+# wrong: Spring expands `production` to `[production, deployed]` and the LATER
+# profile wins, so a separate production file would be silently shadowed by
+# this one. A later document in the same file wins over an earlier one
+# regardless of group order. `DeployedProfileLayeringTest` loads the real
+# files through Spring and proves the overrides take effect.
 #
 # Everything here is deliberately WITHOUT a default: an unset variable must
 # fail startup, not silently fall back to the local-development value in
@@ -120,3 +128,32 @@ info:
     environment: ${TESTINBOX_ENVIRONMENT}
     gitSha: ${TESTINBOX_GIT_SHA:unknown}
     imageDigest: ${TESTINBOX_IMAGE_DIGEST:unknown}
+
+---
+# Production overrides (ADR-034 §4) — only what is stricter than the shared
+# layer above. A document can still be overridden by an environment variable,
+# so this is the default and `DeploymentSafety` is the enforcement: a
+# production process whose effective values contradict these refuses to
+# start, whichever source they came from.
+spring:
+  config:
+    activate:
+      on-profile: production
+
+testinbox:
+  # The tenant domain the public MX will name (ADR-004). Fixed, not injected.
+  mail-domain: inbox.testinbox.email
+  storage:
+    # Runtime credentials are scoped to the pre-provisioned bucket and hold no
+    # CreateBucket. An absent bucket is a readiness failure, never a silent
+    # creation under broader privileges.
+    create-bucket: false
+  deployment:
+    # ADR-033: a hung idempotency claim must be bounded by the database.
+    # Reported in every deployed environment; here it takes the node out of
+    # readiness until Ops sets `idle_in_transaction_session_timeout`.
+    # (The ingress ceiling is NOT redeclared here: the shared layer's optional
+    # form resolves an unset variable to null, and DeploymentSafety refuses a
+    # production node without one — in the same aggregated report as every
+    # other violation, rather than a bare placeholder exception.)
+    require-database-session-timeout: true

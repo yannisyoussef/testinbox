@@ -119,7 +119,7 @@ class DeploymentSafetyCheckTest {
             }
     }
 
-    /** A production node, as `application-production.yaml` plus a correct environment would configure it. */
+    /** A production node, as the production document of `application-deployed.yaml` plus a correct environment would configure it. */
     private val production =
         arrayOf(
             "spring.profiles.active=production",
@@ -130,6 +130,7 @@ class DeploymentSafetyCheckTest {
             "testinbox.deployment.git-sha=abc123",
             "testinbox.mail-domain=inbox.testinbox.email",
             "testinbox.storage.create-bucket=false",
+            "testinbox.deployment.require-database-session-timeout=true",
             "spring.datasource.url=jdbc:postgresql://db.prod.internal:5432/testinbox",
             "spring.datasource.username=testinbox_prod",
             "spring.datasource.password=fixture-not-a-real-db-password--1",
@@ -180,6 +181,25 @@ class DeploymentSafetyCheckTest {
             assertThat(context).hasFailed()
             context.startupFailure!!.stackTraceToString() shouldContain "testinbox.deployment.edge-request-ceiling"
         }
+    }
+
+    @Test
+    fun `a deployed profile with a blank environment name is refused, not silently unguarded`() {
+        // With TESTINBOX_ENVIRONMENT set but empty, every check used to be skipped.
+        runner.withPropertyValues("spring.profiles.active=production", "testinbox.deployment.environment=").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain "testinbox.deployment.environment is not set"
+        }
+    }
+
+    @Test
+    fun `an environment variable cannot turn production's session enforcement into reporting`() {
+        runner
+            .withPropertyValues(*production, "testinbox.deployment.require-database-session-timeout=false")
+            .run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure!!.stackTraceToString() shouldContain "require-database-session-timeout"
+            }
     }
 
     @Test

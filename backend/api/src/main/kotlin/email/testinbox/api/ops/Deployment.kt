@@ -33,6 +33,13 @@ class DeploymentSafetyCheck(
 ) {
     init {
         val environment = properties.deployment.environment?.takeIf { it.isNotBlank() }
+        val deployedProfiles = springEnvironment.activeProfiles.toSet().intersect(DEPLOYED_PROFILES)
+        // A deployed profile with no environment name would skip every check
+        // below — a blank TESTINBOX_ENVIRONMENT must be a refusal, not a bypass.
+        check(environment != null || deployedProfiles.isEmpty()) {
+            "Refusing to start: deployed configuration is unsafe.\n  - testinbox.deployment.environment is not set " +
+                "although profile '${deployedProfiles.sorted().joinToString(",")}' is active"
+        }
         if (environment != null) {
             val violations =
                 DeploymentSafety.validate(
@@ -54,6 +61,7 @@ class DeploymentSafetyCheck(
                         activeProfiles = springEnvironment.activeProfiles.toSet(),
                         publicSurface = true,
                         createBucket = properties.storage.createBucket,
+                        requireDatabaseSessionTimeout = properties.deployment.requireDatabaseSessionTimeout,
                     ),
                 )
             check(violations.isEmpty()) { DeploymentSafety.describe(violations) }
@@ -68,6 +76,7 @@ class DeploymentSafetyCheck(
     }
 
     private companion object {
+        val DEPLOYED_PROFILES = setOf("deployed", "staging", "production")
         val log = LoggerFactory.getLogger(DeploymentSafetyCheck::class.java)
     }
 }

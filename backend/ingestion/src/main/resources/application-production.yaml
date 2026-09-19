@@ -1,9 +1,0 @@
-# Production overrides for the inbound SMTP gateway (ADR-034), on top of the
-# shared `deployed` layer. Enforcement is `DeploymentSafety`, not this file —
-# see the API's application-production.yaml.
-testinbox:
-  mail-domain: inbox.testinbox.email
-  storage:
-    create-bucket: false
-  deployment:
-    edge-request-ceiling: ${TESTINBOX_EDGE_REQUEST_CEILING}

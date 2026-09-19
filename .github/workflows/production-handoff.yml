@@ -142,7 +142,7 @@ jobs:
               echo "job, readiness, and the post-deployment synthetic suite run in"
               echo "\`infinity/infinity-core\`, and **the authoritative production verdict lives"
               echo "there**. Ops also confirms, before deploying, that this digest set is the one"
-              echo "that passed staging (ADR-034 §13)."
+              echo "that passed staging (ADR-034 §3)."
             else
               echo "## Production handoff FAILED"
               echo

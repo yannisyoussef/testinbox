@@ -30,19 +30,30 @@ const NOT_REACHED = new Set([
   "ENETDOWN",
 ]);
 
+/** Failures that a runner with no route of that family produces on its own, whatever the origin does. */
+const LOCAL_ROUTING = new Set(["EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN", "ENETDOWN"]);
+
 /**
  * @param {{connected?: boolean, error?: string}} probe
  *   `connected: true` when the TCP connection completed, regardless of what
  *   happened after; `error` is the socket error code when it did not.
+ * @param {{sameFamilyReachable?: boolean}} [control]
+ *   Whether the positive control reached the environment over the same
+ *   address family as the probe. A routing failure only proves isolation
+ *   when the runner demonstrably CAN route that family — otherwise an IPv6
+ *   probe from an IPv4-only runner would pass for free.
  * @returns {{isolated: boolean, reason: string}}
  */
-export function classifyOriginProbe(probe) {
+export function classifyOriginProbe(probe, { sameFamilyReachable = true } = {}) {
   if (probe.connected === true) {
     return { isolated: false, reason: "the origin accepted a direct connection; it is reachable outside the approved ingress path" };
   }
   if (typeof probe.error !== "string" || probe.error === "") {
     // Fail closed: no connection and no reason is not evidence of isolation.
     return { isolated: false, reason: "the probe produced neither a connection nor a socket error; nothing was demonstrated" };
+  }
+  if (LOCAL_ROUTING.has(probe.error) && !sameFamilyReachable) {
+    return { isolated: false, reason: `${probe.error} while the runner could not reach the environment over that address family; that is the runner's routing, not the origin's isolation` };
   }
   if (NOT_REACHED.has(probe.error)) {
     return { isolated: true, reason: `the origin did not answer a direct connection (${probe.error})` };

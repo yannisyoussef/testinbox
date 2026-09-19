@@ -47,6 +47,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       EXPECTED_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
+      # Through env, never interpolated into `run:` — a branch name is untrusted input.
+      CANDIDATE_HEAD_REF: ${{ github.event.pull_request.head.ref }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -66,7 +68,7 @@ jobs:
           ./scripts/verify-production-candidate.sh \
             --candidate "$CANDIDATE_SHA" \
             --mode pr \
-            --head-ref "${{ github.event.pull_request.head.ref }}" \
+            --head-ref "$CANDIDATE_HEAD_REF" \
             --manifest release-manifest.json
       - name: Record the release manifest
         uses: actions/upload-artifact@v7

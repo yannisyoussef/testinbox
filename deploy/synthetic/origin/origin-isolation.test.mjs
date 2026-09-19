@@ -1,11 +1,12 @@
-import { test } from "node:test";
+import { before, test } from "node:test";
 import assert from "node:assert/strict";
+import dns from "node:dns/promises";
 import net from "node:net";
 import { classifyOriginProbe } from "../src/origin.mjs";
 import { originConfig } from "../src/env.mjs";
 
 /**
- * Origin isolation, proven from OUTSIDE the host (TI-006 §11; ADR-034).
+ * Origin isolation, proven from OUTSIDE the host (ADR-034 §6).
  *
  *     approved ingress path (public hostname)  → TestInbox answers
  *     direct connection to the origin address  → nothing answers
@@ -37,7 +38,21 @@ function probe(host, port, timeoutMs) {
   });
 }
 
-test("positive control: the environment is reachable through its public hostname", async () => {
+/** Set by the positive control: the runner reached the environment over the probe's own address family. */
+let sameFamilyReachable = false;
+
+before(async () => {
+  // Resolve the public hostname to an address of the SAME family as the probe
+  // and connect to it. This is what makes "unreachable" mean the origin's
+  // firewall rather than the runner's routing table.
+  const host = new URL(config.baseUrl).hostname;
+  const { address } = await dns.lookup(host, { family: config.family });
+  const control = await probe(address, 443, config.timeoutMs);
+  sameFamilyReachable = control.connected === true;
+});
+
+test("positive control: the environment is reachable through its public hostname, over the probe's address family", async () => {
+  assert.equal(sameFamilyReachable, true, `the runner cannot reach ${config.baseUrl} over IPv${config.family}; every isolation verdict below would be vacuous`);
   const response = await fetch(`${config.baseUrl}/v1/inboxes/00000000-0000-0000-0000-000000000000`);
   assert.ok(
     response.headers.get("x-correlation-id"),
@@ -48,7 +63,7 @@ test("positive control: the environment is reachable through its public hostname
 for (const port of config.ports) {
   test(`a direct connection to the origin address on :${port} is not answered`, async () => {
     const result = await probe(config.originAddress, port, config.timeoutMs);
-    const verdict = classifyOriginProbe(result);
+    const verdict = classifyOriginProbe(result, { sameFamilyReachable });
     assert.equal(
       verdict.isolated,
       true,

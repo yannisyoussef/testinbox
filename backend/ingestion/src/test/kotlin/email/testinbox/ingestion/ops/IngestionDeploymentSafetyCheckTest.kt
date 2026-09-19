@@ -117,6 +117,14 @@ class IngestionDeploymentSafetyCheckTest {
     }
 
     @Test
+    fun `a deployed profile with a blank environment name is refused`() {
+        runner.withPropertyValues("spring.profiles.active=staging", "testinbox.deployment.environment=").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain "testinbox.deployment.environment is not set"
+        }
+    }
+
+    @Test
     fun `the guard is inert when the gateway is not deployed`() {
         runner
             .withPropertyValues("spring.datasource.password=testinbox", "testinbox.storage.access-key=testinbox")

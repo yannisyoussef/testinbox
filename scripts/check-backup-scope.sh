@@ -11,7 +11,10 @@
 # Input is either a plain-SQL pg_dump (COPY/INSERT statements mark tables that
 # carry data) or a newline-separated list of tables that carry data, e.g.
 #
-#     pg_restore -l backup.dump | awk '/TABLE DATA/ {print $6}' > tables.txt
+#     pg_restore -l backup.dump | awk '/ TABLE DATA / {print $7}' > tables.txt
+#
+# (`pg_restore -l` lines read `3117; 0 16391 TABLE DATA public workspace owner`:
+# field 6 is the schema, field 7 the table.)
 #
 # Usage:
 #   check-backup-scope.sh <dump.sql | tables.txt>        validate a backup
@@ -60,7 +63,14 @@ if [[ "${1:-}" == "--classification" ]]; then
       echo "UNCLASSIFIED: $table — decide whether it is backed up (+) or never (-) in $SCOPE" >&2
       unclassified=1
     fi
-  done < <(grep -hioE 'CREATE TABLE (IF NOT EXISTS )?[a-z_]+' "${files[@]}" | awk '{print tolower($NF)}' | sort -u)
+  done < <(
+    # Normalise first: one statement per line, comments stripped, so a
+    # `create table\n  name` split across lines, an UNLOGGED table, a quoted or
+    # schema-qualified name, or a digit-suffixed name (`rate_bucket2` is NOT
+    # `rate_bucket`) all yield exactly their table name.
+    cat "${files[@]}" | sed -E 's/--.*$//' | tr '\n' ' ' | tr ';' '\n' \
+      | grep -ioE 'CREATE[[:space:]]+(UNLOGGED[[:space:]]+)?TABLE[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?("?[A-Za-z0-9_]+"?\.)?"?[A-Za-z0-9_]+"?' \
+      | awk '{gsub(/"/, "", $NF); sub(/^.*\./, "", $NF); print tolower($NF)}' | sort -u)
   (( unclassified == 0 )) || fail "the schema has tables the backup scope does not classify"
   echo "every table in $dir is classified (${#KEEP[@]} kept, ${#DENY[@]} never backed up)"
   exit 0
@@ -72,11 +82,18 @@ input="${1:-}"; [[ -f "$input" ]] || usage
 # Tables whose DATA is present. For a plain-SQL dump that is COPY or INSERT
 # INTO; a CREATE TABLE alone is schema only and retains nothing.
 declare -a WITH_DATA=()
-if grep -qiE '^(COPY|INSERT INTO|CREATE TABLE) ' "$input"; then
+if grep -qiE '^[[:space:]]*(COPY|INSERT[[:space:]]+INTO|CREATE[[:space:]]+(UNLOGGED[[:space:]]+)?TABLE)[[:space:]]' "$input"; then
+  # Per line, case-folded, with one continuation form handled: a bare
+  # `INSERT INTO` line is joined with its successor. A leading tab or spaces
+  # before COPY/INSERT are still a data statement; a `\.` terminator, a data
+  # row, or a CREATE TABLE are not.
   while IFS= read -r t; do [[ -n "$t" ]] && WITH_DATA+=("$t"); done < <(
-    grep -iE '^(COPY|INSERT INTO) ' "$input" \
-      | sed -E 's/^(COPY|INSERT INTO)[[:space:]]+(ONLY[[:space:]]+)?("?[a-z_]+"?\.)?"?([a-z_]+)"?.*/\4/I' \
-      | awk '{print tolower($0)}' | sort -u)
+    tr 'A-Z' 'a-z' < "$input" | awk '
+      { if (pending) { $0 = "insert into " $0; pending = 0 } }
+      /^[ \t]*insert[ \t]+into[ \t]*$/ { pending = 1; next }
+      /^[ \t]*(copy|insert[ \t]+into)[ \t]+/ { print }
+    ' | sed -E 's/^[[:space:]]*(copy|insert[[:space:]]+into)[[:space:]]+(only[[:space:]]+)?("?[a-z0-9_]+"?\.)?"?([a-z0-9_]+)"?.*/\4/' \
+      | sort -u)
 else
   while IFS= read -r t; do
     t="${t%%#*}"; t="${t// /}"; t="${t##*.}"; t="${t//\"/}"
