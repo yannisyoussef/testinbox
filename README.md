@@ -41,6 +41,7 @@ val verificationUrl = message.links.first().href
 | Testing/quality strategy | [`docs/quality/`](docs/quality/) |
 | Deployment, staging, release and rollback | [`docs/dev/deployment.md`](docs/dev/deployment.md), [`docs/dev/staging.md`](docs/dev/staging.md), [`docs/dev/release-process.md`](docs/dev/release-process.md), [`docs/dev/rollback.md`](docs/dev/rollback.md) |
 | Production contract and Ops acceptance | [`docs/dev/production.md`](docs/dev/production.md), [`docs/dev/production-ops-acceptance.md`](docs/dev/production-ops-acceptance.md) |
+| Third-party image mirrors (why MinIO is mirrored, and its provenance) | [`docs/dev/third-party-mirrors.md`](docs/dev/third-party-mirrors.md) |
 | Architecture decision records | [`docs/adr/`](docs/adr/README.md) |
 | Contribution and repo conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 

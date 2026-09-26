@@ -6,6 +6,16 @@ Everything runs locally — no AWS credentials, no cloud dependency (ADR-004).
 
 - JDK 25 (Temurin recommended)
 - Docker (for Postgres, MinIO, and Testcontainers-based tests)
+- A GHCR login, because MinIO comes from a **private** mirror we own — MinIO
+  withdrew its public images, so upstream cannot be used
+  ([`third-party-mirrors.md`](third-party-mirrors.md)):
+
+  ```bash
+  docker login ghcr.io      # username: your GitHub login, password: a token with read:packages
+  ```
+
+  Without it, `docker compose up -d` and every Testcontainers suite fail with
+  `unauthorized` on the MinIO image.
 - Node.js >= 22.12 (TypeScript SDK and web UI). This is the **development**
   toolchain floor, set by vitest 5 (`^22.12.0 || ^24 || >=26`); Next 16 needs
   only >= 20.9. It is deliberately *not* the SDK's published support floor,

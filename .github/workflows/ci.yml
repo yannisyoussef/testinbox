@@ -162,6 +162,13 @@ jobs:
   backend:
     name: Backend (format, compile, unit + integration + architecture)
     runs-on: ubuntu-latest
+    # The integration suites start MinIO through Testcontainers, and that image
+    # is a private third-party mirror in GHCR because MinIO withdrew its public
+    # images (docs/dev/third-party-mirrors.md). Read access to packages is the
+    # whole reason this block exists; nothing here writes anything.
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -169,6 +176,14 @@ jobs:
           distribution: temurin
           java-version: 25
       - uses: gradle/actions/setup-gradle@v5
+      # Testcontainers pulls through the Docker daemon, so it is the daemon that
+      # must hold the credential — not Gradle.
+      - name: Log in to GHCR (private MinIO mirror)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Self-test the CI test verifier
         run: ./scripts/verify-test-results.test.sh
       - name: Formatting
@@ -190,6 +205,11 @@ jobs:
     name: Acceptance (black-box, Karate, JVM + TS SDK live)
     runs-on: ubuntu-latest
     needs: backend
+    # Same reason as `backend`: the acceptance stack starts MinIO from the
+    # private GHCR mirror (docs/dev/third-party-mirrors.md).
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -200,6 +220,12 @@ jobs:
         with:
           node-version: 22
       - uses: gradle/actions/setup-gradle@v5
+      - name: Log in to GHCR (private MinIO mirror)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Install TS SDK dependencies (used by the live SDK e2e test)
         working-directory: sdk/typescript
         run: npm ci
