@@ -74,6 +74,7 @@ jobs:
           ./scripts/promotion-gate.test.sh
           ./scripts/check-backup-scope.test.sh
           ./scripts/await-candidate-build.test.sh
+          ./scripts/check-minio-mirror-pin.test.sh
       # TI-005. Separate step because the 220-banner mutation needs Docker: its
       # whole point is that static validation cannot see a configuration which
       # passes `postfix check` and then leaves smtpd answering nothing. The
@@ -81,6 +82,12 @@ jobs:
       # suite that quietly skips is the failure it exists to prevent.
       - name: Self-test the mail-edge gates (TI-005 mutation proofs)
         run: ./scripts/check-mail-edge-contract.test.sh
+      # The MinIO image comes from a mirror we own because upstream withdrew it
+      # (docs/dev/third-party-mirrors.md). Six consumers pin it, and a partial
+      # re-pin is silent: CI stays green while the rehearsal and the test suites
+      # prove two different MinIO versions.
+      - name: MinIO mirror pinned consistently (one digest, no withdrawn upstream)
+        run: ./scripts/check-minio-mirror-pin.sh
       # ADR-023: @types/node is a compile-time ceiling. Above the floor it lets
       # TypeScript accept an API the oldest supported runtime does not have, and
       # nothing fails until a consumer on that runtime calls it — which no green
