@@ -75,6 +75,14 @@ esac
   fail "GITLAB_PROJECT must be a numeric id or a URL-encoded path (e.g. group%2Fproject)"
 [[ "$GITLAB_REF" =~ ^[A-Za-z0-9._/-]+$ ]] ||
   fail "GITLAB_REF is not a plain git ref"
+# Staging reconciles from infinity-core's `develop`, always. The workflow passes
+# that literal; this refuses the case where something else does not, so the
+# invariant survives an edit to the workflow as well as a variable set on an
+# environment. Production's ref is Ops-owned and supplied per environment
+# (ADR-034 / production-handoff.yml), so it is deliberately not constrained.
+if [[ "$TESTINBOX_ENVIRONMENT" == "staging" && "$GITLAB_REF" != "develop" ]]; then
+  fail "staging hands off on 'develop' only, not '$GITLAB_REF' — the staging trigger ref is not configurable"
+fi
 
 # Ops validates all of this again on receipt; doing it here too means a bad
 # payload fails where the mistake was made, with a legible message, instead of

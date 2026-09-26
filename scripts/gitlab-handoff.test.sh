@@ -157,6 +157,60 @@ status=$(run_handoff --environment staging "${valid_args[@]}")
 record "an explicit staging handoff is the same as the default" "$([[ "$status" == 0 ]] && echo ok || echo no)"
 expect_field "environment field is staging when asked for staging" 'variables[TESTINBOX_ENVIRONMENT]=staging'
 
+# --- the staging trigger ref is fixed, not configurable ----------------------
+# Which ref of infinity-core reconciles staging is control-plane routing. It was
+# `vars.GITLAB_OPS_REF || 'develop'`, which read as safe because the fallback was
+# correct — but a repository or environment variable, writable with a weaker
+# permission than reading a secret, silently won whenever it was set.
+#
+# The proof has to be static as well as behavioural: "no variable can redirect
+# the trigger" is a property of the workflow file, which no run of this script
+# can demonstrate.
+WORKFLOW="$SCRIPT_DIR/../.github/workflows/deploy-staging.yml"
+PRODUCTION_WORKFLOW="$SCRIPT_DIR/../.github/workflows/production-handoff.yml"
+
+assignments="$(grep -c 'GITLAB_REF:' "$WORKFLOW" 2>/dev/null || true)"
+record "deploy-staging.yml sets the trigger ref exactly once" \
+  "$([[ "$assignments" == "1" ]] && echo ok || echo no)"
+
+ref_line="$(grep 'GITLAB_REF:' "$WORKFLOW" 2>/dev/null | sed 's/^[[:space:]]*//')"
+record "the staging trigger ref is the literal develop" \
+  "$([[ "$ref_line" == "GITLAB_REF: develop" ]] && echo ok || echo no)"
+record "the staging trigger ref is not a workflow expression" \
+  "$([[ "$ref_line" != *'${{'* ]] && echo ok || echo no)"
+# Comment lines are excluded deliberately: the workflow documents the variable
+# it no longer reads, and what matters is what it does, not what it explains.
+record "no repository or environment variable feeds the staging trigger ref" \
+  "$(! grep -v '^[[:space:]]*#' "$WORKFLOW" | grep -q 'GITLAB_OPS_REF' && echo ok || echo no)"
+
+# Production's ref stays Ops-supplied per environment (ADR-034). Hardcoding
+# `develop` there would silently reroute production to the staging branch, so
+# the fix must not spread.
+record "the production handoff still takes its ref from its own environment" \
+  "$(grep -q 'GITLAB_REF: ${{ vars.GITLAB_OPS_PRODUCTION_REF }}' "$PRODUCTION_WORKFLOW" 2>/dev/null \
+     && echo ok || echo no)"
+
+# And the script refuses to be the weak link if the workflow is ever edited back.
+ok_response
+status=$(GITLAB_REF="main" run_handoff "${valid_args[@]}")
+record "a staging handoff on another ref is refused" "$([[ "$status" != "0" ]] && echo ok || echo no)"
+record "and nothing was sent when the ref was refused" \
+  "$([[ ! -f "$STUB_DIR/marker" ]] && echo ok || echo no)"
+record "the refusal names the ref it rejected" \
+  "$(grep -q "not 'main'" "$STUB_DIR/stderr" && echo ok || echo no)"
+
+ok_response
+status=$(GITLAB_REF="refs/heads/develop" run_handoff "${valid_args[@]}")
+record "a ref that merely contains develop is still refused" \
+  "$([[ "$status" != "0" ]] && echo ok || echo no)"
+
+# The guard is scoped to staging: production's ref is not ours to fix.
+ok_response
+status=$(GITLAB_REF="production" run_handoff --environment production "${valid_args[@]}")
+record "a production handoff on its own ref is still accepted" \
+  "$([[ "$status" == "0" ]] && echo ok || echo no)"
+expect_field "and production triggers on the ref it was given" 'form-string = "ref=production"'
+
 # --- refusals: nothing may leave the runner ----------------------------------
 refuses() {
   local name="$1"; shift

@@ -113,9 +113,16 @@ this change, or the handoff job fails:
    trigger token for `infinity/infinity-core`. It can start one pipeline and do
    nothing else.
 
-Optional repository **variables**, both with working defaults:
+One optional repository **variable**, with a working default:
 `GITLAB_OPS_PROJECT` (default `infinity%2Finfinity-core` — URL-encoded; an
-unencoded path is rejected) and `GITLAB_OPS_REF` (default `develop`).
+unencoded path is rejected).
+
+The GitLab ref the staging handoff triggers is **not** configurable: the
+workflow passes the literal `develop`, and `gitlab-handoff.sh` refuses a staging
+handoff on any other ref. Which ref reconciles staging is control-plane routing,
+and a variable there would let anyone who can write one redirect the trigger —
+and the token — at another ref of `infinity-core`. Production's ref is separate
+and remains Ops-supplied on the `production-handoff` environment (ADR-034).
 
 ## Branch protection
 
