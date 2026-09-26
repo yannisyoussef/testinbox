@@ -244,7 +244,12 @@ CI gets this for free because its runner has only Java 21 installed. Everything
 else builds and runs on Java 25.
 
 Local dependencies: `docker compose up -d` from the repo root (Postgres 16 +
-MinIO). SDKs: `sdk/kotlin` has its own `./gradlew build`; `sdk/typescript`
+MinIO). **MinIO is pinned to a private GHCR mirror we own, by index digest** —
+MinIO withdrew its public images, so `quay.io`/Docker Hub cannot be restored and
+must never be pinned again; a GHCR login (`read:packages`) is required locally
+and CI logs in with `GITHUB_TOKEN`. The mirror holds the *same* bytes as the
+withdrawn release, per platform: changing to a newer MinIO is a separate
+decision, not a mirroring change (`docs/dev/third-party-mirrors.md`). SDKs: `sdk/kotlin` has its own `./gradlew build`; `sdk/typescript`
 and `web` use `npm ci && npm test` / `npm run build`. Full local setup:
 `docs/dev/local-setup.md`.
 

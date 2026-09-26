@@ -87,12 +87,16 @@ abstract class ApiIntegrationTestBase {
         @JvmStatic
         val minio: MinIOContainer =
             MinIOContainer(
-                // minio/minio is no longer anonymously pullable from Docker Hub;
-                // quay.io is MinIO's public mirror. Pinned to the release staging
-                // runs (deploy/staging/compose.data.yaml) so tests prove that version.
+                // MinIO withdrew its public images: Docker Hub's repository is gone
+                // and quay.io answers 401 for every tag. This is our own private
+                // mirror of the exact same bytes, pinned by index digest to what
+                // the staging data tier runs (deploy/staging/compose.data.yaml) so
+                // the tests still prove that version. Needs a GHCR login —
+                // docs/dev/third-party-mirrors.md.
                 DockerImageName
-                    .parse("quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z")
-                    .asCompatibleSubstituteFor("minio/minio"),
+                    .parse(
+                        "ghcr.io/yannisyoussef/testinbox-mirror/minio@sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d",
+                    ).asCompatibleSubstituteFor("minio/minio"),
             ).withUserName("testinbox")
                 .withPassword("testinbox123")
                 .also { it.start() }

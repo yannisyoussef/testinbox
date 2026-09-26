@@ -169,11 +169,24 @@ jobs:
     needs: resolve-artifacts
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # The data tier of the rehearsal topology pulls MinIO from the private
+    # third-party mirror in GHCR — MinIO withdrew its public images
+    # (docs/dev/third-party-mirrors.md). Read-only; the rehearsal pushes its
+    # application images to a registry it runs on the runner itself.
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+      - name: Log in to GHCR (private MinIO mirror)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Run the rehearsal
         # Bounded at the step, not only the job: a hung docker build would
         # otherwise burn the full job timeout before printing anything.

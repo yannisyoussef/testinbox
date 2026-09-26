@@ -17,7 +17,11 @@ services:
       retries: 10
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    # Our own private mirror of MinIO's withdrawn RELEASE.2025-04-22T22-12-26Z —
+    # the same bytes, not an upgrade. Pinned by INDEX digest so an amd64 runner
+    # and an arm64 laptop each resolve their own member natively. Requires
+    # `docker login ghcr.io` (docs/dev/third-party-mirrors.md).
+    image: ghcr.io/yannisyoussef/testinbox-mirror/minio@sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: testinbox

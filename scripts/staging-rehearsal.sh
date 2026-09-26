@@ -84,6 +84,32 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# MinIO is pulled from a PRIVATE third-party mirror in GHCR, because MinIO
+# withdrew its public images (docs/dev/third-party-mirrors.md). Checked here,
+# before anything is built: without this, a missing `docker login ghcr.io`
+# surfaces as a bare `unauthorized` in the middle of the deploy step, which
+# reads like a broken deployment rather than a missing credential — that is
+# exactly how the withdrawal itself was first seen.
+MIRROR_IMAGE="$(sed -n 's|^[[:space:]]*image:[[:space:]]*\(ghcr\.io/[^[:space:]]*/minio@sha256:[0-9a-f]*\).*$|\1|p' \
+  "$REPO_ROOT/deploy/staging/compose.data.yaml" | head -1)"
+if [[ -z "$MIRROR_IMAGE" ]]; then
+  echo "no GHCR MinIO mirror reference found in deploy/staging/compose.data.yaml — the data tier must pin one by digest" >&2
+  exit 1
+fi
+if ! docker image inspect "$MIRROR_IMAGE" >/dev/null 2>&1 && ! docker pull "$MIRROR_IMAGE" >/dev/null 2>&1; then
+  cat >&2 <<MSG
+cannot pull the MinIO mirror:
+  $MIRROR_IMAGE
+
+It is a private package, so a GHCR login is required:
+  docker login ghcr.io          # username: your GitHub login, password: a token with read:packages
+
+Why it is private and why upstream cannot be used instead:
+  docs/dev/third-party-mirrors.md
+MSG
+  exit 1
+fi
+
 # The environment file drives compose, deploy.sh and the synthetic suite alike.
 mkdir -p "$WORK/tls"
 ENV_FILE="$WORK/.env"
