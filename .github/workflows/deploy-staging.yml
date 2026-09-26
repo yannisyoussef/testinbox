@@ -282,7 +282,13 @@ jobs:
           # the run, not silently send a credential to the wrong host.
           GITLAB_API_URL: ${{ vars.GITLAB_OPS_API_URL }}
           GITLAB_PROJECT: ${{ vars.GITLAB_OPS_PROJECT || 'infinity%2Finfinity-core' }}
-          GITLAB_REF: ${{ vars.GITLAB_OPS_REF || 'develop' }}
+          # Control-plane ROUTING, not configuration — deliberately a literal.
+          # `vars.GITLAB_OPS_REF || 'develop'` read as safe because the fallback
+          # was correct, but the variable silently won whenever it was set: anyone
+          # who can write a repository or environment variable could point this
+          # trigger — and the token with it — at another ref of infinity-core.
+          # Which ref reconciles staging is not a caller's decision.
+          GITLAB_REF: develop
           EXPECTED_IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}
         run: |
           set -euo pipefail

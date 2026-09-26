@@ -231,7 +231,7 @@ none of them is one:
 |---|---|---|
 | `GITLAB_OPS_API_URL` | `https://gitlab.yvnn.is/api/v4` | **Required.** `gitlab-handoff.sh` defaults to `gitlab.com`, which is the right default for a repository that assumes no Ops platform — but it means the host must be named explicitly, or the trigger token is POSTed to gitlab.com. The workflow fails loudly when this is unset rather than falling back. |
 | `GITLAB_OPS_PROJECT` | `3` | The numeric project id, not the URL-encoded path: immune to a group or project rename. |
-| `GITLAB_OPS_REF` | `develop` | The Ops branch whose pipeline is triggered. | GitHub previously held
+| ~~`GITLAB_OPS_REF`~~ | — | **Removed.** The triggered Ops branch is the literal `develop` in the workflow, and `gitlab-handoff.sh` refuses a staging handoff on any other ref. It is control-plane routing, not configuration: a variable — writable with a weaker permission than reading a secret — could otherwise point the trigger and the token at another ref. | GitHub previously held
 `STAGING_SSH_HOST`, `STAGING_SSH_USER`, `STAGING_SSH_KEY`,
 `STAGING_SSH_KNOWN_HOSTS` and `STAGING_SYNTHETIC_API_KEY` in order to push a
 deployment and verify it afterwards. On a pull-based estate none of that is
