@@ -16,19 +16,19 @@
 | [0012](0012-wait-for-message-semantics.md) | Wait-for-message semantics | Accepted (amended by 0020) |
 | [0013](0013-repository-module-architecture.md) | Repository/module architecture | Accepted |
 | [0014](0014-sdk-architecture.md) | SDK architecture | Accepted (amended by 0022) |
-| [0015](0015-rest-compatibility-versioning.md) | REST compatibility/versioning | Accepted |
+| [0015](0015-rest-compatibility-versioning.md) | REST compatibility/versioning | Accepted (experimental-v1 problem-type rule proposed by 0035) |
 | [0016](0016-sdk-compatibility-versioning.md) | SDK compatibility/versioning | Proposed |
 | [0017](0017-maven-npm-distribution.md) | Maven/npm distribution | Proposed |
 | [0018](0018-framework-integration-strategy.md) | Framework integration strategy | Proposed |
 | [0019](0019-inbound-deduplication-semantics.md) | Inbound deduplication semantics | Accepted (amended by 0026) |
-| [0020](0020-wait-reliability-and-timeout-semantics.md) | Wait reliability and timeout semantics | Accepted |
+| [0020](0020-wait-reliability-and-timeout-semantics.md) | Wait reliability and timeout semantics | Accepted (§3 amendment proposed by 0035) |
 | [0021](0021-exact-address-reservation.md) | Inbox addressing — generated and exact modes | Accepted (amended by 0033) |
 | [0022](0022-openapi-contract-first.md) | Contract-first OpenAPI | Accepted |
 | [0023](0023-sdk-runtime-baselines.md) | Public SDK runtime baselines | Accepted |
-| [0024](0024-application-layer-and-dependency-rule.md) | Application layer and dependency rule | Accepted (amended by 0029) |
+| [0024](0024-application-layer-and-dependency-rule.md) | Application layer and dependency rule | Accepted (amended by 0029; trigger-maintained accounting carve-out proposed by 0035) |
 | [0025](0025-unknown-recipient-handling.md) | Unknown-recipient handling | Accepted |
 | [0026](0026-recipient-scoped-provider-delivery-identity.md) | Recipient-scoped provider delivery identity | Accepted |
-| [0027](0027-rate-limiting-and-resource-quotas.md) | Rate limiting and resource quota strategy | Accepted (§6 amended by 0033) |
+| [0027](0027-rate-limiting-and-resource-quotas.md) | Rate limiting and resource quota strategy | Accepted (§6 amended by 0033; §2/§4/§5 amendment proposed by 0035) |
 | [0028](0028-deployment-artifacts-and-promotion.md) | Deployment artifacts and promotion by digest | Accepted (§6 amended by 0031; §1 promotion defined by 0034) |
 | [0029](0029-schema-migration-execution.md) | Schema migration execution model | Accepted (§4 readiness extended by 0034) |
 | [0030](0030-staging-deployment-target.md) | Staging deployment target | Accepted (production row superseded by 0034) |
@@ -36,6 +36,7 @@
 | [0032](0032-api-key-credential-lifecycle.md) | API key credential format, verification and lifecycle | Accepted |
 | [0033](0033-idempotent-mutations.md) | Idempotent mutations | Accepted (deployment-requirement gap closed by 0034) |
 | [0034](0034-production-platform-and-promotion.md) | Production platform, promotion contract and data lifecycle | Accepted |
+| [0035](0035-physical-storage-bound-at-ingest.md) | Physical storage bound at ingest | Proposed |
 
 `Proposed` ADRs require a human decision (see `VISION.md` §Human Decisions
 Required Before Implementation) before they can move to `Accepted`.

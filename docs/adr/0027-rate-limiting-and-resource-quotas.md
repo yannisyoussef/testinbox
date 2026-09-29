@@ -1,6 +1,6 @@
 # ADR-027: Rate Limiting and Resource Quota Strategy
 
-**Status:** Accepted (§6 amended by [ADR-033](0033-idempotent-mutations.md))
+**Status:** Accepted (§6 amended by [ADR-033](0033-idempotent-mutations.md); an amendment of §2, §4, §5, Alternatives and Consequences is proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md), which is Proposed and not in force)
 > Accepted after architecture and security review of the design. The first
 > draft deferred inbound mail with `452` when a recipient's workspace was over
 > quota; both reviews independently rejected that, and §1 records why. The
@@ -98,6 +98,8 @@ draining the workspace token after its own bucket emptied — starving every
 other inbox in that workspace, which is the outcome the per-inbox key exists
 to prevent.
 
+> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, this paragraph and the overshoot bound below are superseded: stored bytes are bounded *at ingest* by a workspace and a global application ceiling, reserved before any object is written (ADR-035 §3–§6, bound in §9). The `CreateInbox` admission rule stands, and the SMTP reply is still never affected.
+
 **Storage quota is admission control on tenant-initiated growth, not on
 inbound mail.** A workspace at or over `maxStoredBytes` cannot create new
 inboxes — it cannot enlarge its own footprint — but mail addressed to the
@@ -183,7 +185,11 @@ budget. This is the one place mail addressed to a live inbox is dropped; it
 happens only under a sustained flood, never merely because a workspace sits
 at its storage quota.
 
+> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, the closing sentence of §4 above ("the one place mail addressed to a live inbox is dropped") no longer holds: a storage-ceiling refusal is a second in-process discard behind the same uniform `250`, and unlike `INGEST` it is visible to the authenticated tenant (ADR-035 §10–§11).
+
 ### 5. Quota usage is derived, never accounted
+
+> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, stored bytes are no longer derived per decision: they are maintained by database triggers — which a measurement (TI-STORAGE-BOUND, 2026-09-26) showed *do* fire on `ON DELETE CASCADE`, answering this section's objection — and proven against this section's derivation by a reconciliation job (ADR-035 §7). `maxActiveInboxes` remains derived.
 
 `maxActiveInboxes` and `maxStoredBytes` are computed from the rows that
 actually exist, under the admission guard of §6.
@@ -295,6 +301,9 @@ a silently disabled limiter is indistinguishable from a working one.
   make `rate_bucket` growth caller-controlled rather than bounded, and is
   wrong for CI behind shared NAT.
 - **`452` deferral on quota exhaustion** (the first draft): rejected — §1.
+
+> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, "accept-and-drop" and "maintained usage counters" below are adopted in a form that answers their rejection reasons (authenticated refusal visibility, ADR-035 §11; trigger-maintained accounting, §7). Eviction stays rejected (ADR-035 I6).
+
 - **Accept-and-drop on quota exhaustion**: rejected — it manufactures the
   false negative the product exists to prevent.
 - **Evicting a workspace's oldest messages on arrival** to hold a hard
@@ -306,6 +315,8 @@ a silently disabled limiter is indistinguishable from a working one.
   policy shape is generic enough for future plans to map onto.
 
 ## Consequences
+
+> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, "No usage table" and the `maxStoredBytes`-plus-overshoot storage bound below are superseded by ADR-035 §9.
 
 - Two new tables (`rate_bucket`, `wait_lease`), both with row counts bounded
   by tenant count rather than traffic, and three indexes supporting derived
