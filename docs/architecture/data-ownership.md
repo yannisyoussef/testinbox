@@ -44,13 +44,40 @@ An orphan sweep reclaims blobs whose DB write never committed
 (storage-first write order, ADR-005): objects older than a threshold with
 no referencing `Message` row are deleted.
 
+## Storage accounting (ADR-035)
+
+**Implemented (TI-STORAGE-001):** the accounting foundation. The physical bytes
+a workspace or inbox holds are `raw_size_bytes` plus every extracted
+attachment's `size_bytes`: an attachment counts twice, because both objects
+exist.
+
+- **The ledger.** V6's statement-level triggers on `message` and `attachment`
+  append those bytes to the append-only `storage_delta` ledger in the writing
+  transaction, including for `ON DELETE CASCADE`. No application code
+  maintains a counter (the ADR-024 carve-out).
+- **Compaction.** An API-side job folds the deltas into
+  `workspace_storage_account` and `inbox_storage` every 5 s, under the advisory
+  lock `(35, 2)`.
+- **Reconciliation.** Every 6 h it proves `base + Σdelta` against the source
+  rows and repairs, meters and logs any drift.
+- **The source of truth.** The rows themselves remain the authority. The
+  ledger is derived, reconcilable and rebuilt after a restore.
+
+**Not implemented yet** (later ADR-035 slices): reservations, admission,
+refusals, fenced object writes, the storage breaker, ambiguity tracking, the
+admission latch, API and SDK visibility, and any enforcement. Nothing reads the
+ledger to make a decision. V6 creates `storage_reservation`,
+`storage_ambiguity`, `storage_node` and `storage_admission_latch` because
+ADR-035 assigns them to V6, but nothing writes to them.
+
 ## Backup scope
 
 Ownership decides what a backup may hold (ADR-034 §5). Durable control-plane
 tables — `workspace`, `project`, `api_key`, `exact_address_reservation`,
 `flyway_schema_history` — are backed up; tenant content (`inbox`, `message`,
-`attachment`), the idempotency projections and the limiter tables are never,
-and neither is any object in storage. `deploy/backup/scope.txt` classifies
+`attachment`), the idempotency projections, the limiter tables and the seven
+ADR-035 accounting and admission tables are never, and neither is any object in
+storage. `deploy/backup/scope.txt` classifies
 every table and `scripts/check-backup-scope.sh` refuses a dump that breaks the
 classification, so a backup cannot quietly outlive the TTL and deletion
 promises above.
