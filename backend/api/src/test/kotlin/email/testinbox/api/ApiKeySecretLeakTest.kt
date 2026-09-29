@@ -34,6 +34,18 @@ class ApiKeySecretLeakTest : ApiIntegrationTestBase() {
     private lateinit var root: Logger
     private lateinit var jdkHttpClient: Logger
 
+    /**
+     * A snapshot of what the appender has captured so far.
+     *
+     * `ListAppender.list` is a plain `ArrayList`, filled from
+     * `AppenderBase.doAppend`, which synchronizes on the appender. Background
+     * threads in the running application keep logging into the root logger
+     * while a test reads the list. Iterating the live list therefore
+     * intermittently raced them into a `ConcurrentModificationException`.
+     * Copying it under the same monitor cannot race.
+     */
+    private fun captured(): List<ILoggingEvent> = synchronized(appender) { appender.list.toList() }
+
     /** Field names that would carry credential material if one ever leaked. */
     private val suspicious = listOf("key", "secret", "hash", "verifier", "token", "credential", "password")
 
@@ -148,14 +160,14 @@ class ApiKeySecretLeakTest : ApiIntegrationTestBase() {
         get("/v1/inboxes/00000000-0000-0000-0000-000000000000", plaintext.dropLast(3))
         get("/v1/inboxes/00000000-0000-0000-0000-000000000000", "Bearer-shaped-nonsense")
 
-        val logged = appender.list.map { it.formattedMessage + " " + (it.throwableProxy?.message ?: "") }
+        val logged = captured().map { it.formattedMessage + " " + (it.throwableProxy?.message ?: "") }
         logged.none { it.contains(secret) } shouldBe true
         logged.none { it.contains(plaintext) } shouldBe true
         // The Authorization header value itself, in any form.
         logged.none { it.contains("Bearer $plaintext") } shouldBe true
         // Guard the guard: an appender that captured nothing would pass all of
         // the above while proving nothing at all.
-        (appender.list.size > 0) shouldBe true
+        (captured().isNotEmpty()) shouldBe true
     }
 
     @Test
@@ -167,7 +179,7 @@ class ApiKeySecretLeakTest : ApiIntegrationTestBase() {
                 .hex(plaintext.split('_')[3])
 
         get("/v1/api-keys", plaintext)
-        val logged = appender.list.map { it.formattedMessage }
+        val logged = captured().map { it.formattedMessage }
         // A hashed credential is not a credential, but publishing every stored
         // verifier hands an offline attacker the whole target set for free.
         logged.none { it.contains(verifier) } shouldBe true
@@ -180,7 +192,7 @@ class ApiKeySecretLeakTest : ApiIntegrationTestBase() {
         val publicId = plaintext.split('_')[2]
         val secret = plaintext.split('_')[3]
 
-        val audit = appender.list.filter { it.loggerName == "testinbox.audit" }.map { it.formattedMessage }
+        val audit = captured().filter { it.loggerName == "testinbox.audit" }.map { it.formattedMessage }
         audit.any { it.contains("event=api_key.created") && it.contains(publicId) } shouldBe true
         audit.none { it.contains(secret) } shouldBe true
         // And it carries the correlation id, which is what makes it joinable
@@ -232,8 +244,8 @@ class ApiKeySecretLeakTest : ApiIntegrationTestBase() {
         // that makes this true is a single `toString()` override on a value
         // class, one deletion away from putting a customer identifier into our
         // logs and theirs at once.
-        appender.list.map { it.formattedMessage }.none { it.contains(idempotencyKey) } shouldBe true
-        (appender.list.size > 0) shouldBe true
+        captured().map { it.formattedMessage }.none { it.contains(idempotencyKey) } shouldBe true
+        (captured().isNotEmpty()) shouldBe true
     }
 
     private fun postWithIdempotencyKey(
