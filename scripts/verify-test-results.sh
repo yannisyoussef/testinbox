@@ -51,14 +51,14 @@ ROOT="${VERIFY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # were initially left alone, which meant every one of them could have been
 # deleted with CI still green.
 BACKEND_MODULES=(
-  "backend/architecture:27"
-  "backend/domain:56"
-  "backend/application:193"
-  "backend/persistence:123"
+  "backend/architecture:29"
+  "backend/domain:78"
+  "backend/application:205"
+  "backend/persistence:202"
   "backend/storage:6"
   "backend/notification:6"
   "backend/observability:33"
-  "backend/ingestion:41"
+  "backend/ingestion:42"
   "backend/api:122"
   "backend/migrator:6"
 )

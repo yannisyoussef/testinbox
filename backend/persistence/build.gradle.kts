@@ -29,3 +29,12 @@ dependencies {
     testImplementation(libs.testcontainers.junit)
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
+
+// The ADR-035 T1 sanity benchmark (docs/adr/0035-benchmark/t1-admission) is
+// not a test: it measures, and asserts only what a pathology would break.
+// It runs only on request, and never counts toward the suite's floor.
+tasks.test {
+    if (!project.hasProperty("storageBenchmark")) {
+        exclude("**/StorageAdmissionBenchmark*")
+    }
+}
