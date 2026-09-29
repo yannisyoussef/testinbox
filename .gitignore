@@ -35,3 +35,6 @@ web/CLAUDE.md
 deploy/**/tls/
 # The staging rehearsal writes a throwaway CA and server key here.
 .rehearsal/
+
+# Local video presentation of the app (Remotion project, ~1.2 GB with node_modules) — never committed
+video/
