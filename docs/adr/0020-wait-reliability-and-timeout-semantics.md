@@ -1,6 +1,6 @@
 # ADR-020: Wait Reliability and Timeout Semantics
 
-**Status:** Accepted (amends [ADR-007](0007-event-coordination-strategy.md)
+**Status:** Accepted (§3 amended by [ADR-035](0035-physical-storage-bound-at-ingest.md): one opt-in, authenticated-only wait outcome; amends [ADR-007](0007-event-coordination-strategy.md)
 and [ADR-012](0012-wait-for-message-semantics.md); the normative wait
 contract in `docs/architecture/wait-semantics.md` is updated accordingly)
 
@@ -81,7 +81,7 @@ introduced, the `LISTEN` connection must bypass it or use session mode.
 
 ### 3. Wait-window expiry returns `200` with an explicit result
 
-> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, a wait that carries the optional `afterStorageRefusalCount` cursor also ends with `409` `…/problems/storage-limit-exceeded` when a copy addressed to the waited inbox was refused by a storage ceiling after that cursor (ADR-035 §13c). A wait without the cursor keeps exactly the behaviour below; `MATCHED`, `TIMEOUT` and `410` are unchanged.
+> **Amended by [ADR-035](0035-physical-storage-bound-at-ingest.md) (2026-09-29).** A wait that carries the optional `afterStorageRefusalCount` cursor also ends with `409` `…/problems/storage-limit-exceeded` when a copy addressed to the waited inbox was refused by a storage ceiling after that cursor (ADR-035 §13c). A wait without the cursor keeps exactly the behaviour below; `MATCHED`, `TIMEOUT` and `410` are unchanged.
 
 `POST /v1/inboxes/{id}/messages/wait` returns:
 

@@ -1,6 +1,15 @@
 # ADR-035: Physical Storage Bound at Ingest
 
-**Status:** Proposed, revision 5 (2026-09-29).
+**Status:** Accepted (2026-09-29, owner acceptance TI-DEC-001b). This is revision 5 (2026-09-29).
+
+> **Acceptance authorizes implementation, not enablement.** It does not turn
+> on `testinbox.storage.enforcement`, global capacity enforcement in staging
+> or production, a production TestInbox deployment, or SMTP/MX. Every gate in
+> §18 remains binding: the implementation gates, the enablement gates
+> (activation barrier, staging-host-class benchmark, valid storage
+> qualification), the production Ops prerequisites (including a separately
+> qualified amd64 backend with `slow-W`), and edge queue alerting before any
+> public MX.
 
 This revision incorporates the owner's decisions O1–O4 (TI-DEC-001), the facts
 measured to settle them, and the four focused re-reviews that followed:
@@ -9,9 +18,8 @@ storage and failure, database and rollout, API and SDK, and security.
 Revision 5 answers the final owner review (TI-DEC-001a). It replaces the
 unproven `C_max = 9 min` with a basis, a qualification and a compatibility
 contract (§7, §9, §9a).
-Nothing below may be implemented or relied on until the owner accepts it.
 
-**What acceptance amends:**
+**Amends** (effective 2026-09-29):
 
 - [ADR-027](0027-rate-limiting-and-resource-quotas.md) §2 (the storage-quota
   paragraph and its overshoot bound), §4 (the sentence naming `INGEST` as the
@@ -22,7 +30,7 @@ Nothing below may be implemented or relied on until the owner accepts it.
 - [ADR-024](0024-application-layer-and-dependency-rule.md), with one narrow
   carve-out for accounting maintained by the database (§10).
 
-**What acceptance leaves unchanged:**
+**Leaves unchanged:**
 
 - [ADR-015](0015-rest-compatibility-versioning.md): every contract change is
   additive, and the new wait outcome is opt-in (§13c).
@@ -1640,7 +1648,7 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
     4 h expiry. This does not block acceptance, implementation, staging or a
     dark production.
 
-## Amendments to Accepted ADRs (effective on acceptance)
+## Amendments to Accepted ADRs (effective 2026-09-29)
 
 - **ADR-027 §2.** The storage-quota paragraph and the overshoot bound are
   superseded by §3, §4 and §9. The `CreateInbox` rule stands.
@@ -1741,7 +1749,8 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
   behind a proven barrier and a floor that is already on `master`.
 - Seven tables, statement triggers, the compactor, and one expand-only
   migration.
-- These documents change on acceptance and implementation:
+- These documents change with the implementation (CLAUDE.md invariant 8
+  already changed with acceptance):
   - `docs/api/v1-design.md`;
   - `docs/architecture/` (`wait-semantics`, `inbound-mail-flow`,
     `failure-modes`, `observability`, `data-ownership`);
@@ -1752,7 +1761,6 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
     `rollback.md`;
   - `deploy/backup/scope.txt`, `deploy/mail-edge/contract.yaml`,
     `deploy/rollback-floors.txt`, and `deploy/staging/deploy.sh`;
-  - CLAUDE.md invariant 8;
   - the SDK READMEs.
 - Every workspace limit can still be bypassed with a second workspace. The
   global ceiling bounds the service regardless.
