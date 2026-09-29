@@ -1,10 +1,14 @@
 # ADR-035: Physical Storage Bound at Ingest
 
-**Status:** Proposed, revision 4 (2026-09-29).
+**Status:** Proposed, revision 5 (2026-09-29).
 
 This revision incorporates the owner's decisions O1–O4 (TI-DEC-001), the facts
 measured to settle them, and the four focused re-reviews that followed:
 storage and failure, database and rollout, API and SDK, and security.
+
+Revision 5 answers the final owner review (TI-DEC-001a). It replaces the
+unproven `C_max = 9 min` with a basis, a qualification and a compatibility
+contract (§7, §9, §9a).
 Nothing below may be implemented or relied on until the owner accepts it.
 
 **What acceptance amends:**
@@ -87,16 +91,38 @@ What has changed is measured, not argued:
   - MinIO's own metadata and parity are not payload objects.
 - **Covered** means counted in committed accounting or in an unreleased
   reservation.
-- **Assumption A_F** is stated once and relied on explicitly: a storage server
-  that has received a single-part PUT's *complete* body finalizes or discards
-  it within `C_max` (9 min). §9 explains why a physical bound cannot be
-  unconditional, and how A_F is contained and monitored.
+- **Assumption A_F (finalize), a qualified storage contract, not a proof.**
+  A storage server that has received a single-part PUT's complete body either
+  commits it or discards it within `C_max` of the client's abortive close.
+  - **Why it must be an assumption.** The pinned MinIO enforces no such bound.
+    - A commit begins only while the request is live, and the client's
+      abortive close cancels it. Once the body has ended, though, the server
+      has **no** backstop: a silent client that stays connected keeps the
+      request alive indefinitely.
+    - A commit that has begun is a `rename(2)` that nothing cancels
+      (`0035-benchmark/minio-probes/FINALIZE-SOURCE.md`).
+    - ADR-035 therefore gates *release* on a storage liveness witness (§7).
+      The witness proves that storage is not **stalled**. It does not prove
+      that earlier commits have **drained**.
+    - **A_F's residual** is therefore any commit of an ambiguous upload that is
+      still pending when the witness completes (plus `C_drain`). That pending
+      commit may still be before its context check, or already at its
+      `rename(2)`.
+      - Before the check, it can land only if its client is silent and still
+        connected: a frozen writer, or a dead host until MinIO's
+        `TCP_USER_TIMEOUT` ends the connection.
+      - This happens only under slow-but-not-stalled storage.
+  - **What the empirical part rests on.** It is qualified by trial
+    (`QUALIFICATION.md`) and is valid **only** for the qualified storage
+    combination of §9a.
+  - **Where it is handled.** §9 explains why a physical bound cannot be
+    unconditional, and how A_F is contained, monitored and fail-closed.
 
 **The invariants.**
 
-- **I1 (physical coverage).** Under A_F, every TestInbox-owned payload byte
+- **I1 (physical coverage).** Under the qualified A_F contract (§9a), every TestInbox-owned payload byte
   that exists, or can still come to exist, is covered. There is no exception.
-  - If A_F is violated by up to `T_verify` (30 min), the uncovered bytes stay
+  - If A_F is violated by up to `T_verify` (60 min), the uncovered bytes stay
     inside the finalize budget **H** that admission reserves out of *G*. The
     owned bytes still never exceed *G*.
   - A detected violation latches admission closed (§9).
@@ -425,25 +451,86 @@ refusal it was woken for (ADR-020).
                     ▼
                 RELEASING ── offset ≤ ε_max · for EVERY reserved key: delete, then
                     │        ListObjectsV2(key) = ∅ ∧ ListMultipartUploads(prefix = exact key) = ∅
-                    │        · now() ≥ release_not_before ──▶ released                              [B/C]
+                    │        · now() ≥ release_not_before · witness done at w′ ≥ release_not_before · now() ≥ w′ + C_drain ──▶ released [B/C]
                     │                  └ anything found → delete it, release_not_before = now() + S, late_object++
                     └ a committed message row has this id (impossible by I4) → release, delete nothing, alarm      [D]
 ```
 
 **When can a reservation's object last come into existence?** Measured on
-MinIO's clock:
+MinIO's clock, for the qualified combination of §9a:
 
-1. No upload can **start** after `t0 + E + ε_max`. That is the fence (E3, E8).
-2. An upload that started before then is aborted with RST at `T_put`. An
-   incomplete body leaves nothing (E2), and RST means no buffered tail
-   arrives afterwards. So the last *complete* body is received by
-   `write_deadline_at + ε_max + T_put`.
-3. Under A_F, finalization follows within `C_max`.
+1. **No upload can start** after `t0 + E + ε_max`. That is the presigned
+   fence (probes E3, E8).
+2. **An upload that started earlier is aborted with RST at `T_put`.** The upload
+   client enforces this, and §5 gate 2 proves it. A body cut off mid-way
+   produces no object (E2), and an RST discards any buffered tail.
+3. **A body stalled *by the client* before EOF produces nothing.** MinIO keeps
+   a sliding read deadline (the idle timeout, 30 s + 250 ms) while it reads the
+   body. It bounds **inactivity**, not total time. A writer that freezes
+   mid-body therefore has its request fail after about 30.25 s of inactivity,
+   and nothing commits. The 30.25 s term in `S` covers that case, and it is
+   why the idle timeout stays in the §9a contract, as a **pre-EOF** control.
+   - **It does not bound a stall on the server's side.** If MinIO itself stops
+     reading because encoding is blocked on storage, the client's tail waits in
+     kernel buffers, and reads after the stall return at once. EOF can then
+     come arbitrarily late. That case belongs to the storage witness and to
+     A_F's residual below, not to this term.
+4. **Once the body is complete, the commit no longer depends on the client.**
+   No step after EOF waits on the client (`FINALIZE-SOURCE.md`).
+   - An RST before the context check cancels the commit. Qualification
+     `v3-freeze*-R2s` confirms this directly on disk.
+   - After EOF the server keeps **no** read deadline (`server.go:685`,
+     `deadlineconn.go:56,133`), so a silent connected client keeps the context
+     alive. That matters only if the commit is *itself* delayed.
+   - A commit is delayed only by storage, CPU or lock progress. The
+     **storage witness** below gates *stalls*. *Slowness* is A_F's residual,
+     described below.
+5. **A commit that began before the RST must still finish.** This is `C_max`,
+   and it is **qualified**, not enforced. The final commit is a `rename(2)`
+   that ignores cancellation, and the 30 s drive timeout abandons it without
+   cancelling it.
 
 ```
-S = ε_max + T_put + C_max = 30 s + 30 s + 9 min = 10 min
+C_max = 15 min                                  (qualified; §9a)
+S     = ε_max + T_put + 30.25 s + C_max  =  30 s + 30 s + 30.25 s + 15 min  →  17 min (rounded up)
 release_not_before = write_deadline_at + S        (when the last upload's outcome was ambiguous or unknown)
+C_drain = 60 s     (after a completed witness; qualification saw pending commits land ≤ 0.34 s after storage resumed)
+T_verify = 60 min  (≥ S; the window within which a late object is still inside H)
 ```
+
+**Storage liveness witness: a second, fail-closed condition for releasing an
+ambiguous reservation.** Before any ambiguous reservation is released, the
+cleaner needs a successful witness: a small probe commit (`PUT` of
+`_probe/{node}/{uuid}`), issued **at or after** that reservation's
+`release_not_before`, that completed at time `w′` and was listed. The release
+itself happens only at or after `w′ + C_drain`.
+
+- **What the witness proves: storage is not stalled.** Probe objects are
+  infrastructure, outside payload accounting. Under a stalled filesystem the
+  witness cannot complete: it was blocked in 51 of 51 qualification freezes.
+  So *no release happens while storage is stalled*.
+- **What it does not prove: earlier commits have drained.** The witness is a
+  1-byte, inline `PUT`. Nothing orders it behind other uploads' pending 15 MiB
+  `fdatasync`, lock or `RenameData` steps.
+  - Under slow-but-not-stalled storage (a sick disk, or slow write-back after a
+    stall), the witness can complete while an ambiguous upload's commit is
+    still pending.
+  - If that upload's client is silent and still connected, its context is live
+    and it can commit **after** release. That client is either a frozen
+    writer, which can hold the connection indefinitely, or a dead host, until
+    MinIO's `TCP_USER_TIMEOUT` plus keepalive idle (about 10.25 min).
+- **`C_drain` = 60 s is empirical, not derived.** Qualification saw pending
+  commits land within 0.34 s after a freeze, at healthy throughput. It says
+  nothing about slow storage.
+- **What is left to A_F.** Any ambiguous upload's commit that is still pending
+  at `w′ + C_drain`, whether it is still before its context check or already at
+  its `rename(2)`.
+  - That is A_F's content, together with `C_max`.
+  - It is **contained** rather than prevented:
+    - a frozen writer's in-flight slot stays inside H while its crash-ambiguity
+      rows are unresolved (§9);
+    - a late object is detected and latches admission.
+  - §9 lists what escapes even that.
 
 **How each number is derived.**
 
@@ -457,7 +544,35 @@ release_not_before = write_deadline_at + S        (when the last upload's outcom
     slow for the event's size. That is not a tenant decision.
 - **`ε_max`** is enforced by the breaker and the release suspension.
   **`T_put`** is enforced by the abortive close.
-- **`C_max` is the only assumed term.** It is the content of A_F.
+- **No server-side commit-start bound after EOF is claimed.** MinIO's idle
+  timeout bounds a body that stalls *before* EOF: that is the 30.25 s term in
+  `S`. After EOF it bounds nothing. Once the body is complete, a commit is
+  delayed only by storage progress, which the witness gates.
+- **`C_max` = 15 min is the only assumed term**, and it is the content of A_F.
+  - **Where the number comes from.** It is not a server bound, and it is not
+    kept at 9 min to hold S at 10 min.
+  - **Qualification evidence** (`QUALIFICATION.md`): 111 uploads of 15 MiB
+    against the pinned binary.
+    - 51 of them froze the data filesystem for 45 or 120 s, which is longer
+      than MinIO's 30 s drive deadline, with an RST or with a silent connected
+      client.
+    - Direct on-disk checks found **0 late commits**. A commit either happened
+      before the stall, or, if the stall caught it earlier, never happened.
+    - A strict sweep at +21.5 min found 0 objects that appeared after their
+      poll window.
+    - The witness was blocked during all 51 freezes.
+    - The latest observed commit was 0.06 s after the full body was
+      acknowledged. 15 min is a margin of about 15 000× over that.
+    - One window was **not** exercised: a `rename(2)` already in flight when
+      storage stalls, which lasts microseconds. That window is what A_F still
+      assumes.
+  - **Why the margin is operationally acceptable.** A `rename(2)` stalled for
+    minutes is a storage incident. MinIO's own drive monitor treats an
+    operation over 30 s as a drive fault.
+  - **The price of the margin.** Stale capacity for an *ambiguous* copy stays
+    charged for about `E + S + C_drain` ≈ 20 min instead of about 12. That is correctness
+    bought with capacity during a storage failure, the trade the owner asked
+    for.
 - **What a writer does after `RELEASING` does not matter.** A frozen or
   partitioned writer cannot *start* an upload after the fence, and only
   uploads that started before it count.
@@ -538,9 +653,27 @@ Let *P_owned(t)* be the TestInbox-owned payload bytes in the bucket.
 **An unconditional bound is impossible.** Once a storage server has
 authorized an upload and received its complete body, no S3 API can fence that
 request. No API reports whether the server has finished requests the client
-abandoned. Any finite release rule therefore rests on some finalize latency.
-ADR-035 names it (A_F, `C_max` = 9 min) instead of hiding it, and then
-contains it three ways.
+abandoned.
+
+The pinned MinIO does not bound it either:
+
+- **When a commit may begin.** Before EOF, a stalled body errors out. After
+  EOF, a commit may begin for as long as the client keeps the connection
+  open: the client's RST cancels it, and nothing on the server does.
+- **When a begun commit must finish.** It is a `rename(2)`, and nothing bounds
+  it (`FINALIZE-SOURCE.md`).
+
+ADR-035 therefore:
+
+- gates every release on a **storage liveness witness**, plus a drain margin
+  (§7). A stalled filesystem blocks releases. The witness does **not** prove
+  that earlier commits drained, and that residual is A_F's (§7);
+- names the one remaining latency (A_F, `C_max` = 15 min, measured from the
+  writer's RST);
+- qualifies it for one exact storage combination (§9a);
+- contains it in three ways. **Under the
+qualified A_F contract, P_owned ≤ G.** This is an empirical qualification, not
+a mathematical proof.
 
 **1. Ambiguity occupies write slots, persistently.**
 - Every ambiguous upload writes a row to
@@ -554,7 +687,7 @@ contains it three ways.
   unconsumed reservations. Each reservation records `first_upload_at` once,
   on its first upload.
 - **Resolution** happens at `verify_at = ambiguous_at + T_verify`, with
-  `T_verify` = 30 min and always ≥ S. A per-key proof must show either an
+  `T_verify` = 60 min and always ≥ S (17 min). A per-key proof must show either an
   absent object or a committed one. A late object found then is deleted,
   counted in `late_object`, and **latched** (point 3).
 
@@ -586,9 +719,17 @@ database **admission latch**, `storage_admission_latch`.
   queue (§12).
 - An operator clears the latch after investigating.
 - **What remains unbounded:** objects that finalize *later than `T_verify`*
-  and *before the first detection*. They require MinIO to breach A_F by more
-  than 30 min, and they are removed by `OrphanBlobSweep` within 1 h 30 min.
-  This is stated rather than claimed away.
+  and *before the first detection*. There are two ways to get there:
+  - **A begun commit takes more than 60 min**, a `rename(2)` stalled for an
+    hour.
+  - **A commit *begins* late.** The commit of an ambiguous upload whose client
+    is silent and still connected (a frozen writer) is held back by
+    slow-but-not-stalled storage until after its crash-ambiguity rows expired
+    at `verify_at` (+60 min). It then lands outside H.
+
+  Both are removed by `OrphanBlobSweep` within 1 h 30 min of appearing, and
+  they latch admission when detected. This is stated rather than claimed
+  away.
 
 **The bound.**
 
@@ -599,8 +740,11 @@ P_owned(t) ≤ max(G, B)
 - **B** is the covered total at activation (§14). Pre-existing excess drains
   only through expiry, because there is no eviction and nothing is admitted
   above the cap.
-- After that, **P_owned ≤ G** under A_F, or under A_F violated by up to
-  `T_verify`.
+- After that, **P_owned ≤ G** under the qualified A_F contract, or under A_F
+  violated by up to `T_verify`.
+- **Outside the qualified combination, no bound is claimed at all.** §9a then
+  forbids enforcement, so the question never arises in an enforced
+  deployment.
 
 **Other exclusions, each handled elsewhere:**
 
@@ -625,6 +769,127 @@ proof and the bucket-wide sweep guard (§7) catch anything else.
 
 The bucket quota is a fuse, never the bound. It lags: probes Q2–Q7 stored
 2.4 MiB in a 1 MiB-quota bucket.
+
+### 9a. Storage compatibility contract (A_F qualification)
+
+A_F is not a property of MinIO in general. It is a property of **one
+qualified combination**, recorded in
+`0035-benchmark/minio-probes/QUALIFICATION.md` and, at implementation, in a
+machine-readable record shipped inside the artifact.
+
+**The qualified combination is exactly all of this:**
+
+| Element | Qualified value |
+|---|---|
+| MinIO image | the GHCR mirror index `sha256:bbac6789…e00d`: amd64 member `sha256:3f97c565…64bb`, arm64 member `sha256:54d3d6a0…8194`. Both are `RELEASE.2025-04-22T22-12-26Z`, index `a1ea29fa…015e` upstream. |
+| Server mode | single node, single drive (erasure "SD" mode), `minio server /data` |
+| Timeouts, from environment **and** CLI flags | `MINIO_IDLE_TIMEOUT` / `--idle-timeout` at the default of 30 s: a pre-EOF inactivity control (a client-stalled body errors out, and nothing commits). `MINIO_CONN_USER_TIMEOUT` (10 min) and the TCP keepalive at their defaults: they are what ends the request context for a **dead peer host** after EOF, which bounds the A_F residual for that case. `MINIO_DRIVE_MAX_TIMEOUT` at its default. |
+| Runtime admin configuration | `mc admin config get` for the `api`, `drive`, `storage_class` and `scanner` subsystems equal to their release defaults. This configuration persists in `.minio.sys/config`, not in the environment, so it must be checked separately. |
+| Host | the kernel release and the data filesystem's mount options, as recorded at qualification |
+| Storage class / inline threshold | release defaults |
+| Data filesystem | local ext4 or XFS. No network filesystem, no FUSE. |
+| Network path | ingestion connects directly to MinIO. No retrying proxy, no load balancer, no TLS terminator in between. |
+| Upload implementation | ADR-035 §5: presigned single-part PUT, signed `content-length` and `If-None-Match: *`, one attempt, total wall-clock `T_put`, abort by RST. **No pipelining**: nothing is sent on the connection after the body, since pipelined bytes suppress the RST's cancellation (`server.go:691`). |
+
+**Invalidation rule.** Any change to **any** element above invalidates the
+qualification, including a MinIO upgrade or a re-mirror with a new digest. A
+multi-drive erasure layout is a different combination, not a variant: late
+renames on timed-out drives can reach read quorum there. See
+`FINALIZE-SOURCE.md`.
+
+**While the qualification is invalid, ADR-035 enforcement must not be
+enabled.** The combination has to be re-qualified first, by re-running the
+qualification procedure and committing the new record.
+
+**Enforcement: fail closed where the application can see it, detect where it
+cannot.**
+
+- **At startup.** `DeploymentSafety` refuses to start an ingestion node with
+  `testinbox.storage.enforcement=ON` unless all of these hold:
+  - `testinbox.storage.backend-identity` is declared: the image digest, mode,
+    timeouts, runtime-configuration hash, kernel, mount options and proxy
+    status;
+  - that declaration exactly equals a qualification record shipped in the
+    artifact;
+  - the application's upload implementation version equals the record's.
+
+  A mismatch is a refusal to start, not a warning.
+
+  This check compares a *declaration* against a record. On its own it cannot
+  see the real MinIO.
+- **Observing the real MinIO.** An Ops-run `qualification-check` does that. It
+  runs with MinIO admin credentials, which the application deliberately does
+  not hold. It reads:
+  - `ServerInfo`: version, commit-id, mode and drive count;
+  - `mc admin config get` for the subsystems in the table above;
+  - the data filesystem's mount options, and `uname -r`.
+
+  It hashes the result and compares it with the declared qualification record.
+
+  **When it runs:** before every enablement, before and after every MinIO
+  change, and **daily**.
+
+  **What it publishes:** `testinbox_storage_qualification_valid{…}` (0 or 1,
+  with no tenant labels). A value of 0 raises a page and automatically sets
+  the admission latch of §9, which fails closed until Ops re-qualifies or sets
+  `enforcement=OFF`.
+- **In CI.** The existing mirror-pin gate (`scripts/check-minio-mirror-pin.sh`)
+  also checks that every repository MinIO pin is the digest of a qualification
+  record, so a re-mirror cannot land without a record.
+- **The MinIO change rule, for Ops.** Before changing any element while
+  enforcement is ON, Ops either confirms that the new combination already has
+  a record, or sets `enforcement=OFF` first and re-enables it only after
+  re-qualification. This is a row in `production-ops-acceptance.md` and a step
+  in the MinIO upgrade runbook.
+- **A late object still latches.** A late-object detection (§9 point 3)
+  latches admission closed whatever the qualification state.
+
+**What this does and does not guarantee.** An invalidating change cannot pass
+*unnoticed*:
+
+- the mirror-pin gate catches it in the repository;
+- `DeploymentSafety` catches it at the declared identity;
+- `qualification-check` catches it on the real backend.
+
+But a change made by hand between two daily checks is only **detected within
+one check interval** (≤ 24 h), not prevented. For that window, what holds is
+the change rule, together with the storage witness,
+the ambiguity slots and late-object detection. This is stated rather than
+claimed away.
+
+**Qualification procedure.** It is recorded in `QUALIFICATION.md`, and it is
+repeated for every new combination:
+
+1. Use the exact image digest and configuration being qualified, with the
+   client on the same host or network as MinIO and no proxy. Run on a
+   **dedicated filesystem** that can be frozen, and record the kernel and mount
+   options.
+2. Use the largest permitted single-part PUT (15 MiB).
+3. Make every outcome ambiguous: either withhold the response, or reset the
+   connection after the full body.
+4. Poll the object from a separate connection throughout, and list every key
+   again once the full candidate `C_max` window has passed. The procedure looks
+   specifically for **"absent at an earlier check, then appears later"**.
+5. Cover three scenario groups:
+   - baseline uploads;
+   - `freeze-W`: freeze the filesystem after the full body is acknowledged,
+     with the client staying silent and connected (the frozen-writer case);
+   - `freeze-R`: freeze, then RST during the freeze, at several phase offsets,
+     to try to catch a `rename(2)` in flight;
+   - **`slow-W`: throttle the data filesystem without freezing it (for example
+     `dm-delay`, or a cgroup `io.max` on its device). Keep the client silent
+     and connected, and run the witness concurrently.** The question is
+     whether an ambiguous upload's commit can land *after* a witness that was
+     issued later has already completed, and if so, how late. That is A_F's
+     residual.
+
+   Throttling is **not** a substitute: it slows `fdatasync`, not the rename.
+   Every existence check is strict: `200` means present, `404` means absent,
+   and anything else is an error, never "absent". Check that the storage
+   witness is blocked during every freeze.
+6. Record the digest, the configuration, the topology, the number of trials,
+   the object sizes, the maximum observed latency, the chosen `C_finish`, and
+   the margin.
 
 ### 10. Accounting ledger, compaction, reconciliation
 
@@ -954,9 +1219,10 @@ type: https://testinbox.email/problems/storage-limit-exceeded
 - `workspace_storage_account(workspace_id PK → workspace, base_bytes, reconciled_at)`
 - `inbox_storage(inbox_id PK → inbox ON DELETE CASCADE, workspace_id, base_bytes, refusal_count, last_refusal_at, last_refusal_reason)`
 - `storage_delta`
-- `storage_reservation(message_id PK, workspace_id → workspace, inbox_id` *(no FK)*`, object_keys text[], bytes > 0, state, created_at, write_deadline_at, release_not_before, node_id, first_upload_at)`
+- `storage_reservation(message_id PK, workspace_id → workspace, inbox_id` *(no FK)*`, object_keys text[], bytes > 0, state, created_at, write_deadline_at, release_not_before, node_id, generation, first_upload_at)`
 - `storage_ambiguity`
-- `storage_node`
+- `storage_node` (`node_id`, `generation`, capability, `heartbeat_at`,
+  `clean_shutdown`), used for crash-ambiguity detection (§9).
 - `storage_admission_latch`
 - indexes: `(workspace_id) INCLUDE (bytes)`, `(inbox_id) INCLUDE (bytes)`, and `(state, write_deadline_at)`. Deadlines are never used in index predicates (ADR-021).
 - the statement triggers and `storage_account_recompute()`, then the
@@ -1103,7 +1369,11 @@ Alerts:
 - a `RELEASING` row older than 1 h;
 - `physical_listed > covered + H`;
 - any activation violation;
-- edge queue age (Ops, §12).
+- edge queue age (Ops, §12);
+- `qualification_valid = 0`, which pages and latches (§9a);
+- the storage witness failing for more than 5 min;
+- `enforcement=OFF` in production for more than 24 h (for example, left off
+  after a MinIO change and never re-qualified).
 
 ### 17. Test plan
 
@@ -1265,7 +1535,12 @@ without sleeping:
 47. Metric cardinality, including `STORAGE_LIMIT_EXCEEDED`.
 48. `DeploymentSafety` refuses to start when any of these is missing or
     wrong: *G*, the declared quota, the declared process count, `Q` too
-    small, or the share outside `(0,1]`.
+    small, or the share outside `(0,1]`. With `enforcement=ON` it also refuses
+    to start without a declared backend identity, or with one that does not
+    exactly match a shipped qualification record (§9a). Every element is
+    tested separately: digest, mode, timeouts (environment and flag),
+    runtime-configuration hash, kernel, mount options, proxy status, and the
+    upload implementation version.
 49. The activation barrier fails on any of:
     - a pgJDBC default name;
     - `testinbox-listen`;
@@ -1289,10 +1564,26 @@ without sleeping:
       after a crash at `beforeCommit` with cleanup paused, and after cleanup.
     - Finally, assert `G − H − f ≤ listed ≤ G − H`.
 
+**Release gates (§7)**
+
+53. **Pre-EOF stall.** A writer that stops mid-body is simulated: a TCP proxy
+    freezes the stream after 90 % of the body. MinIO fails the request within
+    about 30.25 s, no object appears (strict checks plus an on-disk check), and
+    the reservation is released only through the normal rule.
+54. **Storage witness.** With the witness PUT blocked (a stalled test storage
+    adapter), or with the data filesystem frozen (`fsfreeze`, as in
+    qualification), no ambiguous reservation is released. Releases resume only
+    after
+    a witness issued after `release_not_before` completes.
+55. **Qualification-check signal.** `qualification_valid = 0` sets the
+    admission latch, and every node answers `451` before T1.
+
 **Explicitly untested:**
 
-- a real MinIO violating A_F (it cannot be injected into MinIO itself;
-  test 26 simulates it with a direct put after release);
+- a real MinIO violating A_F. A `rename(2)` stalled beyond `C_finish` cannot
+  be injected deterministically; test 26 simulates it with a direct put after
+  release. The empirical side is the §9a qualification, which is a
+  procedure, not a CI test.
 - nodes configured with different values of *G*;
 - provider adapters;
 - Ops alert rules.
@@ -1309,13 +1600,22 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
 2. The upload client enforces a total wall-clock `T_put` and aborts with RST,
    proven with the TCP proxy.
 3. URL redaction is proven by a log-capture test.
-4. Tests 1–52 are in place, and the minima are ratcheted.
+4. Tests 1–55 are in place, and the minima are ratcheted.
 5. Staging's `deploy.sh` gains the rollback-floor check.
 
 **Enablement gates, before `enforcement=ON`:**
 
 6. The activation barrier (a)–(e) of §14.
 7. The staging-host-class benchmark of §11, before the global ceiling.
+7a. **The storage backend qualification is valid** (§9a), and the Ops
+    `qualification-check` reports it valid on the real backend. The deployed MinIO
+    combination is exactly one that has a committed qualification record,
+    covering digest, mode, timeouts, filesystem, direct path and upload
+    implementation. The production host (amd64, Ops-owned filesystem) is
+    **re-qualified on its own combination**. The laptop qualification in
+    `QUALIFICATION.md` covers the arm64 member in the reference topology,
+    and does not stand in for it. The production qualification must include
+    the `slow-W` scenario (§9a), which the laptop qualification did not run.
 
 **Ops prerequisites, before production enforcement:**
 
@@ -1327,6 +1627,12 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
     `declared-max-ingestion-processes` (including deploy surge).
 11. The restore procedure of §9.
 12. A runbook for the admission latch: investigate, then clear.
+12a. **The MinIO change rule (§9a).** Before any MinIO upgrade, re-mirror,
+     configuration, filesystem or topology change while enforcement is ON:
+     either the new combination already has a qualification record, or
+     `enforcement=OFF` is set first and re-enabled only after
+     re-qualification. This is a row in `production-ops-acceptance.md` and a
+     step in the MinIO upgrade runbook.
 
 **Ops prerequisite, before any public SMTP/MX (§12):**
 
@@ -1372,6 +1678,33 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
   presigned expiry.
 - **Reserving before taking a write slot (rev 3).** Replaced. Slot queueing
   consumed write deadlines and turned load into cross-tenant `451`s.
+- **`C_max = 9 min` as a bare assumption (rev 4).** Replaced by:
+  - a storage-liveness witness, with a drain margin, on every release;
+  - `C_max` = 15 min, measured from the writer's RST, qualified for one
+    combination, and fail-closed on change.
+
+  The pinned MinIO enforces neither a commit-start bound after EOF nor a
+  finish bound.
+- **A writer-liveness gate (rev 5 draft).** This used a heartbeat after
+  `release_not_before`, or a missing session advisory lock held for `K_dead`.
+  It was dropped as unnecessary and fragile:
+  - Once the body is complete, a commit does not depend on the client
+    (verified in source). The gate could never have *prevented* a frozen
+    writer's late commit: it could only keep capacity charged. The same
+    residual is now stated honestly as part of A_F (§7), and contained by H and
+    the latch.
+  - The focused review found real weaknesses in it: a missing lock does not
+    prove death (failover, `idle_session_timeout`, pooling); MinIO's
+    `TCP_USER_TIMEOUT` of 10 min made `K_dead` too short; and a heartbeat does
+    not prove the RST was sent.
+- **Treating MinIO's idle timeout as a commit-start backstop (rev 5 draft).**
+  Rejected. After body EOF the Go server clears the read deadline, and
+  MinIO's `DeadlineConn` then applies none (`server.go:685`,
+  `deadlineconn.go:56,133`). This is verified in source, and it is not relied
+  on either way.
+- **Treating MinIO's 30 s drive timeout as the bound.** Rejected. It abandons
+  the operation without cancelling it, so a late `rename(2)` can still land
+  (`FINALIZE-SOURCE.md`).
 - **An in-memory ambiguity budget (rev 3).** Replaced by persisted ambiguity
   that occupies slots. The in-memory version was unbounded across breaker
   cycles and restarts.
