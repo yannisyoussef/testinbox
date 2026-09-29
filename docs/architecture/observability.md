@@ -65,6 +65,11 @@ have queried a series that does not exist. `MetricCardinalityTest` asserts the
 | `testinbox_api_key_lifecycle_total` | counter | `operation` | A credential is created or revoked |
 | `testinbox_api_key_last_used_writes_total` | counter | — | A coalesced `last_used_at` write actually reached the database |
 | `testinbox_idempotency_total` | counter | `operation`, `outcome` | Every request carrying an `Idempotency-Key` resolves (ADR-033) |
+| `testinbox_storage_ledger_unfolded_rows` | gauge | — | After each ADR-035 compaction tick, including a failed or contended one: delta rows not yet folded. The figure is global, so aggregate replicas with `max`. |
+| `testinbox_storage_covered_bytes` | gauge | `kind=committed` | After each compaction tick: committed physical bytes (Σ base + Σ delta), global, so aggregate with `max`. `kind=reserved` arrives with reservations. |
+| `testinbox_storage_ledger_compaction_total` | counter | `outcome` (`ok`/`contended`/`failed`) | Every compaction tick. `contended` is normal with several replicas; a sustained `failed` means the ledger is not being folded. |
+| `testinbox_storage_accounting_drift_total` | counter | `direction` (`under`/`over`) | Reconciliation repaired a drifted figure. Always a defect. |
+| `testinbox_storage_reconciliation_total` | counter | `outcome` (`clean`/`repaired`/`failed`) | Every ADR-035 reconciliation run |
 
 ### Reading the idempotency outcomes
 

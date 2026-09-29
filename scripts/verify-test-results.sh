@@ -53,13 +53,13 @@ ROOT="${VERIFY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 BACKEND_MODULES=(
   "backend/architecture:27"
   "backend/domain:56"
-  "backend/application:184"
-  "backend/persistence:70"
+  "backend/application:193"
+  "backend/persistence:123"
   "backend/storage:6"
   "backend/notification:6"
-  "backend/observability:32"
-  "backend/ingestion:40"
-  "backend/api:120"
+  "backend/observability:33"
+  "backend/ingestion:41"
+  "backend/api:122"
   "backend/migrator:6"
 )
 E2E_MODULES=(

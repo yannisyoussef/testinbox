@@ -21,6 +21,8 @@ import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.NotifierMetrics
 import email.testinbox.application.port.RateLimiter
+import email.testinbox.application.port.StorageAccountingMetrics
+import email.testinbox.application.port.StorageLedger
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.WaitMetrics
 import email.testinbox.application.port.WaitSlots
@@ -30,11 +32,13 @@ import email.testinbox.application.query.InboxQueries
 import email.testinbox.application.query.MessageQueries
 import email.testinbox.application.usecase.AuthenticateApiKey
 import email.testinbox.application.usecase.CoalescingLastUsedRecorder
+import email.testinbox.application.usecase.CompactStorageLedger
 import email.testinbox.application.usecase.CreateApiKey
 import email.testinbox.application.usecase.CreateInbox
 import email.testinbox.application.usecase.DeleteInbox
 import email.testinbox.application.usecase.ExpireInboxes
 import email.testinbox.application.usecase.OrphanBlobSweep
+import email.testinbox.application.usecase.ReconcileStorageAccounting
 import email.testinbox.application.usecase.RevokeApiKey
 import email.testinbox.application.usecase.WaitForMessage
 import email.testinbox.notification.PgListenNotifier
@@ -46,6 +50,7 @@ import email.testinbox.observability.MicrometerIdempotencyMetrics
 import email.testinbox.observability.MicrometerInboxMetrics
 import email.testinbox.observability.MicrometerLimitMetrics
 import email.testinbox.observability.MicrometerNotifierMetrics
+import email.testinbox.observability.MicrometerStorageAccountingMetrics
 import email.testinbox.observability.MicrometerWaitMetrics
 import email.testinbox.observability.Slf4jAuditLog
 import email.testinbox.persistence.BundledMigrations
@@ -96,6 +101,9 @@ class ApiMetricsWiring {
 
     @Bean
     fun idempotencyMetrics(registry: MeterRegistry): IdempotencyMetrics = MicrometerIdempotencyMetrics(registry)
+
+    @Bean
+    fun storageAccountingMetrics(registry: MeterRegistry): StorageAccountingMetrics = MicrometerStorageAccountingMetrics(registry)
 
     /** Credential lifecycle audit trail (TI-002 §14) on its own `testinbox.audit` logger. */
     @Bean
@@ -297,6 +305,20 @@ class ApiWiring(
         blobs: BlobStore,
         messages: MessageRepository,
     ): OrphanBlobSweep = OrphanBlobSweep(blobs, messages, clock, properties.orphanMinAge)
+
+    /** ADR-035 §10 ledger compaction. Observational only: nothing admits or refuses on it yet. */
+    @Bean
+    fun compactStorageLedger(
+        ledger: StorageLedger,
+        metrics: StorageAccountingMetrics,
+    ): CompactStorageLedger = CompactStorageLedger(ledger, metrics)
+
+    /** ADR-035 §10 reconciliation of the ledger against the source rows. */
+    @Bean
+    fun reconcileStorageAccounting(
+        ledger: StorageLedger,
+        metrics: StorageAccountingMetrics,
+    ): ReconcileStorageAccounting = ReconcileStorageAccounting(ledger, metrics)
 
     /**
      * Coalesces `last_used_at` writes (ADR-032 §7). One instance per process,

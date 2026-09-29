@@ -112,7 +112,36 @@ release. Between those, rollback stays available at every step.
 
 Nothing currently in `db/migration` is of this kind: `V1` creates the schema,
 `V2` replaces a unique index with a wider one (ADR-026), `V3` adds the limits
-tables (ADR-027).
+tables (ADR-027), and `V4`–`V6` only add tables, functions and triggers (see
+below for what rolling back across `V4` and `V6` means).
+
+## Rolling back across TI-STORAGE-001 (schema V6)
+
+V6 (ADR-035 accounting foundation) is expand-only: it adds seven tables, two
+trigger functions, six statement-level triggers on `message` and `attachment`,
+and `storage_account_recompute()`, then backfills. An older artifact starts
+cleanly against it, because a schema ahead of the artifact is healthy. The
+TI-STORAGE-001 pull request records the rehearsal: the persistence, ingestion,
+API and migrator suites of the pre-V6 commit, run against a V6 schema.
+
+- **The triggers stay active after a rollback.** They belong to the schema,
+  not the artifact, so an older artifact's ingestion and retention writes keep
+  appending to `storage_delta` without knowing it.
+- **The rolled-back artifact never folds those deltas.** It has no compactor,
+  so the ledger grows by about one row per writing statement until a V6-aware
+  artifact returns. Nothing reads the ledger to decide anything yet, so this
+  costs rows, not correctness. When the V6-aware artifact returns, its
+  compactor drains the backlog in bounded passes.
+- **If the backlog is ever unwanted,** run `SELECT storage_account_recompute();`
+  to rebuild every base from the rows and empty the ledger in one transaction.
+  It takes the same table locks as V6, and it sets no timeout of its own, so
+  run it off-peak inside `BEGIN; SET LOCAL lock_timeout = '30s'; SELECT
+  storage_account_recompute(); COMMIT;`.
+
+V6 takes `SHARE ROW EXCLUSIVE` on `workspace`, `inbox`, `message` and
+`attachment` with `lock_timeout = 30s`. If it cannot get them, it fails without
+applying anything and the deployment stops as described below. Retry it when
+the long-running writer has gone.
 
 ## If the migration itself fails
 

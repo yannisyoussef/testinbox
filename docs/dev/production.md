@@ -106,6 +106,28 @@ measures the symptom; `testinbox_wait_listen_degraded_polling` reports it
 continuously), that the management ports are unreachable from the ingress,
 and that `/actuator` is not routed (the edge synthetic asserts it).
 
+## Database privileges for the ADR-035 ledger (V6)
+
+V6's ledger triggers run as the role that writes `message` and `attachment`
+rows (`SECURITY INVOKER`). **Before V6 is promoted,** every role the API,
+the ingestion gateway and the retention sweep connect as must have `INSERT`
+on `storage_delta` and `USAGE` on `storage_delta_id_seq`. If it does not, every
+message insert and every retention delete fails with `permission denied` the
+moment V6 commits, and that includes writes from artifacts built before V6.
+The API role also needs `SELECT, INSERT, UPDATE, DELETE` on `storage_delta`,
+`workspace_storage_account` and `inbox_storage` for compaction and
+reconciliation. Staging connects every deployable as the table owner, which
+satisfies all of this. A production that separates the roles must grant these
+first.
+
+The API's accounting jobs read three optional settings:
+
+- `testinbox.storage-accounting.compaction-interval` (default `5s`);
+- `testinbox.storage-accounting.reconciliation-interval` (default `6h`);
+- `testinbox.storage-accounting.reconciliation-initial-delay` (default `15m`).
+
+The defaults are the ADR-035 values, and nothing needs to set them.
+
 ## Object storage privileges
 
 The bucket is created by Ops before the first deployment. The runtime
@@ -209,7 +231,7 @@ which row B requires Ops to show alongside a listing of the backup target.
 
 | backed up | never |
 |---|---|
-| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; **all object storage** |
+| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
 
 What that buys, stated plainly:
 
@@ -273,6 +295,8 @@ Boot's standard binders, whose presence the rehearsal asserts:
 | schema compatibility | readiness `schema` | `OUT_OF_SERVICE` — migration did not run or history holds a failure |
 | object store / database reachability | readiness `objectStorage`, `db`; `testinbox_object_storage_operation_duration_seconds{outcome="FAILURE"}` | any `DOWN`; failures > 0 sustained |
 | LISTEN degraded | `testinbox_wait_listen_degraded_polling` | `== 1` for > 1 min — **the one that is otherwise invisible** (everything else stays green) |
+| storage accounting drift (ADR-035) | `testinbox_storage_accounting_drift_total{direction}`; `testinbox_storage_reconciliation_total{outcome="failed"}` | any increase: a repaired drift is always a defect, and a failed reconciliation leaves the ledger unproven |
+| storage ledger backlog (ADR-035) | `testinbox_storage_ledger_unfolded_rows` (every API replica reports the same global figure, so take `max`, never `sum`); `testinbox_storage_ledger_compaction_total{outcome="failed"}` | backlog > 1 000 sustained, or failed compactions with no `ok` in 5 min: compaction is not keeping up, or is failing. Observational until admission exists. |
 | inbound SMTP | `testinbox_smtp_accept_total`, `testinbox_smtp_reject_total{reason}` | reject rate rising; accepts flat while the edge queue grows (TI-007) |
 | unknown-recipient discards | `testinbox_smtp_unknown_recipient_discard_total` | rate change — an enumeration attempt or a misrouted sender |
 | ingestion rate refusals | `testinbox_rate_decision_total{category="INGEST",outcome="REFUSED"}` | sustained refusals on one workspace |

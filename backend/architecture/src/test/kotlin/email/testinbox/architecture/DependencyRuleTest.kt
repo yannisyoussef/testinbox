@@ -223,6 +223,7 @@ class DependencyRuleTest {
                 email.testinbox.application.port.BlobStoreMetrics::class.java,
                 email.testinbox.application.port.SmtpMetrics::class.java,
                 email.testinbox.application.port.ApiKeyMetrics::class.java,
+                email.testinbox.application.port.StorageAccountingMetrics::class.java,
             )
         val allowed =
             setOf(

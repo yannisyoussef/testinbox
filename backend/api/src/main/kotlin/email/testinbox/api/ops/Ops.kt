@@ -6,8 +6,10 @@ import email.testinbox.application.port.IdempotencyRecords
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.ProvisioningRepository
 import email.testinbox.application.port.WaitSlots
+import email.testinbox.application.usecase.CompactStorageLedger
 import email.testinbox.application.usecase.ExpireInboxes
 import email.testinbox.application.usecase.OrphanBlobSweep
+import email.testinbox.application.usecase.ReconcileStorageAccounting
 import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
@@ -33,6 +35,8 @@ class SweepScheduler(
     private val orphanBlobSweep: OrphanBlobSweep,
     private val waitSlots: WaitSlots,
     private val idempotencyRecords: IdempotencyRecords,
+    private val compactStorageLedger: CompactStorageLedger,
+    private val reconcileStorageAccounting: ReconcileStorageAccounting,
     private val clock: Clock,
 ) {
     /**
@@ -88,6 +92,32 @@ class SweepScheduler(
     fun orphanSweep() {
         runCatching { orphanBlobSweep.sweep() }
             .onFailure { log.warn("orphan blob sweep failed", it) }
+    }
+
+    /**
+     * ADR-035 §10: fold the trigger-written deltas into the base figures every
+     * few seconds, so that the unfolded ledger stays small. Every API node runs
+     * this, and the ledger's advisory lock makes all but one of them no-ops.
+     * PostgreSQL coordinates them, not a leader election.
+     */
+    @Scheduled(fixedDelayString = "\${testinbox.storage-accounting.compaction-interval:5s}")
+    fun storageLedgerCompaction() {
+        // The use case absorbs, logs and meters its own failures.
+        compactStorageLedger.compact()
+    }
+
+    /**
+     * ADR-035 §10: prove the ledger against the source rows every 6 h, and
+     * repair any drift. The first run comes 15 min after start, so a node that
+     * has just been deployed checks the V6 backfill promptly. The use case
+     * catches, logs and meters its own failures.
+     */
+    @Scheduled(
+        fixedDelayString = "\${testinbox.storage-accounting.reconciliation-interval:6h}",
+        initialDelayString = "\${testinbox.storage-accounting.reconciliation-initial-delay:15m}",
+    )
+    fun storageAccountingReconciliation() {
+        reconcileStorageAccounting.reconcile()
     }
 
     private companion object {

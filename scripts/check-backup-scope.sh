@@ -43,6 +43,20 @@ while IFS= read -r line; do
 done < "$SCOPE"
 (( ${#KEEP[@]} > 0 && ${#DENY[@]} > 0 )) || { echo "scope must classify both kept and denied tables" >&2; exit 2; }
 
+# Tables whose classification is not a choice: content (ADR-009) and the
+# ADR-035 accounting and admission state, which is derived or transient and
+# rebuilt after a restore. Classifying any of them `+` would put content, or
+# state that describes an object store that is not backed up, into a backup,
+# so the scope file itself is refused.
+REQUIRED_DENY=(inbox message attachment
+               workspace_storage_account inbox_storage storage_delta
+               storage_reservation storage_ambiguity storage_node storage_admission_latch)
+for required in "${REQUIRED_DENY[@]}"; do
+  for kept in "${KEEP[@]}"; do
+    [[ "$kept" == "$required" ]] && { echo "SCOPE MISCLASSIFIED: $required is content or derived state and must be '-' in $SCOPE" >&2; exit 1; }
+  done
+done
+
 classified() {
   local t="$1" x
   for x in "${KEEP[@]}" "${DENY[@]}"; do [[ "$x" == "$t" ]] && return 0; done

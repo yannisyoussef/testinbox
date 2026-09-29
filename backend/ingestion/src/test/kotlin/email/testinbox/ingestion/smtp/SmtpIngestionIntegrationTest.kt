@@ -344,6 +344,43 @@ class SmtpIngestionIntegrationTest {
     }
 
     @Test
+    fun `real SMTP ingestion feeds the ADR-035 ledger and nothing else changes (TI-STORAGE-001)`() {
+        // The unchanged production path (gateway, ReceiveInboundDelivery,
+        // JdbcMessageRepository) against V6. The ledger's triggers account for
+        // it, the SMTP reply is the uniform 250 it always was, and nothing
+        // writes to the tables later ADR-035 slices will own.
+        val inbox = provisionInbox()
+        client().use { smtp ->
+            smtp
+                .send(
+                    "billing@example.com",
+                    listOf(inbox.address, "nobody-${UUID.randomUUID()}@testinbox.local"),
+                    corpus("multipart-mixed-attachment.eml"),
+                ).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(inbox.id).size shouldBe 1
+        }
+        val message = messages.listVisible(inbox.id).single()
+        val physical = message.rawSizeBytes + message.attachments.sumOf { it.sizeBytes }
+
+        // base + Σdelta for this workspace: raw + extracted attachment (ADR-035 §2).
+        jdbc
+            .sql(
+                """
+                SELECT (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account WHERE workspace_id = :ws)
+                     + (SELECT coalesce(sum(bytes), 0) FROM storage_delta WHERE workspace_id = :ws)
+                """.trimIndent(),
+            ).param("ws", inbox.workspaceId.value)
+            .query(Long::class.java)
+            .single() shouldBe physical
+        // The unknown recipient left no trace here either (ADR-025).
+        for (table in listOf("storage_reservation", "storage_ambiguity", "storage_node", "storage_admission_latch")) {
+            jdbc.sql("SELECT count(*) FROM $table").query(Long::class.java).single() shouldBe 0
+        }
+    }
+
+    @Test
     fun `malformed MIME is persisted as ParseFailed with raw bytes intact (ADR-005)`() {
         val inbox = provisionInbox()
         val raw = "X-Broken: yes\r\nContent-Type: multipart/mixed; boundary=\r\n\r\ngarbage".toByteArray()

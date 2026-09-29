@@ -6,13 +6,17 @@ import email.testinbox.application.port.AuthOutcome
 import email.testinbox.application.port.BlobOperation
 import email.testinbox.application.port.BlobOutcome
 import email.testinbox.application.port.BlobStoreMetrics
+import email.testinbox.application.port.CompactionOutcome
+import email.testinbox.application.port.DriftDirection
 import email.testinbox.application.port.IdempotencyMetrics
 import email.testinbox.application.port.IdempotencyOutcome
 import email.testinbox.application.port.InboundMetrics
 import email.testinbox.application.port.InboxMetrics
 import email.testinbox.application.port.NotifierMetrics
+import email.testinbox.application.port.ReconciliationOutcome
 import email.testinbox.application.port.SmtpMetrics
 import email.testinbox.application.port.SmtpRejection
+import email.testinbox.application.port.StorageAccountingMetrics
 import email.testinbox.application.port.WaitMetrics
 import email.testinbox.application.port.WaitOutcome
 import email.testinbox.domain.idempotency.IdempotentOperation
@@ -325,5 +329,60 @@ class MicrometerIdempotencyMetrics(
 
     private companion object {
         const val NAME = "testinbox_idempotency_total"
+    }
+}
+
+/**
+ * ADR-035 storage accounting (TI-STORAGE-001).
+ *
+ * `covered_bytes` carries only `kind=committed` for now: reservations do not
+ * exist yet, and a `kind=reserved` series that was always zero would be a
+ * fake metric. The drift and reconciliation counters are pre-registered for
+ * every enum value, so a dashboard sees an explicit zero rather than a missing
+ * series.
+ */
+class MicrometerStorageAccountingMetrics(
+    private val registry: MeterRegistry,
+) : StorageAccountingMetrics {
+    private val unfoldedRows = AtomicLong(0)
+    private val committedBytes = AtomicLong(0)
+
+    init {
+        Gauge.builder(UNFOLDED, unfoldedRows) { it.get().toDouble() }.register(registry)
+        Gauge
+            .builder(COVERED, committedBytes) { it.get().toDouble() }
+            .tags(Tags.of("kind", "committed"))
+            .register(registry)
+        DriftDirection.entries.forEach { registry.counter(DRIFT, "direction", it.name.lowercase()) }
+        ReconciliationOutcome.entries.forEach { registry.counter(RECONCILIATION, "outcome", it.name.lowercase()) }
+        CompactionOutcome.entries.forEach { registry.counter(COMPACTION, "outcome", it.name.lowercase()) }
+    }
+
+    override fun ledgerObserved(
+        unfoldedRows: Long,
+        committedBytes: Long,
+    ) {
+        this.unfoldedRows.set(unfoldedRows)
+        this.committedBytes.set(committedBytes)
+    }
+
+    override fun driftRepaired(direction: DriftDirection) {
+        registry.counter(DRIFT, "direction", direction.name.lowercase()).increment()
+    }
+
+    override fun reconciliationCompleted(outcome: ReconciliationOutcome) {
+        registry.counter(RECONCILIATION, "outcome", outcome.name.lowercase()).increment()
+    }
+
+    override fun compactionCompleted(outcome: CompactionOutcome) {
+        registry.counter(COMPACTION, "outcome", outcome.name.lowercase()).increment()
+    }
+
+    private companion object {
+        const val UNFOLDED = "testinbox_storage_ledger_unfolded_rows"
+        const val COVERED = "testinbox_storage_covered_bytes"
+        const val DRIFT = "testinbox_storage_accounting_drift_total"
+        const val RECONCILIATION = "testinbox_storage_reconciliation_total"
+        const val COMPACTION = "testinbox_storage_ledger_compaction_total"
     }
 }

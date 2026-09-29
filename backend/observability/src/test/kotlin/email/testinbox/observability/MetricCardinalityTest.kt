@@ -4,7 +4,10 @@ import email.testinbox.application.port.ApiKeyOperation
 import email.testinbox.application.port.AuthOutcome
 import email.testinbox.application.port.BlobOperation
 import email.testinbox.application.port.BlobOutcome
+import email.testinbox.application.port.CompactionOutcome
+import email.testinbox.application.port.DriftDirection
 import email.testinbox.application.port.IdempotencyOutcome
+import email.testinbox.application.port.ReconciliationOutcome
 import email.testinbox.application.port.SmtpRejection
 import email.testinbox.application.port.WaitOutcome
 import email.testinbox.domain.idempotency.IdempotentOperation
@@ -89,12 +92,31 @@ class MetricCardinalityTest {
             IdempotencyOutcome.entries.forEach { idempotency.completed(operation, it) }
         }
 
+        val storage = MicrometerStorageAccountingMetrics(registry)
+        storage.ledgerObserved(unfoldedRows = 12, committedBytes = 3_456)
+        DriftDirection.entries.forEach { storage.driftRepaired(it) }
+        ReconciliationOutcome.entries.forEach { storage.reconciliationCompleted(it) }
+        CompactionOutcome.entries.forEach { storage.compactionCompleted(it) }
+
         BuildInfoMetric(registry, service = "testinbox-api", gitSha = "abc1234", version = "0.1.0")
     }
 
     /** Every label key any TestInbox metric is allowed to carry. */
     private val allowedLabelKeys =
-        setOf("mode", "parse_status", "outcome", "operation", "reason", "category", "quota", "service", "git_sha", "version")
+        setOf(
+            "mode",
+            "parse_status",
+            "outcome",
+            "operation",
+            "reason",
+            "category",
+            "quota",
+            "service",
+            "git_sha",
+            "version",
+            "direction",
+            "kind",
+        )
 
     private val allowedLabelValues: Map<String, Set<String>> =
         mapOf(
@@ -105,6 +127,8 @@ class MetricCardinalityTest {
                 BlobOutcome.entries.map { it.name.lowercase() }.toSet() +
                 AuthOutcome.entries.map { it.name }.toSet() +
                 IdempotencyOutcome.entries.map { it.name }.toSet() +
+                ReconciliationOutcome.entries.map { it.name.lowercase() }.toSet() +
+                CompactionOutcome.entries.map { it.name.lowercase() }.toSet() +
                 setOf("allowed", "rejected"),
             "operation" to
                 BlobOperation.entries.map { it.name }.toSet() +
@@ -113,6 +137,9 @@ class MetricCardinalityTest {
             "reason" to SmtpRejection.entries.map { it.name }.toSet(),
             "category" to RateCategory.entries.map { it.name }.toSet(),
             "quota" to QuotaDimension.entries.map { it.name }.toSet(),
+            "direction" to DriftDirection.entries.map { it.name.lowercase() }.toSet(),
+            // Only `committed` until reservations exist (ADR-035, later slice).
+            "kind" to setOf("committed"),
         )
 
     @Test
@@ -223,7 +250,24 @@ class MetricCardinalityTest {
             "testinbox_api_key_lifecycle_total",
             "testinbox_api_key_last_used_writes_total",
             "testinbox_idempotency_total",
+            "testinbox_storage_ledger_unfolded_rows",
+            "testinbox_storage_covered_bytes",
+            "testinbox_storage_accounting_drift_total",
+            "testinbox_storage_reconciliation_total",
+            "testinbox_storage_ledger_compaction_total",
         ).forEach { name -> scrape shouldContain name }
+    }
+
+    @Test
+    fun `the storage ledger gauges report the observed values, each on its own meter`() {
+        // Names and labels alone would pass with the two values swapped.
+        exerciseEverything()
+        registry.get("testinbox_storage_ledger_unfolded_rows").gauge().value() shouldBe 12.0
+        registry
+            .get("testinbox_storage_covered_bytes")
+            .tag("kind", "committed")
+            .gauge()
+            .value() shouldBe 3_456.0
     }
 
     @Test

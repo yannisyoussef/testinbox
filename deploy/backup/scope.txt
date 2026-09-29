@@ -24,3 +24,15 @@
 - idempotency_record
 - rate_bucket
 - wait_lease
+# ADR-035 §14 (V6). All seven are derived or transient, so none is ever backed
+# up. The ledger is rebuilt from rows, and after a restore `message` is empty,
+# so empty base figures are correct. A reservation, an ambiguity or a latch
+# describes object storage, which is not restored either (ADR-035 §9 restore
+# procedure). scripts/check-backup-scope.sh refuses any of these as `+`.
+- workspace_storage_account
+- inbox_storage
+- storage_delta
+- storage_reservation
+- storage_ambiguity
+- storage_node
+- storage_admission_latch

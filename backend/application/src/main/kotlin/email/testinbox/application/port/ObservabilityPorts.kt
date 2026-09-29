@@ -295,3 +295,57 @@ interface IdempotencyMetrics {
         val NOOP: IdempotencyMetrics = object : IdempotencyMetrics {}
     }
 }
+
+/** How one reconciliation run ended (ADR-035 §10). Closed by construction. */
+enum class ReconciliationOutcome {
+    /** The ledger matched the source rows. */
+    CLEAN,
+
+    /** Drift was found and repaired. Always a defect worth investigating. */
+    REPAIRED,
+
+    /** The run threw. The ledger is unchanged, and the next run retries. */
+    FAILED,
+}
+
+/** How one ADR-035 compaction tick ended. */
+enum class CompactionOutcome {
+    /** This node held the ledger lock and folded what it could (possibly nothing). */
+    OK,
+
+    /** Another node held the ledger lock. Normal with several API replicas. */
+    CONTENDED,
+
+    /** A pass threw. It rolled back with its deltas intact, and the next tick retries. */
+    FAILED,
+}
+
+/**
+ * ADR-035 §16 accounting signals (`storage_ledger_unfolded_rows`,
+ * `storage_covered_bytes{kind=committed}`, `storage_accounting_drift_total`).
+ * Two are additions §16 does not list:
+ * - `storage_reconciliation_total`, so a reconciliation that fails, leaving
+ *   the ledger unproven, is visible;
+ * - `storage_ledger_compaction_total`, so a compactor failing on every node
+ *   is visible, and not merely a frozen backlog gauge.
+ *
+ * Only the accounting foundation exists (TI-STORAGE-001), so only accounting
+ * signals exist. Reserved bytes, admission refusals, the breaker, ambiguity
+ * and the latch arrive with the slices that implement them.
+ */
+interface StorageAccountingMetrics {
+    fun ledgerObserved(
+        unfoldedRows: Long,
+        committedBytes: Long,
+    ) {}
+
+    fun driftRepaired(direction: DriftDirection) {}
+
+    fun reconciliationCompleted(outcome: ReconciliationOutcome) {}
+
+    fun compactionCompleted(outcome: CompactionOutcome) {}
+
+    companion object {
+        val NOOP: StorageAccountingMetrics = object : StorageAccountingMetrics {}
+    }
+}
