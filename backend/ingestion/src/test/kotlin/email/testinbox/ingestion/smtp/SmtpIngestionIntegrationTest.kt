@@ -381,6 +381,34 @@ class SmtpIngestionIntegrationTest {
     }
 
     @Test
+    fun `normal SMTP ingestion still takes the old path and reserves nothing (TI-STORAGE-002)`() {
+        // The ADR-035 admission core exists, but no ingress path calls it yet.
+        // A multi-recipient event across two tenants, plus an unknown
+        // recipient, is delivered exactly as before: stored, visible, and
+        // with no reservation, ambiguity, node or latch row anywhere.
+        val first = provisionInbox()
+        val second = provisionInbox()
+        client().use { smtp ->
+            smtp
+                .send(
+                    "billing@example.com",
+                    listOf(first.address, "nobody-${UUID.randomUUID()}@testinbox.local", second.address),
+                    corpus("multipart-mixed-attachment.eml"),
+                ).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(first.id).size shouldBe 1
+            messages.listVisible(second.id).size shouldBe 1
+        }
+        for (message in messages.listVisible(first.id) + messages.listVisible(second.id)) {
+            blobs.get(message.rawObjectKey) shouldNotBe null
+        }
+        for (table in listOf("storage_reservation", "storage_ambiguity", "storage_node", "storage_admission_latch")) {
+            jdbc.sql("SELECT count(*) FROM $table").query(Long::class.java).single() shouldBe 0
+        }
+    }
+
+    @Test
     fun `malformed MIME is persisted as ParseFailed with raw bytes intact (ADR-005)`() {
         val inbox = provisionInbox()
         val raw = "X-Broken: yes\r\nContent-Type: multipart/mixed; boundary=\r\n\r\ngarbage".toByteArray()
