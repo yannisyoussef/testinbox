@@ -6,7 +6,8 @@
 [ADR-029](0029-schema-migration-execution.md): `application.deployment` is a
 permitted non-use-case category — framework-free policy about the environment a
 process runs in, shared by both entry points, where duplicating it per
-deployable would drift)
+deployable would drift. Amended by [ADR-035](0035-physical-storage-bound-at-ingest.md) (2026-09-29): a narrow carve-out for
+database-maintained storage accounting — see the amendment note in Decision)
 
 ## Context
 
@@ -64,6 +65,20 @@ matters: **any write that must uphold a documented invariant goes through
 exactly one application use case**, and ArchUnit enforces the dependency
 directions (`domain` depends on nothing; `application` depends only on
 `domain`; adapters depend inward).
+
+> **Amended by [ADR-035](0035-physical-storage-bound-at-ingest.md) (2026-09-29): one narrow carve-out.** Storage accounting,
+> meaning the committed-bytes ledger and its base figures, may be maintained by
+> **database triggers and an append-only ledger** rather than inside a use
+> case. This is allowed only because it remains **derived from and reconcilable
+> against the authoritative source rows**, `message.raw_size_bytes` and
+> `attachment.size_bytes`, as ADR-035 §10 defines. An application use case
+> (`ReconcileStorageAccounting`) proves it against those rows and alarms on
+> drift.
+>
+> This is **not** a general permission for maintained counters. Any other
+> invariant-bearing write still goes through exactly one use case, and an
+> application-maintained counter that cannot be reconciled against source rows
+> remains forbidden.
 
 ## Alternatives considered
 

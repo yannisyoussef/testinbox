@@ -1,0 +1,120 @@
+== mode=a clients=8
+number of failed transactions: 0 (0.000%)
+number of transactions retried: 0 (0.000%)
+tps = 2120.152755 (without initial connection time)
+ - 40376 transactions (95.2% of total, tps = 2018.517004)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+         3.085           0           0  SELECT pg_advisory_xact_lock(7340035);
+         0.121           0           0  COMMIT;
+         0.109           0           0  COMMIT;
+ - 2033 transactions (4.8% of total, tps = 101.635751)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+         0.144           0           0  COMMIT;
+== mode=a clients=16
+number of failed transactions: 0 (0.000%)
+number of transactions retried: 0 (0.000%)
+tps = 2519.845439 (without initial connection time)
+ - 47960 transactions (95.1% of total, tps = 2397.615063)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+         5.872           0           0  SELECT pg_advisory_xact_lock(7340035);
+         0.145           0           0  COMMIT;
+         0.116           0           0  COMMIT;
+ - 2445 transactions (4.9% of total, tps = 122.230376)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+         0.149           0           0  COMMIT;
+== mode=a clients=64
+number of failed transactions: 0 (0.000%)
+number of transactions retried: 0 (0.000%)
+tps = 1990.647796 (without initial connection time)
+ - 37961 transactions (95.4% of total, tps = 1898.477062)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+        32.760           0           0  SELECT pg_advisory_xact_lock(7340035);
+         0.132           0           0  COMMIT;
+         0.114           0           0  COMMIT;
+ - 1843 transactions (4.6% of total, tps = 92.170734)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+         0.147           0           0  COMMIT;
+== mode=a clients=128
+number of failed transactions: 0 (0.000%)
+number of transactions retried: 0 (0.000%)
+tps = 1690.018848 (without initial connection time)
+ - 32249 transactions (95.3% of total, tps = 1610.181335)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+        78.277           0           0  SELECT pg_advisory_xact_lock(7340035);
+         0.132           0           0  COMMIT;
+         0.111           0           0  COMMIT;
+ - 1599 transactions (4.7% of total, tps = 79.837513)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+         0.144           0           0  COMMIT;
+== mode=b clients=8
+number of failed transactions: 0 (0.000%)
+number of transactions retried: 0 (0.000%)
+tps = 1456.804861 (without initial connection time)
+ - 27764 transactions (95.3% of total, tps = 1388.014076)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+         2.422           0           0  UPDATE g_acct SET reserved = reserved + :b WHERE id = 1 AND committed + reserved + :b <= 9223372036854775000;
+         0.141           0           0  COMMIT;
+         2.466           0           0  UPDATE g_acct SET reserved = reserved - :b WHERE id = 1;
+         0.143           0           0  COMMIT;
+ - 1376 transactions (4.7% of total, tps = 68.790785)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+         2.351           0           0  SELECT 1 FROM g_acct WHERE id = 1 FOR UPDATE;
+         0.152           0           0  COMMIT;
+== mode=b clients=16
+number of failed transactions: 0 (0.000%)
+number of transactions retried: 0 (0.000%)
+tps = 1215.833395 (without initial connection time)
+ - 23148 transactions (95.2% of total, tps = 1157.003553)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+         6.283           0           0  UPDATE g_acct SET reserved = reserved + :b WHERE id = 1 AND committed + reserved + :b <= 9223372036854775000;
+         0.162           0           0  COMMIT;
+         6.337           0           0  UPDATE g_acct SET reserved = reserved - :b WHERE id = 1;
+         0.164           0           0  COMMIT;
+ - 1177 transactions (4.8% of total, tps = 58.829842)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+         6.185           0           0  SELECT 1 FROM g_acct WHERE id = 1 FOR UPDATE;
+         0.160           0           0  COMMIT;
+== mode=b clients=64
+number of failed transactions: 0 (0.000%)
+number of transactions retried: 0 (0.000%)
+tps = 756.386259 (without initial connection time)
+ - 14416 transactions (95.2% of total, tps = 719.740219)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+        41.903           0           0  UPDATE g_acct SET reserved = reserved + :b WHERE id = 1 AND committed + reserved + :b <= 9223372036854775000;
+         0.317           0           0  COMMIT;
+        43.141           0           0  UPDATE g_acct SET reserved = reserved - :b WHERE id = 1;
+         0.331           0           0  COMMIT;
+ - 734 transactions (4.8% of total, tps = 36.646041)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+        40.239           0           0  SELECT 1 FROM g_acct WHERE id = 1 FOR UPDATE;
+         0.169           0           0  COMMIT;
+== mode=b clients=128
+number of failed transactions: 0 (0.000%)
+number of transactions retried: 0 (0.000%)
+tps = 445.034689 (without initial connection time)
+ - 8538 transactions (95.3% of total, tps = 424.121685)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+       145.007           0           0  UPDATE g_acct SET reserved = reserved + :b WHERE id = 1 AND committed + reserved + :b <= 9223372036854775000;
+         0.515           0           0  COMMIT;
+       145.663           0           0  UPDATE g_acct SET reserved = reserved - :b WHERE id = 1;
+         0.574           0           0  COMMIT;
+ - 421 transactions (4.7% of total, tps = 20.913004)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+       140.592           0           0  SELECT 1 FROM g_acct WHERE id = 1 FOR UPDATE;
+         0.347           0           0  COMMIT;

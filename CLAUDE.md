@@ -65,16 +65,20 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
    state (`ACTIVE`/`COOLDOWN`/`RELEASED` + `available_at` with guarded
    transactional reclaim) — **never a `now()`-dependent index predicate**.
    Generated tokens are never reused. Cooldown is config-driven.
-8. **Limits (ADR-027).** Rate limits and quotas key on the **workspace**,
+8. **Limits (ADR-027, amended by ADR-035).** Rate limits and quotas key on the **workspace**,
    derived from the authenticated key — never on an API key (rotation would
    reset them), a header, or a source IP. Enforcement lives in the
    application layer, never in an HTTP filter, or the ingestion gateway is
    unprotected. **No limit may change an SMTP reply**: a syntactically valid
    recipient always gets the uniform `250` of ADR-025, or the differing
    replies become a workspace-membership oracle. Rate refusals are `429` +
-   `Retry-After`; quota exhaustion is `409` (waiting does not help). Quota
-   usage is derived from real rows, never a counter — a cascade delete runs
-   no application code to decrement one.
+   `Retry-After`; quota exhaustion is `409` (waiting does not help). Inbox
+   quota usage (`maxActiveInboxes`) is derived from real rows. **Storage
+   usage** (ADR-035) is derived, or database-maintained (statement triggers
+   into an append-only ledger) and **reconciled against the authoritative
+   `message`/`attachment` rows**. It is **never** an application-maintained,
+   unauditable counter: a cascade delete runs no application code to
+   decrement one.
 9. **Security.** API keys hashed at rest, never logged. Untrusted HTML is
    never rendered on the primary origin (sandboxed iframe, CSP, no remote
    loads — ADR-011). Never auto-fetch URLs from message content. Every
