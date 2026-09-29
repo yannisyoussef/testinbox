@@ -289,6 +289,50 @@ class DependencyRuleTest {
     }
 
     @Test
+    fun `the ADR-035 admission core is reachable from no deployable (TI-STORAGE-002)`() {
+        // The engine exists and is proven, but nothing drives it yet: no ingress
+        // path, no configuration class and no scheduled job may construct or call
+        // it until the slice that adds the fenced write path wires it on purpose.
+        // Exact types (and their nested and synthetic classes), never a name
+        // prefix: a future `StorageAdmissionWiring` must NOT count as core.
+        val core =
+            setOf(
+                "email.testinbox.application.usecase.StorageAdmission",
+                "email.testinbox.application.usecase.StorageAdmissionRules",
+                "email.testinbox.application.usecase.StorageAdmissionCandidate",
+                "email.testinbox.application.usecase.StorageAdmissionRequest",
+                "email.testinbox.application.usecase.StorageAdmissionDecision",
+                "email.testinbox.application.usecase.StorageAdmissionResult",
+                "email.testinbox.application.port.StorageAdmissionStore",
+                "email.testinbox.application.port.StorageAdmissionScope",
+                "email.testinbox.application.port.StorageAdmissionPlan",
+                "email.testinbox.persistence.JdbcStorageAdmission",
+            )
+        val entryPoints =
+            setOf(
+                "email.testinbox.application.usecase.StorageAdmission",
+                "email.testinbox.application.port.StorageAdmissionStore",
+                "email.testinbox.persistence.JdbcStorageAdmission",
+            )
+        noClasses()
+            .that(describe("are outside the admission core") { c: JavaClass -> c.name.substringBefore('$') !in core })
+            .should()
+            .dependOnClassesThat(describe("are admission entry points") { c: JavaClass -> c.name in entryPoints })
+            .because("TI-STORAGE-002 ships the admission engine unconnected (ADR-035 §14)")
+            .check(allClasses)
+    }
+
+    @Test
+    fun `the admission adapter is not a Spring bean, so no context can obtain it (TI-STORAGE-002)`() {
+        classes()
+            .that()
+            .haveFullyQualifiedName("email.testinbox.persistence.JdbcStorageAdmission")
+            .should()
+            .notBeMetaAnnotatedWith("org.springframework.stereotype.Component")
+            .check(allClasses)
+    }
+
+    @Test
     fun `the limit domain stays free of framework and storage types`() {
         classes()
             .that()
