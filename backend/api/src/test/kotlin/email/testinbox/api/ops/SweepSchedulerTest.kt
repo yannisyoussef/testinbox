@@ -1,12 +1,18 @@
 package email.testinbox.api.ops
 
+import email.testinbox.application.port.AccountingDrift
 import email.testinbox.application.port.ClaimOutcome
 import email.testinbox.application.port.IdempotencyRecords
 import email.testinbox.application.port.IdempotencyScope
 import email.testinbox.application.port.IdempotencySnapshot
+import email.testinbox.application.port.LedgerCompaction
+import email.testinbox.application.port.LedgerState
+import email.testinbox.application.port.StorageLedger
 import email.testinbox.application.port.WaitSlots
+import email.testinbox.application.usecase.CompactStorageLedger
 import email.testinbox.application.usecase.ExpireInboxes
 import email.testinbox.application.usecase.OrphanBlobSweep
+import email.testinbox.application.usecase.ReconcileStorageAccounting
 import email.testinbox.domain.ApiKeyId
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
@@ -63,14 +69,37 @@ class SweepSchedulerTest {
         }
     }
 
-    private fun scheduler(records: IdempotencyRecords) =
-        SweepScheduler(
-            expireInboxes = mock(ExpireInboxes::class.java),
-            orphanBlobSweep = mock(OrphanBlobSweep::class.java),
-            waitSlots = mock(WaitSlots::class.java),
-            idempotencyRecords = records,
-            clock = Clock.fixed(Instant.parse("2026-09-08T12:00:00Z"), ZoneOffset.UTC),
-        )
+    /** A ledger whose every operation fails, as it would with the database gone. */
+    private class BrokenLedger : StorageLedger {
+        var calls = 0
+
+        override fun compact(batch: Int): LedgerCompaction {
+            calls++
+            error("database gone")
+        }
+
+        override fun state(): LedgerState = error("database gone")
+
+        override fun findDrift(): List<AccountingDrift> {
+            calls++
+            error("database gone")
+        }
+
+        override fun repairDrift(): List<AccountingDrift> = error("database gone")
+    }
+
+    private fun scheduler(
+        records: IdempotencyRecords = CountingRecords(fullPasses = 0),
+        ledger: StorageLedger = BrokenLedger(),
+    ) = SweepScheduler(
+        expireInboxes = mock(ExpireInboxes::class.java),
+        orphanBlobSweep = mock(OrphanBlobSweep::class.java),
+        waitSlots = mock(WaitSlots::class.java),
+        idempotencyRecords = records,
+        compactStorageLedger = CompactStorageLedger(ledger),
+        reconcileStorageAccounting = ReconcileStorageAccounting(ledger),
+        clock = Clock.fixed(Instant.parse("2026-09-08T12:00:00Z"), ZoneOffset.UTC),
+    )
 
     @Test
     fun `one tick is bounded, however much there is to delete`() {
@@ -105,5 +134,24 @@ class SweepSchedulerTest {
         val records = CountingRecords(fullPasses = 0, failWith = IllegalStateException("database gone"))
         scheduler(records).idempotencySweep()
         records.calls shouldBe 0
+    }
+
+    @Test
+    fun `a failing ledger compaction does not escape the scheduled tick (ADR-035)`() {
+        // Same hazard as the retention sweep: an escaping exception would stop
+        // compaction for the life of the process, and the unfolded ledger, which
+        // every later admission reads in one statement, would grow without bound.
+        val ledger = BrokenLedger()
+        scheduler(ledger = ledger).storageLedgerCompaction()
+        ledger.calls shouldBe 1
+    }
+
+    @Test
+    fun `a failing reconciliation does not escape the scheduled tick (ADR-035)`() {
+        val ledger = BrokenLedger()
+        scheduler(ledger = ledger).storageAccountingReconciliation()
+        // It reached the ledger, failed there, and was absorbed and metered
+        // as FAILED by the use case rather than thrown.
+        ledger.calls shouldBe 1
     }
 }
