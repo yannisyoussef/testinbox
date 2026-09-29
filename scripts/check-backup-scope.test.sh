@@ -111,6 +111,33 @@ printf 'workspace\nproject\napi_key\nexact_address_reservation\nflyway_schema_hi
 check "a list including inbox data is refused" 1 "$WORK/list-inbox.txt"
 check "a missing input is a usage error" 2 "$WORK/nope.txt"
 
+# --- ADR-035 (V6): the seven accounting/admission tables ----------------------
+# Each must be classified, and classified '-'. Omitting one fails the
+# classification check; marking one '+' is refused outright, in either mode,
+# because backing it up would carry derived or transient state (ADR-035 §14).
+SCOPE_FILE="$REPO_ROOT/deploy/backup/scope.txt"
+for t in workspace_storage_account inbox_storage storage_delta storage_reservation \
+         storage_ambiguity storage_node storage_admission_latch; do
+  grep -qx -- "- $t" "$SCOPE_FILE" || { echo "FAIL — $t is not classified '-' in the real scope"; fail=$((fail + 1)); continue; }
+  grep -vx -- "- $t" "$SCOPE_FILE" > "$WORK/omit-$t.txt"
+  out=$(BACKUP_SCOPE="$WORK/omit-$t.txt" "$GATE" --classification "$REPO_ROOT/backend/persistence/src/main/resources/db/migration" 2>&1); st=$?
+  if [[ $st == 1 && "$out" == *"UNCLASSIFIED: $t"* ]]; then echo "ok   — omitting $t fails the classification"; pass=$((pass + 1))
+  else echo "FAIL — omitting $t was not caught (exit $st)"; fail=$((fail + 1)); fi
+  sed "s/^- $t\$/+ $t/" "$SCOPE_FILE" > "$WORK/keep-$t.txt"
+  out=$(BACKUP_SCOPE="$WORK/keep-$t.txt" "$GATE" --classification "$REPO_ROOT/backend/persistence/src/main/resources/db/migration" 2>&1); st=$?
+  if [[ $st == 1 && "$out" == *"SCOPE MISCLASSIFIED: $t"* ]]; then echo "ok   — classifying $t '+' is refused"; pass=$((pass + 1))
+  else echo "FAIL — classifying $t '+' was not refused (exit $st)"; fail=$((fail + 1)); fi
+done
+# The content tables share the same deny rule: marking one '+' is refused too.
+for t in inbox message attachment; do
+  sed "s/^- $t\$/+ $t/" "$SCOPE_FILE" > "$WORK/keep-$t.txt"
+  out=$(BACKUP_SCOPE="$WORK/keep-$t.txt" "$GATE" --classification "$REPO_ROOT/backend/persistence/src/main/resources/db/migration" 2>&1); st=$?
+  if [[ $st == 1 && "$out" == *"SCOPE MISCLASSIFIED: $t"* ]]; then echo "ok   — classifying content table $t '+' is refused"; pass=$((pass + 1))
+  else echo "FAIL — classifying content table $t '+' was not refused (exit $st)"; fail=$((fail + 1)); fi
+done
+{ control_plane_dump; printf 'COPY public.storage_delta (id) FROM stdin;\n\\.\n'; } > "$WORK/dump-ledger.sql"
+check "a dump carrying the ADR-035 ledger's data is refused" 1 "$WORK/dump-ledger.sql"
+
 echo "----"
 echo "check-backup-scope.test.sh: $pass passed, $fail failed"
 (( fail == 0 ))
