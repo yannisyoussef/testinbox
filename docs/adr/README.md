@@ -16,7 +16,7 @@
 | [0012](0012-wait-for-message-semantics.md) | Wait-for-message semantics | Accepted (amended by 0020) |
 | [0013](0013-repository-module-architecture.md) | Repository/module architecture | Accepted |
 | [0014](0014-sdk-architecture.md) | SDK architecture | Accepted (amended by 0022) |
-| [0015](0015-rest-compatibility-versioning.md) | REST compatibility/versioning | Accepted (experimental-v1 problem-type rule proposed by 0035) |
+| [0015](0015-rest-compatibility-versioning.md) | REST compatibility/versioning | Accepted |
 | [0016](0016-sdk-compatibility-versioning.md) | SDK compatibility/versioning | Proposed |
 | [0017](0017-maven-npm-distribution.md) | Maven/npm distribution | Proposed |
 | [0018](0018-framework-integration-strategy.md) | Framework integration strategy | Proposed |

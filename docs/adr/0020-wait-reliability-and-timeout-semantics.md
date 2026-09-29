@@ -81,7 +81,7 @@ introduced, the `LISTEN` connection must bypass it or use session mode.
 
 ### 3. Wait-window expiry returns `200` with an explicit result
 
-> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, a wait also ends with `409` `…/problems/storage-limit-exceeded` when a copy addressed to the waited inbox is refused by a storage ceiling after the wait's baseline (ADR-035 §11c). `MATCHED`, `TIMEOUT` and `410` are unchanged.
+> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, a wait that carries the optional `afterStorageRefusalCount` cursor also ends with `409` `…/problems/storage-limit-exceeded` when a copy addressed to the waited inbox was refused by a storage ceiling after that cursor (ADR-035 §13c). A wait without the cursor keeps exactly the behaviour below; `MATCHED`, `TIMEOUT` and `410` are unchanged.
 
 `POST /v1/inboxes/{id}/messages/wait` returns:
 

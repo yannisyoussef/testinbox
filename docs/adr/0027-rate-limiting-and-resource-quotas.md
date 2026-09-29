@@ -98,7 +98,7 @@ draining the workspace token after its own bucket emptied — starving every
 other inbox in that workspace, which is the outcome the per-inbox key exists
 to prevent.
 
-> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, this paragraph and the overshoot bound below are superseded: stored bytes are bounded *at ingest* by a workspace and a global application ceiling, reserved before any object is written (ADR-035 §3–§6, bound in §9). The `CreateInbox` admission rule stands, and the SMTP reply is still never affected.
+> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, this paragraph and the overshoot bound below are superseded: stored bytes are bounded *at ingest* by inbox, workspace and global application ceilings, reserved before any object is written (ADR-035 §3–§7, bound in §9). The `CreateInbox` admission rule stands, and the SMTP reply is still never affected.
 
 **Storage quota is admission control on tenant-initiated growth, not on
 inbound mail.** A workspace at or over `maxStoredBytes` cannot create new
@@ -185,11 +185,11 @@ budget. This is the one place mail addressed to a live inbox is dropped; it
 happens only under a sustained flood, never merely because a workspace sits
 at its storage quota.
 
-> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, the closing sentence of §4 above ("the one place mail addressed to a live inbox is dropped") no longer holds: a storage-ceiling refusal is a second in-process discard behind the same uniform `250`, and unlike `INGEST` it is visible to the authenticated tenant (ADR-035 §10–§11).
+> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, the closing sentence of §4 above ("the one place mail addressed to a live inbox is dropped") no longer holds: a storage-ceiling refusal is a second in-process discard behind the same uniform `250`, and unlike `INGEST` it is visible to the authenticated tenant (ADR-035 §12–§13).
 
 ### 5. Quota usage is derived, never accounted
 
-> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, stored bytes are no longer derived per decision: they are maintained by database triggers — which a measurement (TI-STORAGE-BOUND, 2026-09-26) showed *do* fire on `ON DELETE CASCADE`, answering this section's objection — and proven against this section's derivation by a reconciliation job (ADR-035 §7). `maxActiveInboxes` remains derived.
+> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, stored bytes are no longer derived per decision: they are maintained by database triggers into an append-only ledger — measurements (2026-09-26, 2026-09-29) show triggers *do* fire on `ON DELETE CASCADE`, answering this section's objection — and proven against this section's derivation by a reconciliation job (ADR-035 §10). `maxActiveInboxes` remains derived.
 
 `maxActiveInboxes` and `maxStoredBytes` are computed from the rows that
 actually exist, under the admission guard of §6.
@@ -302,7 +302,7 @@ a silently disabled limiter is indistinguishable from a working one.
   wrong for CI behind shared NAT.
 - **`452` deferral on quota exhaustion** (the first draft): rejected — §1.
 
-> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, "accept-and-drop" and "maintained usage counters" below are adopted in a form that answers their rejection reasons (authenticated refusal visibility, ADR-035 §11; trigger-maintained accounting, §7). Eviction stays rejected (ADR-035 I6).
+> **Amendment proposed by [ADR-035](0035-physical-storage-bound-at-ingest.md) (Proposed, not in force until Accepted).** If accepted, "accept-and-drop" and "maintained usage counters" below are adopted in a form that answers their rejection reasons (authenticated refusal visibility, ADR-035 §13; trigger-maintained ledger, §10). Eviction stays rejected (ADR-035 I6).
 
 - **Accept-and-drop on quota exhaustion**: rejected — it manufactures the
   false negative the product exists to prevent.

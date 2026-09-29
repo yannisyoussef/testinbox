@@ -1,579 +1,705 @@
 # ADR-035: Physical Storage Bound at Ingest
 
-**Status:** Proposed (2026-09-28, revised after architecture, security,
-quality and API/SDK review). It is awaiting the owner's review. Nothing below
-may be implemented or relied on until it is Accepted, and four owner decisions
-remain open (§0).
+**Status:** Proposed, revision 4 (2026-09-29).
 
-On acceptance it amends:
+This revision incorporates the owner's decisions O1–O4 (TI-DEC-001), the facts
+measured to settle them, and the four focused re-reviews that followed:
+storage and failure, database and rollout, API and SDK, and security.
+Nothing below may be implemented or relied on until the owner accepts it.
+
+**What acceptance amends:**
 
 - [ADR-027](0027-rate-limiting-and-resource-quotas.md) §2 (the storage-quota
-  paragraph and the overshoot bound), §4 (the sentence naming `INGEST` as the
+  paragraph and its overshoot bound), §4 (the sentence naming `INGEST` as the
   only place mail for a live inbox is dropped), §5 (usage derived, never
-  accounted), and the matching Alternatives and Consequences entries;
-- [ADR-020](0020-wait-reliability-and-timeout-semantics.md) §3 (a wait gains
-  one terminal, authenticated-only outcome);
+  accounted), and the matching Alternatives and Consequences entries.
+- [ADR-020](0020-wait-reliability-and-timeout-semantics.md) §3, by adding one
+  opt-in, authenticated-only wait outcome.
 - [ADR-024](0024-application-layer-and-dependency-rule.md), with one narrow
-  carve-out for database-maintained accounting (§7);
-- [ADR-015](0015-rest-compatibility-versioning.md), with one explicit behaviour
-  change within the experimental v1 (§11c).
+  carve-out for accounting maintained by the database (§10).
 
-It does **not** amend [ADR-025](0025-unknown-recipient-handling.md),
-[ADR-026](0026-recipient-scoped-provider-delivery-identity.md),
-[ADR-019](0019-inbound-deduplication-semantics.md) or
-[ADR-009](0009-retention-lifecycle.md): no SMTP reply changes, the event stays
-the atomic unit of commit, nothing is deduplicated, and no lifecycle transition
-is added. ADR-027's text is left as written, and its superseded passages carry
-a pointer here.
+**What acceptance leaves unchanged:**
 
-> Owner decisions this ADR is written against (TI-DOC-001, 2026-09-28):
-> - authenticated refusal visibility **yes**, including a typed wait outcome;
-> - **no** grandfathering and **no** eviction;
-> - `maxStoredBytes` stays **2 GiB**;
-> - a **global application ceiling** (40 GiB initial production value) under a
->   50 GiB bucket quota;
-> - the 120 s reservation TTL is a **write deadline, not a release**;
-> - accounting is **physical**;
-> - ceilings answer `250`, and physical storage failure answers `451`.
+- [ADR-015](0015-rest-compatibility-versioning.md): every contract change is
+  additive, and the new wait outcome is opt-in (§13c).
+- [ADR-025](0025-unknown-recipient-handling.md): no SMTP reply changes.
+- [ADR-026](0026-recipient-scoped-provider-delivery-identity.md): the event is
+  still the unit of commit.
+- [ADR-019](0019-inbound-deduplication-semantics.md): nothing is deduplicated.
+- [ADR-009](0009-retention-lifecycle.md): no lifecycle transition is added.
+- ADR-027's own text. Its superseded passages only carry a pointer here.
 
-## 0. Open decisions for the owner
+**Evidence** (all in [`0035-benchmark/`](0035-benchmark/)):
 
-Review surfaced four questions that the TI-DOC-001 decisions do not settle.
-Each has a recommendation, and the ADR is written as if the recommendation is
-taken. None of the four changes the invariants of §1.
+- the contention benchmark, run on a laptop and not re-run for this revision;
+- `minio-probes/RESULTS.md`, 25 behaviour probes against the pinned MinIO
+  release.
 
-| # | Question | Recommendation | Where |
-|---|---|---|---|
-| **O1** | A workspace-wide ceiling lets one guessed `EXACT` address deny mail to *every* inbox in the workspace. About 80 large messages fill 2 GiB, which fits inside the edge's per-client rate. This is the property ADR-027 keyed `INGEST` per inbox to prevent. Add a **per-inbox storage sub-ceiling**? | **Yes**: `maxStoredBytesPerInbox` = 25 % of the workspace limit (512 MiB), checked narrow scope first, mirroring `ingestPerInbox`. It is a new product limit, which is why it is the owner's call. | §3a |
-| **O2** | "Terminate if a refusal occurs *after the wait begins*" misses the most common test flow: create the inbox, trigger the send, then wait. A copy refused before the first wait call would still time out silently. Widen "begins" to "after the inbox state the caller last observed"? | **Yes**: SDKs seed the first call's cursor from the `Inbox` they hold (0 for an inbox they just created). | §11c |
-| **O3** | Disclose `SERVICE_CAPACITY` to tenants as a refusal reason? It is a one-bit, incident-time cross-tenant signal. | **Yes**, with the residual recorded in §11b. Without it, a tenant with visible headroom has a refusal nobody can explain. | §11b |
-| **O4** | Accept the additions made for the invariants, all beyond the literal request? They are: explicit gateway connection and recipient bounds; per-node write permits; single-attempt puts with a real timeout; a physical-failure circuit breaker; chunked retention deletes. | **Yes**. Each is load-bearing for a stated invariant or bound, and each section says which. | §4, §5, §6a |
+## 0. Owner decisions (TI-DOC-001, TI-DEC-001)
+
+| # | Decision | Where |
+|---|---|---|
+| — | Authenticated refusal visibility. No grandfathering, no eviction. `maxStoredBytes` stays at 2 GiB. A global application ceiling of 40 GiB, under a 50 GiB bucket quota. The 120 s TTL is a **write deadline, not a release**. Accounting is physical. Ceilings answer `250`; physical failure answers `451`. | throughout |
+| **O1** | **Accepted with refinement.** A per-inbox hard ceiling, expressed as a *policy share* of the workspace limit: default 25 %, which is 512 MiB today. Authenticated clients can discover it. Refusal reason `INBOX_LIMIT`. | §3, §13b |
+| **O2** | **Accepted with an explicit protocol.** The boundary is a cursor on the wire (`afterStorageRefusalCount`), not hidden SDK state. | §13c |
+| **O3** | **Accepted.** `SERVICE_CAPACITY` discloses one bit and no global figure. | §13d |
+| **O4** | **Accepted in principle.** Each supporting control is kept only where it protects a named invariant or bound. | §15 |
+
+No design question remains open. The implementation gates, enablement gates
+and Ops prerequisites are listed in §18.
 
 ## Context
 
-ADR-027 §2 deliberately did not enforce `maxStoredBytes` on inbound mail. A
-workspace at its quota could not create inboxes, but mail to the inboxes it
-already held was stored. The bound was therefore `maxStoredBytes` plus an
-overshoot of `INGEST` rate × the ADR-009 TTL ceiling. ADR-027 gave three
-reasons, and each one still has to be answered rather than set aside:
+ADR-027 §2 deliberately did not enforce `maxStoredBytes` on inbound mail. Its
+storage bound was therefore `maxStoredBytes` plus the `INGEST` rate × the TTL
+ceiling. It gave three reasons:
 
-1. **The SMTP reply must not carry quota state** (§1). A `452` for an
-   over-quota workspace next to a `250` for an unknown address is a
-   workspace-membership oracle. Deferring the whole event is a cross-tenant
-   denial of service under ADR-026.
-2. **Accept-and-drop manufactures a false negative** (Alternatives). Mail to a
-   live inbox that silently disappears makes the system under test look as if
-   it never sent.
-3. **A counter cannot be maintained** (§5). ADR-009 hard-deletes through
-   `ON DELETE CASCADE`, which runs no application code, so a usage counter would
-   drift upward until every workspace wedged at `409`.
+1. **The SMTP reply must not carry quota state.** A distinct reply would be a
+   membership oracle, and a deferral would be a cross-tenant denial of service.
+2. **Accept-and-drop manufactures a false negative.**
+3. **A counter cannot be maintained through `ON DELETE CASCADE`.**
 
-Three facts have changed since ADR-027 was accepted, and each is measured or
-observed rather than argued:
+What has changed is measured, not argued:
 
-- **The overshoot is not small.** At the ADR-027 defaults (`INGEST` 10/s
-  sustained per workspace, a 24 h TTL ceiling, 15 MiB messages) the "bounded"
-  overshoot is about 12.4 TiB per workspace. The production bucket is 50 GiB,
-  so that bound constrains nothing, and 26 workspaces legitimately at 2 GiB
-  already fill it.
-- **Objection 3 is refuted by measurement** (TI-STORAGE-BOUND, 2026-09-26,
-  `postgres:16-alpine`). Row-level `AFTER INSERT`/`AFTER DELETE` triggers **do**
-  fire for rows removed by `ON DELETE CASCADE`: an aggregate maintained by
-  triggers went `0 → 1250 → 0` across a `DELETE FROM inbox` that cascaded
-  through `message` to `attachment`. The cascade runs no *application* code,
-  but it does run *database* code, and that is where the maintenance now
-  lives. The cost is about 88 µs per row.
-- **Deriving usage per delivery is too slow at the rate it would run.** With
-  864k `message` rows in one workspace (plus 100k elsewhere and 300k
-  attachments), the ADR-027 derivation took 27.7–45.5 ms. With covering
-  indexes it was still 26.2–30.1 ms, as an index-only scan over about 1.16M
-  entries. At 10 deliveries/s under a serialization point, that is a 26–30 %
-  duty cycle. An aggregate row plus the live reservations read in
-  0.17–1.07 ms.
-- **Objection 2 has an answer that objection 1 permits.** The sender is still
-  told nothing. The *tenant*, who is authenticated, can be told everything
-  about their own workspace, including a wait that ends early with the reason.
+- **The overshoot is not small.** At the ADR-027 defaults it is about
+  12.4 TiB per workspace, against a 50 GiB bucket.
+- **Objection 3 is refuted.** Both kinds of trigger fire for rows that
+  `ON DELETE CASCADE` removes:
+  - row-level triggers (2026-09-26);
+  - statement-level triggers with transition tables (2026-09-29).
+    PostgreSQL batches these per cascade: a cascade over 50 000 messages
+    wrote one ledger row per (workspace, inbox) in 0.25 s, and the ledger
+    matched the source rows exactly.
+- **Deriving usage per delivery is too slow**: 26–45 ms per large workspace.
+- **Objection 2 has an answer that objection 1 permits.** The sender is told
+  nothing. The authenticated tenant is told everything about its own scopes.
 
 ## Decision
 
-### 1. Invariants
+### 1. Invariants (normative)
 
-These are normative. Everything after this section is mechanism.
+**Definitions.**
 
-- **I1: accounting never under-counts physical bytes.** For every workspace
-  *W*, the application-written object bytes under *W*'s prefix that have not
-  been *proven absent* are at most `committed(W) + reserved(W)`. Summed over
-  workspaces, the same holds globally. The database may over-count: briefly,
-  during retention, and while a crash is cleaned up. It must never under-count,
-  except for the residue enumerated in §9.
-- **I2: admission is exact against every ceiling.** A reservation for a
-  candidate recipient copy of `f` bytes is created only if the following holds
-  in **one** database snapshot, under the global admission lock:
-  - the inbox ceiling (§3a, if O1 is taken);
-  - `committed(W) + reserved(W) + f ≤ workspaceLimit`;
-  - `Σcommitted + Σreserved + f ≤ globalLimit`.
-- **I3: no object without a live reservation.** `BlobStore.put` is never
-  called for a recipient copy unless a `RESERVED` reservation covering its
-  exact bytes exists. A put is never *started* after that reservation's write
-  cutoff (§4).
-- **I4: commit consumes the reservation or fails closed.** A message row
-  commits only in the transaction that deletes its own `RESERVED`
-  reservation, and only if the reserved bytes equal the bytes committed.
-  Otherwise the whole event rolls back and the gateway answers `451`.
-- **I5: reserved bytes are released only on proof.** Release happens only
-  through one of:
-  - (A) the commit of I4;
-  - (B) proof that no object exists under the copy's prefix;
-  - (C) deletion of those objects, followed by the same proof;
-  - (D) a reconciliation that establishes one of these states.
+- A **TestInbox-owned payload object** is an object under a key
+  `{workspace}/{inbox}/{message}/…` created by the ADR-035 write path (§5).
+  - Objects written by pre-activation binaries are brought under accounting
+    by the activation barrier (§14).
+  - MinIO's own metadata and parity are not payload objects.
+- **Covered** means counted in committed accounting or in an unreleased
+  reservation.
+- **Assumption A_F** is stated once and relied on explicitly: a storage server
+  that has received a single-part PUT's *complete* body finalizes or discards
+  it within `C_max` (9 min). §9 explains why a physical bound cannot be
+  unconditional, and how A_F is contained and monitored.
 
-  **Time alone never releases capacity.**
-- **I6: no eviction.** Stored content stays readable until ADR-009 retention
-  or explicit deletion removes it. A workspace over its ceiling loses
-  nothing; it only stops admitting.
-- **I7: SMTP never reveals tenant state.** A syntactically valid recipient
-  gets the uniform `250` of ADR-025 in all three cases: it is unknown, its
-  inbox or workspace is at its ceiling, or the global ceiling is reached. The
-  refused copy is discarded in-process, and `BlobStore` is never called for
-  it. A `451` is **never a function of tenant state** (membership, usage,
-  ceilings). It reports physical storage failure, database failure, or load
-  (§4 cutoff), and it covers the whole `DATA` with nothing committed.
-- **I8: the tenant can see what the sender cannot.** Workspace storage state,
-  per-inbox refusal counts, and a typed terminal wait outcome are exposed on
-  the authenticated API only, workspace-scoped. Cross-tenant lookups stay
-  `404`.
-- **I9: no tenant identifier becomes a metric label.** Every new label is a
-  closed enum.
-- **I10: drift is detectable and repairable.** Database triggers maintain
-  `committed`. A reconciliation job proves it against the rows and repairs
-  it. A non-zero repair is metered and alarmed, because it is evidence of a
-  defect and never a normal mode.
+**The invariants.**
+
+- **I1 (physical coverage).** Under A_F, every TestInbox-owned payload byte
+  that exists, or can still come to exist, is covered. There is no exception.
+  - If A_F is violated by up to `T_verify` (30 min), the uncovered bytes stay
+    inside the finalize budget **H** that admission reserves out of *G*. The
+    owned bytes still never exceed *G*.
+  - A detected violation latches admission closed (§9).
+- **I2 (atomic ceilings).** The inbox, workspace and global ceilings are
+  evaluated in **one** database snapshot, under one admission lock. A copy is
+  admitted only if all three hold. The global admission cap is `G − H`.
+- **I3 (fenced writes).** Every object write is authorized by a live
+  reservation, through a presigned URL. The storage server itself enforces
+  four limits on that URL:
+  - it refuses any upload that *starts* after the reservation's write
+    deadline;
+  - it refuses any upload of a size other than the reserved one;
+  - it refuses any upload to a different key;
+  - it refuses any upload to a key that already exists.
+- **I4 (commit consumes).** A message becomes visible only in the transaction
+  that consumes its `RESERVED` reservation, for exactly the reserved bytes.
+  Otherwise the whole event rolls back.
+- **I5 (stale ≠ free).** Age alone never releases capacity. Release requires
+  two things:
+  - `release_not_before` has passed. After that point no request can still
+    create an object (§7).
+  - A per-exact-key proof shows no object and no incomplete upload.
+- **I6 (exactly-once decrement).** Deleting content, including through a
+  cascade, decrements committed accounting exactly once, in the deleting
+  transaction.
+- **I7 (ownership).** Cleanup deletes only its own reservation's exact keys,
+  never a committed message's objects.
+- **I8 (auditability).** Committed accounting is an append-only ledger folded
+  into base rows. It is reconciled against the source rows, and any drift is
+  alarmed.
+- **I9 (no disclosure over SMTP).** Every syntactically valid recipient gets
+  the uniform `250` of ADR-025. That covers an unknown recipient and a reached
+  inbox, workspace or service ceiling. A `451` never *discloses* tenant state:
+  it reports storage, database or load failure for the whole `DATA`, and it is
+  never chosen per tenant.
+- **I10 (relevant refusals visible).** An authenticated waiter that presents
+  its observation cursor can tell whether a storage refusal occurred for its
+  inbox after that cursor.
+- **I11 (no eviction, no grandfathered growth).** Content stays readable until
+  ADR-009 retention removes it. A scope above its ceiling, including content
+  already above it at rollout, admits nothing.
+- **I12 (closed-enum labels).** No tenant identifier is ever a metric label.
 
 ### 2. Physical accounting
 
-The unit is the number of bytes that physically exist in object storage.
+- **What one copy costs.** A recipient copy costs its `raw.eml` bytes plus
+  every extracted attachment object, so attachments are counted twice (the
+  ADR-027 §5 derivation, unchanged).
+  - A parse failure costs the raw bytes only.
+  - PostgreSQL metadata does not count.
+- **All copies of one event cost the same.** They share the bytes and the
+  single parse, so they have the same footprint *f*. *f* is exact before any
+  write.
+- **No attachment object exceeds the raw message.** The MIME parser
+  (`JakartaMimeParser`) takes attachment bytes from `part.inputStream`, which
+  only reverses the transfer encoding (base64, QP, uuencode, 7/8-bit).
+  `message/rfc822` parts are kept whole, not expanded. So
+  `maxObjectBytes` = the 15 MiB raw cap.
 
-- **Per recipient copy**, the charge is the `raw.eml` bytes plus the bytes of
-  **every** extracted attachment object. Attachments therefore count twice:
-  once inside `raw.eml` and once as the extracted object, because both exist
-  under ADR-005's per-message key layout. This is ADR-027 §5's existing
-  derivation, kept unchanged, so reconciliation (§7) can compare the two
-  exactly.
-- An event with *N* admitted recipients costs *N* copies. Keys are
-  per-message (ADR-005/026), so identical bytes are stored and counted *N*
-  times.
-- A parse failure stores `raw.eml` only (`parseStatus=FAILED`), so its
-  footprint is the raw size.
-- PostgreSQL metadata does **not** count toward `maxStoredBytes`.
-- Every copy's footprint is exact **before the first byte is written**. The
-  raw size is known when `DATA` ends, and the gateway bounds it to 15 MiB. The
-  attachment sizes are known after the single per-event parse, which already
-  precedes any write.
+### 3. Scopes and ceilings (O1)
 
-`workspaceLimit` stays **2 GiB** (`testinbox.limits.max-stored-bytes`,
-unchanged). Making it plan-dependent is a later, separate decision.
+| Scope | Limit | Configuration | Visible to |
+|---|---|---|---|
+| Inbox | `floor(workspaceLimit × inboxShare)`, share default **0.25** | `testinbox.limits.max-stored-bytes-per-inbox-share`, `0 < share ≤ 1`, so the inbox limit is never above the workspace limit | the owning workspace (§13b) |
+| Workspace | default **2 GiB** | `testinbox.limits.max-stored-bytes` (unchanged) | that workspace (§13a) |
+| Global | admission cap `G − H`; *G* = 40 GiB in production | `testinbox.storage.global-limit-bytes` (operational) | operators; tenants get one bit (§13d) |
 
-### 3. The admission transaction (T1)
+- **The inbox limit is a policy value, not a constant.** 512 MiB is today's
+  result of the share. If the workspace limit becomes plan-dependent, the
+  inbox limit follows. A per-inbox override would be a later additive
+  change, and the API already reports the *effective* limit.
+- **A full inbox keeps everything it has.** Further copies to it are refused
+  with `INBOX_LIMIT`. Its siblings are unaffected unless the workspace itself
+  is full.
+- **Residual (recorded in `abuse-model.md`).** An attacker who knows an
+  inbox's address can fill it with about 20 large copies. The per-inbox
+  `INGEST` burst of 60 does not stop that. The inbox then refuses mail for the
+  rest of its TTL, and an `EXACT` local-part stays unusable through its 24 h
+  cooldown.
+  - The tenant sees `INBOX_LIMIT`, so there is no false negative.
+  - Denying the whole workspace needs four known addresses at the default
+    share.
+  - The named follow-up is an additive, tenant-initiated "clear inbox"
+    operation. That is deletion by the tenant, not eviction.
 
-T1 runs once per inbound event. It runs after the one parse and after the
-per-recipient ADR-025 resolution and ADR-027 `INGEST` charge, both of which
-are unchanged. It runs before any object write. **T1 is skipped entirely when
-no candidate survives those two steps**, so an unknown-recipient or
-rate-limited flood never touches the global lock.
+### 4. Admission (T1) and multi-recipient semantics
+
+**The admission unit is one recipient copy.** For one SMTP `DATA` or one
+provider event:
+
+1. Recipients are normalized and deduplicated, then kept in **envelope
+   order**. That order is deterministic, and the sender chose it.
+2. Each recipient is resolved (ADR-025). Unknown recipients are discarded, and
+   nothing else happens for them.
+3. `INGEST` is charged per inbox, then per workspace (ADR-027). A refused
+   charge means a discard.
+4. **If no candidate survives, stop.** There is no slot, no lock and no T1.
+5. **Take one write slot for the whole event before T1** (§5). The slot queue
+   is fair: at most `max-concurrent-events-per-workspace` (default
+   `slots/4`) events of one workspace may hold slots on a node, and waiting
+   is bounded at `W_slot` (10 s). A wait longer than that answers `451`, a
+   load failure.
+   - No reservation or deadline exists while the event waits, so queueing
+     can never consume a write deadline.
+   - One tenant's large events can delay, but not fail, other tenants'
+     events.
+6. **T1:**
 
 ```
-BEGIN;                                               -- READ COMMITTED, synchronous commit
-SET LOCAL lock_timeout = '5s';                       -- waiting past this → 451 (load, not tenant state)
-SELECT pg_advisory_xact_lock(:storageClass, :global);   -- first lock-taking statement
-INSERT INTO workspace_storage_account (workspace_id)    -- ensure rows exist; DO NOTHING
-     SELECT unnest(:workspaceIds) ON CONFLICT DO NOTHING;
-SELECT                                               -- ONE statement = ONE snapshot
-  (SELECT coalesce(sum(committed_bytes),0) FROM workspace_storage_account)
-+ (SELECT coalesce(sum(bytes),0)          FROM storage_reservation)         AS global_used,
-  <per involved workspace: committed_bytes + Σ its reservations>            AS ws_used,
-  <per involved inbox (O1): inbox committed + Σ its reservations>           AS inbox_used;
--- application: walk candidates in envelope order; admit while every ceiling holds,
---              adding each admitted f to the running totals
-INSERT INTO storage_reservation (...) VALUES (...admitted copies...);
-COMMIT;                                              -- releases the global lock
+BEGIN;                                             -- READ COMMITTED, synchronous_commit = on
+SET LOCAL lock_timeout = '5s';                     -- exceeded → 451 (load)
+SELECT pg_advisory_xact_lock(:storageClass, :global);
+SELECT now() AS t0,
+  (SELECT coalesce(sum(base_bytes),0) FROM workspace_storage_account)
++ (SELECT coalesce(sum(bytes),0)      FROM storage_delta)
++ (SELECT coalesce(sum(bytes),0)      FROM storage_reservation)                AS global_used,
+  <per involved workspace: base + Σ deltas + Σ reservations>                   AS ws_used,
+  <per involved inbox:     base + Σ deltas + Σ reservations>                   AS inbox_used;
+-- ONE statement. Missing base rows read as 0 (their deltas are still summed).
+-- For each candidate in envelope order: admit iff every ceiling holds (inbox, workspace, G − H);
+--   an admitted copy adds f to the running totals.
+INSERT INTO storage_reservation (...) VALUES (...admitted copies, with their exact keys...);
+COMMIT;
 ```
 
-- **One global admission lock, in the two-key form.** PostgreSQL keeps the
-  `pg_advisory_xact_lock(int4, int4)` key space disjoint from the
-  one-`bigint` space used by the per-workspace `guardAdmission` (ADR-027 §6),
-  so no workspace key can collide with it.
-  - Only T1 takes this lock.
-  - Nothing that *decreases* usage needs it: not commit, retention, cleanup or
-    reconciliation. A decrease the admission snapshot does not yet see only
-    makes the admission more conservative.
-  - The `lock_timeout` stops a queue of waiters from draining the ingestion
-    pool (8 connections per node). A waiter that exceeds it answers `451`.
-    That is load, and it is the same `451` for every recipient.
-- **Global usage is derived, not stored.** `Σcommitted` is a sum over one row
-  per workspace. `Σreserved` is a sum over live reservations, bounded by
-  in-flight copies plus stale ones (§6a bounds the stale ones). No row is
-  written by every ingest, commit and retention delete. §8 measures that
-  alternative and rejects it.
-- **One statement, one snapshot.** Under READ COMMITTED, each statement takes
-  its own snapshot. T2 (§5) moves bytes from `reserved` to `committed`
-  atomically. If `Σcommitted` and `Σreserved` were read by two separate
-  statements, a T2 committing between them would be seen in neither place.
-  That is an under-count by exactly its bytes, which means over-admission.
-  Reading both in one statement makes the move either invisible or fully
-  visible. The adapter is required to issue a single statement, and a test
-  asserts this (§14, test 12).
-- **Refusal precedence**, narrowest first: the inbox ceiling (O1), then the
-  workspace ceiling (both recorded as `WORKSPACE_LIMIT`, which the tenant can
-  act on), then the global ceiling (`SERVICE_CAPACITY`). A copy that several
-  ceilings would refuse is recorded under the narrowest one.
-- **Refusing one recipient is a discard, not a partial commit.** A refused copy
-  is dropped in-process, exactly like the ADR-025 unknown-recipient discard
-  and the ADR-027 rate-limited discard. Those already coexist with committed
-  siblings in the same event. ADR-026's all-or-nothing rule governs what
-  *commits*, and it is unchanged.
-- **`ON CONFLICT DO NOTHING` locks nothing when the row already exists.** It
-  *can* wait on another transaction's uncommitted insert of the same key,
-  which in practice means a trigger upsert for a brand-new workspace. That is
-  a rare wait, once per workspace lifetime, and `lock_timeout` covers it.
+**Which ceiling is reported.** The narrowest one: `INBOX_LIMIT`, then
+`WORKSPACE_LIMIT`, then `SERVICE_CAPACITY`.
 
-### 3a. Per-inbox sub-ceiling (O1; pending owner decision)
+**Partial success is independent per recipient.** A full inbox, a full
+workspace, or a full workspace belonging to another tenant discards only its
+own copies. Valid mail for tenant B is never discarded because tenant A in the
+same `DATA` is full.
 
-This section applies only if O1 is taken.
+**What happens when the global cap is reached mid-event.** Every copy has the
+same *f*, so after the first `SERVICE_CAPACITY` refusal every later candidate
+is refused too. The admitted set is an *envelope-order prefix* of the eligible
+candidates. It is deterministic.
 
-- **Limit.** `testinbox.limits.max-stored-bytes-per-inbox`, default 25 % of
-  the workspace limit, and required to be `≤ max-stored-bytes`.
-- **Committed bytes per inbox.** They live in `inbox_storage.committed_bytes`.
-  The same triggers maintain it on message and attachment **insert**. An
-  attachment finds its inbox through its message, which exists in the same
-  transaction.
-- **No decrement path.** Messages are deleted only when their inbox is torn
-  down, and the `inbox_storage` row goes with the inbox.
-- **Reserved bytes per inbox** are `Σ storage_reservation.bytes` for that
-  `inbox_id`.
-- **Effect.** A flood against one guessed address fills its own inbox's
-  allowance and then stops charging the workspace. Denying the whole workspace
-  then requires as many known addresses as the ratio: four at the default.
-- **Residual.** The residual is recorded in `docs/security/abuse-model.md` §4:
-  a party that knows *every* address can still deny the workspace. That is the
-  ADR-027 per-inbox `INGEST` posture, applied to storage.
+**What commits.** Every admitted copy commits together, or none does (ADR-026;
+§6).
 
-### 4. Writing under a reservation
+**Refusal counters.** Each refused copy adds one to its inbox's count (§6a).
+An event refuses at most one copy per inbox.
 
-- **What a reservation records.** Each reservation carries:
-  - `message_id`, pre-generated, which is the primary key;
-  - `workspace_id`, `inbox_id`, and `object_prefix` (`{workspace}/{inbox}/{message}/`);
-  - `bytes`, `state` and `created_at`;
-  - `write_deadline_at = now() + 120 s`, computed from **database time** (the
-    ADR-027 §4 rule).
-- **`inbox_id` has no foreign key, and nothing cascades into this table.** An
-  inbox that is hard-deleted while a copy is in flight must not take with it
-  the only record of objects that may already exist. This is the same reason
-  `exact_address_reservation.inbox_id` has none (V1).
-- **The write cutoff is measured without trusting node clocks.**
-  - The writer starts a monotonic `Ticker` *before* sending T1's `BEGIN`. Its
-    elapsed time therefore over-estimates the database time elapsed since T1's
-    `now()`.
-  - It may start a put only while `elapsed + T_put + 5 s ≤ 120 s`. Otherwise it
-    aborts the event with `451`.
-  - The `Ticker` is injectable, and tests drive it (§14).
-- **A put is a single attempt with a hard timeout `T_put`** (default 30 s,
-  exposed on the `BlobStore` port so the use case can apply the cutoff).
-  - SDK retries are **disabled** for `put`. With retries, a put could return a
-    clean error while an earlier attempt that timed out was still in flight.
-    Nothing could then be treated as finished.
-  - Today `S3BlobStore` sets no `apiCallTimeout` at all, which makes a put
-    unbounded and a deadline decorative. The implementation sets it.
-  - A put's outcome is **definitive** if it succeeded or the storage server
-    answered with an error. It is **ambiguous** on a timeout or an I/O failure.
-  - Puts stay **single-part** (`putObject`; 15 MiB is far below any multipart
-    threshold), so no abandoned multipart parts exist.
-- **Per-node write permits.** `max-concurrent-writes`, default 16, is an
-  application-side semaphore (framework-free, so ADR-024 is respected).
-  - A writer holds at most **one** permit at a time, and one event's puts are
-    sequential. A single large event therefore cannot hold permits that other
-    events need.
-  - Time spent waiting for a permit counts against the cutoff.
-  - The permits are what make the §9 residue a small number.
-- **Gateway bounds become explicit instead of inherited.** SubEthaSMTP's
-  defaults are 1000 connections and 1000 recipients.
-  - `maxRecipients` is set to exactly the edge's
-    `relay_destination_recipient_limit` (50). If it were lower, the edge would
-    split a transaction and silently weaken ADR-026's atomicity.
-  - The value is pinned in `deploy/mail-edge/contract.yaml` under `ingestion:`.
-  - `maxConnections` is configured explicitly as well.
-- **Inline release.** A writer that fails may mark its reservations
-  `RELEASING` and run §6 immediately, without waiting for the settle window,
-  only when **every** put it started ended definitively. After any ambiguous
-  put, it must leave the reservation to the settle window.
+**What the SMTP reply reveals.** Nothing. It is `250` for every recipient
+(§12).
 
-### 5. The commit transaction (T2)
+**Infrastructure failure after admission.** A failed or ambiguous upload, a
+missed deadline or a lock timeout all answer `451` for the whole `DATA`.
+- T2 does not run, and nothing becomes visible.
+- The event's reservations go to `RELEASING`. They go there *immediately* only
+  if every upload the event started ended definitively (§5). Otherwise they go
+  there at their deadline, and release still requires the §7 proof.
+- The refusal records roll back with the event (§6a). The sender's retry
+  therefore re-runs admission from scratch.
+
+**Why one statement.** Under READ COMMITTED each statement takes its own
+snapshot. Two things move bytes between the three sums, each atomically: T2
+moves reserved bytes to delta, and the compactor moves delta to base. A
+second statement could observe a move the first statement missed, which
+would under-count exactly those bytes and so over-admit. One statement sees
+each move entirely or not at all. The adapter must issue one statement, and a
+test asserts it (§17, test 12).
+
+**The lock.**
+- It uses the two-`int4` advisory key space, which is disjoint from ADR-027
+  §6's one-`bigint` guard.
+- Only T1 takes it. Every other path only decreases or moves usage, which can
+  only make admission conservative.
+- T1 creates reservation rows. It waits on no row lock.
+
+### 5. The write fence: presigned, create-only, size-bound uploads
+
+For each admitted copy, the use case obtains one **presigned PUT URL per exact
+key**. The keys are stored on the reservation: `raw.eml`, plus
+`attachments/{id}` for each attachment id, and those ids are pre-generated
+before T1. Each URL is:
+
+| Property | How it is enforced | Probe |
+|---|---|---|
+| Signed with the DB clock `t0` from T1, never the node clock | the adapter signs | — |
+| Valid for `E` = 120 s, so `write_deadline_at = t0 + E` | a PUT that **starts** later gets `403` | E3, E8 |
+| Bound to the exact key | the signature covers the path | — |
+| Bound to the exact size | `content-length` is a signed header: N±1 gets `403`, chunked gets `411` | E9b–d |
+| **Create-only** | a signed `If-None-Match: *` makes a replay get `412`, leaving the object unchanged; omitting the header gets `400` | I1–I6 |
+
+Because the URL is create-only, a leaked or replayed URL can never overwrite
+committed content. URLs are also **never logged**: they are redacted from
+every log line and exception message, since the query string carries the
+signature.
+
+**Timeouts and closing the connection.**
+- `T_put` (30 s) is the **total wall-clock** deadline of an upload. The
+  application measures it; a socket inactivity timeout does not count.
+- When `T_put` expires, the connection is **aborted with RST**
+  (`SO_LINGER 0`), not closed with FIN. A FIN would let the kernel keep
+  delivering a buffered body tail after the deadline; an RST discards it.
+- Implementation gate: the upload client must provably do both. The
+  candidate is Apache HttpClient 5 with `CloseMode.IMMEDIATE`, verified by a
+  TCP-proxy test that observes the RST.
+
+**One attempt, and which outcomes are definitive.** Each upload is attempted
+once. The SDK's transport-level retries are off: 2.54.18's Apache5 client
+disables automatic retries. An outcome is **definitive** only in these cases:
+
+- a received `2xx`;
+- `403` (`AccessDenied` or `SignatureDoesNotMatch`), meaning refused at
+  authorization;
+- `411`;
+- `412`;
+- `400 XMinioAdminBucketQuotaExceeded`.
+
+Every other outcome is **ambiguous**: a timeout, a connection reset, EOF, or
+any `5xx`. Probe E5 shows why: a fully received body can finalize even though
+the client saw a failure.
+
+**Write slots.**
+- A node has `max-concurrent-writes` slots (default 16). An event holds one
+  slot, taken before T1, and uploads its keys sequentially.
+- A slot whose upload ended *ambiguously* is **not returned**. It stays
+  occupied by a persisted ambiguity record (§9) until that key is resolved.
+- Effective write concurrency therefore shrinks under storage trouble, and
+  the H budget holds across breaker cycles and restarts.
+
+**Shape of the upload.**
+- It is single-part only. Presigned PUTs cannot become multipart.
+- Nothing in TestInbox initiates multipart. The AWS SDK dependency is
+  `software.amazon.awssdk:s3` 2.54.18 only, with no transfer manager and no
+  CRT.
+- The `BlobStore` port loses its unfenced `put`, and the only write is
+  `putReserved(url, bytes)`. ArchUnit and an adapter test assert that no
+  other payload write path exists.
+
+**Clock offset.**
+- MinIO accepts a signing time up to its 15 min skew constant into the
+  future: probe E6 accepted +10 min and E7 refused +20 min. The DB↔MinIO
+  offset therefore matters.
+- Measured error: MinIO's `Date` header against DB `now()`, plus 1 s
+  resolution, plus the round trip.
+- It is checked at readiness, before **every** release decision, and on every
+  cleanup pass.
+- While `|offset| > ε_max` (30 s): the breaker opens (§8), and releases are
+  **suspended**. On resumption, `release_not_before` is pushed back by the
+  observed offset.
+- No sender can influence either clock.
+
+**Efficiency cutoff.** The monotonic per-event cutoff only avoids starting
+uploads that the fence would refuse. Correctness does not depend on it.
+
+### 6. Commit (T2)
 
 ```
 BEGIN;
-SELECT … FROM workspace_storage_account
- WHERE workspace_id = :w FOR UPDATE;             -- one row per statement, ascending workspace_id
 SELECT message_id, bytes, state FROM storage_reservation
- WHERE message_id = ANY(:ids) FOR UPDATE;        -- all present, all RESERVED, bytes = footprint,
-                                                 --   else ROLLBACK → 451 (commit fenced)
-INSERT INTO inbox_storage (...) … ON CONFLICT …  -- ensure a row for EVERY involved inbox (admitted and
-SELECT … FROM inbox_storage … FOR UPDATE;        --   refused), then lock them in ascending inbox_id;
-                                                 --   refusal records of THIS event (§5a); WHERE EXISTS (inbox)
-INSERT INTO message … ON CONFLICT … DO NOTHING;  -- triggers: committed += raw
-INSERT INTO attachment …;                        -- triggers: committed += size
-SELECT pg_notify(…);                             -- messages, and refused inboxes (unchanged channel)
+ WHERE message_id = ANY(:ids) ORDER BY message_id FOR UPDATE;   -- all present, RESERVED, bytes = f,
+                                                                --   else ROLLBACK → 451 (fenced)
+SELECT 1 FROM inbox WHERE id = ANY(:involvedInboxes)
+ ORDER BY id FOR KEY SHARE;                                     -- admitted + refused inboxes, ascending
+INSERT INTO inbox_storage … ON CONFLICT DO UPDATE …             -- refusal records of THIS event (§6a),
+ (ascending inbox_id; WHERE EXISTS (inbox))
+INSERT INTO message … ON CONFLICT … DO NOTHING;                 -- statement triggers append deltas
+INSERT INTO attachment …;                                       -- (skipped conflict rows are not in the
+                                                                --  transition table — verified)
+SELECT pg_notify(…);                                            -- messages and refused inboxes (ADR-020)
 DELETE FROM storage_reservation WHERE message_id = ANY(:appended);
 UPDATE storage_reservation SET state = 'RELEASING', release_not_before = now()
- WHERE message_id = ANY(:duplicates);            -- ADR-026 reprocessed event
+ WHERE message_id = ANY(:duplicates);                           -- ADR-026 reprocessed event
 COMMIT;
--- after commit: the duplicates' blobs are deleted (as today); §6 then releases them
 ```
 
-- **T2 is atomic with respect to any snapshot.** The reservation delete and the
-  `committed` increment happen in one transaction, so any snapshot sees those
-  bytes in exactly one of the two places.
-- **Duplicates are released immediately.** A duplicate's puts all succeeded
-  (they are definitive), so it may be released as soon as its prefix is proven
-  empty.
-- **The lock order is total, and every path takes its locks in this order:**
-  - `idempotency claim (ADR-033, CreateInbox only)`
-  - `≺ guardAdmission advisory (ADR-027 §6, CreateInbox only)`
-  - `≺ global admission (T1 only)`
-  - `≺ workspace_storage_account rows (ascending)`
-  - `≺ storage_reservation rows`
-  - `≺ inbox_storage rows (ascending inbox_id, all taken up front: the O1
-    trigger on message insert then finds them already held)`
-  - `≺ inbox ≺ message ≺ attachment`
-- **What each path takes:**
-  - **T1** takes the global lock and otherwise only *creates* rows. It reads
-    existing account rows through its snapshot and waits on no row lock (with
-    the one `ON CONFLICT` exception of §3).
-  - **T2** takes the account rows first.
-  - **Cleanup (§6)** touches only reservation rows.
-  - **The retention hard delete** changes shape. Today it is one autocommit
-    `DELETE FROM inbox` (`JdbcInboxRepository.kt:136`), whose cascade runs one
-    row trigger per message. Holding the account row for a whole large cascade
-    would stall every T2 of that workspace (≈ 88 µs × rows: about 90 s for a
-    million rows). It therefore becomes:
-    1. Delete the inbox prefix (blob-first, unchanged).
-    2. Delete messages in bounded transactions. Each one takes the account row
-       `FOR UPDATE`, then runs `DELETE FROM message WHERE inbox_id = :i` over
-       at most 1 000 ids.
-    3. Delete the now-empty inbox row, again after taking the account row.
+**Lock order.** Every path acquires locks in this order:
 
-    The account row is never held longer than one chunk, and blob-first
-    ordering still makes retention over-count only.
-  - **Without the account lock, retention would deadlock with T2.** A T2
-    holding the account row and waiting for `FOR KEY SHARE` on a second inbox
-    of the same workspace would deadlock against a retention transaction
-    holding that inbox and waiting for the account row.
-- **Committing after the deadline is fine.** The deadline makes a reservation
-  *eligible* for cleanup, but the reservation's state is what fences it:
-  - If cleanup claimed the row first, T2 sees `RELEASING` and fails closed.
-  - If T2 locked it first, cleanup's `UPDATE … WHERE state = 'RESERVED'`
-    re-evaluates against the deleted row after the lock wait and does nothing.
+1. the ADR-033 claim;
+2. ADR-027 `guardAdmission`;
+3. the admission lock (T1 only);
+4. `storage_reservation` rows, ascending;
+5. `inbox` `FOR KEY SHARE`, ascending;
+6. `inbox_storage` rows, ascending;
+7. `message`;
+8. `attachment`.
 
-#### 5a. Refusal records commit with the event's outcome
+**How the other paths fit that order.**
 
-Recording a refusal before the event's fate is known would fire a waiter's
-`409` for a copy that a `451` retry may later admit. It would also inflate the
-count on every retry. So:
+- **`storage_delta` never takes part in a lock cycle.** It is insert-only.
+- **Retention is unchanged.** It is one autocommit `DELETE FROM inbox` per
+  inbox: exclusive on the inbox, then cascades in constraint order (`message`,
+  `attachment`, `inbox_storage`), then delta inserts. It locks no account
+  row.
+- **T2 cannot deadlock with retention.** T2 takes `FOR KEY SHARE` on its
+  inboxes before any `inbox_storage` row. If it waits on a retention delete,
+  it holds only reservation rows, which retention never touches.
+- **Retention stays fast.** A cascade over 50 000 messages cost 0.24–0.25 s
+  of accounting, against 19.8 s for rev 2's row-level account updates.
+- **Old binaries gain no lock-order cycle.** Their only new effect is delta
+  inserts. This was verified: retention against T2, the refusal-only upsert,
+  the compactor, and old ingestion formed no cycle.
+- **A commit after the deadline is fine.** The reservation state is the
+  fence. Cleanup's guarded `UPDATE … WHERE state = 'RESERVED'` and T2's
+  `FOR UPDATE` serialize on the row.
 
-- **Where the refusal is recorded.**
-  - If the event has admitted copies, its refusal records are written **inside
-    T2**. They commit or roll back together with the event.
-  - If every copy was refused, they are written in one short transaction after
-    T1.
-- **How the record is written.** For each refused inbox, in ascending
-  `inbox_id`:
-  - one upsert into `inbox_storage` (`refusal_count + 1`,
-    `last_refusal_at = now()`, `last_refusal_reason`);
-  - one `pg_notify` on the existing channel, with the inbox id as payload.
-    ADR-020 atomicity holds: a woken waiter always sees the refusal it was
-    woken for.
-- **An inbox that has vanished** because retention removed it after
-  resolution is skipped (`INSERT … SELECT … WHERE EXISTS`), not failed.
-- **Failure is treated as database failure.** The records ride in T2, or in a
-  transaction with nothing else to do, so their failure is a failing database.
-  The event answers `451`, and its reservations go stale and are cleaned (§6,
-  path B).
+#### 6a. Refusal records
 
-### 6. Reservation states, crash and orphan accounting
+For each refused copy's inbox, in ascending `inbox_id`, the event writes:
 
-The state machine has two states and one deletion:
+- one upsert into `inbox_storage`: `refusal_count + 1`, `last_refusal_at`,
+  `last_refusal_reason`;
+- one `pg_notify`.
+
+Where they are written:
+
+- **inside T2**, when the event admitted any copy, so they commit or roll back
+  with it;
+- **in one short transaction after T1**, when nothing was admitted.
+
+A vanished inbox is skipped, not an error. A woken waiter always sees the
+refusal it was woken for (ADR-020).
+
+### 7. Reservation lifecycle, reclaim timing and ownership
 
 ```
-            T1 admits                         T2 commits (I4)
-  (none) ───────────────▶ RESERVED ─────────────────────────────▶ (row deleted; bytes now committed)   [A]
-                             │
-                             │ write_deadline_at < now()  (cleanup claim; release_not_before = deadline + settle)
-                             │ | T2 marks an ADR-026 duplicate      (release_not_before = now())
-                             │ | writer's inline abort, all puts definitive (release_not_before = now())
-                             ▼
-                         RELEASING ── delete prefix · LIST prefix = ∅ · now() ≥ release_not_before ──▶ (row deleted) [B/C]
-                             │                     │
-                             │                     └─ LIST ≠ ∅ → delete again, release_not_before = now() + settle,
-                             │                                   testinbox_storage_late_object_total++
-                             └─ a message row with this id exists (impossible by I4) → release WITHOUT
-                                deleting anything, alarm                                           [D]
+ (none) ──T1──▶ RESERVED ──T2──▶ (row deleted; bytes now in the ledger)                          [A]
+                    │
+                    │ write_deadline_at < now()              → release_not_before = write_deadline_at + S
+                    │ | ADR-026 duplicate in T2              → release_not_before = now()
+                    │ | event abort, every upload definitive → release_not_before = now()
+                    ▼
+                RELEASING ── offset ≤ ε_max · for EVERY reserved key: delete, then
+                    │        ListObjectsV2(key) = ∅ ∧ ListMultipartUploads(prefix = exact key) = ∅
+                    │        · now() ≥ release_not_before ──▶ released                              [B/C]
+                    │                  └ anything found → delete it, release_not_before = now() + S, late_object++
+                    └ a committed message row has this id (impossible by I4) → release, delete nothing, alarm      [D]
 ```
 
-- **`RESERVED → RELEASING` after the deadline.** This is a guarded
-  `UPDATE … WHERE state = 'RESERVED' AND write_deadline_at < now()`. Batches
-  are claimed with `FOR UPDATE SKIP LOCKED`, so several API nodes can run it.
-  `settle` defaults to 10 min and must exceed `T_put`.
-- **The first pass deletes objects immediately**, so physical usage falls at
-  once. The *charge* stays until a later pass, at or after
-  `release_not_before`, lists the prefix and finds it empty.
-- **The settle window absorbs late writes.** It covers two cases: a request
-  the storage server completes after the client gave up, and a process frozen
-  between its cutoff check and its put. Either write lands before the
-  verifying listing, is found, is deleted, and restarts the window.
-- **Paths B and C are one procedure.** Path B is "no object was ever written",
-  for example a crash straight after T1, so the first listing is empty. Path C
-  is "orphans exist", so the first listing is not. There is no separate code
-  path to get wrong.
-- **Cleanup can never delete committed content.** A reservation row exists
-  only while no message row with its id has committed: I4 deletes the row in
-  the committing transaction, and an ADR-026 duplicate's id never gets a row.
-  Cleanup still checks `NOT EXISTS (SELECT 1 FROM message WHERE id = :id)`
-  before deleting, as defence in depth. The impossible case is released
-  *without* deleting anything, which over-counts (the safe direction), and
-  raises an alarm.
-- **A storage outage during cleanup keeps the capacity charged.** The row stays
-  `RELEASING` and is retried on every pass. Under-availability is the accepted
-  failure; under-accounting is not.
-- **`OrphanBlobSweep` stays as the unconditional backstop** for objects that
-  have no message row and no reservation: pre-ADR-035 orphans, the residue of
-  §9, and anything a defect leaves behind. Its bucket listing, which already
-  runs every 30 min, is extended to return sizes, and that feeds the physical
-  gauge (§7).
+**When can a reservation's object last come into existence?** Measured on
+MinIO's clock:
 
-**Worked example (the case the owner named).**
+1. No upload can **start** after `t0 + E + ε_max`. That is the fence (E3, E8).
+2. An upload that started before then is aborted with RST at `T_put`. An
+   incomplete body leaves nothing (E2), and RST means no buffered tail
+   arrives afterwards. So the last *complete* body is received by
+   `write_deadline_at + ε_max + T_put`.
+3. Under A_F, finalization follows within `C_max`.
 
-| Time | What happens | Workspace and global charge |
+```
+S = ε_max + T_put + C_max = 30 s + 30 s + 9 min = 10 min
+release_not_before = write_deadline_at + S        (when the last upload's outcome was ambiguous or unknown)
+```
+
+**How each number is derived.**
+
+- **`E` = 120 s** is the time to write the largest admissible event
+  (50 recipients, capped by both edge and gateway, × about 26 MiB, so about
+  1.3 GiB) at the lowest storage throughput still called healthy
+  (20 MiB/s, about 65 s). That leaves roughly 2× margin.
+  - Since the slot is taken *before* T1, only the event's own uploads spend
+    `E`.
+  - An event that still misses its deadline answers `451`: the storage is too
+    slow for the event's size. That is not a tenant decision.
+- **`ε_max`** is enforced by the breaker and the release suspension.
+  **`T_put`** is enforced by the abortive close.
+- **`C_max` is the only assumed term.** It is the content of A_F.
+- **What a writer does after `RELEASING` does not matter.** A frozen or
+  partitioned writer cannot *start* an upload after the fence, and only
+  uploads that started before it count.
+- **Absence is proven per exact key.** Probe M2 shows that MinIO's
+  `ListMultipartUploads` with a *parent* prefix returns nothing even while an
+  upload is open, so a prefix-based proof would pass vacuously. The proof
+  therefore lists every reserved key individually (M3).
+
+**Ownership (I7).**
+
+- The reservation's primary key is `message_id`, a random UUIDv4 generated
+  before T1. Its keys sit under `{workspace}/{inbox}/{message_id}/` and are
+  stored on the row.
+  - Two reservations cannot share a key: the primary key is unique, and
+    UUIDv4 collision (2⁻¹²²) is not a design case.
+  - A `message_id` is never reissued, so a key is never reassigned.
+  - A late upload can only target its own signed key, and only create it
+    (`If-None-Match: *`).
+- A reservation row exists only while no message with its id has committed.
+  I4 deletes the row in the commit, and a duplicate's id never gets a message
+  row.
+- Cleanup deletes only the exact keys of its own reservation. It first checks
+  `NOT EXISTS (message.id = :id)`; case [D] deletes nothing.
+
+**`OrphanBlobSweep`.** It deletes a key only when a **single statement**
+confirms three things: no message row, no reservation for its message id,
+and no unresolved ambiguity record for the key.
+- The single statement matters. With a check for the message followed by a
+  check for the reservation, a T2 could commit between the two and the sweep
+  would delete committed blobs.
+- The sweep also runs `ListMultipartUploads` across the whole bucket. That
+  works bucket-wide (probe M1), and any incomplete upload it finds is a
+  defect: it is aborted and alarmed.
+
+**Concurrency and outages.** Cleanup claims due rows with
+`FOR UPDATE SKIP LOCKED`. A storage outage during cleanup leaves rows
+`RELEASING` and still charged.
+
+### 8. Storage circuit breaker (infrastructure, never capacity)
+
+The breaker is per node and held in memory. It opens on any of these:
+
+- an ambiguous upload outcome (§5);
+- the quota response `400 XMinioAdminBucketQuotaExceeded` (probe Q1, a 4xx
+  that is still physical);
+- a clock offset above `ε_max`.
+
+**While it is open**, the node answers `451` *before* the slot and before T1.
+No reservation is made and no lock is taken.
+
+**Half-open trial.** Backoff starts at 15 s and doubles up to 2 min.
+- For `unavailable`, `timeout` or `5xx`, the trial is a zero-byte probe to
+  `_probe/{node}`.
+- For `quota`, the trial is one **real** event, because MinIO's lagging quota
+  can accept a zero-byte probe while real uploads still fail (probes Q2–Q7).
+  A quota outcome is definitive, so the trial risks nothing in H.
+
+**Why the breaker exists** (§15):
+- It prevents reservations piling up while the edge retries. Such a pile
+  would later turn queued mail into refusals.
+- It bounds the ambiguous uploads started per stall.
+- It keeps T1's cost, which is linear in live reservations, at in-flight
+  scale.
+
+**Capacity and infrastructure stay distinct:**
+
+| Outcome | SMTP | Tenant sees |
 |---|---|---|
-| *t* = 0 | 10 MiB is reserved, both objects are written, and the process crashes before T2 | includes the 10 MiB |
-| *t* = 120 s | the reservation becomes `RELEASING` and the objects are deleted | still includes the 10 MiB |
-| *t* ≈ 12 min | the listing is empty and the 10 MiB is released | no longer includes it |
+| `INBOX_LIMIT`, `WORKSPACE_LIMIT`, `SERVICE_CAPACITY` (application admission) | `250` and discard | the reason |
+| Open breaker, storage failure, clock offset, latch (infrastructure) | `451` for the whole `DATA` | nothing (the edge retries) |
 
-At no instant does the database hold less than the bucket. The
-orphan-retention exposure described in the prompt cannot arise: stale
-reservations stay charged, so a workspace in a crash loop is refused at its
-ceiling, not after it.
+An open breaker is never reported as `SERVICE_CAPACITY`.
 
-#### 6a. Physical-failure circuit breaker
+### 9. Physical bound, the finalize budget H, and why it is conditional
 
-Suppose storage is down while the edge keeps retrying (every few minutes, for
-up to 4 h). Every retry would reserve again under fresh message ids: the SMTP
-adapter has no `providerMessageId`, so nothing is deduplicated. Every ambiguous
-failure would leave a reservation charged for 120 s plus the settle window.
-Stale charge would pile up until it filled the ceilings. After recovery, queued
-mail would then be *refused* (`250` and discard, a permanent loss) instead of
-admitted. A `451` retry would have been the right outcome.
+Let *P_owned(t)* be the TestInbox-owned payload bytes in the bucket.
 
-The fix is a per-node breaker:
+**An unconditional bound is impossible.** Once a storage server has
+authorized an upload and received its complete body, no S3 API can fence that
+request. No API reports whether the server has finished requests the client
+abandoned. Any finite release rule therefore rests on some finalize latency.
+ADR-035 names it (A_F, `C_max` = 9 min) instead of hiding it, and then
+contains it three ways.
 
-- **Opening.** Any physical failure (`quota`, `unavailable`, `timeout`) opens
-  it.
-- **While open**, ingestion answers `451` **before T1**. It creates no
-  reservation and takes no lock.
-- **Half-open.** After a backoff (default 15 s, doubling to 2 min), exactly
-  one event is let through. Its outcome closes or re-opens the breaker.
-- **Resulting bound.** Live reservations are at most in-flight copies plus one
-  outage's worth of ambiguous copies per node. That in turn bounds the
-  `Σreserved` scan inside T1.
-- The breaker is per node and in memory. It is load shedding, not an
-  invariant, so it needs no shared state.
+**1. Ambiguity occupies write slots, persistently.**
+- Every ambiguous upload writes a row to
+  `storage_ambiguity(id, node_id, object_key, bytes, ambiguous_at,
+  verify_at, resolved_at)` and keeps its slot occupied.
+- **After a crash:** each node heartbeats in `storage_node(node_id,
+  generation, capability, heartbeat_at, clean_shutdown)`. When a generation
+  ends uncleanly, or its heartbeat goes stale, the uploads it might have had
+  in flight are recorded as ambiguity rows. There are at most one per slot,
+  keyless, and covering the keys of that generation's started but
+  unconsumed reservations. Each reservation records `first_upload_at` once,
+  on its first upload.
+- **Resolution** happens at `verify_at = ambiguous_at + T_verify`, with
+  `T_verify` = 30 min and always ≥ S. A per-key proof must show either an
+  absent object or a committed one. A late object found then is deleted,
+  counted in `late_object`, and **latched** (point 3).
 
-### 7. Committed accounting and reconciliation
+Per node process, the uploads that are in flight plus the unresolved
+ambiguities never exceed `max-concurrent-writes`, across breaker cycles and
+restarts. That gives:
 
-- **Triggers are the only routine writers of `committed_bytes`.**
-  - They are row-level triggers on `message` (`raw_size_bytes`) and
-    `attachment` (`size_bytes`).
-  - They fire on `INSERT`, on `DELETE` (including cascades), and on an
-    `UPDATE` of those columns or of `workspace_id` (applied as a delta).
-  - They **upsert** (`INSERT … ON CONFLICT (workspace_id) DO UPDATE`), so a
-    missing account row heals itself instead of losing an increment. A
-    workspace created by an older binary is one case.
-  - The only other writer is the reconciliation *repair* below.
-  - There is **no `TRUNCATE` trigger**: `scripts/check-migration-safety.sh`
-    refuses any statement containing `TRUNCATE`, and production never
-    truncates. Test fixtures call `storage_account_recompute()` after
-    truncating instead.
-- **`reserved` is not a column.** It is `Σ storage_reservation.bytes` per
-  workspace. So there is no second counter to drift, and releasing a
-  reservation is simply deleting a row.
-- **Reconciliation of `committed` (repair).** Periodically (default every 6 h),
-  one `GROUP BY` pass reads every account's `committed_bytes` beside the
-  ADR-027 §5 derivation, **in one statement**.
-  - Triggers update both sides in the same transaction, so any difference is
-    real drift, and detecting it needs no lock.
-  - Only a differing account is locked `FOR UPDATE`, recomputed and written.
-  - A repair emits `testinbox_storage_accounting_drift_total{direction}` and an
-    operator log line. The log line carries the workspace id, as existing ops
-    logs do (`api/ops/Ops.kt`); the metric never does.
-- **Reconciliation of physical bytes (proof, not repair).** The orphan sweep's
-  listing is summed as `testinbox_storage_physical_listed_bytes`. It is
-  exported next to `testinbox_storage_accounted_bytes{kind}`. An alert fires
-  if `physical > committed + reserved` persists beyond one sweep, which by I1
-  should never happen.
-- **ADR-024 carve-out.** ADR-024 requires every invariant-bearing write to go
-  through exactly one application use case. Database triggers are such writes,
-  deliberately outside any use case, because the cascade objection applies
-  precisely to application code.
-  - The carve-out is narrow: *derived accounting columns may be maintained by
-    database triggers, provided an application use case (here
-    `ReconcileStorageAccounting`) proves them against the source rows.*
-  - ArchUnit cannot see triggers, so persistence tests 1–6 (§14) are their
-    enforcement.
-- **Placement (ADR-024).** The work is split as follows:
-  - Ports in `application`: `StorageAdmission` (T1, the T2 reservation fence,
-    and refusal records) and `StorageReservations` (the cleanup claim, listing
-    and release).
-  - Use cases: `ReceiveInboundDelivery` (extended), `ReleaseStaleReservations`
-    and `ReconcileStorageAccounting`.
-  - The permits and the `Ticker` live in `application`. `T_put` is a property
-    of the `BlobStore` port.
-  - The JDBC and S3 adapters implement the ports, and `ingestion` still only
-    calls the use case.
+```
+H = declaredMaxIngestionProcesses × max-concurrent-writes × maxObjectBytes
+  = 1 × 16 × 15 MiB = 240 MiB  (a rolling deploy that briefly runs 2 processes must declare 2 → 480 MiB)
+admission cap = G − H
+```
 
-### 8. Global ceiling: configuration and measured contention
+Here is what H means. Admission already reserves every byte in flight, so H
+is not in-flight bytes. H covers only bytes that can surface *after* their
+reservation's release. Under A_F that set is empty. If A_F is violated by up
+to `T_verify`, the set is bounded by the slots still occupied by unresolved
+ambiguity, so owned bytes stay ≤ *G*. That is the precise sense of I1.
 
-- **`testinbox.storage.global-limit-bytes` is operational configuration.** It
-  is not an API constant and not a contract value.
-  - The initial production value is 40 GiB, under a 50 GiB bucket quota.
-  - The 10 GiB margin must exceed the §9 residue bound.
-- **`DeploymentSafety` (the ADR-034 fail-closed pattern) guards it.** It
-  refuses to start a `production` ingestion node unless all three hold:
-  - `global-limit-bytes` is set explicitly;
-  - `testinbox.storage.declared-bucket-quota-bytes` is declared (Ops-supplied,
-    as the edge ceiling is);
-  - `global-limit ≤ declared-quota − max(1 GiB, 10 %)`.
+**2. Detection.** A late object is detected at the ambiguity verification,
+within `T_verify`. It is also detected by `OrphanBlobSweep`, which matches
+deleted orphans against ambiguity rows retained for 24 h, and by
+`physical_listed > covered` beyond one sweep.
 
-  Staging uses the same rule with its own values. Local and test profiles
-  default to effectively unlimited, as in ADR-027 §9.
-- **Only ingestion enforces the global ceiling.** `CreateInbox` does not.
-  Creating an inbox consumes no storage, and refusing it on a service-wide
-  condition would disclose that condition on a surface that needs no such
-  answer.
-- **Node limits must be equal.** If ingestion nodes were configured with
-  different global limits, the largest would be the effective bound. Ops must
-  keep them equal. This is recorded but not enforced.
-- **T1 commits synchronously.** Setting `synchronous_commit = off` for T1
-  would shorten the serial section, and it is forbidden. The writer starts
-  writing on the commit acknowledgement. A database crash that lost an
-  acknowledged but unflushed reservation would leave objects that no row
-  accounts for, a direct violation of I1.
+**3. Containment, which fails closed.** The first detected late object sets a
+database **admission latch**, `storage_admission_latch`.
+- While the latch is set, every node answers `451` before T1. The edge queues
+  the mail for up to 4 h, and nothing is lost unless the latch outlives the
+  queue (§12).
+- An operator clears the latch after investigating.
+- **What remains unbounded:** objects that finalize *later than `T_verify`*
+  and *before the first detection*. They require MinIO to breach A_F by more
+  than 30 min, and they are removed by `OrphanBlobSweep` within 1 h 30 min.
+  This is stated rather than claimed away.
 
-**Contention, measured on 2026-09-28.** Setup:
+**The bound.**
 
-- `postgres:16-alpine` 16.15 on Docker Desktop, on a 16-vCPU arm64 laptop;
-- 26 workspaces and 200k standing messages;
-- `pgbench` with 20 s per point.
+```
+P_owned(t) ≤ max(G, B)
+```
 
-The absolute numbers are not the production host's. The comparisons between
-modes are the evidence. The scripts, the raw logs and a README are committed
-beside this ADR in `docs/adr/0035-benchmark/`.
+- **B** is the covered total at activation (§14). Pre-existing excess drains
+  only through expiry, because there is no eviction and nothing is admitted
+  above the cap.
+- After that, **P_owned ≤ G** under A_F, or under A_F violated by up to
+  `T_verify`.
+
+**Other exclusions, each handled elsewhere:**
+
+| Exclusion | Handled by |
+|---|---|
+| Pre-activation objects | the barrier (§14) |
+| Rollback to a pre-ADR-035 ingestion binary | the rollback floor (§14) |
+| Restore from backup with the bucket kept | Ops procedure: empty the bucket, or keep the latch set, until one full orphan sweep completes |
+| Accounting defects | reconciliation (§10) |
+
+**Multipart.** TestInbox only ever issues single-part PUTs of at most
+15 MiB. An aborted single PUT leaves no incomplete upload (E2). The per-key
+proof and the bucket-wide sweep guard (§7) catch anything else.
+
+**Ops preconditions** (§18):
+- bucket **versioning off**;
+- **no object-lock or retention rule**;
+- **no retrying proxy or load balancer** between ingestion and MinIO, since a
+  proxy retry would create a second request per slot;
+- quota `Q ≥ G + max(1 GiB, 10 %, H + the bytes MinIO can accept during one
+  usage-refresh lag)`, where Ops measures that last term.
+
+The bucket quota is a fuse, never the bound. It lags: probes Q2–Q7 stored
+2.4 MiB in a 1 MiB-quota bucket.
+
+### 10. Accounting ledger, compaction, reconciliation
+
+**The delta ledger.**
+- `storage_delta(id bigserial, workspace_id, inbox_id, bytes)` is
+  **append-only**.
+- It is written only by **statement-level** triggers with transition tables:
+  `AFTER INSERT`, `AFTER DELETE` and `AFTER UPDATE`, on `message` and on
+  `attachment`.
+  - Each trigger aggregates with `GROUP BY`. A bare `sum()` over an empty
+    transition table (for example an `ON CONFLICT DO NOTHING` that skipped
+    every row) would insert `NULL` and abort T2.
+  - An attachment insert finds its inbox through its message.
+  - A cascaded attachment delete carries `inbox_id = NULL`. Only torn-down
+    inboxes lose messages (verified in the code), so the inbox figure can
+    only over-count, and only until the inbox row disappears.
+
+**Committed usage** = `base_bytes` + `Σ storage_delta`, where the base lives
+in `workspace_storage_account` or `inbox_storage`.
+
+**The compactor.** It is the single writer of the base figures. It runs every
+few seconds, under its own advisory lock. In one transaction it:
+
+- deletes the visible delta rows (`DELETE … RETURNING`);
+- **upserts** the bases: `INSERT … ON CONFLICT DO UPDATE` for workspaces, and
+  `INSERT … SELECT … WHERE EXISTS (inbox) ON CONFLICT DO UPDATE` for inboxes.
+  - A plain `UPDATE` would silently drop the bytes of workspaces and inboxes
+    created after the backfill.
+  - A deleted inbox's own share is dropped, but its workspace share is always
+    kept.
+  - If a concurrent inbox delete breaks the foreign key, the whole compaction
+    rolls back, restoring the deltas, and retries.
+
+Deleting by visibility means uncommitted deltas and bigserial gaps simply
+wait for the next pass. Each delta is folded exactly once.
+
+**Exactly once (I6).** Every deleted row set produces exactly one negative
+delta, inside the deleting transaction. It rolls back with that transaction,
+and no application code is involved.
+
+**No `TRUNCATE` trigger.** The migration gate refuses the word. Test fixtures
+call `storage_account_recompute()` instead.
+
+**Reconciliation (I8).**
+- It runs every 6 h as one `GROUP BY` statement comparing `base + Σdelta` with
+  the ADR-027 §5 derivation.
+- A repair is also a single statement, `base := derived − Σdelta`, read from
+  one snapshot, taken under the compactor's lock.
+- Metric: `accounting_drift_total{direction}`. The operator log names the
+  workspace; the metric never does.
+- The physical side compares `physical_listed_bytes` against the covered
+  total.
+
+**ADR-024 carve-out.** Derived accounting may be maintained by database
+triggers, provided a use case, `ReconcileStorageAccounting`, proves it
+against the source rows.
+
+**Placement.**
+- **Ports:**
+  - `StorageAdmission`: T1, the T2 fence, and refusals;
+  - `StorageReservations`: claim, list per key, release;
+  - `StorageLedger`: compaction;
+  - `StorageAmbiguity`: slots, ambiguity, the latch, node heartbeat.
+- **Use cases:** `ReceiveInboundDelivery` (extended),
+  `ReleaseStaleReservations`, `CompactStorageLedger`,
+  `ReconcileStorageAccounting`, and `VerifyAmbiguousUploads`.
+- **The presigner, the upload client and `T_put`** sit behind `BlobStore`.
+
+### 11. Global admission lock: measured contention and the enablement gate
+
+The design is provisionally accepted. The laptop evidence below is preserved
+verbatim; it was **not** re-run for revisions 3 and 4. It was run on
+`postgres:16-alpine` 16.15, Docker Desktop, a 16-vCPU arm64 laptop, with 26
+workspaces and 200 000 standing messages. The absolute numbers are not the
+production host's; the comparisons between modes are the evidence.
 
 *Pass 1: closed loop at saturation, one event = T1 + T2 in one script, plus
 retention deleting 200 rows once per 21 events (mean lock and row waits from
@@ -612,758 +738,688 @@ the lock:*
 
 (Latencies include open-loop schedule lag, i.e. what a caller waits.)
 
-**Reading.**
+**What the laptop evidence shows:**
+- At **2× the expected load** with 7 000 live reservations, T1 p99 is
+  10.1 ms.
+- At **4× with that backlog** the design saturates. Without the backlog, T1
+  p99 is 7.2 ms.
+- **Admission cost is linear** in live reservations plus unfolded delta rows.
+  The breaker, cleanup and compaction every few seconds keep both at
+  in-flight scale, and more than 1 000 of either raises an alert.
+- The chosen mode beats the hot-row design at equal offered load, and it
+  leaves retention unaffected.
+- The ledger sum (`Σ storage_delta`) and the pre-T1 slot are newer than the
+  laptop run. The staging gate measures them.
 
-- **One serialization point costs throughput.** At saturation, mode **a**
-  plateaus near 2 000–2 400 events/s whatever the client count, which implies
-  a serial section of about 0.4–0.5 ms. Mode **c**, with no global ceiling,
-  reaches about 12 000/s.
-- **Mode b degrades on every axis.** Throughput *falls* as clients are added,
-  and retention serializes behind admissions, because commits and cascades
-  queue on the same row.
-- **The comparison is fair at an equal offered rate.** Pass 1 compared the
-  modes at different throughputs, which confounds the retention comparison.
-  Pass 2 fixes the offered rate. At 2× the expected load, even with 7 000 live
-  reservations, mode **a** meets every part of the criterion below: T1 p99 is
-  10.1 ms, and retention p99 is 11.5 ms against the reference's 13.2 ms.
-- **Admission cost grows with the number of live reservations, and that is
-  the design's real limit.** At 4× load, mode **a** saturates with the
-  backlog (T1 p99 868 ms, worse than mode **b**), but not without it: the
-  control run gives T1 p99 7.2 ms at the same rate. `Σreserved` is scanned
-  under the global lock, so the serial section is linear in live reservation
-  rows. What keeps that count at in-flight scale is §6's cleanup and §6a's
-  breaker, so they are load-bearing for throughput as well as for
-  correctness. A `storage_reservations` gauge above 1 000 is an alert (§13).
-  If a real backlog must be admitted against at high rate, the remedy is a
-  per-workspace reserved sum maintained by triggers on `storage_reservation`.
-  That was not adopted because T1 would then wait on row locks while holding
-  the global lock, and it is listed with the escrow fallback below.
-- **The expected load sits well inside the plateau.**
-  - Concurrency is capped by the ingestion pool (`TESTINBOX_DB_POOL_SIZE`, 8
-    per node deployed).
-  - The ADR-027 sustained `INGEST` rate of 10/s for each of 26 full
-    workspaces is 260 events/s.
-- **Caveat: this machine understates commit cost.** `COMMIT` measured about
-  0.12 ms, which suggests the Docker Desktop VM is not paying a real `fsync`.
-  The lock is held through commit, so on a production disk the serial section
-  scales with real commit latency. At 1 ms per commit, the prediction is
-  roughly 700 events/s.
-- **Pass criterion, to be re-run on the staging host class before the global
-  ceiling is enabled in production:**
-  - at least **520 events/s offered** (2 × 260) is sustained open-loop;
-  - T1 p99 is ≤ 50 ms;
-  - retention p99 is within 2× the reference at the same offered rate;
-  - there are zero deadlocks;
-  - all of this holds at 1× and 2× the deployed pool, with a backlog of
-    1 000 live reservations (the alert threshold) present;
-  - the result is recorded in `docs/dev/production-ops-acceptance.md`, row G.
+**Hard enablement gate, before the global ceiling is turned on.** Re-run on
+the **staging host class** with the revision 4 schema:
 
-  The target is 2× and not more on purpose. The 1 ms prediction is about 2.7×,
-  and a criterion the design is expected to miss would only get waived.
-- **Fallback, if the criterion fails on real hardware:** per-node *escrow*
-  slices of the global allowance, held in PostgreSQL. Each node pre-reserves a
-  slice under the global lock and admits against it under a per-node lock.
-  That takes the global lock off the per-event path, at the cost of at most
-  one slice of stranded headroom per node. It is not built unless the
-  measurement demands it.
+| Parameter | Values |
+|---|---|
+| Concurrency | 1 / 10 / 25 / 50 / 100 |
+| Offered load (open loop) | the expected rate (260 events/s) and 2× that rate |
+| Backlog | 1 000 live reservations, plus a compaction interval's worth of deltas |
+| Reported | p50, p95 and p99 for T1, T2 and retention; lock wait; throughput; the rate of timeouts and errors |
+| Event mix | multi-recipient events |
 
-### 9. Maximum provable physical overshoot
+**Pass criterion:**
+- 2× the expected load is sustained;
+- T1 p99 ≤ 50 ms;
+- retention p99 ≤ 2× the no-ceiling reference at the same offered load;
+- zero deadlocks;
+- `lock_timeout` < 0.1 %;
+- no deadline miss caused by slot queueing.
 
-Let *G* be the global limit, *B* the committed total at the moment V6 is
-applied, and *P(t)* the bytes of application-written objects in the bucket at
-time *t*. Under I1–I5:
+The result is recorded in `production-ops-acceptance.md` row G. If it fails,
+the design **returns to ADR review**. Per-node escrow is the named fallback,
+and it is not pre-built. Nothing outside PostgreSQL is introduced.
 
-**P(t) ≤ max(G, B) + R**
+### 12. SMTP and edge behaviour
 
-The `max(G, B)` term exists because there is no grandfathering and no
-eviction: content already above *G* stays readable until it expires, and
-nothing new is admitted while the total is above *G*. Once that content has
-expired, the bound is **G + R**.
-
-The residue *R* has exactly these sources:
-
-| # | Residue | Bound | Why it is outside I1 |
+| Situation | Gateway reply to the edge | Stored | Tenant sees |
 |---|---|---|---|
-| R1 | A put that lands after its reservation was released. This needs either a storage server that completes an abandoned request more than *settle* after the client gave up, or a process frozen for longer than the rest of the deadline plus *settle* between its cutoff check and sending the request. | ≤ `ingestionNodes × max-concurrent-writes × 15 MiB`. Puts are single-attempt, so each permit covers one request; a resumed writer re-checks the cutoff before its *next* put. At the defaults: 1 × 16 × 15 MiB = **240 MiB**. | The application cannot fence a request it has already handed to the network. The writer's own abort path deletes its prefix. If that is lost too, `OrphanBlobSweep` removes the object within 1 h 30 min. |
-| R2 | A pre-ADR-035 ingestion binary running against V6 (a rollback) | Not bounded by this ADR. It equals the ADR-027 bound for as long as that binary runs. | It does not reserve. Its commits are still counted, so enforcement resumes exactly when the binary is rolled forward. |
-| R3 | A database restored from backup (ADR-034 §5) while the bucket is kept | Up to the bucket's pre-restore contents. After a restore, every object is an orphan: no `message` row survives a restore, by design. | Accounting restarts at zero. **Restore procedure:** the bucket is emptied, or ingestion's global limit is held at 0, until one full `OrphanBlobSweep` pass has completed. This becomes a production-ops acceptance item. |
-| R4 | Accounting defects | Detected by §7 within one reconciliation interval | A defect is not a design bound. It is alarmed. |
+| Invalid recipient or foreign domain | `553` at `RCPT` | nothing | — |
+| Raw message > 15 MiB | `552` (a property of the sender's own message) | nothing | — |
+| More than 50 recipients | `452` at `RCPT` for the excess, from the gateway's explicit cap; tenant-independent, and the edge already caps at 50 | — | — |
+| Unknown, expired or deleted recipient | `250` | nothing | — |
+| `INGEST` rate exhausted | `250` | nothing for that copy | — |
+| **Inbox, workspace or service ceiling** | **`250`** | nothing for that copy, no upload | `INBOX_LIMIT` / `WORKSPACE_LIMIT` / `SERVICE_CAPACITY` |
+| Mixed event | `250` | the admitted envelope-order prefix, committed atomically | refusals recorded on the refused inboxes |
+| Breaker open, storage failure (including quota `400`), clock offset, latch | **`451`**, whole `DATA`, nothing committed | admitted reservations move to `RELEASING` | nothing |
+| Slot wait, write deadline, `lock_timeout`, fenced reservation | `451`, whole `DATA` | the same | nothing |
+| ADR-026 reprocessed event | `250` / ack | no new row | — |
 
-**Explicitly not residue**, because each is charged until proven gone: crash
-orphans (§6), duplicate-event blobs, retention (blob-first deletion only
-over-counts), failed events, and breaker-shed events.
+**The edge hides every reply.** The edge is store-and-forward, and its
+contract sends **no DSNs** (`notify_classes=""`, `bounce_queue_lifetime=0`).
+- No ingestion reply, and no timing difference between refused and admitted
+  copies, reaches an external sender.
+- A `451` condition that outlives the edge queue (`maximal_queue_lifetime`
+  4 h) therefore ends in **silent loss**. That includes a latch left set.
 
-**Outside *P(t)*: infrastructure bytes.** MinIO's own metadata, erasure parity
-and filesystem overhead are not application objects, and neither figure counts
-them.
+This does **not** block acceptance, implementation, staging or a dark
+production. It **is an Ops prerequisite before any public SMTP/MX**: alerting
+on queue age and deferred mail, early enough to act well before expiry (for
+example, the oldest deferred message is older than 30 min). It is an
+operational dependency, not an application feature (§18).
 
-**Two storage preconditions** make *P(t)* meaningful, and Ops acceptance must
-evidence both:
+### 13. Authenticated API contract (spec-first, ADR-022; all additive)
 
-- bucket **versioning is off**, so a delete frees bytes instead of adding a
-  delete marker over a retained version;
-- there is **no object-lock or retention rule** on the bucket.
+All new schema members are **optional**, never `required`, so generated
+clients keep working against a rolled-back server (ADR-028). Nullable members
+use OpenAPI 3.1 type arrays. Every new enum states that *clients must tolerate
+unknown values*.
 
-MinIO evaluates its bucket quota against its own periodically refreshed usage
-figure, so it can itself be overshot. That is why the application ceiling, not
-the bucket quota, is the bound this ADR proves, and why the margin exists.
-
-With the initial values, **40 GiB + 240 MiB < 50 GiB**. That leaves a 9.76 GiB
-margin for R1 and for MinIO's quota lag.
-
-### 10. SMTP and provider behaviour
-
-| Situation | Gateway reply to the edge | What is stored | Tenant sees | Operator sees |
-|---|---|---|---|---|
-| Syntactically invalid recipient or foreign domain | `553` at `RCPT` (unchanged) | nothing | — | `smtp_reject_total{reason}` |
-| Raw message > 15 MiB | `552` at `DATA` (unchanged; a property of the sender's own message) | nothing | — | `smtp_reject_total` |
-| Unknown, expired or deleted recipient | `250` (unchanged, ADR-025) | nothing | — | `unknown_recipient_discard_total` |
-| `INGEST` rate exhausted | `250` (unchanged, ADR-027 §4) | nothing for that copy | — | `rate_decision_total{INGEST,refused}` |
-| **Inbox or workspace ceiling** | **`250`** | nothing for that copy; `BlobStore` not called | refusal count, time and reason `WORKSPACE_LIMIT`; a wait ends with `409` | `storage_admission_total{refused_inbox\|refused_workspace}` |
-| **Global application ceiling** | **`250`** | nothing for that copy; `BlobStore` not called | the same, with reason `SERVICE_CAPACITY` | `storage_admission_total{refused_global}` + **page** |
-| Mixed event (A refused, B admitted) | `250` | B's copy only, committed atomically with B's siblings | A's inbox records the refusal, in B's T2 | both counters |
-| Bucket quota reached or storage full | **`451`** for the whole `DATA`; nothing committed; breaker opens | stale reservations are cleaned (§6) | nothing: the edge retries | `storage_physical_failure_total{kind=quota}` + **page** |
-| Storage outage, put timeout, breaker open | `451` for the whole `DATA` | the same | nothing | `{kind=unavailable\|timeout}`, `storage_breaker_open` |
-| Write cutoff exhausted, or admission `lock_timeout` hit (load) | `451` for the whole `DATA` | the same | nothing | `{kind=cutoff}`, `admission_lock_wait_seconds` |
-| Reservation lost before T2 (I4) | `451` for the whole `DATA` | the same | nothing | `storage_commit_fenced_total` |
-| Database down or schema incompatible | `451` (unchanged) | nothing | — | existing metrics |
-| ADR-026 reprocessed provider event | `250` / provider ack | no new row; its blobs are deleted, then its reservation released | — | `duplicate_event_noop_total` |
-
-- **Ceilings answer `250`, never `452`.** The reasons are those of ADR-027 §1,
-  in full. A `452` for a known recipient in a full workspace, beside a `250`
-  for an unknown address, is a membership oracle, and an attacker can
-  *drive* it by filling a workspace through one guessed `EXACT` address. It
-  would also push tenant policy into the edge's queue. The global ceiling is
-  the same kind of decision, application admission control, and gets the same
-  answer. A `451` there would not reveal membership, but it would let one
-  tenant's consumption delay every sender through edge retries.
-- **Physical failure answers `451`.** It is independent of tenant state, and a
-  retry is the right outcome for mail that may still be storable. It is not
-  identical at the ingestion hop for every event: an event with only unknown
-  recipients never reaches storage, so it gets `250`. That is pre-existing, and
-  it is not observable from outside (next bullet).
-- **In the deployed topology, the external sender only ever sees the edge.**
-  - Postfix relays store-and-forward (ADR-004), so a `451` from ingestion
-    becomes an edge queue retry.
-  - The edge contract sends **no DSNs at all** (`notify_classes=""`,
-    `bounce_queue_lifetime=0`). Nothing an ingestion reply says can reach the
-    sender, and neither can the latency difference between refused and
-    accepted copies.
-- **A `451` that outlives the edge queue is silent loss.**
-  `maximal_queue_lifetime` is 4 h, and the message then disappears with no
-  DSN. The tenant sees nothing for these, because the copy never reached
-  admission. Ops therefore needs an **edge-queue-age alert** (a new
-  production-ops acceptance row). This is a pre-existing property of the edge
-  that the breaker makes more likely to be exercised, so it is stated here.
-- **Discard logging.** A discarded refusal uses the existing `smtp_discard`
-  line, metadata only, with a closed-enum reason:
-  `storage_inbox_limit | storage_workspace_limit | storage_service_capacity`.
-- **Provider adapters** (future, ADR-003/004) map the same classification.
-  Ceiling refusals *acknowledge* the event, because redelivery cannot help.
-  Physical failures *do not acknowledge* it, so the provider redelivers.
-
-### 11. Authenticated visibility contract
-
-Everything here is specified first in `backend/api/contract/openapi.yaml`, in
-the implementing PR (ADR-022). Field names follow the owner's
-(`storageRefusalCount`, `lastStorageRefusalAt`).
-
-**11a. Workspace storage state: `GET /v1/workspace/storage`.**
-
-- It requires scope `messages:read`, like `getInbox`.
-- It is charged to rate category `READ`, through an **explicit** pattern in
-  `RateCategories`. Without one, the default-deny fallback would silently
-  charge it as `INBOX_CREATE`.
-- The workspace is the authenticated key's (ADR-027 §3). There is no path
-  parameter to get wrong.
+**The shared `StorageUsage` object:**
 
 ```json
-{ "limitBytes": 2147483648, "storedBytes": 1990000000, "reservedBytes": 15728640,
-  "availableBytes": 141754008, "overLimit": false }
+{ "limitBytes": 536870912, "storedBytes": 402653184, "reservedBytes": 15728640,
+  "availableBytes": 118489088, "overLimit": false }
 ```
 
-- `storedBytes` is `committed`.
-- `reservedBytes` includes stale and releasing reservations.
-- `availableBytes = max(0, limit − stored − reserved)`.
-- `overLimit` is `stored + reserved > limit`. For example, a workspace
-  backfilled above its ceiling.
-- **`availableBytes` is workspace headroom only, never global.** Global
-  headroom moves with *other* tenants' traffic, so exposing it would give every
-  tenant a live side channel on everyone else's ingest.
+- `storedBytes` is committed usage (`base + Σdelta`).
+- `reservedBytes` counts reservations in every state.
+- `overLimit` means `stored + reserved > limit`.
+- Every figure covers the caller's **own** scope only.
 
-**11b. Inbox fields.** `Inbox` gains three fields, **always present**:
+**13a. Workspace.** `GET /v1/workspace/storage` returns `StorageUsage`, with
+`availableBytes = max(0, limit − stored − reserved)`.
+- Scope: `messages:read`.
+- Rate category: `READ`, through an explicit `RateCategories` pattern;
+  `RouteCoverageTest` enforces it.
+- The workspace is the authenticated key's own.
 
-- `storageRefusalCount` (int64, starts at 0, monotonic for the inbox's
-  lifetime);
-- `lastStorageRefusalAt` (date-time or null);
-- `lastStorageRefusalReason` (`WORKSPACE_LIMIT | SERVICE_CAPACITY` or null;
-  clients must tolerate unknown values).
+**13b. Inbox (O1).** Every representation of an inbox carries these fields:
+create, get, and any future list (which must compute them set-based, per
+page). They are read *live* from the inbox id, including when an idempotent
+create replay rebuilds the response from `InboxSnapshot`.
 
-**Residual of O3.** A tenant with room can probe the global ceiling with its
-own copies. Near *G*, that measures global headroom to within one copy's size.
-It requires the service to already be at a paged incident, and workspaces are
-operator-provisioned. It is recorded in the abuse model rather than engineered
-away.
+| Field | Meaning |
+|---|---|
+| `storage: StorageUsage` | `limitBytes` is the effective inbox limit (§3). `availableBytes = max(0, min(inbox headroom, workspace headroom))`, which is what this inbox can still admit. It may be `> 0` while `SERVICE_CAPACITY` refusals are happening. |
+| `storageRefusalCount` | int64, monotonic, starts at 0. |
+| `lastStorageRefusalAt` | date-time or null. |
+| `lastStorageRefusalReason` | `INBOX_LIMIT \| WORKSPACE_LIMIT \| SERVICE_CAPACITY` or null. |
 
-**11c. Wait termination.** On `POST /v1/inboxes/{id}/messages/wait`:
+`POST /v1/inboxes` needs only `inboxes:write`, but its response reveals the
+caller's *own* workspace headroom through `availableBytes`. That is accepted:
+it is the same workspace, and nothing crosses a tenant boundary.
 
-- **Contract changes.**
-  - The request gains an optional `storageRefusalsSeen` (int64 ≥ 0).
-  - Every `200` (`MATCHED` and `TIMEOUT`) gains `storageRefusalCount`: the
-    baseline value that the server confirmed was *not* exceeded.
-  - `TIMEOUT`, together with `TestInboxTimeoutError` and
-    `TestInboxTimeoutException`, also carries it and `lastStorageRefusalAt`,
-    beside `arrivedButUnmatchedCount`.
-- **The baseline.**
-  - It is `min(storageRefusalsSeen, current)` when the field is present. A
-    value from the future cannot suppress a real refusal.
-  - Otherwise it is the inbox's count as read at the call's initial check.
-- **The check.** Whenever the wait finds no match (at the initial check, the
-  recheck, and every wake), it reads the count. The count is read **before**
-  the wait slot is claimed, so a refusal already present returns without
-  consuming a slot. If the count exceeds the baseline, the wait ends:
+**13c. Wait: the explicit observation boundary (O2).**
+
+`POST /v1/inboxes/{id}/messages/wait` gains:
+
+- an optional request member `afterStorageRefusalCount` (int64 ≥ 0; a
+  negative value gets `400`);
+- on every `200`, the members `storageRefusalCount` and
+  `lastStorageRefusalAt`. These are **informational**, and are taken from the
+  **same snapshot** the call evaluated, never from a fresh read.
+
+**Server rule.** Each evaluation reads the messages and the inbox's
+`refusal_count` in **one snapshot**, then decides:
+
+1. A matching visible message returns `200 MATCHED`. A match always wins.
+2. Otherwise, if a cursor was supplied and
+   `refusal_count > min(afterStorageRefusalCount, refusal_count)`, the call
+   returns `409 storage-limit-exceeded`.
+3. Otherwise the call parks, re-evaluating on every wake, and returns
+   `200 TIMEOUT` when the window ends.
+
+The refusal check runs before a wait slot is claimed. Response precedence, in
+order: request-rate `429` → `400` → `404` → `410` → `MATCHED` → `409` →
+slot `429` → `TIMEOUT`.
+
+| Case | Behaviour |
+|---|---|
+| Newly created inbox | The create response carries `storageRefusalCount: 0`. Passing 0 observes every refusal the inbox ever has. |
+| Fetched existing inbox | `GET` returns the current count *c*. Passing *c* observes the refusals that happen after that read. |
+| Repeated waits | The caller passes the boundary it has **observed**: the value it started from, or the count carried by a `409` it has handled. A `MATCHED`/`TIMEOUT` echo is informational. Adopting it is the caller's explicit choice to move the boundary, and it would skip any refusal that the match outranked. |
+| Process restart | The cursor is explicit caller state. The caller persists it, or re-reads the inbox and accepts the new boundary. The server keeps no per-client state. |
+| Multiple SDK instances | Each keeps its own cursor and observes relative to it. |
+| Refusal before the first wait | With the cursor from create (0) or from a prior `GET`, the call returns `409` at once, unless a match is visible. |
+| Refusal during the wait | The refusal's `pg_notify` wakes the waiter, which re-evaluates and returns `409`, not `TIMEOUT`. With LISTEN degraded, the ADR-020 bounded re-query does the same. |
+| Refusal after the matching message committed | `MATCHED`. The refusal is still observable by the next wait that carries the unadvanced cursor. |
+| Match and refusal racing | The single snapshot decides. The `409` body says the refused copy *may* have been the awaited one. Waits are non-consuming, so a later call can still find the match. |
+| Cursor larger than the current count | Treated as the current count (the `min` above), so a future value cannot suppress a real refusal. |
+| **Cursor omitted (legacy client)** | **Exactly the pre-ADR-035 behaviour.** A storage refusal never produces a `409`. The call ends `MATCHED` or `TIMEOUT`, and `TIMEOUT` now also carries the count for diagnosis. |
+
+**Compatibility.** Only a request that carries the new member can receive the
+new outcome, so every change is additive under ADR-015 and no amendment is
+needed.
+
+**The 409 problem.**
 
 ```
 409 application/problem+json
 type: https://testinbox.email/problems/storage-limit-exceeded
-{ "inboxId", "refusalReason": "WORKSPACE_LIMIT|SERVICE_CAPACITY",
-  "refusalsDuringWait": n, "storageRefusalCount": c, "lastStorageRefusalAt": t,
-  "quota": "storedBytes", "limit": …, "current": … }      ← the last three only for WORKSPACE_LIMIT
+{ "inboxId", "refusalReason": "INBOX_LIMIT|WORKSPACE_LIMIT|SERVICE_CAPACITY",
+  "afterStorageRefusalCount": n, "storageRefusalCount": c, "lastStorageRefusalAt": t,
+  "quota": "STORED_BYTES", "limit": …, "current": … }
 ```
 
-  - There is no `Retry-After`: waiting does not recover a discarded copy
-    (ADR-027 §8).
-  - `detail` names the cause in plain words. A Kotlin SDK built before this
-    change drops `problemType` on unknown 409s (`Errors.kt:53-58`), so `detail`
-    is all it will show.
-- **Precedence**, first match wins:
-  1. request-rate `429` (charged before routing);
-  2. `404` (not the caller's inbox);
-  3. `410` (not `ACTIVE`);
-  4. a match: `200 MATCHED` wins even if refusals also happened;
-  5. `409 storage-limit-exceeded`;
-  6. `429` slot refusal;
-  7. `200 TIMEOUT`.
-- **The SDK seeds the cursor (O2).** The first call sends
-  `storageRefusalsSeen` from the `Inbox` object the SDK holds: 0 for an inbox
-  it just created, otherwise the last value it saw. Later calls send the value
-  returned by the previous response.
-  - A copy refused between "trigger the send" and "wait" therefore ends the
-    wait. The same holds for a refusal between two chained calls.
-  - No node or client clock is compared, and no server state is kept, so the
-    cursor survives SDK chaining, node failover and client restarts.
-  - Raw-API callers may omit it and get "since this call began".
-- **Why a `409` problem and not a new `200` status.** Both SDKs treat any
-  unknown `status` as `TIMEOUT` and chain again, as ADR-020 told them to
-  (`client.ts:238-277`, `TestInboxClient.kt:248-255`). A new status would be
-  swallowed silently by any SDK build already in a consumer's hands: none is
-  published yet (`docs/sdk/distribution.md`), but snapshot builds exist. A
-  `409` surfaces at once as the generic conflict error in those builds, and
-  neither SDK retries a `409`. New SDKs throw a typed error, and they
-  discriminate on the problem `type`, never on the status code.
-- **Compatibility (amends ADR-015 explicitly).** Everything else in this
-  section is additive: new optional request and response fields, a new
-  endpoint, and new optional members. This one is not, because the same
-  request that used to end `200 TIMEOUT` can now end `409`. It is accepted as a
-  deliberate behaviour change under `X-API-Stability: experimental`.
-  `docs/api/versioning.md` gains the rule it follows: *a new problem type for a
-  new failure condition on an existing operation; clients must handle unknown
-  4xx generically.*
-- **Granularity is the inbox, deliberately.** A refused copy is discarded
-  before anything could evaluate it against a waiter's matcher. Storing the
-  fields a matcher needs (subject, sender) would store part of the content
-  this ADR just refused to keep.
-  - So every waiter on the inbox, whatever its matcher, ends on any refusal
-    after its baseline, and the problem says the refused copy *may* have been
-    the awaited one.
-  - The failure mode this accepts is an unrelated copy refused and the awaited
-    one admitted later within the same wait. That requires the workspace to
-    cross its ceiling and recover within one wait, and it fails a test with an
-    exact cause instead of passing it.
-  - The failure mode it removes is a test that silently times out on a refused
-    copy.
-- **Notification.** The refusal record `pg_notify`s the inbox's channel
-  (§5a), so parked waiters wake. Under LISTEN degradation, the ADR-020 bounded
-  re-query reads the counter as well.
+- `quota`, `limit` and `current` are present **only** for `INBOX_LIMIT` and
+  `WORKSPACE_LIMIT`. `quota` uses the existing enum spelling (`STORED_BYTES`,
+  as emitted by `InboxController` today). `current` is `stored + reserved` for
+  the named scope.
+- There is no `Retry-After`.
+- A wait may return `409` because ADR-020 §3 treats a wait's outcomes as
+  answers about the inbox's state. ADR-027 §8 supplies the meaning "waiting
+  does not help".
+- The new members are added to the shared `Problem` schema and to both SDK
+  problem parsers.
 
-**11d. SDK surface** (ADR-014: hand-designed; the transport stays internal).
+**SDKs (ADR-014).**
 
 | TypeScript | Kotlin / JVM |
 |---|---|
-| `TestInboxStorageLimitExceededError` extends `TestInboxError` directly, like `TestInboxQuotaExceededError` | `TestInboxStorageLimitExceededException` extends the base directly, and passes `problemType` and status 409 |
-| Error fields: `refusalReason`, `refusalsDuringWait`, `storageRefusalCount`, `lastStorageRefusalAt`, `inboxId` | the same fields |
-| `client.getWorkspaceStorage(): Promise<WorkspaceStorage>` | `getWorkspaceStorage()` / `getWorkspaceStorageBlocking()`, returning `WorkspaceStorage` |
-| `Inbox` gains `storageRefusalCount`, `lastStorageRefusalAt`, `lastStorageRefusalReason` | the same |
+| `TestInboxStorageLimitExceededError extends TestInboxError` | `TestInboxStorageLimitExceededException`, which carries `problemType` and status 409 |
+| `client.getWorkspaceStorage(): Promise<StorageUsage>` | `getWorkspaceStorage()` / `getWorkspaceStorageBlocking()` |
+| `Inbox.storage`, `storageRefusalCount`, `lastStorageRefusalAt`, `lastStorageRefusalReason`: read-only snapshots | the same |
+| `inbox.waitForMessage({ …, afterStorageRefusalCount?, observeStorageRefusals = true })` | `awaitMessage(…, afterStorageRefusalCount: Long? = null, observeStorageRefusals: Boolean = true)` and `awaitMessageBlocking(…)` |
 
-- The cursor is threaded inside the existing chaining loop and is not public
-  API.
-- The error is terminal: the SDK does not retry it.
-- Both problem parsers (`asProblemDetails`, `ProblemDto`) learn the new
-  members, and the shared `Problem` schema declares them.
+- **The per-`Inbox` observation cursor.** It is a read-only accessor,
+  initialized from the count on the representation the SDK was handed: 0 for
+  an inbox it created.
+- **It advances in exactly two cases.** When the SDK surfaces a `409` (it
+  moves to that `409`'s count), and when the caller passes an explicit value.
+  It **never** advances from a `MATCHED` or `TIMEOUT` echo.
+- **Concurrent waits.** It advances monotonically and atomically (to the
+  maximum of its current and new value), so two concurrent awaits on one
+  `Inbox` are safe.
+- **Opting out.** `observeStorageRefusals = false` sends no cursor, which
+  gives the legacy behaviour.
+- **No hidden state.** The same results are reachable with raw REST.
 
-### 12. Migration V6 and backfill
+**13d. Disclosure (O3).**
 
-`V6__physical_storage_accounting.sql` is **expand-only** and carries no
-`-- testinbox:rollback-unsafe:` declaration. It contains, in order:
+- **What a tenant can learn:** `SERVICE_CAPACITY`, one bit: "the service was
+  at application capacity when this copy was refused".
+- **What a tenant never sees:** the global limit; global stored, reserved or
+  available bytes; other workspaces' activity; the reservation backlog.
+- **Residual, stated precisely.** A tenant can send one `DATA` to up to 50 of
+  its own inboxes. Because admission is an envelope-order prefix, the number
+  of copies admitted places global headroom within one copy's size, anywhere
+  up to the tenant's own workspace headroom (about 2 GiB). That holds below
+  the 90 % paging threshold. Repeated probing yields a coarse time series of
+  other tenants' aggregate usage near the cap.
+  - Workspaces are provisioned by operators.
+  - The owner accepted the disclosure knowing this residual, which is recorded
+    in `abuse-model.md`.
+  - Quantizing the admission cap or adding hysteresis are named follow-ups,
+    not built here.
 
-1. **`workspace_storage_account`.**
+### 14. Migration V6, backfill, activation
 
-   ```
-   workspace_id   uuid PRIMARY KEY REFERENCES workspace (id)
-   committed_bytes bigint NOT NULL DEFAULT 0
-   reconciled_at  timestamptz
-   ```
+**V6 is expand-only**, with no `rollback-unsafe` declaration. It creates:
 
-   There is no `CHECK (committed_bytes >= 0)`. A negative value is drift, and
-   a constraint violation there would abort retention deletes and wedge the
-   sweep. Reconciliation reports it instead.
-2. **`storage_reservation`.**
+- `workspace_storage_account(workspace_id PK → workspace, base_bytes, reconciled_at)`
+- `inbox_storage(inbox_id PK → inbox ON DELETE CASCADE, workspace_id, base_bytes, refusal_count, last_refusal_at, last_refusal_reason)`
+- `storage_delta`
+- `storage_reservation(message_id PK, workspace_id → workspace, inbox_id` *(no FK)*`, object_keys text[], bytes > 0, state, created_at, write_deadline_at, release_not_before, node_id, first_upload_at)`
+- `storage_ambiguity`
+- `storage_node`
+- `storage_admission_latch`
+- indexes: `(workspace_id) INCLUDE (bytes)`, `(inbox_id) INCLUDE (bytes)`, and `(state, write_deadline_at)`. Deadlines are never used in index predicates (ADR-021).
+- the statement triggers and `storage_account_recompute()`, then the
+  **backfill** of both bases, in the same transaction.
 
-   ```
-   message_id         uuid PRIMARY KEY
-   workspace_id       uuid NOT NULL REFERENCES workspace (id)
-   inbox_id           uuid NOT NULL                -- no FK, §4
-   object_prefix      text NOT NULL
-   bytes              bigint NOT NULL CHECK (bytes > 0)
-   state              text NOT NULL CHECK (state IN ('RESERVED', 'RELEASING'))
-   created_at         timestamptz NOT NULL
-   write_deadline_at  timestamptz NOT NULL
-   release_not_before timestamptz
-   ```
+**Locking.** V6 starts with:
 
-   Indexes:
-   - `(workspace_id) INCLUDE (bytes)`
-   - `(inbox_id) INCLUDE (bytes)`
-   - `(state, write_deadline_at)`
+```
+SET LOCAL lock_timeout = '30s';
+LOCK TABLE workspace, inbox, message, attachment IN SHARE ROW EXCLUSIVE MODE;
+```
 
-   Deadlines drive transitions; they never appear in index predicates (the
-   ADR-021 rule).
-3. **`inbox_storage`.**
+- **Why this order.** V6's own foreign keys and `CREATE TRIGGER` take
+  `SHARE ROW EXCLUSIVE` on `workspace`, `inbox`, `message` and `attachment`.
+  Taking them up front in retention's order (inbox, then message) avoids the
+  deadlock that the database review reproduced. With `message` locked first,
+  V6 deadlocked against a concurrent `DELETE FROM inbox`.
+- **Why the timeout.** V6 fails fast if it cannot get the locks, so it never
+  queues for up to the 600 s migration window while blocking every writer.
+  Ops re-runs it.
+- **What is not blocked.** The lock blocks inserts and deletes, not reads or
+  foreign-key checks (which take `ROW SHARE`). That was verified with
+  `pg_locks`.
 
-   ```
-   inbox_id                  uuid PRIMARY KEY REFERENCES inbox (id) ON DELETE CASCADE
-   workspace_id              uuid NOT NULL
-   committed_bytes           bigint NOT NULL DEFAULT 0   -- O1
-   refusal_count             bigint NOT NULL DEFAULT 0
-   last_refusal_at           timestamptz
-   last_refusal_reason       text
-   ```
+**Backfill.**
 
-   It is a side table, so the hot `inbox` row and older binaries' mapping of
-   it are untouched. The cascade is correct here, because this table holds no
-   capacity.
-4. **The explicit lock, then the triggers, then the backfill.**
-   - `LOCK TABLE message, attachment IN SHARE ROW EXCLUSIVE MODE`.
-   - The trigger functions and triggers (§7), and
-     `storage_account_recompute()`.
-   - The backfill: `INSERT INTO workspace_storage_account SELECT w.id,
-     <ADR-027 §5 derivation> FROM workspace w`, plus the O1 per-inbox backfill.
+- **It is exact.** The byte columns hold exactly the arrays that were
+  uploaded. It is deterministic: no object-store scan and no approximation.
+- **Measured duration:** 0.30 s for 1 000 000 messages and 300 000
+  attachments (85 ms and 215 ms, warm). Staging is far smaller, and this
+  repository holds no credentials to query it. The migrator logs the real
+  duration. The planning bound is ≤ 10 s cold, plus up to 30 s of lock wait.
+- **What waits during it:** ingestion commits and inbox creation. Reads and
+  waits continue. An SMTP session stalls for at most that long (the
+  SubEthaSMTP timeout is 60 s). A timeout answers `451`, and the edge retries.
+- **It fits the normal migrator step.**
+- **Verified:** a draft V6 containing LOCK, the triggers, the functions and the
+  backfill passes `check-migration-safety.sh`.
 
-   The explicit lock blocks concurrent inserts and deletes for the length of
-   the migration transaction. That makes the backfill exact against anything
-   an old binary does meanwhile, instead of relying on the lock `CREATE
-   TRIGGER` takes as a side effect. While the backfill runs (one sequential
-   sum, seconds at today's volumes), ingestion commits wait. A commit that
-   times out answers `451`, and the edge retries.
+**Activation sequence.** Old and new binaries do overlap. The reference
+`deploy.sh` runs the migrator while the old containers serve, then recreates
+`api` and `ingestion` separately. The GitLab-reconciled host cannot be proven
+overlap-free from here.
 
-**No grandfathering, no grace, no eviction.** A workspace whose backfilled
-`committed_bytes` exceeds its limit starts refusing new copies the moment an
-ADR-035 ingestion binary runs. Its content stays readable, and capacity
-returns only through ADR-009 expiry and explicit deletion. `CreateInbox`'s
-`409 quota-exceeded` rule is unchanged, but it now reads `committed +
-reserved` from the account row instead of deriving it.
+1. **Phase 1, expand.** V6 lands.
+   - Old binaries are unaware of it. Their inserts and deletes also append
+     deltas, which creates **no** new lock-order cycle.
+   - Rev 2's "deadlocks resolve by retry" is withdrawn: the ledger removes
+     those deadlocks.
+2. **Phase 2, coexistence with enforcement OFF.** ADR-035 binaries ship with
+   `testinbox.storage.enforcement=OFF`, the default.
+   - The full protocol runs: slots, reservations, the fence, the T2 fence,
+     cleanup, compaction, reconciliation, ambiguity tracking, heartbeat and
+     visibility.
+   - Nothing is refused. This is the ADR-027 §9 precedent.
+   - Old and new binaries may coexist **only** in this phase.
+3. **Phase 3, the activation barrier.** It is proven, not assumed, by five
+   checks:
+   - **(a) Capability, as an allowlist.**
+     - Every session of the application DB role has an `application_name`
+       matching `testinbox-%:%:storage-v1`, except named exclusions:
+       `testinbox-migrator:%`, and Ops sessions tagged `ops:%`.
+     - Old binaries show pgJDBC's default name, and the old LISTEN connection
+       is `testinbox-listen`, so both fail the check.
+     - The positive inventory must also agree: `storage_node` shows every
+       declared ingestion and api node heartbeating with capability
+       `storage-v1`.
+     - The new LISTEN name requires updating `PgListenNotifierTest` and
+       `E2eStack`, in the implementation.
+   - **(b) Physical baseline.** A full orphan-sweep pass has completed since
+     Phase 2 began, with `physical_listed ≤ covered + H`.
+   - **(c) Clock offset.** It is within `ε_max` on every node.
+   - **(d) Global benchmark.** For the global ceiling, the §11 gate has
+     passed.
+   - **(e) Rollback floor.** The ADR-035 commit is in
+     `deploy/rollback-floors.txt` **on `master`** before Phase 4, because
+     `production-handoff.yml` reads the floors from `master`.
+     `verify-production-candidate.sh` then refuses a production candidate
+     below the floor, unless the operator explicitly acknowledges the hazard.
+     Staging's `deploy.sh` has no floor check today. The implementation adds
+     the same check there, or a staging rollback with enforcement ON would go
+     silent, with no new binary left to alarm.
+4. **Phase 4, enforce.** Ops sets `testinbox.storage.enforcement=ON`. It is
+   configuration on the same digests, and may be staged: inbox and workspace
+   first, global after gate (d).
+   - No old ingress instance may exist from here on.
+   - Every node re-runs the allowlist and inventory checks on each cleanup
+     pass, and raises `activation_violation` on any mismatch.
 
-**Old binaries while V6 is present** (ADR-029: every V6 rollout, not only a
-rollback):
+**Backups.** All seven tables are classified `-` in `deploy/backup/scope.txt`.
+After a restore, `message` is empty, so empty bases are correct. The §9
+restore procedure covers the bucket.
 
-- They neither read nor write the new tables.
-- Their inserts and deletes are counted by the triggers, so accounting stays
-  exact.
-- They do not reserve, so their traffic is not ceiling-enforced (R2).
-- The triggers make them take account rows in envelope order and inside their
-  own inbox-locking transactions. That adds lock-order cycles that PostgreSQL's
-  deadlock detector resolves by aborting one side:
-  - old ingest vs old ingest (two workspaces in opposite orders);
-  - old ingest vs old retention (inbox then account, against account then
-    inbox);
-  - old retention vs new T2.
+### 15. Supporting controls (O4), classified
 
-  An aborted ingest answers `451` and the edge retries. An aborted sweep
-  retries on its next interval. This is liveness during a rollout window, not
-  correctness. It ends when both deployables run ADR-035 code.
-
-**Backups (ADR-034 §5).** All three tables are classified `-` in
-`deploy/backup/scope.txt`. They are derived or transient. After a restore,
-`message` is empty, so an empty account table is *correct*; the §9 R3 procedure
-covers the bucket.
-
-### 13. Observability
-
-All labels are closed enums. No workspace, inbox, key or address ever appears
-in a label.
-
-| Metric | Type | Labels |
+| Control | Kept in ADR-035? | Invariant or bound it protects |
 |---|---|---|
-| `testinbox_storage_admission_total` | counter | `outcome` = `admitted \| refused_inbox \| refused_workspace \| refused_global` |
-| `testinbox_storage_admission_lock_wait_seconds` | timer | — |
-| `testinbox_storage_accounted_bytes` | gauge | `kind` = `committed \| reserved` (global sums) |
-| `testinbox_storage_global_limit_bytes` | gauge | — |
-| `testinbox_storage_reservations` | gauge | `state` = `reserved \| releasing` |
-| `testinbox_storage_reservation_released_total` | counter | `path` = `committed \| absent \| deleted \| reconciled` |
-| `testinbox_storage_late_object_total` | counter | — |
-| `testinbox_storage_commit_fenced_total` | counter | — |
-| `testinbox_storage_physical_failure_total` | counter | `kind` = `quota \| unavailable \| timeout \| cutoff \| lock_timeout` |
-| `testinbox_storage_breaker_open` | gauge | — |
-| `testinbox_storage_accounting_drift_total` | counter | `direction` = `under \| over` |
-| `testinbox_storage_physical_listed_bytes` | gauge | — |
+| Presigned uploads that are deadline-, size-, key- and create-bound (with URL redaction) | **Yes** | I3, I5, I7. This is the server-side fence that makes reclaim provable. Create-only prevents overwriting committed content. |
+| Total wall-clock `T_put` with an RST abort | **Yes** | I5. It is a term of S, and without it no bound on a buffered tail exists. |
+| One-attempt uploads, and the narrow definition of definitive | **Yes** | I1/H. At most one server-side request per slot, and every doubtful outcome counts. |
+| Write slots (taken before T1, fair per workspace, occupied by persisted ambiguity) | **Yes** | I1/H: bounded across cycles and restarts. Keeps queueing from consuming deadlines (I9: a 451 is never chosen per tenant). |
+| Storage circuit breaker | **Yes** | Stops reservations accumulating during outages; bounds ambiguity starts; keeps T1's cost down; keeps capacity separate from infrastructure. |
+| Admission latch | **Yes** | I1 containment: fails closed on the first A_F violation. |
+| Gateway recipient cap = 50 (edge parity, pinned in `contract.yaml` and set in the gateway) | **Yes** | ADR-026 atomicity (the edge never splits an event), and the per-event bound used to size `E`. |
+| Gateway connection cap | **No: follow-up hardening** | No ADR-035 invariant depends on it. The DB pool and the slots already bound concurrency. |
+| Chunked retention deletion | **No: dropped** | The ledger removes the account locks that needed it. A 50k cascade costs 0.25 s. |
+| Monotonic per-event cutoff | **Efficiency only** | None. |
+
+### 16. Observability
+
+All labels are closed enums.
+
+| Metric | Labels |
+|---|---|
+| `testinbox_storage_admission_total` | `outcome` = `admitted \| refused_inbox \| refused_workspace \| refused_global` |
+| `testinbox_storage_admission_lock_wait_seconds`, `testinbox_storage_slot_wait_seconds` | — |
+| `testinbox_storage_covered_bytes` | `kind` = `committed \| reserved` |
+| `testinbox_storage_global_limit_bytes`, `testinbox_storage_finalize_budget_bytes` | — |
+| `testinbox_storage_reservations` | `state` |
+| `testinbox_storage_ledger_unfolded_rows`, `testinbox_storage_ambiguous_uploads` | — |
+| `testinbox_storage_reservation_released_total` | `path` = `committed \| absent \| deleted \| reconciled` |
+| `testinbox_storage_late_object_total`, `testinbox_storage_commit_fenced_total` | — |
+| `testinbox_storage_physical_failure_total` | `kind` = `quota \| unavailable \| timeout \| ambiguous \| deadline \| lock_timeout \| slot_wait \| clock_offset` |
+| `testinbox_storage_breaker_open`, `testinbox_storage_admission_latched`, `testinbox_storage_clock_offset_seconds` | — |
+| `testinbox_storage_accounting_drift_total` | `direction` |
+| `testinbox_storage_physical_listed_bytes`, `testinbox_storage_incomplete_uploads` | — |
+| `testinbox_storage_activation_violation` | — |
 
 `WaitOutcome` gains `STORAGE_LIMIT_EXCEEDED`.
 
-Alerts fire on any of:
+Alerts:
 
-- accounted bytes ≥ 90 % of *G*;
+- covered ≥ 90 % of the admission cap;
 - any `refused_global`;
 - any `physical_failure{quota}`;
 - the breaker open for more than 5 min;
+- the latch set, **paged**;
+- the offset above `ε_max / 2`;
+- more than 1 000 live reservations or unfolded delta rows;
+- any ambiguous upload older than `T_verify` + 5 min;
 - any `late_object`;
 - any drift;
-- a `RELEASING` reservation older than 1 h;
-- more than 1 000 live reservations (admission cost is linear in them, §8);
-- `physical_listed > committed + reserved` beyond one sweep;
-- edge queue age (Ops, §10).
+- any incomplete upload;
+- a `RELEASING` row older than 1 h;
+- `physical_listed > covered + H`;
+- any activation violation;
+- edge queue age (Ops, §12).
 
-### 14. Test plan
+### 17. Test plan
 
-The layers follow `docs/quality/strategy.md`:
+**Seams.** These are required, so the tests can drive time and interleavings
+without sleeping:
 
-- unit and property tests for pure logic;
-- Testcontainers (Postgres, MinIO) for storage;
-- real SMTP to the gateway for SMTP behaviour;
-- concurrency tests that are **deterministic**, using the seams below and never
-  sleeps.
-
-Every module this touches ratchets its minimum in `verify-test-results.sh` to
-its new count in the same PR.
-
-**Seams.** These are required by the implementation. Without them the crash
-tests cannot be built.
-
-- **DB time.** Tests move time by back-dating `write_deadline_at` and
-  `release_not_before` with SQL. That is equivalent to advancing the database's
-  `now()`. Production SQL keeps `now()`, and *settle* and the deadline keep
-  their production values.
-- **Monotonic time.** An injectable `Ticker` drives the write cutoff.
-- **`IngestSyncHook`** (production no-op, like `WaitSyncHook`), with the
-  points `afterAdmission`, `beforePut`, `afterPuts`, `beforeCommit`, and
-  `inCommitAfterReservationLock`.
-- **`CleanupSyncHook`**, with the points `afterClaim` and
-  `afterDeleteBeforeList`.
-- **"Is blocked"** is proven by polling `pg_blocking_pids`, following the
-  `JdbcIdempotencyRecordsTest` pattern, never by sleeping.
+- SQL back-dating of `write_deadline_at`, `release_not_before` and
+  `verify_at`;
+- an injectable `Ticker`;
+- an injectable signing clock for the presigner (probe E8 as a test);
+- `IngestSyncHook`: `afterSlot`, `afterAdmission`, `beforeUpload`,
+  `afterUploads`, `beforeCommit`, `inCommitAfterReservationLock`;
+- `CleanupSyncHook`: `afterClaim`, `afterDeleteBeforeList`;
+- a TCP fault proxy that can stall, swallow a response, or reset;
+- `pg_blocking_pids` to prove that something is blocked.
 
 **Accounting**
 
-1. **Triggers.** After an insert, a delete, an `ON DELETE CASCADE` from
-   `inbox`, an attachment insert or delete, a column update, and a
-   truncate followed by `storage_account_recompute()`, `committed` equals the
-   ADR-027 derivation.
-2. **Property test.** Random interleavings of append, duplicate append,
-   inbox delete and chunked hard delete keep `committed == derivation` for
-   every workspace, and for every inbox under O1.
-3. **Attachments are counted twice.** Two attachments charge
-   `raw + a1 + a2`. A parse failure charges `raw` only.
-4. **V6 backfill.**
-   - Start from the V5 schema with data. Latch old-style inserts, run V6 while
-     they are held, then release them.
-   - Every account equals its derivation.
-   - A second connection is shown blocked by `pg_blocking_pids` during the
-     backfill.
-5. **Reconciliation.**
-   - Corrupt one account up and one down, then reconcile: both are repaired,
-     and `drift_total{over}` and `{under}` each rise by 1.
-   - A clean run emits nothing and takes no row lock.
-6. **Restore simulation.** A missing account row heals on the next insert.
+1. The ledger equals the derivation after inserts, `ON CONFLICT DO NOTHING`
+   (all rows skipped), deletes, cascades, attachment inserts and deletes,
+   updates, and truncate followed by recompute.
+2. Property test: random append, duplicate, delete and compaction sequences
+   preserve the ledger for every workspace and inbox. Inboxes may over-count
+   during teardown.
+3. Attachments count twice, and a parse failure counts the raw bytes only.
+4. The V6 backfill is exact while latched old-style inserts wait. A
+   concurrent `DELETE FROM inbox` does not deadlock V6. `lock_timeout` makes V6
+   fail fast.
+5. Compaction:
+   - it folds each delta exactly once;
+   - it upserts base rows for a workspace and an inbox created after the
+     backfill;
+   - it drops only the inbox share of a concurrently deleted inbox;
+   - a T1 snapshot taken across a compaction never under-counts.
+6. Reconciliation repairs drift in both directions with a single statement,
+   and a clean run takes no lock.
 
 **Admission**
 
-7. **Workspace boundary.** `used + f == limit` is admitted; `limit + 1` is
-   refused.
-8. **Global boundary.** `Σused + f == G` is admitted; `G + 1` is refused.
-9. **Mixed event.** An event with W1 full and W2 with room: W1's copy is
-   refused and never `put` (asserted with a recording `BlobStore`), W2's copy
-   commits, and the reply is one `250`.
-10. **Owner's global-cap test.** W1 and W2 are each below quota, but the
-    combined candidate exceeds *G*. The candidate is refused with
-    `SERVICE_CAPACITY`, and zero puts happen for it.
-11. **Owner's concurrent test.**
-    - (a) Deterministic: the test itself holds
-      `pg_advisory_xact_lock(storageClass, global)`, starts T1 (shown blocked),
-      commits a competing reservation, then releases. T1 must refuse.
-    - (b) Load: 32 events across 8 workspaces with *G* sized below total
-      demand. Refusals must actually occur. A sampler reading `Σcommitted +
-      Σreserved` in one statement never observes more than *G*, and neither
-      does the final real MinIO listing.
-12. **Single snapshot.**
-    - A *demonstration*: a T2 latched between two separate reads shows the
-      two-statement form under-counts.
-    - An *adapter assertion*: T1's usage read is exactly one statement.
-13. **Precedence.** A copy refused by both the workspace and global ceilings
-    is recorded as `WORKSPACE_LIMIT`. Under O1, the inbox ceiling is checked
-    first, and a flood of one inbox leaves a sibling inbox admitting.
-14. **Over-limit after backfill.**
-    - Every message stays readable (`GET`, `/raw`, attachments).
-    - New copies are refused, and no row is deleted.
-    - After a retention hard delete frees space, the next copy is admitted.
-    - `CreateInbox` returns `409 quota-exceeded` at `committed + reserved ≥
-      limit`.
-15. **T1 skipped.** An event with only unknown recipients never takes the
-    global lock. The test holds the lock and the event still completes.
-16. **`lock_timeout`.** With the lock held beyond the timeout, the event
-    answers `451` and `physical_failure{lock_timeout}` rises by 1.
-17. **Synchronous commit.** T1 asserts
-    `current_setting('synchronous_commit') = 'on'` inside the transaction.
+7. Boundaries for the inbox, workspace and `G − H` ceilings.
+8. `INBOX_LIMIT` precedence. A sibling inbox still admits. The inbox limit
+   follows the share.
+9. Mixed event: exactly the envelope-order eligible prefix is admitted, with
+   zero uploads for refused copies and one `250`.
+10. Global exhaustion mid-event.
+11. Global concurrency: (a) a deterministic test in which the admission lock
+    is held; (b) a load test that proves refusals happen and never exceed
+    `G − H`.
+12. Single snapshot: a latched demonstration, plus an assertion on the
+    adapter's statement count.
+13. T1 and slot acquisition are skipped for unknown-only events.
+    `lock_timeout` answers `451`. `synchronous_commit = on`.
+14. A scope over its limit after backfill: its content stays readable,
+    nothing is admitted or deleted, and it recovers after retention.
+    `CreateInbox` still answers `409 quota-exceeded`.
+15. Slot fairness:
+    - one workspace's events cannot hold more than its per-workspace share;
+    - a `W_slot` timeout answers `451` with no reservation;
+    - no deadline is missed because of slot queueing, even with a flood of
+      large multi-recipient events from one workspace.
 
-**Crash accounting and the state machine**
+**Fence, reclaim, ambiguity**
 
-18. **Owner: reservation, blobs, crash.**
-    - The writer's puts complete, then a crash is simulated at `beforeCommit`,
-      and the deadline is back-dated past 120 s.
-    - Cleanup marks the reservation `RELEASING` and deletes the objects.
-    - Still charged: proven through *admission*. A candidate that would fit
-      only if those bytes were free is refused.
-    - After back-dating `release_not_before`: the listing is empty, the
-      reservation is released (`released_total{deleted}`), and the same
-      candidate is admitted.
-19. **Owner: expiry before any write.** A crash at `afterAdmission`. After the
-    settle window, the listing proves absence and the reservation is released
-    (`released_total{absent}`).
-20. **Late object.** At `afterDeleteBeforeList`, the test puts an object
-    under the prefix. The listing finds it, deletes it, pushes
-    `release_not_before` forward and increments `late_object_total`. The
-    charge is still held.
-21. **T2 fenced.** The writer is held at `beforeCommit`, the deadline is
-    back-dated, and cleanup claims the reservation. The writer's T2 then
-    fails with `451`, no row is written for any recipient of the event
-    (ADR-026), and `commit_fenced_total` rises by 1.
-22. **T2 against cleanup, both orders.** At `inCommitAfterReservationLock`,
-    cleanup is shown blocked and then does nothing. In the reverse order, T2
-    fails. Exactly one wins, never both and never neither.
-23. **Write cutoff.** The `Ticker` is advanced past the cutoff at `beforePut`.
-    The next put is not started, the event answers `451`, and the waiting
-    time for a permit is counted against the cutoff.
-24. **Real timeout.** A put against a TCP proxy that stalls MinIO ends within
-    `T_put`, is classified as ambiguous, and there is no inline release.
-25. **Definitive errors.** Inline release after definitive errors is
-    immediate.
-26. **ADR-026 duplicate event.** The reservation is released only after its
-    blobs are deleted. A crash between the commit and the blob deletion is
-    recovered by cleanup.
-27. **Storage down during cleanup.** The reservation stays `RELEASING` and
-    charged across passes, and is released after storage returns.
-28. **Inbox hard-deleted while `RESERVED`.** The reservation survives (no
-    cascade), and its bytes stay charged until the prefix is proven empty.
-29. **Two cleaners.** Both are held at `afterClaim`. Each reservation is
-    released exactly once.
-30. **Lock order, deterministically.** T2 holds W's account row at
-    `inCommitAfterReservationLock`. A retention chunk on a second inbox of W
-    is shown blocked on the account row, not on the inbox. Both then
-    complete, with no deadlock.
-31. **Path D.** A message row with a reservation's id is forced to exist.
-    Cleanup releases the reservation without deleting any object and raises
-    the alarm.
-32. **Chunked retention.** A 50k-message inbox is deleted in chunks. The
-    account row is never held longer than one chunk (a concurrent T2 is shown
-    to progress between chunks), and the final count equals the derivation.
-33. **Breaker.** On a physical failure the breaker opens. The next event
-    answers `451` without T1 and without a reservation row. The half-open
-    trial closes it.
-34. **Security review follow-up (outage and edge retries).** An outage plus
-    repeated retries of the same queued message: after recovery, the message
-    is *admitted*, not refused.
+16. A URL signed with a clock that has already expired gets `403`, classified
+    `deadline`. A size mismatch gets `403`. A replay after commit gets `412`
+    and the object is unchanged. URLs never appear in logs or exception
+    messages, checked by a log-capture test.
+17. **Owner test: crash after upload, before T2.** The charge is held until
+    `release_not_before`, proven through admission. It is then released.
+18. **Owner test: expiry before any upload.** Released after the per-key
+    proof.
+19. A late object found at `afterDeleteBeforeList` is deleted, and the charge
+    is held.
+20. T2 fenced by cleanup: `451`, and nothing becomes visible. T2 against
+    cleanup, in both orders.
+21. Response swallowed after a full body (E5 via the proxy): ambiguous, the
+    slot stays occupied, and there is no inline release.
+22. The body is stalled, then `T_put` expires: the proxy observes an **RST**,
+    and no object exists afterwards.
+23. `5xx` and reset outcomes are classified ambiguous. `2xx`, `403`, `411`,
+    `412` and quota `400` are definitive.
+24. The per-key multipart proof fails on an injected open upload for a
+    reserved key, while the parent-prefix listing is empty (a regression test
+    for M2). The bucket-wide guard aborts the upload and alarms.
+25. Ambiguity slots:
+    - 16 ambiguous uploads block new uploads on that node until they are
+      verified;
+    - a breaker close/reopen cycle does not free them;
+    - a process restart does not free them (persisted);
+    - an unclean shutdown records keyless ambiguity from `first_upload_at`.
+26. A late object at verification sets the latch. Every node then answers
+    `451` before T1, and only an operator clears it.
+27. ADR-026 duplicate. Storage down during cleanup. Inbox hard-deleted while
+    `RESERVED`. Two cleaners. Path [D].
+28. `OrphanBlobSweep` uses one statement, and a T2 latched between its checks
+    cannot lose committed blobs.
+29. Clock offset:
+    - an injected skew opens the breaker and suspends releases;
+    - resumption pushes `release_not_before` back.
+30. Breaker kinds:
+    - on a quota `400`, the half-open trial uses a real event, never the
+      zero-byte probe;
+    - the zero-byte probe closes the breaker only for other kinds.
+31. Outage plus edge retries, then recovery: the mail is admitted, not
+    refused.
+32. Lock order, deterministic, including an old-binary-style path: no
+    deadlock.
 
-**SMTP and anti-oracle**
+**SMTP**
 
-35. **Owner's anti-oracle test.**
-    - The full SMTP transcript (codes and text for `RCPT` and `DATA`) is
-      byte-identical for four recipients: an *admitted* known recipient, an
-      unknown recipient, an over-ceiling workspace, and the global ceiling.
-      Each is tested alone and each mixed with an admitted recipient.
-    - Non-vacuity: for each refused case, the refusal row with its reason,
-      the `refused_*` counter, zero objects under the prefix and no message
-      row are all asserted.
-36. **`451` classification.** A fault-injecting S3 endpoint returns MinIO's
-    quota-exceeded error. The result is `451` for the whole `DATA`, nothing
-    committed, the stale reservations cleaned, and the breaker open. A real
-    `mc quota` check lives in the rehearsal only, because MinIO's quota lags.
-37. **MinIO stopped.** Using its own container, not the shared one: `451`.
-    After a restart and a retry: `250`, and the message is committed.
-38. **Regression.** `> 15 MiB` still answers `552`, unknown still `250`, and
-    invalid still `553`. The gateway's `maxRecipients` equals the value pinned
-    in `contract.yaml`.
+33. **Owner test: anti-oracle.** The transcript is byte-identical across
+    admitted, unknown, `INBOX_LIMIT`, `WORKSPACE_LIMIT` and
+    `SERVICE_CAPACITY` recipients, each alone and mixed. The test also asserts
+    that every refusal really happened.
+34. Quota classification through fault injection (`400
+    XMinioAdminBucketQuotaExceeded`). A real `mc quota` check runs only in the
+    rehearsal.
+35. MinIO stopped (its own container): `451`, then admission after restart.
+36. `552`, `553` and the unknown-recipient `250` are unchanged. The gateway's
+    `maxRecipients` equals `contract.yaml`.
 
-**Wait UX**
+**Wait protocol**
 
-39. **Owner's test.**
-    - A refusal lands at `afterSubscribe`, and separately at
-      `afterInitialCheck`. Each is driven through real ingestion, so notify
-      atomicity is exercised.
-    - The wait window is well above the test's `future.get` timeout.
-    - The result is `409 storage-limit-exceeded`, not `TIMEOUT`.
-40. **Baseline.**
-    - A refusal before the baseline does not end the wait when
-      `storageRefusalsSeen` equals the current count.
-    - It does end it when the SDK sends a cursor of 0.
-    - A cursor larger than the count is clamped.
-41. **Between chained calls.** A refusal between two chained calls ends the
-    next call, via the cursor.
-42. **Outcome ordering.** A match and a refusal together give `MATCHED`. A
-    refusal plus exhausted slots gives `409`, with no slot consumed.
-43. **Scope of termination.** A refusal on another inbox does not end the
-    wait. A refusal ends every concurrent waiter on its own inbox.
-44. **Degraded LISTEN.** The refusal is still detected with the LISTEN
-    connection killed.
-45. **Unchanged errors.** A cross-tenant wait is still `404`, and a
-    non-active inbox is still `410`.
-46. **SDKs (TypeScript and JVM).**
-    - The typed error and its fields.
-    - The cursor is threaded and seeded from the `Inbox`.
-    - An old-SDK fixture surfaces a generic conflict, not a timeout.
-    - The SDK CI jobs gain a count floor.
+37. **Owner test: refusal before the first wait.** Cursor 0 gives `409` at
+    once.
+38. A refusal during the wait, via real ingestion: `409`, not `TIMEOUT`.
+39. A refusal after the match committed: `MATCHED`. The next wait with the
+    unadvanced cursor gets `409`.
+40. A match racing a refusal, in both orders, decided by one snapshot.
+41. Cursor edge cases:
+    - a cursor equal to the count;
+    - a cursor above the count (clamped);
+    - a negative cursor (`400`);
+    - an omitted cursor never gets `409`, and `TIMEOUT` carries the count.
+42. The echo comes from the evaluated snapshot. A refusal committed after the
+    evaluation is not echoed.
+43. Chained calls, two SDK instances, and a restart: each behaves as the
+    table says.
+44. Precedence: `409` before slot `429`, and no slot is consumed. A refusal on
+    another inbox does not end the wait. LISTEN killed. `404` and `410` are
+    unchanged.
+45. SDKs:
+    - the typed error;
+    - the cursor seeded from the `Inbox`;
+    - the cursor never advances on `MATCHED`;
+    - the cursor advances on a surfaced `409`, and concurrent awaits advance
+      it monotonically;
+    - `observeStorageRefusals = false`;
+    - `getWorkspaceStorage`;
+    - count floors in the SDK CI jobs.
 
-**Visibility, metrics, deployment**
+**Visibility, deployment, activation**
 
-47. **Workspace storage endpoint.** `GET /v1/workspace/storage` equals the
-    accounting. `availableBytes` clamps at 0 and `overLimit` is set. The
-    endpoint is isolated per workspace, charged `READ` (`RouteCoverageTest`),
-    and requires `messages:read`.
-48. **Inbox fields.** They are always present and they update.
-49. **Metric cardinality.** The test is extended to every new metric and to
-    `WaitOutcome.STORAGE_LIMIT_EXCEEDED`: closed enums only, and no
-    identifiers.
-50. **`DeploymentSafety`.** Production refuses to start with a missing global
-    limit, a missing declared quota, or `G > quota − margin`.
-51. **ArchUnit.** The reservation, cleanup, reconciliation, permit and
-    `Ticker` types live in `application`, and `ingestion` reaches storage only
-    through the use case.
-52. **Gates.** The migration-safety gate passes (no `TRUNCATE`), and the
-    backup-scope gate classifies the three new tables.
+46. `StorageUsage` for the workspace and the inbox equals the accounting.
+    Inbox `availableBytes` is the minimum of inbox and workspace headroom. A
+    schema test asserts that no global figure appears in any tenant
+    response. An idempotent create replay returns live fields. New members
+    are optional in the OpenAPI contract, and the compatibility gate passes.
+47. Metric cardinality, including `STORAGE_LIMIT_EXCEEDED`.
+48. `DeploymentSafety` refuses to start when any of these is missing or
+    wrong: *G*, the declared quota, the declared process count, `Q` too
+    small, or the share outside `(0,1]`.
+49. The activation barrier fails on any of:
+    - a pgJDBC default name;
+    - `testinbox-listen`;
+    - a missing heartbeat;
+    - a declared node without capability.
 
-**Physical proof** (ephemeral rehearsal only, never `deploy/synthetic`
-against deployed staging, because it would fill staging to *G* and page)
+    Named exclusions pass. With enforcement OFF, nothing is refused and the
+    full protocol runs.
+50. ArchUnit: no unfenced payload write path exists, and the new types sit in
+    their proper layers.
+51. The migration gate (no `TRUNCATE`) and the backup-scope gate (seven
+    tables).
 
-53. **Owner's physical-proof test.**
-    - Setup: a dedicated database and bucket, a small *G* and a declared
-      quota satisfying `DeploymentSafety`, and versioning asserted off.
-    - Drive ingestion across several workspaces until both
-      `refused_workspace > 0` and `refused_global > 0`.
-    - Check `listed ≤ committed + reserved` (I1) at three checkpoints: after
-      the fill, after a crash injected at `beforeCommit` with cleanup paused,
-      and after cleanup.
-    - Finally, check `G − largest copy ≤ listed ≤ G`. R1 is zero because no
-      freeze is injected, so the fill provably reached the ceiling and never
-      passed it.
+**Physical proof** (ephemeral rehearsal only)
 
-**Explicitly untested (stated, not implied):**
+52. **Owner test: physical proof.**
+    - Setup: a dedicated database and bucket, a small *G*, versioning checked
+      off.
+    - Fill until both `refused_workspace > 0` and `refused_global > 0`.
+    - Assert `listed ≤ committed + reserved` at three points: after the fill,
+      after a crash at `beforeCommit` with cleanup paused, and after cleanup.
+    - Finally, assert `G − H − f ≤ listed ≤ G − H`.
 
-- the mixed-version deadlock cycles of §12 (resolved by PostgreSQL's
-  detector);
-- ingestion nodes configured with different values of *G* (§8);
-- provider-adapter mapping (no provider adapter exists yet);
-- alert rules (Ops-owned);
-- the R1 frozen-process case (not injectable deterministically; bounded by
-  arithmetic, not by a test).
+**Explicitly untested:**
+
+- a real MinIO violating A_F (it cannot be injected into MinIO itself;
+  test 26 simulates it with a direct put after release);
+- nodes configured with different values of *G*;
+- provider adapters;
+- Ops alert rules.
+
+Each touched module ratchets its minimum in `verify-test-results.sh`.
+
+### 18. Gates and Ops prerequisites
+
+**Implementation gates, before the implementation PR merges:**
+
+1. The presigner signs with an explicit clock and the signed `content-length`
+   and `If-None-Match` headers, verified against the pinned MinIO in the
+   storage suite. The probes E9 and I1–I6 are the reference.
+2. The upload client enforces a total wall-clock `T_put` and aborts with RST,
+   proven with the TCP proxy.
+3. URL redaction is proven by a log-capture test.
+4. Tests 1–52 are in place, and the minima are ratcheted.
+5. Staging's `deploy.sh` gains the rollback-floor check.
+
+**Enablement gates, before `enforcement=ON`:**
+
+6. The activation barrier (a)–(e) of §14.
+7. The staging-host-class benchmark of §11, before the global ceiling.
+
+**Ops prerequisites, before production enforcement:**
+
+8. Versioning off, no object lock, and no retrying proxy in front of MinIO.
+   Quota `Q ≥ G + max(1 GiB, 10 %, H + the measured MinIO usage-lag churn)`.
+   Evidence goes in `production-ops-acceptance.md` row G.
+9. NTP on the database and MinIO hosts.
+10. Declared values: `global-limit-bytes`, `declared-bucket-quota-bytes`,
+    `declared-max-ingestion-processes` (including deploy surge).
+11. The restore procedure of §9.
+12. A runbook for the admission latch: investigate, then clear.
+
+**Ops prerequisite, before any public SMTP/MX (§12):**
+
+13. Edge queue-age and deferred-mail alerting, early enough to act before the
+    4 h expiry. This does not block acceptance, implementation, staging or a
+    dark production.
 
 ## Amendments to Accepted ADRs (effective on acceptance)
 
-- **ADR-027 §2.** The paragraph "Storage quota is admission control on
-  tenant-initiated growth, not on inbound mail", and the overshoot bound that
-  follows it, are superseded by §3 and §9. `CreateInbox`'s admission rule
-  stands.
-- **ADR-027 §4.** "This is the one place mail addressed to a live inbox is
-  dropped" no longer holds. A storage-ceiling refusal is a second such
-  place, and unlike `INGEST` it is visible to the tenant.
-- **ADR-027 §5.** "Quota usage is derived, never accounted" is superseded for
-  stored bytes by trigger-maintained accounting with reconciliation (§7).
-  `maxActiveInboxes` remains derived.
-- **ADR-027 Alternatives and Consequences.** "Accept-and-drop" and "maintained
-  usage counters" are adopted in a form that answers their rejection reasons.
-  "Evicting the oldest messages" stays rejected (I6). "No usage table" and the
-  overshoot bound are superseded.
-- **ADR-020 §3.** A wait gains `409 storage-limit-exceeded` (§11c).
-- **ADR-024.** One carve-out: derived accounting columns may be maintained by
-  database triggers, provided a use case proves them (§7).
-- **ADR-015 / `docs/api/versioning.md`.** A new problem type for a new failure
-  condition on an existing operation is permitted within v1 while experimental
-  (§11c).
+- **ADR-027 §2.** The storage-quota paragraph and the overshoot bound are
+  superseded by §3, §4 and §9. The `CreateInbox` rule stands.
+- **ADR-027 §4.** "The one place mail addressed to a live inbox is dropped" no
+  longer holds. Storage-ceiling refusals are a second such place, and the
+  tenant can see them.
+- **ADR-027 §5.** "Derived, never accounted" is superseded for stored bytes by
+  the reconciled ledger (§10). `maxActiveInboxes` remains derived.
+- **ADR-027 Alternatives and Consequences.** Accept-and-drop and maintained
+  counters are adopted in a form that answers the reasons they were rejected.
+  Eviction stays rejected. "No usage table" and the overshoot bound are
+  superseded.
+- **ADR-020 §3.** A wait gains the opt-in `409 storage-limit-exceeded`
+  (§13c).
+- **ADR-024.** The carve-out for trigger-maintained accounting (§10).
 - **CLAUDE.md invariant 8.** "Quota usage is derived from real rows, never a
-  counter" becomes: *derived or database-maintained and reconciled; never an
+  counter" becomes *derived, or database-maintained and reconciled; never an
   application-maintained counter*.
 
 ## Alternatives considered
 
-- **`452` for tenant quota.** Rejected for the reasons in ADR-027 §1 (the
-  oracle and the cross-tenant denial of service). Nothing in this ADR weakens
-  them.
-- **`451` for the global ceiling.** Rejected (§10). It would convert
-  application admission control into edge retry traffic that one tenant can
-  impose on every sender.
-- **Freeing a reservation when its 120 s TTL elapses.** Rejected by the owner
-  and by I1. The database would forget bytes that may physically exist.
-- **Evicting the oldest messages to make room.** Rejected (I6).
-- **Grandfathering, or a grace period.** Rejected by the owner.
-- **A single hot global accounting row.** Measured in §8 and rejected.
-- **Deriving stored bytes per delivery** (ADR-027 §5 as written). Measured at
-  26–45 ms per large workspace.
-- **Application-maintained counters.** Rejected: the cascade objection applies
-  to them.
-- **Statement-level triggers with transition tables** in place of row-level
-  triggers plus chunked deletes. Not adopted. Row-level firing on cascade is
-  measured; statement-level firing on cascade is not. Chunking bounds lock
-  hold time regardless of trigger shape.
-- **Redis, or any in-memory global counter.** Rejected (ADR-006, and the owner's
-  instruction).
-- **Counting PostgreSQL metadata.** Rejected by the owner.
-- **Evaluating the waiter's matcher against the refused copy.** Rejected
-  (§11c).
-- **A new `200` wait status instead of a `409`.** Rejected (§11c).
-- **Exposing global headroom to tenants.** Rejected (§11a).
-- **Hysteresis on the global ceiling to blunt probing.** Not adopted (§11b
-  residual). It adds shared state for an incident-only signal.
+- **`452` for a tenant quota, or `451` for the global ceiling.** Rejected:
+  §12, and ADR-027 §1.
+- **Releasing capacity when the TTL elapses.** Rejected by the owner and by
+  I5.
+- **Eviction, grandfathering, or a grace period.** Rejected by the owner.
+- **A single hot global accounting row.** Measured and rejected (§11).
+- **Row-level triggers that update account rows (rev 2).** Replaced. They
+  took 19.8 s against 0.25 s for a 50k cascade, and they caused lock cycles
+  with old binaries.
+- **Deriving stored bytes per delivery.** Measured at 26–45 ms.
+- **Application-maintained counters.** Rejected: the cascade objection
+  applies to them.
+- **A writer-side cutoff as the fence (rev 2).** Replaced by server-enforced
+  presigned expiry.
+- **Reserving before taking a write slot (rev 3).** Replaced. Slot queueing
+  consumed write deadlines and turned load into cross-tenant `451`s.
+- **An in-memory ambiguity budget (rev 3).** Replaced by persisted ambiguity
+  that occupies slots. The in-memory version was unbounded across breaker
+  cycles and restarts.
+- **A content checksum to prevent URL replay.** `If-None-Match: *` is
+  stronger (create-only) and is verified.
+- **Multipart ownership in the reservation protocol (options B and C).**
+  Unnecessary: only single-part PUTs are issued, and a guard catches anything
+  else.
+- **Redis or an in-memory counter.** Rejected (ADR-006, owner).
+- **Counting metadata.** Rejected by the owner.
+- **Evaluating the waiter's matcher against the refused copy.** Rejected: that
+  needs content that is discarded.
+- **A new `200` wait status.** Rejected: released SDK builds would swallow it.
+- **A `409` on every wait, cursor or not (rev 2).** Replaced by the opt-in
+  cursor, which is fully additive.
+- **Advancing the SDK cursor on a `MATCHED` echo.** Rejected: it would swallow
+  the refusal that the match outranked.
+- **Exposing global headroom.** Rejected (O3).
+- **Quantizing or adding hysteresis to the global cap now.** Deferred as a
+  follow-up (§13d).
 
 ## Consequences
 
-- **Stored bytes are bounded at ingest** by the inbox (O1), workspace and
-  global ceilings. The ADR-027 overshoot of about 12.4 TiB per workspace
-  becomes *G* + 240 MiB service-wide, once any backfilled excess has expired.
-- **Mail to a live inbox can now be dropped because of storage, but never
-  silently.** The tenant sees it on the inbox, on the workspace, and as a
-  typed, immediate wait failure. The sender still sees only `250`.
-- **A crash costs temporary capacity, never accounting accuracy.** The cost is
-  up to 120 s + *settle* per stale copy.
-- **Code changes by component:**
-  - `ReceiveInboundDelivery` gains T1, the write cutoff, a fenced T2, the
-    refusal records and the breaker.
-  - The retention hard delete becomes chunked and transactional.
-  - The API scheduler gains cleanup and reconciliation.
-  - `S3BlobStore` gains a real timeout and single-attempt puts.
-  - The gateway gains explicit connection and recipient bounds.
-- **Schema.** Three tables, the trigger functions, and one expand-only
+- TestInbox-owned payload stays ≤ *G* once any pre-existing excess has
+  drained, under A_F or A_F violated by up to `T_verify`. Beyond that, the
+  system detects the violation and fails closed. The ADR-027 overshoot of
+  about 12.4 TiB per workspace is gone.
+- A refused copy is never silent to the tenant. The sender sees only `250`.
+- A crash or a storage stall costs capacity and temporary write concurrency.
+  It never costs accuracy.
+- The write path changes: slot, then T1, then presigned create-only uploads
+  with RST aborts, then T2. `BlobStore` loses its unfenced `put`.
+- V6 adds no lock-order hazard for old binaries. Enforcement turns on only
+  behind a proven barrier and a floor that is already on `master`.
+- Seven tables, statement triggers, the compactor, and one expand-only
   migration.
-- **Documents to update in the implementing PR:**
-  - `docs/api/v1-design.md` and `docs/api/versioning.md`;
-  - `docs/architecture/wait-semantics.md`, `inbound-mail-flow.md`,
-    `failure-modes.md`, `observability.md` and `data-ownership.md`;
-  - `docs/security/abuse-model.md` §4. The anti-enumeration statement is
-    **preserved**; the O1 and O3 residuals are added.
-  - `docs/dev/production.md` and `production-ops-acceptance.md`: row G (the
-    bucket quota above *G* + residue, versioning off, no object lock, and the
-    benchmark result), plus new rows for the restore procedure (R3) and the
-    edge-queue-age alert;
-  - `deploy/backup/scope.txt`;
-  - `deploy/mail-edge/contract.yaml` (`maxRecipients`);
+- These documents change on acceptance and implementation:
+  - `docs/api/v1-design.md`;
+  - `docs/architecture/` (`wait-semantics`, `inbound-mail-flow`,
+    `failure-modes`, `observability`, `data-ownership`);
+  - `docs/security/abuse-model.md`, which keeps its anti-enumeration
+    statement and gains the O1 and O3 residuals and the persistence residual;
+  - `docs/dev/production.md`, `production-ops-acceptance.md` (row G, plus
+    rows for restore, clock, latch, edge queue and activation), and
+    `rollback.md`;
+  - `deploy/backup/scope.txt`, `deploy/mail-edge/contract.yaml`,
+    `deploy/rollback-floors.txt`, and `deploy/staging/deploy.sh`;
   - CLAUDE.md invariant 8;
   - the SDK READMEs.
-- **Multiple workspaces remain a bypass.** Every workspace-scoped limit can
-  still be bypassed with a second workspace (ADR-027 Consequences). The
-  global ceiling is what now bounds the service however many workspaces
-  exist.
+- Every workspace limit can still be bypassed with a second workspace. The
+  global ceiling bounds the service regardless.
