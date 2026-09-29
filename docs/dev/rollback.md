@@ -129,7 +129,7 @@ API and migrator suites of the pre-V6 commit, run against a V6 schema.
   appending to `storage_delta` without knowing it.
 - **The rolled-back artifact never folds those deltas.** It has no compactor,
   so the ledger grows by about one row per writing statement until a V6-aware
-  artifact returns. Nothing reads the ledger to decide anything yet, so this
+  artifact returns. Nothing on a live path reads the ledger to decide anything yet (the TI-STORAGE-002 admission core is not wired), so this
   costs rows, not correctness. When the V6-aware artifact returns, its
   compactor drains the backlog in bounded passes.
 - **If the backlog is ever unwanted,** run `SELECT storage_account_recompute();`
