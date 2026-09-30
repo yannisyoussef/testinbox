@@ -63,38 +63,57 @@ exist.
 - **The source of truth.** The rows themselves remain the authority. The
   ledger is derived, reconcilable and rebuilt after a restore.
 
-**Implemented internally, NOT wired to ingress (TI-STORAGE-002):** the atomic
-admission and reservation core (ADR-035 §4, T1).
+**Live, with enforcement OFF (TI-STORAGE-002 core, TI-STORAGE-003 wiring):**
+the guarded ingest protocol of ADR-035 §4–§9. It is ADR-035 Phase 2: the
+whole protocol runs, every ceiling is observed, and nothing is refused for
+capacity.
 
-- `StorageAdmission` decides one event's recipient copies, in envelope order,
-  against three ceilings:
-  - the inbox, at `floor(workspace × share)`;
-  - the workspace;
-  - the global admission cap `G − H`.
-- `JdbcStorageAdmission` runs it as one transaction:
-  - READ COMMITTED, with `synchronous_commit = on` and a 5 s lock timeout;
-  - the advisory lock `(35, 1)`;
-  - **one** statement that reads base, deltas and reservations for every scope;
-  - one insert of the admitted copies' `RESERVED` rows.
-- It has an enforcement-OFF mode, which reserves without refusing.
-- It is proven in the persistence suite, including under concurrency.
-- **Nothing calls it.** The adapter is not a Spring bean, and an ArchUnit rule
-  forbids any deployable from depending on it. Normal SMTP and provider traffic
-  therefore creates no reservation, and no mail is refused because of
-  storage.
+- **Write slots.** Each ingestion node has 16. One workspace holds at most 4,
+  and a slot waits at most 10 s. An event takes one slot BEFORE its
+  reservations, so waiting never spends a write deadline. Unresolved
+  ambiguity for the node occupies its slots, across restarts.
+- **T1 (`JdbcStorageAdmission`).** The advisory lock `(35, 1)`, one snapshot
+  of base, deltas and reservations, then the event's `RESERVED` rows. The
+  live path constructs it with enforcement **OFF**, as a literal; no
+  property, environment variable or profile can change it.
+- **Fenced uploads.** One presigned PUT per exact key, signed with T1's
+  database clock. The storage server binds the key, the length, create-only
+  and a start deadline. Each upload is attempted once, with `T_put` and an
+  RST abort. These are the only payload writes: an ArchUnit rule allows no
+  other S3 `putObject` than the storage witness.
+- **T2.** Reservations `FOR UPDATE`, then inboxes `FOR KEY SHARE`, then the
+  refusal records, the messages with their `pg_notify`, and the reservations
+  consumed, all in ONE transaction. An ADR-026 duplicate's reservation goes
+  to `RELEASING`.
+- **Failure.** Any physical failure abandons the whole event (`451`):
+  - a definitive one releases its reservations now;
+  - an ambiguous one keeps them charged, persists `storage_ambiguity`, and
+    opens the node's breaker.
+- **Cleanup** (API, every 30 s). It expires overdue reservations to
+  `RELEASING` (`release_not_before = deadline + S`). It releases one only
+  after all of these:
+  - the clock-offset check;
+  - a storage witness issued after `release_not_before`, plus `C_drain`;
+  - a per-exact-key proof that both the object and any multipart upload are
+    absent.
+
+  Anything that reappears is a late object: it is deleted, and the admission
+  latch (`storage_admission_latch`) is set. Only an operator clears it.
+- **Verification** (API, every 60 s). Ambiguity is verified at `T_verify`
+  (60 min). Each node heartbeats in `storage_node`, and a node that died with
+  uploads in flight leaves keyless ambiguity for them.
+- **Refusal records** (`inbox_storage.refusal_count`) commit inside T2, or in
+  a short transaction of their own when nothing was admitted. With
+  enforcement OFF there are none.
 
 **Not implemented yet** (later ADR-035 slices):
-- the live guarded ingest path: write slots, fenced (presigned) object writes,
-  and the T2 commit that consumes a reservation;
-- reservation cleanup and release;
-- refusal counters;
-- the storage breaker, ambiguity tracking and the admission latch;
-- API and SDK visibility;
-- any enforcement.
-
-V6's `storage_ambiguity`, `storage_node` and `storage_admission_latch` tables
-are still never written. Outside the persistence tests, nothing writes
-`storage_reservation` either.
+- authenticated storage visibility: the workspace storage endpoint, the
+  inbox `StorageUsage` fields, and the refusal counts;
+- the opt-in wait `409` and its cursor;
+- JVM and TypeScript SDK behaviour;
+- enabling any enforcement. That needs the §14 activation barrier and the
+  §18 enablement gates (the §11 staging benchmark, the storage
+  qualification, the Ops prerequisites).
 
 ## Backup scope
 

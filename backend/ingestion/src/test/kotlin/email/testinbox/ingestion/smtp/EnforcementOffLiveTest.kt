@@ -91,6 +91,23 @@ class EnforcementOffLiveTest {
         (counter("testinbox_storage_admission_unenforced_total", "ceiling", "inbox") > 0) shouldBe true
     }
 
+    @Test
+    fun `the deployable's database sessions carry the storage-v1 capability name`() {
+        // ADR-035 §14 (a): the activation barrier allowlists testinbox-%:%:storage-v1,
+        // which an old binary (pgJDBC's default name) cannot match.
+        jdbc
+            .sql("SELECT count(*) FROM pg_stat_activity WHERE application_name = 'testinbox-ingestion:testinbox-ingestion:storage-v1'")
+            .query(Long::class.java)
+            .single()
+            .let { (it > 0) shouldBe true }
+        jdbc
+            .sql(
+                "SELECT count(*) FROM storage_node WHERE capability = 'storage-v1' AND NOT clean_shutdown",
+            ).query(Long::class.java)
+            .single() shouldBe
+            1
+    }
+
     companion object {
         @JvmStatic
         @ServiceConnection

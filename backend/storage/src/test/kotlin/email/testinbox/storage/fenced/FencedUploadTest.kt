@@ -301,6 +301,28 @@ class FencedUploadTest {
     }
 
     @Test
+    fun `a body stalled before EOF, with storage's side left open, is failed by MinIO's idle timeout, and nothing commits`() {
+        // §17 test 53, the pre-EOF control. The proxy keeps MinIO's connection open
+        // and silent after the client gives up, so only MinIO's own idle timeout
+        // (30 s + 250 ms, §9a) can end the request. No object may ever appear.
+        proxy.mode = TcpFaultProxy.Mode.STALL
+        proxy.stallAfterBytes = 90 * 1024 // 90% of the body reaches storage, then nothing
+        proxy.holdUpstreamOnAbort = true
+        val key = key()
+
+        uploader(viaProxy(), tPut = Duration.ofSeconds(1)).put(upload(key, ByteArray(100 * 1024))) shouldBe
+            UploadOutcome.Ambiguous(AmbiguityKind.TIMEOUT)
+
+        // Past MinIO's idle timeout, with margin: strict checks, absent every time.
+        val until = System.nanoTime() + Duration.ofSeconds(36).toNanos()
+        while (System.nanoTime() < until) {
+            exists(key) shouldBe false
+            Thread.sleep(2_000)
+        }
+        exists(key) shouldBe false
+    }
+
+    @Test
     fun `a completed upload ends with a normal close, so the RST is specific to the abort`() {
         proxy.mode = TcpFaultProxy.Mode.PASS
 

@@ -49,6 +49,16 @@ class TcpFaultProxy(
 
     @Volatile var canned: String = ""
 
+    /**
+     * When the client aborts a STALL, leave storage's side open and silent
+     * instead of resetting it, so only storage's own idle timeout can end the
+     * request (§17 test 53, the pre-EOF control).
+     */
+    @Volatile var holdUpstreamOnAbort = false
+
+    /** Storage-side connections held open by [holdUpstreamOnAbort], closed by [close]. */
+    private val held = java.util.concurrent.CopyOnWriteArrayList<Socket>()
+
     /** How many client connections were accepted: one attempt means exactly one. */
     val connections = AtomicInteger()
 
@@ -122,6 +132,11 @@ class TcpFaultProxy(
                 if (forward > 0) upstream.getOutputStream().write(bytes, 0, forward)
             }
         clientEnds += end
+        if (mode == Mode.STALL && holdUpstreamOnAbort) {
+            held += upstream
+            runCatching { client.close() }
+            return
+        }
         if (end == "RST" || mode == Mode.STALL) {
             // Mirror an aborted client onto storage: the request dies there too.
             abort(upstream)
@@ -187,6 +202,7 @@ class TcpFaultProxy(
     }
 
     override fun close() {
+        held.forEach { runCatching { it.close() } }
         server.close()
         acceptor.join(1_000)
     }
