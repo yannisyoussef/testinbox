@@ -23,6 +23,7 @@ import email.testinbox.application.storage.StorageNodeLifecycle
 import email.testinbox.application.storage.WriteSlots
 import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.application.usecase.StorageAdmission
+import email.testinbox.domain.storage.InboxShare
 import email.testinbox.domain.storage.StorageCapacityPolicy
 import email.testinbox.domain.storage.StorageEnforcement
 import email.testinbox.ingestion.mime.JakartaMimeParser
@@ -267,7 +268,10 @@ class IngestionWiring(
         fun storagePolicy(limits: LimitsConfig): StorageCapacityPolicy {
             val reference = StorageCapacityPolicy.ADR_035_REFERENCE
             val workspace = limits.quotas.maxStoredBytes.coerceAtMost(reference.globalLimitBytes)
-            return StorageCapacityPolicy(workspace, reference.inboxShare, reference.globalLimitBytes, reference.finalizeBudgetBytes)
+            // A workspace limit too small for the reference share to floor above
+            // zero (only ever a test setting) observes against the whole workspace.
+            val share = if (reference.inboxShare.floorOf(workspace) > 0) reference.inboxShare else InboxShare.of("1")
+            return StorageCapacityPolicy(workspace, share, reference.globalLimitBytes, reference.finalizeBudgetBytes)
         }
     }
 }
