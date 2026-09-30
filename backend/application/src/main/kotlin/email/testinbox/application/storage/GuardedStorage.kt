@@ -118,15 +118,15 @@ class GuardedStorage(
         require(copies.all { it.bytes == bytesPerCopy }) { "every copy of an event has the same exact footprint" }
         ensureOpen()
         val trial = admitThroughBreaker()
-        var trialEnded = !trial
+        var trialEnded = trial == null
         try {
             val report = ingestHoldingSlot(bytesPerCopy, copies, persist)
-            if (trial) {
+            if (trial != null) {
                 if (report.appended.isEmpty() && report.duplicates.isEmpty()) {
                     breaker.abandonTrial()
                 } else {
-                    breaker.close()
-                    metrics.breakerOpen(false)
+                    breaker.close(trial)
+                    metrics.breakerOpen(breaker.isOpen)
                 }
                 trialEnded = true
             }
@@ -235,11 +235,11 @@ class GuardedStorage(
         }
     }
 
-    /** True when this event is the breaker's real-event (quota) trial. */
-    private fun admitThroughBreaker(): Boolean =
+    /** The breaker's real-event (quota) trial this event is, or null. */
+    private fun admitThroughBreaker(): StorageBreaker.Admission.Trial? =
         when (val admission = breaker.admit()) {
             StorageBreaker.Admission.Closed -> {
-                false
+                null
             }
 
             is StorageBreaker.Admission.Blocked -> {
@@ -256,11 +256,11 @@ class GuardedStorage(
                     )
                 }
                 if (admission.needsRealEvent) {
-                    true
+                    admission
                 } else {
-                    breaker.close()
-                    metrics.breakerOpen(false)
-                    false
+                    breaker.close(admission)
+                    metrics.breakerOpen(breaker.isOpen)
+                    null
                 }
             }
         }

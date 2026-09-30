@@ -272,7 +272,7 @@ class VerifyAmbiguousUploads(
             if (incomplete) inspection.incompleteUploads().filter { it.key == key }.forEach(inspection::abortIncompleteUpload)
             result = Verified.LATE
         }
-        ambiguity.resolve(record.id)
+        if (committed) ambiguity.resolveCommitted(record.id) else ambiguity.resolve(record.id)
         return result
     }
 

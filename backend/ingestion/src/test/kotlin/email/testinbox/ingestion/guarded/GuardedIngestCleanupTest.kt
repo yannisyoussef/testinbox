@@ -250,4 +250,32 @@ class GuardedIngestCleanupTest {
         h.latched() shouldBe "late object found by the orphan sweep"
         h.inspection.objectExists(key) shouldBe false
     }
+
+    @Test
+    fun `a key proven committed leaves no evidence, so its later orphan never latches`() {
+        // A live node wrongly declared dead gets coverage rows for events that then
+        // commit normally. When such a message is later deleted, its orphaned
+        // objects are ordinary content, not late objects.
+        val h = track(GuardedIngestHarness())
+        val (_, a) = h.inbox(h.workspace())
+        h.deliver(listOf(a)).accepted.size shouldBe 1
+        val key = h.fencedWrites.first()
+        h.ambiguity.record("recovered:some-node", key, 0, Duration.ZERO)
+        h.verification().run().resolved shouldBe 1
+        h.count("SELECT count(*) FROM storage_ambiguity") shouldBe 0
+
+        h.jdbc.sql("DELETE FROM message").update() // e.g. its inbox hard-deleted, the prefix delete failed
+        OrphanBlobSweep(
+            h.blobs,
+            h.reservations,
+            h.ambiguity,
+            h.ambiguity,
+            h.inspection,
+            Clock.offset(Clock.systemUTC(), Duration.ofHours(2)),
+            Duration.ofHours(1),
+        ).sweep()
+
+        h.latched() shouldBe null
+        h.inspection.objectExists(key) shouldBe false
+    }
 }

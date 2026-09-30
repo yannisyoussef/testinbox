@@ -473,6 +473,19 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `a node id is held by one process at a time, and released when it stops`() {
+        val claims = JdbcStorageNodeClaims(db.dataSource)
+        val first = checkNotNull(claims.claim("node-x"))
+        first.held() shouldBe true
+        claims.claim("node-x") shouldBe null // a second process with the same id cannot start
+        claims.claim("node-y")?.close() // another id is independent
+
+        first.close()
+        val again = checkNotNull(claims.claim("node-x"))
+        again.close()
+    }
+
+    @Test
     fun `the latch is set once and only an operator clears it`() {
         ambiguity.latched() shouldBe null
         ambiguity.latch("late object")

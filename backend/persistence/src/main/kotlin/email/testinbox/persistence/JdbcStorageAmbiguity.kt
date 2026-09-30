@@ -88,6 +88,10 @@ class JdbcStorageAmbiguity(
         jdbc.sql("UPDATE storage_ambiguity SET resolved_at = now() WHERE id = :id AND resolved_at IS NULL").param("id", id).update()
     }
 
+    override fun resolveCommitted(id: Long) {
+        jdbc.sql("DELETE FROM storage_ambiguity WHERE id = :id AND resolved_at IS NULL").param("id", id).update()
+    }
+
     override fun wasAmbiguous(
         key: String,
         within: Duration,

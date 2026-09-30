@@ -168,6 +168,13 @@ interface StorageAmbiguity {
     fun resolve(id: Long)
 
     /**
+     * Resolved by a COMMITTED message: the key's objects are legitimate
+     * content, so no evidence is kept. A later orphan of that key (its inbox
+     * deleted) must not look like a late object to [wasAmbiguous].
+     */
+    fun resolveCommitted(id: Long)
+
+    /**
      * Whether [key] was ambiguous within [within]: resolved or not. The orphan
      * sweep uses it to recognise a late object it is about to delete (§9 point 2).
      */

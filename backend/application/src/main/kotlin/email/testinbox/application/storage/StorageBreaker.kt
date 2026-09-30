@@ -41,6 +41,8 @@ class StorageBreaker(
          */
         data class Trial(
             val kinds: Set<Kind>,
+            /** The trip generation this trial was issued for. */
+            val epoch: Long = 0,
         ) : Admission {
             /** Whether the caller's real event is part of the trial (quota). */
             val needsRealEvent: Boolean get() = Kind.QUOTA in kinds
@@ -52,12 +54,15 @@ class StorageBreaker(
     private var retryAt = 0L
     private var trialInFlight = false
 
+    /** Bumped on every trip, so a trial only ever closes the trips it was issued for. */
+    private var epoch = 0L
+
     @Synchronized
     fun admit(): Admission {
         if (kinds.isEmpty()) return Admission.Closed
         if (trialInFlight || nanoTime() - retryAt < 0) return Admission.Blocked(kinds.toSet())
         trialInFlight = true
-        return Admission.Trial(kinds.toSet())
+        return Admission.Trial(kinds.toSet(), epoch)
     }
 
     /** Whether a caller would be refused right now. Consumes no trial. */
@@ -76,6 +81,7 @@ class StorageBreaker(
                 initialBackoff
             }
         kinds += kind
+        epoch++
         trialInFlight = false
         retryAt = nanoTime() + backoff.toNanos()
     }
@@ -86,7 +92,17 @@ class StorageBreaker(
         trialInFlight = false
     }
 
-    /** The trial succeeded for every open kind. */
+    /**
+     * [trial] succeeded. It closes the breaker only if nothing tripped since
+     * it was issued: a quota trial is a whole real event, and an ambiguous
+     * outcome or a clock offset reported meanwhile needs its own trial.
+     */
+    @Synchronized
+    fun close(trial: Admission.Trial) {
+        if (trial.epoch == epoch) close() else trialInFlight = false
+    }
+
+    /** Closes unconditionally (a success no later trip can have overtaken). */
     @Synchronized
     fun close() {
         kinds.clear()

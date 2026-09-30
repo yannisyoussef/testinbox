@@ -68,21 +68,22 @@ class StorageNodeRuntime(
             }
         }
 
+    @Synchronized
     private fun heartbeat() {
         runCatching {
             lifecycle.heartbeat()
-            claim?.let { held ->
-                if (!held.held()) {
-                    // The claim's session died, so the id is unguarded: take it
-                    // back, or fail closed if another process got it meanwhile.
-                    runCatching { held.close() }
-                    claim = claims?.claim(lifecycle.node.nodeId)
-                    if (claim == null) {
-                        log.error("storage node id lost to another process: storage breaker open")
-                        breaker.trip(StorageBreaker.Kind.UNAVAILABLE)
-                        metrics.breakerOpen(true)
-                    }
-                }
+            val c = claims ?: return@runCatching
+            if (claim?.held() == true) return@runCatching
+            // The claim's session died, so the id is unguarded: take it back,
+            // or stay failed closed while another process holds it. The trip
+            // is renewed on EVERY heartbeat (more often than any backoff), so
+            // no trial can reopen ingestion while the id is shared.
+            claim?.let { runCatching { it.close() } }
+            claim = c.claim(lifecycle.node.nodeId)
+            if (claim == null) {
+                log.error("storage node id held by another process: storage breaker kept open")
+                breaker.trip(StorageBreaker.Kind.UNAVAILABLE)
+                metrics.breakerOpen(true)
             }
         }.onFailure { log.warn("storage node heartbeat failed: {}", it.toString()) }
     }
@@ -103,6 +104,7 @@ class StorageNodeRuntime(
         }.onFailure { log.warn("storage clock offset check failed: {}", it.toString()) }
     }
 
+    @Synchronized
     override fun stop() {
         executors.forEach { it.shutdownNow() }
         executors = emptyList()

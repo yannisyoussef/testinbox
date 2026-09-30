@@ -296,6 +296,10 @@ class InMemoryStorageAmbiguity(
         }
     }
 
+    override fun resolveCommitted(id: Long) {
+        records.removeIf { it.id == id && !it.resolved }
+    }
+
     override fun wasAmbiguous(
         key: String,
         within: Duration,

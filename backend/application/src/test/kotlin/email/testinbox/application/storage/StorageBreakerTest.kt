@@ -30,7 +30,7 @@ class StorageBreakerTest {
 
         advance(Duration.ofSeconds(15))
         breaker.isBlocked() shouldBe false // a check consumes no trial
-        breaker.admit() shouldBe Admission.Trial(setOf(Kind.AMBIGUOUS))
+        breaker.admit() shouldBe Admission.Trial(setOf(Kind.AMBIGUOUS), 1)
         breaker.admit() shouldBe Admission.Blocked(setOf(Kind.AMBIGUOUS)) // one trial at a time
         breaker.isBlocked() shouldBe true
     }
@@ -60,7 +60,7 @@ class StorageBreakerTest {
         advance(Duration.ofSeconds(15))
         breaker.admit().shouldBeInstanceOf<Admission.Trial>()
         breaker.abandonTrial()
-        breaker.admit() shouldBe Admission.Trial(setOf(Kind.QUOTA))
+        breaker.admit() shouldBe Admission.Trial(setOf(Kind.QUOTA), 1)
     }
 
     @Test
@@ -70,7 +70,7 @@ class StorageBreakerTest {
         advance(breaker.currentBackoff)
 
         val trial = breaker.admit()
-        trial shouldBe Admission.Trial(setOf(Kind.AMBIGUOUS, Kind.CLOCK_OFFSET))
+        trial shouldBe Admission.Trial(setOf(Kind.AMBIGUOUS, Kind.CLOCK_OFFSET), 2)
         (trial as Admission.Trial).needsRealEvent shouldBe false
     }
 
@@ -80,5 +80,27 @@ class StorageBreakerTest {
         breaker.trip(Kind.UNAVAILABLE)
         advance(breaker.currentBackoff)
         (breaker.admit() as Admission.Trial).needsRealEvent shouldBe true
+    }
+
+    @Test
+    fun `a trial's success never closes a trip that happened while it ran`() {
+        breaker.trip(Kind.QUOTA)
+        advance(breaker.currentBackoff)
+        val trial = breaker.admit() as Admission.Trial // a whole real event, up to E
+
+        breaker.trip(Kind.AMBIGUOUS) // an older event ends ambiguous meanwhile
+        breaker.close(trial) // the quota trial succeeds
+
+        breaker.isOpen shouldBe true // the ambiguous trip still needs its own probe
+        advance(breaker.currentBackoff)
+        breaker.admit() shouldBe Admission.Trial(setOf(Kind.QUOTA, Kind.AMBIGUOUS), 2)
+    }
+
+    @Test
+    fun `a trial issued for the current trips closes the breaker`() {
+        breaker.trip(Kind.UNAVAILABLE)
+        advance(breaker.currentBackoff)
+        breaker.close(breaker.admit() as Admission.Trial)
+        breaker.isOpen shouldBe false
     }
 }
