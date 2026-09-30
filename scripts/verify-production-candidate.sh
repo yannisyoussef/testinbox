@@ -132,26 +132,14 @@ note "every digest attests to source commit $candidate via $SIGNER_WORKFLOW"
 # is a checkout that cannot evaluate them. Requires full history: after a
 # squash or rebase merge the candidate SHA is on develop, not master, and is
 # present only because develop is fetched too and never force-pushed.
-[[ -f "$FLOORS" ]] || refuse "rollback floors file not found at $FLOORS; the checkout cannot evaluate rollback hazards"
-{
-  while IFS= read -r line; do
-    line="${line%%#*}"; [[ -n "${line// /}" ]] || continue
-    floor="${line%% *}"; why="${line#* }"
-    [[ "$floor" =~ ^[0-9a-f]{40}$ ]] || refuse "rollback floor '$floor' in $FLOORS is not a commit SHA"
-    git cat-file -e "${floor}^{commit}" 2>/dev/null \
-      || refuse "rollback floor $floor is not in this checkout; fetch full history (fetch-depth: 0) so floors can be evaluated"
-    git cat-file -e "${candidate}^{commit}" 2>/dev/null \
-      || refuse "candidate $candidate is not in this checkout; fetch full history so rollback floors can be evaluated"
-    if ! git merge-base --is-ancestor "$floor" "$candidate"; then
-      if [[ "$acknowledge" == true ]]; then
-        echo "WARNING: candidate predates rollback floor $floor ($why); proceeding on explicit acknowledgement" >&2
-      else
-        refuse "candidate $candidate predates rollback floor $floor: $why. Re-run with --acknowledge-rollback-hazard only if that outage is understood and announced"
-      fi
-    fi
-  done < "$FLOORS"
-  note "rollback floors evaluated"
-}
+ack_flag=()
+[[ "$acknowledge" == true ]] && ack_flag=(--acknowledge-rollback-hazard)
+if ! floors_out="$(ROLLBACK_FLOORS="$FLOORS" "$SCRIPT_DIR/check-rollback-floors.sh" --candidate "$candidate" ${ack_flag[@]+"${ack_flag[@]}"} 2>&1)"; then
+  reason="$(printf '%s' "$floors_out" | sed -n 's/^REFUSED: //p' | head -1)"
+  refuse "${reason:-rollback floor check failed: $floors_out}"
+fi
+printf '%s\n' "$floors_out" | grep '^WARNING:' >&2 || true
+note "rollback floors evaluated"
 
 # --- 6. record the identity --------------------------------------------------
 json="$(jq -n --arg sha "$candidate" --arg mode "$mode" --argjson ack "$acknowledge" \

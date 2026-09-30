@@ -52,7 +52,7 @@ run_bounded() {
 
 step() { printf '\n=== %s ===\n' "$1"; }
 
-step "1/5 validate image references"
+step "1/6 validate image references"
 # Ownership and digest-pinning, before anything is pulled (§29).
 "$REPO_ROOT/scripts/validate-image-digest.sh" \
   "$TESTINBOX_API_IMAGE" \
@@ -60,10 +60,32 @@ step "1/5 validate image references"
   "$TESTINBOX_WEB_IMAGE" \
   "$TESTINBOX_MIGRATOR_IMAGE"
 
-step "2/5 pull artifacts"
+step "2/6 pull artifacts"
 compose pull --quiet
 
-step "3/5 run the migration job to completion"
+step "3/6 rollback floors"
+# ADR-035 §14 (e) and §18 gate 5: once staging runs the guarded ingest protocol,
+# a rollback to a backend artifact that predates a floor in
+# deploy/rollback-floors.txt must not happen silently. The candidate is the
+# revision each backend image was built from (its OCI label). An image with
+# no label cannot be evaluated, so it is refused. This is the SAME check the
+# production gate runs (scripts/check-rollback-floors.sh).
+floor_ack=()
+[[ "${TESTINBOX_ACKNOWLEDGE_ROLLBACK_HAZARD:-false}" == "true" ]] && floor_ack=(--acknowledge-rollback-hazard)
+for image in "$TESTINBOX_API_IMAGE" "$TESTINBOX_INGESTION_IMAGE"; do
+  revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image" 2>/dev/null || true)"
+  if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "DEPLOYMENT ABORTED: $image carries no source revision label; its rollback floors cannot be evaluated" >&2
+    exit 1
+  fi
+  if ! ROLLBACK_FLOORS_REPO="$REPO_ROOT" "$REPO_ROOT/scripts/check-rollback-floors.sh" --candidate "$revision" ${floor_ack[@]+"${floor_ack[@]}"}; then
+    echo "DEPLOYMENT ABORTED: $image (revision $revision) is below a rollback floor; nothing was migrated or restarted." >&2
+    echo "  Set TESTINBOX_ACKNOWLEDGE_ROLLBACK_HAZARD=true only if that hazard is understood and announced." >&2
+    exit 1
+  fi
+done
+
+step "4/6 run the migration job to completion"
 # --rm: the job is one-shot. A non-zero exit propagates through `set -e` and
 # stops the deployment here, before any service is started or updated.
 # Bounded, because Flyway takes a Postgres advisory lock: a stuck prior
@@ -74,7 +96,7 @@ if ! run_bounded "${TESTINBOX_MIGRATION_TIMEOUT:-600}" docker compose "${COMPOSE
   exit 1
 fi
 
-step "4/5 start/update services"
+step "5/6 start/update services"
 # --wait blocks on the healthchecks, which are readiness probes — so this
 # returns only when every service can actually serve TestInbox traffic. That
 # holds only because every service has a healthcheck: `--wait` treats one
@@ -96,7 +118,7 @@ if ! compose up -d --wait --force-recreate --wait-timeout "${TESTINBOX_READY_TIM
   exit 1
 fi
 
-step "5/5 record what is running"
+step "6/6 record what is running"
 # Deployment evidence (§16/§31). Safe metadata only: commit, version, digest.
 for service in api ingestion; do
   port=$([[ "$service" == api ]] && echo 9090 || echo 9091)
