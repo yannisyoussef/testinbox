@@ -15,4 +15,6 @@ dependencies {
     testImplementation(libs.kotest.assertions)
     testImplementation(libs.testcontainers.minio)
     testImplementation(libs.testcontainers.junit)
+    // Log capture for the URL-redaction proof (ADR-035 §18 gate 3).
+    testImplementation("ch.qos.logback:logback-classic")
 }

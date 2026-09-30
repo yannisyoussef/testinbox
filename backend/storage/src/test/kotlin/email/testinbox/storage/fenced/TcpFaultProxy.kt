@@ -1,0 +1,193 @@
+package email.testinbox.storage.fenced
+
+import java.io.IOException
+import java.io.InputStream
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.SocketException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
+
+/**
+ * A TCP proxy between the upload client and MinIO that injects the faults of
+ * ADR-035 §17 (tests 21–23): it can stall a body, swallow the response to a
+ * complete body, reset the client after the body, or answer with a canned
+ * response instead of storage.
+ *
+ * It also observes how the CLIENT ended the connection. A read that fails
+ * with "Connection reset" is an RST. A read that returns end-of-stream is a
+ * FIN. That distinction is the whole point of the `T_put` gate.
+ */
+class TcpFaultProxy(
+    private val target: InetSocketAddress,
+) : AutoCloseable {
+    enum class Mode {
+        /** Forward everything both ways. */
+        PASS,
+
+        /** Forward the request head and [stallAfterBytes] bytes, then nothing more. Never answer. */
+        STALL,
+
+        /** Forward the whole request; discard the response, so the client never sees it (probe E5). */
+        SWALLOW_RESPONSE,
+
+        /** Forward the whole request; when storage answers, reset the client instead. */
+        RESET_AFTER_BODY,
+
+        /** Do not contact storage: read the request, answer with [canned]. */
+        RESPOND,
+    }
+
+    @Volatile var mode = Mode.PASS
+
+    @Volatile var stallAfterBytes = 512
+
+    @Volatile var canned: String = ""
+
+    /** How many client connections were accepted: one attempt means exactly one. */
+    val connections = AtomicInteger()
+
+    /** How each client connection ended: `RST`, `FIN`, or `ANSWERED` (the proxy closed it). */
+    val clientEnds = LinkedBlockingQueue<String>()
+
+    private val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+    val port: Int get() = server.localPort
+
+    private val acceptor =
+        thread(isDaemon = true, name = "fault-proxy-accept") {
+            while (!server.isClosed) {
+                val client = runCatching { server.accept() }.getOrNull() ?: break
+                connections.incrementAndGet()
+                val snapshot = mode
+                thread(isDaemon = true, name = "fault-proxy-conn") { handle(client, snapshot) }
+            }
+        }
+
+    private fun handle(
+        client: Socket,
+        mode: Mode,
+    ) {
+        if (mode == Mode.RESPOND) return respond(client)
+        val upstream = Socket().apply { connect(target, 5_000) }
+        val upstreamDone = CountDownLatch(1)
+        // storage → client
+        thread(isDaemon = true, name = "fault-proxy-down") {
+            try {
+                val input = upstream.getInputStream()
+                val buffer = ByteArray(16 * 1024)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n == -1) break
+                    when (mode) {
+                        Mode.PASS -> {
+                            client.getOutputStream().write(buffer, 0, n)
+                        }
+
+                        Mode.SWALLOW_RESPONSE -> {
+                            Unit
+                        }
+
+                        // the client never sees it
+                        Mode.RESET_AFTER_BODY -> {
+                            abort(client)
+                            break
+                        }
+
+                        else -> {
+                            Unit
+                        }
+                    }
+                }
+                if (mode == Mode.PASS) client.shutdownOutput()
+            } catch (_: IOException) {
+                // Either side went away.
+            } finally {
+                upstreamDone.countDown()
+            }
+        }
+        // client → storage, and how the client ended.
+        val end =
+            pumpClient(client.getInputStream()) { bytes, n, total ->
+                val forward =
+                    if (mode == Mode.STALL) {
+                        (stallAfterBytes - (total - n)).coerceIn(0L, n.toLong()).toInt()
+                    } else {
+                        n
+                    }
+                if (forward > 0) upstream.getOutputStream().write(bytes, 0, forward)
+            }
+        clientEnds += end
+        if (end == "RST" || mode == Mode.STALL) {
+            // Mirror an aborted client onto storage: the request dies there too.
+            abort(upstream)
+        } else {
+            upstreamDone.await(10, TimeUnit.SECONDS)
+            runCatching { upstream.close() }
+        }
+        runCatching { client.close() }
+    }
+
+    /** Reads the client until it ends; returns `RST` or `FIN`. */
+    private fun pumpClient(
+        input: InputStream,
+        forward: (ByteArray, Int, Long) -> Unit,
+    ): String {
+        val buffer = ByteArray(16 * 1024)
+        var total = 0L
+        return try {
+            while (true) {
+                val n = input.read(buffer)
+                if (n == -1) return "FIN"
+                total += n
+                runCatching { forward(buffer, n, total) }
+            }
+            @Suppress("UNREACHABLE_CODE")
+            "FIN"
+        } catch (e: SocketException) {
+            if (e.message.orEmpty().contains("reset", ignoreCase = true)) "RST" else "CLOSED:${e.message}"
+        } catch (e: IOException) {
+            "CLOSED:${e.message}"
+        }
+    }
+
+    private fun respond(client: Socket) {
+        try {
+            val input = client.getInputStream()
+            val head = StringBuilder()
+            while (!head.endsWith("\r\n\r\n")) {
+                val b = input.read()
+                if (b == -1) return
+                head.append(b.toChar())
+            }
+            val length =
+                Regex("(?i)content-length: *(\\d+)")
+                    .find(head)
+                    ?.groupValues
+                    ?.get(1)
+                    ?.toLong() ?: 0
+            input.skipNBytes(length)
+            client.getOutputStream().write(canned.toByteArray(Charsets.US_ASCII))
+            client.getOutputStream().flush()
+            clientEnds += "ANSWERED"
+        } catch (_: IOException) {
+            clientEnds += "CLOSED"
+        } finally {
+            runCatching { client.close() }
+        }
+    }
+
+    private fun abort(socket: Socket) {
+        runCatching { socket.setSoLinger(true, 0) }
+        runCatching { socket.close() }
+    }
+
+    override fun close() {
+        server.close()
+        acceptor.join(1_000)
+    }
+}
