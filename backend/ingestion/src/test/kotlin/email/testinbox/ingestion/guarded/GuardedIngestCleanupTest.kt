@@ -70,9 +70,7 @@ class GuardedIngestCleanupTest {
         keys.size shouldBe 2
 
         h.backdate(Duration.ofMinutes(30))
-        val cleanup = h.cleanup()
-        cleanup.run()
-        cleanup.run().lateObjects shouldBe 1
+        h.releaseCycle().lateObjects shouldBe 1
 
         h.latched() shouldNotBe null
         h.metrics.events.contains("late") shouldBe true
@@ -109,9 +107,7 @@ class GuardedIngestCleanupTest {
         h.inspection.incompleteUploadExists(raw) shouldBe true
 
         h.backdate(Duration.ofMinutes(30))
-        val cleanup = h.cleanup()
-        cleanup.run()
-        cleanup.run().lateObjects shouldBe 1
+        h.releaseCycle().lateObjects shouldBe 1
 
         h.latched() shouldNotBe null
         h.inspection.incompleteUploadExists(raw) shouldBe false // aborted
@@ -160,7 +156,9 @@ class GuardedIngestCleanupTest {
         val before = h.count("SELECT extract(epoch FROM release_not_before)::bigint FROM storage_reservation")
 
         skew = Duration.ZERO
-        cleanup.run()
+        // Resumes (moving every release later), and witnesses. Without a tick,
+        // C_drain has not passed, so nothing can be released in this pass.
+        cleanup.run().released shouldBe 0
 
         val after = h.count("SELECT extract(epoch FROM release_not_before)::bigint FROM storage_reservation")
         (after - before >= 45) shouldBe true // pushed back by the observed offset
@@ -189,9 +187,7 @@ class GuardedIngestCleanupTest {
         h.messageCount() shouldBe 0
         h.metrics.events.contains("fenced") shouldBe true
         h.backdate(Duration.ofMinutes(30))
-        val cleanup = h.cleanup()
-        cleanup.run()
-        cleanup.run().released shouldBe 1
+        h.releaseCycle().released shouldBe 1
         h.listedBytes() shouldBe 0
     }
 
@@ -219,9 +215,7 @@ class GuardedIngestCleanupTest {
         h.messages.listVisible(inbox).size shouldBe 1
         h.reservationStates() shouldBe emptyMap()
         h.backdate(Duration.ofMinutes(30))
-        val cleanup = h.cleanup()
-        cleanup.run()
-        cleanup.run().released shouldBe 0
+        h.releaseCycle().released shouldBe 0
         h.fencedWrites.forEach { h.inspection.objectExists(it) shouldBe true } // committed content is safe
     }
 }

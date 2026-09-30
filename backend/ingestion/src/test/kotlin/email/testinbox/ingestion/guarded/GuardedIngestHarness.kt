@@ -173,20 +173,45 @@ class GuardedIngestHarness(
             Clock.systemUTC(),
         )
 
+    /**
+     * Cleanup's clock: the database clock plus a manual advance. `C_drain`
+     * (1 s here) is then decided by [tick], never by how many milliseconds
+     * happened to pass between two statements. The advance stays far inside
+     * `ε_max`, so the clock-offset check is unaffected.
+     */
+    @Volatile var advance: Duration = Duration.ZERO
+    private val cleanupClock = DatabaseClock { reservations.now().plus(advance) }
+
     fun cleanup(
         settle: Duration = Duration.ofMinutes(17),
-        drain: Duration = Duration.ofMillis(1),
+        drain: Duration = Duration.ofSeconds(1),
     ) = ReleaseStaleReservations(
         reservations,
         ambiguity,
         inspection,
-        clock,
+        cleanupClock,
         "api-test",
         metrics,
         cleanupHookFor,
         drain = drain,
         settle = settle,
     )
+
+    /** Moves cleanup's clock past `C_drain`: a witness completed before this now counts. */
+    fun tick() {
+        advance = advance.plusSeconds(2)
+    }
+
+    /**
+     * One full release cycle: a pass that expires and witnesses (it can never
+     * release, since `C_drain` has not passed), [tick], then a pass that
+     * releases. Returns the second pass's report.
+     */
+    fun releaseCycle(cleanup: ReleaseStaleReservations = cleanup()): ReleaseStaleReservations.Report {
+        cleanup.run()
+        tick()
+        return cleanup.run()
+    }
 
     private val cleanupHookFor: CleanupSyncHook = cleanupHook
 

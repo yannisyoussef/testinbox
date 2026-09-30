@@ -102,6 +102,7 @@ class GuardedIngestEdgeCasesTest {
         h.backdate(Duration.ofMinutes(30))
         val cleanup = h.cleanup()
         cleanup.run() // expire + witness
+        h.tick() // the release is now due
 
         storageDown = true
         runCatching { cleanup.run() }.isFailure shouldBe true
@@ -129,9 +130,7 @@ class GuardedIngestEdgeCasesTest {
         h.messageCount() shouldBe 0
         h.reservationStates() shouldBe mapOf("RESERVED" to 1L) // no inbox FK: the charge survives the inbox
         h.backdate(Duration.ofMinutes(30))
-        val cleanup = h.cleanup()
-        cleanup.run()
-        cleanup.run().released shouldBe 1
+        h.releaseCycle().released shouldBe 1
         h.listedBytes() shouldBe 0
     }
 
@@ -158,9 +157,7 @@ class GuardedIngestEdgeCasesTest {
             ).param("k", keys)
             .param("id", committed)
             .update()
-        val cleanup = h.cleanup()
-        cleanup.run()
-        cleanup.run().released shouldBe 1
+        h.releaseCycle().released shouldBe 1
 
         h.metrics.events.contains("released:RECONCILED") shouldBe true
         keys.forEach { h.inspection.objectExists(it) shouldBe true } // nothing deleted
@@ -180,12 +177,14 @@ class GuardedIngestEdgeCasesTest {
         h.backdate(Duration.ofMinutes(30))
         val cleanup = h.cleanup()
 
-        repeat(3) { cleanup.run().released shouldBe 0 } // however long it has been
+        repeat(3) {
+            cleanup.run().released shouldBe 0 // however long it has been
+            h.tick()
+        }
 
         h.reservationStates() shouldBe mapOf("RELEASING" to 1L)
         witnessWorks = true
-        cleanup.run() // a witness completes, issued after release_not_before
-        cleanup.run().released shouldBe 1
+        h.releaseCycle(cleanup).released shouldBe 1 // a witness completes, issued after release_not_before
     }
 
     @Test

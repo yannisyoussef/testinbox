@@ -55,9 +55,7 @@ class GuardedIngestCrashTest {
     /** Back-dates past the write deadline and `S`, then runs cleanup: witness first, release second. */
     private fun cleanUpEverything(harness: GuardedIngestHarness) {
         harness.backdate(Duration.ofMinutes(30))
-        val cleanup = harness.cleanup()
-        cleanup.run()
-        cleanup.run()
+        harness.releaseCycle()
     }
 
     private fun restartOf(harness: GuardedIngestHarness) = harness.restart().also { harnesses += it }

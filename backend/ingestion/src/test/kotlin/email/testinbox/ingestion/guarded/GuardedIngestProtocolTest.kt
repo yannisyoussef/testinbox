@@ -322,9 +322,7 @@ class GuardedIngestProtocolTest {
         val duplicateKeys = h.fencedWrites.drop(original.size)
         duplicateKeys.forEach { h.inspection.objectExists(it) shouldBe true }
 
-        val cleanup = h.cleanup()
-        cleanup.run() // the witness
-        cleanup.run().released shouldBe 1
+        h.releaseCycle().released shouldBe 1 // witness, C_drain, then the release
 
         duplicateKeys.forEach { h.inspection.objectExists(it) shouldBe false }
         original.forEach { h.inspection.objectExists(it) shouldBe true }

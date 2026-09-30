@@ -158,9 +158,7 @@ class StorageOutageAndBoundTest {
             checkpoint("after fill")
 
             h.backdate(Duration.ofMinutes(30))
-            val cleanup = h.cleanup()
-            cleanup.run()
-            cleanup.run()
+            h.releaseCycle().released shouldBe 1 // the crashed event's reservation, and its objects
             checkpoint("after cleanup")
 
             val listed = h.listedBytes()
