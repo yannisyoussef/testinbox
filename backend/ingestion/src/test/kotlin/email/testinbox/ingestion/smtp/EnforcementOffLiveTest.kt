@@ -88,7 +88,7 @@ class EnforcementOffLiveTest {
             counter("testinbox_storage_admission_total", "outcome", outcome) shouldBe 0.0
         }
         counter("testinbox_storage_admission_total", "outcome", "admitted") shouldBe 6.0
-        (counter("testinbox_storage_admission_unenforced_total", "scope", "inbox") > 0) shouldBe true
+        (counter("testinbox_storage_admission_unenforced_total", "ceiling", "inbox") > 0) shouldBe true
     }
 
     companion object {

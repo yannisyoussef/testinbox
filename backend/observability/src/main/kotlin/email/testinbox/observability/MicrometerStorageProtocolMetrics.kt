@@ -44,7 +44,7 @@ class MicrometerStorageProtocolMetrics(
         Gauge.builder(GLOBAL_LIMIT) { policy.globalLimitBytes.toDouble() }.register(registry)
         Gauge.builder(FINALIZE_BUDGET) { policy.finalizeBudgetBytes.toDouble() }.register(registry)
         StorageAdmissionOutcome.entries.forEach { registry.counter(ADMISSION, "outcome", it.name.lowercase()) }
-        StorageScope.entries.forEach { registry.counter(UNENFORCED, "scope", it.name.lowercase()) }
+        StorageScope.entries.forEach { registry.counter(UNENFORCED, "ceiling", it.name.lowercase()) }
         PhysicalFailureKind.entries.forEach { registry.counter(PHYSICAL_FAILURE, "kind", it.name.lowercase()) }
         ReleasePath.entries.forEach { registry.counter(RELEASED, "path", it.name.lowercase()) }
         registry.counter(COMMIT_FENCED)
@@ -65,7 +65,7 @@ class MicrometerStorageProtocolMetrics(
     }
 
     override fun unenforcedLimit(scope: StorageScope) {
-        registry.counter(UNENFORCED, "scope", scope.name.lowercase()).increment()
+        registry.counter(UNENFORCED, "ceiling", scope.name.lowercase()).increment()
     }
 
     override fun lockWait(duration: Duration) = lockWait.record(duration)
