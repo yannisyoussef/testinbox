@@ -43,23 +43,26 @@ class StorageAdmissionPropertyTest : PersistenceIntegrationTest() {
             global += bytes
         }
 
+        /** Tenant ceilings enforced unless OFF; the global cap only under ALL. */
         fun decide(
             inboxLimit: Long,
             workspaceLimit: Long,
             cap: Long,
-            enforced: Boolean,
+            enforcement: StorageEnforcement,
             f: Long,
             candidates: List<Pair<UUID, UUID>>,
         ): List<String> =
             candidates.map { (ws, ib) ->
+                val tenant = enforcement != StorageEnforcement.OFF
+                val enforceGlobal = enforcement == StorageEnforcement.ALL
                 val reason =
                     when {
-                        (inbox[ib] ?: 0) + f > inboxLimit -> "INBOX_LIMIT"
-                        (workspace[ws] ?: 0) + f > workspaceLimit -> "WORKSPACE_LIMIT"
-                        global + f > cap -> "SERVICE_CAPACITY"
+                        tenant && (inbox[ib] ?: 0) + f > inboxLimit -> "INBOX_LIMIT"
+                        tenant && (workspace[ws] ?: 0) + f > workspaceLimit -> "WORKSPACE_LIMIT"
+                        enforceGlobal && global + f > cap -> "SERVICE_CAPACITY"
                         else -> null
                     }
-                if (reason == null || !enforced) {
+                if (reason == null) {
                     add(ws, ib, f)
                     "admitted"
                 } else {
@@ -118,13 +121,17 @@ class StorageAdmissionPropertyTest : PersistenceIntegrationTest() {
         val policy = policy(workspace = workspaceLimit, share = share, global = g, h = h)
 
         repeat(EVENTS) { event ->
-            val enforcement = if (random.nextInt(4) == 0) StorageEnforcement.OFF else StorageEnforcement.ON
+            val enforcement =
+                listOf(
+                    StorageEnforcement.OFF,
+                    StorageEnforcement.TENANT_LIMITS,
+                    StorageEnforcement.ALL,
+                    StorageEnforcement.ALL,
+                ).random(random)
             val f = random.nextLong(1, 40)
-            val targets =
-                List(random.nextInt(1, 13)) {
-                    val ws = workspaces.random(random)
-                    ws to inboxes.getValue(ws).random(random)
-                }
+            // Distinct inboxes: an event carries at most one copy per inbox.
+            val all = inboxes.flatMap { (ws, ibs) -> ibs.map { ws to it } }
+            val targets = all.shuffled(random).take(random.nextInt(1, all.size + 1))
             val clue =
                 "seed $seed, event $event: f=$f, $enforcement, $policy, candidates=$targets, before: $model"
 
@@ -134,11 +141,11 @@ class StorageAdmissionPropertyTest : PersistenceIntegrationTest() {
                     workspaceLimit * shareHundredths / 100,
                     workspaceLimit,
                     g - h,
-                    enforcement == StorageEnforcement.ON,
+                    enforcement,
                     f,
                     targets,
                 )
-            expected.forEach { tally.merge(if (enforcement == StorageEnforcement.OFF) "OFF:$it" else it, 1, Int::plus) }
+            expected.forEach { tally.merge("$enforcement:$it", 1, Int::plus) }
             val reservationsBefore = fx.reservedBytes()
             val candidates = targets.map { (ws, ib) -> fx.candidate(ws, ib, attachments = random.nextInt(0, 3)) }
             val sameShape = candidates.map { it.copy(objectKeys = it.objectKeys.take(1)) } // one parse: one key shape per event

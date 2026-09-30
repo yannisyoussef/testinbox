@@ -137,12 +137,28 @@ class StorageCapacityPolicy(
 enum class StorageScope { INBOX, WORKSPACE, GLOBAL }
 
 /**
- * Whether reaching a ceiling refuses a copy (ADR-035 §14).
+ * Which ceilings may refuse a copy: exactly the rollout states ADR-035 §14
+ * needs.
  *
- * With [OFF] (Phase 2), the whole protocol still runs: the lock, the snapshot,
- * the reservations, the running totals. Only the refusal is withheld.
+ * - [OFF] (Phase 2): the whole protocol still runs (the lock, the snapshot,
+ *   the reservations, the running totals), and every ceiling is observational.
+ * - [TENANT_LIMITS] (Phase 4, staged): the inbox and workspace ceilings
+ *   refuse, and the global one is observed until the §11 gate has passed.
+ * - [ALL] (Phase 4): all three refuse.
+ *
+ * TI-STORAGE-003: the live path is constructed with [OFF] only, and no
+ * configuration can select anything else.
  */
-enum class StorageEnforcement { OFF, ON }
+enum class StorageEnforcement(
+    private val enforced: Set<StorageScope>,
+) {
+    OFF(emptySet()),
+    TENANT_LIMITS(setOf(StorageScope.INBOX, StorageScope.WORKSPACE)),
+    ALL(StorageScope.entries.toSet()),
+    ;
+
+    fun enforces(scope: StorageScope): Boolean = scope in enforced
+}
 
 /**
  * Why a copy was refused, reported as the narrowest ceiling reached

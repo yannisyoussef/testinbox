@@ -77,9 +77,9 @@ class StorageAdmissionDecisionTest : PersistenceIntegrationTest() {
     fun `global exhaustion mid-event admits exactly the envelope-order prefix, across tenants`() {
         val db = fx.db
         val workspaces = List(3) { db.workspace() }
-        val inboxes = workspaces.map { db.inbox(it) }
         val admission = fx.admission(policy(workspace = 1_000, global = 3 * F + 5)) // three copies fit, not four
-        val candidates = List(6) { i -> fx.candidate(workspaces[i % 3], inboxes[i % 3]) }
+        // Six copies, two inboxes per tenant, interleaved across the three tenants.
+        val candidates = List(6) { i -> workspaces[i % 3].let { ws -> fx.candidate(ws, db.inbox(ws)) } }
 
         val result = admission.admit(fx.request(F, candidates))
 
@@ -147,14 +147,20 @@ class StorageAdmissionDecisionTest : PersistenceIntegrationTest() {
         fx.base(ws, inbox, 5_000) // over inbox, workspace and global alike
         val policy = policy(workspace = 1_000, share = "0.5", global = 2_000)
 
+        val siblings = List(3) { db.inbox(ws) }
+
         val result =
-            fx.admission(policy, StorageEnforcement.OFF).admit(fx.request(F, List(4) { fx.candidate(ws, inbox) }))
+            fx
+                .admission(policy, StorageEnforcement.OFF)
+                .admit(fx.request(F, (listOf(inbox) + siblings).map { fx.candidate(ws, it) }))
 
         result.refused.shouldBeEmpty()
-        result.admitted.map { it.unenforcedLimit } shouldBe List(4) { StorageRefusalReason.INBOX_LIMIT }
+        // The full inbox would have been INBOX_LIMIT; its empty siblings, WORKSPACE_LIMIT.
+        result.admitted.map { it.unenforcedLimit } shouldBe
+            listOf(StorageRefusalReason.INBOX_LIMIT) + List(3) { StorageRefusalReason.WORKSPACE_LIMIT }
         fx.reservationCount() shouldBe 4
         // The next snapshot sees all four: OFF still counts what it admits.
-        fx.used(fx.snapshot(setOf(ws), setOf(inbox)), ws, inbox) shouldBe Triple(5_040L, 5_040L, 5_040L)
+        fx.used(fx.snapshot(setOf(ws), setOf(inbox)), ws, inbox) shouldBe Triple(5_040L, 5_040L, 5_010L)
     }
 
     @Test
