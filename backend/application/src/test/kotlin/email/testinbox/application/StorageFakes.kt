@@ -11,7 +11,9 @@ import email.testinbox.application.port.StorageAdmissionPlan
 import email.testinbox.application.port.StorageAdmissionScope
 import email.testinbox.application.port.StorageAdmissionStore
 import email.testinbox.application.port.StorageAmbiguity
+import email.testinbox.application.port.StorageCommitFence
 import email.testinbox.application.port.StorageInspection
+import email.testinbox.application.port.StorageLatch
 import email.testinbox.application.port.StorageReservations
 import email.testinbox.application.port.StorageUsageSnapshot
 import email.testinbox.application.port.TransactionRunner
@@ -107,6 +109,7 @@ class InMemoryStorage(
         admission = StorageAdmission(admissionStore, policy, enforcement),
         reservations = reservations,
         ambiguity = ambiguity,
+        latch = ambiguity,
         blobs = blobs,
         inspection = inspection,
         slots = slots,
@@ -122,7 +125,8 @@ class InMemoryStorageReservations(
     private val messages: InMemoryMessageRepository,
     private val ambiguity: InMemoryStorageAmbiguity,
     private val clock: Clock,
-) : StorageReservations {
+) : StorageCommitFence,
+    StorageReservations {
     data class Row(
         val messageId: MessageId,
         val workspaceId: WorkspaceId,
@@ -227,7 +231,8 @@ class InMemoryStorageReservations(
 
 class InMemoryStorageAmbiguity(
     private val clock: Clock,
-) : StorageAmbiguity {
+) : StorageAmbiguity,
+    StorageLatch {
     data class Record(
         val id: Long,
         val nodeId: String,

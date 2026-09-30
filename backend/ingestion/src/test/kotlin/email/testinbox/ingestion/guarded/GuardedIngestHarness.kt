@@ -67,6 +67,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * Inspection, cleanup and verification always talk to MinIO directly, so a
  * fault injected into uploads never hides what is really in the bucket.
  */
+@Suppress("LongParameterList") // every knob a §17 scenario needs, each with a default
 class GuardedIngestHarness(
     val enforcement: StorageEnforcement = StorageEnforcement.OFF,
     val policy: StorageCapacityPolicy = GENEROUS,
@@ -151,6 +152,7 @@ class GuardedIngestHarness(
             admission = StorageAdmission(JdbcStorageAdmission(jdbc, template), policy, enforcement),
             reservations = reservations,
             ambiguity = ambiguity,
+            latch = ambiguity,
             blobs = blobs,
             inspection = inspection,
             slots = slots,
@@ -188,6 +190,7 @@ class GuardedIngestHarness(
     ) = ReleaseStaleReservations(
         reservations,
         ambiguity,
+        ambiguity,
         inspection,
         cleanupClock,
         "api-test",
@@ -215,7 +218,7 @@ class GuardedIngestHarness(
 
     private val cleanupHookFor: CleanupSyncHook = cleanupHook
 
-    fun verification() = VerifyAmbiguousUploads(ambiguity, reservations, inspection, metrics)
+    fun verification() = VerifyAmbiguousUploads(ambiguity, ambiguity, reservations, inspection, metrics)
 
     // --- fixtures -------------------------------------------------------------------------------------
 

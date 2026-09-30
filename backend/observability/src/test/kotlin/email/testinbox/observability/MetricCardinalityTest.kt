@@ -103,6 +103,13 @@ class MetricCardinalityTest {
         ReconciliationOutcome.entries.forEach { storage.reconciliationCompleted(it) }
         CompactionOutcome.entries.forEach { storage.compactionCompleted(it) }
 
+        exerciseStorageProtocol()
+
+        BuildInfoMetric(registry, service = "testinbox-api", gitSha = "abc1234", version = "0.1.0")
+    }
+
+    /** ADR-035 §16, the guarded protocol (TI-STORAGE-003): every signal, every enum value. */
+    private fun exerciseStorageProtocol() {
         val protocol = MicrometerStorageProtocolMetrics(registry, StorageCapacityPolicy.ADR_035_REFERENCE)
         StorageAdmissionOutcome.entries.forEach { protocol.admission(it) }
         StorageScope.entries.forEach { protocol.unenforcedLimit(it) }
@@ -120,8 +127,6 @@ class MetricCardinalityTest {
         protocol.incompleteUploads(0)
         protocol.lockWait(java.time.Duration.ofMillis(2))
         protocol.slotWait(java.time.Duration.ofMillis(3))
-
-        BuildInfoMetric(registry, service = "testinbox-api", gitSha = "abc1234", version = "0.1.0")
     }
 
     /** Every label key any TestInbox metric is allowed to carry. */

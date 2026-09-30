@@ -4,6 +4,7 @@ import email.testinbox.application.port.DatabaseClock
 import email.testinbox.application.port.LockedReservation
 import email.testinbox.application.port.NOTIFICATION_CHANNEL
 import email.testinbox.application.port.ReleasableReservation
+import email.testinbox.application.port.StorageCommitFence
 import email.testinbox.application.port.StorageReservations
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
@@ -27,7 +28,8 @@ import java.util.UUID
 class JdbcStorageReservations(
     private val jdbc: JdbcClient,
     private val transactions: TransactionOperations,
-) : StorageReservations,
+) : StorageCommitFence,
+    StorageReservations,
     DatabaseClock {
     override fun now(): Instant =
         // clock_timestamp(), not now(): the current instant, not the start of

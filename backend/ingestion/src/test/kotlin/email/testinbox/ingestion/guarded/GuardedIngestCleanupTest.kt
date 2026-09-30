@@ -45,7 +45,7 @@ class GuardedIngestCleanupTest {
 
     private val crashBeforeCommit =
         object : IngestSyncHook {
-            override fun beforeCommit(): Unit = throw IllegalStateException("died before T2")
+            override fun beforeCommit(): Unit = error("died before T2")
         }
 
     @Test

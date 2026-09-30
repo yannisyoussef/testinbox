@@ -12,7 +12,6 @@ import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.MimeParser
 import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.SmtpMetrics
-import email.testinbox.application.port.StorageAmbiguity
 import email.testinbox.application.port.StorageInspection
 import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.TransactionRunner
@@ -172,7 +171,7 @@ class IngestionWiring(
     fun storageAmbiguity(
         jdbc: JdbcClient,
         transactionManager: PlatformTransactionManager,
-    ): StorageAmbiguity = JdbcStorageAmbiguity(jdbc, template(transactionManager))
+    ): JdbcStorageAmbiguity = JdbcStorageAmbiguity(jdbc, template(transactionManager))
 
     @Bean
     fun storageNode(properties: IngestionProperties): StorageNode = StorageNode(properties.storage.nodeId, UUID.randomUUID())
@@ -182,7 +181,7 @@ class IngestionWiring(
 
     @Bean
     fun writeSlots(
-        ambiguity: StorageAmbiguity,
+        ambiguity: JdbcStorageAmbiguity,
         node: StorageNode,
     ): WriteSlots = WriteSlots(ambiguous = { ambiguity.unresolvedFor(node.nodeId) })
 
@@ -196,12 +195,20 @@ class IngestionWiring(
      * environment variable or profile reaches this value (TI-STORAGE-003).
      */
     @Bean
-    fun guardedStorage(
+    fun storageAdmission(
         jdbc: JdbcClient,
         transactionManager: PlatformTransactionManager,
         limits: LimitsConfig,
+    ): StorageAdmission =
+        StorageAdmission(JdbcStorageAdmission(jdbc, template(transactionManager)), storagePolicy(limits), StorageEnforcement.OFF)
+
+    /** A @Bean method's parameters are its dependencies: one per protocol collaborator. */
+    @Bean
+    @Suppress("LongParameterList")
+    fun guardedStorage(
+        admission: StorageAdmission,
         reservations: JdbcStorageReservations,
-        ambiguity: StorageAmbiguity,
+        ambiguity: JdbcStorageAmbiguity,
         blobs: BlobStore,
         inspection: StorageInspection,
         slots: WriteSlots,
@@ -211,14 +218,10 @@ class IngestionWiring(
         storageMetrics: StorageProtocolMetrics,
     ): GuardedStorage =
         GuardedStorage(
-            admission =
-                StorageAdmission(
-                    JdbcStorageAdmission(jdbc, template(transactionManager)),
-                    storagePolicy(limits),
-                    StorageEnforcement.OFF,
-                ),
+            admission = admission,
             reservations = reservations,
             ambiguity = ambiguity,
+            latch = ambiguity,
             blobs = blobs,
             inspection = inspection,
             slots = slots,
@@ -231,7 +234,7 @@ class IngestionWiring(
 
     @Bean
     fun storageNodeRuntime(
-        ambiguity: StorageAmbiguity,
+        ambiguity: JdbcStorageAmbiguity,
         node: StorageNode,
         breaker: StorageBreaker,
         inspection: StorageInspection,

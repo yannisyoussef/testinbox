@@ -167,7 +167,7 @@ class ReceiveInboundDelivery(
                 rateLimited++
                 continue
             }
-            prepared += prepare(inbox, recipient, command, parseResult)
+            prepared += prepare(inbox, recipient, parseResult)
         }
         if (prepared.isEmpty()) return Result(emptyList(), discarded, 0, rateLimited)
 
@@ -201,7 +201,6 @@ class ReceiveInboundDelivery(
     private fun prepare(
         inbox: Inbox,
         recipient: String,
-        command: Command,
         parseResult: MimeParseResult,
     ): Prepared {
         // Ids and exact keys are generated BEFORE T1: they are what the

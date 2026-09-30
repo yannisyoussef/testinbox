@@ -8,14 +8,15 @@ import java.time.Duration
 import java.time.Instant
 
 /**
- * `storage_reservation` state transitions after T1 (ADR-035 §6, §7).
+ * The reservation fence of an event in flight (ADR-035 §5, §6): the upload
+ * phase, and T2.
  *
  * The T2 methods ([lockForCommit] through [releaseDuplicates]) must run inside
  * one `TransactionRunner.required` block, in the order listed. That order is
  * the ADR's lock order: reservations, then inboxes, then `inbox_storage`, then
  * `message`.
  */
-interface StorageReservations {
+interface StorageCommitFence {
     // --- T2 -------------------------------------------------------------------------------
 
     /** `FOR UPDATE`, ascending `message_id`. The rows that exist, in any state. */
@@ -50,9 +51,10 @@ interface StorageReservations {
      * `RESERVED` → `RELEASING`, releasable now (§4). Guarded on `RESERVED`.
      */
     fun releaseAbandoned(ids: Collection<MessageId>)
+}
 
-    // --- cleanup (§7) --------------------------------------------------------------------------
-
+/** `storage_reservation` cleanup and release (ADR-035 §7), and the orphan sweep's check. */
+interface StorageReservations {
     /**
      * `RESERVED` past its write deadline → `RELEASING`, releasable at
      * `write_deadline_at + S`. One guarded statement: a concurrent T2 either
@@ -179,9 +181,10 @@ interface StorageAmbiguity {
         slots: Int,
         verifyAfter: Duration,
     ): Int
+}
 
-    // --- the latch ------------------------------------------------------------------------------
-
+/** The database admission latch (ADR-035 §9): the shared fail-closed kill switch. */
+interface StorageLatch {
     fun latched(): String?
 
     /** Sets the latch if it is not set. Only an operator clears it, by hand (runbook). */

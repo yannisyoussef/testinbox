@@ -7,9 +7,10 @@ import email.testinbox.application.port.ReservedUpload
 import email.testinbox.application.port.StorageAdmissionOutcome
 import email.testinbox.application.port.StorageAdmissionUnavailableException
 import email.testinbox.application.port.StorageAmbiguity
+import email.testinbox.application.port.StorageCommitFence
 import email.testinbox.application.port.StorageInspection
+import email.testinbox.application.port.StorageLatch
 import email.testinbox.application.port.StorageProtocolMetrics
-import email.testinbox.application.port.StorageReservations
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.UploadOutcome
 import email.testinbox.application.port.UploadRefusal
@@ -70,11 +71,19 @@ data class GuardedIngestReport(
  * an ambiguous upload is persisted as ambiguity, and its reservation stays
  * charged until cleanup can prove its keys absent. Capacity is never
  * released inline for an ambiguous outcome.
+ *
+ * Its constructor takes one collaborator per protocol step: T1, the commit
+ * fence, ambiguity, the latch, the fenced writer, inspection for the probe,
+ * slots, the breaker, the node, transactions, the database clock, metrics and
+ * the test hook. Grouping them behind a wrapper to satisfy a counter would
+ * hide which step uses which.
  */
+@Suppress("LongParameterList") // one collaborator per protocol step; see the class comment
 class GuardedStorage(
     private val admission: StorageAdmission,
-    private val reservations: StorageReservations,
+    private val reservations: StorageCommitFence,
     private val ambiguity: StorageAmbiguity,
+    private val latch: StorageLatch,
     private val blobs: BlobStore,
     private val inspection: StorageInspection,
     private val slots: WriteSlots,
@@ -174,7 +183,7 @@ class GuardedStorage(
     }
 
     private fun ensureOpen() {
-        ambiguity.latched()?.let { reason ->
+        latch.latched()?.let { reason ->
             metrics.latched(true)
             throw StorageUnavailableException(StorageUnavailableReason.LATCHED, "storage admission is latched: $reason")
         }

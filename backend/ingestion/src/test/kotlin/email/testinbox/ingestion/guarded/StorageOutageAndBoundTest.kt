@@ -124,7 +124,7 @@ class StorageOutageAndBoundTest {
                 override fun beforeCommit() {
                     if (crashNext) {
                         crashNext = false
-                        throw IllegalStateException("crash at beforeCommit")
+                        error("crash at beforeCommit")
                     }
                 }
             }

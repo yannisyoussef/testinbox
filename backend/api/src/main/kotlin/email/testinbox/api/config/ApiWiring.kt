@@ -315,48 +315,6 @@ class ApiWiring(
         config: TestInboxConfig,
     ): ExpireInboxes = ExpireInboxes(inboxes, reservations, blobs, tx, clock, config, inboxMetrics)
 
-    // --- ADR-035 reservation cleanup, ambiguity verification, orphan sweep (TI-STORAGE-003) ------
-
-    @Bean
-    fun storageInspection(blobs: BlobStore): StorageInspection = (blobs as S3BlobStore).inspection()
-
-    @Bean
-    fun storageReservations(
-        jdbc: JdbcClient,
-        transactionManager: PlatformTransactionManager,
-    ): JdbcStorageReservations = JdbcStorageReservations(jdbc, TransactionTemplate(transactionManager))
-
-    @Bean
-    fun storageAmbiguity(
-        jdbc: JdbcClient,
-        transactionManager: PlatformTransactionManager,
-    ): StorageAmbiguity = JdbcStorageAmbiguity(jdbc, TransactionTemplate(transactionManager))
-
-    @Bean
-    fun releaseStaleReservations(
-        reservations: JdbcStorageReservations,
-        ambiguity: StorageAmbiguity,
-        inspection: StorageInspection,
-        metrics: StorageProtocolMetrics,
-    ): ReleaseStaleReservations =
-        ReleaseStaleReservations(reservations, ambiguity, inspection, reservations, properties.storage.nodeId, metrics)
-
-    @Bean
-    fun verifyAmbiguousUploads(
-        ambiguity: StorageAmbiguity,
-        reservations: JdbcStorageReservations,
-        inspection: StorageInspection,
-        metrics: StorageProtocolMetrics,
-    ): VerifyAmbiguousUploads = VerifyAmbiguousUploads(ambiguity, reservations, inspection, metrics)
-
-    @Bean
-    fun orphanBlobSweep(
-        blobs: BlobStore,
-        reservations: JdbcStorageReservations,
-        inspection: StorageInspection,
-        metrics: StorageProtocolMetrics,
-    ): OrphanBlobSweep = OrphanBlobSweep(blobs, reservations, inspection, clock, properties.orphanMinAge, metrics)
-
     /** ADR-035 §10 ledger compaction. Observational only: nothing admits or refuses on it yet. */
     @Bean
     fun compactStorageLedger(

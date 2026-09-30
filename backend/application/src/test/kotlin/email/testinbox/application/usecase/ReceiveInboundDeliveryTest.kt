@@ -259,7 +259,14 @@ class ReceiveInboundDeliveryTest {
             .single()
             .state shouldBe "RELEASING"
         val cleanup =
-            ReleaseStaleReservations(storage.reservations, storage.ambiguity, storage.inspection, storage.databaseClock, "api")
+            ReleaseStaleReservations(
+                storage.reservations,
+                storage.ambiguity,
+                storage.ambiguity,
+                storage.inspection,
+                storage.databaseClock,
+                "api",
+            )
         cleanup.run() // the witness completes now
         clock.advanceSeconds(StorageProtocol.C_DRAIN.seconds)
         cleanup.run().released shouldBe 1

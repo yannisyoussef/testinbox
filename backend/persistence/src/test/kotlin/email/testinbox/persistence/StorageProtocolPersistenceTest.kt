@@ -36,6 +36,7 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
         ambiguity = JdbcStorageAmbiguity(db.jdbc, db.transactions)
     }
 
+    @Suppress("LongParameterList") // one parameter per reservation column a scenario varies
     private fun reserve(
         ws: UUID,
         inbox: UUID,

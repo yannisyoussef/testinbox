@@ -363,7 +363,12 @@ enum class ReleasePath { COMMITTED, ABSENT, DELETED, RECONCILED }
  * The ADR-035 §16 signals of the guarded ingest protocol (TI-STORAGE-003).
  * Closed enums only: no workspace, inbox, message, key or address is ever a
  * label.
+ *
+ * One method per §16 signal, so this port reads as that table. Splitting it
+ * by an arbitrary line only to satisfy a function count would hide the
+ * correspondence.
  */
+@Suppress("TooManyFunctions")
 interface StorageProtocolMetrics {
     fun admission(outcome: StorageAdmissionOutcome) {}
 

@@ -2,6 +2,7 @@ package email.testinbox.persistence
 
 import email.testinbox.application.port.AmbiguityRecord
 import email.testinbox.application.port.StorageAmbiguity
+import email.testinbox.application.port.StorageLatch
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.transaction.support.TransactionOperations
 import java.time.Duration
@@ -20,7 +21,8 @@ import java.util.UUID
 class JdbcStorageAmbiguity(
     private val jdbc: JdbcClient,
     private val transactions: TransactionOperations,
-) : StorageAmbiguity {
+) : StorageAmbiguity,
+    StorageLatch {
     override fun record(
         nodeId: String,
         objectKey: String?,

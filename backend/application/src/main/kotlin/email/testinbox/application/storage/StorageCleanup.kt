@@ -6,6 +6,7 @@ import email.testinbox.application.port.ReleasableReservation
 import email.testinbox.application.port.ReleasePath
 import email.testinbox.application.port.StorageAmbiguity
 import email.testinbox.application.port.StorageInspection
+import email.testinbox.application.port.StorageLatch
 import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.StorageReservations
 import email.testinbox.domain.MessageId
@@ -34,9 +35,11 @@ import java.util.UUID
  * release moves `S` later, and the admission latch is set. Only an operator
  * clears the latch.
  */
+@Suppress("LongParameterList") // the ports, then the ADR constants that tests may shorten
 class ReleaseStaleReservations(
     private val reservations: StorageReservations,
     private val ambiguity: StorageAmbiguity,
+    private val latch: StorageLatch,
     private val inspection: StorageInspection,
     private val clock: DatabaseClock,
     private val probeOwner: String,
@@ -152,7 +155,7 @@ class ReleaseStaleReservations(
         if (late) {
             reservations.postpone(row.messageId, now.plus(settle))
             metrics.lateObject()
-            ambiguity.latch("late object found while releasing a reservation")
+            latch.latch("late object found while releasing a reservation")
             metrics.latched(true)
             log.error("storage_late_object reservation keys reappeared after deletion; admission LATCHED")
             return Released.LATE
@@ -183,6 +186,7 @@ class ReleaseStaleReservations(
  */
 class VerifyAmbiguousUploads(
     private val ambiguity: StorageAmbiguity,
+    private val latch: StorageLatch,
     private val reservations: StorageReservations,
     private val inspection: StorageInspection,
     private val metrics: StorageProtocolMetrics = StorageProtocolMetrics.NOOP,
@@ -218,7 +222,7 @@ class VerifyAmbiguousUploads(
                 if (present) inspection.deleteObject(key)
                 if (incomplete) inspection.incompleteUploads().filter { it.key == key }.forEach(inspection::abortIncompleteUpload)
                 metrics.lateObject()
-                ambiguity.latch("late object found at ambiguity verification")
+                latch.latch("late object found at ambiguity verification")
                 metrics.latched(true)
                 log.error("storage_late_object an ambiguous upload landed after its reservation was released; admission LATCHED")
                 late++
