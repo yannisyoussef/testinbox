@@ -32,6 +32,10 @@ dependencies {
     testImplementation(libs.testcontainers.junit)
     testImplementation(libs.awaitility)
     testImplementation(libs.aws.s3)
+    testImplementation(testFixtures(project(":storage")))
+    // The guarded-ingest harness migrates a fresh database per scenario.
+    testImplementation("org.flywaydb:flyway-core")
+    testImplementation("org.flywaydb:flyway-database-postgresql")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
     // The Boot BOM manages Tomcat 11.0.24 (CVE-2026-65182, CRITICAL, fixed in

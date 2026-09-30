@@ -1,5 +1,7 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    // The TCP fault proxy is shared with the ingestion suite (ADR-035 §17).
+    `java-test-fixtures`
 }
 
 dependencies {

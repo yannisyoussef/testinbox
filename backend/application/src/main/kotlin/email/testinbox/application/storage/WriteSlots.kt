@@ -69,6 +69,8 @@ class WriteSlots(
             lock.withLock {
                 if (closed) return@withLock
                 closed = true
+                // Moves from "in use" to "poisoned": still one slot, never two.
+                inUse--
                 poisoned++
                 workspaces.forEach { ws -> perWorkspaceInUse.merge(ws, -1) { a, b -> (a + b).takeIf { it > 0 } } }
                 released.signalAll()

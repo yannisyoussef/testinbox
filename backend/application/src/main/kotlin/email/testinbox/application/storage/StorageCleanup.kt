@@ -44,6 +44,10 @@ class ReleaseStaleReservations(
     private val hook: CleanupSyncHook = CleanupSyncHook.NONE,
     private val batch: Int = 100,
     private val staleHeartbeat: Duration = Duration.ofMinutes(5),
+    /** `C_drain`. A seam for tests only; the deployables use the ADR value. */
+    private val drain: Duration = StorageProtocol.C_DRAIN,
+    /** `S`. A seam for tests only; the deployables use the ADR value. */
+    private val settle: Duration = StorageProtocol.SETTLE,
 ) {
     data class Report(
         val expired: Int,
@@ -64,7 +68,7 @@ class ReleaseStaleReservations(
         // A node whose heartbeat went stale may have died with uploads in
         // flight: keyless ambiguity keeps its slots occupied (§9).
         ambiguity.recoverDeadGenerations(null, null, staleHeartbeat, StorageProtocol.MAX_CONCURRENT_WRITES, StorageProtocol.T_VERIFY)
-        val expired = reservations.expireOverdue(StorageProtocol.SETTLE)
+        val expired = reservations.expireOverdue(settle)
         metrics.reservations(reservations.countsByState())
 
         val offset = ClockOffset.measure(inspection, clock)
@@ -100,7 +104,7 @@ class ReleaseStaleReservations(
         // The newest witness that completed at w′ with now ≥ w′ + C_drain.
         // Releases are due only if that witness was ISSUED at or after their
         // release_not_before, so the horizon is its issue time.
-        val horizon = witnesses.lastOrNull { (_, completed) -> !now.isBefore(completed.plus(StorageProtocol.C_DRAIN)) }?.first
+        val horizon = witnesses.lastOrNull { (_, completed) -> !now.isBefore(completed.plus(drain)) }?.first
         if (horizon == null) return Report(expired, 0, 0, suspendedForClockOffset = false, witnessed = witnessed)
 
         var released = 0
@@ -146,7 +150,7 @@ class ReleaseStaleReservations(
             }
         }
         if (late) {
-            reservations.postpone(row.messageId, now.plus(StorageProtocol.SETTLE))
+            reservations.postpone(row.messageId, now.plus(settle))
             metrics.lateObject()
             ambiguity.latch("late object found while releasing a reservation")
             metrics.latched(true)
