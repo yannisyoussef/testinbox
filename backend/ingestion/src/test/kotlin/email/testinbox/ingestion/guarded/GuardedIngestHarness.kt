@@ -253,7 +253,12 @@ class GuardedIngestHarness(
 
     fun reservedBytes(): Long = count("SELECT coalesce(sum(bytes), 0) FROM storage_reservation")
 
-    fun reservationKeys(): List<String> = jdbc.sql("SELECT unnest(object_keys) FROM storage_reservation").query(String::class.java).list().filterNotNull()
+    fun reservationKeys(): List<String> =
+        jdbc
+            .sql("SELECT unnest(object_keys) FROM storage_reservation")
+            .query(String::class.java)
+            .list()
+            .filterNotNull()
 
     /** ADR-035 §17 seam: SQL back-dating instead of waiting E, S or T_verify. */
     fun backdate(by: Duration) {

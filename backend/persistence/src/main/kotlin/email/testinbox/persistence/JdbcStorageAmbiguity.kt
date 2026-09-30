@@ -154,8 +154,12 @@ class JdbcStorageAmbiguity(
                             jdbc
                                 .sql(
                                     """
-                                    SELECT count(*), coalesce(max(bytes), 0) FROM storage_reservation
-                                     WHERE node_id = :node AND generation = :generation AND first_upload_at IS NOT NULL
+                                    SELECT count(*), coalesce(max(bytes), 0) FROM storage_reservation r
+                                     WHERE r.node_id = :node AND r.generation = :generation AND r.first_upload_at IS NOT NULL
+                                       -- An upload already recorded as keyed ambiguity is not "in flight":
+                                       -- it holds its slot through that row, and must not hold two.
+                                       AND NOT EXISTS (SELECT 1 FROM storage_ambiguity a
+                                                        WHERE a.resolved_at IS NULL AND a.object_key = ANY (r.object_keys))
                                     """.trimIndent(),
                                 ).param("node", node)
                                 .param("generation", generation)
