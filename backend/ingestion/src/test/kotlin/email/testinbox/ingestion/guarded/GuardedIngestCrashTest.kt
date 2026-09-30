@@ -94,7 +94,8 @@ class GuardedIngestCrashTest {
         harness.inspection.objectExists(keys.single { it != harness.fencedWrites.first() }) shouldBe false // never started
         (harness.reservedBytes() >= harness.listedBytes()) shouldBe true // covered: listed ≤ committed + reserved
         val restarted = restartOf(harness)
-        restarted.unresolvedAmbiguity() shouldBe 1 // the dead generation's started upload holds a slot
+        restarted.ambiguity.unresolvedFor("ingest-test") shouldBe 1 // the dead generation's started upload holds a slot
+        restarted.ambiguity.unresolvedFor("recovered:ingest-test") shouldBe 2 // and each of its keys awaits a proof
 
         cleanUpEverything(restarted)
 
@@ -116,7 +117,8 @@ class GuardedIngestCrashTest {
         harness.fencedWrites.size shouldBe 4 // two copies, raw + attachment each
         harness.reservedBytes() shouldBe harness.listedBytes() // exactly covered by the reservations
         val restarted = restartOf(harness)
-        restarted.unresolvedAmbiguity() shouldBe 2
+        restarted.ambiguity.unresolvedFor("ingest-test") shouldBe 2 // one slot per started event copy
+        restarted.ambiguity.unresolvedFor("recovered:ingest-test") shouldBe 4 // one proof per key
 
         cleanUpEverything(restarted)
 
@@ -171,5 +173,40 @@ class GuardedIngestCrashTest {
         restarted.backdate(Duration.ofMinutes(61))
         restarted.verification().run().resolved shouldBe 16
         restarted.deliver(listOf(fresh)).accepted.size shouldBe 1
+    }
+
+    @Test
+    fun `F - a dead writer's object that lands after its reservation's release is caught by its per-key coverage, and latches`() {
+        // ADR-035 §9: the keyless rows bound the dead node's slots; every key it
+        // had started also gets its own proof at verify_at. Without it, a frozen
+        // writer's late commit would be deleted silently by the orphan sweep.
+        val harness = h(hook = crashAt("beforeCommit"))
+        val (_, a) = harness.inbox(harness.workspace())
+        shouldThrow<SimulatedCrash> { harness.deliver(listOf(a)) }
+        val keys = harness.reservationKeys()
+        val restarted = restartOf(harness)
+        restarted.count("SELECT count(*) FROM storage_ambiguity WHERE node_id = 'recovered:ingest-test'") shouldBe keys.size.toLong()
+        cleanUpEverything(restarted)
+        restarted.reservationStates() shouldBe emptyMap()
+        restarted.latched() shouldBe null
+
+        // The frozen writer's commit finally lands.
+        restarted.s3.putObject(
+            software.amazon.awssdk.services.s3.model.PutObjectRequest
+                .builder()
+                .bucket(restarted.bucket)
+                .key(keys.first())
+                .build(),
+            software.amazon.awssdk.core.sync.RequestBody
+                .fromBytes(byteArrayOf(1)),
+        )
+        restarted.backdate(Duration.ofHours(2)) // past verify_at
+
+        val report = restarted.verification().run()
+
+        report.lateObjects shouldBe 1
+        restarted.latched() shouldBe "late object found at ambiguity verification"
+        restarted.inspection.objectExists(keys.first()) shouldBe false
+        restarted.unresolvedAmbiguity() shouldBe 0
     }
 }

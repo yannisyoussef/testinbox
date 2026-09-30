@@ -105,7 +105,7 @@ class GuardedIngestEdgeCasesTest {
         h.tick() // the release is now due
 
         storageDown = true
-        runCatching { cleanup.run() }.isFailure shouldBe true
+        cleanup.run().failed shouldBe 1 // logged and counted; the pass itself carries on
 
         h.reservationStates() shouldBe mapOf("RELEASING" to 1L)
         (h.reservedBytes() > 0) shouldBe true
@@ -125,13 +125,102 @@ class GuardedIngestEdgeCasesTest {
         h = track(GuardedIngestHarness(hook = deleteInbox))
         val (_, a) = h.inbox(h.workspace())
 
-        runCatching { h.deliver(listOf(a)) }.isFailure shouldBe true // the gateway's 451
+        // T2's insert fails on the vanished inbox: the gateway's 451.
+        shouldThrow<org.springframework.dao.DataIntegrityViolationException> { h.deliver(listOf(a)) }
 
         h.messageCount() shouldBe 0
-        h.reservationStates() shouldBe mapOf("RESERVED" to 1L) // no inbox FK: the charge survives the inbox
+        // Every upload was Stored, definitively: the charge goes to RELEASING at
+        // once (no inbox FK: it survives the inbox), and cleanup deletes the objects.
+        h.reservationStates() shouldBe mapOf("RELEASING" to 1L)
         h.backdate(Duration.ofMinutes(30))
         h.releaseCycle().released shouldBe 1
         h.listedBytes() shouldBe 0
+    }
+
+    @Test
+    fun `a late object latches even when another row of the same pass fails on storage`() {
+        // ADR-035 §9 point 3: the latch commits on its own, before the evidence is
+        // deleted, and each row is its own transaction. A batch-wide transaction
+        // would roll the latch back with the failing row.
+        lateinit var h: GuardedIngestHarness
+        var brokenKeys = emptySet<String>()
+        val flaky = { real: StorageInspection ->
+            object : StorageInspection by real {
+                override fun objectExists(key: String): Boolean =
+                    if (key in brokenKeys) error("storage unreachable for this key") else real.objectExists(key)
+            }
+        }
+        val lateCommit =
+            object : email.testinbox.application.storage.CleanupSyncHook {
+                override fun afterDeleteBeforeList(key: String) {
+                    if (key !in brokenKeys) {
+                        h.s3.putObject(
+                            software.amazon.awssdk.services.s3.model.PutObjectRequest
+                                .builder()
+                                .bucket(h.bucket)
+                                .key(key)
+                                .build(),
+                            software.amazon.awssdk.core.sync.RequestBody
+                                .fromBytes(byteArrayOf(1)),
+                        )
+                    }
+                }
+            }
+        h = track(GuardedIngestHarness(hook = crashBeforeCommit, inspectionOverride = flaky, cleanupHook = lateCommit))
+        runCatching { h.deliver(listOf(h.inbox(h.workspace()).second)) }
+        val first = h.reservationKeys().toSet()
+        runCatching { h.deliver(listOf(h.inbox(h.workspace()).second)) }
+        brokenKeys = h.reservationKeys().toSet() - first
+        h.backdate(Duration.ofMinutes(30))
+
+        val report = h.releaseCycle()
+
+        report.lateObjects shouldBe 1
+        report.failed shouldBe 1
+        h.latched() shouldBe "late object found while releasing a reservation"
+        h.reservationStates() shouldBe mapOf("RELEASING" to 2L) // the late one postponed, the failed one untouched
+    }
+
+    @Test
+    fun `while the breaker is open, an event for unknown recipients gets the same 451 as one for a known inbox`() {
+        // Checked before any recipient resolves: the 451/250 split would otherwise
+        // tell a sender which addresses exist (ADR-025).
+        val h =
+            track(
+                GuardedIngestHarness(
+                    breaker =
+                        email.testinbox.application.storage
+                            .StorageBreaker(Duration.ofMinutes(1)),
+                ),
+            )
+        val (_, known) = h.inbox(h.workspace())
+        h.breaker.trip(email.testinbox.application.storage.StorageBreaker.Kind.AMBIGUOUS)
+
+        shouldThrow<StorageUnavailableException> { h.deliver(listOf(known)) }.reason shouldBe StorageUnavailableReason.BREAKER_OPEN
+        shouldThrow<StorageUnavailableException> {
+            h.deliver(listOf("nobody-${UUID.randomUUID()}@testinbox.local"))
+        }.reason shouldBe StorageUnavailableReason.BREAKER_OPEN
+        h.reservationStates() shouldBe emptyMap()
+    }
+
+    @Test
+    fun `a reservation fenced by cleanup before its first byte uploads nothing, and is released at once`() {
+        lateinit var h: GuardedIngestHarness
+        val fenceFirst =
+            object : IngestSyncHook {
+                override fun afterAdmission() {
+                    h.backdate(Duration.ofMinutes(5))
+                    h.reservations.expireOverdue(Duration.ofMinutes(17)) shouldBe 1
+                }
+            }
+        h = track(GuardedIngestHarness(hook = fenceFirst))
+        val (_, a) = h.inbox(h.workspace())
+
+        shouldThrow<StorageUnavailableException> { h.deliver(listOf(a)) }.reason shouldBe StorageUnavailableReason.COMMIT_FENCED
+
+        h.fencedWrites.shouldBeEmpty() // markUploadStarted refused: not one byte sent
+        h.count("SELECT count(*) FROM storage_reservation WHERE first_upload_at IS NOT NULL") shouldBe 0
+        h.metrics.events.contains("fenced") shouldBe true
     }
 
     @Test

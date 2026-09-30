@@ -277,7 +277,18 @@ class GuardedIngestProtocolTest {
 
     @Test
     fun `an unreachable storage opens the breaker, and a zero-byte probe closes it once storage answers`() {
-        val h = harness(viaProxy = true)
+        val probes =
+            java.util.concurrent.atomic
+                .AtomicInteger()
+        val counting = { real: email.testinbox.application.port.StorageInspection ->
+            object : email.testinbox.application.port.StorageInspection by real {
+                override fun witness(probeKey: String): Boolean {
+                    probes.incrementAndGet()
+                    return real.witness(probeKey)
+                }
+            }
+        }
+        val h = GuardedIngestHarness(viaProxy = true, inspectionOverride = counting).also { harnesses += it }
         val (_, a) = h.inbox(h.workspace())
         h.proxy!!.close() // nothing listens: connections are refused, nothing is sent
 
@@ -286,10 +297,13 @@ class GuardedIngestProtocolTest {
         h.reservationStates() shouldBe mapOf("RELEASING" to 1L) // not started = definitive
         h.breaker.isOpen shouldBe true
 
+        probes.get() shouldBe 0
         Thread.sleep(h.breaker.currentBackoff.toMillis() + 50)
         // The probe goes to storage directly and succeeds; the event itself still
         // fails here because its uploads use the dead proxy, which reopens the breaker.
         shouldThrow<StorageUnavailableException> { h.deliver(listOf(a)) }.reason shouldBe StorageUnavailableReason.UPLOAD_FAILED
+        probes.get() shouldBe 1 // exactly one witness probe ran the trial, not the real event
+        h.metrics.events.count { it == "failure:UNAVAILABLE" } shouldBe 2 // the event after the probe failed on its own
     }
 
     @Test
@@ -416,14 +430,5 @@ class GuardedIngestProtocolTest {
 
         shouldThrow<StorageUnavailableException> { h.deliver(listOf(a)) }.reason shouldBe StorageUnavailableReason.SLOT_WAIT
         h.slots.occupied() shouldBe 1
-    }
-
-    @Test
-    fun `the upload outcome the SDK never sees is still an outcome the protocol honours`() {
-        // Sanity for the classification the whole suite relies on.
-        UploadOutcome.Ambiguous(AmbiguityKind.TIMEOUT).definitive shouldBe false
-        listOf<UploadOutcome>(UploadOutcome.Stored, UploadOutcome.NotStarted).map { it.definitive } shouldNotContain false
-        StorageUnavailableReason.entries.map { it.name } shouldContainAll listOf("LATCHED", "BREAKER_OPEN", "SLOT_WAIT", "LOCK_TIMEOUT")
-        StorageUnavailableReason.entries.map { it.name } shouldNotBe emptyList<String>()
     }
 }

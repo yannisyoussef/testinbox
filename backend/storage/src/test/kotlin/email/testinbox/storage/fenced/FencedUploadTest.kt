@@ -272,6 +272,30 @@ class FencedUploadTest {
     }
 
     @Test
+    fun `an answer storage sends before reading the body is still used, when the body write fails`() {
+        // MinIO decides a missed deadline, a replay or the quota from the headers,
+        // then resets a connection whose body it never read. The write fails; the
+        // answer is already there, and it is definitive.
+        proxy.mode = TcpFaultProxy.Mode.EARLY_ANSWER
+        proxy.earlyResetAfterMillis = 200
+        val body = "<?xml version=\"1.0\"?><Error><Code>PreconditionFailed</Code></Error>"
+        proxy.canned = "HTTP/1.1 412 Precondition Failed\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
+
+        uploader(viaProxy(), tPut = Duration.ofSeconds(10)).put(upload(key(), ByteArray(64 * 1024 * 1024))) shouldBe
+            UploadOutcome.Refused(UploadRefusal.ALREADY_EXISTS)
+    }
+
+    @Test
+    fun `a large replay and a large late upload are refused definitively by MinIO itself`() {
+        val key = key()
+        val big = ByteArray(15 * 1024 * 1024)
+        uploader().put(upload(key, big)) shouldBe UploadOutcome.Stored
+
+        uploader().put(upload(key, big)) shouldBe UploadOutcome.Refused(UploadRefusal.ALREADY_EXISTS)
+        uploader().put(upload(key(), big, signedAt = Instant.now().minusSeconds(300))) shouldBe UploadOutcome.Refused(UploadRefusal.DENIED)
+    }
+
+    @Test
     fun `no connection at all is definitive, because nothing reached storage`() {
         val closedPort = java.net.ServerSocket(0).use { it.localPort }
 
@@ -301,6 +325,38 @@ class FencedUploadTest {
     }
 
     @Test
+    fun `a peer that trickles a response forever is still cut at T_put - a wall-clock bound, not an inactivity timeout`() {
+        // Every read succeeds within the socket timeout, so only the watchdog can end this.
+        proxy.mode = TcpFaultProxy.Mode.TRICKLE
+        proxy.trickleEvery = Duration.ofMillis(100)
+        val started = System.nanoTime()
+
+        uploader(viaProxy(), tPut = Duration.ofMillis(1_500)).put(upload(key(), ByteArray(1_024))) shouldBe
+            UploadOutcome.Ambiguous(AmbiguityKind.TIMEOUT)
+
+        val elapsed = Duration.ofNanos(System.nanoTime() - started)
+        (elapsed >= Duration.ofMillis(1_400)) shouldBe true
+        (elapsed < Duration.ofSeconds(4)) shouldBe true
+        proxy.clientEnds.poll(10, TimeUnit.SECONDS) shouldBe "RST"
+        proxy.connections.get() shouldBe 1
+    }
+
+    @Test
+    fun `a write blocked by a full TCP window is freed at T_put by the abort, which no read timeout covers`() {
+        proxy.mode = TcpFaultProxy.Mode.BACKPRESSURE
+        proxy.backpressureHoldMillis = 4_000
+        val started = System.nanoTime()
+
+        // Far larger than any loopback socket buffer pair, so write() blocks.
+        uploader(viaProxy(), tPut = Duration.ofSeconds(1)).put(upload(key(), ByteArray(64 * 1024 * 1024))) shouldBe
+            UploadOutcome.Ambiguous(AmbiguityKind.TIMEOUT)
+
+        val elapsed = Duration.ofNanos(System.nanoTime() - started)
+        (elapsed < Duration.ofMillis(3_500)) shouldBe true // before the proxy ever reads: the watchdog freed the write
+        proxy.clientEnds.poll(10, TimeUnit.SECONDS) shouldBe "RST"
+    }
+
+    @Test
     fun `a body stalled before EOF, with storage's side left open, is failed by MinIO's idle timeout, and nothing commits`() {
         // §17 test 53, the pre-EOF control. The proxy keeps MinIO's connection open
         // and silent after the client gives up, so only MinIO's own idle timeout
@@ -313,13 +369,18 @@ class FencedUploadTest {
         uploader(viaProxy(), tPut = Duration.ofSeconds(1)).put(upload(key, ByteArray(100 * 1024))) shouldBe
             UploadOutcome.Ambiguous(AmbiguityKind.TIMEOUT)
 
+        val abortedAt = System.nanoTime()
         // Past MinIO's idle timeout, with margin: strict checks, absent every time.
-        val until = System.nanoTime() + Duration.ofSeconds(36).toNanos()
+        val until = abortedAt + Duration.ofSeconds(36).toNanos()
         while (System.nanoTime() < until) {
             exists(key) shouldBe false
             Thread.sleep(2_000)
         }
         exists(key) shouldBe false
+        // And MinIO itself ended the held request: its idle timeout really fired,
+        // rather than the request staying open with nothing ever committing yet.
+        val storageEnded = proxy.upstreamEnds.poll(10, TimeUnit.SECONDS) ?: error("MinIO never ended the held request")
+        (Duration.ofNanos(storageEnded - abortedAt) < Duration.ofSeconds(36)) shouldBe true
     }
 
     @Test
@@ -329,6 +390,115 @@ class FencedUploadTest {
         uploader(viaProxy()).put(upload(key(), ByteArray(100))) shouldBe UploadOutcome.Stored
 
         proxy.clientEnds.poll(10, TimeUnit.SECONDS) shouldBe "FIN"
+    }
+
+    // --- TLS -----------------------------------------------------------------------------------
+
+    /** A keystore holding one self-signed certificate with [san], and a client factory trusting exactly it. */
+    private fun tlsPair(san: String): Pair<javax.net.ssl.SSLServerSocket, javax.net.ssl.SSLSocketFactory> {
+        val dir =
+            java.nio.file.Files
+                .createTempDirectory("fenced-tls")
+        val store = dir.resolve("ks.p12")
+        val keytool =
+            java.nio.file.Path
+                .of(System.getProperty("java.home"), "bin", "keytool")
+                .toString()
+        val process =
+            ProcessBuilder(
+                keytool,
+                "-genkeypair",
+                "-alias",
+                "s",
+                "-keyalg",
+                "EC",
+                "-groupname",
+                "secp256r1",
+                "-dname",
+                "CN=storage",
+                "-ext",
+                "SAN=$san",
+                "-validity",
+                "2",
+                "-storetype",
+                "PKCS12",
+                "-keystore",
+                store.toString(),
+                "-storepass",
+                "changeit",
+            ).redirectErrorStream(true).start()
+        process.waitFor(60, TimeUnit.SECONDS) shouldBe true
+        process.exitValue() shouldBe 0
+        val keyStore =
+            java.security.KeyStore.getInstance("PKCS12").apply {
+                java.nio.file.Files
+                    .newInputStream(store)
+                    .use { load(it, "changeit".toCharArray()) }
+            }
+        val kmf =
+            javax.net.ssl.KeyManagerFactory
+                .getInstance("PKIX")
+                .apply { init(keyStore, "changeit".toCharArray()) }
+        val tmf =
+            javax.net.ssl.TrustManagerFactory
+                .getInstance(
+                    javax.net.ssl.TrustManagerFactory
+                        .getDefaultAlgorithm(),
+                ).apply { init(keyStore) }
+        val server =
+            javax.net.ssl.SSLContext
+                .getInstance("TLS")
+                .apply { init(kmf.keyManagers, null, null) }
+        val client =
+            javax.net.ssl.SSLContext
+                .getInstance("TLS")
+                .apply { init(null, tmf.trustManagers, null) }
+        val socket =
+            server.serverSocketFactory.createServerSocket(0, 5, java.net.InetAddress.getLoopbackAddress())
+                as javax.net.ssl.SSLServerSocket
+        kotlin.concurrent.thread(isDaemon = true, name = "tls-storage") {
+            while (!socket.isClosed) {
+                val c = runCatching { socket.accept() }.getOrNull() ?: break
+                runCatching {
+                    c.use {
+                        val input = it.getInputStream()
+                        val head = StringBuilder()
+                        while (!head.endsWith("\r\n\r\n")) head.append(input.read().takeIf { b -> b >= 0 }?.toChar() ?: break)
+                        val length =
+                            Regex("(?i)content-length: *(\\d+)")
+                                .find(head)
+                                ?.groupValues
+                                ?.get(1)
+                                ?.toLong() ?: 0
+                        input.skipNBytes(length)
+                        it.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+                        it.getOutputStream().flush()
+                    }
+                }
+            }
+        }
+        return socket to client.socketFactory
+    }
+
+    @Test
+    fun `an https endpoint whose certificate names another host is refused before any byte is sent`() {
+        // The chain is trusted; only the name is wrong. Without endpoint
+        // identification JSSE would accept it, and an on-path attacker holding
+        // any trusted certificate could read the message and the presigned URL.
+        val (server, trust) = tlsPair("DNS:not-storage.example")
+        server.use {
+            FencedUploader(URI.create("https://127.0.0.1:${it.localPort}"), BUCKET, presigner, tlsFactory = trust)
+                .put(upload(key(), ByteArray(10))) shouldBe UploadOutcome.NotStarted
+        }
+    }
+
+    @Test
+    fun `an https endpoint whose certificate names it is used`() {
+        val (server, trust) = tlsPair("IP:127.0.0.1")
+        server.use {
+            FencedUploader(URI.create("https://127.0.0.1:${it.localPort}"), BUCKET, presigner, tlsFactory = trust)
+                .put(upload(key(), ByteArray(10))) shouldBe UploadOutcome.Stored
+        }
     }
 
     // --- redaction (gate 3) ---------------------------------------------------------------------

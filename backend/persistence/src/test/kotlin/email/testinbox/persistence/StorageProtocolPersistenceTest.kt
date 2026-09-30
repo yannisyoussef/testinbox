@@ -137,40 +137,77 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
     fun `two cleaners never claim the same releasable row`() {
         val ws = db.workspace()
         val inbox = db.inbox(ws)
-        val ids = List(6) { reserve(ws, inbox, state = "RELEASING") }
+        val ids = List(3) { reserve(ws, inbox, state = "RELEASING") }
+        val horizon =
+            java.time.Instant
+                .now()
+                .plusSeconds(60)
+        reservations.releasable(horizon, 10).map { it.value } shouldContainExactlyInAnyOrder ids
         val firstHolds = CountDownLatch(1)
         val release = CountDownLatch(1)
         val pool = Executors.newSingleThreadExecutor()
         try {
             val first =
-                pool.submit<List<UUID>> {
-                    reservations.withReleasable(
-                        java.time.Instant
-                            .now()
-                            .plusSeconds(60),
-                        3,
-                    ) { rows ->
+                pool.submit<UUID?> {
+                    reservations.withReleasable(MessageId(ids[0]), horizon) { row ->
                         firstHolds.countDown()
                         release.await(30, TimeUnit.SECONDS)
-                        rows.map { it.messageId.value }
+                        row.messageId.value
                     }
                 }
             firstHolds.await(30, TimeUnit.SECONDS)
-            val second =
-                reservations.withReleasable(
-                    java.time.Instant
-                        .now()
-                        .plusSeconds(60),
-                    10,
-                ) { rows -> rows.map { it.messageId.value } }
+            // SKIP LOCKED: the held row is not handed out twice, and nothing waits for it.
+            reservations.withReleasable(MessageId(ids[0]), horizon) { it.messageId.value } shouldBe null
+            reservations.withReleasable(MessageId(ids[1]), horizon) { it.messageId.value } shouldBe ids[1]
             release.countDown()
-            val firstRows = first.get(30, TimeUnit.SECONDS)
-            firstRows.size shouldBe 3
-            second.size shouldBe 3
-            (firstRows + second) shouldContainExactlyInAnyOrder ids
+            first.get(30, TimeUnit.SECONDS) shouldBe ids[0]
         } finally {
             pool.shutdownNow()
         }
+    }
+
+    @Test
+    fun `each releasable row commits alone, and a latch survives the rollback of the row that set it`() {
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        val (a, b) = List(2) { reserve(ws, inbox, state = "RELEASING") }
+        val horizon =
+            java.time.Instant
+                .now()
+                .plusSeconds(60)
+
+        reservations.withReleasable(MessageId(a), horizon) { reservations.release(it.messageId) }
+        runCatching {
+            reservations.withReleasable(MessageId(b), horizon) {
+                ambiguity.latch("late object")
+                reservations.release(it.messageId)
+                error("storage failed on this row")
+            }
+        }.isFailure shouldBe true
+
+        state(a) shouldBe null // released, committed on its own
+        state(b) shouldBe "RELEASING" // rolled back alone: still charged
+        ambiguity.latched() shouldBe "late object" // committed before the row's rollback
+    }
+
+    @Test
+    fun `a row no longer due or no longer RELEASING is not handed out`() {
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        val reserved = reserve(ws, inbox)
+        val future = reserve(ws, inbox, state = "RELEASING")
+        db.jdbc
+            .sql(
+                "UPDATE storage_reservation SET release_not_before = now() + interval '1 hour' WHERE message_id = ?",
+            ).param(future)
+            .update()
+        val horizon =
+            java.time.Instant
+                .now()
+                .plusSeconds(60)
+
+        reservations.withReleasable(MessageId(reserved), horizon) { it } shouldBe null
+        reservations.withReleasable(MessageId(future), horizon) { it } shouldBe null
     }
 
     @Test
@@ -313,9 +350,16 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
 
         ambiguity.unresolvedFor("n1") shouldBe 16 // at most the declared slots
         db.jdbc
-            .sql("SELECT count(*) FROM storage_ambiguity WHERE object_key IS NOT NULL")
+            .sql("SELECT count(*) FROM storage_ambiguity WHERE node_id = 'n1' AND object_key IS NOT NULL")
             .query(Long::class.java)
             .single() shouldBe 0
+        // Every started key of the dead generation gets its own per-key proof,
+        // under a coverage node that takes none of n1's slots.
+        db.jdbc
+            .sql("SELECT count(*) FROM storage_ambiguity WHERE node_id = 'recovered:n1' AND object_key IS NOT NULL")
+            .query(Long::class.java)
+            .single() shouldBe 20
+        ambiguity.unresolvedFor("recovered:n1") shouldBe 20
         db.jdbc
             .sql("SELECT count(*) FROM storage_node WHERE node_id = 'n1'")
             .query(Long::class.java)
@@ -336,6 +380,96 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
         db.jdbc.sql("UPDATE storage_node SET heartbeat_at = now() - interval '10 minutes'").update()
         ambiguity.recoverDeadGenerations(null, null, Duration.ofMinutes(5), 16, Duration.ofHours(1)) shouldBe 1
         ambiguity.unresolvedFor("n2") shouldBe 1
+    }
+
+    @Test
+    fun `a live generation declared dead comes back at its next heartbeat, so a later crash is still recovered`() {
+        val ws = db.workspace()
+        val generation = UUID.randomUUID()
+        ambiguity.registerGeneration("n3", generation, "storage-v1")
+        ambiguity.heartbeat("n3", generation, "storage-v1") shouldBe true
+        reserve(ws, db.inbox(ws), node = "n3", generation = generation, started = true)
+        db.jdbc.sql("UPDATE storage_node SET heartbeat_at = now() - interval '10 minutes' WHERE node_id = 'n3'").update()
+        ambiguity.recoverDeadGenerations(null, null, Duration.ofMinutes(5), 16, Duration.ofHours(1)) shouldBe 1
+
+        ambiguity.heartbeat("n3", generation, "storage-v1") shouldBe false // it had been forgotten: re-registered
+
+        db.jdbc
+            .sql("SELECT count(*) FROM storage_node WHERE node_id = 'n3' AND NOT clean_shutdown")
+            .query(Long::class.java)
+            .single() shouldBe 1
+        // A reservation started after the resurrection is recovered by a real crash.
+        reserve(ws, db.inbox(ws), node = "n3", generation = generation, started = true)
+        db.jdbc.sql("UPDATE storage_node SET heartbeat_at = now() - interval '10 minutes' WHERE node_id = 'n3'").update()
+        ambiguity.recoverDeadGenerations(null, null, Duration.ofMinutes(5), 16, Duration.ofHours(1)) shouldBe 1
+    }
+
+    @Test
+    fun `a key ambiguous within 24 hours is recognised, resolved or not`() {
+        ambiguity.record("n4", "k-open", 1, Duration.ofHours(1))
+        ambiguity.record("n4", "k-resolved", 1, Duration.ofHours(1))
+        ambiguity.record("n4", "k-old", 1, Duration.ofHours(1))
+        db.jdbc.sql("UPDATE storage_ambiguity SET resolved_at = now() WHERE object_key = 'k-resolved'").update()
+        db.jdbc.sql("UPDATE storage_ambiguity SET resolved_at = now() - interval '25 hours' WHERE object_key = 'k-old'").update()
+
+        ambiguity.wasAmbiguous("k-open", Duration.ofHours(24)) shouldBe true
+        ambiguity.wasAmbiguous("k-resolved", Duration.ofHours(24)) shouldBe true
+        ambiguity.wasAmbiguous("k-old", Duration.ofHours(24)) shouldBe false
+        ambiguity.wasAmbiguous("k-never", Duration.ofHours(24)) shouldBe false
+    }
+
+    @Test
+    fun `a clock-offset postponement moves RESERVED rows too, and their expiry keeps it`() {
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        val reserved = reserve(ws, inbox, deadlineIn = Duration.ofSeconds(-1))
+        val releasing = reserve(ws, inbox, state = "RELEASING")
+
+        fun rnbMinusDeadline(id: UUID) =
+            db.jdbc
+                .sql(
+                    "SELECT extract(epoch FROM release_not_before - write_deadline_at)::bigint FROM storage_reservation WHERE message_id = ?",
+                ).param(id)
+                .query(Long::class.java)
+                .single()
+        val releasingBefore = rnbMinusDeadline(releasing)
+
+        reservations.postponeAll(Duration.ofSeconds(45), Duration.ofMinutes(17)) shouldBe 2
+        reservations.expireOverdue(Duration.ofMinutes(17)) shouldBe 1
+
+        rnbMinusDeadline(reserved) shouldBe 17 * 60 + 45L // deadline + S + the offset, not deadline + S
+        rnbMinusDeadline(releasing) shouldBe releasingBefore + 45
+    }
+
+    @Test
+    fun `refusals are recorded in PostgreSQL uuid order, which is unsigned`() {
+        // java.util.UUID orders f… before 1… (signed); PostgreSQL, the compactor
+        // and drift repair order 1… first. Log the upsert order through the rows' xmin.
+        val ws = db.workspace()
+        val high = UUID.fromString("f0000000-0000-4000-8000-${UUID.randomUUID().toString().takeLast(12)}")
+        val low = UUID.fromString("10000000-0000-4000-8000-${UUID.randomUUID().toString().takeLast(12)}")
+        listOf(high, low).forEach { id ->
+            db.jdbc
+                .sql(
+                    "INSERT INTO inbox (id, workspace_id, project_id, address, address_mode, state, created_at, expires_at) " +
+                        "VALUES (?, ?, ?, ?, 'GENERATED', 'ACTIVE', now(), now() + interval '1 hour')",
+                ).params(id, ws, ws, "$id@ledger.test")
+                .update()
+        }
+        (high < low) shouldBe true // the signed order this must not use
+
+        db.transactions.execute {
+            reservations.recordRefusals(
+                mapOf(InboxId(high) to StorageRefusalReason.INBOX_LIMIT, InboxId(low) to StorageRefusalReason.INBOX_LIMIT),
+            )
+            // Written in the order upserted: the newest row version of each, by physical position.
+            db.jdbc
+                .sql("SELECT inbox_id FROM inbox_storage WHERE inbox_id IN (?, ?) ORDER BY ctid")
+                .param(high)
+                .param(low)
+                .query(UUID::class.java)
+                .list() shouldBe listOf(low, high)
+        }
     }
 
     @Test
@@ -385,16 +519,13 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
         state(abandoned) shouldBe "RELEASING"
         state(duplicate) shouldBe "RELEASING"
         state(consumed) shouldBe null
-        reservations.withReleasable(
-            java.time.Instant
-                .now()
-                .plusSeconds(5),
-            10,
-        ) { rows ->
-            rows.map {
-                it.messageId.value
-            }
-        } shouldContainExactlyInAnyOrder
+        reservations
+            .releasable(
+                java.time.Instant
+                    .now()
+                    .plusSeconds(5),
+                10,
+            ).map { it.value } shouldContainExactlyInAnyOrder
             listOf(abandoned, duplicate)
         reservations.countsByState() shouldBe mapOf("RELEASING" to 2L)
         reservations.lockForCommit(emptyList()).shouldBeEmpty()

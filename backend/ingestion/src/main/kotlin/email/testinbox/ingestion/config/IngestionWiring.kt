@@ -38,6 +38,7 @@ import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.persistence.JdbcSchemaHistory
 import email.testinbox.persistence.JdbcStorageAdmission
 import email.testinbox.persistence.JdbcStorageAmbiguity
+import email.testinbox.persistence.JdbcStorageNodeClaims
 import email.testinbox.persistence.JdbcStorageReservations
 import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
@@ -48,6 +49,7 @@ import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
 import java.time.Clock
 import java.util.UUID
+import javax.sql.DataSource
 
 /**
  * Metric adapters, separated from `IngestionWiring` only so that class can take
@@ -232,7 +234,9 @@ class IngestionWiring(
             metrics = storageMetrics,
         )
 
+    /** A @Bean method's parameters are its dependencies: one per runtime collaborator. */
     @Bean
+    @Suppress("LongParameterList")
     fun storageNodeRuntime(
         ambiguity: JdbcStorageAmbiguity,
         node: StorageNode,
@@ -240,7 +244,18 @@ class IngestionWiring(
         inspection: StorageInspection,
         reservations: JdbcStorageReservations,
         storageMetrics: StorageProtocolMetrics,
-    ): StorageNodeRuntime = StorageNodeRuntime(StorageNodeLifecycle(ambiguity, node), breaker, inspection, reservations, storageMetrics)
+        slots: WriteSlots,
+        dataSource: DataSource,
+    ): StorageNodeRuntime =
+        StorageNodeRuntime(
+            StorageNodeLifecycle(ambiguity, node),
+            breaker,
+            inspection,
+            reservations,
+            storageMetrics,
+            claims = JdbcStorageNodeClaims(dataSource),
+            slots = slots,
+        )
 
     @Bean
     fun receiveInboundDelivery(

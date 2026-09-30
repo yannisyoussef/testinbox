@@ -1,6 +1,7 @@
 package email.testinbox.application.storage
 
 import email.testinbox.application.ObjectKeys
+import email.testinbox.application.port.AmbiguityRecord
 import email.testinbox.application.port.DatabaseClock
 import email.testinbox.application.port.ReleasableReservation
 import email.testinbox.application.port.ReleasePath
@@ -31,9 +32,13 @@ import java.util.UUID
  * - for EVERY reserved key: delete it, then `ListObjectsV2(key) = ∅` and
  *   `ListMultipartUploads(prefix = exact key) = ∅`.
  *
- * Anything found after the delete is a late object: it is deleted, the
- * release moves `S` later, and the admission latch is set. Only an operator
- * clears the latch.
+ * Anything found after the delete is a late object: the admission latch is
+ * set and COMMITTED first, then the object is deleted and the release moves
+ * `S` later. Only an operator clears the latch.
+ *
+ * Each row is claimed, proved and released in its own short transaction. A
+ * storage error on one row is logged and counted, and never rolls back
+ * another row's release, postponement or latch, nor stops the rows after it.
  */
 @Suppress("LongParameterList") // the ports, then the ADR constants that tests may shorten
 class ReleaseStaleReservations(
@@ -58,6 +63,8 @@ class ReleaseStaleReservations(
         val lateObjects: Int,
         val suspendedForClockOffset: Boolean,
         val witnessed: Boolean,
+        /** Rows whose proof failed on a storage or database error: still RELEASING, still charged. */
+        val failed: Int = 0,
     )
 
     /** Completed witnesses (issued, completed), on the database clock, newest last. */
@@ -87,7 +94,7 @@ class ReleaseStaleReservations(
             return Report(expired, 0, 0, suspendedForClockOffset = true, witnessed = false)
         }
         suspendedOffset?.let { by ->
-            val moved = reservations.postponeAll(by)
+            val moved = reservations.postponeAll(by, settle)
             log.warn("storage_release_resumed pending releases moved {} ms later ({} rows)", by.toMillis(), moved)
             suspendedOffset = null
         }
@@ -112,16 +119,26 @@ class ReleaseStaleReservations(
 
         var released = 0
         var late = 0
-        reservations.withReleasable(horizon, batch) { rows ->
-            hook.afterClaim()
-            for (row in rows) {
-                when (release(row, now)) {
+        var failed = 0
+        for (id in reservations.releasable(horizon, batch)) {
+            try {
+                val outcome =
+                    reservations.withReleasable(id, horizon) { row ->
+                        hook.afterClaim()
+                        release(row, now)
+                    }
+                when (outcome) {
                     Released.RELEASED -> released++
                     Released.LATE -> late++
+                    null -> Unit // another cleaner holds it, or it is no longer due
                 }
+            } catch (e: Exception) {
+                // This row stays RELEASING and charged, and is retried next pass.
+                failed++
+                log.warn("storage_release_failed the row stays charged: {}", e.toString())
             }
         }
-        return Report(expired, released, late, suspendedForClockOffset = false, witnessed = witnessed)
+        return Report(expired, released, late, suspendedForClockOffset = false, witnessed = witnessed, failed = failed)
     }
 
     private enum class Released { RELEASED, LATE }
@@ -147,6 +164,13 @@ class ReleaseStaleReservations(
             val stillThere = inspection.objectExists(key)
             val incomplete = inspection.incompleteUploadExists(key)
             if (stillThere || incomplete) {
+                if (!late) {
+                    // Latch BEFORE deleting the evidence, in its own committed transaction.
+                    latch.latch("late object found while releasing a reservation")
+                    metrics.latched(true)
+                    metrics.lateObject()
+                    log.error("storage_late_object reservation keys reappeared after deletion; admission LATCHED")
+                }
                 late = true
                 if (stillThere) inspection.deleteObject(key)
                 if (incomplete) inspection.incompleteUploads().filter { it.key == key }.forEach(inspection::abortIncompleteUpload)
@@ -154,10 +178,6 @@ class ReleaseStaleReservations(
         }
         if (late) {
             reservations.postpone(row.messageId, now.plus(settle))
-            metrics.lateObject()
-            latch.latch("late object found while releasing a reservation")
-            metrics.latched(true)
-            log.error("storage_late_object reservation keys reappeared after deletion; admission LATCHED")
             return Released.LATE
         }
         reservations.release(row.messageId)
@@ -178,11 +198,13 @@ class ReleaseStaleReservations(
  *
  * - A keyed row whose reservation still exists is left for later, and keeps
  *   its slot. Its reservation's own release will prove its keys first.
- * - A key found present with no committed message is a late object: deleted,
- *   metered, LATCHED.
- * - Keyless rows (from a dead process) only bound that process's slots. Their
- *   keys are covered by their reservations' release proofs and by the orphan
- *   sweep, so they resolve at `verify_at`.
+ * - A key found present with no committed message is a late object: LATCHED
+ *   first (committed on its own), then deleted and metered.
+ * - A dead process's uploads are two kinds of rows. Its keyless rows only
+ *   bound its slots, and resolve at `verify_at`. Every key it had started
+ *   has its own keyed coverage row, proved here like any other key.
+ * - One row's error is logged and the row stays unresolved for the next
+ *   pass; it never stops the rows after it.
  */
 class VerifyAmbiguousUploads(
     private val ambiguity: StorageAmbiguity,
@@ -203,35 +225,55 @@ class VerifyAmbiguousUploads(
         var deferred = 0
         var late = 0
         for (record in ambiguity.due(batch)) {
-            val key = record.objectKey
-            if (key == null) {
-                ambiguity.resolve(record.id)
-                resolved++
-                continue
+            try {
+                when (verify(record)) {
+                    Verified.RESOLVED -> {
+                        resolved++
+                    }
+
+                    Verified.LATE -> {
+                        resolved++
+                        late++
+                    }
+
+                    Verified.DEFERRED -> {
+                        deferred++
+                    }
+                }
+            } catch (e: Exception) {
+                log.warn("storage_ambiguity_verification_failed the row stays unresolved: {}", e.toString())
             }
-            val messageId =
-                ObjectKeys.messageIdOf(key)?.let { runCatching { MessageId(UUID.fromString(it)) }.getOrNull() }
-            if (messageId != null && reservations.reservationExists(messageId)) {
-                deferred++
-                continue
-            }
-            val committed = messageId != null && reservations.messageExists(messageId)
-            val present = inspection.objectExists(key)
-            val incomplete = inspection.incompleteUploadExists(key)
-            if (!committed && (present || incomplete)) {
-                if (present) inspection.deleteObject(key)
-                if (incomplete) inspection.incompleteUploads().filter { it.key == key }.forEach(inspection::abortIncompleteUpload)
-                metrics.lateObject()
-                latch.latch("late object found at ambiguity verification")
-                metrics.latched(true)
-                log.error("storage_late_object an ambiguous upload landed after its reservation was released; admission LATCHED")
-                late++
-            }
-            ambiguity.resolve(record.id)
-            resolved++
         }
         metrics.ambiguousUploads(ambiguity.unresolvedTotal())
         return Report(resolved, deferred, late)
+    }
+
+    private enum class Verified { RESOLVED, LATE, DEFERRED }
+
+    private fun verify(record: AmbiguityRecord): Verified {
+        val key = record.objectKey
+        if (key == null) {
+            ambiguity.resolve(record.id)
+            return Verified.RESOLVED
+        }
+        val messageId =
+            ObjectKeys.messageIdOf(key)?.let { runCatching { MessageId(UUID.fromString(it)) }.getOrNull() }
+        if (messageId != null && reservations.reservationExists(messageId)) return Verified.DEFERRED
+        val committed = messageId != null && reservations.messageExists(messageId)
+        val present = inspection.objectExists(key)
+        val incomplete = inspection.incompleteUploadExists(key)
+        var result = Verified.RESOLVED
+        if (!committed && (present || incomplete)) {
+            latch.latch("late object found at ambiguity verification")
+            metrics.latched(true)
+            metrics.lateObject()
+            log.error("storage_late_object an ambiguous upload landed after its reservation was released; admission LATCHED")
+            if (present) inspection.deleteObject(key)
+            if (incomplete) inspection.incompleteUploads().filter { it.key == key }.forEach(inspection::abortIncompleteUpload)
+            result = Verified.LATE
+        }
+        ambiguity.resolve(record.id)
+        return result
     }
 
     private companion object {
@@ -257,9 +299,27 @@ class StorageNodeLifecycle(
         return recovered
     }
 
-    fun heartbeat() = ambiguity.heartbeat(node.nodeId, node.generation)
+    fun heartbeat() {
+        if (!ambiguity.heartbeat(node.nodeId, node.generation, StorageProtocol.CAPABILITY)) {
+            log.error(
+                "storage_node_resurrected this generation was declared dead while alive (heartbeat stale); " +
+                    "re-registered, and its in-flight uploads were recorded as ambiguity",
+            )
+        }
+    }
 
-    fun stop() = ambiguity.markCleanShutdown(node.nodeId, node.generation)
+    /**
+     * Marks the generation clean, unless [poisonedSlots] > 0: an ambiguity
+     * this process could not persist must survive the restart, so the
+     * generation is left unclean and the next start records it (§9).
+     */
+    fun stop(poisonedSlots: Int = 0) {
+        if (poisonedSlots > 0) {
+            log.error("storage_node_unclean_stop {} ambiguous upload(s) were never persisted; generation left unclean", poisonedSlots)
+            return
+        }
+        ambiguity.markCleanShutdown(node.nodeId, node.generation)
+    }
 
     private companion object {
         val log = LoggerFactory.getLogger(StorageNodeLifecycle::class.java)

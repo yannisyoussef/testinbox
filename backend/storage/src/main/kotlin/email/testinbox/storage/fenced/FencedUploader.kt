@@ -18,6 +18,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
@@ -49,6 +50,8 @@ class FencedUploader(
     private val tPut: Duration = DEFAULT_T_PUT,
     private val connectTimeout: Duration = DEFAULT_CONNECT_TIMEOUT,
     private val connector: SocketConnector = SocketConnector.DIRECT,
+    /** TLS for an `https` endpoint. The hostname IS verified (see [tls]); tests supply their own trust. */
+    private val tlsFactory: SSLSocketFactory = SSLSocketFactory.getDefault() as SSLSocketFactory,
 ) {
     init {
         require(!tPut.isNegative && !tPut.isZero) { "T_put must be positive" }
@@ -65,7 +68,13 @@ class FencedUploader(
         companion object {
             val DIRECT =
                 SocketConnector { address, timeout ->
-                    Socket().apply { connect(address, timeout.toMillis().toInt().coerceAtLeast(1)) }
+                    val socket = Socket()
+                    try {
+                        socket.apply { connect(address, timeout.toMillis().toInt().coerceAtLeast(1)) }
+                    } catch (e: IOException) {
+                        socket.close()
+                        throw e
+                    }
                 }
         }
     }
@@ -93,14 +102,18 @@ class FencedUploader(
                 80
             }
         val aborted = AtomicBoolean(false)
-        var plain: Socket? = null
+        // Shared with the watchdog thread: both sides must see each other's
+        // writes, or the T_put abort could miss the socket entirely.
+        val plainRef = AtomicReference<Socket?>(null)
         val watchdog =
             WATCHDOG.schedule({
                 aborted.set(true)
-                plain?.let(::abort)
+                plainRef.get()?.let(::abort)
             }, tPut.toNanos(), TimeUnit.NANOSECONDS)
         var requestStarted = false
         var completed = false
+        var stream: Socket? = null
+        var definitive = false
         try {
             val socket =
                 try {
@@ -110,33 +123,52 @@ class FencedUploader(
                     log.warn("fenced_upload not_started target={} cause={}", Redaction.describe(url), Redaction.scrub(e.toString()))
                     return UploadOutcome.NotStarted
                 }
-            plain = socket
+            plainRef.set(socket)
             if (aborted.get()) abort(socket)
             socket.soTimeout = tPut.toMillis().toInt().coerceAtLeast(1) // a backstop only; the watchdog is the bound
             socket.tcpNoDelay = true
-            val stream = if (url.scheme == "https") tls(socket, url.host, port) else socket
-            val out = stream.getOutputStream()
+            val connection = if (url.scheme == "https") tls(socket, url.host, port) else socket
+            stream = connection
+            val out = connection.getOutputStream()
             requestStarted = true
             out.write(head(url, body.size.toLong()))
             out.write(body)
             out.flush()
             // Nothing else is ever written on this connection: no pipelining.
-            val response = readResponse(BufferedInputStream(stream.getInputStream()))
+            val response = readResponse(BufferedInputStream(connection.getInputStream()))
             completed = true
-            return classify(response)
+            return classify(response).also { definitive = it.definitive }
         } catch (e: IOException) {
             if (!requestStarted) {
                 log.warn("fenced_upload not_started target={} cause={}", Redaction.describe(url), Redaction.scrub(e.toString()))
                 return UploadOutcome.NotStarted
+            }
+            if (!aborted.get() && e !is SocketTimeoutException) {
+                // Storage may have answered from the headers alone (a missed
+                // deadline, a replay, the quota) and closed before reading the
+                // body, which fails our write. Its answer can still be waiting:
+                // a definitive one is used, anything else stays ambiguous.
+                stream?.let { earlyAnswer(it) }?.let { return it }
             }
             val kind = if (aborted.get() || e is SocketTimeoutException) AmbiguityKind.TIMEOUT else AmbiguityKind.CONNECTION_LOST
             log.warn("fenced_upload ambiguous kind={} target={} cause={}", kind, Redaction.describe(url), Redaction.scrub(e.toString()))
             return UploadOutcome.Ambiguous(kind)
         } finally {
             watchdog.cancel(false)
-            plain?.let { if (completed && !aborted.get()) closeQuietly(it) else abort(it) }
+            // A normal close only after a definitive answer. Anything else, a
+            // non-definitive response included, is reset, so no body tail can
+            // still be delivered.
+            plainRef.get()?.let { if (completed && definitive && !aborted.get()) closeQuietly(it) else abort(it) }
         }
     }
+
+    private fun earlyAnswer(stream: Socket): UploadOutcome? =
+        try {
+            stream.soTimeout = EARLY_ANSWER_WAIT.toMillis().toInt()
+            classify(readResponse(BufferedInputStream(stream.getInputStream()))).takeIf { it.definitive }
+        } catch (_: IOException) {
+            null
+        }
 
     private fun head(
         url: URI,
@@ -155,13 +187,21 @@ class FencedUploader(
         ).toByteArray(Charsets.US_ASCII)
     }
 
+    /**
+     * TLS over the already-connected socket, so an abort can still reset the
+     * plain one. The certificate must name the endpoint's host. JSSE checks
+     * only the chain unless endpoint identification is switched on, and an
+     * attacker on the path with any trusted certificate could otherwise read
+     * every message and presigned URL, or fake a `200`.
+     */
     private fun tls(
         socket: Socket,
         host: String,
         port: Int,
     ): Socket =
-        (SSLSocketFactory.getDefault() as SSLSocketFactory).createSocket(socket, host, port, true).also {
-            (it as SSLSocket).startHandshake()
+        (tlsFactory.createSocket(socket, host, port, true) as SSLSocket).also { ssl ->
+            ssl.sslParameters = ssl.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+            ssl.startHandshake()
         }
 
     internal data class Response(
@@ -229,6 +269,8 @@ class FencedUploader(
         val DEFAULT_T_PUT: Duration = Duration.ofSeconds(30)
         val DEFAULT_CONNECT_TIMEOUT: Duration = Duration.ofSeconds(5)
 
+        /** How long an early answer is waited for after a failed write. Well inside `T_put`; the watchdog still bounds it. */
+        private val EARLY_ANSWER_WAIT: Duration = Duration.ofSeconds(1)
         private const val MAX_ERROR_BODY = 64 * 1024
         private const val MAX_LINE = 8 * 1024
 

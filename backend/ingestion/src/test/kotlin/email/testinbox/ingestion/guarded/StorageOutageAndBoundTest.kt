@@ -23,8 +23,10 @@ import java.time.Duration
 
 /**
  * ADR-035 §17 tests 31, 35 and 52:
- * - storage down answers `451` for the whole `DATA`, and the sender's retry
- *   after recovery is admitted, with no tenant refusal persisted;
+ * - a hung storage (the container paused) answers `451` for the whole
+ *   `DATA`, and the sender's retry after recovery is admitted, with no tenant
+ *   refusal persisted. A storage that refuses connections is the protocol
+ *   test's unreachable case;
  * - the owner's physical proof, run in isolation (a dedicated database and
  *   bucket, a small G, enforcement switched on inside this test only):
  *   `listed ≤ committed + reserved` at every checkpoint, and finally
@@ -79,7 +81,7 @@ class StorageOutageAndBoundTest {
     }
 
     @Test
-    fun `storage down answers 451 for the whole DATA, and the retry after recovery is admitted`() {
+    fun `a hung storage answers 451 for the whole DATA, and the retry after recovery is admitted`() {
         GuardedIngestHarness(tPut = Duration.ofSeconds(2)).use { h ->
             val (inbox, address) = h.inbox(h.workspace())
             val docker = DockerClientFactory.instance().client()
@@ -95,6 +97,11 @@ class StorageOutageAndBoundTest {
             down.startsWith("451") shouldBe true
             h.messageCount() shouldBe 0
             h.breaker.isOpen shouldBe true
+            // A paused MinIO still completes the TCP handshake (the kernel does), so
+            // the upload is cut at T_put: ambiguous, persisted, and still charged.
+            h.metrics.events.contains("failure:AMBIGUOUS") shouldBe true
+            h.unresolvedAmbiguity() shouldBe 1
+            h.reservationStates() shouldBe mapOf("RESERVED" to 1L)
 
             Thread.sleep(h.breaker.currentBackoff.toMillis() + 100) // the breaker's own backoff is what is waited out
             val retried = smtp(h, address)

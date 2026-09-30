@@ -168,8 +168,10 @@ class InMemoryStorageReservations(
             }
         }
 
-    override fun markUploadStarted(id: MessageId) {
-        rows[id]?.let { it.firstUploadAt = it.firstUploadAt ?: clock.instant() }
+    override fun markUploadStarted(id: MessageId): Boolean {
+        val row = rows[id]?.takeIf { it.state == "RESERVED" } ?: return false
+        row.firstUploadAt = row.firstUploadAt ?: clock.instant()
+        return true
     }
 
     override fun releaseAbandoned(ids: Collection<MessageId>) = releaseDuplicates(ids)
@@ -178,23 +180,29 @@ class InMemoryStorageReservations(
         val due = rows.values.filter { it.state == "RESERVED" && it.writeDeadlineAt.isBefore(clock.instant()) }
         due.forEach {
             it.state = "RELEASING"
-            it.releaseNotBefore = it.writeDeadlineAt.plus(settle)
+            it.releaseNotBefore = maxOf(it.releaseNotBefore ?: Instant.MIN, it.writeDeadlineAt.plus(settle))
         }
         return due.size
     }
 
-    override fun <T : Any> withReleasable(
+    override fun releasable(
         horizon: Instant,
         limit: Int,
-        work: (List<ReleasableReservation>) -> T,
-    ): T =
-        work(
-            rows.values
-                .filter { it.state == "RELEASING" && !it.releaseNotBefore!!.isAfter(horizon) }
-                .sortedBy { it.messageId.value }
-                .take(limit)
-                .map { ReleasableReservation(it.messageId, it.workspaceId, it.objectKeys, it.releaseNotBefore!!) },
-        )
+    ): List<MessageId> =
+        rows.values
+            .filter { it.state == "RELEASING" && !it.releaseNotBefore!!.isAfter(horizon) }
+            .map { it.messageId }
+            .sortedBy { it.value.toString() }
+            .take(limit)
+
+    override fun <T : Any> withReleasable(
+        id: MessageId,
+        horizon: Instant,
+        work: (ReleasableReservation) -> T,
+    ): T? =
+        rows[id]
+            ?.takeIf { it.state == "RELEASING" && !it.releaseNotBefore!!.isAfter(horizon) }
+            ?.let { work(ReleasableReservation(it.messageId, it.workspaceId, it.objectKeys, it.releaseNotBefore!!)) }
 
     override fun release(id: MessageId) {
         rows[id]?.takeIf { it.state == "RELEASING" }?.let { rows.remove(id) }
@@ -207,10 +215,22 @@ class InMemoryStorageReservations(
         rows[id]?.let { it.releaseNotBefore = maxOf(it.releaseNotBefore ?: until, until) }
     }
 
-    override fun postponeAll(by: Duration): Int {
-        val releasing = rows.values.filter { it.state == "RELEASING" }
-        releasing.forEach { it.releaseNotBefore = it.releaseNotBefore!!.plus(by) }
-        return releasing.size
+    override fun postponeAll(
+        by: Duration,
+        settle: Duration,
+    ): Int {
+        rows.values.forEach {
+            val base =
+                if (it.state ==
+                    "RELEASING"
+                ) {
+                    it.releaseNotBefore!!
+                } else {
+                    maxOf(it.releaseNotBefore ?: Instant.MIN, it.writeDeadlineAt.plus(settle))
+                }
+            it.releaseNotBefore = base.plus(by)
+        }
+        return rows.size
     }
 
     override fun messageExists(id: MessageId) = messages.exists(id)
@@ -241,6 +261,7 @@ class InMemoryStorageAmbiguity(
         val ambiguousAt: Instant,
         val verifyAt: Instant,
         var resolved: Boolean = false,
+        var resolvedAt: Instant? = null,
     )
 
     val records = mutableListOf<Record>()
@@ -269,8 +290,16 @@ class InMemoryStorageAmbiguity(
             .map { AmbiguityRecord(it.id, it.nodeId, it.objectKey, it.ambiguousAt) }
 
     override fun resolve(id: Long) {
-        records.first { it.id == id }.resolved = true
+        records.first { it.id == id }.let {
+            it.resolved = true
+            it.resolvedAt = clock.instant()
+        }
     }
+
+    override fun wasAmbiguous(
+        key: String,
+        within: Duration,
+    ) = records.any { it.objectKey == key && (!it.resolved || it.resolvedAt!!.isAfter(clock.instant().minus(within))) }
 
     override fun oldestUnresolvedAge(): Duration? =
         records
@@ -290,7 +319,8 @@ class InMemoryStorageAmbiguity(
     override fun heartbeat(
         nodeId: String,
         generation: UUID,
-    ) = Unit
+        capability: String,
+    ): Boolean = generations.putIfAbsent(nodeId to generation, false) != null
 
     override fun markCleanShutdown(
         nodeId: String,

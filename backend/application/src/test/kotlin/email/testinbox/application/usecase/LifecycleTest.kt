@@ -201,7 +201,7 @@ class LifecycleTest {
         ambiguity.record("node", ambiguousKey, 1, Duration.ofHours(1))
         val inspection = InMemoryStorageInspection(blobs, clock)
 
-        val sweep = OrphanBlobSweep(blobs, reservations, inspection, clock, Duration.ofHours(1))
+        val sweep = OrphanBlobSweep(blobs, reservations, ambiguity, ambiguity, inspection, clock, Duration.ofHours(1))
         sweep.sweep() shouldBe 1
         blobs.blobs.keys.toSet() shouldBe setOf(referencedKey, freshOrphanKey, reservedKey, ambiguousKey)
     }
@@ -215,7 +215,15 @@ class LifecycleTest {
         val fresh = IncompleteUpload("ws/inbox/msg2/raw.eml", "u2", clock.instant())
         inspection.incomplete += listOf(stale, fresh)
 
-        OrphanBlobSweep(blobs, InMemoryStorageReservations(messages, ambiguity, clock), inspection, clock, Duration.ofHours(1)).sweep()
+        OrphanBlobSweep(
+            blobs,
+            InMemoryStorageReservations(messages, ambiguity, clock),
+            ambiguity,
+            ambiguity,
+            inspection,
+            clock,
+            Duration.ofHours(1),
+        ).sweep()
 
         inspection.incomplete shouldBe listOf(fresh)
     }

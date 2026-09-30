@@ -51,7 +51,7 @@ Suite abbreviations. The directories hold the Kotlin tests:
 | 32 | Deterministic lock order, including an old-binary path | TI-STORAGE-001 / 003 | P `StorageLedgerConcurrencyTest`, `StorageProtocolPersistenceTest` (T2 against retention) |
 | 33 | Owner: anti-oracle transcript | TI-STORAGE-003 | I `SmtpAntiOracleTest` |
 | 34 | Quota classification by fault injection | TI-STORAGE-003 | S `FencedUploadTest`; I `GuardedIngestProtocolTest` |
-| 35 | MinIO stopped: `451`, then admission after restart | TI-STORAGE-003 | I `StorageOutageAndBoundTest` (container paused and resumed) |
+| 35 | MinIO stopped: `451`, then admission after restart | TI-STORAGE-003 | I `StorageOutageAndBoundTest` (container paused and resumed: a hung storage, asserted AMBIGUOUS and persisted); refused connections: `GuardedIngestProtocolTest` (unreachable, asserted UNAVAILABLE) |
 | 36 | `552`, `553` and the unknown `250` unchanged; gateway cap = `contract.yaml` | TI-STORAGE-003 | I `SmtpIngestionIntegrationTest` |
 | 37–44 | The wait protocol (`409`, cursor) | **Deferred to TI-STORAGE-004** | the legacy wait is proven unchanged: API `WaitApiTest` (a refusal notify mid-wait) |
 | 45 | SDK storage behaviour | **Deferred to TI-STORAGE-005** | — |
@@ -59,10 +59,10 @@ Suite abbreviations. The directories hold the Kotlin tests:
 | 47 | Metric cardinality | TI-STORAGE-003 (protocol metrics); `STORAGE_LIMIT_EXCEEDED` waits for TI-STORAGE-004 | observability `MetricCardinalityTest` |
 | 48 | `DeploymentSafety` with enforcement ON | **Enablement gate** (no enforcement setting exists yet) | I `EnforcementOffLiveTest` proves that no configuration can enable refusal |
 | 49 | Activation barrier | **Enablement gate**; the capability names and generations it will read are published now | I `EnforcementOffLiveTest`, `GuardedIngestEdgeCasesTest` |
-| 50 | ArchUnit: no unfenced payload write; layers | TI-STORAGE-003 | AR `DependencyRuleTest` (with a fixture proving the rule fails) |
+| 50 | ArchUnit: no unfenced payload write (sync or async client, presigner, transfer manager); only the guarded protocol calls the fenced write; layers | TI-STORAGE-003 | AR `DependencyRuleTest` (fixtures proving each rule fails) |
 | 51 | Migration gate and backup scope | TI-STORAGE-001 | `scripts/check-migration-safety.test.sh`, `scripts/check-backup-scope.test.sh` |
 | 52 | Owner: the physical proof | TI-STORAGE-003 | I `StorageOutageAndBoundTest` (isolated database and bucket, enforcement internal) |
-| 53 | Pre-EOF stall ended by MinIO's idle timeout | TI-STORAGE-003 | S `FencedUploadTest` |
+| 53 | Pre-EOF stall ended by MinIO's idle timeout | TI-STORAGE-003 | S `FencedUploadTest` (MinIO's own end of the held request is observed within the window) |
 | 54 | No release while the witness is blocked | TI-STORAGE-003 | I `GuardedIngestEdgeCasesTest` |
 | 55 | `qualification_valid = 0` latches | **Ops / enablement gate**: the latch exists and every node honours it; the Ops `qualification-check` that sets it is not in this repository | I `GuardedIngestProtocolTest` (the latch) |
 
@@ -71,7 +71,23 @@ Suite abbreviations. The directories hold the Kotlin tests:
 | Gate | Where |
 |---|---|
 | 1. Presigner: explicit clock, signed `content-length` and `if-none-match`, on the pinned MinIO | S `FencedUploadTest` |
-| 2. `T_put` total wall-clock and RST abort, proven with the TCP proxy | S `FencedUploadTest` |
+| 2. `T_put` total wall-clock and RST abort, proven with the TCP proxy: a stall, a peer trickling a response forever (no inactivity timeout can fire), and a write blocked by a full TCP window (no read timeout covers it) | S `FencedUploadTest` |
 | 3. URL redaction, by log capture | S `FencedUploadTest` |
 | 4. The tests above, with ratcheted minima | `scripts/verify-test-results.sh` |
 | 5. The staging `deploy.sh` rollback-floor check | `scripts/check-rollback-floors.test.sh`, `scripts/deploy-preflight.test.sh` |
+
+Review hardening (TI-STORAGE-003 §55–§58), each with its own test:
+
+| Property | Where |
+|---|---|
+| The late-object latch commits on its own; each cleanup row is its own transaction | P `StorageProtocolPersistenceTest`, I `GuardedIngestEdgeCasesTest` |
+| A dead generation's started keys each get a per-key proof at `verify_at` (coverage rows) | P `StorageProtocolPersistenceTest`, I `GuardedIngestCrashTest` F |
+| The orphan sweep latches on an orphan that was ambiguous within 24 h | I `GuardedIngestCleanupTest` |
+| A live generation declared dead re-registers at its next heartbeat | P `StorageProtocolPersistenceTest` |
+| Refusal upserts lock in PostgreSQL (unsigned) uuid order | P `StorageProtocolPersistenceTest` |
+| Clock-offset postponement also moves `RESERVED` rows | P `StorageProtocolPersistenceTest` |
+| Latch and breaker are checked before recipients resolve: one `451` for everyone | I `GuardedIngestEdgeCasesTest` |
+| A reservation fenced before its first byte uploads nothing | I `GuardedIngestEdgeCasesTest` |
+| HTTPS verifies the storage host name | S `FencedUploadTest` |
+| An early definitive answer survives a failed body write | S `FencedUploadTest` |
+| Breaker kinds accumulate; backoff doubling and cap; slot all-or-nothing, poison, and the out-of-lock ambiguity read | A `StorageBreakerTest`, `WriteSlotsTest` |

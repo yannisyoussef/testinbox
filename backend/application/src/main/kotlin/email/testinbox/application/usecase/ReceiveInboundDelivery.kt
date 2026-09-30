@@ -109,6 +109,12 @@ class ReceiveInboundDelivery(
     }
 
     fun execute(command: Command): Result {
+        // Storage health first, before any recipient resolves: while storage
+        // is latched or its breaker is open, EVERY event gets the same 451,
+        // whether its recipients exist or not. Checked after resolution, only
+        // events with a known recipient would get it, and the 451/250 split
+        // would be a recipient-existence oracle (ADR-025).
+        storage.unavailable()?.let { throw it }
         val now = clock.instant()
         val recipients = command.recipients.map { it.trim().lowercase() }.distinct()
         // Transport-insensitive by ADR-019 §4 as amended: the gateway (and any

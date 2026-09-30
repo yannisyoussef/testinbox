@@ -145,7 +145,11 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   across restarts. A node id that changed on every restart would lose that,
   and with it the finalize budget H. Two processes during a rolling deploy
   must use DIFFERENT ids, and are counted twice in H
-  (`declared-max-ingestion-processes`).
+  (`declared-max-ingestion-processes`). This is enforced: a process claims its
+  id with a session-level advisory lock for its whole life, and a second
+  process started with the same id **fails to start**. If the claim's session
+  dies and another process takes the id meanwhile, the first opens its
+  storage breaker (`451`) rather than share it.
 - **Enforcement is OFF, and there is no setting for it.** No property,
   environment variable or profile switches refusal on in this release (ADR-035
   Phase 2). Enabling it is a later, gated release.

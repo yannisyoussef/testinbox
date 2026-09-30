@@ -29,7 +29,11 @@ class WriteSlots(
     private val maxSlots: Int = StorageProtocol.MAX_CONCURRENT_WRITES,
     private val perWorkspace: Int = StorageProtocol.MAX_EVENTS_PER_WORKSPACE,
     private val waitTimeout: Duration = StorageProtocol.SLOT_WAIT,
-    /** Unresolved ambiguity rows of this node. Read on every attempt, never cached. */
+    /**
+     * Unresolved ambiguity rows of this node. Read on every attempt, never
+     * cached, and never while holding the slot lock: a slow query must not
+     * block slot releases or other waiters.
+     */
     private val ambiguous: () -> Int,
 ) {
     init {
@@ -39,6 +43,13 @@ class WriteSlots(
     private val lock = ReentrantLock()
     private val released = lock.newCondition()
     private var inUse = 0
+
+    /**
+     * Bumped whenever a slot is returned. An ambiguity is persisted BEFORE its
+     * slot is returned, so a count read before the bump may miss it: an
+     * attempt whose count predates a return reads it again.
+     */
+    private var returns = 0L
 
     /** Slots lost to an ambiguity that could not be persisted: held until the process ends. */
     private var poisoned = 0
@@ -55,6 +66,7 @@ class WriteSlots(
                 if (closed) return@withLock
                 closed = true
                 inUse--
+                returns++
                 workspaces.forEach { ws -> perWorkspaceInUse.merge(ws, -1) { a, b -> (a + b).takeIf { it > 0 } } }
                 released.signalAll()
             }
@@ -72,6 +84,7 @@ class WriteSlots(
                 // Moves from "in use" to "poisoned": still one slot, never two.
                 inUse--
                 poisoned++
+                returns++
                 workspaces.forEach { ws -> perWorkspaceInUse.merge(ws, -1) { a, b -> (a + b).takeIf { it > 0 } } }
                 released.signalAll()
             }
@@ -81,9 +94,11 @@ class WriteSlots(
     fun acquire(workspaces: Set<WorkspaceId>): Slot {
         require(workspaces.isNotEmpty()) { "an event involves at least one workspace" }
         val deadline = System.nanoTime() + waitTimeout.toNanos()
-        lock.withLock {
-            while (true) {
-                if (fits(workspaces)) {
+        while (true) {
+            val seen = lock.withLock { returns }
+            val persisted = ambiguous() // outside the lock
+            lock.withLock {
+                if (returns == seen && fits(persisted, workspaces)) {
                     inUse++
                     workspaces.forEach { perWorkspaceInUse.merge(it, 1, Int::plus) }
                     return Slot(workspaces)
@@ -95,17 +110,27 @@ class WriteSlots(
                         "no write slot within ${waitTimeout.toMillis()} ms",
                     )
                 }
-                // Ambiguity resolves outside this process, so re-check at least every POLL.
-                released.await(minOf(remaining, POLL.toNanos()), TimeUnit.NANOSECONDS)
+                // A slot returned since the count was read: read it again now.
+                // Otherwise wait for a return; ambiguity also resolves outside
+                // this process, so re-check at least every POLL.
+                if (returns == seen) released.await(minOf(remaining, POLL.toNanos()), TimeUnit.NANOSECONDS)
             }
         }
     }
 
-    private fun fits(workspaces: Set<WorkspaceId>): Boolean =
-        inUse + poisoned + ambiguous() < maxSlots && workspaces.all { (perWorkspaceInUse[it] ?: 0) < perWorkspace }
+    private fun fits(
+        persisted: Int,
+        workspaces: Set<WorkspaceId>,
+    ): Boolean = inUse + poisoned + persisted < maxSlots && workspaces.all { (perWorkspaceInUse[it] ?: 0) < perWorkspace }
 
     /** Slots taken by live events, poisoned slots and persisted ambiguity (for metrics and tests). */
-    fun occupied(): Int = lock.withLock { inUse + poisoned + ambiguous() }
+    fun occupied(): Int {
+        val persisted = ambiguous()
+        return lock.withLock { inUse + poisoned + persisted }
+    }
+
+    /** Slots whose ambiguity could not be persisted: the generation must not be marked clean. */
+    fun poisoned(): Int = lock.withLock { poisoned }
 
     private companion object {
         val POLL: Duration = Duration.ofMillis(250)

@@ -98,6 +98,10 @@ class WaitApiTest : ApiIntegrationTestBase() {
 
     @Autowired lateinit var storageTransactions: org.springframework.transaction.support.TransactionOperations
 
+    @Autowired lateinit var jdbcClient: org.springframework.jdbc.core.simple.JdbcClient
+
+    private fun waitLeases(): Long = jdbcClient.sql("SELECT count(*) FROM wait_lease").query(Long::class.java).single()
+
     @Test
     fun `a storage refusal mid-wait wakes the waiter but never changes the legacy result (TI-STORAGE-003)`() {
         // The refusal pg_notify shares the message channel (ADR-035 §6a). A
@@ -108,9 +112,14 @@ class WaitApiTest : ApiIntegrationTestBase() {
         val executor = Executors.newSingleThreadExecutor()
         try {
             executor.submit {
-                Thread.sleep(300)
+                // Ordered by the wait's own lease, not by sleeps: the refusal lands
+                // while this wait is in progress, then the message arrives.
+                val until = System.nanoTime() + 5_000_000_000L
+                while (waitLeases() == 0L) {
+                    check(System.nanoTime() < until) { "the wait never started" }
+                    Thread.sleep(10)
+                }
                 refuse(inboxId)
-                Thread.sleep(300)
                 appendVisibleMessage(inboxId, inbox["address"].asText(), subject = "after the refusal")
             }
             val matched = post("/v1/inboxes/$inboxId/messages/wait", """{"matcher":{"subjectContains":"after"},"timeoutSeconds":5}""")

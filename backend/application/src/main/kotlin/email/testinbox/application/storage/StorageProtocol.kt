@@ -8,8 +8,11 @@ import java.time.Duration
  * bound's proof.
  */
 object StorageProtocol {
-    /** `E`: the presigned write window, `write_deadline_at = t0 + E` (§5). */
-    val WRITE_WINDOW: Duration = Duration.ofSeconds(120)
+    /**
+     * `E`: the presigned write window, `write_deadline_at = t0 + E` (§5). One
+     * value: T1 sets the deadline with it and the URL expires with it.
+     */
+    val WRITE_WINDOW: Duration = email.testinbox.application.usecase.StorageAdmission.WRITE_WINDOW
 
     /** `T_put`: the total wall-clock bound of one upload, enforced by the upload client (§5). */
     val T_PUT: Duration = Duration.ofSeconds(30)

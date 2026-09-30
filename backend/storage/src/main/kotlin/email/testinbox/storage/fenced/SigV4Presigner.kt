@@ -107,6 +107,6 @@ object Redaction {
     /** [text] with every SigV4 query parameter value removed. */
     fun scrub(text: String?): String = text?.replace(signatureParameters, "$1=<redacted>").orEmpty()
 
-    /** A URI safe to name: scheme, authority and path, never the query. */
-    fun describe(uri: URI): String = "${uri.scheme}://${uri.rawAuthority}${uri.rawPath}"
+    /** A URI safe to name: scheme, host, port and path. Never the query, never user-info. */
+    fun describe(uri: URI): String = uri.scheme + "://" + uri.host + (if (uri.port != -1) ":" + uri.port else "") + uri.rawPath
 }

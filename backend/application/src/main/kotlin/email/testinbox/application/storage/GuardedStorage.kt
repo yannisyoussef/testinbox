@@ -1,5 +1,6 @@
 package email.testinbox.application.storage
 
+import email.testinbox.application.port.AmbiguityKind
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.DatabaseClock
 import email.testinbox.application.port.PhysicalFailureKind
@@ -117,19 +118,41 @@ class GuardedStorage(
         require(copies.all { it.bytes == bytesPerCopy }) { "every copy of an event has the same exact footprint" }
         ensureOpen()
         val trial = admitThroughBreaker()
+        var trialEnded = !trial
         try {
             val report = ingestHoldingSlot(bytesPerCopy, copies, persist)
             if (trial) {
-                if (report.appended.isEmpty() && report.duplicates.isEmpty()) breaker.abandonTrial() else breaker.close()
+                if (report.appended.isEmpty() && report.duplicates.isEmpty()) {
+                    breaker.abandonTrial()
+                } else {
+                    breaker.close()
+                    metrics.breakerOpen(false)
+                }
+                trialEnded = true
             }
             return report
-        } catch (e: Exception) {
+        } finally {
             // A failure that tripped the breaker already ended the trial; any
-            // other failure leaves it to the next caller.
-            if (trial) breaker.abandonTrial()
-            throw e
+            // other failure, an Error included, leaves it to the next caller.
+            if (!trialEnded) breaker.abandonTrial()
         }
     }
+
+    /**
+     * Whether storage would refuse this event before T1 (latch, or a breaker
+     * that is open and not yet due a trial), checked BEFORE recipients are
+     * resolved. The SMTP reply for an unhealthy storage is then the same `451`
+     * whatever the recipients are: known or not, inside a limit or not.
+     */
+    fun unavailable(): StorageUnavailableException? =
+        latch.latched()?.let { reason ->
+            metrics.latched(true)
+            StorageUnavailableException(StorageUnavailableReason.LATCHED, "storage admission is latched: $reason")
+        } ?: if (breaker.isBlocked()) {
+            StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open")
+        } else {
+            null
+        }
 
     private fun ingestHoldingSlot(
         bytesPerCopy: Long,
@@ -158,10 +181,17 @@ class GuardedStorage(
             val t0 = checkNotNull(result.t0)
             val attempts = mutableListOf<Attempt>()
             for (copy in admitted) {
-                reservations.markUploadStarted(copy.messageId)
+                if (!reservations.markUploadStarted(copy.messageId)) {
+                    // Cleanup fenced this reservation before its first byte:
+                    // nothing of this copy was written. Whatever earlier copies
+                    // stored was stored definitively, so all of it can go back.
+                    metrics.commitFenced()
+                    releaseAbandoned(admitted)
+                    throw StorageUnavailableException(StorageUnavailableReason.COMMIT_FENCED, "a reservation was fenced before its upload")
+                }
                 for ((key, bytes) in copy.objects) {
                     hook.beforeUpload(key)
-                    val outcome = blobs.putReserved(ReservedUpload(key, bytes, t0, StorageProtocol.WRITE_WINDOW))
+                    val outcome = put(ReservedUpload(key, bytes, t0, StorageProtocol.WRITE_WINDOW))
                     attempts += Attempt(copy.messageId, key, bytes.size.toLong(), outcome)
                     if (outcome != UploadOutcome.Stored) {
                         poisoned = abandon(attempts, admitted, slot)
@@ -182,6 +212,22 @@ class GuardedStorage(
         }
     }
 
+    /** Anything but an outcome, after the call began, may have reached storage: ambiguous. */
+    private fun put(upload: ReservedUpload): UploadOutcome =
+        try {
+            blobs.putReserved(upload)
+        } catch (e: RuntimeException) {
+            log.warn("fenced upload failed unexpectedly; treated as ambiguous: {}", e.javaClass.simpleName)
+            UploadOutcome.Ambiguous(AmbiguityKind.UNEXPECTED_RESPONSE)
+        }
+
+    private fun releaseAbandoned(admitted: List<CopyPlan>) {
+        runCatching { reservations.releaseAbandoned(admitted.map { it.messageId }) }
+            .onFailure {
+                log.warn("could not release abandoned reservations; cleanup expires them at their deadline: {}", it.toString())
+            }
+    }
+
     private fun ensureOpen() {
         latch.latched()?.let { reason ->
             metrics.latched(true)
@@ -196,41 +242,49 @@ class GuardedStorage(
                 false
             }
 
-            StorageBreaker.Admission.RealTrial -> {
-                true
-            }
-
             is StorageBreaker.Admission.Blocked -> {
-                throw StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open (${admission.kind})")
+                throw StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open (${admission.kinds})")
             }
 
-            is StorageBreaker.Admission.Probe -> {
-                if (probe(admission.kind)) {
+            is StorageBreaker.Admission.Trial -> {
+                val failed = probe(admission.kinds)
+                if (failed != null) {
+                    breaker.trip(failed)
+                    throw StorageUnavailableException(
+                        StorageUnavailableReason.BREAKER_OPEN,
+                        "storage breaker half-open probe failed (${admission.kinds})",
+                    )
+                }
+                if (admission.needsRealEvent) {
+                    true
+                } else {
                     breaker.close()
                     metrics.breakerOpen(false)
                     false
-                } else {
-                    breaker.trip(admission.kind)
-                    throw StorageUnavailableException(
-                        StorageUnavailableReason.BREAKER_OPEN,
-                        "storage breaker half-open probe failed (${admission.kind})",
-                    )
                 }
             }
         }
 
-    /** The half-open probe: a zero-risk witness write, or a fresh clock-offset measurement. */
-    private fun probe(kind: StorageBreaker.Kind): Boolean =
-        runCatching {
-            if (kind == StorageBreaker.Kind.CLOCK_OFFSET) {
-                ClockOffset.measure(inspection, clock).withinBound()
-            } else {
-                inspection.witness("_probe/${node.nodeId}/${UUID.randomUUID()}")
+    /**
+     * The half-open probes for every open kind except quota: a fresh
+     * clock-offset measurement for a clock offset, a zero-risk witness write
+     * for anything else. Returns the kind that failed, or null.
+     */
+    private fun probe(kinds: Set<StorageBreaker.Kind>): StorageBreaker.Kind? {
+        fun passes(check: () -> Boolean) =
+            runCatching(check).getOrElse {
+                log.warn("storage breaker probe failed: {}", it.toString())
+                false
             }
-        }.getOrElse {
-            log.warn("storage breaker probe failed: {}", it.toString())
-            false
+        if (StorageBreaker.Kind.CLOCK_OFFSET in kinds && !passes { ClockOffset.measure(inspection, clock).withinBound() }) {
+            return StorageBreaker.Kind.CLOCK_OFFSET
         }
+        val witnessed = kinds.filter { it != StorageBreaker.Kind.CLOCK_OFFSET && it != StorageBreaker.Kind.QUOTA }
+        if (witnessed.isNotEmpty() && !passes { inspection.witness("_probe/${node.nodeId}/${UUID.randomUUID()}") }) {
+            return witnessed.first()
+        }
+        return null
+    }
 
     private fun acquireSlot(copies: List<CopyPlan>): WriteSlots.Slot {
         val started = System.nanoTime()
@@ -287,6 +341,19 @@ class GuardedStorage(
         slot: WriteSlots.Slot,
     ): Boolean {
         val ambiguous = attempts.filter { !it.outcome.definitive }
+        // Ambiguous: the reservation stays RESERVED and charged until cleanup
+        // proves its keys absent, and the slot stays occupied until the
+        // ambiguity is verified. The ambiguity is persisted FIRST, before
+        // anything else can fail, and before the slot can be reused.
+        val poisoned =
+            try {
+                ambiguous.forEach { ambiguity.record(node.nodeId, it.key, it.bytes, StorageProtocol.T_VERIFY) }
+                false
+            } catch (e: RuntimeException) {
+                log.error("could not persist an ambiguous upload; its write slot stays occupied until this process ends", e)
+                slot.poison()
+                true
+            }
         val last = attempts.last().outcome
         val kind =
             when {
@@ -304,30 +371,10 @@ class GuardedStorage(
             else -> Unit // a missed deadline is definitive and says nothing about storage health
         }
         if (breaker.isOpen) metrics.breakerOpen(true)
-        if (ambiguous.isEmpty()) {
-            // Every upload that started ended definitively: nothing can still
-            // appear, so the capacity can go back now (§4).
-            runCatching { reservations.releaseAbandoned(admitted.map { it.messageId }) }
-                .onFailure {
-                    log.warn(
-                        "could not release abandoned reservations; cleanup expires them at their deadline: {}",
-                        it.toString(),
-                    )
-                }
-            return false
-        }
-        // Ambiguous: the reservation stays RESERVED and charged until cleanup
-        // proves its keys absent, and the slot stays occupied until the
-        // ambiguity is verified. The ambiguity is persisted BEFORE the slot
-        // can be reused.
-        return try {
-            ambiguous.forEach { ambiguity.record(node.nodeId, it.key, it.bytes, StorageProtocol.T_VERIFY) }
-            false
-        } catch (e: RuntimeException) {
-            log.error("could not persist an ambiguous upload; its write slot stays occupied until this process ends", e)
-            slot.poison()
-            true
-        }
+        // Every upload that started ended definitively: nothing can still
+        // appear, so the capacity can go back now (§4).
+        if (ambiguous.isEmpty()) releaseAbandoned(admitted)
+        return poisoned
     }
 
     private fun commit(
@@ -359,6 +406,14 @@ class GuardedStorage(
             }
         } catch (e: StorageUnavailableException) {
             if (e.reason == StorageUnavailableReason.COMMIT_FENCED) metrics.commitFenced()
+            releaseAbandoned(admitted)
+            throw e
+        } catch (e: RuntimeException) {
+            // T2 failed (a deadlock loser, a vanished inbox, a database blip).
+            // Every upload was Stored, definitively: nothing can still appear,
+            // so the reservations go back now instead of at deadline + S.
+            // Guarded on RESERVED, so a T2 that did commit is untouched.
+            releaseAbandoned(admitted)
             throw e
         }
     }

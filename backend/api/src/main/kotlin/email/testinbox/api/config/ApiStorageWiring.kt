@@ -62,7 +62,8 @@ class ApiStorageWiring(
     fun orphanBlobSweep(
         blobs: BlobStore,
         reservations: JdbcStorageReservations,
+        ambiguity: JdbcStorageAmbiguity,
         inspection: StorageInspection,
         metrics: StorageProtocolMetrics,
-    ): OrphanBlobSweep = OrphanBlobSweep(blobs, reservations, inspection, clock, properties.orphanMinAge, metrics)
+    ): OrphanBlobSweep = OrphanBlobSweep(blobs, reservations, ambiguity, ambiguity, inspection, clock, properties.orphanMinAge, metrics)
 }

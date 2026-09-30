@@ -42,9 +42,11 @@ interface StorageCommitFence {
     /**
      * Records `first_upload_at`, and COMMITS it, before the first byte of a
      * reservation's upload. Crash recovery relies on it: a reservation with
-     * `first_upload_at` may have objects even if its node died (§9).
+     * `first_upload_at` may have objects even if its node died (§9). False
+     * when the reservation is no longer `RESERVED` (cleanup fenced it): the
+     * upload must not start.
      */
-    fun markUploadStarted(id: MessageId)
+    fun markUploadStarted(id: MessageId): Boolean
 
     /**
      * The event was abandoned and every upload it started ended DEFINITIVELY:
@@ -63,16 +65,25 @@ interface StorageReservations {
      */
     fun expireOverdue(settle: Duration): Int
 
-    /**
-     * In one transaction, locks up to [limit] `RELEASING` rows due by
-     * [horizon] with `FOR UPDATE SKIP LOCKED`, so two cleaners never work the
-     * same row, and runs [work] while holding them.
-     */
-    fun <T : Any> withReleasable(
+    /** Up to [limit] ids of `RELEASING` rows due by [horizon], ascending. A read: nothing is locked. */
+    fun releasable(
         horizon: Instant,
         limit: Int,
-        work: (List<ReleasableReservation>) -> T,
-    ): T
+    ): List<MessageId>
+
+    /**
+     * In its OWN short transaction, locks the one row [id] with
+     * `FOR UPDATE SKIP LOCKED`, rechecks that it is still `RELEASING` and due
+     * by [horizon], and runs [work] while holding it. Returns null, without
+     * running [work], when another cleaner holds the row or it is no longer
+     * due. Each row commits or rolls back alone, so one row's storage error
+     * can never undo another row's release, postponement or latch.
+     */
+    fun <T : Any> withReleasable(
+        id: MessageId,
+        horizon: Instant,
+        work: (ReleasableReservation) -> T,
+    ): T?
 
     /** Released: the row is deleted and its bytes stop counting. Inside [withReleasable]. */
     fun release(id: MessageId)
@@ -83,8 +94,15 @@ interface StorageReservations {
         until: Instant,
     )
 
-    /** After a clock-offset suspension, every pending release moves later by [by] (§5). */
-    fun postponeAll(by: Duration): Int
+    /**
+     * After a clock-offset suspension, every pending release moves later by
+     * [by] (§5): `RELEASING` rows directly, and `RESERVED` rows through the
+     * release time their expiry will give them (`write_deadline_at + settle + by`).
+     */
+    fun postponeAll(
+        by: Duration,
+        settle: Duration,
+    ): Int
 
     /** Case [D]: a committed message already has this id. */
     fun messageExists(id: MessageId): Boolean
@@ -122,8 +140,11 @@ data class ReleasableReservation(
 /**
  * Persisted ambiguity, node generations and the admission latch (ADR-035 §9).
  * This is what keeps the finalize budget H true across breaker cycles and
- * process restarts.
+ * process restarts. Ambiguity and node generations are one port because
+ * recovering a dead generation writes ambiguity rows in the same transaction
+ * that forgets it.
  */
+@Suppress("TooManyFunctions")
 interface StorageAmbiguity {
     /**
      * Persists one ambiguous upload. It must be committed BEFORE the write
@@ -146,6 +167,15 @@ interface StorageAmbiguity {
 
     fun resolve(id: Long)
 
+    /**
+     * Whether [key] was ambiguous within [within]: resolved or not. The orphan
+     * sweep uses it to recognise a late object it is about to delete (§9 point 2).
+     */
+    fun wasAmbiguous(
+        key: String,
+        within: Duration,
+    ): Boolean
+
     fun oldestUnresolvedAge(): Duration?
 
     // --- node generations --------------------------------------------------------------------
@@ -156,10 +186,16 @@ interface StorageAmbiguity {
         capability: String,
     )
 
+    /**
+     * Refreshes this generation's heartbeat, re-creating its row if cleanup
+     * recovered it while this process was alive but unable to heartbeat.
+     * Returns false in that case: the generation had been declared dead.
+     */
     fun heartbeat(
         nodeId: String,
         generation: java.util.UUID,
-    )
+        capability: String,
+    ): Boolean
 
     fun markCleanShutdown(
         nodeId: String,
@@ -169,10 +205,16 @@ interface StorageAmbiguity {
     /**
      * For every generation of [nodeId] other than [current] that did not shut
      * down cleanly (or, when [nodeId] is null, of any node whose heartbeat is
-     * older than [staleAfter]), records keyless ambiguity for the uploads it
-     * might have had in flight. That is at most [slots] rows per generation,
-     * covering its started (`first_upload_at`) but unconsumed reservations.
-     * Then forgets the generation. Idempotent, and returns the rows recorded.
+     * older than [staleAfter]), records the uploads it might have had in
+     * flight:
+     * - at most [slots] keyless rows for the node, which occupy its slots
+     *   (the H bound);
+     * - one keyed COVERAGE row per key of its started (`first_upload_at`)
+     *   but unconsumed reservations, under [coverageNode] of the node, so
+     *   each key gets its own per-key proof at `verify_at` and the orphan
+     *   sweep leaves it alone until then. Coverage rows occupy no slot.
+     *
+     * Then forgets the generation. Idempotent, and returns the keyless rows recorded.
      */
     fun recoverDeadGenerations(
         nodeId: String?,
@@ -183,6 +225,21 @@ interface StorageAmbiguity {
     ): Int
 }
 
+/**
+ * Exclusive use of a storage node id while this process lives (ADR-035 §9).
+ * Two live processes sharing an id would recover each other's in-flight
+ * uploads as dead and share one ambiguity budget.
+ */
+fun interface StorageNodeClaims {
+    /** Claims [nodeId], or returns null when another live process holds it. */
+    fun claim(nodeId: String): Claim?
+
+    interface Claim : AutoCloseable {
+        /** Whether the claim is still held (its database session is alive). */
+        fun held(): Boolean
+    }
+}
+
 /** The database admission latch (ADR-035 §9): the shared fail-closed kill switch. */
 interface StorageLatch {
     fun latched(): String?
@@ -190,6 +247,9 @@ interface StorageLatch {
     /** Sets the latch if it is not set. Only an operator clears it, by hand (runbook). */
     fun latch(reason: String)
 }
+
+/** The `node_id` under which a dead generation's per-key coverage rows are kept: never a real node's. */
+fun coverageNode(nodeId: String): String = "recovered:$nodeId"
 
 data class AmbiguityRecord(
     val id: Long,

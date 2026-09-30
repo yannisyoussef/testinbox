@@ -109,7 +109,7 @@ class S3StorageInspection(
                 .bucket(bucket)
                 .key(probeKey)
                 .build(),
-            RequestBody.fromBytes(byteArrayOf(0)),
+            RequestBody.fromBytes(ByteArray(0)), // the ADR-035 §8 zero-byte probe
         )
         val listed = objectExists(probeKey)
         deleteObject(probeKey)

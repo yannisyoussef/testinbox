@@ -3,8 +3,10 @@ package email.testinbox.persistence
 import email.testinbox.application.port.AmbiguityRecord
 import email.testinbox.application.port.StorageAmbiguity
 import email.testinbox.application.port.StorageLatch
+import email.testinbox.application.port.coverageNode
 import org.springframework.jdbc.core.simple.JdbcClient
-import org.springframework.transaction.support.TransactionOperations
+import org.springframework.transaction.TransactionDefinition
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Duration
 import java.util.UUID
 
@@ -16,13 +18,25 @@ import java.util.UUID
  * recorded by whoever notices first: the same node at restart, or cleanup
  * when the heartbeat goes stale. Either way, per node, in-flight uploads plus
  * unresolved rows never exceed the declared slots, across breaker cycles and
- * restarts. That is the finalize budget H.
+ * restarts. That is the finalize budget H. Every key those uploads covered
+ * also gets a keyed coverage row under [coverageNode], which holds no slot and
+ * is proved per key at `verify_at`.
  */
 class JdbcStorageAmbiguity(
     private val jdbc: JdbcClient,
-    private val transactions: TransactionOperations,
+    private val transactions: TransactionTemplate,
 ) : StorageAmbiguity,
     StorageLatch {
+    /**
+     * The latch commits on its own, whatever transaction the caller is in: a
+     * late object's evidence is deleted right after, and a later rollback of
+     * the caller's work must never take the latch with it.
+     */
+    private val independent =
+        TransactionTemplate(checkNotNull(transactions.transactionManager)).apply {
+            propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW
+        }
+
     override fun record(
         nodeId: String,
         objectKey: String?,
@@ -74,6 +88,22 @@ class JdbcStorageAmbiguity(
         jdbc.sql("UPDATE storage_ambiguity SET resolved_at = now() WHERE id = :id AND resolved_at IS NULL").param("id", id).update()
     }
 
+    override fun wasAmbiguous(
+        key: String,
+        within: Duration,
+    ): Boolean =
+        jdbc
+            .sql(
+                """
+                SELECT EXISTS (SELECT 1 FROM storage_ambiguity
+                                WHERE object_key = :key
+                                  AND (resolved_at IS NULL OR resolved_at > now() - make_interval(secs => :within)))
+                """.trimIndent(),
+            ).param("key", key)
+            .param("within", within.seconds.toDouble())
+            .query(Boolean::class.java)
+            .single()
+
     override fun oldestUnresolvedAge(): Duration? =
         jdbc
             .sql("SELECT extract(epoch FROM now() - min(ambiguous_at)) FROM storage_ambiguity WHERE resolved_at IS NULL")
@@ -100,13 +130,24 @@ class JdbcStorageAmbiguity(
     override fun heartbeat(
         nodeId: String,
         generation: UUID,
-    ) {
+        capability: String,
+    ): Boolean =
+        // An upsert: if cleanup declared this generation dead (a stale
+        // heartbeat while it was alive), the row comes back, so a later real
+        // crash is still recovered. xmax = 0 identifies a fresh insert.
         jdbc
-            .sql("UPDATE storage_node SET heartbeat_at = now() WHERE node_id = :node AND generation = :generation")
-            .param("node", nodeId)
+            .sql(
+                """
+                INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown)
+                VALUES (:node, :generation, :capability, now(), false)
+                ON CONFLICT (node_id, generation) DO UPDATE SET heartbeat_at = now()
+                RETURNING xmax <> 0
+                """.trimIndent(),
+            ).param("node", nodeId)
             .param("generation", generation)
-            .update()
-    }
+            .param("capability", capability)
+            .query(Boolean::class.java)
+            .single()
 
     override fun markCleanShutdown(
         nodeId: String,
@@ -151,25 +192,32 @@ class JdbcStorageAmbiguity(
                 for ((node, generation, clean) in dead) {
                     if (!clean) {
                         // Started but unconsumed: these might have objects in
-                        // flight. At most one row per slot, keyless.
-                        val (started, largest) =
+                        // flight. An upload already recorded as keyed ambiguity
+                        // is not "in flight": it holds its slot through that
+                        // row, and must not hold two.
+                        val started =
                             jdbc
                                 .sql(
                                     """
-                                    SELECT count(*), coalesce(max(bytes), 0) FROM storage_reservation r
+                                    SELECT r.bytes, r.object_keys FROM storage_reservation r
                                      WHERE r.node_id = :node AND r.generation = :generation AND r.first_upload_at IS NOT NULL
-                                       -- An upload already recorded as keyed ambiguity is not "in flight":
-                                       -- it holds its slot through that row, and must not hold two.
                                        AND NOT EXISTS (SELECT 1 FROM storage_ambiguity a
                                                         WHERE a.resolved_at IS NULL AND a.object_key = ANY (r.object_keys))
                                     """.trimIndent(),
                                 ).param("node", node)
                                 .param("generation", generation)
-                                .query { rs, _ -> rs.getInt(1) to rs.getLong(2) }
-                                .single()
-                        repeat(minOf(started, slots)) {
+                                .query { rs, _ -> rs.getLong(1) to (rs.getArray(2).array as Array<*>).map { it as String } }
+                                .list()
+                        // At most one keyless row per slot: they bound the node's slots (H).
+                        val largest = started.maxOfOrNull { it.first } ?: 0
+                        repeat(minOf(started.size, slots)) {
                             record(node, null, largest, verifyAfter)
                             recorded++
+                        }
+                        // And every key they covered gets its own per-key proof at
+                        // verify_at, under a coverage node that holds no slot.
+                        for (key in started.flatMap { it.second }.distinct()) {
+                            record(coverageNode(node), key, 0, verifyAfter)
                         }
                     }
                     jdbc
@@ -190,9 +238,11 @@ class JdbcStorageAmbiguity(
             .orElse(null)
 
     override fun latch(reason: String) {
-        jdbc
-            .sql("INSERT INTO storage_admission_latch (id, reason, latched_at) VALUES (1, :reason, now()) ON CONFLICT (id) DO NOTHING")
-            .param("reason", reason.take(500))
-            .update()
+        independent.executeWithoutResult {
+            jdbc
+                .sql("INSERT INTO storage_admission_latch (id, reason, latched_at) VALUES (1, :reason, now()) ON CONFLICT (id) DO NOTHING")
+                .param("reason", reason.take(500))
+                .update()
+        }
     }
 }

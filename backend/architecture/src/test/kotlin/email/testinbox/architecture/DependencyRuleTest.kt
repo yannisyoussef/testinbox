@@ -313,16 +313,24 @@ class DependencyRuleTest {
         check(methods == setOf("putReserved", "get", "delete", "deletePrefix", "listKeysOlderThan")) {
             "BlobStore must expose no write but putReserved, found $methods"
         }
-        noClasses()
-            .that()
-            .doNotHaveFullyQualifiedName("email.testinbox.application.storage.GuardedStorage")
-            .should()
-            .callMethodWhere(
-                describe("BlobStore.putReserved") { call: com.tngtech.archunit.core.domain.JavaMethodCall ->
-                    call.name == "putReserved"
-                },
-            ).because("a payload object is created only between T1 and T2, under a live reservation (ADR-035 I3)")
-            .check(allClasses)
+        fencedCallerRule().check(allClasses)
+    }
+
+    @Test
+    fun `the write rules catch an async put, a rogue fenced write and a stray uploader, so they can fail`() {
+        fun fails(
+            rule: com.tngtech.archunit.lang.ArchRule,
+            fixture: Class<*>,
+            expected: String,
+        ) {
+            val failure = runCatching { rule.check(ClassFileImporter().importClasses(fixture)) }.exceptionOrNull()
+            check(failure is AssertionError && expected in failure.message.orEmpty()) {
+                "the rule did not catch ${fixture.simpleName}: $failure"
+            }
+        }
+        fails(payloadWriteRule(), email.testinbox.architecture.fixtures.UnfencedAsyncPutFixture::class.java, "putObject")
+        fails(fencedCallerRule(), email.testinbox.architecture.fixtures.RogueReservedPutFixture::class.java, "putReserved")
+        fails(fencedCallerRule(), email.testinbox.architecture.fixtures.RogueReservedPutFixture::class.java, "FencedUploader.put")
     }
 
     @Test
@@ -555,18 +563,45 @@ class DependencyRuleTest {
         }
     }
 
+    private val s3Writes =
+        setOf("putObject", "createMultipartUpload", "uploadPart", "uploadPartCopy", "completeMultipartUpload", "copyObject")
+
     private fun payloadWriteRule() =
         noClasses()
-            .that()
-            .doNotHaveFullyQualifiedName("email.testinbox.storage.S3StorageInspection")
             .should()
             .callMethodWhere(
-                describe("S3 putObject / multipart upload") { call: com.tngtech.archunit.core.domain.JavaMethodCall ->
-                    call.targetOwner.isAssignableTo("software.amazon.awssdk.services.s3.S3Client") &&
-                        call.name in setOf("putObject", "createMultipartUpload", "uploadPart", "completeMultipartUpload", "copyObject")
+                describe("an S3 object write outside the storage witness") { call: com.tngtech.archunit.core.domain.JavaMethodCall ->
+                    val s3Client =
+                        call.targetOwner.isAssignableTo("software.amazon.awssdk.services.s3.S3Client") ||
+                            call.targetOwner.isAssignableTo("software.amazon.awssdk.services.s3.S3AsyncClient")
+                    val witness =
+                        call.originOwner.name == "email.testinbox.storage.S3StorageInspection" && call.origin.name == "witness"
+                    s3Client && call.name in s3Writes && !witness
                 },
-            ).because(
+            ).orShould()
+            .dependOnClassesThat()
+            .resideInAnyPackage("software.amazon.awssdk.transfer..", "software.amazon.awssdk.services.s3.presigner..")
+            .because(
                 "every payload object is written by the presigned, create-only, size-bound FencedUploader; " +
                     "the only other write is the storage witness under _probe/ (ADR-035 §5, §7)",
             )
+
+    /** Only the guarded protocol calls the fenced write, and only the blob store drives the uploader. */
+    private fun fencedCallerRule() =
+        noClasses()
+            .that()
+            .doNotHaveFullyQualifiedName("email.testinbox.application.storage.GuardedStorage")
+            .should()
+            .callMethodWhere(
+                describe("BlobStore.putReserved") { call: com.tngtech.archunit.core.domain.JavaMethodCall ->
+                    call.name == "putReserved"
+                },
+            ).orShould()
+            .callMethodWhere(
+                describe("FencedUploader.put outside S3BlobStore") { call: com.tngtech.archunit.core.domain.JavaMethodCall ->
+                    call.targetOwner.name == "email.testinbox.storage.fenced.FencedUploader" &&
+                        call.name == "put" &&
+                        call.originOwner.name != "email.testinbox.storage.S3BlobStore"
+                },
+            ).because("a payload object is created only between T1 and T2, under a live reservation (ADR-035 I3)")
 }

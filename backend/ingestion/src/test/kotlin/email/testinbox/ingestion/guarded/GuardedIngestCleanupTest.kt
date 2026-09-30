@@ -20,6 +20,7 @@ import software.amazon.awssdk.services.s3.model.ListMultipartUploadsRequest
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
 import java.time.Clock
 import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -129,6 +130,8 @@ class GuardedIngestCleanupTest {
         OrphanBlobSweep(
             h.blobs,
             h.reservations,
+            h.ambiguity,
+            h.ambiguity,
             h.inspection,
             Clock.offset(Clock.systemUTC(), Duration.ofHours(2)),
             Duration.ofHours(1),
@@ -217,5 +220,34 @@ class GuardedIngestCleanupTest {
         h.backdate(Duration.ofMinutes(30))
         h.releaseCycle().released shouldBe 0
         h.fencedWrites.forEach { h.inspection.objectExists(it) shouldBe true } // committed content is safe
+    }
+
+    @Test
+    fun `the orphan sweep latches when an orphan it deletes was ambiguous within 24 hours`() {
+        val h = track(GuardedIngestHarness())
+        val key = "${UUID.randomUUID()}/${UUID.randomUUID()}/${UUID.randomUUID()}/raw.eml"
+        h.ambiguity.record("some-node", key, 1, Duration.ZERO)
+        h.jdbc.sql("UPDATE storage_ambiguity SET resolved_at = now()").update() // verified absent, then landed
+        h.s3.putObject(
+            PutObjectRequest
+                .builder()
+                .bucket(h.bucket)
+                .key(key)
+                .build(),
+            RequestBody.fromBytes(byteArrayOf(1)),
+        )
+
+        OrphanBlobSweep(
+            h.blobs,
+            h.reservations,
+            h.ambiguity,
+            h.ambiguity,
+            h.inspection,
+            Clock.offset(Clock.systemUTC(), Duration.ofHours(2)),
+            Duration.ofHours(1),
+        ).sweep() shouldBe 1
+
+        h.latched() shouldBe "late object found by the orphan sweep"
+        h.inspection.objectExists(key) shouldBe false
     }
 }

@@ -69,7 +69,11 @@ class JdbcStorageReservations(
     }
 
     override fun recordRefusals(refusals: Map<InboxId, StorageRefusalReason>) {
-        for ((inbox, reason) in refusals.toSortedMap(compareBy { it.value })) {
+        // Ascending in PostgreSQL's uuid order (unsigned, byte-wise), the order
+        // the compactor and drift repair lock in. java.util.UUID compares its
+        // halves as SIGNED longs, which would put 8…–f… first and let this
+        // upsert and the compactor lock inbox_storage rows in opposite orders.
+        for ((inbox, reason) in refusals.toSortedMap(compareBy { it.value.toString() })) {
             val recorded =
                 jdbc
                     .sql(
@@ -116,14 +120,13 @@ class JdbcStorageReservations(
             .update()
     }
 
-    override fun markUploadStarted(id: MessageId) {
+    override fun markUploadStarted(id: MessageId): Boolean =
         jdbc
             .sql(
                 "UPDATE storage_reservation SET first_upload_at = coalesce(first_upload_at, clock_timestamp()) " +
-                    "WHERE message_id = :id",
+                    "WHERE message_id = :id AND state = 'RESERVED'",
             ).param("id", id.value)
-            .update()
-    }
+            .update() == 1
 
     override fun releaseAbandoned(ids: Collection<MessageId>) {
         if (ids.isEmpty()) return
@@ -147,43 +150,57 @@ class JdbcStorageReservations(
                 )
                 UPDATE storage_reservation r
                    SET state = 'RELEASING',
-                       release_not_before = r.write_deadline_at + make_interval(secs => :settle)
+                       -- A clock-offset postponement recorded while RESERVED is kept.
+                       release_not_before = greatest(r.release_not_before, r.write_deadline_at + make_interval(secs => :settle))
                   FROM due
                  WHERE r.message_id = due.message_id AND r.state = 'RESERVED'
                 """.trimIndent(),
             ).param("settle", settle.seconds.toDouble())
             .update()
 
-    override fun <T : Any> withReleasable(
+    override fun releasable(
         horizon: Instant,
         limit: Int,
-        work: (List<ReleasableReservation>) -> T,
-    ): T =
-        checkNotNull(
-            transactions.execute {
-                val rows =
-                    jdbc
-                        .sql(
-                            """
-                            SELECT message_id, workspace_id, object_keys, release_not_before FROM storage_reservation
-                             WHERE state = 'RELEASING' AND release_not_before <= :horizon
-                             ORDER BY message_id
-                             LIMIT :limit
-                               FOR UPDATE SKIP LOCKED
-                            """.trimIndent(),
-                        ).param("horizon", Timestamps.toDb(horizon))
-                        .param("limit", limit)
-                        .query { rs, _ ->
-                            ReleasableReservation(
-                                messageId = MessageId(rs.getObject("message_id", UUID::class.java)),
-                                workspaceId = WorkspaceId(rs.getObject("workspace_id", UUID::class.java)),
-                                objectKeys = (rs.getArray("object_keys").array as Array<*>).map { it as String },
-                                releaseNotBefore = checkNotNull(Timestamps.fromDb(rs, "release_not_before")),
-                            )
-                        }.list()
-                work(rows)
-            },
-        )
+    ): List<MessageId> =
+        jdbc
+            .sql(
+                """
+                SELECT message_id FROM storage_reservation
+                 WHERE state = 'RELEASING' AND release_not_before <= :horizon
+                 ORDER BY message_id
+                 LIMIT :limit
+                """.trimIndent(),
+            ).param("horizon", Timestamps.toDb(horizon))
+            .param("limit", limit)
+            .query { rs, _ -> MessageId(rs.getObject(1, UUID::class.java)) }
+            .list()
+
+    override fun <T : Any> withReleasable(
+        id: MessageId,
+        horizon: Instant,
+        work: (ReleasableReservation) -> T,
+    ): T? =
+        transactions.execute {
+            jdbc
+                .sql(
+                    """
+                    SELECT message_id, workspace_id, object_keys, release_not_before FROM storage_reservation
+                     WHERE message_id = :id AND state = 'RELEASING' AND release_not_before <= :horizon
+                       FOR UPDATE SKIP LOCKED
+                    """.trimIndent(),
+                ).param("id", id.value)
+                .param("horizon", Timestamps.toDb(horizon))
+                .query { rs, _ ->
+                    ReleasableReservation(
+                        messageId = MessageId(rs.getObject("message_id", UUID::class.java)),
+                        workspaceId = WorkspaceId(rs.getObject("workspace_id", UUID::class.java)),
+                        objectKeys = (rs.getArray("object_keys").array as Array<*>).map { it as String },
+                        releaseNotBefore = checkNotNull(Timestamps.fromDb(rs, "release_not_before")),
+                    )
+                }.optional()
+                .map(work)
+                .orElse(null)
+        }
 
     override fun release(id: MessageId) {
         jdbc
@@ -203,12 +220,21 @@ class JdbcStorageReservations(
             .update()
     }
 
-    override fun postponeAll(by: Duration): Int =
+    override fun postponeAll(
+        by: Duration,
+        settle: Duration,
+    ): Int =
         jdbc
             .sql(
-                "UPDATE storage_reservation SET release_not_before = release_not_before + make_interval(secs => :by) " +
-                    "WHERE state = 'RELEASING'",
+                """
+                UPDATE storage_reservation
+                   SET release_not_before =
+                       CASE WHEN state = 'RELEASING' THEN release_not_before
+                            ELSE greatest(release_not_before, write_deadline_at + make_interval(secs => :settle)) END
+                       + make_interval(secs => :by)
+                """.trimIndent(),
             ).param("by", by.toMillis() / 1000.0)
+            .param("settle", settle.seconds.toDouble())
             .update()
 
     override fun messageExists(id: MessageId): Boolean =

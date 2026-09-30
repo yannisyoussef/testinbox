@@ -97,11 +97,15 @@ capacity.
   - a per-exact-key proof that both the object and any multipart upload are
     absent.
 
-  Anything that reappears is a late object: it is deleted, and the admission
-  latch (`storage_admission_latch`) is set. Only an operator clears it.
+  Anything that reappears is a late object: the admission latch
+  (`storage_admission_latch`) is set and committed, then the object is
+  deleted. Only an operator clears the latch. Each row is claimed and released
+  in its own short transaction.
 - **Verification** (API, every 60 s). Ambiguity is verified at `T_verify`
   (60 min). Each node heartbeats in `storage_node`, and a node that died with
-  uploads in flight leaves keyless ambiguity for them.
+  uploads in flight leaves keyless ambiguity for them (one per slot, under its
+  node id), plus one keyed coverage row per key it had started (under
+  `recovered:<node id>`, holding no slot), each proved at `T_verify`.
 - **Refusal records** (`inbox_storage.refusal_count`) commit inside T2, or in
   a short transaction of their own when nothing was admitted. With
   enforcement OFF there are none.
