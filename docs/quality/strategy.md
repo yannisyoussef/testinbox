@@ -68,7 +68,7 @@ gate.
 | OpenAPI backwards compatibility | oasdiff vs. the PR base spec | Yes on ERR; warnings (e.g. removing an optional parameter) are reported only |
 | Compatibility-gate self-test | `openapi-breaking-check.test.sh` | Yes |
 | Secret detection | gitleaks (working tree) | Yes |
-| Deployment-gate self-tests | `validate-image-digest.test.sh`, `deploy-preflight.test.sh`, `gitlab-handoff.test.sh`, `check-migration-safety.test.sh`, `scan-images.test.sh` | Yes |
+| Deployment-gate self-tests | `validate-image-digest.test.sh`, `deploy-preflight.test.sh` (including the staging rollback floor: below-floor, unlabelled, boundary, acknowledged and unreadable-floors images), `check-rollback-floors.test.sh` (13: the one floor check behind staging and production, with its fail-closed cases), `gitlab-handoff.test.sh`, `check-migration-safety.test.sh`, `scan-images.test.sh` | Yes |
 | Production-contract self-tests (ADR-034) | `verify-production-candidate.test.sh` (25 cases: non-develop or cross-repository head, no merged PR, one of four artifacts missing, a tag-shaped digest, artifacts attested to another commit / by another repository's workflow / from another ref, rollback floors incl. an absent floors file, and the positive controls — the stubbed `gh` refuses any attestation call missing a binding flag), `promotion-gate.test.sh` (11: failed/cancelled/skipped/missing/unlisted leg, zero legs, nothing to aggregate), `await-candidate-build.test.sh` (10: a failed or cancelled develop build, a build that never comes, a build still running at the deadline, a feature-branch head refused without a query), `check-backup-scope.test.sh` (43: content rows in every spelling `pg_dump` and hand tooling produce, quoted/`UNLOGGED`/multiline/digit-suffixed `CREATE TABLE`, the documented `pg_restore -l` recipe, a missing control-plane table, a dump that examines nothing, and each ADR-035 table or content table omitted or classified `+`) | Yes — on every pull request, because the gates they protect run only on a promotion |
 | Candidate identity + `Production promotion gate` | `release-candidate.yml` | Yes, on a pull request to `master` only; the one context `master` requires |
 | Production fail-closed configuration | `DeploymentSafetyTest`, `DeploymentSafetyCheckTest`, `IngestionDeploymentSafetyCheckTest`, `DeployedConfigurationTest`, `DeployedProfileLayeringTest` (api + ingestion: the REAL profile documents loaded through Spring — the production overrides win, staging is untouched), `S3BlobStoreTest` | Yes — staging configuration labelled production, a blank environment under a deployed profile, an env var re-enabling bucket creation or demoting the session bound, a production node creating its bucket, a shadowed per-profile file, and profiles that drift |
@@ -149,3 +149,15 @@ treated with the same seriousness as the security threat model — new corpus
 entries should be added whenever a real-world malformed message causes an
 issue, growing the suite as a regression net over time (a "fuzz corpus"
 mindset, not a fixed fixture set written once).
+
+## ADR-035 storage protocol
+
+Where each ADR-035 §17 test lives is mapped in
+[`adr-035-test-map.md`](adr-035-test-map.md). The guarded ingest path is
+proven against real PostgreSQL and the pinned MinIO. A TCP fault proxy
+(storage test fixtures) injects stalls, swallowed responses, resets and
+canned answers. Sync hooks and SQL back-dating drive every interleaving,
+with no sleep deciding one, and every gate has a test proving it can fail.
+The physical-bound rehearsal runs with enforcement enabled only inside its
+own isolated test. No deployable can enable it.
+

@@ -4,12 +4,15 @@ import email.testinbox.application.FakeRateLimiter
 import email.testinbox.application.InMemoryBlobStore
 import email.testinbox.application.InMemoryInboxRepository
 import email.testinbox.application.InMemoryMessageRepository
+import email.testinbox.application.InMemoryStorage
 import email.testinbox.application.MutableClock
 import email.testinbox.application.RollbackTx
 import email.testinbox.application.port.MimeAttachment
 import email.testinbox.application.port.MimeParseResult
 import email.testinbox.application.port.MimeParser
 import email.testinbox.application.port.ParsedMime
+import email.testinbox.application.storage.ReleaseStaleReservations
+import email.testinbox.application.storage.StorageProtocol
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
@@ -20,6 +23,7 @@ import email.testinbox.domain.message.ParseStatus
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
+import io.kotest.matchers.maps.shouldBeEmpty
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import org.junit.jupiter.api.BeforeEach
@@ -32,6 +36,7 @@ class ReceiveInboundDeliveryTest {
     private lateinit var inboxes: InMemoryInboxRepository
     private lateinit var messages: InMemoryMessageRepository
     private lateinit var blobs: InMemoryBlobStore
+    private lateinit var storage: InMemoryStorage
     private lateinit var clock: MutableClock
     private var parseResult: MimeParseResult =
         MimeParseResult.Parsed(
@@ -60,10 +65,19 @@ class ReceiveInboundDeliveryTest {
     fun setUp() {
         inboxes = InMemoryInboxRepository()
         messages = InMemoryMessageRepository()
-        blobs = InMemoryBlobStore()
         clock = MutableClock(Instant.parse("2026-08-29T12:00:00Z"))
+        storage = InMemoryStorage(inboxes, messages, clock)
+        blobs = storage.blobs
         useCase =
-            ReceiveInboundDelivery(inboxes, messages, blobs, parser, RollbackTx(messages), rateLimiter, clock, inboundMetrics = metrics)
+            ReceiveInboundDelivery(
+                inboxes,
+                messages,
+                storage.guarded(RollbackTx(messages)),
+                parser,
+                rateLimiter,
+                clock,
+                inboundMetrics = metrics,
+            )
         inbox = provisionInbox("test@testinbox.local")
     }
 
@@ -238,7 +252,25 @@ class ReceiveInboundDeliveryTest {
         replay.accepted.shouldBeEmpty()
         replay.duplicateRecipients shouldBe 1
         messages.messages.size shouldBe 1
-        // The no-op's own blobs are cleaned up; the original's are untouched.
+        // ADR-035: the duplicate's reservation went to RELEASING in the same
+        // commit, and cleanup (not the ingest path) deletes its objects, after
+        // a witness plus C_drain. The original's objects are untouched.
+        storage.reservations.rows.values
+            .single()
+            .state shouldBe "RELEASING"
+        val cleanup =
+            ReleaseStaleReservations(
+                storage.reservations,
+                storage.ambiguity,
+                storage.ambiguity,
+                storage.inspection,
+                storage.databaseClock,
+                "api",
+            )
+        cleanup.run() // the witness completes now
+        clock.advanceSeconds(StorageProtocol.C_DRAIN.seconds)
+        cleanup.run().released shouldBe 1
+        storage.reservations.rows.shouldBeEmpty()
         blobs.blobs.size shouldBe blobCount
     }
 

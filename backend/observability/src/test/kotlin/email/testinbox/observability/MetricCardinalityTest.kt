@@ -7,14 +7,19 @@ import email.testinbox.application.port.BlobOutcome
 import email.testinbox.application.port.CompactionOutcome
 import email.testinbox.application.port.DriftDirection
 import email.testinbox.application.port.IdempotencyOutcome
+import email.testinbox.application.port.PhysicalFailureKind
 import email.testinbox.application.port.ReconciliationOutcome
+import email.testinbox.application.port.ReleasePath
 import email.testinbox.application.port.SmtpRejection
+import email.testinbox.application.port.StorageAdmissionOutcome
 import email.testinbox.application.port.WaitOutcome
 import email.testinbox.domain.idempotency.IdempotentOperation
 import email.testinbox.domain.inbox.AddressMode
 import email.testinbox.domain.limits.QuotaDimension
 import email.testinbox.domain.limits.RateCategory
 import email.testinbox.domain.message.ParseStatus
+import email.testinbox.domain.storage.StorageCapacityPolicy
+import email.testinbox.domain.storage.StorageScope
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.micrometer.prometheusmetrics.PrometheusConfig
@@ -98,7 +103,30 @@ class MetricCardinalityTest {
         ReconciliationOutcome.entries.forEach { storage.reconciliationCompleted(it) }
         CompactionOutcome.entries.forEach { storage.compactionCompleted(it) }
 
+        exerciseStorageProtocol()
+
         BuildInfoMetric(registry, service = "testinbox-api", gitSha = "abc1234", version = "0.1.0")
+    }
+
+    /** ADR-035 §16, the guarded protocol (TI-STORAGE-003): every signal, every enum value. */
+    private fun exerciseStorageProtocol() {
+        val protocol = MicrometerStorageProtocolMetrics(registry, StorageCapacityPolicy.ADR_035_REFERENCE)
+        StorageAdmissionOutcome.entries.forEach { protocol.admission(it) }
+        StorageScope.entries.forEach { protocol.unenforcedLimit(it) }
+        PhysicalFailureKind.entries.forEach { protocol.physicalFailure(it) }
+        ReleasePath.entries.forEach { protocol.released(it) }
+        protocol.commitFenced()
+        protocol.lateObject()
+        protocol.witnessFailed()
+        protocol.breakerOpen(true)
+        protocol.latched(true)
+        protocol.clockOffset(java.time.Duration.ofSeconds(2))
+        protocol.ambiguousUploads(3)
+        protocol.reservations(mapOf("RESERVED" to 4L, "RELEASING" to 1L))
+        protocol.physicalListedBytes(1_000)
+        protocol.incompleteUploads(0)
+        protocol.lockWait(java.time.Duration.ofMillis(2))
+        protocol.slotWait(java.time.Duration.ofMillis(3))
     }
 
     /** Every label key any TestInbox metric is allowed to carry. */
@@ -116,6 +144,9 @@ class MetricCardinalityTest {
             "version",
             "direction",
             "kind",
+            "ceiling",
+            "path",
+            "state",
         )
 
     private val allowedLabelValues: Map<String, Set<String>> =
@@ -129,6 +160,7 @@ class MetricCardinalityTest {
                 IdempotencyOutcome.entries.map { it.name }.toSet() +
                 ReconciliationOutcome.entries.map { it.name.lowercase() }.toSet() +
                 CompactionOutcome.entries.map { it.name.lowercase() }.toSet() +
+                StorageAdmissionOutcome.entries.map { it.name.lowercase() }.toSet() +
                 setOf("allowed", "rejected"),
             "operation" to
                 BlobOperation.entries.map { it.name }.toSet() +
@@ -139,7 +171,10 @@ class MetricCardinalityTest {
             "quota" to QuotaDimension.entries.map { it.name }.toSet(),
             "direction" to DriftDirection.entries.map { it.name.lowercase() }.toSet(),
             // Only `committed` until reservations exist (ADR-035, later slice).
-            "kind" to setOf("committed"),
+            "kind" to setOf("committed") + PhysicalFailureKind.entries.map { it.name.lowercase() },
+            "ceiling" to StorageScope.entries.map { it.name.lowercase() }.toSet(),
+            "path" to ReleasePath.entries.map { it.name.lowercase() }.toSet(),
+            "state" to setOf("reserved", "releasing"),
         )
 
     @Test
@@ -207,8 +242,9 @@ class MetricCardinalityTest {
         }
         registry.meters.size shouldBe before
         // A generous ceiling that still fails loudly if a per-caller label
-        // is ever introduced.
-        (before < 100) shouldBe true
+        // is ever introduced. ADR-035 §16 (TI-STORAGE-003) added about 45
+        // enum-bounded series.
+        (before < 160) shouldBe true
     }
 
     @Test
@@ -255,6 +291,25 @@ class MetricCardinalityTest {
             "testinbox_storage_accounting_drift_total",
             "testinbox_storage_reconciliation_total",
             "testinbox_storage_ledger_compaction_total",
+            // ADR-035 §16, the guarded protocol (TI-STORAGE-003).
+            "testinbox_storage_admission_total",
+            "testinbox_storage_admission_unenforced_total",
+            "testinbox_storage_admission_lock_wait_seconds",
+            "testinbox_storage_slot_wait_seconds",
+            "testinbox_storage_physical_failure_total",
+            "testinbox_storage_commit_fenced_total",
+            "testinbox_storage_reservation_released_total",
+            "testinbox_storage_late_object_total",
+            "testinbox_storage_witness_failed_total",
+            "testinbox_storage_breaker_open",
+            "testinbox_storage_admission_latched",
+            "testinbox_storage_clock_offset_seconds",
+            "testinbox_storage_ambiguous_uploads",
+            "testinbox_storage_physical_listed_bytes",
+            "testinbox_storage_incomplete_uploads",
+            "testinbox_storage_reservations",
+            "testinbox_storage_global_limit_bytes",
+            "testinbox_storage_finalize_budget_bytes",
         ).forEach { name -> scrape shouldContain name }
     }
 

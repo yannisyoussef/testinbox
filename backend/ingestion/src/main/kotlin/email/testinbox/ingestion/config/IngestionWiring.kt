@@ -12,24 +12,44 @@ import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.MimeParser
 import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.SmtpMetrics
+import email.testinbox.application.port.StorageInspection
+import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.TransactionRunner
+import email.testinbox.application.storage.GuardedStorage
+import email.testinbox.application.storage.StorageBreaker
+import email.testinbox.application.storage.StorageNode
+import email.testinbox.application.storage.StorageNodeLifecycle
+import email.testinbox.application.storage.WriteSlots
 import email.testinbox.application.usecase.ReceiveInboundDelivery
+import email.testinbox.application.usecase.StorageAdmission
+import email.testinbox.domain.storage.InboxShare
+import email.testinbox.domain.storage.StorageCapacityPolicy
+import email.testinbox.domain.storage.StorageEnforcement
 import email.testinbox.ingestion.mime.JakartaMimeParser
+import email.testinbox.ingestion.ops.StorageNodeRuntime
 import email.testinbox.observability.BuildInfoMetric
 import email.testinbox.observability.MicrometerBlobStoreMetrics
 import email.testinbox.observability.MicrometerInboundMetrics
 import email.testinbox.observability.MicrometerLimitMetrics
 import email.testinbox.observability.MicrometerSmtpMetrics
+import email.testinbox.observability.MicrometerStorageProtocolMetrics
 import email.testinbox.persistence.BundledMigrations
 import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.persistence.JdbcSchemaHistory
+import email.testinbox.persistence.JdbcStorageAdmission
+import email.testinbox.persistence.JdbcStorageAmbiguity
+import email.testinbox.persistence.JdbcStorageNodeClaims
+import email.testinbox.persistence.JdbcStorageReservations
 import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Clock
+import java.util.UUID
+import javax.sql.DataSource
 
 /**
  * Metric adapters, separated from `IngestionWiring` only so that class can take
@@ -135,25 +155,141 @@ class IngestionWiring(
     @Bean
     fun mimeParser(): MimeParser = JakartaMimeParser()
 
+    // --- ADR-035 guarded ingest protocol (TI-STORAGE-003) ------------------------------------------
+
+    @Bean
+    fun storageInspection(blobs: BlobStore): StorageInspection = (blobs as S3BlobStore).inspection()
+
+    /** Each adapter owns its transactions explicitly (READ COMMITTED is stated in the SQL). */
+    private fun template(transactionManager: PlatformTransactionManager) = TransactionTemplate(transactionManager)
+
+    @Bean
+    fun storageReservations(
+        jdbc: JdbcClient,
+        transactionManager: PlatformTransactionManager,
+    ): JdbcStorageReservations = JdbcStorageReservations(jdbc, template(transactionManager))
+
+    @Bean
+    fun storageAmbiguity(
+        jdbc: JdbcClient,
+        transactionManager: PlatformTransactionManager,
+    ): JdbcStorageAmbiguity = JdbcStorageAmbiguity(jdbc, template(transactionManager))
+
+    @Bean
+    fun storageNode(properties: IngestionProperties): StorageNode = StorageNode(properties.storage.nodeId, UUID.randomUUID())
+
+    @Bean
+    fun storageBreaker(): StorageBreaker = StorageBreaker()
+
+    @Bean
+    fun writeSlots(
+        ambiguity: JdbcStorageAmbiguity,
+        node: StorageNode,
+    ): WriteSlots = WriteSlots(ambiguous = { ambiguity.unresolvedFor(node.nodeId) })
+
+    @Bean
+    fun storageProtocolMetrics(registry: io.micrometer.core.instrument.MeterRegistry): StorageProtocolMetrics =
+        MicrometerStorageProtocolMetrics(registry, StorageCapacityPolicy.ADR_035_REFERENCE)
+
+    /**
+     * T1 with enforcement OFF, a literal. ADR-035 Phase 2: the whole protocol
+     * runs and every ceiling is observed, but nothing is refused. No property,
+     * environment variable or profile reaches this value (TI-STORAGE-003).
+     */
+    @Bean
+    fun storageAdmission(
+        jdbc: JdbcClient,
+        transactionManager: PlatformTransactionManager,
+        limits: LimitsConfig,
+    ): StorageAdmission =
+        StorageAdmission(JdbcStorageAdmission(jdbc, template(transactionManager)), storagePolicy(limits), StorageEnforcement.OFF)
+
+    /** A @Bean method's parameters are its dependencies: one per protocol collaborator. */
+    @Bean
+    @Suppress("LongParameterList")
+    fun guardedStorage(
+        admission: StorageAdmission,
+        reservations: JdbcStorageReservations,
+        ambiguity: JdbcStorageAmbiguity,
+        blobs: BlobStore,
+        inspection: StorageInspection,
+        slots: WriteSlots,
+        breaker: StorageBreaker,
+        node: StorageNode,
+        transactions: TransactionRunner,
+        storageMetrics: StorageProtocolMetrics,
+    ): GuardedStorage =
+        GuardedStorage(
+            admission = admission,
+            reservations = reservations,
+            ambiguity = ambiguity,
+            latch = ambiguity,
+            blobs = blobs,
+            inspection = inspection,
+            slots = slots,
+            breaker = breaker,
+            node = node,
+            transactions = transactions,
+            clock = reservations,
+            metrics = storageMetrics,
+        )
+
+    /** A @Bean method's parameters are its dependencies: one per runtime collaborator. */
+    @Bean
+    @Suppress("LongParameterList")
+    fun storageNodeRuntime(
+        ambiguity: JdbcStorageAmbiguity,
+        node: StorageNode,
+        breaker: StorageBreaker,
+        inspection: StorageInspection,
+        reservations: JdbcStorageReservations,
+        storageMetrics: StorageProtocolMetrics,
+        slots: WriteSlots,
+        dataSource: DataSource,
+    ): StorageNodeRuntime =
+        StorageNodeRuntime(
+            StorageNodeLifecycle(ambiguity, node),
+            breaker,
+            inspection,
+            reservations,
+            storageMetrics,
+            claims = JdbcStorageNodeClaims(dataSource),
+            slots = slots,
+        )
+
     @Bean
     fun receiveInboundDelivery(
         inboxes: InboxRepository,
         messages: MessageRepository,
-        blobs: BlobStore,
+        storage: GuardedStorage,
         parser: MimeParser,
-        transactions: TransactionRunner,
         rateLimiter: RateLimiter,
         clock: Clock,
     ): ReceiveInboundDelivery =
         ReceiveInboundDelivery(
             inboxes,
             messages,
-            blobs,
+            storage,
             parser,
-            transactions,
             rateLimiter,
             clock,
             metrics = limitMetrics,
             inboundMetrics = inboundMetrics,
         )
+
+    companion object {
+        /**
+         * The observed ceilings: the workspace limit is the existing
+         * `max-stored-bytes`, and the rest are the ADR-035 reference values. They
+         * only feed observation while enforcement is OFF.
+         */
+        fun storagePolicy(limits: LimitsConfig): StorageCapacityPolicy {
+            val reference = StorageCapacityPolicy.ADR_035_REFERENCE
+            val workspace = limits.quotas.maxStoredBytes.coerceAtMost(reference.globalLimitBytes)
+            // A workspace limit too small for the reference share to floor above
+            // zero (only ever a test setting) observes against the whole workspace.
+            val share = if (reference.inboxShare.floorOf(workspace) > 0) reference.inboxShare else InboxShare.of("1")
+            return StorageCapacityPolicy(workspace, share, reference.globalLimitBytes, reference.finalizeBudgetBytes)
+        }
+    }
 }

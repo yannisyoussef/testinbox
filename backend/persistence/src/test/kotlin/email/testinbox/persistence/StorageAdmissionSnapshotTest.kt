@@ -170,7 +170,7 @@ class StorageAdmissionSnapshotTest : PersistenceIntegrationTest() {
         val reservation = fx.reservation(ws, inbox, 50)
         val mutant = SplitReadAdmission(db.jdbc, fx, afterDelta = { t2Moves(reservation, ws, inbox) })
 
-        fx.admission(policy, StorageEnforcement.ON, mutant).admit(fx.request(F, listOf(fx.candidate(ws, inbox)))).shape() shouldBe
+        fx.admission(policy, StorageEnforcement.ALL, mutant).admit(fx.request(F, listOf(fx.candidate(ws, inbox)))).shape() shouldBe
             listOf("admitted")
 
         fx.used(fx.snapshot(setOf(ws), setOf(inbox)), ws, inbox).third shouldBe 105 // over the inbox limit of 100
@@ -192,7 +192,7 @@ class StorageAdmissionSnapshotTest : PersistenceIntegrationTest() {
             fresh
                 .admission(
                     policy,
-                    StorageEnforcement.ON,
+                    StorageEnforcement.ALL,
                     store,
                 ).admit(fresh.request(F, listOf(fresh.candidate(ws, inbox))))
                 .shape() shouldBe
@@ -211,7 +211,7 @@ class StorageAdmissionSnapshotTest : PersistenceIntegrationTest() {
         fx.delta(ws, inbox, 50)
         val mutant = SplitReadAdmission(db.jdbc, fx, afterBase = { compactorFolds() })
 
-        fx.admission(policy, StorageEnforcement.ON, mutant).admit(fx.request(F, listOf(fx.candidate(ws, inbox)))).shape() shouldBe
+        fx.admission(policy, StorageEnforcement.ALL, mutant).admit(fx.request(F, listOf(fx.candidate(ws, inbox)))).shape() shouldBe
             listOf("admitted")
 
         fx.used(fx.snapshot(setOf(ws), setOf(inbox)), ws, inbox).third shouldBe 105
@@ -233,7 +233,7 @@ class StorageAdmissionSnapshotTest : PersistenceIntegrationTest() {
             fresh
                 .admission(
                     policy,
-                    StorageEnforcement.ON,
+                    StorageEnforcement.ALL,
                     store,
                 ).admit(fresh.request(F, listOf(fresh.candidate(ws, inbox))))
                 .shape() shouldBe

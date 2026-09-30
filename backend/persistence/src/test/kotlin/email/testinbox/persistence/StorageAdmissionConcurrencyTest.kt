@@ -94,7 +94,7 @@ class StorageAdmissionConcurrencyTest : PersistenceIntegrationTest() {
                     StorageAdmission(
                         paused,
                         policy,
-                        StorageEnforcement.ON,
+                        StorageEnforcement.ALL,
                     ).admit(fx.request(F, first.map { fx.candidate(it.first, it.second) }))
                 }
             check(paused.reachedDecision.await(30, TimeUnit.SECONDS)) { "the first T1 never reached its decision" }
@@ -103,7 +103,7 @@ class StorageAdmissionConcurrencyTest : PersistenceIntegrationTest() {
                     StorageAdmission(
                         store(),
                         policy,
-                        StorageEnforcement.ON,
+                        StorageEnforcement.ALL,
                     ).admit(fx.request(F, second.map { fx.candidate(it.first, it.second) }))
                 }
             val blocked = awaitBlockedOrDone(b)
@@ -218,11 +218,13 @@ class StorageAdmissionConcurrencyTest : PersistenceIntegrationTest() {
                 val random = Random(thread)
                 start.await()
                 repeat(12) {
+                    // Distinct inboxes: an event carries at most one copy per inbox.
                     val event =
-                        List(random.nextInt(1, 6)) {
-                            val ws = workspaces[random.nextInt(workspaces.size)]
-                            fx.candidate(ws, inboxes.getValue(ws)[random.nextInt(3)])
-                        }
+                        inboxes
+                            .flatMap { (ws, ibs) -> ibs.map { ws to it } }
+                            .shuffled(random)
+                            .take(random.nextInt(1, 6))
+                            .map { (ws, inbox) -> fx.candidate(ws, inbox) }
                     runCatching { admission.admit(fx.request(F, event)) }
                         .onSuccess { result ->
                             admittedCopies.addAndGet(result.admitted.size)

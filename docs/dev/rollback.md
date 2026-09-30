@@ -191,6 +191,30 @@ Before rolling back across V4:
 3. Prefer rolling forward with a fix. This is one of the cases the ADR-028
    promote-by-digest model makes cheap.
 
+## Rolling back across TI-STORAGE-003 (the guarded ingest protocol)
+
+From TI-STORAGE-003 on, live ingestion writes every object through the ADR-035
+reservation fence. The API side runs reservation cleanup and ambiguity
+verification. An artifact from before that commit would do three harmful
+things:
+- write objects that no reservation covers;
+- leave any reservations in flight charged forever, because it runs no
+  cleanup;
+- ignore the admission latch.
+
+The commit is therefore a rollback **floor**.
+
+- **Staging.** `deploy.sh` now enforces floors itself, before the migration
+  job or any service is touched (ADR-035 §18 gate 5). It reads the
+  `org.opencontainers.image.revision` label of the api and ingestion images,
+  and runs `scripts/check-rollback-floors.sh`, the same check the production
+  gate uses. An image below a floor, or with no revision label, aborts the
+  deployment. `TESTINBOX_ACKNOWLEDGE_ROLLBACK_HAZARD=true` proceeds anyway,
+  with a warning, and only if the hazard is understood and announced.
+- **Production.** The production handoff reads floors from `master`, so this
+  floor becomes a production floor only when it is promoted through the
+  normal release pull request.
+
 This is what `deploy/rollback-floors.txt` encodes: V4's commit is a **floor**,
 and `verify-production-candidate.sh` refuses a production candidate that does
 not contain it unless `acknowledge_rollback_hazard` is set on the dispatch —

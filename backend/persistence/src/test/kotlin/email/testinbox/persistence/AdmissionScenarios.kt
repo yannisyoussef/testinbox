@@ -80,7 +80,7 @@ object AdmissionScenarios {
             StorageScope.GLOBAL -> db.workspace().let { other -> seed(fx, other, db.inbox(other), used) }
         }
 
-        val result = under.build(fx, policy, StorageEnforcement.ON).admit(fx.request(F, listOf(fx.candidate(ws, inbox))))
+        val result = under.build(fx, policy, StorageEnforcement.ALL).admit(fx.request(F, listOf(fx.candidate(ws, inbox))))
 
         val expected = if (offset <= 0) "admitted" else scopeReason(scope)
         withClue("$scope at limit − f + $offset") { result.shape() shouldBe listOf(expected) }
@@ -93,7 +93,7 @@ object AdmissionScenarios {
         under: AdmissionUnderTest,
     ) {
         val policy = policy(workspace = 100, share = "0.5", global = 1_000) // inbox 50, workspace 100, cap 1 000
-        val admission = under.build(fx, policy, StorageEnforcement.ON)
+        val admission = under.build(fx, policy, StorageEnforcement.ALL)
         val db = fx.db
 
         // All three exceeded.
@@ -142,9 +142,11 @@ object AdmissionScenarios {
         seed(fx, a, db.inbox(a), 30) // workspace a: 20 left, two copies
         val b = db.workspace()
         val bInbox = db.inbox(b)
+        val bFull = db.inbox(b)
+        fx.inboxBase(b, bFull, 5) // inbox limit 10: a copy of 10 no longer fits
 
-        val candidates = aInboxes.map { fx.candidate(a, it) } + List(2) { fx.candidate(b, bInbox) }
-        val result = under.build(fx, policy, StorageEnforcement.ON).admit(fx.request(F, candidates))
+        val candidates = aInboxes.map { fx.candidate(a, it) } + listOf(fx.candidate(b, bInbox), fx.candidate(b, bFull))
+        val result = under.build(fx, policy, StorageEnforcement.ALL).admit(fx.request(F, candidates))
 
         withClue("running totals") {
             result.shape() shouldBe

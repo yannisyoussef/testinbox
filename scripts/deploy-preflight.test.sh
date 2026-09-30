@@ -35,6 +35,7 @@ cat >"$STUB_DIR/docker-failing-migration" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$DOCKER_STUB_MARKER"
 case "$*" in
+  *"image inspect"*)  echo "${STUB_REVISION:-}"; exit 0 ;;   # the OCI revision label
   *" run "*migrator*) exit 3 ;;   # the migration job fails
   *" up "*)           exit 0 ;;   # would start services — must never be reached
   *)                  exit 0 ;;   # pull, ps, exec, ...
@@ -65,8 +66,11 @@ check() {
   fi
 }
 
+# The current checkout contains every floor, so its HEAD is an allowed revision.
+HEAD_REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 valid_env=(
   env
+  "STUB_REVISION=$HEAD_REVISION"
   "TESTINBOX_API_IMAGE=ghcr.io/testowner/testinbox-api@$DIGEST"
   "TESTINBOX_INGESTION_IMAGE=ghcr.io/testowner/testinbox-ingestion@$DIGEST"
   "TESTINBOX_WEB_IMAGE=ghcr.io/testowner/testinbox-web@$DIGEST"
@@ -123,6 +127,9 @@ fi
 cat >"$STUB_DIR/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$DOCKER_STUB_MARKER"
+case "$*" in
+  *"image inspect"*) echo "${STUB_REVISION:-}" ;;
+esac
 exit 0
 STUB
 chmod +x "$STUB_DIR/docker"
@@ -139,6 +146,34 @@ else
   echo "FAIL — services were never started even though the migration succeeded"
   fail=$((fail + 1))
 fi
+
+# --- rollback floors (ADR-035 §14 (e), §18 gate 5) ---------------------------
+# A backend image built before a rollback floor must stop the deployment
+# BEFORE the migration job runs or any service is touched.
+run_with_revision() {
+  rm -f "$STUB_DIR/marker"
+  DOCKER_STUB_MARKER="$STUB_DIR/marker" PATH="$STUB_DIR:$PATH" EXPECTED_IMAGE_REPOSITORY="ghcr.io/testowner" \
+    "${valid_env[@]}" "STUB_REVISION=$1" "${@:2}" "$DEPLOY" >/dev/null 2>&1
+  echo $?
+}
+floor_check() {
+  local name="$1" expected_status="$2" expect_migration="$3" status migrated=false
+  status=$(run_with_revision "${@:4}")
+  grep -q " run " "$STUB_DIR/marker" 2>/dev/null && migrated=true
+  if [[ "$status" == "$expected_status" && "$migrated" == "$expect_migration" ]]; then
+    echo "ok   — $name"; pass=$((pass + 1))
+  else
+    echo "FAIL — $name (exit $status, migration reached=$migrated)"; fail=$((fail + 1))
+  fi
+}
+# The newest floor: every other floor is its ancestor, so exactly it is the boundary.
+NEWEST_FLOOR="$(grep -Eo '^[0-9a-f]{40}' "$REPO_ROOT/deploy/rollback-floors.txt" | tail -1)"
+TOO_OLD="$(git -C "$REPO_ROOT" rev-parse "$NEWEST_FLOOR^")"
+floor_check "an image below a rollback floor aborts before the migration" 1 false "$TOO_OLD"
+floor_check "an image with no revision label aborts before the migration" 1 false ""
+floor_check "an image at exactly the floor is allowed" 0 true "$NEWEST_FLOOR"
+floor_check "an image below a floor proceeds only on explicit acknowledgement" 0 true "$TOO_OLD" "TESTINBOX_ACKNOWLEDGE_ROLLBACK_HAZARD=true"
+floor_check "a floors file that cannot be read aborts (fail closed)" 1 false "$HEAD_REVISION" "ROLLBACK_FLOORS=/nonexistent/floors.txt"
 
 echo "----"
 echo "deploy-preflight.test.sh: $pass passed, $fail failed"

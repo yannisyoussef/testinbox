@@ -76,6 +76,9 @@ data class StorageAdmissionRequest(
         require(bytesPerCopy in 1..MAX_BYTES_PER_COPY) { "bytesPerCopy must be in 1..$MAX_BYTES_PER_COPY, was $bytesPerCopy" }
         require(candidates.size <= MAX_CANDIDATES) { "an event has at most $MAX_CANDIDATES recipients, was ${candidates.size}" }
         require(candidates.map { it.messageId }.toSet().size == candidates.size) { "every copy has its own message id" }
+        // Recipients are normalized and deduplicated before T1, and one inbox has
+        // one address: an event refuses at most one copy per inbox (ADR-035 §4).
+        require(candidates.map { it.inboxId }.toSet().size == candidates.size) { "at most one copy per inbox per event" }
         require(candidates.flatMap { it.objectKeys }.toSet().size == candidates.sumOf { it.objectKeys.size }) {
             "no two copies may claim the same key"
         }
@@ -104,9 +107,9 @@ sealed interface StorageAdmissionDecision {
     val candidate: StorageAdmissionCandidate
 
     /**
-     * Reserved. [unenforcedLimit] is set only with enforcement OFF (Phase 2):
-     * the ceiling that *would* have refused this copy. It is an observation,
-     * never an outcome.
+     * Reserved. [unenforcedLimit] is the narrowest ceiling this copy exceeded
+     * among the scopes whose enforcement is off: what *would* have refused it.
+     * It is an observation, never an outcome.
      */
     data class Admitted(
         override val candidate: StorageAdmissionCandidate,
@@ -114,7 +117,7 @@ sealed interface StorageAdmissionDecision {
         val unenforcedLimit: StorageRefusalReason? = null,
     ) : StorageAdmissionDecision
 
-    /** Refused under enforcement ON, for the narrowest ceiling reached. */
+    /** Refused for the narrowest ceiling reached among the ENFORCED scopes. */
     data class Refused(
         override val candidate: StorageAdmissionCandidate,
         val reason: StorageRefusalReason,
@@ -154,7 +157,11 @@ object StorageAdmissionRules {
 
     data class Verdict(
         val admitted: Boolean,
-        /** The narrowest ceiling the copy did not fit, enforced or not. */
+        /**
+         * Refused: the narrowest ENFORCED ceiling the copy did not fit.
+         * Admitted: the narrowest ceiling it did not fit anyway (all of them
+         * observational), or null.
+         */
         val ceiling: StorageRefusalReason?,
     )
 
@@ -178,12 +185,14 @@ object StorageAdmissionRules {
                         StorageScope.GLOBAL to globalUsed,
                     )
                 // Narrowest first, by declaration: the reason never depends on
-                // which figure the database happened to return first.
-                val ceiling =
-                    StorageScope.entries
-                        .firstOrNull { scope -> Math.addExact(used.getValue(scope), bytesPerCopy) > policy.limitOf(scope) }
-                        ?.let(StorageRefusalReason::of)
-                val admitted = ceiling == null || enforcement == StorageEnforcement.OFF
+                // which figure the database happened to return first. Only an
+                // enforced scope refuses, so a disabled narrower scope never
+                // masks an enforced wider one.
+                val exceeded =
+                    StorageScope.entries.filter { scope -> Math.addExact(used.getValue(scope), bytesPerCopy) > policy.limitOf(scope) }
+                val refusing = exceeded.firstOrNull(enforcement::enforces)
+                val admitted = refusing == null
+                val ceiling = (refusing ?: exceeded.firstOrNull())?.let(StorageRefusalReason::of)
                 if (admitted) {
                     inboxUsed[placement.inboxId] = Math.addExact(used.getValue(StorageScope.INBOX), bytesPerCopy)
                     workspaceUsed[placement.workspaceId] = Math.addExact(used.getValue(StorageScope.WORKSPACE), bytesPerCopy)
