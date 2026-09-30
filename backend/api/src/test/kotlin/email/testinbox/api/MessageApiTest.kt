@@ -40,7 +40,7 @@ class MessageApiTest : ApiIntegrationTestBase() {
         val inbox = createInbox()
         val inboxId = InboxId(UUID.fromString(inbox["id"].asText()))
         val message = appendVisibleMessage(inboxId, inbox["address"].asText())
-        blobs.put(message.rawObjectKey, "From: a@b.c\r\n\r\nraw-bytes".toByteArray(), "message/rfc822")
+        seed(message.rawObjectKey, "From: a@b.c\r\n\r\nraw-bytes".toByteArray())
         val response = get("/v1/messages/${message.id}/raw")
         response.statusCode.value() shouldBe 200
         response.headers.contentType.toString() shouldContain "message/rfc822"
@@ -55,7 +55,7 @@ class MessageApiTest : ApiIntegrationTestBase() {
         var message = appendVisibleMessage(inboxId, inbox["address"].asText())
         val attachmentId = AttachmentId(UUID.randomUUID())
         val key = "$bootstrapWorkspaceId/$inboxId/${message.id}/attachments/$attachmentId"
-        blobs.put(key, byteArrayOf(0x25, 0x50), "application/pdf")
+        seed(key, byteArrayOf(0x25, 0x50))
         // Register attachment metadata through the repository (same tx contract as ingestion).
         message =
             message.copy(
@@ -95,6 +95,17 @@ class MessageApiTest : ApiIntegrationTestBase() {
         disposition.contains("..") shouldBe false
 
         get("/v1/messages/${message.id}/attachments/${UUID.randomUUID()}").statusCode.value() shouldBe 404
+    }
+
+    /** Seeds an object through the only write path there is: a fenced upload (ADR-035 §5). */
+    private fun seed(
+        key: String,
+        bytes: ByteArray,
+    ) {
+        blobs.putReserved(
+            email.testinbox.application.port
+                .ReservedUpload(key, bytes, java.time.Instant.now(), java.time.Duration.ofSeconds(120)),
+        ) shouldBe email.testinbox.application.port.UploadOutcome.Stored
     }
 }
 

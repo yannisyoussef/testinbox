@@ -6,6 +6,8 @@ import email.testinbox.application.port.IdempotencyRecords
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.ProvisioningRepository
 import email.testinbox.application.port.WaitSlots
+import email.testinbox.application.storage.ReleaseStaleReservations
+import email.testinbox.application.storage.VerifyAmbiguousUploads
 import email.testinbox.application.usecase.CompactStorageLedger
 import email.testinbox.application.usecase.ExpireInboxes
 import email.testinbox.application.usecase.OrphanBlobSweep
@@ -37,8 +39,35 @@ class SweepScheduler(
     private val idempotencyRecords: IdempotencyRecords,
     private val compactStorageLedger: CompactStorageLedger,
     private val reconcileStorageAccounting: ReconcileStorageAccounting,
+    private val releaseStaleReservations: ReleaseStaleReservations,
+    private val verifyAmbiguousUploads: VerifyAmbiguousUploads,
     private val clock: Clock,
 ) {
+    /**
+     * ADR-035 §7 reservation cleanup: expires overdue reservations, and releases
+     * RELEASING ones only after the clock check, a completed storage witness
+     * plus `C_drain`, and a per-exact-key absence proof. Runs on every API node.
+     * `SKIP LOCKED` keeps two nodes off the same row.
+     */
+    @Scheduled(
+        fixedDelayString = "\${testinbox.storage.cleanup-interval:30s}",
+        initialDelayString = "\${testinbox.storage.cleanup-initial-delay:30s}",
+    )
+    fun storageReservationCleanup() {
+        runCatching { releaseStaleReservations.run() }
+            .onFailure { log.warn("storage reservation cleanup failed; reservations stay charged and the next pass retries", it) }
+    }
+
+    /** ADR-035 §9: verifies persisted ambiguity once `T_verify` has passed, and latches on a late object. */
+    @Scheduled(
+        fixedDelayString = "\${testinbox.storage.ambiguity-interval:60s}",
+        initialDelayString = "\${testinbox.storage.ambiguity-initial-delay:60s}",
+    )
+    fun ambiguityVerification() {
+        runCatching { verifyAmbiguousUploads.run() }
+            .onFailure { log.warn("ambiguity verification failed; the ambiguity stays unresolved and keeps its slot", it) }
+    }
+
     /**
      * Retention sweep for idempotency records (ADR-033 §9).
      *

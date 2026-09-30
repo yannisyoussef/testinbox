@@ -20,6 +20,10 @@ spring:
     url: ${TESTINBOX_DB_URL:jdbc:postgresql://localhost:5432/testinbox}
     username: ${TESTINBOX_DB_USER:testinbox}
     password: ${TESTINBOX_DB_PASSWORD:testinbox}
+    hikari:
+      data-source-properties:
+        # ADR-035 §14 (a): testinbox-<service>:<node>:storage-v1, the capability allowlist.
+        ApplicationName: testinbox-api:${testinbox.storage.node-id}:storage-v1
   flyway:
     enabled: true
 
@@ -34,6 +38,8 @@ testinbox:
   orphan-sweep-interval: 30m
   orphan-min-age: 1h
   storage:
+    # ADR-035 §9: stable across restarts; persisted ambiguity is counted per node.
+    node-id: ${TESTINBOX_STORAGE_NODE_ID:testinbox-api}
     endpoint: ${TESTINBOX_S3_ENDPOINT:http://localhost:9000}
     access-key: ${TESTINBOX_S3_ACCESS_KEY:testinbox}
     secret-key: ${TESTINBOX_S3_SECRET_KEY:testinbox123}

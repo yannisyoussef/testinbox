@@ -113,9 +113,11 @@ class S3BlobStoreTest {
             // Every one of them must construct: none may fail because another
             // won.
             val stores = futures.map { it.get(30, java.util.concurrent.TimeUnit.SECONDS) }
-            stores.forEach { store ->
-                store.put("probe/raw.eml", byteArrayOf(7), "message/rfc822")
-                store.get("probe/raw.eml")?.toList() shouldBe listOf<Byte>(7)
+            // Each writes its own key: the fenced write is create-only, so a
+            // second write to one key is refused (ADR-035 §5), by design.
+            stores.forEachIndexed { i, store ->
+                store.put("probe-$i/raw.eml", byteArrayOf(7), "message/rfc822")
+                store.get("probe-$i/raw.eml")?.toList() shouldBe listOf<Byte>(7)
                 store.close()
             }
         } finally {
@@ -152,7 +154,14 @@ class S3BlobStoreTest {
         try {
             // The readiness probe's call, and the raw-first write's call: both must fail loudly.
             shouldThrow<NoSuchBucketException> { store.listKeysOlderThan("_probe/readiness/", Instant.EPOCH) }
-            shouldThrow<NoSuchBucketException> { store.put("ws/in/m/raw.eml", byteArrayOf(1), "message/rfc822") }
+            // The fenced write reports it as a failed upload, never as stored.
+            // A 404 is not on ADR-035's definitive list, so it is ambiguous.
+            store.putReserved(
+                email.testinbox.application.port
+                    .ReservedUpload("ws/in/m/raw.eml", byteArrayOf(1), Instant.now(), java.time.Duration.ofSeconds(120)),
+            ) shouldBe
+                email.testinbox.application.port.UploadOutcome
+                    .Ambiguous(email.testinbox.application.port.AmbiguityKind.UNEXPECTED_RESPONSE)
             admin().use { s3 ->
                 shouldThrow<NoSuchBucketException> { s3.headBucket(HeadBucketRequest.builder().bucket(bucket).build()) }
             }
@@ -182,5 +191,17 @@ class S3BlobStoreTest {
         } finally {
             store.close()
         }
+    }
+
+    /** The port has no unfenced write: seeding goes through the fenced one (ADR-035 §5). */
+    private fun S3BlobStore.put(
+        key: String,
+        bytes: ByteArray,
+        @Suppress("UNUSED_PARAMETER") contentType: String,
+    ) {
+        putReserved(
+            email.testinbox.application.port
+                .ReservedUpload(key, bytes, java.time.Instant.now(), java.time.Duration.ofSeconds(120)),
+        ) shouldBe email.testinbox.application.port.UploadOutcome.Stored
     }
 }

@@ -146,7 +146,7 @@ class PgListenNotifierTest {
                 connection.createStatement().use {
                     it.execute(
                         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity " +
-                            "WHERE application_name = 'testinbox-listen'",
+                            "WHERE application_name LIKE 'testinbox-listen:%:storage-v1'",
                     )
                 }
             }

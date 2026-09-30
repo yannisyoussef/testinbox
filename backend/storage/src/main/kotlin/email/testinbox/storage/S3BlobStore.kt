@@ -4,9 +4,13 @@ import email.testinbox.application.port.BlobOperation
 import email.testinbox.application.port.BlobOutcome
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.BlobStoreMetrics
+import email.testinbox.application.port.ReservedUpload
+import email.testinbox.application.port.StorageInspection
+import email.testinbox.application.port.UploadOutcome
+import email.testinbox.storage.fenced.FencedUploader
+import email.testinbox.storage.fenced.SigV4Presigner
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
-import software.amazon.awssdk.core.sync.RequestBody
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.BucketAlreadyOwnedByYouException
@@ -20,7 +24,6 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Request
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier
-import software.amazon.awssdk.services.s3.model.PutObjectRequest
 import java.net.URI
 import java.time.Duration
 import java.time.Instant
@@ -33,6 +36,8 @@ data class S3BlobStoreConfig(
     val bucket: String,
     /** Create the bucket at startup when missing — local/MinIO convenience. */
     val createBucket: Boolean = true,
+    /** `T_put` (ADR-035 §5). Tests shorten it; the deployables use the default. */
+    val uploadTimeout: Duration = FencedUploader.DEFAULT_T_PUT,
 )
 
 /**
@@ -85,22 +90,32 @@ class S3BlobStore(
         }
     }
 
-    override fun put(
-        key: String,
-        bytes: ByteArray,
-        contentType: String,
-    ) = timed(BlobOperation.PUT) {
-        s3.putObject(
-            PutObjectRequest
-                .builder()
-                .bucket(config.bucket)
-                .key(key)
-                .contentType(contentType)
-                .build(),
-            RequestBody.fromBytes(bytes),
+    private val uploader =
+        FencedUploader(
+            endpoint = URI.create(config.endpoint),
+            bucket = config.bucket,
+            presigner = SigV4Presigner(config.accessKey, config.secretKey, config.region),
+            tPut = config.uploadTimeout,
         )
-        Unit
+
+    /**
+     * The only payload write (ADR-035 §5): presigned with the reservation's
+     * database clock, create-only, size-bound, attempted once, aborted by RST
+     * at `T_put`. Its outcome is never retried or reinterpreted here.
+     */
+    override fun putReserved(upload: ReservedUpload): UploadOutcome {
+        val started = System.nanoTime()
+        val outcome = uploader.put(upload)
+        metrics.operationCompleted(
+            BlobOperation.PUT,
+            Duration.ofNanos(System.nanoTime() - started),
+            if (outcome == UploadOutcome.Stored) BlobOutcome.SUCCESS else BlobOutcome.FAILURE,
+        )
+        return outcome
     }
+
+    /** Cleanup, verification and orphan-sweep operations on the same bucket and client. */
+    fun inspection(): StorageInspection = S3StorageInspection(s3, config.bucket)
 
     override fun get(key: String): ByteArray? =
         // A miss is reported as NOT_FOUND, not success: a raw MIME object that
