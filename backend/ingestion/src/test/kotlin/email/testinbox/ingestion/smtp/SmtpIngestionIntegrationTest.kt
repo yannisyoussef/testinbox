@@ -410,6 +410,36 @@ class SmtpIngestionIntegrationTest {
     }
 
     @Test
+    fun `the gateway caps an event at the edge's 50 recipients, answering 452 for the excess (ADR-035)`() {
+        // The cap equals the mail edge contract (ADR-035 §15), and bounds T1's event.
+        val contract = java.io.File("../../deploy/mail-edge/contract.yaml").readText()
+        Regex("""smtpd_recipient_limit:\s*"(\d+)"""").find(contract)!!.groupValues[1].toInt() shouldBe SmtpGateway.MAX_RECIPIENTS
+        java.net.Socket("localhost", smtpPort).use { socket ->
+            val reader = socket.getInputStream().bufferedReader(Charsets.US_ASCII)
+            val out = socket.getOutputStream()
+
+            fun reply(): String {
+                var line: String
+                do line = reader.readLine() while (line.length > 3 && line[3] == '-')
+                return line
+            }
+
+            fun send(command: String): String {
+                out.write("$command\r\n".toByteArray())
+                out.flush()
+                return reply()
+            }
+            reply()
+            send("EHLO cap.example")
+            send("MAIL FROM:<sender@example.com>")
+            val replies = (1..51).map { send("RCPT TO:<cap-$it@testinbox.local>") }
+            replies.take(50).all { it.startsWith("250") } shouldBe true
+            replies.last().take(3) shouldBe "452"
+            send("QUIT")
+        }
+    }
+
+    @Test
     fun `malformed MIME is persisted as ParseFailed with raw bytes intact (ADR-005)`() {
         val inbox = provisionInbox()
         val raw = "X-Broken: yes\r\nContent-Type: multipart/mixed; boundary=\r\n\r\ngarbage".toByteArray()
