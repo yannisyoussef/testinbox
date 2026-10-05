@@ -49,6 +49,10 @@ class SmtpGateway(
                 .port(properties.smtp.port)
                 .messageHandlerFactory { context: MessageContext -> Handler() }
                 .maxMessageSize(config.maxRawSizeBytes.toInt())
+                // ADR-035 §12/§15: the gateway's explicit recipient cap equals the
+                // edge's (contract.yaml smtpd_recipient_limit = 50), and bounds an
+                // event for T1. The excess gets 452 at RCPT, tenant-independent.
+                .maxRecipients(MAX_RECIPIENTS)
                 .softwareName("TestInbox")
                 .build()
         smtpServer.start()
@@ -137,7 +141,10 @@ class SmtpGateway(
         }
     }
 
-    private companion object {
-        val log = LoggerFactory.getLogger(SmtpGateway::class.java)
+    companion object {
+        /** One event's recipients: the edge's cap, and T1's per-event bound. */
+        const val MAX_RECIPIENTS = email.testinbox.application.usecase.StorageAdmissionRequest.MAX_CANDIDATES
+
+        private val log = LoggerFactory.getLogger(SmtpGateway::class.java)
     }
 }

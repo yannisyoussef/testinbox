@@ -44,6 +44,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The rollback-floor gates are ancestry checks (ADR-035 §18 gate 5):
+          # a shallow checkout cannot evaluate them, and they refuse.
+          fetch-depth: 0
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -71,6 +75,9 @@ jobs:
           # they protect only ever run on a promotion pull request — where a
           # broken verifier and a refused candidate look identical.
           ./scripts/verify-production-candidate.test.sh
+          # ADR-035 §18 gate 5: the one rollback-floor check behind both the
+          # production gate and staging's deploy.sh.
+          ./scripts/check-rollback-floors.test.sh
           ./scripts/promotion-gate.test.sh
           ./scripts/check-backup-scope.test.sh
           ./scripts/await-candidate-build.test.sh

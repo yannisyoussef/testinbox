@@ -4,10 +4,14 @@ import email.testinbox.application.InMemoryBlobStore
 import email.testinbox.application.InMemoryInboxRepository
 import email.testinbox.application.InMemoryMessageRepository
 import email.testinbox.application.InMemoryReservations
+import email.testinbox.application.InMemoryStorageAmbiguity
+import email.testinbox.application.InMemoryStorageInspection
+import email.testinbox.application.InMemoryStorageReservations
 import email.testinbox.application.MutableClock
 import email.testinbox.application.NoopTx
 import email.testinbox.application.ObjectKeys
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.port.IncompleteUpload
 import email.testinbox.application.port.ReserveOutcome
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
@@ -171,9 +175,57 @@ class LifecycleTest {
         val freshOrphanKey = ObjectKeys.raw(workspaceId, inboxId, MessageId(UUID.randomUUID()))
         blobs.put(freshOrphanKey, byteArrayOf(3), "x") // too young to reap
 
-        val sweep = OrphanBlobSweep(blobs, messages, clock, Duration.ofHours(1))
+        // ADR-035: a key is also protected by a live reservation, and by an
+        // unresolved ambiguity for it. The sweep's single check sees all three.
+        val ambiguity = InMemoryStorageAmbiguity(clock)
+        val reservations = InMemoryStorageReservations(messages, ambiguity, clock)
+        val reservedId = MessageId(UUID.randomUUID())
+        val reservedKey = ObjectKeys.raw(workspaceId, inboxId, reservedId)
+        val ambiguousKey = ObjectKeys.raw(workspaceId, inboxId, MessageId(UUID.randomUUID()))
+        clock.advanceSeconds(-7200)
+        blobs.put(reservedKey, byteArrayOf(4), "x")
+        blobs.put(ambiguousKey, byteArrayOf(5), "x")
+        clock.advanceSeconds(7200)
+        reservations.rows[reservedId] =
+            InMemoryStorageReservations.Row(
+                reservedId,
+                workspaceId,
+                inboxId,
+                listOf(reservedKey),
+                1,
+                "RELEASING",
+                clock.instant(),
+                clock.instant(),
+                null,
+            )
+        ambiguity.record("node", ambiguousKey, 1, Duration.ofHours(1))
+        val inspection = InMemoryStorageInspection(blobs, clock)
+
+        val sweep = OrphanBlobSweep(blobs, reservations, ambiguity, ambiguity, inspection, clock, Duration.ofHours(1))
         sweep.sweep() shouldBe 1
-        blobs.blobs.keys.toSet() shouldBe setOf(referencedKey, freshOrphanKey)
+        blobs.blobs.keys.toSet() shouldBe setOf(referencedKey, freshOrphanKey, reservedKey, ambiguousKey)
+    }
+
+    @Test
+    fun `the orphan sweep aborts old incomplete multipart uploads, which TestInbox never starts`() {
+        val messages = InMemoryMessageRepository()
+        val ambiguity = InMemoryStorageAmbiguity(clock)
+        val inspection = InMemoryStorageInspection(blobs, clock)
+        val stale = IncompleteUpload("ws/inbox/msg/raw.eml", "u1", clock.instant().minusSeconds(7200))
+        val fresh = IncompleteUpload("ws/inbox/msg2/raw.eml", "u2", clock.instant())
+        inspection.incomplete += listOf(stale, fresh)
+
+        OrphanBlobSweep(
+            blobs,
+            InMemoryStorageReservations(messages, ambiguity, clock),
+            ambiguity,
+            ambiguity,
+            inspection,
+            clock,
+            Duration.ofHours(1),
+        ).sweep()
+
+        inspection.incomplete shouldBe listOf(fresh)
     }
 }
 

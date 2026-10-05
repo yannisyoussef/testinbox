@@ -349,3 +349,61 @@ interface StorageAccountingMetrics {
         val NOOP: StorageAccountingMetrics = object : StorageAccountingMetrics {}
     }
 }
+
+/** ADR-035 §16 `storage_admission_total{outcome}`. */
+enum class StorageAdmissionOutcome { ADMITTED, REFUSED_INBOX, REFUSED_WORKSPACE, REFUSED_GLOBAL }
+
+/** ADR-035 §16 `storage_physical_failure_total{kind}`: infrastructure, never capacity. */
+enum class PhysicalFailureKind { QUOTA, UNAVAILABLE, TIMEOUT, AMBIGUOUS, DEADLINE, LOCK_TIMEOUT, SLOT_WAIT, CLOCK_OFFSET }
+
+/** ADR-035 §16 `storage_reservation_released_total{path}`. */
+enum class ReleasePath { COMMITTED, ABSENT, DELETED, RECONCILED }
+
+/**
+ * The ADR-035 §16 signals of the guarded ingest protocol (TI-STORAGE-003).
+ * Closed enums only: no workspace, inbox, message, key or address is ever a
+ * label.
+ *
+ * One method per §16 signal, so this port reads as that table. Splitting it
+ * by an arbitrary line only to satisfy a function count would hide the
+ * correspondence.
+ */
+@Suppress("TooManyFunctions")
+interface StorageProtocolMetrics {
+    fun admission(outcome: StorageAdmissionOutcome) {}
+
+    /** A ceiling was exceeded on a scope whose enforcement is OFF: observed, not refused. */
+    fun unenforcedLimit(scope: email.testinbox.domain.storage.StorageScope) {}
+
+    fun lockWait(duration: java.time.Duration) {}
+
+    fun slotWait(duration: java.time.Duration) {}
+
+    fun physicalFailure(kind: PhysicalFailureKind) {}
+
+    fun commitFenced() {}
+
+    fun released(path: ReleasePath) {}
+
+    fun lateObject() {}
+
+    fun breakerOpen(open: Boolean) {}
+
+    fun latched(latched: Boolean) {}
+
+    fun clockOffset(offset: java.time.Duration) {}
+
+    fun ambiguousUploads(count: Int) {}
+
+    fun reservations(byState: Map<String, Long>) {}
+
+    fun physicalListedBytes(bytes: Long) {}
+
+    fun incompleteUploads(count: Int) {}
+
+    fun witnessFailed() {}
+
+    companion object {
+        val NOOP: StorageProtocolMetrics = object : StorageProtocolMetrics {}
+    }
+}

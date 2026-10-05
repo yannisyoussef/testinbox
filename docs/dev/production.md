@@ -128,6 +128,42 @@ The API's accounting jobs read three optional settings:
 
 The defaults are the ADR-035 values, and nothing needs to set them.
 
+### The guarded ingest protocol (TI-STORAGE-003)
+
+- **Database.** The ingestion and API roles also need `SELECT, INSERT, UPDATE,
+  DELETE` on `storage_reservation`, `storage_ambiguity`, `storage_node`,
+  `storage_admission_latch` and `storage_clock_episode` (V7), and `USAGE` on
+  `storage_ambiguity_id_seq`.
+  Staging's owner role already has them.
+- **Object storage.** Cleanup and the orphan sweep need `ListBucket`,
+  `ListBucketMultipartUploads` and `AbortMultipartUpload` on the bucket,
+  besides the object read, write and delete the runtime identity already
+  holds. The presigned uploads are signed with the same identity, so it needs
+  no new write privilege.
+- **Node identity.** Each ingestion process must run with a
+  `TESTINBOX_STORAGE_NODE_ID` that is stable across restarts, and it defaults
+  to `testinbox-ingestion`. Its persisted ambiguity occupies its write slots
+  across restarts. A node id that changed on every restart would lose that,
+  and with it the finalize budget H. Two processes during a rolling deploy
+  must use DIFFERENT ids, and are counted twice in H
+  (`declared-max-ingestion-processes`). This is enforced: a process claims its
+  id with a session-level advisory lock for its whole life, and a second
+  process started with the same id **fails to start**. If the claim's session
+  dies and another process takes the id meanwhile, the first opens its
+  storage breaker (`451`) rather than share it.
+- **Enforcement is OFF, and there is no setting for it.** No property,
+  environment variable or profile switches refusal on in this release (ADR-035
+  Phase 2). Enabling it is a later, gated release.
+- **The admission latch.** A late object sets `storage_admission_latch`, and
+  every ingestion node then answers SMTP `451` before admission. The edge
+  queues mail for up to 4 h. **Runbook:**
+  1. Investigate the late object (`testinbox_storage_late_object_total`, and
+     the `storage_late_object` error logs).
+  2. Confirm the storage combination is still the qualified one.
+  3. Clear the latch by hand: `DELETE FROM storage_admission_latch;`.
+
+  No endpoint clears it.
+
 ## Object storage privileges
 
 The bucket is created by Ops before the first deployment. The runtime
@@ -231,7 +267,7 @@ which row B requires Ops to show alongside a listing of the backup target.
 
 | backed up | never |
 |---|---|
-| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
+| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch`, `storage_clock_episode` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
 
 What that buys, stated plainly:
 
@@ -296,7 +332,17 @@ Boot's standard binders, whose presence the rehearsal asserts:
 | object store / database reachability | readiness `objectStorage`, `db`; `testinbox_object_storage_operation_duration_seconds{outcome="FAILURE"}` | any `DOWN`; failures > 0 sustained |
 | LISTEN degraded | `testinbox_wait_listen_degraded_polling` | `== 1` for > 1 min — **the one that is otherwise invisible** (everything else stays green) |
 | storage accounting drift (ADR-035) | `testinbox_storage_accounting_drift_total{direction}`; `testinbox_storage_reconciliation_total{outcome="failed"}` | any increase: a repaired drift is always a defect, and a failed reconciliation leaves the ledger unproven |
-| storage ledger backlog (ADR-035) | `testinbox_storage_ledger_unfolded_rows` (every API replica reports the same global figure, so take `max`, never `sum`); `testinbox_storage_ledger_compaction_total{outcome="failed"}` | backlog > 1 000 sustained, or failed compactions with no `ok` in 5 min: compaction is not keeping up, or is failing. Observational until admission exists. |
+| storage breaker open (ADR-035) | `testinbox_storage_breaker_open` | `== 1` for > 5 min on any ingestion node: mail is being deferred (`451`) |
+| **storage admission latched** (ADR-035) | `testinbox_storage_admission_latched`; `testinbox_storage_late_object_total` | **page**: any late object, or the latch set. Every node refuses mail until an operator clears it (runbook above) |
+| old ambiguity / old RELEASING (ADR-035) | `testinbox_storage_ambiguous_uploads`; `testinbox_storage_reservations{state="releasing"}` | ambiguity older than `T_verify` + 5 min, or `RELEASING` rows older than 1 h: verification or cleanup is stuck (for example, the witness is failing: `testinbox_storage_witness_failed_total`) |
+| physical over-coverage (ADR-035) | `testinbox_storage_physical_listed_bytes` against committed + reserved | `physical_listed > covered + H`: objects exist that nothing accounts for |
+| incomplete multipart (ADR-035) | `testinbox_storage_incomplete_uploads` | `> 0`: TestInbox never starts one; the orphan sweep aborts it and it is a defect to explain |
+| storage clock offset (ADR-035) | `testinbox_storage_clock_offset_seconds` | `abs(offset) > 15 s` (`ε_max / 2`): releases suspend at 30 s |
+| storage ledger backlog (ADR-035) | `testinbox_storage_ledger_unfolded_rows` (every API replica reports the same global figure, so take `max`, never `sum`); `testinbox_storage_ledger_compaction_total{outcome="failed"}` | backlog > 1 000 sustained, or failed compactions with no `ok` in 5 min: compaction is not keeping up, or is failing. T1 reads the backlog on every event, so its cost grows with it. |
+
+The **edge queue-age and deferred-mail alerting** of ADR-035 §12 is an Ops
+prerequisite owned by the mail edge's operators. It is not in this
+repository, and it is not claimed as done. Public SMTP/MX stays blocked on it.
 | inbound SMTP | `testinbox_smtp_accept_total`, `testinbox_smtp_reject_total{reason}` | reject rate rising; accepts flat while the edge queue grows (TI-007) |
 | unknown-recipient discards | `testinbox_smtp_unknown_recipient_discard_total` | rate change — an enumeration attempt or a misrouted sender |
 | ingestion rate refusals | `testinbox_rate_decision_total{category="INGEST",outcome="REFUSED"}` | sustained refusals on one workspace |

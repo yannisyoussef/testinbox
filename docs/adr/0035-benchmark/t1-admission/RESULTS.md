@@ -60,3 +60,16 @@ Measured on 2026-09-29, on a 16-vCPU arm64 laptop with Docker Desktop:
 - **The backlog costs little.** 1 000 live reservations move the p50 by under 0.5 ms.
 - **An earlier harness artifact.** A first run used an unpooled data source, which opens a physical connection per T1.
   It measured about 10 ms of connection setup, not T1. The pooled figures above are the ones that count.
+
+## TI-STORAGE-003: the formal §11 gate is still ahead
+
+T1 is now on the live path with enforcement OFF. This laptop sanity run,
+including the 10 000-workspace rows above, is not the gate. Before the global
+ceiling is enforced, the §11 staging-host gate must run with all of this, and
+pass the §11 criteria unchanged:
+- the actual staging workspace population, plus 10 000 synthetic workspaces;
+- 1 000 live reservations and a compaction interval's worth of deltas;
+- the expected offered rate, and twice that rate;
+- multi-recipient events;
+- p50, p95 and p99 for T1, T2 and retention.
+

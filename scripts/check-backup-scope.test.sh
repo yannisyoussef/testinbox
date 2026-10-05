@@ -117,7 +117,7 @@ check "a missing input is a usage error" 2 "$WORK/nope.txt"
 # because backing it up would carry derived or transient state (ADR-035 §14).
 SCOPE_FILE="$REPO_ROOT/deploy/backup/scope.txt"
 for t in workspace_storage_account inbox_storage storage_delta storage_reservation \
-         storage_ambiguity storage_node storage_admission_latch; do
+         storage_ambiguity storage_node storage_admission_latch storage_clock_episode; do
   grep -qx -- "- $t" "$SCOPE_FILE" || { echo "FAIL — $t is not classified '-' in the real scope"; fail=$((fail + 1)); continue; }
   grep -vx -- "- $t" "$SCOPE_FILE" > "$WORK/omit-$t.txt"
   out=$(BACKUP_SCOPE="$WORK/omit-$t.txt" "$GATE" --classification "$REPO_ROOT/backend/persistence/src/main/resources/db/migration" 2>&1); st=$?

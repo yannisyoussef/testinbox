@@ -344,7 +344,7 @@ class SmtpIngestionIntegrationTest {
     }
 
     @Test
-    fun `real SMTP ingestion feeds the ADR-035 ledger and nothing else changes (TI-STORAGE-001)`() {
+    fun `real SMTP ingestion feeds the ADR-035 ledger (TI-STORAGE-001)`() {
         // The unchanged production path (gateway, ReceiveInboundDelivery,
         // JdbcMessageRepository) against V6. The ledger's triggers account for
         // it, the SMTP reply is the uniform 250 it always was, and nothing
@@ -375,17 +375,17 @@ class SmtpIngestionIntegrationTest {
             .query(Long::class.java)
             .single() shouldBe physical
         // The unknown recipient left no trace here either (ADR-025).
-        for (table in listOf("storage_reservation", "storage_ambiguity", "storage_node", "storage_admission_latch")) {
-            jdbc.sql("SELECT count(*) FROM $table").query(Long::class.java).single() shouldBe 0
-        }
+        // TI-STORAGE-003: the guarded protocol ran. T2 consumed the reservations,
+        // nothing was ambiguous, nothing latched, and this node's generation is
+        // registered with the storage-v1 capability.
+        assertGuardedProtocolSettled()
     }
 
     @Test
-    fun `normal SMTP ingestion still takes the old path and reserves nothing (TI-STORAGE-002)`() {
-        // The ADR-035 admission core exists, but no ingress path calls it yet.
-        // A multi-recipient event across two tenants, plus an unknown
-        // recipient, is delivered exactly as before: stored, visible, and
-        // with no reservation, ambiguity, node or latch row anywhere.
+    fun `a multi-recipient event across tenants commits through the guarded protocol and leaves nothing reserved (TI-STORAGE-003)`() {
+        // A multi-recipient event across two tenants, plus an unknown recipient:
+        // one slot, one T1, fenced uploads for both admitted copies, one T2.
+        // Both copies are stored and visible, and no reservation is left.
         val first = provisionInbox()
         val second = provisionInbox()
         client().use { smtp ->
@@ -403,8 +403,39 @@ class SmtpIngestionIntegrationTest {
         for (message in messages.listVisible(first.id) + messages.listVisible(second.id)) {
             blobs.get(message.rawObjectKey) shouldNotBe null
         }
-        for (table in listOf("storage_reservation", "storage_ambiguity", "storage_node", "storage_admission_latch")) {
-            jdbc.sql("SELECT count(*) FROM $table").query(Long::class.java).single() shouldBe 0
+        // TI-STORAGE-003: the guarded protocol ran. T2 consumed the reservations,
+        // nothing was ambiguous, nothing latched, and this node's generation is
+        // registered with the storage-v1 capability.
+        assertGuardedProtocolSettled()
+    }
+
+    @Test
+    fun `the gateway caps an event at the edge's 50 recipients, answering 452 for the excess (ADR-035)`() {
+        // The cap equals the mail edge contract (ADR-035 §15), and bounds T1's event.
+        val contract = java.io.File("../../deploy/mail-edge/contract.yaml").readText()
+        Regex("""smtpd_recipient_limit:\s*"(\d+)"""").find(contract)!!.groupValues[1].toInt() shouldBe SmtpGateway.MAX_RECIPIENTS
+        java.net.Socket("localhost", smtpPort).use { socket ->
+            val reader = socket.getInputStream().bufferedReader(Charsets.US_ASCII)
+            val out = socket.getOutputStream()
+
+            fun reply(): String {
+                var line: String
+                do line = reader.readLine() while (line.length > 3 && line[3] == '-')
+                return line
+            }
+
+            fun send(command: String): String {
+                out.write("$command\r\n".toByteArray())
+                out.flush()
+                return reply()
+            }
+            reply()
+            send("EHLO cap.example")
+            send("MAIL FROM:<sender@example.com>")
+            val replies = (1..51).map { send("RCPT TO:<cap-$it@testinbox.local>") }
+            replies.take(50).all { it.startsWith("250") } shouldBe true
+            replies.last().take(3) shouldBe "452"
+            send("QUIT")
         }
     }
 
@@ -659,5 +690,16 @@ class SmtpIngestionIntegrationTest {
             runCatching { smtp.send("no-reply@example.com", listOf("someone@example.com"), corpus("simple-text.eml")) }
         }
         smtpMetrics.rejections shouldContain SmtpRejection.INVALID_RECIPIENT
+    }
+
+    private fun assertGuardedProtocolSettled() {
+        for (table in listOf("storage_reservation", "storage_admission_latch")) {
+            jdbc.sql("SELECT count(*) FROM $table").query(Long::class.java).single() shouldBe 0
+        }
+        jdbc.sql("SELECT count(*) FROM storage_ambiguity WHERE resolved_at IS NULL").query(Long::class.java).single() shouldBe 0
+        jdbc
+            .sql("SELECT count(*) FROM storage_node WHERE capability = 'storage-v1' AND NOT clean_shutdown")
+            .query(Long::class.java)
+            .single() shouldBe 1
     }
 }

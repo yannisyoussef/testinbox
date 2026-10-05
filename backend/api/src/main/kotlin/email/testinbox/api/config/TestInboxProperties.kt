@@ -36,6 +36,8 @@ data class TestInboxProperties(
          * `CreateBucket` should set this false and pre-create the bucket.
          */
         val createBucket: Boolean = true,
+        /** ADR-035: this API node's id, naming its witness probes and its DB sessions. */
+        val nodeId: String = "testinbox-api",
     )
 
     /**

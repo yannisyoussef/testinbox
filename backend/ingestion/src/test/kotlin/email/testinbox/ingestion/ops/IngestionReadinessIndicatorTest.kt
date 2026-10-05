@@ -64,11 +64,8 @@ class IngestionReadinessIndicatorTest {
     }
 
     private object UnreachableBlobStore : BlobStore {
-        override fun put(
-            key: String,
-            bytes: ByteArray,
-            contentType: String,
-        ) = Unit
+        override fun putReserved(upload: email.testinbox.application.port.ReservedUpload) =
+            email.testinbox.application.port.UploadOutcome.NotStarted
 
         override fun get(key: String): ByteArray? = null
 

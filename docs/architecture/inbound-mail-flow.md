@@ -14,12 +14,14 @@ sequenceDiagram
     alt no recipient resolves
         GW-->>Sender: 250 OK (nothing stored)
     else one or more known active inboxes
-        GW->>GW: parse MIME once for the event
-        GW->>Obj: store raw MIME + attachments per accepted recipient (per-message keys)
-        GW->>DB: ONE transaction — insert every recipient Message + pg_notify each inbox
+        GW->>GW: parse MIME once; exact footprint f; ids and keys generated per copy
+        GW->>GW: latch? breaker? then ONE fair write slot for the event (ADR-035 §4)
+        GW->>DB: T1 — admission lock, one snapshot, RESERVED reservation per copy (enforcement OFF)
+        GW->>Obj: fenced uploads — one presigned, create-only, size-bound PUT per exact key, one attempt
+        GW->>DB: T2 — reservations FOR UPDATE, inboxes FOR KEY SHARE, every recipient Message + pg_notify, reservations consumed
         Note over DB,Notify: all recipients commit together, or none (ADR-026)
-        alt transaction fails
-            GW-->>Sender: 451 (sender retries the whole transaction; nothing committed)
+        alt any upload not stored, slot/lock timeout, fenced reservation, or T2 fails
+            GW-->>Sender: 451 (sender retries the whole transaction; nothing visible)
         else committed
             Note over DB,Notify: NOTIFY delivered to listeners after commit (ADR-020)
             GW-->>Sender: 250 OK
@@ -43,9 +45,11 @@ sequenceDiagram
    transaction would manufacture a duplicate for the recipient that already
    succeeded — an infrastructure-induced duplicate, not an observation of the
    system under test. Duplicate `RCPT TO` values collapse to one delivery.
-   Blobs are written before the transaction; those left behind by a failed
-   transaction are reclaimed by the orphan sweep, because losing raw bytes is
-   worse than transiently storing unreferenced ones.
+   Since TI-STORAGE-003 the blobs are written under the ADR-035 guarded
+   protocol: after the event's reservations (T1) and before the one commit (T2).
+   Blobs left behind by a failed event stay charged to their reservations, and
+   reservation cleanup deletes them. It proves each exact key absent before it
+   frees the bytes. The orphan sweep remains a backstop for anything else.
 3. **Recipient resolution**: the address token is looked up against active
    inbox reservations. No match (unknown, expired, or already-deleted) →
    message is still accepted (SMTP-level 250) to avoid backscatter/NDN abuse,
@@ -77,10 +81,26 @@ sequenceDiagram
    hop adds do not hide the match; ADR-019 §4 as amended), never silently
    collapsed. See
    [`message-lifecycle.md`](message-lifecycle.md).
-5. **Storage before parsing**: raw MIME is written to object storage before
-   parsing is attempted, so a parser crash or poison-message never loses the
-   original bytes. Recipients of the same event never share a blob: each
-   message owns its raw and attachment objects (ADR-005).
+5. **Storage before the row**: raw MIME is written to object storage before
+   the message row commits, so parse failure never loses the original bytes.
+   The event is parsed ONCE, and the exact bytes (raw MIME plus every extracted
+   attachment) are then uploaded separately under each admitted recipient's own
+   keys. Recipients of the same event never share a blob: each message owns its
+   raw and attachment objects (ADR-005).
+   - **The only write.** It is a fenced one (ADR-035 §5), presigned with the
+     database clock of T1 and bound by the storage server itself to:
+     - the exact key;
+     - the exact length;
+     - create-only (`If-None-Match: *`);
+     - a start deadline of `t0 + 120 s`.
+   - **One attempt.** Each upload is attempted exactly once and aborted with an
+     RST at `T_put` (30 s).
+   - **An outcome that is not definitive is ambiguous.** The reservation stays
+     charged, the ambiguity is persisted and holds its write slot, the breaker
+     opens, and the whole `DATA` gets `451`.
+   - **Enforcement is OFF.** Storage ceilings are observed, never enforced, so
+     no copy is refused for capacity. Under ADR-035 §12, a future enforced
+     refusal will still be a `250` and a discard.
 6. **Parsing**: MIME → structured `Message` (headers, plaintext, sanitized
    HTML render pointer, extracted links, attachment metadata). See
    [ADR-011](../adr/0011-html-rendering-security.md) for HTML handling and

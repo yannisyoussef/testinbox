@@ -9,6 +9,8 @@ import email.testinbox.application.port.LedgerCompaction
 import email.testinbox.application.port.LedgerState
 import email.testinbox.application.port.StorageLedger
 import email.testinbox.application.port.WaitSlots
+import email.testinbox.application.storage.ReleaseStaleReservations
+import email.testinbox.application.storage.VerifyAmbiguousUploads
 import email.testinbox.application.usecase.CompactStorageLedger
 import email.testinbox.application.usecase.ExpireInboxes
 import email.testinbox.application.usecase.OrphanBlobSweep
@@ -17,6 +19,8 @@ import email.testinbox.domain.ApiKeyId
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.verify
+import org.mockito.Mockito.`when`
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -91,6 +95,8 @@ class SweepSchedulerTest {
     private fun scheduler(
         records: IdempotencyRecords = CountingRecords(fullPasses = 0),
         ledger: StorageLedger = BrokenLedger(),
+        cleanup: ReleaseStaleReservations = mock(ReleaseStaleReservations::class.java),
+        verification: VerifyAmbiguousUploads = mock(VerifyAmbiguousUploads::class.java),
     ) = SweepScheduler(
         expireInboxes = mock(ExpireInboxes::class.java),
         orphanBlobSweep = mock(OrphanBlobSweep::class.java),
@@ -98,6 +104,8 @@ class SweepSchedulerTest {
         idempotencyRecords = records,
         compactStorageLedger = CompactStorageLedger(ledger),
         reconcileStorageAccounting = ReconcileStorageAccounting(ledger),
+        releaseStaleReservations = cleanup,
+        verifyAmbiguousUploads = verification,
         clock = Clock.fixed(Instant.parse("2026-09-08T12:00:00Z"), ZoneOffset.UTC),
     )
 
@@ -144,6 +152,23 @@ class SweepSchedulerTest {
         val ledger = BrokenLedger()
         scheduler(ledger = ledger).storageLedgerCompaction()
         ledger.calls shouldBe 1
+    }
+
+    @Test
+    fun `a failing reservation cleanup or ambiguity verification does not escape its tick (ADR-035)`() {
+        // An escaping exception would stop the job's future runs, and with them
+        // every release: reserved capacity would stay charged forever.
+        val cleanup = mock(ReleaseStaleReservations::class.java)
+        val verification = mock(VerifyAmbiguousUploads::class.java)
+        `when`(cleanup.run()).thenThrow(IllegalStateException("storage gone"))
+        `when`(verification.run()).thenThrow(IllegalStateException("storage gone"))
+        val scheduler = scheduler(cleanup = cleanup, verification = verification)
+
+        scheduler.storageReservationCleanup()
+        scheduler.ambiguityVerification()
+
+        verify(cleanup).run()
+        verify(verification).run()
     }
 
     @Test

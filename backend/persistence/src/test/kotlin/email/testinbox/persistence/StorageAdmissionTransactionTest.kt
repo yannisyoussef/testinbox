@@ -96,7 +96,7 @@ class StorageAdmissionTransactionTest : PersistenceIntegrationTest() {
             StorageAdmission(
                 JdbcStorageAdmission(recording.jdbc, recording.transactions),
                 StorageCapacityPolicyFixtures.GENEROUS,
-                StorageEnforcement.ON,
+                StorageEnforcement.ALL,
             )
 
         admission.admit(fx.request(F, emptyList())) shouldBe StorageAdmissionResult.NOTHING_TO_ADMIT
@@ -116,7 +116,7 @@ class StorageAdmissionTransactionTest : PersistenceIntegrationTest() {
                 StorageAdmission(
                     JdbcStorageAdmission(recording.jdbc, recording.transactions),
                     StorageCapacityPolicyFixtures.GENEROUS,
-                    StorageEnforcement.ON,
+                    StorageEnforcement.ALL,
                 )
             val event = List(candidates) { i -> workspaces[i % 10].let { fx.candidate(it, db.inbox(it)) } }
 
@@ -140,7 +140,7 @@ class StorageAdmissionTransactionTest : PersistenceIntegrationTest() {
             StorageAdmission(
                 JdbcStorageAdmission(recording.jdbc, recording.transactions),
                 policy(workspace = 5, global = 1_000),
-                StorageEnforcement.ON,
+                StorageEnforcement.ALL,
             )
 
         admission.admit(fx.request(F, listOf(fx.candidate(ws, db.inbox(ws))))).shape() shouldBe listOf("INBOX_LIMIT")

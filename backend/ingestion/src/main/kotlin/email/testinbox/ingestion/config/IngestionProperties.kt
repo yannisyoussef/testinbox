@@ -31,6 +31,14 @@ data class IngestionProperties(
         val bucket: String = "testinbox-mime",
         /** See TestInboxProperties.Storage.createBucket. */
         val createBucket: Boolean = true,
+        /**
+         * ADR-035 §9: this gateway's stable node id. Its persisted ambiguity
+         * occupies its write slots across restarts, so it must NOT change when
+         * the process restarts. It is not a secret, and never a metric label.
+         * There is deliberately no enforcement setting here: the live path is
+         * enforcement OFF, whatever the environment says (TI-STORAGE-003).
+         */
+        val nodeId: String = "testinbox-ingestion",
     )
 
     /**

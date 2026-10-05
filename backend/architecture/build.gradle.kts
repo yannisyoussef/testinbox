@@ -16,4 +16,6 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation(libs.archunit.junit5)
+    // Only for the fixture that proves the unfenced-write rule can fail.
+    testImplementation(libs.aws.s3)
 }

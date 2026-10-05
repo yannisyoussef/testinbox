@@ -88,10 +88,11 @@ class StorageAdmissionBenchmark : PersistenceIntegrationTest() {
                     """
                     INSERT INTO inbox (id, workspace_id, project_id, address, address_mode, state, created_at, expires_at)
                     SELECT gen_random_uuid(), w, w, gen_random_uuid() || '@bench.test', 'GENERATED', 'ACTIVE', now(), now() + interval '1 day'
-                      FROM unnest(ARRAY[:ws]::uuid[]) AS w, generate_series(1, 5)
+                      FROM unnest(ARRAY[:ws]::uuid[]) AS w, generate_series(1, :perWorkspace)
                     RETURNING workspace_id, id
                     """.trimIndent(),
                 ).param("ws", workspaces)
+                .param("perWorkspace", maxOf(5, scenario.candidates))
                 .query { rs, _ -> rs.getObject(1, UUID::class.java)!! to rs.getObject(2, UUID::class.java)!! }
                 .list()
                 .groupBy({ it.first }, { it.second })
@@ -132,16 +133,16 @@ class StorageAdmissionBenchmark : PersistenceIntegrationTest() {
             StorageAdmission(
                 JdbcStorageAdmission(pooledJdbc, TransactionTemplate(DataSourceTransactionManager(pool))),
                 StorageCapacityPolicyFixtures.GENEROUS,
-                StorageEnforcement.ON,
+                StorageEnforcement.ALL,
             )
+
+        val allInboxes = inboxes.flatMap { (ws, ibs) -> ibs.map { ws to it } }
 
         fun event(random: Random) =
             fx.request(
                 26_000,
-                List(scenario.candidates) {
-                    val ws = workspaces.random(random)
-                    fx.candidate(ws, inboxes.getValue(ws).random(random), attachments = 1)
-                },
+                // Distinct inboxes: an event carries at most one copy per inbox.
+                allInboxes.shuffled(random).take(scenario.candidates).map { (ws, inbox) -> fx.candidate(ws, inbox, attachments = 1) },
             )
 
         // Warm up, then measure. Every event's own reservations are removed

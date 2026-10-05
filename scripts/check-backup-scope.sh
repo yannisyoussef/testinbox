@@ -50,7 +50,8 @@ done < "$SCOPE"
 # so the scope file itself is refused.
 REQUIRED_DENY=(inbox message attachment
                workspace_storage_account inbox_storage storage_delta
-               storage_reservation storage_ambiguity storage_node storage_admission_latch)
+               storage_reservation storage_ambiguity storage_node storage_admission_latch
+               storage_clock_episode)
 for required in "${REQUIRED_DENY[@]}"; do
   for kept in "${KEEP[@]}"; do
     [[ "$kept" == "$required" ]] && { echo "SCOPE MISCLASSIFIED: $required is content or derived state and must be '-' in $SCOPE" >&2; exit 1; }

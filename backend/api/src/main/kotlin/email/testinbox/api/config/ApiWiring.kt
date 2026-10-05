@@ -22,7 +22,10 @@ import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.NotifierMetrics
 import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.StorageAccountingMetrics
+import email.testinbox.application.port.StorageAmbiguity
+import email.testinbox.application.port.StorageInspection
 import email.testinbox.application.port.StorageLedger
+import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.WaitMetrics
 import email.testinbox.application.port.WaitSlots
@@ -30,6 +33,8 @@ import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.application.query.ApiKeyQueries
 import email.testinbox.application.query.InboxQueries
 import email.testinbox.application.query.MessageQueries
+import email.testinbox.application.storage.ReleaseStaleReservations
+import email.testinbox.application.storage.VerifyAmbiguousUploads
 import email.testinbox.application.usecase.AuthenticateApiKey
 import email.testinbox.application.usecase.CoalescingLastUsedRecorder
 import email.testinbox.application.usecase.CompactStorageLedger
@@ -41,6 +46,7 @@ import email.testinbox.application.usecase.OrphanBlobSweep
 import email.testinbox.application.usecase.ReconcileStorageAccounting
 import email.testinbox.application.usecase.RevokeApiKey
 import email.testinbox.application.usecase.WaitForMessage
+import email.testinbox.domain.storage.StorageCapacityPolicy
 import email.testinbox.notification.PgListenNotifier
 import email.testinbox.notification.PgListenNotifierConfig
 import email.testinbox.observability.BuildInfoMetric
@@ -51,12 +57,15 @@ import email.testinbox.observability.MicrometerInboxMetrics
 import email.testinbox.observability.MicrometerLimitMetrics
 import email.testinbox.observability.MicrometerNotifierMetrics
 import email.testinbox.observability.MicrometerStorageAccountingMetrics
+import email.testinbox.observability.MicrometerStorageProtocolMetrics
 import email.testinbox.observability.MicrometerWaitMetrics
 import email.testinbox.observability.Slf4jAuditLog
 import email.testinbox.persistence.BundledMigrations
 import email.testinbox.persistence.JdbcDatabaseSessionSettings
 import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.persistence.JdbcSchemaHistory
+import email.testinbox.persistence.JdbcStorageAmbiguity
+import email.testinbox.persistence.JdbcStorageReservations
 import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
 import io.micrometer.core.instrument.MeterRegistry
@@ -66,6 +75,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Clock
 
 @Configuration
@@ -104,6 +114,10 @@ class ApiMetricsWiring {
 
     @Bean
     fun storageAccountingMetrics(registry: MeterRegistry): StorageAccountingMetrics = MicrometerStorageAccountingMetrics(registry)
+
+    @Bean
+    fun storageProtocolMetrics(registry: MeterRegistry): StorageProtocolMetrics =
+        MicrometerStorageProtocolMetrics(registry, StorageCapacityPolicy.ADR_035_REFERENCE)
 
     /** Credential lifecycle audit trail (TI-002 §14) on its own `testinbox.audit` logger. */
     @Bean
@@ -238,6 +252,7 @@ class ApiWiring(
                 jdbcUrl = dataSourceProperties.determineUrl(),
                 username = dataSourceProperties.determineUsername().orEmpty(),
                 password = dataSourceProperties.determinePassword().orEmpty(),
+                applicationName = "testinbox-listen:${properties.storage.nodeId}:storage-v1",
             ),
             metrics,
         )
@@ -299,12 +314,6 @@ class ApiWiring(
         tx: TransactionRunner,
         config: TestInboxConfig,
     ): ExpireInboxes = ExpireInboxes(inboxes, reservations, blobs, tx, clock, config, inboxMetrics)
-
-    @Bean
-    fun orphanBlobSweep(
-        blobs: BlobStore,
-        messages: MessageRepository,
-    ): OrphanBlobSweep = OrphanBlobSweep(blobs, messages, clock, properties.orphanMinAge)
 
     /** ADR-035 §10 ledger compaction. Observational only: nothing admits or refuses on it yet. */
     @Bean

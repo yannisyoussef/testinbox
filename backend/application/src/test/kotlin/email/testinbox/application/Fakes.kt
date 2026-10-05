@@ -12,7 +12,10 @@ import email.testinbox.application.port.NotifierHealth
 import email.testinbox.application.port.RateDecision
 import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.ReserveOutcome
+import email.testinbox.application.port.ReservedUpload
 import email.testinbox.application.port.TransactionRunner
+import email.testinbox.application.port.UploadOutcome
+import email.testinbox.application.port.UploadRefusal
 import email.testinbox.application.port.WaitHandle
 import email.testinbox.application.port.WaitSlot
 import email.testinbox.application.port.WaitSlots
@@ -251,13 +254,31 @@ class InMemoryBlobStore : BlobStore {
     var storedAtClock: Clock = Clock.systemUTC()
     val putOrder = mutableListOf<String>()
 
-    override fun put(
+    /** Scripted outcomes for the next fenced uploads (ADR-035 fault injection); empty means store. */
+    val nextOutcomes = ArrayDeque<UploadOutcome>()
+
+    /** When an ambiguous outcome is scripted, whether the object landed anyway (probe E5). */
+    var ambiguousStores = false
+
+    /** Test seeding only: NOT part of the port, which has no unfenced write. */
+    fun put(
         key: String,
         bytes: ByteArray,
         contentType: String,
     ) {
         blobs[key] = Entry(bytes, contentType, storedAtClock.instant())
         putOrder += key
+    }
+
+    override fun putReserved(upload: ReservedUpload): UploadOutcome {
+        val scripted = nextOutcomes.removeFirstOrNull()
+        if (scripted != null) {
+            if (scripted is UploadOutcome.Ambiguous && ambiguousStores) put(upload.key, upload.bytes, "application/octet-stream")
+            return scripted
+        }
+        if (upload.key in blobs) return UploadOutcome.Refused(UploadRefusal.ALREADY_EXISTS)
+        put(upload.key, upload.bytes, "application/octet-stream")
+        return UploadOutcome.Stored
     }
 
     override fun get(key: String): ByteArray? = blobs[key]?.bytes

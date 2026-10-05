@@ -36,3 +36,6 @@
 - storage_ambiguity
 - storage_node
 - storage_admission_latch
+# ADR-035 §5 (V7). A clock-offset episode describes the reservations, which
+# are not restored either.
+- storage_clock_episode

@@ -68,6 +68,23 @@ have queried a series that does not exist. `MetricCardinalityTest` asserts the
 | `testinbox_storage_ledger_unfolded_rows` | gauge | — | After each ADR-035 compaction tick, including a failed or contended one: delta rows not yet folded. The figure is global, so aggregate replicas with `max`. |
 | `testinbox_storage_covered_bytes` | gauge | `kind=committed` | After each compaction tick: committed physical bytes (Σ base + Σ delta), global, so aggregate with `max`. `kind=reserved` arrives with reservations. |
 | `testinbox_storage_ledger_compaction_total` | counter | `outcome` (`ok`/`contended`/`failed`) | Every compaction tick. `contended` is normal with several replicas; a sustained `failed` means the ledger is not being folded. |
+| `testinbox_storage_admission_total` | counter | `outcome` (`admitted`/`refused_inbox`/`refused_workspace`/`refused_global`) | Every recipient copy decided by ADR-035 T1. Enforcement is OFF, so the `refused_*` series stay 0 in every deployment. |
+| `testinbox_storage_admission_unenforced_total` | counter | `ceiling` (`inbox`/`workspace`/`global`) | A copy exceeded a ceiling whose enforcement is OFF: observed, not refused (ADR-035 Phase 2). |
+| `testinbox_storage_admission_lock_wait_seconds` | timer | — | Every T1 (lock, snapshot, reservation insert). |
+| `testinbox_storage_slot_wait_seconds` | timer | — | Every write-slot acquisition, successful or not. |
+| `testinbox_storage_physical_failure_total` | counter | `kind` (`quota`/`unavailable`/`timeout`/`ambiguous`/`deadline`/`lock_timeout`/`slot_wait`/`clock_offset`) | An event abandoned for infrastructure (`451`). Never capacity. |
+| `testinbox_storage_commit_fenced_total` | counter | — | T2 found a reservation no longer `RESERVED`: cleanup owned it. |
+| `testinbox_storage_reservation_released_total` | counter | `path` (`committed`/`absent`/`deleted`/`reconciled`) | Cleanup released a reservation; `reconciled` is the impossible case [D] and alarms. |
+| `testinbox_storage_late_object_total` | counter | — | An object reappeared after cleanup deleted it. The admission latch is set. |
+| `testinbox_storage_witness_failed_total` | counter | — | A storage witness did not complete: releases wait. |
+| `testinbox_storage_breaker_open` | gauge | — | 1 while this ingestion node's storage breaker is open. |
+| `testinbox_storage_admission_latched` | gauge | — | 1 once a node has seen the latch set. |
+| `testinbox_storage_clock_offset_seconds` | gauge | — | The last measured DB↔storage clock offset. |
+| `testinbox_storage_ambiguous_uploads` | gauge | — | Unresolved persisted ambiguity (each holds a write slot). |
+| `testinbox_storage_reservations` | gauge | `state` (`reserved`/`releasing`) | Live reservations, after each cleanup pass. |
+| `testinbox_storage_physical_listed_bytes` | gauge | — | Payload bytes actually listed in the bucket (orphan sweep). |
+| `testinbox_storage_incomplete_uploads` | gauge | — | Incomplete multipart uploads in the bucket. TestInbox never starts one, so any is a defect. |
+| `testinbox_storage_global_limit_bytes`, `testinbox_storage_finalize_budget_bytes` | gauge | — | The observed G and H. |
 | `testinbox_storage_accounting_drift_total` | counter | `direction` (`under`/`over`) | Reconciliation repaired a drifted figure. Always a defect. |
 | `testinbox_storage_reconciliation_total` | counter | `outcome` (`clean`/`repaired`/`failed`) | Every ADR-035 reconciliation run |
 

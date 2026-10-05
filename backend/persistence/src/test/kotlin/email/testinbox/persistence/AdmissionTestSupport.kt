@@ -42,7 +42,7 @@ class AdmissionFixture(
 
     fun admission(
         policy: StorageCapacityPolicy,
-        enforcement: StorageEnforcement = StorageEnforcement.ON,
+        enforcement: StorageEnforcement = StorageEnforcement.ALL,
         store: StorageAdmissionStore = store(),
     ) = StorageAdmission(store, policy, enforcement)
 

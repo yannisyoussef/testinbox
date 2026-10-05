@@ -10,3 +10,5 @@
 # Format: <40-hex commit> <why this is a floor>
 # Order is irrelevant. Never remove a line; a floor is history.
 a2cb7ecc2e9a9067549003a85330bcdb55489dec V4 managed credentials (TI-002): an earlier artifact hashes the whole token and cannot authenticate any ti_k1_ key — every API client gets 401 until rolled forward
+c84ddd74f7983dba053c7d377a10960c0c409248 ADR-035 guarded ingest protocol (TI-STORAGE-003): an earlier ingestion artifact writes objects outside the reservation fence and never runs reservation cleanup or ambiguity verification, so reservations and physical bytes are left unaccounted while it serves
+d4e38b230af5576512ed09da6f52c44a71c266b4 TI-STORAGE-003 guarded-ingest safety floor: includes the final upload ambiguity/Error handling and the V7 durable clock-episode release protection; earlier guarded-ingest artifacts are not safe once this protocol and schema have been deployed

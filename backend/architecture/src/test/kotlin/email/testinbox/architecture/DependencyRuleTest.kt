@@ -7,6 +7,7 @@ import com.tngtech.archunit.core.importer.ClassFileImporter
 import com.tngtech.archunit.core.importer.ImportOption
 import com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes
 import com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses
+import email.testinbox.architecture.fixtures.UnfencedPutFixture
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 
@@ -289,37 +290,47 @@ class DependencyRuleTest {
     }
 
     @Test
-    fun `the ADR-035 admission core is reachable from no deployable (TI-STORAGE-002)`() {
-        // The engine exists and is proven, but nothing drives it yet: no ingress
-        // path, no configuration class and no scheduled job may construct or call
-        // it until the slice that adds the fenced write path wires it on purpose.
-        // Exact types (and their nested and synthetic classes), never a name
-        // prefix: a future `StorageAdmissionWiring` must NOT count as core.
-        val core =
-            setOf(
-                "email.testinbox.application.usecase.StorageAdmission",
-                "email.testinbox.application.usecase.StorageAdmissionRules",
-                "email.testinbox.application.usecase.StorageAdmissionCandidate",
-                "email.testinbox.application.usecase.StorageAdmissionRequest",
-                "email.testinbox.application.usecase.StorageAdmissionDecision",
-                "email.testinbox.application.usecase.StorageAdmissionResult",
-                "email.testinbox.application.port.StorageAdmissionStore",
-                "email.testinbox.application.port.StorageAdmissionScope",
-                "email.testinbox.application.port.StorageAdmissionPlan",
-                "email.testinbox.persistence.JdbcStorageAdmission",
-            )
-        val entryPoints =
-            setOf(
-                "email.testinbox.application.usecase.StorageAdmission",
-                "email.testinbox.application.port.StorageAdmissionStore",
-                "email.testinbox.persistence.JdbcStorageAdmission",
-            )
-        noClasses()
-            .that(describe("are outside the admission core") { c: JavaClass -> c.name.substringBefore('$') !in core })
-            .should()
-            .dependOnClassesThat(describe("are admission entry points") { c: JavaClass -> c.name in entryPoints })
-            .because("TI-STORAGE-002 ships the admission engine unconnected (ADR-035 §14)")
-            .check(allClasses)
+    fun `the only payload write is the fenced one (ADR-035 §5, TI-STORAGE-003)`() {
+        payloadWriteRule().check(allClasses)
+    }
+
+    @Test
+    fun `the payload-write rule catches a direct S3 put, so it can fail`() {
+        // A fixture that writes an object the way the old unfenced path did.
+        val violating = ClassFileImporter().importClasses(UnfencedPutFixture::class.java)
+        val failure = runCatching { payloadWriteRule().check(violating) }.exceptionOrNull()
+        check(failure is AssertionError && "putObject" in failure.message.orEmpty()) {
+            "the rule did not catch a direct S3 putObject: $failure"
+        }
+    }
+
+    @Test
+    fun `BlobStore offers no unfenced write, and only the guarded protocol calls the fenced one`() {
+        val methods =
+            email.testinbox.application.port.BlobStore::class.java.declaredMethods
+                .map { it.name }
+                .toSet()
+        check(methods == setOf("putReserved", "get", "delete", "deletePrefix", "listKeysOlderThan")) {
+            "BlobStore must expose no write but putReserved, found $methods"
+        }
+        fencedCallerRule().check(allClasses)
+    }
+
+    @Test
+    fun `the write rules catch an async put, a rogue fenced write and a stray uploader, so they can fail`() {
+        fun fails(
+            rule: com.tngtech.archunit.lang.ArchRule,
+            fixture: Class<*>,
+            expected: String,
+        ) {
+            val failure = runCatching { rule.check(ClassFileImporter().importClasses(fixture)) }.exceptionOrNull()
+            check(failure is AssertionError && expected in failure.message.orEmpty()) {
+                "the rule did not catch ${fixture.simpleName}: $failure"
+            }
+        }
+        fails(payloadWriteRule(), email.testinbox.architecture.fixtures.UnfencedAsyncPutFixture::class.java, "putObject")
+        fails(fencedCallerRule(), email.testinbox.architecture.fixtures.RogueReservedPutFixture::class.java, "putReserved")
+        fails(fencedCallerRule(), email.testinbox.architecture.fixtures.RogueReservedPutFixture::class.java, "FencedUploader.put")
     }
 
     @Test
@@ -551,4 +562,46 @@ class DependencyRuleTest {
                 "record (ADR-033 §2, §6)."
         }
     }
+
+    private val s3Writes =
+        setOf("putObject", "createMultipartUpload", "uploadPart", "uploadPartCopy", "completeMultipartUpload", "copyObject")
+
+    private fun payloadWriteRule() =
+        noClasses()
+            .should()
+            .callMethodWhere(
+                describe("an S3 object write outside the storage witness") { call: com.tngtech.archunit.core.domain.JavaMethodCall ->
+                    val s3Client =
+                        call.targetOwner.isAssignableTo("software.amazon.awssdk.services.s3.S3Client") ||
+                            call.targetOwner.isAssignableTo("software.amazon.awssdk.services.s3.S3AsyncClient")
+                    val witness =
+                        call.originOwner.name == "email.testinbox.storage.S3StorageInspection" && call.origin.name == "witness"
+                    s3Client && call.name in s3Writes && !witness
+                },
+            ).orShould()
+            .dependOnClassesThat()
+            .resideInAnyPackage("software.amazon.awssdk.transfer..", "software.amazon.awssdk.services.s3.presigner..")
+            .because(
+                "every payload object is written by the presigned, create-only, size-bound FencedUploader; " +
+                    "the only other write is the storage witness under _probe/ (ADR-035 §5, §7)",
+            )
+
+    /** Only the guarded protocol calls the fenced write, and only the blob store drives the uploader. */
+    private fun fencedCallerRule() =
+        noClasses()
+            .that()
+            .doNotHaveFullyQualifiedName("email.testinbox.application.storage.GuardedStorage")
+            .should()
+            .callMethodWhere(
+                describe("BlobStore.putReserved") { call: com.tngtech.archunit.core.domain.JavaMethodCall ->
+                    call.name == "putReserved"
+                },
+            ).orShould()
+            .callMethodWhere(
+                describe("FencedUploader.put outside S3BlobStore") { call: com.tngtech.archunit.core.domain.JavaMethodCall ->
+                    call.targetOwner.name == "email.testinbox.storage.fenced.FencedUploader" &&
+                        call.name == "put" &&
+                        call.originOwner.name != "email.testinbox.storage.S3BlobStore"
+                },
+            ).because("a payload object is created only between T1 and T2, under a live reservation (ADR-035 I3)")
 }

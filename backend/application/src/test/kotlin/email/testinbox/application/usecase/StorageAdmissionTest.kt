@@ -97,7 +97,7 @@ class StorageAdmissionTest {
 
     private fun admission(
         store: StorageAdmissionStore,
-        enforcement: StorageEnforcement = StorageEnforcement.ON,
+        enforcement: StorageEnforcement = StorageEnforcement.ALL,
     ) = StorageAdmission(store, policy, enforcement)
 
     private fun StorageAdmissionResult.shape() =
@@ -136,13 +136,52 @@ class StorageAdmissionTest {
     }
 
     @Test
-    fun `copies admitted earlier in the event count against the next one`() {
-        // Inbox 100 fits two copies of 40; the third would make 120.
-        val store = FakeStore(inboxes = mapOf(a1 to owned(ws1)))
-        val sameInbox = List(3) { candidate(ws1, a1) }
+    fun `an event carries at most one copy per inbox`() {
+        // Recipients are deduplicated before T1, and an inbox has one address.
+        shouldThrow<IllegalArgumentException> { request(40, candidate(ws1, a1), candidate(ws1, a1)) }
+    }
 
-        admission(store).admit(request(40, *sameInbox.toTypedArray())).shape() shouldBe
-            listOf("admitted", "admitted", "INBOX_LIMIT")
+    @Test
+    fun `TENANT_LIMITS refuses on inbox and workspace, and only observes the global cap`() {
+        val store =
+            FakeStore(
+                global = StorageUsage(995, 0),
+                workspaces = mapOf(ws2 to StorageUsage(195, 0)),
+                inboxes = mapOf(a1 to owned(ws1, used = 95), a2 to owned(ws1), b1 to owned(ws2)),
+            )
+
+        val result =
+            admission(store, StorageEnforcement.TENANT_LIMITS)
+                .admit(request(10, candidate(ws1, a1), candidate(ws2, b1), candidate(ws1, a2)))
+
+        // a1: inbox full (and global too) -> INBOX_LIMIT. b1: workspace full -> WORKSPACE_LIMIT.
+        // a2: fits its tenant ceilings; the global cap is exceeded but not enforced.
+        result.shape() shouldBe listOf("INBOX_LIMIT", "WORKSPACE_LIMIT", "admitted")
+        result.admitted.single().unenforcedLimit shouldBe StorageRefusalReason.SERVICE_CAPACITY
+    }
+
+    @Test
+    fun `a disabled narrower scope never masks an enabled wider one`() {
+        // Hypothetically, a mode enforcing only the global cap: the inbox is over
+        // too, but the enforced reason is the one reported. ALL and TENANT_LIMITS
+        // are the real modes; this pins the rule through ALL's global case and
+        // TENANT_LIMITS' workspace case.
+        val store =
+            FakeStore(
+                global = StorageUsage(995, 0),
+                workspaces = mapOf(ws1 to StorageUsage(195, 0)),
+                inboxes = mapOf(a1 to owned(ws1)),
+            )
+        // TENANT_LIMITS: workspace exceeded (enabled) and global exceeded (disabled).
+        admission(store, StorageEnforcement.TENANT_LIMITS).admit(request(10, candidate(ws1, a1))).shape() shouldBe
+            listOf("WORKSPACE_LIMIT")
+        // OFF: every scope disabled, the narrowest exceeded is observed only.
+        admission(store, StorageEnforcement.OFF)
+            .admit(request(10, candidate(ws1, a1)))
+            .admitted
+            .single()
+            .unenforcedLimit shouldBe
+            StorageRefusalReason.WORKSPACE_LIMIT
     }
 
     @Test
@@ -268,10 +307,10 @@ class StorageAdmissionTest {
         shouldThrow<IllegalArgumentException> { request(0, c) }
         shouldThrow<IllegalArgumentException> { request(-1, c) }
         shouldThrow<IllegalArgumentException> { request(10, c, c) } // the same message id twice
-        shouldThrow<IllegalArgumentException> { request(10, *Array(51) { candidate(ws1, a1) }) }
+        shouldThrow<IllegalArgumentException> { request(10, *Array(51) { candidate(ws1, InboxId(UUID.randomUUID())) }) }
         shouldThrow<IllegalArgumentException> { request(10, candidate(ws1, a1), candidate(ws1, a2, attachments = 1)) }
         shouldThrow<IllegalArgumentException> { StorageAdmissionRequest(10, listOf(c), " ", UUID.randomUUID()) }
         shouldThrow<IllegalArgumentException> { request(StorageAdmissionRequest.MAX_BYTES_PER_COPY + 1, c) }
-        request(10, *Array(50) { candidate(ws1, a1) }).candidates.size shouldBe 50
+        request(10, *Array(50) { candidate(ws1, InboxId(UUID.randomUUID())) }).candidates.size shouldBe 50
     }
 }

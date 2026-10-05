@@ -27,6 +27,12 @@ data class PgListenNotifierConfig(
     /** Bounded degraded-mode re-query interval while LISTEN is down (ADR-020: order of 1–2s). */
     val degradedInterval: Duration = Duration.ofSeconds(1),
     val reconnectBackoff: Duration = Duration.ofMillis(500),
+    /**
+     * The LISTEN session's `application_name`. ADR-035 §14 (a): every session of
+     * an ADR-035-aware binary is named `testinbox-%:%:storage-v1`, so the
+     * activation barrier can tell it from an old binary's `testinbox-listen`.
+     */
+    val applicationName: String = "testinbox-listen:api:storage-v1",
 )
 
 /**
@@ -131,7 +137,7 @@ class PgListenNotifier(
             Properties().apply {
                 setProperty("user", config.username)
                 setProperty("password", config.password)
-                setProperty("ApplicationName", "testinbox-listen")
+                setProperty("ApplicationName", config.applicationName)
             }
         return DriverManager.getConnection(config.jdbcUrl, props)
     }
