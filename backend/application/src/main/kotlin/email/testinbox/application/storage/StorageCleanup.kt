@@ -24,10 +24,12 @@ import java.util.UUID
  * only when ALL of these hold:
  * - `now() ≥ release_not_before`, on the database clock;
  * - the DB↔storage clock offset is within `ε_max`. Otherwise releases are
- *   suspended, and before the pass ends every reservation is durably held
- *   until at least `write_deadline_at + S + offset` (see
- *   [StorageReservations.holdForClockOffset]). Nothing about the episode
- *   lives in memory, so a restart cannot forget it;
+ *   suspended. The episode is RECORDED durably first, then applied: every
+ *   reservation is held until at least `write_deadline_at + S + offset`, and
+ *   the record is forgotten in the same transaction (see
+ *   [StorageReservations.recordClockEpisode]). Every pass applies a recorded
+ *   episode before it releases anything, so a crash between observing and
+ *   holding cannot erase the hold;
  * - a storage witness issued at or after `release_not_before` completed at
  *   `w′`, and `now() ≥ w′ + C_drain`. This proves storage is not stalled, not
  *   that earlier commits drained;
@@ -70,19 +72,21 @@ class ReleaseStaleReservations(
     )
 
     /**
-     * An observed out-of-bound offset whose hold has not committed yet. It is
-     * written before anything else in every pass, and while it cannot be,
-     * nothing is released. The hold itself is durable once written; this only
-     * keeps a failed write (a lock timeout, a DB blip) from being forgotten.
+     * An observed out-of-bound offset not yet RECORDED durably. It is recorded
+     * before anything else in every pass, and while it cannot be, nothing is
+     * released. Once recorded, the episode lives in the database: this
+     * process, or any other after it, applies it before releasing anything.
      */
-    private var pendingHold: Duration? = null
+    private var pendingEpisode: Duration? = null
 
     /** Completed witnesses (issued, completed), on the database clock, newest last. */
     private val witnesses = ArrayDeque<Pair<Instant, Instant>>()
 
     @Synchronized
     fun run(): Report {
-        pendingHold?.let { hold(it) } // throws while it cannot be written: no release this pass
+        // Both throw while the database refuses them: no release this pass.
+        pendingEpisode?.let { record(it) }
+        applyRecordedEpisode()
         // A node whose heartbeat went stale may have died with uploads in
         // flight: keyless ambiguity keeps its slots occupied (§9).
         ambiguity.recoverDeadGenerations(null, null, staleHeartbeat, StorageProtocol.MAX_CONCURRENT_WRITES, StorageProtocol.T_VERIFY)
@@ -93,9 +97,11 @@ class ReleaseStaleReservations(
         metrics.clockOffset(offset.offset)
         if (!offset.withinBound()) {
             val observed = offset.offset.abs().plus(offset.error)
-            pendingHold = maxOf(pendingHold ?: Duration.ZERO, observed)
-            // Durable before this pass returns: the hold is in the rows.
-            val held = hold(observed)
+            // Recorded first, in a row no T2 touches; then applied. A crash
+            // between the two leaves the record for the next process.
+            pendingEpisode = maxOf(pendingEpisode ?: Duration.ZERO, observed)
+            record(observed)
+            val held = applyRecordedEpisode() ?: 0
             log.warn(
                 "storage_release_suspended clock offset {} ms exceeds {} ms; {} reservation(s) held until deadline + S + offset",
                 observed.toMillis(),
@@ -147,11 +153,16 @@ class ReleaseStaleReservations(
         return Report(expired, released, late, suspendedForClockOffset = false, witnessed = witnessed, failed = failed)
     }
 
-    private fun hold(offset: Duration): Int {
-        val held = reservations.holdForClockOffset(maxOf(offset, pendingHold ?: Duration.ZERO), settle)
-        pendingHold = null
-        return held
+    private fun record(offset: Duration) {
+        reservations.recordClockEpisode(maxOf(offset, pendingEpisode ?: Duration.ZERO))
+        pendingEpisode = null
     }
+
+    /** Holds every reservation by a recorded episode, and forgets it, in one transaction. */
+    private fun applyRecordedEpisode(): Int? =
+        reservations.applyClockEpisode(settle)?.also { held ->
+            log.warn("storage_clock_episode applied: {} reservation(s) held until deadline + S + offset", held)
+        }
 
     private enum class Released { RELEASED, LATE }
 

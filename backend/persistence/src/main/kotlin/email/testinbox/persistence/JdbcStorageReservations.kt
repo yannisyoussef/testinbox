@@ -223,35 +223,76 @@ class JdbcStorageReservations(
     override fun holdForClockOffset(
         offset: Duration,
         settle: Duration,
-    ): Int =
-        checkNotNull(
-            transactions.execute {
-                // Rows are locked in ascending message_id, T2's order, so the two
-                // can never form a cycle. A row held elsewhere (T2, a cleaner's
-                // per-row proof) is waited for at most HOLD_LOCK_TIMEOUT; then this
-                // fails, and the caller keeps the hold pending and retries.
-                jdbc.sql("SET LOCAL lock_timeout = '${HOLD_LOCK_TIMEOUT.toMillis()}ms'").update()
+    ): Int = checkNotNull(transactions.execute { holdRows(offset, settle) })
+
+    override fun recordClockEpisode(offset: Duration) {
+        transactions.executeWithoutResult {
+            // Waits at most briefly for an applier holding the row; the caller
+            // keeps the observation pending and retries on failure.
+            jdbc.sql("SET LOCAL lock_timeout = '${EPISODE_LOCK_TIMEOUT.toMillis()}ms'").update()
+            jdbc
+                .sql(
+                    """
+                    INSERT INTO storage_clock_episode (id, max_offset_ms, first_observed_at, last_observed_at)
+                    VALUES (1, :ms, now(), now())
+                    ON CONFLICT (id) DO UPDATE
+                       SET max_offset_ms = greatest(storage_clock_episode.max_offset_ms, EXCLUDED.max_offset_ms),
+                           last_observed_at = now()
+                    """.trimIndent(),
+                ).param("ms", minOf(offset.abs(), MAX_HELD_OFFSET).toMillis())
+                .update()
+        }
+    }
+
+    override fun applyClockEpisode(settle: Duration): Int? =
+        transactions.execute {
+            jdbc.sql("SET LOCAL lock_timeout = '${HOLD_LOCK_TIMEOUT.toMillis()}ms'").update()
+            // The episode row first, then reservation rows ascending: appliers
+            // serialize on the episode, and no T2 ever touches it, so no cycle.
+            val recorded =
                 jdbc
-                    .sql(
-                        """
-                        WITH due AS (
-                            SELECT message_id FROM storage_reservation
-                             WHERE release_not_before IS NULL
-                                OR release_not_before < write_deadline_at + make_interval(secs => :hold)
-                             ORDER BY message_id
-                               FOR UPDATE
-                        )
-                        UPDATE storage_reservation r
-                           SET release_not_before = r.write_deadline_at + make_interval(secs => :hold)
-                          FROM due
-                         WHERE r.message_id = due.message_id
-                           AND (r.release_not_before IS NULL
-                                OR r.release_not_before < r.write_deadline_at + make_interval(secs => :hold))
-                        """.trimIndent(),
-                    ).param("hold", (settle.toMillis() + minOf(offset.abs(), MAX_HELD_OFFSET).toMillis()) / 1000.0)
-                    .update()
-            },
-        )
+                    .sql("SELECT max_offset_ms FROM storage_clock_episode WHERE id = 1 FOR UPDATE")
+                    .query(Long::class.java)
+                    .optional()
+                    .orElse(null)
+                    ?: return@execute null
+            val held = holdRows(Duration.ofMillis(recorded), settle)
+            // Forgotten only together with its committed hold. A newer
+            // observation waits on the row lock and records a fresh episode.
+            jdbc.sql("DELETE FROM storage_clock_episode WHERE id = 1").update()
+            held
+        }
+
+    /** The hold itself, inside the caller's transaction. */
+    private fun holdRows(
+        offset: Duration,
+        settle: Duration,
+    ): Int {
+        // Rows are locked in ascending message_id, T2's order, so the two can
+        // never form a cycle. A row held elsewhere (T2, a cleaner's per-row
+        // proof) is waited for at most HOLD_LOCK_TIMEOUT; then this fails, and
+        // the caller keeps the hold pending and retries.
+        jdbc.sql("SET LOCAL lock_timeout = '${HOLD_LOCK_TIMEOUT.toMillis()}ms'").update()
+        return jdbc
+            .sql(
+                """
+                WITH due AS (
+                    SELECT message_id FROM storage_reservation
+                     WHERE release_not_before IS NULL
+                        OR release_not_before < write_deadline_at + make_interval(secs => :hold)
+                     ORDER BY message_id
+                       FOR UPDATE
+                )
+                UPDATE storage_reservation r
+                   SET release_not_before = r.write_deadline_at + make_interval(secs => :hold)
+                  FROM due
+                 WHERE r.message_id = due.message_id
+                   AND (r.release_not_before IS NULL
+                        OR r.release_not_before < r.write_deadline_at + make_interval(secs => :hold))
+                """.trimIndent(),
+            ).param("hold", (settle.toMillis() + minOf(offset.abs(), MAX_HELD_OFFSET).toMillis()) / 1000.0)
+            .update()
+    }
 
     override fun messageExists(id: MessageId): Boolean =
         jdbc
@@ -293,6 +334,9 @@ class JdbcStorageReservations(
     private companion object {
         /** How long a clock-offset hold waits for a row another transaction holds. */
         val HOLD_LOCK_TIMEOUT: Duration = Duration.ofSeconds(2)
+
+        /** How long recording an episode waits for an applier holding its row. */
+        val EPISODE_LOCK_TIMEOUT: Duration = Duration.ofSeconds(5)
 
         /**
          * The largest offset a hold honours. Anything beyond it is not a clock

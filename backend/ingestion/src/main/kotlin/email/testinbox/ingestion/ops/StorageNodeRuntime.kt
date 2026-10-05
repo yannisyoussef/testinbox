@@ -93,8 +93,8 @@ class StorageNodeRuntime(
         }.onFailure { log.warn("storage node heartbeat failed: {}", it.toString()) }
     }
 
-    /** An out-of-bound offset whose hold has not committed yet; retried at every check. */
-    @Volatile private var pendingHold: Duration? = null
+    /** An out-of-bound offset not yet recorded durably; retried at every check. */
+    @Volatile private var pendingEpisode: Duration? = null
 
     fun checkOffset() {
         runCatching {
@@ -110,7 +110,7 @@ class StorageNodeRuntime(
                 metrics.breakerOpen(true)
                 // Every reservation this node admitted before it noticed is held
                 // durably, whether or not cleanup ever observes this episode.
-                pendingHold = maxOf(pendingHold ?: Duration.ZERO, offset.offset.abs().plus(offset.error))
+                pendingEpisode = maxOf(pendingEpisode ?: Duration.ZERO, offset.offset.abs().plus(offset.error))
             }
             metrics.breakerOpen(breaker.isOpen)
         }.onFailure { log.warn("storage clock offset check failed: {}", it.toString()) }
@@ -118,16 +118,18 @@ class StorageNodeRuntime(
     }
 
     private fun writePendingHold() {
-        val hold = pendingHold ?: return
+        val episode = pendingEpisode ?: return
         val store = reservations ?: return
-        runCatching { store.holdForClockOffset(hold, StorageProtocol.SETTLE) }
-            .onSuccess { if (pendingHold == hold) pendingHold = null }
-            .onFailure {
-                // Not written: admit nothing until it is. The breaker stays open.
-                log.warn("storage clock-offset hold not written yet, retried at the next check: {}", it.toString())
-                breaker.trip(StorageBreaker.Kind.CLOCK_OFFSET)
-                metrics.breakerOpen(true)
-            }
+        runCatching {
+            store.recordClockEpisode(episode) // durable first
+            if (pendingEpisode == episode) pendingEpisode = null
+            store.applyClockEpisode(StorageProtocol.SETTLE) // then held; if this fails, cleanup applies it
+        }.onFailure {
+            // Not recorded (or not applied yet): admit nothing meanwhile.
+            log.warn("storage clock-offset episode not fully written yet, retried at the next check: {}", it.toString())
+            breaker.trip(StorageBreaker.Kind.CLOCK_OFFSET)
+            metrics.breakerOpen(true)
+        }
     }
 
     @Synchronized

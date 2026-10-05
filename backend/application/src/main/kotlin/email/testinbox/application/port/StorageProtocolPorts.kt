@@ -55,8 +55,48 @@ interface StorageCommitFence {
     fun releaseAbandoned(ids: Collection<MessageId>)
 }
 
+/**
+ * The ADR-035 §5 clock-offset hold: an out-of-bound DB↔storage offset is
+ * recorded durably, then applied to every reservation.
+ */
+interface StorageClockHold {
+    /**
+     * A DB↔storage clock offset beyond `ε_max` was observed (§5). DURABLY,
+     * every reservation, `RESERVED` or `RELEASING`, becomes releasable no
+     * earlier than `write_deadline_at + settle + offset`: storage's own clock
+     * may have accepted its upload up to [offset] later than the database
+     * deadline says.
+     *
+     * Idempotent and bounded: `greatest()`, never an addition, so repeated
+     * passes over one episode never compound, and the hold is at most the
+     * largest offset observed. Nothing is ever moved earlier. Returns the rows
+     * whose release time moved.
+     */
+    fun holdForClockOffset(
+        offset: Duration,
+        settle: Duration,
+    ): Int
+
+    /**
+     * Durably records an observed out-of-bound offset episode, BEFORE any
+     * hold is attempted: one tiny row, touching no reservation, whose offset
+     * is only ever raised. A process that dies before its hold commits leaves
+     * this record, and the next cleaner applies it before releasing anything.
+     */
+    fun recordClockEpisode(offset: Duration)
+
+    /**
+     * Applies a recorded episode, if there is one. In ONE transaction it
+     * holds every reservation as [holdForClockOffset] does, by the recorded
+     * offset, and forgets the episode, so the record disappears exactly when
+     * its hold is durable. Returns the rows moved, or null when nothing was
+     * recorded. Every cleaner pass calls it before any release.
+     */
+    fun applyClockEpisode(settle: Duration): Int?
+}
+
 /** `storage_reservation` cleanup and release (ADR-035 §7), and the orphan sweep's check. */
-interface StorageReservations {
+interface StorageReservations : StorageClockHold {
     /**
      * `RESERVED` past its write deadline → `RELEASING`, releasable at
      * `write_deadline_at + S`. One guarded statement: a concurrent T2 either
@@ -93,23 +133,6 @@ interface StorageReservations {
         id: MessageId,
         until: Instant,
     )
-
-    /**
-     * A DB↔storage clock offset beyond `ε_max` was observed (§5). DURABLY,
-     * every reservation, `RESERVED` or `RELEASING`, becomes releasable no
-     * earlier than `write_deadline_at + settle + offset`: storage's own clock
-     * may have accepted its upload up to [offset] later than the database
-     * deadline says.
-     *
-     * Idempotent and bounded: `greatest()`, never an addition, so repeated
-     * passes over one episode never compound, and the hold is at most the
-     * largest offset observed. Nothing is ever moved earlier. Returns the rows
-     * whose release time moved.
-     */
-    fun holdForClockOffset(
-        offset: Duration,
-        settle: Duration,
-    ): Int
 
     /** Case [D]: a committed message already has this id. */
     fun messageExists(id: MessageId): Boolean

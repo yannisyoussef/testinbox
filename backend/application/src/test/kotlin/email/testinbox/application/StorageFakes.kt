@@ -230,6 +230,19 @@ class InMemoryStorageReservations(
         return moved
     }
 
+    var clockEpisode: Duration? = null
+
+    override fun recordClockEpisode(offset: Duration) {
+        clockEpisode = maxOf(clockEpisode ?: Duration.ZERO, offset.abs())
+    }
+
+    override fun applyClockEpisode(settle: Duration): Int? {
+        val episode = clockEpisode ?: return null
+        val held = holdForClockOffset(episode, settle)
+        clockEpisode = null
+        return held
+    }
+
     override fun messageExists(id: MessageId) = messages.exists(id)
 
     override fun reservationExists(id: MessageId) = id in rows

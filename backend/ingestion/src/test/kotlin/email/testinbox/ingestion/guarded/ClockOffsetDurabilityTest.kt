@@ -147,16 +147,102 @@ class ClockOffsetDurabilityTest {
         (hold(h) >= settle.seconds + 45) shouldBe true // no cleaner had to observe this episode
     }
 
-    /** The real store, whose hold fails while [failing] is set. */
+    /** The real store, whose episode record and/or hold fail while the flags are set. */
     private class FailingHold(
         private val real: email.testinbox.application.port.StorageReservations,
+        @Volatile var failRecord: Boolean = true,
+        @Volatile var failApply: Boolean = true,
     ) : email.testinbox.application.port.StorageReservations by real {
-        @Volatile var failing = true
+        var failing: Boolean
+            get() = failRecord || failApply
+            set(value) {
+                failRecord = value
+                failApply = value
+            }
 
-        override fun holdForClockOffset(
-            offset: Duration,
-            settle: Duration,
-        ): Int = if (failing) error("lock timeout writing the hold") else real.holdForClockOffset(offset, settle)
+        @Volatile private var recorded = false
+
+        override fun recordClockEpisode(offset: Duration) {
+            if (failRecord) error("database refused the episode record")
+            real.recordClockEpisode(offset)
+            recorded = true
+        }
+
+        // Fails only when there is a recorded episode to apply, as a lock timeout would.
+        override fun applyClockEpisode(settle: Duration): Int? =
+            if (failApply && recorded) error("lock timeout writing the hold") else real.applyClockEpisode(settle)
+    }
+
+    private fun episodes(h: GuardedIngestHarness) = h.count("SELECT count(*) FROM storage_clock_episode")
+
+    /** The process observes the skew, records it, and dies before its hold commits. */
+    private fun observeThenDieBeforeHold(h: GuardedIngestHarness) {
+        val dying = FailingHold(h.reservations, failRecord = false, failApply = true)
+        skew = Duration.ofSeconds(45)
+        runCatching { h.cleanup(reservations = dying).run() }.isFailure shouldBe true
+        episodes(h) shouldBe 1 // the observation survives the process
+        skew = Duration.ZERO // the clocks recover; the cleaner above is never used again
+    }
+
+    @Test
+    fun `1 - RESERVED - observed, hold failed, process died, clocks recovered - a fresh process cannot release early`() {
+        val h = abandoned()
+        h.backdate(Duration.ofSeconds(110)) // 10 s before its deadline
+        observeThenDieBeforeHold(h)
+        state(h) shouldBe "RESERVED"
+        h.count("SELECT count(*) FROM storage_reservation WHERE release_not_before IS NOT NULL") shouldBe 0 // no hold written
+
+        val fresh = restarted(h)
+        h.backdate(Duration.ofSeconds(10).plus(settle).plusSeconds(20)) // deadline + S + 20 s
+        fresh.releaseCycle().released shouldBe 0 // the recorded episode is applied before any release
+
+        episodes(h) shouldBe 0 // applied and forgotten together
+        (hold(h) >= settle.seconds + 45) shouldBe true
+        h.backdate(Duration.ofSeconds(60))
+        fresh.releaseCycle()
+        h.reservationStates() shouldBe emptyMap()
+    }
+
+    @Test
+    fun `2 - RELEASING - observed, hold failed, process died, clocks recovered - a fresh process cannot release early`() {
+        val h = abandoned()
+        h.backdate(Duration.ofSeconds(120).plus(settle).plusSeconds(20)) // deadline + S + 20 s
+        h.cleanup().run().released shouldBe 0 // healthy: expires and witnesses
+        state(h) shouldBe "RELEASING"
+        hold(h) shouldBe settle.seconds
+        observeThenDieBeforeHold(h)
+        hold(h) shouldBe settle.seconds // the hold never committed
+
+        val fresh = restarted(h)
+        fresh.releaseCycle().released shouldBe 0 // plain deadline + S is past; the recorded episode is not
+
+        episodes(h) shouldBe 0
+        (hold(h) >= settle.seconds + 45) shouldBe true
+        h.backdate(Duration.ofSeconds(60))
+        fresh.releaseCycle()
+        h.reservationStates() shouldBe emptyMap()
+    }
+
+    @Test
+    fun `5 - once the recorded episode is applied, cleanup and the witness behave normally again`() {
+        val h = abandoned()
+        observeThenDieBeforeHold(h)
+        val fresh = restarted(h)
+        val cleanup = fresh.cleanup()
+
+        val first = cleanup.run() // applies the episode, then an ordinary pass
+        first.suspendedForClockOffset shouldBe false
+        first.witnessed shouldBe true
+        episodes(h) shouldBe 0
+        val held = hold(h)
+        repeat(3) {
+            fresh.tick()
+            cleanup.run().suspendedForClockOffset shouldBe false
+        }
+        hold(h) shouldBe held // a healthy pass never touches the hold again
+        h.backdate(Duration.ofSeconds(120).plus(settle).plusSeconds(60)) // past deadline + S + offset
+        fresh.releaseCycle(cleanup)
+        h.reservationStates() shouldBe emptyMap()
     }
 
     @Test

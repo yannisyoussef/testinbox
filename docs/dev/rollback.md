@@ -112,8 +112,9 @@ release. Between those, rollback stays available at every step.
 
 Nothing currently in `db/migration` is of this kind: `V1` creates the schema,
 `V2` replaces a unique index with a wider one (ADR-026), `V3` adds the limits
-tables (ADR-027), and `V4`–`V6` only add tables, functions and triggers (see
-below for what rolling back across `V4` and `V6` means).
+tables (ADR-027), `V4`–`V6` only add tables, functions and triggers (see
+below for what rolling back across `V4` and `V6` means), and `V7` adds one
+table, `storage_clock_episode`, which only TI-STORAGE-003 artifacts read.
 
 ## Rolling back across TI-STORAGE-001 (schema V6)
 
@@ -221,3 +222,8 @@ not contain it unless `acknowledge_rollback_hazard` is set on the dispatch —
 and then still warns in the log. A schema check alone would have called this
 rollback safe. Any future break of the same shape is added there, never
 removed.
+
+**Schema V7** (`storage_clock_episode`) is expand-only: one new table that no
+older artifact reads. Rolling an artifact back leaves it in place, harmlessly.
+A recorded clock episode that an older artifact never applies is a no-op for
+that artifact, which has no ADR-035 release path at all.

@@ -54,11 +54,11 @@ BACKEND_MODULES=(
   "backend/architecture:32"
   "backend/domain:78"
   "backend/application:222"
-  "backend/persistence:223"
+  "backend/persistence:226"
   "backend/storage:26"
   "backend/notification:6"
   "backend/observability:33"
-  "backend/ingestion:98"
+  "backend/ingestion:101"
   "backend/api:124"
   "backend/migrator:6"
 )

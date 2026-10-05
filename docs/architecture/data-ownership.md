@@ -106,6 +106,10 @@ capacity.
   uploads in flight leaves keyless ambiguity for them (one per slot, under its
   node id), plus one keyed coverage row per key it had started (under
   `recovered:<node id>`, holding no slot), each proved at `T_verify`.
+- **Clock episodes** (`storage_clock_episode`, V7). One row recording an
+  out-of-bound DB↔storage offset until its hold is applied to the
+  reservations; written by whichever process observes it, applied and deleted
+  by the next cleaner pass (or the observer itself).
 - **Refusal records** (`inbox_storage.refusal_count`) commit inside T2, or in
   a short transaction of their own when nothing was admitted. With
   enforcement OFF there are none.

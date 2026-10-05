@@ -479,6 +479,86 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
         }
     }
 
+    private fun holdOf(id: UUID) =
+        db.jdbc
+            .sql("SELECT extract(epoch FROM release_not_before - write_deadline_at)::bigint FROM storage_reservation WHERE message_id = ?")
+            .param(id)
+            .query(Long::class.java)
+            .single()
+
+    private fun episode(): Long? =
+        db.jdbc
+            .sql("SELECT max_offset_ms FROM storage_clock_episode")
+            .query(Long::class.java)
+            .optional()
+            .orElse(null)
+
+    @Test
+    fun `3 - a recorded clock episode is applied once, and recovery is idempotent`() {
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        val reserved = reserve(ws, inbox)
+        val releasing = reserve(ws, inbox, state = "RELEASING")
+        val s = Duration.ofMinutes(17)
+
+        reservations.recordClockEpisode(Duration.ofSeconds(45))
+        reservations.recordClockEpisode(Duration.ofSeconds(45)) // the same observation, twice
+        episode() shouldBe 45_000L
+
+        reservations.applyClockEpisode(s) shouldBe 2 // RESERVED and RELEASING
+        episode() shouldBe null // forgotten in the same transaction as the hold
+        holdOf(reserved) shouldBe 17 * 60 + 45L
+        holdOf(releasing) shouldBe 17 * 60 + 45L
+
+        reservations.applyClockEpisode(s) shouldBe null // nothing left to recover
+        reservations.recordClockEpisode(Duration.ofSeconds(45)) // a recovery that re-observes the same episode
+        reservations.applyClockEpisode(s) shouldBe 0 // moves nothing
+        holdOf(reserved) shouldBe 17 * 60 + 45L
+    }
+
+    @Test
+    fun `a recorded episode whose hold cannot be written is kept, for the next process to apply`() {
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        val (a, b) = List(2) { reserve(ws, inbox) }
+        reservations.recordClockEpisode(Duration.ofSeconds(45))
+        db.dataSource.connection.use { t2 ->
+            t2.autoCommit = false
+            t2.createStatement().use { it.execute("SELECT 1 FROM storage_reservation WHERE message_id = '$b' FOR UPDATE") }
+
+            runCatching { reservations.applyClockEpisode(Duration.ofMinutes(17)) }.isFailure shouldBe true
+
+            t2.rollback()
+        }
+        episode() shouldBe 45_000L // the hold rolled back, and so did the forgetting
+        db.jdbc
+            .sql("SELECT count(*) FROM storage_reservation WHERE message_id IN (?, ?) AND release_not_before IS NOT NULL")
+            .params(a, b)
+            .query(Long::class.java)
+            .single() shouldBe 0
+        reservations.applyClockEpisode(Duration.ofMinutes(17)) shouldBe 2
+        episode() shouldBe null
+    }
+
+    @Test
+    fun `4 - several observations can never shorten the required horizon`() {
+        val ws = db.workspace()
+        val id = reserve(ws, db.inbox(ws))
+        val s = Duration.ofMinutes(17)
+
+        reservations.recordClockEpisode(Duration.ofSeconds(90))
+        reservations.recordClockEpisode(Duration.ofSeconds(45)) // a later, smaller reading
+        episode() shouldBe 90_000L
+        reservations.applyClockEpisode(s) shouldBe 1
+        holdOf(id) shouldBe 17 * 60 + 90L
+
+        reservations.recordClockEpisode(Duration.ofSeconds(30)) // a new, smaller episode
+        reservations.applyClockEpisode(s) shouldBe 0
+        holdOf(id) shouldBe 17 * 60 + 90L // never earlier
+        reservations.holdForClockOffset(Duration.ofSeconds(10), s) shouldBe 0
+        holdOf(id) shouldBe 17 * 60 + 90L
+    }
+
     @Test
     fun `an absurd offset is held at the 24 hour ceiling, never years`() {
         val ws = db.workspace()

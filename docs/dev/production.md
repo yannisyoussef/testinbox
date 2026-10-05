@@ -131,8 +131,9 @@ The defaults are the ADR-035 values, and nothing needs to set them.
 ### The guarded ingest protocol (TI-STORAGE-003)
 
 - **Database.** The ingestion and API roles also need `SELECT, INSERT, UPDATE,
-  DELETE` on `storage_reservation`, `storage_ambiguity`, `storage_node` and
-  `storage_admission_latch`, and `USAGE` on `storage_ambiguity_id_seq`.
+  DELETE` on `storage_reservation`, `storage_ambiguity`, `storage_node`,
+  `storage_admission_latch` and `storage_clock_episode` (V7), and `USAGE` on
+  `storage_ambiguity_id_seq`.
   Staging's owner role already has them.
 - **Object storage.** Cleanup and the orphan sweep need `ListBucket`,
   `ListBucketMultipartUploads` and `AbortMultipartUpload` on the bucket,
@@ -266,7 +267,7 @@ which row B requires Ops to show alongside a listing of the backup target.
 
 | backed up | never |
 |---|---|
-| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
+| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch`, `storage_clock_episode` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
 
 What that buys, stated plainly:
 
