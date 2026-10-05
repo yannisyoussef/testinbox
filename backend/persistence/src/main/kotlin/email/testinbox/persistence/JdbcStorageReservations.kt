@@ -248,7 +248,7 @@ class JdbcStorageReservations(
                            AND (r.release_not_before IS NULL
                                 OR r.release_not_before < r.write_deadline_at + make_interval(secs => :hold))
                         """.trimIndent(),
-                    ).param("hold", (settle.toMillis() + offset.abs().toMillis()) / 1000.0)
+                    ).param("hold", (settle.toMillis() + minOf(offset.abs(), MAX_HELD_OFFSET).toMillis()) / 1000.0)
                     .update()
             },
         )
@@ -293,5 +293,14 @@ class JdbcStorageReservations(
     private companion object {
         /** How long a clock-offset hold waits for a row another transaction holds. */
         val HOLD_LOCK_TIMEOUT: Duration = Duration.ofSeconds(2)
+
+        /**
+         * The largest offset a hold honours. Anything beyond it is not a clock
+         * that drifted but a broken `Date` (a proxy, a clock that jumped
+         * years). Holding by it would charge every reservation for years, or
+         * overflow the timestamp and fail every pass. The breaker stays open
+         * while the offset is out of bound, so nothing new is admitted meanwhile.
+         */
+        val MAX_HELD_OFFSET: Duration = Duration.ofHours(24)
     }
 }

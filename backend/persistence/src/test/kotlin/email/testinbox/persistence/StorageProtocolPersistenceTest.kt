@@ -480,6 +480,20 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `an absurd offset is held at the 24 hour ceiling, never years`() {
+        val ws = db.workspace()
+        val id = reserve(ws, db.inbox(ws))
+
+        reservations.holdForClockOffset(Duration.ofDays(3650), Duration.ofMinutes(17)) shouldBe 1
+
+        db.jdbc
+            .sql("SELECT extract(epoch FROM release_not_before - write_deadline_at)::bigint FROM storage_reservation WHERE message_id = ?")
+            .param(id)
+            .query(Long::class.java)
+            .single() shouldBe 17 * 60 + 24 * 3600L
+    }
+
+    @Test
     fun `a clock-offset hold waits a bounded time for a row another transaction holds, and never half-applies`() {
         val ws = db.workspace()
         val inbox = db.inbox(ws)
