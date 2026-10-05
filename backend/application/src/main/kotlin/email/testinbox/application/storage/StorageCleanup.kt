@@ -69,11 +69,20 @@ class ReleaseStaleReservations(
         val failed: Int = 0,
     )
 
+    /**
+     * An observed out-of-bound offset whose hold has not committed yet. It is
+     * written before anything else in every pass, and while it cannot be,
+     * nothing is released. The hold itself is durable once written; this only
+     * keeps a failed write (a lock timeout, a DB blip) from being forgotten.
+     */
+    private var pendingHold: Duration? = null
+
     /** Completed witnesses (issued, completed), on the database clock, newest last. */
     private val witnesses = ArrayDeque<Pair<Instant, Instant>>()
 
     @Synchronized
     fun run(): Report {
+        pendingHold?.let { hold(it) } // throws while it cannot be written: no release this pass
         // A node whose heartbeat went stale may have died with uploads in
         // flight: keyless ambiguity keeps its slots occupied (§9).
         ambiguity.recoverDeadGenerations(null, null, staleHeartbeat, StorageProtocol.MAX_CONCURRENT_WRITES, StorageProtocol.T_VERIFY)
@@ -84,8 +93,9 @@ class ReleaseStaleReservations(
         metrics.clockOffset(offset.offset)
         if (!offset.withinBound()) {
             val observed = offset.offset.abs().plus(offset.error)
+            pendingHold = maxOf(pendingHold ?: Duration.ZERO, observed)
             // Durable before this pass returns: the hold is in the rows.
-            val held = reservations.holdForClockOffset(observed, settle)
+            val held = hold(observed)
             log.warn(
                 "storage_release_suspended clock offset {} ms exceeds {} ms; {} reservation(s) held until deadline + S + offset",
                 observed.toMillis(),
@@ -135,6 +145,12 @@ class ReleaseStaleReservations(
             }
         }
         return Report(expired, released, late, suspendedForClockOffset = false, witnessed = witnessed, failed = failed)
+    }
+
+    private fun hold(offset: Duration): Int {
+        val held = reservations.holdForClockOffset(maxOf(offset, pendingHold ?: Duration.ZERO), settle)
+        pendingHold = null
+        return held
     }
 
     private enum class Released { RELEASED, LATE }

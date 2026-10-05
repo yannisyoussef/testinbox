@@ -4,6 +4,7 @@ import email.testinbox.application.storage.StorageUnavailableException
 import email.testinbox.application.storage.StorageUnavailableReason
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeInstanceOf
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -62,7 +63,8 @@ class UploadErrorTest {
             )
         val (_, a) = h.inbox(h.workspace())
 
-        shouldThrow<Error> { h.deliver(listOf(a)) }
+        val thrown = shouldThrow<FatalAfterUpload> { h.deliver(listOf(a)) } // the upload's Error stays primary
+        thrown.suppressed.single().shouldBeInstanceOf<FatalWhilePersisting>()
 
         h.ambiguity.unresolvedFor(h.nodeId) shouldBe 0 // nothing could be persisted...
         h.slots.poisoned() shouldBe 1 // ...so the slot is held for the life of the process
@@ -77,6 +79,19 @@ class UploadErrorTest {
         val restarted = track(h.restart())
         restarted.ambiguity.unresolvedFor(h.nodeId) shouldBe 1
         restarted.slots.occupied() shouldBe 1
+    }
+
+    @Test
+    fun `an Error after the ambiguity was recorded still poisons the slot, on top of the persisted row`() {
+        val h = track(GuardedIngestHarness(afterUpload = { error("a runtime failure after the upload began") }))
+        h.metrics.physicalFailureError = FatalWhilePersisting() // thrown inside the abandon path, after record
+        val (_, a) = h.inbox(h.workspace())
+
+        shouldThrow<FatalWhilePersisting> { h.deliver(listOf(a)) }
+
+        h.ambiguity.unresolvedFor(h.nodeId) shouldBe 1 // recorded before the Error
+        h.slots.poisoned() shouldBe 1 // and the slot is not handed back either: conservative
+        h.reservationStates() shouldBe mapOf("RESERVED" to 1L)
     }
 
     @Test

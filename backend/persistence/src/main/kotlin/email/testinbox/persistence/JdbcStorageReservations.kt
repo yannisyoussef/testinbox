@@ -224,16 +224,34 @@ class JdbcStorageReservations(
         offset: Duration,
         settle: Duration,
     ): Int =
-        jdbc
-            .sql(
-                """
-                UPDATE storage_reservation
-                   SET release_not_before = write_deadline_at + make_interval(secs => :hold)
-                 WHERE release_not_before IS NULL
-                    OR release_not_before < write_deadline_at + make_interval(secs => :hold)
-                """.trimIndent(),
-            ).param("hold", (settle.toMillis() + offset.abs().toMillis()) / 1000.0)
-            .update()
+        checkNotNull(
+            transactions.execute {
+                // Rows are locked in ascending message_id, T2's order, so the two
+                // can never form a cycle. A row held elsewhere (T2, a cleaner's
+                // per-row proof) is waited for at most HOLD_LOCK_TIMEOUT; then this
+                // fails, and the caller keeps the hold pending and retries.
+                jdbc.sql("SET LOCAL lock_timeout = '${HOLD_LOCK_TIMEOUT.toMillis()}ms'").update()
+                jdbc
+                    .sql(
+                        """
+                        WITH due AS (
+                            SELECT message_id FROM storage_reservation
+                             WHERE release_not_before IS NULL
+                                OR release_not_before < write_deadline_at + make_interval(secs => :hold)
+                             ORDER BY message_id
+                               FOR UPDATE
+                        )
+                        UPDATE storage_reservation r
+                           SET release_not_before = r.write_deadline_at + make_interval(secs => :hold)
+                          FROM due
+                         WHERE r.message_id = due.message_id
+                           AND (r.release_not_before IS NULL
+                                OR r.release_not_before < r.write_deadline_at + make_interval(secs => :hold))
+                        """.trimIndent(),
+                    ).param("hold", (settle.toMillis() + offset.abs().toMillis()) / 1000.0)
+                    .update()
+            },
+        )
 
     override fun messageExists(id: MessageId): Boolean =
         jdbc
@@ -271,4 +289,9 @@ class JdbcStorageReservations(
             .query { rs, _ -> rs.getString("state") to rs.getLong("n") }
             .list()
             .toMap()
+
+    private companion object {
+        /** How long a clock-offset hold waits for a row another transaction holds. */
+        val HOLD_LOCK_TIMEOUT: Duration = Duration.ofSeconds(2)
+    }
 }

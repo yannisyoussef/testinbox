@@ -202,6 +202,7 @@ class GuardedIngestHarness(
     fun cleanup(
         settle: Duration = Duration.ofMinutes(17),
         drain: Duration = Duration.ofSeconds(1),
+        reservations: email.testinbox.application.port.StorageReservations = this.reservations,
     ) = ReleaseStaleReservations(
         reservations,
         ambiguity,
@@ -423,8 +424,12 @@ class RecordingProtocolMetrics : StorageProtocolMetrics {
         events += "unenforced:$scope"
     }
 
+    /** When set, thrown from [physicalFailure]: a failure inside the abandon path, after the ambiguity was recorded. */
+    @Volatile var physicalFailureError: Error? = null
+
     override fun physicalFailure(kind: email.testinbox.application.port.PhysicalFailureKind) {
         events += "failure:$kind"
+        physicalFailureError?.let { throw it }
     }
 
     override fun commitFenced() {

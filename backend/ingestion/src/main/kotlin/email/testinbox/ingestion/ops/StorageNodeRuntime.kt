@@ -93,6 +93,9 @@ class StorageNodeRuntime(
         }.onFailure { log.warn("storage node heartbeat failed: {}", it.toString()) }
     }
 
+    /** An out-of-bound offset whose hold has not committed yet; retried at every check. */
+    @Volatile private var pendingHold: Duration? = null
+
     fun checkOffset() {
         runCatching {
             val offset = ClockOffset.measure(inspection, clock)
@@ -104,12 +107,27 @@ class StorageNodeRuntime(
                     offset.error.toMillis(),
                 )
                 breaker.trip(StorageBreaker.Kind.CLOCK_OFFSET)
+                metrics.breakerOpen(true)
                 // Every reservation this node admitted before it noticed is held
                 // durably, whether or not cleanup ever observes this episode.
-                reservations?.holdForClockOffset(offset.offset.abs().plus(offset.error), StorageProtocol.SETTLE)
+                pendingHold = maxOf(pendingHold ?: Duration.ZERO, offset.offset.abs().plus(offset.error))
             }
             metrics.breakerOpen(breaker.isOpen)
         }.onFailure { log.warn("storage clock offset check failed: {}", it.toString()) }
+        writePendingHold()
+    }
+
+    private fun writePendingHold() {
+        val hold = pendingHold ?: return
+        val store = reservations ?: return
+        runCatching { store.holdForClockOffset(hold, StorageProtocol.SETTLE) }
+            .onSuccess { if (pendingHold == hold) pendingHold = null }
+            .onFailure {
+                // Not written: admit nothing until it is. The breaker stays open.
+                log.warn("storage clock-offset hold not written yet, retried at the next check: {}", it.toString())
+                breaker.trip(StorageBreaker.Kind.CLOCK_OFFSET)
+                metrics.breakerOpen(true)
+            }
     }
 
     @Synchronized

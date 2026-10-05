@@ -480,6 +480,30 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `a clock-offset hold waits a bounded time for a row another transaction holds, and never half-applies`() {
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        val (a, b) = List(2) { reserve(ws, inbox) }
+        db.dataSource.connection.use { t2 ->
+            t2.autoCommit = false
+            t2.createStatement().use { it.execute("SELECT 1 FROM storage_reservation WHERE message_id = '$b' FOR UPDATE") }
+
+            val started = System.nanoTime()
+            runCatching { reservations.holdForClockOffset(Duration.ofSeconds(45), Duration.ofMinutes(17)) }.isFailure shouldBe true
+            (Duration.ofNanos(System.nanoTime() - started) < Duration.ofSeconds(10)) shouldBe true // bounded, not a stall
+
+            t2.rollback()
+        }
+        // One statement, one transaction: nothing was held, so the caller retries the whole hold.
+        db.jdbc
+            .sql("SELECT count(*) FROM storage_reservation WHERE message_id IN (?, ?) AND release_not_before IS NOT NULL")
+            .params(a, b)
+            .query(Long::class.java)
+            .single() shouldBe 0
+        reservations.holdForClockOffset(Duration.ofSeconds(45), Duration.ofMinutes(17)) shouldBe 2
+    }
+
+    @Test
     fun `a node id is held by one process at a time, and released when it stops`() {
         val claims = JdbcStorageNodeClaims(db.dataSource)
         val first = checkNotNull(claims.claim("node-x"))

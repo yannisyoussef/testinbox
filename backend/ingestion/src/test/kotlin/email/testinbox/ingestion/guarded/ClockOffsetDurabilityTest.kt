@@ -146,4 +146,62 @@ class ClockOffsetDurabilityTest {
         breaker.isOpen shouldBe true
         (hold(h) >= settle.seconds + 45) shouldBe true // no cleaner had to observe this episode
     }
+
+    /** The real store, whose hold fails while [failing] is set. */
+    private class FailingHold(
+        private val real: email.testinbox.application.port.StorageReservations,
+    ) : email.testinbox.application.port.StorageReservations by real {
+        @Volatile var failing = true
+
+        override fun holdForClockOffset(
+            offset: Duration,
+            settle: Duration,
+        ): Int = if (failing) error("lock timeout writing the hold") else real.holdForClockOffset(offset, settle)
+    }
+
+    @Test
+    fun `a hold that cannot be written is never forgotten - nothing is released until it is`() {
+        val h = abandoned()
+        h.backdate(Duration.ofSeconds(120).plus(settle).plusSeconds(20)) // deadline + S + 20 s
+        val store = FailingHold(h.reservations)
+        val cleanup = h.cleanup(reservations = store)
+
+        skew = Duration.ofSeconds(45)
+        runCatching { cleanup.run() }.isFailure shouldBe true // observed, but the hold could not be written
+        skew = Duration.ZERO // the clocks recover...
+        repeat(2) {
+            h.tick()
+            runCatching { cleanup.run() }.isFailure shouldBe true // ...and still nothing is released
+        }
+        h.reservationStates() shouldBe mapOf("RELEASING" to 1L) // expired, still charged
+
+        store.failing = false
+        cleanup.run().released shouldBe 0 // the pending hold is written first
+        (hold(h) >= settle.seconds + 45) shouldBe true
+        h.tick()
+        cleanup.run().released shouldBe 0 // past deadline + S, not past the hold
+        h.backdate(Duration.ofSeconds(60))
+        h.releaseCycle(cleanup) // this cleaner already holds an old enough witness: either pass may release
+        h.reservationStates() shouldBe emptyMap()
+    }
+
+    @Test
+    fun `the ingestion node keeps its breaker open until its own hold is written`() {
+        val h = abandoned()
+        val store = FailingHold(h.reservations)
+        val breaker = StorageBreaker(Duration.ofMillis(1), Duration.ofMillis(1))
+        val node = StorageNodeRuntime(h.lifecycle, breaker, h.inspection, h.clock, h.metrics, reservations = store)
+
+        skew = Duration.ofSeconds(45)
+        node.checkOffset()
+        skew = Duration.ZERO
+        Thread.sleep(5) // past the breaker's backoff
+        node.checkOffset() // in bound, but the hold is still unwritten: tripped again
+        breaker.isBlocked() shouldBe true
+        h.count("SELECT count(*) FROM storage_reservation WHERE release_not_before IS NOT NULL") shouldBe 0
+
+        store.failing = false
+        node.checkOffset()
+        (hold(h) >= settle.seconds + 45) shouldBe true
+    }
 }

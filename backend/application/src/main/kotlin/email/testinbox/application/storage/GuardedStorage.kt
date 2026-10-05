@@ -243,7 +243,17 @@ class GuardedStorage(
                     guard.inDoubt = false
                     continue
                 }
-                guard.poisoned = abandon(attempts, admitted, guard.slot)
+                guard.poisoned =
+                    try {
+                        abandon(attempts, admitted, guard.slot)
+                    } catch (t: Throwable) {
+                        // The upload's own Error stays the primary one.
+                        fatal?.let {
+                            it.addSuppressed(t)
+                            throw it
+                        }
+                        throw t
+                    }
                 guard.inDoubt = false // persisted, or the slot is poisoned
                 // A fatal Error goes on up once the ambiguity is safe.
                 fatal?.let { throw it }
