@@ -255,6 +255,7 @@ class IngestionWiring(
             storageMetrics,
             claims = JdbcStorageNodeClaims(dataSource),
             slots = slots,
+            reservations = reservations,
         )
 
     @Bean

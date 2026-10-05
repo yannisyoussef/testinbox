@@ -4,9 +4,11 @@ import email.testinbox.application.port.DatabaseClock
 import email.testinbox.application.port.StorageInspection
 import email.testinbox.application.port.StorageNodeClaims
 import email.testinbox.application.port.StorageProtocolMetrics
+import email.testinbox.application.port.StorageReservations
 import email.testinbox.application.storage.ClockOffset
 import email.testinbox.application.storage.StorageBreaker
 import email.testinbox.application.storage.StorageNodeLifecycle
+import email.testinbox.application.storage.StorageProtocol
 import email.testinbox.application.storage.WriteSlots
 import org.slf4j.LoggerFactory
 import org.springframework.context.SmartLifecycle
@@ -29,6 +31,7 @@ import java.util.concurrent.TimeUnit
  * - marks the generation clean only after the gateway has stopped taking
  *   mail, and never when an ambiguity could not be persisted.
  */
+@Suppress("LongParameterList") // its collaborators, then the intervals tests may shorten
 class StorageNodeRuntime(
     private val lifecycle: StorageNodeLifecycle,
     private val breaker: StorageBreaker,
@@ -39,6 +42,8 @@ class StorageNodeRuntime(
     private val offsetEvery: Duration = Duration.ofSeconds(30),
     private val claims: StorageNodeClaims? = null,
     private val slots: WriteSlots? = null,
+    /** Where an out-of-bound offset is made durable; the same hold cleanup applies. */
+    private val reservations: StorageReservations? = null,
 ) : SmartLifecycle {
     private var executors: List<ScheduledExecutorService> = emptyList()
     private var claim: StorageNodeClaims.Claim? = null
@@ -99,6 +104,9 @@ class StorageNodeRuntime(
                     offset.error.toMillis(),
                 )
                 breaker.trip(StorageBreaker.Kind.CLOCK_OFFSET)
+                // Every reservation this node admitted before it noticed is held
+                // durably, whether or not cleanup ever observes this episode.
+                reservations?.holdForClockOffset(offset.offset.abs().plus(offset.error), StorageProtocol.SETTLE)
             }
             metrics.breakerOpen(breaker.isOpen)
         }.onFailure { log.warn("storage clock offset check failed: {}", it.toString()) }

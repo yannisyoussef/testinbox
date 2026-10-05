@@ -85,7 +85,8 @@ Review hardening (TI-STORAGE-003 §55–§58), each with its own test:
 | The orphan sweep latches on an orphan that was ambiguous within 24 h | I `GuardedIngestCleanupTest` |
 | A live generation declared dead re-registers at its next heartbeat | P `StorageProtocolPersistenceTest` |
 | Refusal upserts lock in PostgreSQL (unsigned) uuid order | P `StorageProtocolPersistenceTest` |
-| Clock-offset postponement also moves `RESERVED` rows | P `StorageProtocolPersistenceTest` |
+| A clock-offset hold is durable (in the rows), covers `RESERVED` and `RELEASING`, survives a restart, never compounds, and leaves the no-skew path unchanged (TI-STORAGE-003b P1-1) | P `StorageProtocolPersistenceTest`, I `ClockOffsetDurabilityTest` A–E |
+| Any throwable after upload start is ambiguous: persisted or the slot poisoned, the reservation charged, the generation left unclean, H kept across a restart (TI-STORAGE-003b P1-2) | I `UploadErrorTest` |
 | Latch and breaker are checked before recipients resolve: one `451` for everyone | I `GuardedIngestEdgeCasesTest` |
 | A reservation fenced before its first byte uploads nothing | I `GuardedIngestEdgeCasesTest` |
 | HTTPS verifies the storage host name | S `FencedUploadTest` |

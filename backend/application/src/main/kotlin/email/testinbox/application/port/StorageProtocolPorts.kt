@@ -95,12 +95,19 @@ interface StorageReservations {
     )
 
     /**
-     * After a clock-offset suspension, every pending release moves later by
-     * [by] (§5): `RELEASING` rows directly, and `RESERVED` rows through the
-     * release time their expiry will give them (`write_deadline_at + settle + by`).
+     * A DB↔storage clock offset beyond `ε_max` was observed (§5). DURABLY,
+     * every reservation, `RESERVED` or `RELEASING`, becomes releasable no
+     * earlier than `write_deadline_at + settle + offset`: storage's own clock
+     * may have accepted its upload up to [offset] later than the database
+     * deadline says.
+     *
+     * Idempotent and bounded: `greatest()`, never an addition, so repeated
+     * passes over one episode never compound, and the hold is at most the
+     * largest offset observed. Nothing is ever moved earlier. Returns the rows
+     * whose release time moved.
      */
-    fun postponeAll(
-        by: Duration,
+    fun holdForClockOffset(
+        offset: Duration,
         settle: Duration,
     ): Int
 

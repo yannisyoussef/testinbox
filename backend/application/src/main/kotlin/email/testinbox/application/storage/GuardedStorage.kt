@@ -154,13 +154,39 @@ class GuardedStorage(
             null
         }
 
+    /**
+     * The event's write slot, and whether an upload is in doubt: begun, with
+     * an outcome neither definitive nor persisted as ambiguity. While one is,
+     * the slot may NEVER be returned. Whatever ends the event, a throwable
+     * included, poisons it instead (§9).
+     */
+    private class SlotGuard(
+        val slot: WriteSlots.Slot,
+    ) {
+        var poisoned = false
+        var inDoubt = false
+
+        fun end() {
+            when {
+                // Already poisoned: poison() and close() are idempotent together.
+                poisoned -> Unit
+
+                // Something escaped between an upload's start and its ambiguity
+                // being persisted: occupied for this process's life, and the
+                // generation is never marked clean.
+                inDoubt -> slot.poison()
+
+                else -> slot.close()
+            }
+        }
+    }
+
     private fun ingestHoldingSlot(
         bytesPerCopy: Long,
         copies: List<CopyPlan>,
         persist: (List<CopyPlan>) -> Map<MessageId, Boolean>,
     ): GuardedIngestReport {
-        val slot = acquireSlot(copies)
-        var poisoned = false
+        val guard = SlotGuard(acquireSlot(copies))
         try {
             hook.afterSlot()
             val result = admit(bytesPerCopy, copies)
@@ -178,27 +204,7 @@ class GuardedStorage(
                 }
                 return GuardedIngestReport(emptyList(), emptyList(), refused)
             }
-            val t0 = checkNotNull(result.t0)
-            val attempts = mutableListOf<Attempt>()
-            for (copy in admitted) {
-                if (!reservations.markUploadStarted(copy.messageId)) {
-                    // Cleanup fenced this reservation before its first byte:
-                    // nothing of this copy was written. Whatever earlier copies
-                    // stored was stored definitively, so all of it can go back.
-                    metrics.commitFenced()
-                    releaseAbandoned(admitted)
-                    throw StorageUnavailableException(StorageUnavailableReason.COMMIT_FENCED, "a reservation was fenced before its upload")
-                }
-                for ((key, bytes) in copy.objects) {
-                    hook.beforeUpload(key)
-                    val outcome = put(ReservedUpload(key, bytes, t0, StorageProtocol.WRITE_WINDOW))
-                    attempts += Attempt(copy.messageId, key, bytes.size.toLong(), outcome)
-                    if (outcome != UploadOutcome.Stored) {
-                        poisoned = abandon(attempts, admitted, slot)
-                        throw StorageUnavailableException(StorageUnavailableReason.UPLOAD_FAILED, "an upload was not stored: $outcome")
-                    }
-                }
-            }
+            uploadAll(admitted, checkNotNull(result.t0), guard)
             hook.afterUploads()
             hook.beforeCommit()
             val outcomes = commit(bytesPerCopy, admitted, refused, persist)
@@ -208,17 +214,57 @@ class GuardedStorage(
                 refused = refused,
             )
         } finally {
-            if (!poisoned) slot.close()
+            guard.end()
         }
     }
 
-    /** Anything but an outcome, after the call began, may have reached storage: ambiguous. */
-    private fun put(upload: ReservedUpload): UploadOutcome =
+    /** Every object of every admitted copy, in order; throws on the first one not Stored. */
+    private fun uploadAll(
+        admitted: List<CopyPlan>,
+        t0: java.time.Instant,
+        guard: SlotGuard,
+    ) {
+        val attempts = mutableListOf<Attempt>()
+        for (copy in admitted) {
+            if (!reservations.markUploadStarted(copy.messageId)) {
+                // Cleanup fenced this reservation before its first byte:
+                // nothing of this copy was written. Whatever earlier copies
+                // stored was stored definitively, so all of it can go back.
+                metrics.commitFenced()
+                releaseAbandoned(admitted)
+                throw StorageUnavailableException(StorageUnavailableReason.COMMIT_FENCED, "a reservation was fenced before its upload")
+            }
+            for ((key, bytes) in copy.objects) {
+                hook.beforeUpload(key)
+                guard.inDoubt = true
+                val (outcome, fatal) = put(ReservedUpload(key, bytes, t0, StorageProtocol.WRITE_WINDOW))
+                attempts += Attempt(copy.messageId, key, bytes.size.toLong(), outcome)
+                if (outcome == UploadOutcome.Stored) {
+                    guard.inDoubt = false
+                    continue
+                }
+                guard.poisoned = abandon(attempts, admitted, guard.slot)
+                guard.inDoubt = false // persisted, or the slot is poisoned
+                // A fatal Error goes on up once the ambiguity is safe.
+                fatal?.let { throw it }
+                throw StorageUnavailableException(StorageUnavailableReason.UPLOAD_FAILED, "an upload was not stored: $outcome")
+            }
+        }
+    }
+
+    /**
+     * One fenced upload. Anything but an outcome, once the call began, may
+     * have reached storage, so it is ambiguous: an Exception and an Error
+     * alike. An Error is handed back too, to be rethrown once the ambiguity
+     * is safe; it is never swallowed.
+     */
+    @Suppress("TooGenericExceptionCaught") // deliberately every Throwable: see above
+    private fun put(upload: ReservedUpload): Pair<UploadOutcome, Error?> =
         try {
-            blobs.putReserved(upload)
-        } catch (e: RuntimeException) {
+            blobs.putReserved(upload) to null
+        } catch (e: Throwable) {
             log.warn("fenced upload failed unexpectedly; treated as ambiguous: {}", e.javaClass.simpleName)
-            UploadOutcome.Ambiguous(AmbiguityKind.UNEXPECTED_RESPONSE)
+            UploadOutcome.Ambiguous(AmbiguityKind.UNEXPECTED_RESPONSE) to (e as? Error)
         }
 
     private fun releaseAbandoned(admitted: List<CopyPlan>) {
@@ -345,13 +391,15 @@ class GuardedStorage(
         // proves its keys absent, and the slot stays occupied until the
         // ambiguity is verified. The ambiguity is persisted FIRST, before
         // anything else can fail, and before the slot can be reused.
+        var recordError: Error? = null
         val poisoned =
             try {
                 ambiguous.forEach { ambiguity.record(node.nodeId, it.key, it.bytes, StorageProtocol.T_VERIFY) }
                 false
-            } catch (e: RuntimeException) {
+            } catch (e: Throwable) {
                 log.error("could not persist an ambiguous upload; its write slot stays occupied until this process ends", e)
                 slot.poison()
+                if (e is Error) recordError = e
                 true
             }
         val last = attempts.last().outcome
@@ -374,6 +422,8 @@ class GuardedStorage(
         // Every upload that started ended definitively: nothing can still
         // appear, so the capacity can go back now (§4).
         if (ambiguous.isEmpty()) releaseAbandoned(admitted)
+        // The slot is already poisoned; a fatal Error is not swallowed.
+        recordError?.let { throw it }
         return poisoned
     }
 

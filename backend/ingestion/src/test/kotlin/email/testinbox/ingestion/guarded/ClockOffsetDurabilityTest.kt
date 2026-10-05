@@ -1,0 +1,149 @@
+package email.testinbox.ingestion.guarded
+
+import email.testinbox.application.port.StorageInspection
+import email.testinbox.application.storage.IngestSyncHook
+import email.testinbox.application.storage.StorageBreaker
+import email.testinbox.ingestion.ops.StorageNodeRuntime
+import io.kotest.matchers.shouldBe
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Test
+import java.time.Duration
+
+/**
+ * ADR-035 §5 (TI-STORAGE-003b P1-1): the hold an out-of-bound DB↔storage
+ * clock offset imposes is DURABLE. It lives in the reservation rows, so a
+ * cleaner (or the whole API process) that restarts after the clocks recover
+ * still cannot release a reservation before `write_deadline_at + S + offset`.
+ *
+ * A "restart" is a new harness on the same database and bucket: a new
+ * process with none of the old one's memory. It has no skew: the clocks have
+ * recovered.
+ */
+class ClockOffsetDurabilityTest {
+    private val harnesses = mutableListOf<GuardedIngestHarness>()
+
+    @AfterEach
+    fun close() = harnesses.reversed().forEach { it.close() }
+
+    private fun track(h: GuardedIngestHarness) = h.also { harnesses += it }
+
+    private val crashBeforeCommit =
+        object : IngestSyncHook {
+            override fun beforeCommit(): Unit = error("died before T2")
+        }
+
+    @Volatile private var skew: Duration = Duration.ZERO
+
+    private val skewed = { real: StorageInspection ->
+        object : StorageInspection by real {
+            override fun serverTime() = real.serverTime().let { it.copy(date = it.date.plus(skew)) }
+        }
+    }
+
+    private val settle = Duration.ofMinutes(17)
+
+    /** release_not_before − write_deadline_at, in seconds: what back-dating preserves. */
+    private fun hold(h: GuardedIngestHarness): Long =
+        h.count("SELECT extract(epoch FROM release_not_before - write_deadline_at)::bigint FROM storage_reservation")
+
+    private fun state(h: GuardedIngestHarness) = h.reservationStates().keys.single()
+
+    /** An event that uploaded everything, then its process died before T2: one reservation, deadline now + E. */
+    private fun abandoned(): GuardedIngestHarness {
+        val h = track(GuardedIngestHarness(hook = crashBeforeCommit, inspectionOverride = skewed))
+        runCatching { h.deliver(listOf(h.inbox(h.workspace()).second)) }
+        h.reservationStates() shouldBe mapOf("RESERVED" to 1L)
+        return h
+    }
+
+    /** A new process on the same database: healthy clocks, empty memory. */
+    private fun restarted(h: GuardedIngestHarness) = track(h.restart())
+
+    @Test
+    fun `A and B - a RESERVED row held during a skew is still held after a restart with healthy clocks`() {
+        val h = abandoned()
+        h.backdate(Duration.ofSeconds(110)) // 10 s before its deadline: still RESERVED
+        skew = Duration.ofSeconds(45)
+
+        h.cleanup().run().suspendedForClockOffset shouldBe true
+
+        state(h) shouldBe "RESERVED"
+        val held = hold(h)
+        (held >= settle.seconds + 45) shouldBe true // durable, in the row
+        (held <= settle.seconds + 50) shouldBe true // the observed offset plus its error, no more
+
+        val fresh = restarted(h)
+        h.backdate(Duration.ofSeconds(10).plus(settle).plusSeconds(20)) // deadline + S + 20 s: the plain rule would release
+        fresh.releaseCycle().released shouldBe 0
+        state(fresh) shouldBe "RELEASING" // expired, keeping the hold
+        hold(fresh) shouldBe held
+
+        h.backdate(Duration.ofSeconds(60)) // now past deadline + S + offset
+        fresh.releaseCycle().released shouldBe 1
+    }
+
+    @Test
+    fun `C - a RELEASING row held during a skew is still held after a restart with healthy clocks`() {
+        val h = abandoned()
+        h.backdate(Duration.ofSeconds(120).plus(settle).plusSeconds(20)) // deadline + S + 20 s
+        h.cleanup().run().released shouldBe 0 // healthy: expires and witnesses, cannot release yet
+        state(h) shouldBe "RELEASING"
+        hold(h) shouldBe settle.seconds
+
+        skew = Duration.ofSeconds(45)
+        h.cleanup().run().suspendedForClockOffset shouldBe true
+        val held = hold(h)
+        (held >= settle.seconds + 45) shouldBe true
+
+        val fresh = restarted(h)
+        fresh.releaseCycle().released shouldBe 0 // the plain deadline + S has passed; the hold has not
+
+        h.backdate(Duration.ofSeconds(60))
+        fresh.releaseCycle().released shouldBe 1
+    }
+
+    @Test
+    fun `D - repeated bad-offset passes hold once, by the largest offset, never compounding`() {
+        val h = abandoned()
+        skew = Duration.ofSeconds(45)
+        val cleanup = h.cleanup()
+
+        repeat(6) { cleanup.run().suspendedForClockOffset shouldBe true }
+        val afterSix = hold(h)
+        // And across cleaner restarts: a fresh instance each time, no shared memory.
+        repeat(6) { h.cleanup().run().suspendedForClockOffset shouldBe true }
+
+        (afterSix <= settle.seconds + 50) shouldBe true // one offset, not six
+        (hold(h) - afterSix <= 2) shouldBe true // later passes add only measurement noise, not 45 s each
+        h.reservations.holdForClockOffset(Duration.ofSeconds(30), settle) shouldBe 0 // a smaller offset never moves it earlier
+
+        skew = Duration.ofSeconds(90) // a worse episode raises it, to that offset
+        cleanup.run().suspendedForClockOffset shouldBe true
+        (hold(h) >= settle.seconds + 90) shouldBe true
+        (hold(h) <= settle.seconds + 95) shouldBe true
+    }
+
+    @Test
+    fun `E - with no skew, release times are exactly deadline + S, as before`() {
+        val h = abandoned() // skew stays zero
+        h.backdate(Duration.ofSeconds(120).plus(settle).plusSeconds(20))
+
+        val first = h.cleanup()
+        first.run().suspendedForClockOffset shouldBe false
+        hold(h) shouldBe settle.seconds
+        h.tick()
+        first.run().released shouldBe 1
+    }
+
+    @Test
+    fun `the ingestion node holds its own reservations durably when it sees the offset first`() {
+        val h = abandoned()
+        skew = Duration.ofSeconds(45)
+        val breaker = StorageBreaker()
+
+        StorageNodeRuntime(h.lifecycle, breaker, h.inspection, h.clock, h.metrics, reservations = h.reservations).checkOffset()
+
+        breaker.isOpen shouldBe true
+        (hold(h) >= settle.seconds + 45) shouldBe true // no cleaner had to observe this episode
+    }
+}

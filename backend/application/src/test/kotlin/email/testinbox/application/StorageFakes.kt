@@ -215,22 +215,19 @@ class InMemoryStorageReservations(
         rows[id]?.let { it.releaseNotBefore = maxOf(it.releaseNotBefore ?: until, until) }
     }
 
-    override fun postponeAll(
-        by: Duration,
+    override fun holdForClockOffset(
+        offset: Duration,
         settle: Duration,
     ): Int {
+        var moved = 0
         rows.values.forEach {
-            val base =
-                if (it.state ==
-                    "RELEASING"
-                ) {
-                    it.releaseNotBefore!!
-                } else {
-                    maxOf(it.releaseNotBefore ?: Instant.MIN, it.writeDeadlineAt.plus(settle))
-                }
-            it.releaseNotBefore = base.plus(by)
+            val hold = it.writeDeadlineAt.plus(settle).plus(offset.abs())
+            if (it.releaseNotBefore == null || it.releaseNotBefore!!.isBefore(hold)) {
+                it.releaseNotBefore = hold
+                moved++
+            }
         }
-        return rows.size
+        return moved
     }
 
     override fun messageExists(id: MessageId) = messages.exists(id)

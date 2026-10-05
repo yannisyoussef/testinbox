@@ -141,38 +141,6 @@ class GuardedIngestCleanupTest {
     }
 
     @Test
-    fun `a clock offset above epsilon suspends releases, then pushes every pending release back by it`() {
-        var skew = Duration.ofSeconds(45)
-        val skewed = { real: StorageInspection ->
-            object : StorageInspection by real {
-                override fun serverTime() = real.serverTime().let { it.copy(date = it.date.plus(skew)) }
-            }
-        }
-        val h = track(GuardedIngestHarness(hook = crashBeforeCommit, inspectionOverride = skewed))
-        abandonedEvent(h)
-        h.backdate(Duration.ofMinutes(30))
-        val cleanup = h.cleanup()
-
-        val suspended = cleanup.run()
-        suspended.suspendedForClockOffset shouldBe true
-        suspended.released shouldBe 0
-        val before = h.count("SELECT extract(epoch FROM release_not_before)::bigint FROM storage_reservation")
-
-        skew = Duration.ZERO
-        // Resumes (moving every release later), and witnesses. Without a tick,
-        // C_drain has not passed, so nothing can be released in this pass.
-        cleanup.run().released shouldBe 0
-
-        val after = h.count("SELECT extract(epoch FROM release_not_before)::bigint FROM storage_reservation")
-        (after - before >= 45) shouldBe true // pushed back by the observed offset
-        // The ingestion node's own check opens its breaker on the same condition.
-        skew = Duration.ofSeconds(45)
-        val breaker = StorageBreaker()
-        StorageNodeRuntime(h.lifecycle, breaker, h.inspection, h.clock, h.metrics).checkOffset()
-        breaker.isOpen shouldBe true
-    }
-
-    @Test
     fun `cleanup claiming first fences T2 out - 451, nothing visible, and the objects go with the reservation`() {
         lateinit var h: GuardedIngestHarness
         val cleanupFirst =

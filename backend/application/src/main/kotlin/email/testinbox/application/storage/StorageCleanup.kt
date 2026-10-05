@@ -24,8 +24,10 @@ import java.util.UUID
  * only when ALL of these hold:
  * - `now() ≥ release_not_before`, on the database clock;
  * - the DB↔storage clock offset is within `ε_max`. Otherwise releases are
- *   suspended, and on resumption every pending release moves later by the
- *   observed offset;
+ *   suspended, and before the pass ends every reservation is durably held
+ *   until at least `write_deadline_at + S + offset` (see
+ *   [StorageReservations.holdForClockOffset]). Nothing about the episode
+ *   lives in memory, so a restart cannot forget it;
  * - a storage witness issued at or after `release_not_before` completed at
  *   `w′`, and `now() ≥ w′ + C_drain`. This proves storage is not stalled, not
  *   that earlier commits drained;
@@ -70,9 +72,6 @@ class ReleaseStaleReservations(
     /** Completed witnesses (issued, completed), on the database clock, newest last. */
     private val witnesses = ArrayDeque<Pair<Instant, Instant>>()
 
-    /** The largest offset observed while releases were suspended; applied on resumption. */
-    private var suspendedOffset: Duration? = null
-
     @Synchronized
     fun run(): Report {
         // A node whose heartbeat went stale may have died with uploads in
@@ -85,18 +84,15 @@ class ReleaseStaleReservations(
         metrics.clockOffset(offset.offset)
         if (!offset.withinBound()) {
             val observed = offset.offset.abs().plus(offset.error)
-            suspendedOffset = maxOf(suspendedOffset ?: Duration.ZERO, observed)
+            // Durable before this pass returns: the hold is in the rows.
+            val held = reservations.holdForClockOffset(observed, settle)
             log.warn(
-                "storage_release_suspended clock offset {} ms exceeds {} ms",
+                "storage_release_suspended clock offset {} ms exceeds {} ms; {} reservation(s) held until deadline + S + offset",
                 observed.toMillis(),
                 StorageProtocol.EPSILON_MAX.toMillis(),
+                held,
             )
             return Report(expired, 0, 0, suspendedForClockOffset = true, witnessed = false)
-        }
-        suspendedOffset?.let { by ->
-            val moved = reservations.postponeAll(by, settle)
-            log.warn("storage_release_resumed pending releases moved {} ms later ({} rows)", by.toMillis(), moved)
-            suspendedOffset = null
         }
 
         val issued = clock.now()

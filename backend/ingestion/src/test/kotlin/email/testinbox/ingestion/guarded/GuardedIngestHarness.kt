@@ -84,6 +84,10 @@ class GuardedIngestHarness(
     shared: GuardedIngestHarness? = null,
     val metrics: RecordingProtocolMetrics = RecordingProtocolMetrics(),
     inspectionOverride: ((StorageInspection) -> StorageInspection)? = null,
+    /** Runs after an upload reached storage, before its outcome returns: a throw here loses the outcome. */
+    private val afterUpload: (ReservedUpload) -> Unit = {},
+    /** Runs before the guarded path persists an ambiguity: a throw here is a failed persist. */
+    private val beforeAmbiguityRecord: () -> Unit = {},
 ) : AutoCloseable {
     val dbName: String = shared?.dbName ?: "guarded_${UUID.randomUUID().toString().replace("-", "")}"
     val bucket: String = shared?.bucket ?: "g-${UUID.randomUUID().toString().take(12)}"
@@ -134,7 +138,7 @@ class GuardedIngestHarness(
         object : BlobStore by store {
             override fun putReserved(upload: ReservedUpload): UploadOutcome {
                 fencedWrites += upload.key
-                return store.putReserved(upload)
+                return store.putReserved(upload).also { afterUpload(upload) }
             }
         }
 
@@ -151,7 +155,18 @@ class GuardedIngestHarness(
         GuardedStorage(
             admission = StorageAdmission(JdbcStorageAdmission(jdbc, template), policy, enforcement),
             reservations = reservations,
-            ambiguity = ambiguity,
+            ambiguity =
+                object : email.testinbox.application.port.StorageAmbiguity by ambiguity {
+                    override fun record(
+                        nodeId: String,
+                        objectKey: String?,
+                        bytes: Long,
+                        verifyAfter: Duration,
+                    ) {
+                        beforeAmbiguityRecord()
+                        ambiguity.record(nodeId, objectKey, bytes, verifyAfter)
+                    }
+                },
             latch = ambiguity,
             blobs = blobs,
             inspection = inspection,

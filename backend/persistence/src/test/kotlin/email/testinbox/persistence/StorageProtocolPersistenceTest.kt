@@ -419,26 +419,33 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
     }
 
     @Test
-    fun `a clock-offset postponement moves RESERVED rows too, and their expiry keeps it`() {
+    fun `a clock-offset hold is durable in the rows, covers RESERVED and RELEASING, and never compounds`() {
         val ws = db.workspace()
         val inbox = db.inbox(ws)
         val reserved = reserve(ws, inbox, deadlineIn = Duration.ofSeconds(-1))
         val releasing = reserve(ws, inbox, state = "RELEASING")
 
-        fun rnbMinusDeadline(id: UUID) =
+        fun hold(id: UUID) =
             db.jdbc
                 .sql(
                     "SELECT extract(epoch FROM release_not_before - write_deadline_at)::bigint FROM storage_reservation WHERE message_id = ?",
                 ).param(id)
                 .query(Long::class.java)
                 .single()
-        val releasingBefore = rnbMinusDeadline(releasing)
+        val s = Duration.ofMinutes(17)
 
-        reservations.postponeAll(Duration.ofSeconds(45), Duration.ofMinutes(17)) shouldBe 2
-        reservations.expireOverdue(Duration.ofMinutes(17)) shouldBe 1
+        reservations.holdForClockOffset(Duration.ofSeconds(45), s) shouldBe 2
+        hold(reserved) shouldBe 17 * 60 + 45L
+        hold(releasing) shouldBe 17 * 60 + 45L
 
-        rnbMinusDeadline(reserved) shouldBe 17 * 60 + 45L // deadline + S + the offset, not deadline + S
-        rnbMinusDeadline(releasing) shouldBe releasingBefore + 45
+        repeat(5) { reservations.holdForClockOffset(Duration.ofSeconds(45), s) shouldBe 0 } // idempotent
+        reservations.holdForClockOffset(Duration.ofSeconds(10), s) shouldBe 0 // never earlier
+        hold(reserved) shouldBe 17 * 60 + 45L
+
+        reservations.expireOverdue(s) shouldBe 1
+        hold(reserved) shouldBe 17 * 60 + 45L // expiry keeps the hold, not plain deadline + S
+        reservations.holdForClockOffset(Duration.ofSeconds(60), s) shouldBe 2 // a worse episode raises it
+        hold(releasing) shouldBe 17 * 60 + 60L
     }
 
     @Test

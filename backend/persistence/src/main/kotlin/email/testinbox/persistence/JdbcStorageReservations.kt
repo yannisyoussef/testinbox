@@ -220,21 +220,19 @@ class JdbcStorageReservations(
             .update()
     }
 
-    override fun postponeAll(
-        by: Duration,
+    override fun holdForClockOffset(
+        offset: Duration,
         settle: Duration,
     ): Int =
         jdbc
             .sql(
                 """
                 UPDATE storage_reservation
-                   SET release_not_before =
-                       CASE WHEN state = 'RELEASING' THEN release_not_before
-                            ELSE greatest(release_not_before, write_deadline_at + make_interval(secs => :settle)) END
-                       + make_interval(secs => :by)
+                   SET release_not_before = write_deadline_at + make_interval(secs => :hold)
+                 WHERE release_not_before IS NULL
+                    OR release_not_before < write_deadline_at + make_interval(secs => :hold)
                 """.trimIndent(),
-            ).param("by", by.toMillis() / 1000.0)
-            .param("settle", settle.seconds.toDouble())
+            ).param("hold", (settle.toMillis() + offset.abs().toMillis()) / 1000.0)
             .update()
 
     override fun messageExists(id: MessageId): Boolean =
