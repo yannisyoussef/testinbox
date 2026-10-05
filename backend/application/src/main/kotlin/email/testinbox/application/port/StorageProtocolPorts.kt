@@ -105,7 +105,11 @@ interface StorageReservations : StorageClockHold {
      */
     fun expireOverdue(settle: Duration): Int
 
-    /** Up to [limit] ids of `RELEASING` rows due by [horizon], ascending. A read: nothing is locked. */
+    /**
+     * Up to [limit] ids of `RELEASING` rows due by [horizon], ascending. A
+     * read: nothing is locked. Empty while a clock episode is recorded but
+     * not yet applied.
+     */
     fun releasable(
         horizon: Instant,
         limit: Int,
@@ -115,8 +119,9 @@ interface StorageReservations : StorageClockHold {
      * In its OWN short transaction, locks the one row [id] with
      * `FOR UPDATE SKIP LOCKED`, rechecks that it is still `RELEASING` and due
      * by [horizon], and runs [work] while holding it. Returns null, without
-     * running [work], when another cleaner holds the row or it is no longer
-     * due. Each row commits or rolls back alone, so one row's storage error
+     * running [work], when another cleaner holds the row, it is no longer
+     * due, or a clock episode is recorded but not yet applied (the record is
+     * the linearization point: no release after it until its hold commits). Each row commits or rolls back alone, so one row's storage error
      * can never undo another row's release, postponement or latch.
      */
     fun <T : Any> withReleasable(

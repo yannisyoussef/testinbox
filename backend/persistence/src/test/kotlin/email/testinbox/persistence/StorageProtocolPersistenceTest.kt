@@ -541,6 +541,26 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `a recorded, unapplied clock episode stops every release, even one already under way`() {
+        val ws = db.workspace()
+        val id = reserve(ws, db.inbox(ws), state = "RELEASING") // due now
+        val horizon =
+            java.time.Instant
+                .now()
+                .plusSeconds(60)
+        reservations.releasable(horizon, 10).map { it.value } shouldBe listOf(id)
+
+        // A pass that measured in bound has its candidates; then someone records an episode.
+        reservations.recordClockEpisode(Duration.ofSeconds(45))
+
+        reservations.releasable(horizon, 10).shouldBeEmpty()
+        reservations.withReleasable(MessageId(id), horizon) { it } shouldBe null // the claim itself refuses
+
+        reservations.applyClockEpisode(Duration.ofMinutes(17)) shouldBe 1
+        reservations.withReleasable(MessageId(id), horizon) { it } shouldBe null // now held past this horizon
+    }
+
+    @Test
     fun `4 - several observations can never shorten the required horizon`() {
         val ws = db.workspace()
         val id = reserve(ws, db.inbox(ws))

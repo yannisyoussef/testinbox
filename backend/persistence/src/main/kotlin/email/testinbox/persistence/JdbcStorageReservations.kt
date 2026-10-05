@@ -167,6 +167,7 @@ class JdbcStorageReservations(
                 """
                 SELECT message_id FROM storage_reservation
                  WHERE state = 'RELEASING' AND release_not_before <= :horizon
+                   AND NOT EXISTS (SELECT 1 FROM storage_clock_episode)
                  ORDER BY message_id
                  LIMIT :limit
                 """.trimIndent(),
@@ -186,6 +187,9 @@ class JdbcStorageReservations(
                     """
                     SELECT message_id, workspace_id, object_keys, release_not_before FROM storage_reservation
                      WHERE message_id = :id AND state = 'RELEASING' AND release_not_before <= :horizon
+                       -- A recorded, unapplied clock episode stops every release at once,
+                       -- even in a pass that measured the offset before it was recorded.
+                       AND NOT EXISTS (SELECT 1 FROM storage_clock_episode)
                        FOR UPDATE SKIP LOCKED
                     """.trimIndent(),
                 ).param("id", id.value)
