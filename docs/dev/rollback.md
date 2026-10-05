@@ -114,7 +114,8 @@ Nothing currently in `db/migration` is of this kind: `V1` creates the schema,
 `V2` replaces a unique index with a wider one (ADR-026), `V3` adds the limits
 tables (ADR-027), `V4`–`V6` only add tables, functions and triggers (see
 below for what rolling back across `V4` and `V6` means), and `V7` adds one
-table, `storage_clock_episode`, which only TI-STORAGE-003 artifacts read.
+table, `storage_clock_episode` (see below for why that does not make every
+earlier artifact a safe rollback target).
 
 ## Rolling back across TI-STORAGE-001 (schema V6)
 
@@ -203,7 +204,17 @@ things:
   cleanup;
 - ignore the admission latch.
 
-The commit is therefore a rollback **floor**.
+The first live guarded-ingest commit is therefore a rollback **floor**
+(`c84ddd7`). It is not the last one. The TI-STORAGE-003 commits that followed it
+fixed release-safety defects in that same protocol: an upload `Error` that
+returned its write slot with no ambiguity recorded, and a clock-offset hold
+that a crash could erase (fixed by V7's durable clock episode, and by refusing
+every release while an episode is recorded). An artifact between those two
+points has a live ADR-035 release path that lacks those protections. So the
+final TI-STORAGE-003 commit is a second floor (`d4e38b2`, the **safety
+floor**): **artifacts below the final TI-STORAGE-003 safety floor are not
+eligible for rollback once the guarded protocol is deployed.** Both floors stay
+in `deploy/rollback-floors.txt`; a floor is never removed.
 
 - **Staging.** `deploy.sh` now enforces floors itself, before the migration
   job or any service is touched (ADR-035 §18 gate 5). It reads the
@@ -223,7 +234,11 @@ and then still warns in the log. A schema check alone would have called this
 rollback safe. Any future break of the same shape is added there, never
 removed.
 
-**Schema V7** (`storage_clock_episode`) is expand-only: one new table that no
-older artifact reads. Rolling an artifact back leaves it in place, harmlessly.
-A recorded clock episode that an older artifact never applies is a no-op for
-that artifact, which has no ADR-035 release path at all.
+**Schema V7** (`storage_clock_episode`) is expand-only: one new table, and
+there is no down migration. Expand-only does not make an older artifact safe.
+An artifact from before TI-STORAGE-003 has no ADR-035 release path, and is
+below the first floor anyway. An intermediate guarded-ingest artifact, between
+`c84ddd7` and the safety floor `d4e38b2`, DOES release reservations. It does not
+know V7, so it would ignore a recorded clock episode and could release on the
+plain horizon. That is exactly why it sits below the safety floor and is
+refused, unless the hazard is explicitly acknowledged.

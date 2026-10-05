@@ -74,7 +74,7 @@ Suite abbreviations. The directories hold the Kotlin tests:
 | 2. `T_put` total wall-clock and RST abort, proven with the TCP proxy: a stall, a peer trickling a response forever (no inactivity timeout can fire), and a write blocked by a full TCP window (no read timeout covers it) | S `FencedUploadTest` |
 | 3. URL redaction, by log capture | S `FencedUploadTest` |
 | 4. The tests above, with ratcheted minima | `scripts/verify-test-results.sh` |
-| 5. The staging `deploy.sh` rollback-floor check | `scripts/check-rollback-floors.test.sh`, `scripts/deploy-preflight.test.sh` |
+| 5. The staging `deploy.sh` rollback-floor check; two ADR-035 floors (`c84ddd7`, first guarded ingest; `d4e38b2`, the TI-STORAGE-003 safety floor) | `scripts/check-rollback-floors.test.sh` (cases A–E on the real history), `scripts/deploy-preflight.test.sh` |
 
 Review hardening (TI-STORAGE-003 §55–§58), each with its own test:
 

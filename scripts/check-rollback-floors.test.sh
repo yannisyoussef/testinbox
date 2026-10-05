@@ -51,6 +51,40 @@ printf '# comments and blank lines are not floors\n\n' > "$WORK/empty.txt"
 FLOORS_FILE="$WORK/empty.txt" check "a floors file with no entries allows (it was read)" 0 --candidate "$BASE"
 check "no arguments is a usage error" 2 --bogus
 
+# --- the REAL floors, against this repository's own history (TI-STORAGE-003d) ---
+# The ADR-035 floors are ancestry: a guarded-ingest artifact older than the
+# final safety floor must be refused even though it contains the first one.
+# These need full history (fetch-depth: 0), which every job running this has.
+REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+REAL_FLOORS="$REPO/deploy/rollback-floors.txt"
+FIRST_GUARDED=c84ddd74f7983dba053c7d377a10960c0c409248   # first live guarded-ingest commit (floor 1)
+SAFETY_FLOOR=d4e38b230af5576512ed09da6f52c44a71c266b4    # final TI-STORAGE-003 safety floor (floor 2)
+PRE_EPISODE=597abf7f1ac6537d84be5673ac564139b10e3a87     # guarded, but before the durable clock episode
+
+real() {
+  local name="$1" expected="$2" candidate="$3" names="${4:-}"
+  local status
+  ROLLBACK_FLOORS="$REAL_FLOORS" ROLLBACK_FLOORS_REPO="$REPO" "$CHECK" --candidate "$candidate" >"$WORK/out" 2>"$WORK/err"
+  status=$?
+  if [[ "$status" != "$expected" ]]; then
+    echo "FAIL — $name (expected exit $expected, got $status)"; sed 's/^/       /' "$WORK/err"; fail=$((fail + 1)); return
+  fi
+  if [[ -n "$names" ]] && ! grep -q "predates rollback floor $names" "$WORK/err"; then
+    echo "FAIL — $name (the refusal does not name floor $names)"; sed 's/^/       /' "$WORK/err"; fail=$((fail + 1)); return
+  fi
+  echo "ok   — $name"; pass=$((pass + 1))
+}
+
+for floor in "$FIRST_GUARDED" "$SAFETY_FLOOR"; do
+  grep -q "^$floor " "$REAL_FLOORS" && { echo "ok   — floor $floor is in deploy/rollback-floors.txt"; pass=$((pass + 1)); } \
+    || { echo "FAIL — floor $floor is missing from deploy/rollback-floors.txt (a floor is never removed)"; fail=$((fail + 1)); }
+done
+real "A: a candidate before the first guarded-ingest commit is refused" 1 "$(git -C "$REPO" rev-parse "$FIRST_GUARDED^")" "$FIRST_GUARDED"
+real "B: the first guarded-ingest commit itself is refused: it lacks the safety floor" 1 "$FIRST_GUARDED" "$SAFETY_FLOOR"
+real "C: 597abf7 is refused: it predates the durable clock episode" 1 "$PRE_EPISODE" "$SAFETY_FLOOR"
+real "D: the safety floor itself is allowed" 0 "$SAFETY_FLOOR"
+real "E: this checkout's head is allowed" 0 "$(git -C "$REPO" rev-parse HEAD)"
+
 echo "----"
 echo "check-rollback-floors.test.sh: $pass passed, $fail failed"
 (( fail == 0 ))
