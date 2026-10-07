@@ -30,7 +30,7 @@ REGISTRY_NAME="testinbox-rehearsal-registry"
 HTTPS_PORT="${REHEARSAL_HTTPS_PORT:-8443}"
 # Raised deliberately when tests are added; a silently shrinking gate is the
 # failure this number exists to catch.
-SYNTHETIC_MINIMUM=13
+SYNTHETIC_MINIMUM=18
 # The credential-lifecycle product suite (TI-002 §19). Counted separately
 # because it is a separate verdict: "the deployment is broken" and "the
 # credential lifecycle is broken on a healthy deployment" are different things.

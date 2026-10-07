@@ -13,6 +13,7 @@ This is the gate that decides whether a staging deployment succeeded — not
 | `longpoll.test.mjs` — full window through the ingress | The reverse-proxy read timeout is shorter than the wait window (§13) |
 | `longpoll.test.mjs` — parked wait woken by SMTP | `LISTEN/NOTIFY` is not reaching waiters — e.g. the database is behind a transaction-mode pooler (ADR-020) |
 | `edge.test.mjs` — edge invariants | The ingress is serving what it must refuse, or refusing what it must serve |
+| `storage.test.mjs` — ADR-035 §13 storage visibility | The deployed artifact predates TI-STORAGE-004 (`GET /v1/workspace/storage` is `404`), a tenant response carries a global figure, a legacy wait without the cursor gets a `409`, or a storage refusal was recorded although live enforcement must be OFF |
 
 ## The product suite is separate
 
