@@ -68,3 +68,17 @@
     turns an accidental dependency into a stated one, and makes SDK traffic
     separable from ad-hoc calls in an access log.
 
+14. **A storage refusal is observed, never guessed at, and never acknowledged
+    by accident** (ADR-035 §13c). Both SDKs seed a per-`Inbox` observation
+    cursor from the representation's `storageRefusalCount`, send it on every
+    wait window by default, and surface the server's `409` as a typed error
+    (`TestInboxStorageLimitExceededError` / `...Exception`) after advancing the
+    cursor to the refusal count — monotonically, atomically on the JVM, so
+    concurrent waits are safe. The cursor advances in exactly two cases: a
+    surfaced `409`, and an explicit `afterStorageRefusalCount` from the caller.
+    A `MATCHED` or `TIMEOUT` echo never advances it, because a match may have
+    outranked a refusal the caller has not seen. Against a server that predates
+    the contract the SDK sends no boundary rather than inventing a zero; a
+    malformed `409` is a protocol error rather than a fabricated field; and the
+    storage error is never retried, because waiting does not help.
+

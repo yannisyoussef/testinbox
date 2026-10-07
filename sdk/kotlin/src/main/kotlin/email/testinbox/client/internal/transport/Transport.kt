@@ -9,8 +9,11 @@ import email.testinbox.client.TestInboxIdempotencyInProgressException
 import email.testinbox.client.TestInboxForbiddenException
 import email.testinbox.client.TestInboxInboxGoneException
 import email.testinbox.client.TestInboxNotFoundException
+import email.testinbox.client.TestInboxProtocolException
 import email.testinbox.client.TestInboxQuotaExceededException
 import email.testinbox.client.TestInboxRateLimitException
+import email.testinbox.client.TestInboxStorageLimitExceededException
+import email.testinbox.client.StorageRefusalReason
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -32,6 +35,20 @@ internal data class CreateInboxRequestDto(
     val localPart: String? = null,
 )
 
+/**
+ * ADR-035 §13 `StorageUsage` on the wire. Every member nullable here so that a
+ * malformed object is detected by the public mapping and reported as a
+ * protocol error, rather than defaulted to zero by the decoder.
+ */
+@Serializable
+internal data class StorageUsageDto(
+    val limitBytes: Long? = null,
+    val storedBytes: Long? = null,
+    val reservedBytes: Long? = null,
+    val availableBytes: Long? = null,
+    val overLimit: Boolean? = null,
+)
+
 @Serializable
 internal data class InboxDto(
     val id: String,
@@ -40,6 +57,11 @@ internal data class InboxDto(
     val state: String = "ACTIVE",
     val createdAt: String? = null,
     val expiresAt: String? = null,
+    // ADR-035 §13b members: all absent from a server that predates TI-STORAGE-004 (ADR-028).
+    val storage: StorageUsageDto? = null,
+    val storageRefusalCount: Long? = null,
+    val lastStorageRefusalAt: String? = null,
+    val lastStorageRefusalReason: String? = null,
 )
 
 @Serializable
@@ -94,7 +116,12 @@ internal data class MatcherDto(
 )
 
 @Serializable
-internal data class WaitRequestDto(val matcher: MatcherDto, val timeoutSeconds: Long)
+internal data class WaitRequestDto(
+    val matcher: MatcherDto,
+    val timeoutSeconds: Long,
+    /** ADR-035 §13c boundary. Null is OMITTED on the wire (`explicitNulls = false`): the legacy request, never 0. */
+    val afterStorageRefusalCount: Long? = null,
+)
 
 @Serializable
 internal data class WaitResultDto(
@@ -103,6 +130,9 @@ internal data class WaitResultDto(
     val elapsedMs: Long = 0,
     val arrivedButUnmatchedCount: Int? = null,
     val parseFailedCount: Int? = null,
+    /** Informational echoes from the deciding snapshot (ADR-035 §13c); never adopted as a boundary. */
+    val storageRefusalCount: Long? = null,
+    val lastStorageRefusalAt: String? = null,
 )
 
 @Serializable
@@ -151,6 +181,12 @@ internal data class ProblemDto(
     val current: Long? = null,
     val apiKeyId: String? = null,
     val publicId: String? = null,
+    // ADR-035 §13c storage-limit-exceeded members; `quota`/`limit`/`current` above are reused.
+    val inboxId: String? = null,
+    val refusalReason: String? = null,
+    val afterStorageRefusalCount: Long? = null,
+    val storageRefusalCount: Long? = null,
+    val lastStorageRefusalAt: String? = null,
 )
 
 /**
@@ -210,6 +246,10 @@ internal class Transport(
                 ),
             ),
         )
+
+    /** ADR-035 §13a: the authenticated key's own workspace. */
+    suspend fun getWorkspaceStorage(): StorageUsageDto =
+        json.decodeFromString(StorageUsageDto.serializer(), String(execute("GET", "/v1/workspace/storage")))
 
     suspend fun getMessage(id: String): MessageDto =
         json.decodeFromString(MessageDto.serializer(), String(execute("GET", "/v1/messages/$id")))
@@ -326,6 +366,9 @@ internal class Transport(
     ): RuntimeException {
         val type = problem.type
         return when {
+            // Exact match on the full URI: this is the one 409 a wait may answer
+            // with, and a suffix match would let an unrelated future type share it.
+            type == TestInboxStorageLimitExceededException.STORAGE_LIMIT_EXCEEDED_TYPE -> storageLimitExceeded(problem, detail)
             type?.endsWith("/quota-exceeded") == true ->
                 TestInboxQuotaExceededException(
                     detail,
@@ -352,5 +395,43 @@ internal class Transport(
                 TestInboxIdempotencyConflictException(detail, problem.correlationId, type)
             else -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
         }
+    }
+
+    /**
+     * A `storage-limit-exceeded` problem carries five semantic members
+     * (ADR-035 §13c). The problem TYPE claims the meaning, so a body that
+     * claims it and omits one of them is a contract violation: a protocol
+     * error, never a fabricated zero, a guessed reason or a generic conflict.
+     * An unknown `refusalReason` STRING is not malformed and passes through.
+     */
+    private fun storageLimitExceeded(problem: ProblemDto, detail: String): RuntimeException {
+        val missing =
+            listOfNotNull(
+                "inboxId".takeIf { problem.inboxId == null },
+                "refusalReason".takeIf { problem.refusalReason == null },
+                "afterStorageRefusalCount".takeIf { (problem.afterStorageRefusalCount ?: -1) < 0 },
+                "storageRefusalCount".takeIf { (problem.storageRefusalCount ?: -1) < 0 },
+                "lastStorageRefusalAt".takeIf { problem.lastStorageRefusalAt == null },
+            )
+        if (missing.isNotEmpty()) {
+            return TestInboxProtocolException(
+                "the server sent a storage-limit-exceeded problem without ${missing.joinToString(", ")}",
+            )
+        }
+        val lastRefusalAt =
+            runCatching { java.time.Instant.parse(problem.lastStorageRefusalAt) }
+                .getOrElse { return TestInboxProtocolException("the server sent an unparseable 'lastStorageRefusalAt'") }
+        return TestInboxStorageLimitExceededException(
+            message = detail,
+            correlationId = problem.correlationId,
+            inboxId = problem.inboxId!!,
+            refusalReason = StorageRefusalReason(problem.refusalReason!!),
+            afterStorageRefusalCount = problem.afterStorageRefusalCount!!,
+            storageRefusalCount = problem.storageRefusalCount!!,
+            lastStorageRefusalAt = lastRefusalAt,
+            quota = problem.quota,
+            limit = problem.limit,
+            current = problem.current,
+        )
     }
 }

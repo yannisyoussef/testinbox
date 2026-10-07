@@ -24,6 +24,8 @@ import {
   TestInboxForbiddenError,
   TestInboxInboxGoneError,
   TestInboxNotFoundError,
+  TestInboxProtocolError,
+  TestInboxStorageLimitExceededError,
   type ProblemDetails,
 } from "../errors";
 
@@ -58,6 +60,16 @@ export interface CreateInboxRequestDto {
   localPart?: string;
 }
 
+/** The wire shape of ADR-035 §13's `StorageUsage`. Validated, never spread, into the public type. */
+export interface StorageUsageDto {
+  limitBytes?: unknown;
+  storedBytes?: unknown;
+  reservedBytes?: unknown;
+  availableBytes?: unknown;
+  overLimit?: unknown;
+  [key: string]: unknown;
+}
+
 export interface InboxDto {
   id: string;
   address: string;
@@ -65,6 +77,11 @@ export interface InboxDto {
   state?: string;
   createdAt?: string;
   expiresAt?: string;
+  /** ADR-035 §13b members. Absent from a server that predates TI-STORAGE-004 (ADR-028). */
+  storage?: unknown;
+  storageRefusalCount?: unknown;
+  lastStorageRefusalAt?: unknown;
+  lastStorageRefusalReason?: unknown;
   [key: string]: unknown;
 }
 
@@ -160,6 +177,8 @@ export interface MessageMatcherDto {
 export interface WaitRequestDto {
   matcher?: MessageMatcherDto;
   timeoutSeconds: number;
+  /** ADR-035 §13c observation boundary. Omitted entirely for the legacy contract; never sent as 0 by default. */
+  afterStorageRefusalCount?: number;
 }
 
 /**
@@ -173,6 +192,9 @@ export interface WaitResultDto {
   elapsedMs?: number;
   arrivedButUnmatchedCount?: number;
   parseFailedCount?: number;
+  /** Informational echoes from the deciding snapshot (ADR-035 §13c). The SDK never adopts them as a boundary. */
+  storageRefusalCount?: number;
+  lastStorageRefusalAt?: string | null;
   [key: string]: unknown;
 }
 
@@ -201,7 +223,72 @@ function asProblemDetails(status: number, body: unknown): ProblemDetails {
     current: typeof body.current === "number" ? body.current : undefined,
     apiKeyId: typeof body.apiKeyId === "string" ? body.apiKeyId : undefined,
     publicId: typeof body.publicId === "string" ? body.publicId : undefined,
+    inboxId: typeof body.inboxId === "string" ? body.inboxId : undefined,
+    refusalReason: typeof body.refusalReason === "string" ? body.refusalReason : undefined,
+    afterStorageRefusalCount:
+      typeof body.afterStorageRefusalCount === "number" ? body.afterStorageRefusalCount : undefined,
+    storageRefusalCount: typeof body.storageRefusalCount === "number" ? body.storageRefusalCount : undefined,
+    lastStorageRefusalAt: typeof body.lastStorageRefusalAt === "string" ? body.lastStorageRefusalAt : undefined,
   };
+}
+
+export const STORAGE_LIMIT_EXCEEDED_TYPE = "https://testinbox.email/problems/storage-limit-exceeded";
+
+/** A non-negative safe integer, or undefined. */
+function countOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * Parses an RFC 3339 timestamp the contract marks `date-time`, or fails as a
+ * protocol error. `new Date("garbage")` is an `Invalid Date` that would
+ * otherwise escape silently (docs/sdk/principles.md #6).
+ */
+export function parseInstant(value: unknown, field: string): Date {
+  if (typeof value !== "string") throw new TestInboxProtocolError(`the server omitted required field '${field}'`);
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new TestInboxProtocolError(`the server sent an unparseable '${field}'`);
+  return date;
+}
+
+/**
+ * A `storage-limit-exceeded` problem carries five semantic members
+ * (ADR-035 §13c). The problem TYPE is what claims the meaning, so a body that
+ * claims it and omits one of them is a contract violation: it becomes a
+ * protocol error, never a fabricated zero, a guessed reason or a generic
+ * conflict. An unknown `refusalReason` STRING is not malformed — it passes
+ * through as the exact wire value.
+ */
+function storageLimitExceeded(message: string, problem: ProblemDetails): TestInboxError {
+  const afterStorageRefusalCount = countOrUndefined(problem.afterStorageRefusalCount);
+  const storageRefusalCount = countOrUndefined(problem.storageRefusalCount);
+  const missing = [
+    problem.inboxId === undefined && "inboxId",
+    problem.refusalReason === undefined && "refusalReason",
+    afterStorageRefusalCount === undefined && "afterStorageRefusalCount",
+    storageRefusalCount === undefined && "storageRefusalCount",
+    problem.lastStorageRefusalAt === undefined && "lastStorageRefusalAt",
+  ].filter((name): name is string => typeof name === "string");
+  if (missing.length > 0) {
+    return new TestInboxProtocolError(
+      `the server sent a storage-limit-exceeded problem without ${missing.join(", ")}`,
+      problem,
+    );
+  }
+  const lastStorageRefusalAt = new Date(problem.lastStorageRefusalAt!);
+  if (Number.isNaN(lastStorageRefusalAt.getTime())) {
+    return new TestInboxProtocolError("the server sent an unparseable 'lastStorageRefusalAt'", problem);
+  }
+  return new TestInboxStorageLimitExceededError(message, problem, {
+    inboxId: problem.inboxId!,
+    refusalReason: problem.refusalReason!,
+    afterStorageRefusalCount: afterStorageRefusalCount!,
+    storageRefusalCount: storageRefusalCount!,
+    lastStorageRefusalAt,
+    ...(problem.quota !== undefined && { quota: problem.quota }),
+    ...(problem.limit !== undefined && { limit: problem.limit }),
+    ...(problem.current !== undefined && { current: problem.current }),
+  });
 }
 
 function errorForStatus(status: number, problem: ProblemDetails): TestInboxError {
@@ -222,6 +309,9 @@ function errorForStatus(status: number, problem: ProblemDetails): TestInboxError
       // wait for a cooldown, retry with the same key, never reuse the key, or
       // revoke and re-mint. The problem type decides, never the status code.
       const type = problem.type ?? "";
+      // Exact match on the full URI: this is the one 409 a wait may answer with,
+      // and mapping it by suffix alone would let an unrelated future type share it.
+      if (type === STORAGE_LIMIT_EXCEEDED_TYPE) return storageLimitExceeded(message, problem);
       if (type.endsWith("/quota-exceeded")) return new TestInboxQuotaExceededError(message, problem);
       if (type.endsWith("/idempotency-request-in-progress")) {
         return new TestInboxIdempotencyInProgressError(message, problem);
@@ -312,6 +402,12 @@ export class Transport {
       { body: request, signal },
     );
     return (await res.json()) as WaitResultDto;
+  }
+
+  /** ADR-035 §13a: the authenticated key's own workspace. */
+  async getWorkspaceStorage(): Promise<StorageUsageDto> {
+    const res = await this.#request("GET", "/v1/workspace/storage", {});
+    return (await res.json()) as StorageUsageDto;
   }
 
   async getRawMime(messageId: string): Promise<Uint8Array> {

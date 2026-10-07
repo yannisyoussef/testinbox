@@ -19,6 +19,8 @@ export {
   TestInboxForbiddenError,
   TestInboxInboxGoneError,
   TestInboxNotFoundError,
+  TestInboxProtocolError,
+  TestInboxStorageLimitExceededError,
   TestInboxTimeoutError,
   type ProblemDetails,
 } from "./errors";
@@ -40,6 +42,8 @@ export type {
   InboxState,
   Message,
   ParseStatus,
+  StorageRefusalReason,
+  StorageUsage,
   TestInboxClientOptions,
   WaitForMessageOptions,
 } from "./types";

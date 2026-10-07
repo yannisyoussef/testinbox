@@ -36,6 +36,16 @@ export interface ProblemDetails {
   current?: number;
   /** Tokens left, when the server reports it. */
   remaining?: number;
+  /** On `storage-limit-exceeded`, the inbox whose wait observed the refusal (ADR-035 §13c). */
+  inboxId?: string;
+  /** On `storage-limit-exceeded`, why the most recent copy was refused. Unknown future values pass through. */
+  refusalReason?: string;
+  /** On `storage-limit-exceeded`, the observation boundary the server evaluated against. */
+  afterStorageRefusalCount?: number;
+  /** On `storage-limit-exceeded`, the inbox's refusal count in the deciding snapshot. */
+  storageRefusalCount?: number;
+  /** On `storage-limit-exceeded`, when the most recent refusal was recorded (RFC 3339). */
+  lastStorageRefusalAt?: string;
 }
 
 /** Base class for every error thrown by the TestInbox SDK. */
@@ -152,6 +162,82 @@ export class TestInboxQuotaExceededError extends TestInboxError {
     this.quota = problem?.quota;
     this.limit = problem?.limit;
     this.current = problem?.current;
+  }
+}
+
+/**
+ * The server's response did not match the committed contract: a member the
+ * contract requires was absent or malformed, or a timestamp would not parse.
+ * Typed rather than an `Invalid Date` or a bare `TypeError` escaping from the
+ * SDK's internals (docs/sdk/principles.md #6). Nothing is fabricated to paper
+ * over it.
+ */
+export class TestInboxProtocolError extends TestInboxError {
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxProtocolError";
+  }
+}
+
+/**
+ * 409 with problem type `storage-limit-exceeded` (ADR-035 §13c): a wait that
+ * observed storage refusals found none of the awaited messages, and a storage
+ * ceiling had refused a copy for this inbox after the observation boundary —
+ * possibly the very message being awaited.
+ *
+ * State-shaped: waiting does not help and the SDK never retries it. By the
+ * time your handler runs, the inbox's `storageRefusalCursor` has already
+ * advanced to `storageRefusalCount`, so the next wait on that object observes
+ * only later refusals.
+ *
+ * `quota`, `limit` and `current` describe the refusing scope — the inbox for
+ * `INBOX_LIMIT`, the workspace for `WORKSPACE_LIMIT` — and are absent for
+ * `SERVICE_CAPACITY`, which is one bit: no global figure is ever disclosed
+ * (ADR-035 §13d).
+ */
+export class TestInboxStorageLimitExceededError extends TestInboxError {
+  readonly inboxId: string;
+  /** Known values are `INBOX_LIMIT`, `WORKSPACE_LIMIT` and `SERVICE_CAPACITY`; future values pass through. */
+  readonly refusalReason: string;
+  /** The boundary the server evaluated against: your cursor, clamped once to the count at the first evaluation. */
+  readonly afterStorageRefusalCount: number;
+  /** The inbox's refusal count in the deciding snapshot — what the cursor advanced to. */
+  readonly storageRefusalCount: number;
+  readonly lastStorageRefusalAt: Date;
+  // `declare`d, so an absent member is genuinely absent on the instance
+  // (`"quota" in error` is false), not a property holding `undefined`.
+  /** `STORED_BYTES` for a tenant scope; absent for `SERVICE_CAPACITY`. */
+  declare readonly quota?: string;
+  /** The refusing scope's limit; absent for `SERVICE_CAPACITY`. */
+  declare readonly limit?: number;
+  /** The refusing scope's `stored + reserved`; absent for `SERVICE_CAPACITY`. */
+  declare readonly current?: number;
+
+  constructor(
+    message: string,
+    problem: ProblemDetails,
+    fields: {
+      inboxId: string;
+      refusalReason: string;
+      afterStorageRefusalCount: number;
+      storageRefusalCount: number;
+      lastStorageRefusalAt: Date;
+      quota?: string;
+      limit?: number;
+      current?: number;
+    },
+    options?: ErrorOptions,
+  ) {
+    super(message, problem, options);
+    this.name = "TestInboxStorageLimitExceededError";
+    this.inboxId = fields.inboxId;
+    this.refusalReason = fields.refusalReason;
+    this.afterStorageRefusalCount = fields.afterStorageRefusalCount;
+    this.storageRefusalCount = fields.storageRefusalCount;
+    this.lastStorageRefusalAt = fields.lastStorageRefusalAt;
+    if (fields.quota !== undefined) this.quota = fields.quota;
+    if (fields.limit !== undefined) this.limit = fields.limit;
+    if (fields.current !== undefined) this.current = fields.current;
   }
 }
 

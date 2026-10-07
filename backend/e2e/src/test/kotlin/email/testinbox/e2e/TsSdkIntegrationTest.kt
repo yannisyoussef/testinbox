@@ -1,5 +1,6 @@
 package email.testinbox.e2e
 
+import email.testinbox.client.TestInboxClient
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.Test
@@ -50,6 +51,28 @@ class TsSdkIntegrationTest {
         return Run(process.exitValue(), output)
     }
 
+    /**
+     * The TS process cannot write the database, so a refusal that must land
+     * AFTER the TS test holds an `Inbox` object is arranged by a file
+     * handshake: the test writes the inbox id to [request], this side records
+     * the §6a refusal, then touches [done]. State-based, no sleeps decide it.
+     */
+    private fun refuseOnRequest(
+        request: File,
+        done: File,
+    ): Thread =
+        Thread {
+            val until = System.nanoTime() + 120_000_000_000L
+            while (!request.isFile && System.nanoTime() < until) Thread.sleep(50)
+            if (request.isFile) {
+                E2eStorage.recordRefusal(request.readText().trim())
+                done.writeText("refused\n")
+            }
+        }.apply {
+            isDaemon = true
+            start()
+        }
+
     @Test
     fun `TypeScript SDK exercises the live stack end-to-end`() {
         val npm = findNpm()
@@ -57,6 +80,16 @@ class TsSdkIntegrationTest {
         if (!sdkDir.resolve("node_modules").isDirectory) {
             run(npm, "ci").exit shouldBe 0
         }
+        val handshake =
+            java.nio.file.Files
+                .createTempDirectory("ti-storage-005-handshake")
+                .toFile()
+        val request = handshake.resolve("refuse-request")
+        val done = handshake.resolve("refuse-done")
+        val refuser = refuseOnRequest(request, done)
+        // An inbox that already carries a refusal when the TS suite fetches it.
+        val preRefused = TestInboxClient(apiKey = E2eStack.API_KEY, baseUrl = E2eStack.apiBaseUrl).createInboxBlocking()
+        E2eStorage.recordRefusal(preRefused.id)
         val result =
             run(
                 npm,
@@ -66,15 +99,16 @@ class TsSdkIntegrationTest {
                     mapOf(
                         "TESTINBOX_BASE_URL" to E2eStack.apiBaseUrl,
                         "TESTINBOX_API_KEY" to E2eStack.API_KEY,
-                        // ADR-035 §13c: the current SDK sends no cursor, so an inbox
-                        // whose refusal count is not zero must still time out, never 409.
-                        "TESTINBOX_REFUSED_INBOX_ID" to StorageVisibilityAcceptanceTest.inboxWithRefusals(),
+                        "TESTINBOX_REFUSED_INBOX_ID" to preRefused.id,
+                        "TESTINBOX_REFUSAL_REQUEST_FILE" to request.absolutePath,
+                        "TESTINBOX_REFUSAL_DONE_FILE" to done.absolutePath,
                     ),
             )
+        refuser.join(5_000)
         result.exit shouldBe 0
-        // Both live cases ran: a skipped case (for instance a lost
-        // TESTINBOX_REFUSED_INBOX_ID) would still exit 0 and prove nothing.
-        result.output shouldContain "2 passed"
+        // All four live cases ran: a skipped case (for instance a lost
+        // environment variable) would still exit 0 and prove nothing.
+        result.output shouldContain "4 passed"
         result.output.contains("skipped") shouldBe false
     }
 }
