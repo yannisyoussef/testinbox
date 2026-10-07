@@ -26,13 +26,17 @@ import email.testinbox.application.port.StorageAmbiguity
 import email.testinbox.application.port.StorageInspection
 import email.testinbox.application.port.StorageLedger
 import email.testinbox.application.port.StorageProtocolMetrics
+import email.testinbox.application.port.StorageVisibility
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.WaitMetrics
+import email.testinbox.application.port.WaitObservations
 import email.testinbox.application.port.WaitSlots
 import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.application.query.ApiKeyQueries
 import email.testinbox.application.query.InboxQueries
 import email.testinbox.application.query.MessageQueries
+import email.testinbox.application.query.StorageQueries
+import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.ReleaseStaleReservations
 import email.testinbox.application.storage.VerifyAmbiguousUploads
 import email.testinbox.application.usecase.AuthenticateApiKey
@@ -46,6 +50,7 @@ import email.testinbox.application.usecase.OrphanBlobSweep
 import email.testinbox.application.usecase.ReconcileStorageAccounting
 import email.testinbox.application.usecase.RevokeApiKey
 import email.testinbox.application.usecase.WaitForMessage
+import email.testinbox.application.usecase.WaitSyncHook
 import email.testinbox.domain.storage.StorageCapacityPolicy
 import email.testinbox.notification.PgListenNotifier
 import email.testinbox.notification.PgListenNotifierConfig
@@ -70,6 +75,7 @@ import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
 import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -286,23 +292,48 @@ class ApiWiring(
         config: TestInboxConfig,
     ): DeleteInbox = DeleteInbox(inboxes, reservations, tx, clock, config, inboxMetrics)
 
+    /**
+     * ADR-035 §3: the ONE effective storage policy, shared with T1 in the
+     * ingestion gateway through the same factory. It decides the limits a
+     * tenant sees; it enforces nothing on its own.
+     */
     @Bean
+    fun storageCapacityPolicy(limits: LimitsConfig): StorageCapacityPolicy = EffectiveStoragePolicy.of(limits)
+
+    /** ADR-035 §13a/§13b read side: workspace and inbox `StorageUsage`, tenant-scoped. */
+    @Bean
+    fun storageQueries(
+        visibility: StorageVisibility,
+        policy: StorageCapacityPolicy,
+    ): StorageQueries = StorageQueries(visibility, policy)
+
+    /**
+     * [hook] is the ADR-035 §17 test seam; no production bean of that type
+     * exists, so the use case runs with [WaitSyncHook.NOOP]. A test context
+     * may contribute one to interleave a commit with the evaluation sequence.
+     */
+    @Bean
+    @Suppress("LongParameterList") // a @Bean method's parameters are its dependencies: one per wait collaborator
     fun waitForMessage(
         inboxes: InboxRepository,
-        messages: MessageRepository,
+        observations: WaitObservations,
         notifier: MessageNotifier,
         waitSlots: WaitSlots,
         limits: LimitsConfig,
         config: TestInboxConfig,
+        policy: StorageCapacityPolicy,
+        hook: ObjectProvider<WaitSyncHook>,
     ): WaitForMessage =
         WaitForMessage(
             inboxes,
-            messages,
+            observations,
             notifier,
             waitSlots,
             limits.quotas.maxConcurrentWaits,
             clock,
             config,
+            policy,
+            hook = hook.getIfAvailable { WaitSyncHook.NOOP },
             metrics = waitMetrics,
         )
 

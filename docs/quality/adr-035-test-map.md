@@ -53,10 +53,17 @@ Suite abbreviations. The directories hold the Kotlin tests:
 | 34 | Quota classification by fault injection | TI-STORAGE-003 | S `FencedUploadTest`; I `GuardedIngestProtocolTest` |
 | 35 | MinIO stopped: `451`, then admission after restart | TI-STORAGE-003 | I `StorageOutageAndBoundTest` (container paused and resumed: a hung storage, asserted AMBIGUOUS and persisted); refused connections: `GuardedIngestProtocolTest` (unreachable, asserted UNAVAILABLE) |
 | 36 | `552`, `553` and the unknown `250` unchanged; gateway cap = `contract.yaml` | TI-STORAGE-003 | I `SmtpIngestionIntegrationTest` |
-| 37–44 | The wait protocol (`409`, cursor) | **Deferred to TI-STORAGE-004** | the legacy wait is proven unchanged: API `WaitApiTest` (a refusal notify mid-wait) |
-| 45 | SDK storage behaviour | **Deferred to TI-STORAGE-005** | — |
-| 46 | `StorageUsage` API | **Deferred to TI-STORAGE-004** | — |
-| 47 | Metric cardinality | TI-STORAGE-003 (protocol metrics); `STORAGE_LIMIT_EXCEEDED` waits for TI-STORAGE-004 | observability `MetricCardinalityTest` |
+| 37 | Owner: refusal before the first wait, cursor 0 → `409` at once, no slot | TI-STORAGE-004 | API `WaitStorageRefusalApiTest` (owner test 37, refusal by the real guarded protocol); A `WaitForMessageStorageRefusalTest` |
+| 38 | Refusal during the wait, via the real guarded protocol: `409`, not `TIMEOUT` | TI-STORAGE-004 | API `WaitStorageRefusalApiTest` (owner test 38: `GuardedRefusals` runs `GuardedStorage` with `TENANT_LIMITS`, the §6a upsert and its `pg_notify` wake the parked waiter) |
+| 39 | Refusal after the match committed: `MATCHED`; the next wait with the unadvanced cursor gets `409` | TI-STORAGE-004 | API `WaitStorageRefusalApiTest`; A `WaitForMessageStorageRefusalTest` |
+| 40 | Match racing a refusal, both orders, one snapshot decides | TI-STORAGE-004 | API `WaitStorageRefusalApiTest` (the `WaitSyncHook` seam commits between check and recheck); A `WaitForMessageStorageRefusalTest`; P `WaitObservationsTest` (REPEATABLE READ, with a READ COMMITTED mutant that sees the split) |
+| 41 | Cursor edges: equal, above (clamped once), negative (`400`), omitted (never `409`, `TIMEOUT` carries the count) | TI-STORAGE-004 | API `WaitStorageRefusalApiTest`; A `WaitForMessageStorageRefusalTest` (including `Long.MAX_VALUE`) |
+| 42 | The echo comes from the deciding snapshot; a refusal committed after it is not echoed | TI-STORAGE-004 | API `WaitStorageRefusalApiTest` (`afterDecision` seam), A `WaitForMessageStorageRefusalTest` |
+| 43 | Chained calls, independent callers, restart: raw REST portion | TI-STORAGE-004 (raw REST); **SDK portion DEFERRED TO TI-STORAGE-005** | API `WaitStorageRefusalApiTest` (caller-managed cursor, two credentials, no cursor table or column in the schema) |
+| 44 | Precedence: `409` before slot `429` with no slot consumed; another inbox's refusal; LISTEN killed; `404`/`410`; request-rate `429` first | TI-STORAGE-004 | API `WaitStoragePrecedenceApiTest` (one slot per workspace, `pg_terminate_backend` on the LISTEN session), `RateLimitOrderingTest` |
+| 45 | SDK storage behaviour | **Deferred to TI-STORAGE-005** | the released SDKs are proven unaffected: e2e `StorageVisibilityAcceptanceTest` (JVM), `TsSdkIntegrationTest` with `TESTINBOX_REFUSED_INBOX_ID` (TypeScript) |
+| 46 | `StorageUsage` for the workspace and the inbox equals the accounting; inbox `availableBytes` is the minimum headroom; no global figure in any tenant response; idempotent replay returns live fields; the contract stays additive | TI-STORAGE-004 | P `StorageVisibilityTest` (every base/delta/reservation combination, missing base row, `RESERVED` and `RELEASING`, tenant scoping, corrupt row, concurrent compaction, no advisory lock, plan sanity); A `StorageQueriesTest`, `EffectiveStoragePolicyTest`; API `StorageVisibilityApiTest`, `StorageDisclosureTest`; AR `DependencyRuleTest` (one policy construction site); CI `openapi-breaking-check.sh` |
+| 47 | Metric cardinality, including `STORAGE_LIMIT_EXCEEDED` | TI-STORAGE-003 / 004 | observability `MetricCardinalityTest`; A `WaitForMessageStorageRefusalTest` (the outcome is recorded) |
 | 48 | `DeploymentSafety` with enforcement ON | **Enablement gate** (no enforcement setting exists yet) | I `EnforcementOffLiveTest` proves that no configuration can enable refusal |
 | 49 | Activation barrier | **Enablement gate**; the capability names and generations it will read are published now | I `EnforcementOffLiveTest`, `GuardedIngestEdgeCasesTest` |
 | 50 | ArchUnit: no unfenced payload write (sync or async client, presigner, transfer manager); only the guarded protocol calls the fenced write; layers | TI-STORAGE-003 | AR `DependencyRuleTest` (fixtures proving each rule fails) |
@@ -93,3 +100,15 @@ Review hardening (TI-STORAGE-003 §55–§58), each with its own test:
 | HTTPS verifies the storage host name | S `FencedUploadTest` |
 | An early definitive answer survives a failed body write | S `FencedUploadTest` |
 | Breaker kinds accumulate; backoff doubling and cap; slot all-or-nothing, poison, and the out-of-lock ambiguity read | A `StorageBreakerTest`, `WriteSlotsTest` |
+
+TI-STORAGE-004 (authenticated visibility and the raw REST wait cursor; live enforcement still OFF):
+
+| Property | Where |
+|---|---|
+| T1 and the API derive the effective policy from one factory (`EffectiveStoragePolicy`); no other main class constructs a `StorageCapacityPolicy` | A `EffectiveStoragePolicyTest`, AR `DependencyRuleTest`, API `StorageVisibilityApiTest` |
+| Every wait evaluation is one short read-only REPEATABLE READ snapshot (messages, attachments, refusal record, and the `409` figures on demand), never held while parked, never inside a caller's transaction | P `WaitObservationsTest` |
+| `IngestionWiring` still constructs `StorageEnforcement.OFF` as a literal and no configuration can refuse | I `EnforcementOffLiveTest` (unchanged) |
+| The legacy wait (no cursor) can never receive `409`, with refusals already recorded and with one arriving while parked | API `WaitApiTest`, `WaitStorageRefusalApiTest`; A `WaitForMessageStorageRefusalTest`; e2e `StorageVisibilityAcceptanceTest`, `TsSdkIntegrationTest` |
+| `GET /v1/workspace/storage` is `READ` by an explicit rule, needs `messages:read`, and takes no workspace id from path, query or header | API `RouteCoverageTest`, `StorageVisibilityApiTest` |
+| A `SERVICE_CAPACITY` `409` carries no `quota`, `limit` or `current` member, and no tenant response names a global, node or reservation-level figure | API `StorageDisclosureTest` |
+| A refusal row that contradicts itself fails closed instead of presenting a made-up reason | P `StorageVisibilityTest` |

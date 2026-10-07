@@ -334,6 +334,42 @@ class DependencyRuleTest {
     }
 
     @Test
+    fun `the effective storage policy is derived in one place, shared by T1 and the API (ADR-035 §3, TI-STORAGE-004)`() {
+        // Two formulas could show a tenant a limit admission does not apply.
+        // Only the domain (its reference constant) and the one application
+        // factory may construct a policy; the api and ingestion wirings, and
+        // every other adapter, obtain it from `EffectiveStoragePolicy`.
+        noClasses()
+            .that()
+            .resideOutsideOfPackages("email.testinbox.domain..", "email.testinbox.application.storage..")
+            .should()
+            .callConstructorWhere(
+                com.tngtech.archunit.core.domain.JavaCall.Predicates.target(
+                    com.tngtech.archunit.core.domain.properties.HasOwner.Predicates.With.owner(
+                        com.tngtech.archunit.core.domain.JavaClass.Predicates.type(
+                            email.testinbox.domain.storage.StorageCapacityPolicy::class.java,
+                        ),
+                    ),
+                ),
+            ).because("the ceilings T1 admits against and the ones the API reports must be the same object (ADR-035 §3)")
+            .check(allClasses)
+        // Guard the guard: the factory itself does construct one.
+        classes()
+            .that()
+            .haveFullyQualifiedName("email.testinbox.application.storage.EffectiveStoragePolicy")
+            .should()
+            .callConstructorWhere(
+                com.tngtech.archunit.core.domain.JavaCall.Predicates.target(
+                    com.tngtech.archunit.core.domain.properties.HasOwner.Predicates.With.owner(
+                        com.tngtech.archunit.core.domain.JavaClass.Predicates.type(
+                            email.testinbox.domain.storage.StorageCapacityPolicy::class.java,
+                        ),
+                    ),
+                ),
+            ).check(allClasses)
+    }
+
+    @Test
     fun `the admission adapter is not a Spring bean, so no context can obtain it (TI-STORAGE-002)`() {
         classes()
             .that()

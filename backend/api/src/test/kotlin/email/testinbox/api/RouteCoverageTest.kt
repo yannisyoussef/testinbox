@@ -1,6 +1,7 @@
 package email.testinbox.api
 
 import email.testinbox.api.web.RateCategories
+import email.testinbox.domain.limits.RateCategory
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
@@ -51,6 +52,13 @@ class RouteCoverageTest : ApiIntegrationTestBase() {
                     !(method == "POST" && pattern == "/v1/inboxes")
             }
         unclassified.shouldBeEmpty()
+    }
+
+    @Test
+    fun `the workspace storage read is charged as READ by an explicit rule, not by the fallback (ADR-035 §13a)`() {
+        RateCategories.of("GET", "/v1/workspace/storage") shouldBe RateCategory.READ
+        // And the wait route stays WAIT whatever the body carries.
+        RateCategories.of("POST", "/v1/inboxes/11111111-1111-1111-1111-111111111111/messages/wait") shouldBe RateCategory.WAIT
     }
 
     @Test

@@ -1,5 +1,6 @@
 package email.testinbox.api
 
+import email.testinbox.api.storage.ApiTestHooks
 import email.testinbox.application.Sha256
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.ProvisioningRepository
@@ -23,6 +24,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.web.server.LocalServerPort
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection
+import org.springframework.context.annotation.Import
 import org.springframework.http.HttpEntity
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpMethod
@@ -47,6 +49,7 @@ import java.util.UUID
  * subclass can override (a dynamic property source outranks it).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Import(ApiTestHooks::class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestPropertySource(
     properties = [
@@ -104,6 +107,13 @@ abstract class ApiIntegrationTestBase {
         @JvmStatic
         @DynamicPropertySource
         fun properties(registry: DynamicPropertyRegistry) {
+            // The pooled DataSource comes from @ServiceConnection; the LISTEN
+            // notifier opens its own session-scoped connection from these
+            // properties (ADR-020), so without them LISTEN never connects and
+            // every wait in this suite is woken only by the degraded tick.
+            registry.add("spring.datasource.url") { postgres.jdbcUrl }
+            registry.add("spring.datasource.username") { postgres.username }
+            registry.add("spring.datasource.password") { postgres.password }
             registry.add("testinbox.storage.endpoint") { minio.s3URL }
             registry.add("testinbox.storage.access-key") { "testinbox" }
             registry.add("testinbox.storage.secret-key") { "testinbox123" }

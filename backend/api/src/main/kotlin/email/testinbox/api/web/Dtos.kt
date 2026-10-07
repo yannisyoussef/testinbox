@@ -2,6 +2,9 @@ package email.testinbox.api.web
 
 import email.testinbox.application.port.ApiKeyCursor
 import email.testinbox.application.port.MessageCursor
+import email.testinbox.application.port.StorageRefusalSnapshot
+import email.testinbox.application.query.InboxStorageView
+import email.testinbox.application.query.StorageUsageView
 import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.inbox.Inbox
@@ -18,6 +21,36 @@ data class CreateInboxRequest(
     val localPart: String? = null,
 )
 
+/**
+ * ADR-035 §13's `StorageUsage`: one scope of the caller's own tenancy. The
+ * wire name is `storedBytes`; the internal `committedBytes` never appears.
+ * No global figure has a field here, so none can be rendered by accident.
+ */
+data class StorageUsageDto(
+    val limitBytes: Long,
+    val storedBytes: Long,
+    val reservedBytes: Long,
+    val availableBytes: Long,
+    val overLimit: Boolean,
+) {
+    companion object {
+        fun from(view: StorageUsageView): StorageUsageDto =
+            StorageUsageDto(
+                limitBytes = view.limitBytes,
+                storedBytes = view.storedBytes,
+                reservedBytes = view.reservedBytes,
+                availableBytes = view.availableBytes,
+                overLimit = view.overLimit,
+            )
+    }
+}
+
+/**
+ * An inbox representation: the aggregate's own members plus its LIVE storage
+ * state (ADR-035 §13b). The storage members are read at response time, on an
+ * idempotent create replay too; they are not part of the `Inbox` aggregate
+ * and never enter the idempotency snapshot.
+ */
 data class InboxDto(
     val id: UUID,
     val address: String,
@@ -25,9 +58,16 @@ data class InboxDto(
     val state: String,
     val createdAt: Instant,
     val expiresAt: Instant,
+    val storage: StorageUsageDto,
+    val storageRefusalCount: Long,
+    val lastStorageRefusalAt: Instant?,
+    val lastStorageRefusalReason: String?,
 ) {
     companion object {
-        fun from(inbox: Inbox): InboxDto =
+        fun from(
+            inbox: Inbox,
+            storage: InboxStorageView,
+        ): InboxDto =
             InboxDto(
                 id = inbox.id.value,
                 address = inbox.address,
@@ -35,6 +75,10 @@ data class InboxDto(
                 state = inbox.state.name,
                 createdAt = inbox.createdAt,
                 expiresAt = inbox.expiresAt,
+                storage = StorageUsageDto.from(storage.storage),
+                storageRefusalCount = storage.refusals.count,
+                lastStorageRefusalAt = storage.refusals.lastAt,
+                lastStorageRefusalReason = storage.refusals.lastReason?.name,
             )
     }
 }
@@ -142,6 +186,11 @@ data class MessageMatcherDto(
 data class WaitRequestDto(
     val matcher: MessageMatcherDto? = null,
     val timeoutSeconds: Long? = null,
+    /**
+     * ADR-035 §13c opt-in. Absent is the legacy contract and is NOT zero:
+     * zero observes every refusal the inbox ever had, absence observes none.
+     */
+    val afterStorageRefusalCount: Long? = null,
 )
 
 data class WaitResultDto(
@@ -150,7 +199,43 @@ data class WaitResultDto(
     val elapsedMs: Long,
     val arrivedButUnmatchedCount: Int?,
     val parseFailedCount: Int?,
-)
+    /** Informational, from the deciding snapshot (ADR-035 §13c). */
+    val storageRefusalCount: Long,
+    val lastStorageRefusalAt: Instant?,
+) {
+    companion object {
+        fun matched(
+            message: MessageDto,
+            elapsedMs: Long,
+            refusals: StorageRefusalSnapshot,
+        ): WaitResultDto =
+            WaitResultDto(
+                status = "MATCHED",
+                message = message,
+                elapsedMs = elapsedMs,
+                arrivedButUnmatchedCount = null,
+                parseFailedCount = null,
+                storageRefusalCount = refusals.count,
+                lastStorageRefusalAt = refusals.lastAt,
+            )
+
+        fun timeout(
+            elapsedMs: Long,
+            arrivedButUnmatchedCount: Int,
+            parseFailedCount: Int,
+            refusals: StorageRefusalSnapshot,
+        ): WaitResultDto =
+            WaitResultDto(
+                status = "TIMEOUT",
+                message = null,
+                elapsedMs = elapsedMs,
+                arrivedButUnmatchedCount = arrivedButUnmatchedCount,
+                parseFailedCount = parseFailedCount,
+                storageRefusalCount = refusals.count,
+                lastStorageRefusalAt = refusals.lastAt,
+            )
+    }
+}
 
 /** Opaque cursor: base64url of `<epochMicros>:<id>`. */
 object Cursors {

@@ -3,6 +3,7 @@ package email.testinbox.application
 import email.testinbox.application.port.AppendOutcome
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.ExactAddressReservations
+import email.testinbox.application.port.InboxObservation
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
 import email.testinbox.application.port.MessageCursor
@@ -13,10 +14,13 @@ import email.testinbox.application.port.RateDecision
 import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.ReserveOutcome
 import email.testinbox.application.port.ReservedUpload
+import email.testinbox.application.port.StorageRefusalSnapshot
+import email.testinbox.application.port.TenantStorageFigures
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.UploadOutcome
 import email.testinbox.application.port.UploadRefusal
 import email.testinbox.application.port.WaitHandle
+import email.testinbox.application.port.WaitObservations
 import email.testinbox.application.port.WaitSlot
 import email.testinbox.application.port.WaitSlots
 import email.testinbox.application.port.WakeOutcome
@@ -30,6 +34,8 @@ import email.testinbox.domain.inbox.InboxState
 import email.testinbox.domain.inbox.ReservationStatus
 import email.testinbox.domain.limits.RateCategory
 import email.testinbox.domain.message.Message
+import email.testinbox.domain.storage.StorageRefusalReason
+import email.testinbox.domain.storage.StorageUsage
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneId
@@ -562,4 +568,67 @@ object NoIdempotencyRecords : email.testinbox.application.port.IdempotencyRecord
         now: Instant,
         batchSize: Int,
     ): Int = 0
+}
+
+/**
+ * In-memory ADR-035 §6a refusal records, keyed by inbox: what
+ * `inbox_storage.refusal_count / last_refusal_*` hold.
+ */
+class InMemoryRefusals {
+    val byInbox = java.util.concurrent.ConcurrentHashMap<InboxId, StorageRefusalSnapshot>()
+
+    fun refuse(
+        inboxId: InboxId,
+        reason: StorageRefusalReason,
+        at: Instant,
+    ): StorageRefusalSnapshot =
+        byInbox.compute(inboxId) { _, previous ->
+            StorageRefusalSnapshot((previous?.count ?: 0) + 1, at, reason)
+        }!!
+
+    fun of(inboxId: InboxId): StorageRefusalSnapshot = byInbox[inboxId] ?: StorageRefusalSnapshot.NONE
+}
+
+/**
+ * The wait use case's one-snapshot read, in memory: the messages list and the
+ * refusal record are captured together, under one lock, and handed to the
+ * evaluation. The byte figures a `409` body names come from [figures].
+ */
+class InMemoryWaitObservations(
+    private val messages: InMemoryMessageRepository,
+    private val refusals: InMemoryRefusals,
+    var figures: (InboxId) -> TenantStorageFigures = { TenantStorageFigures(StorageUsage.ZERO, StorageUsage.ZERO) },
+) : WaitObservations {
+    /** How many evaluations ran: a wait that re-reads after deciding would show up here. */
+    val evaluations =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+    val storageReads =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
+    override fun <R : Any> observe(
+        workspaceId: WorkspaceId,
+        inboxId: InboxId,
+        evaluate: (InboxObservation) -> R,
+    ): R {
+        evaluations.incrementAndGet()
+        val observation =
+            synchronized(this) {
+                Observation(inboxId, messages.listVisible(inboxId), refusals.of(inboxId))
+            }
+        return evaluate(observation)
+    }
+
+    private inner class Observation(
+        private val inboxId: InboxId,
+        override val messages: List<Message>,
+        override val refusals: StorageRefusalSnapshot,
+    ) : InboxObservation {
+        /** Read on demand, as the adapter does: a SERVICE_CAPACITY decision never asks. */
+        override fun storage(): TenantStorageFigures {
+            storageReads.incrementAndGet()
+            return figures(inboxId)
+        }
+    }
 }

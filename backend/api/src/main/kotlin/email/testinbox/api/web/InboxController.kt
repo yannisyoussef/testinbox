@@ -4,6 +4,7 @@ import email.testinbox.api.auth.AuthAttributes
 import email.testinbox.api.auth.requireScope
 import email.testinbox.application.query.InboxQueries
 import email.testinbox.application.query.MessageQueries
+import email.testinbox.application.query.StorageQueries
 import email.testinbox.application.usecase.CreateInbox
 import email.testinbox.application.usecase.DeleteInbox
 import email.testinbox.application.usecase.WaitForMessage
@@ -38,6 +39,7 @@ class InboxController(
     private val waitForMessage: WaitForMessage,
     private val inboxQueries: InboxQueries,
     private val messageQueries: MessageQueries,
+    private val storageQueries: StorageQueries,
 ) {
     @PostMapping
     fun create(
@@ -108,7 +110,11 @@ class InboxController(
                         // creation would imply the endpoint is always
                         // idempotent, which it is not.
                         if (idempotency != null) header(IdempotencyHeader.REPLAYED, result.replayed.toString())
-                    }.body(InboxDto.from(result.inbox))
+                        // ADR-035 §13b: the storage members are LIVE, read now
+                        // for the created or replayed inbox id. They are never
+                        // part of the idempotency snapshot, so a replay reports
+                        // the original identity with the current accounting.
+                    }.body(InboxDto.from(result.inbox, storageQueries.inbox(key.workspaceId, result.inbox.id)))
             }
 
             CreateInbox.Result.IdempotencyKeyReused -> {
@@ -169,7 +175,7 @@ class InboxController(
         val inbox =
             inboxQueries.get(key.workspaceId, InboxId(id))
                 ?: return inboxNotFound(request)
-        return ResponseEntity.ok(InboxDto.from(inbox))
+        return ResponseEntity.ok(InboxDto.from(inbox, storageQueries.inbox(key.workspaceId, inbox.id)))
     }
 
     @DeleteMapping("/{id}")
@@ -265,32 +271,32 @@ class InboxController(
                             headers = headerMatchers,
                         ),
                     timeoutSeconds = timeoutSeconds,
+                    // Passed through as sent: absent stays absent (legacy
+                    // contract), and the use case refuses a negative value.
+                    afterStorageRefusalCount = body.afterStorageRefusalCount,
                 ),
             )
         return when (result) {
             is WaitForMessage.Result.Matched -> {
-                ResponseEntity.ok(
-                    WaitResultDto(
-                        status = "MATCHED",
-                        message = MessageDto.from(result.message),
-                        elapsedMs = result.elapsedMs,
-                        arrivedButUnmatchedCount = null,
-                        parseFailedCount = null,
-                    ),
-                )
+                ResponseEntity.ok(WaitResultDto.matched(MessageDto.from(result.message), result.elapsedMs, result.refusals))
             }
 
             is WaitForMessage.Result.Timeout -> {
                 // ADR-020: window expiry is a successful query with a negative answer — never 408.
                 ResponseEntity.ok(
-                    WaitResultDto(
-                        status = "TIMEOUT",
-                        message = null,
+                    WaitResultDto.timeout(
                         elapsedMs = result.elapsedMs,
                         arrivedButUnmatchedCount = result.arrivedButUnmatchedCount,
                         parseFailedCount = result.parseFailedCount,
+                        refusals = result.refusals,
                     ),
                 )
+            }
+
+            is WaitForMessage.Result.StorageLimitExceeded -> {
+                // ADR-035 §13c: state-shaped, so 409 and no Retry-After. Rendered
+                // from the result alone: no second read may enrich it.
+                Problems.respond(Problems.storageLimitExceeded(result, request))
             }
 
             WaitForMessage.Result.InboxGone -> {

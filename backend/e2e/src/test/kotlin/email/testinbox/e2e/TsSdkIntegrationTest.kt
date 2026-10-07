@@ -60,6 +60,9 @@ class TsSdkIntegrationTest {
                     mapOf(
                         "TESTINBOX_BASE_URL" to E2eStack.apiBaseUrl,
                         "TESTINBOX_API_KEY" to E2eStack.API_KEY,
+                        // ADR-035 §13c: the current SDK sends no cursor, so an inbox
+                        // whose refusal count is not zero must still time out, never 409.
+                        "TESTINBOX_REFUSED_INBOX_ID" to StorageVisibilityAcceptanceTest.inboxWithRefusals(),
                     ),
             )
         exit shouldBe 0

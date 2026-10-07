@@ -76,6 +76,13 @@ enum class WaitOutcome {
     INVALID_REQUEST,
 
     /**
+     * ADR-035 §13c: no match, and a storage ceiling refused a copy for the
+     * inbox after the caller's observation boundary. Only a call that opted
+     * in with `afterStorageRefusalCount` can end here.
+     */
+    STORAGE_LIMIT_EXCEEDED,
+
+    /**
      * The call threw. Recorded rather than dropped: a wait that fails is still
      * a wait that consumed a connection and a slot, and leaving it out would
      * make the duration histogram quietly describe only the happy paths.
