@@ -8,7 +8,6 @@ import email.testinbox.domain.storage.StorageRefusalReason
 import email.testinbox.notification.PgListenNotifier
 import email.testinbox.persistence.JdbcStorageReservations
 import io.kotest.matchers.longs.shouldBeGreaterThan
-import io.kotest.matchers.longs.shouldBeLessThan
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.awaitility.Awaitility.await
@@ -131,12 +130,21 @@ class WaitStoragePrecedenceApiTest : ApiIntegrationTestBase() {
         val tenant = provisionIsolatedWorkspace("prec-other")
         val a = createInbox(tenant.apiKey)
         val b = createInbox(tenant.apiKey)
-        executor.submit {
-            awaitLeases(tenant.workspaceId, 1)
-            recordRefusal(b)
-            guardedRefusals.refuse(tenant.workspaceId, b, StorageRefusalReason.INBOX_LIMIT)
-        }
+        val refusedAt =
+            java.util.concurrent.atomic
+                .AtomicLong(0)
+        val refusal =
+            executor.submit {
+                awaitLeases(tenant.workspaceId, 1)
+                recordRefusal(b)
+                guardedRefusals.refuse(tenant.workspaceId, b, StorageRefusalReason.INBOX_LIMIT)
+                refusedAt.set(System.nanoTime())
+            }
         val response = wait(tenant.apiKey, a, cursor = 0, timeoutSeconds = 2)
+        val returnedAt = System.nanoTime()
+        refusal.get()
+        // The refusals landed while A was parked, before its window ended.
+        (refusedAt.get() in 1 until returnedAt) shouldBe true
         response.statusCode.value() shouldBe 200
         val result = json.readTree(response.body)
         result["status"].asText() shouldBe "TIMEOUT"
@@ -165,14 +173,11 @@ class WaitStoragePrecedenceApiTest : ApiIntegrationTestBase() {
             // A refusal whose notify may now be lost.
             guardedRefusals.refuse(tenant.workspaceId, inbox, StorageRefusalReason.INBOX_LIMIT)
         }
-        val started = System.nanoTime()
         val response = wait(tenant.apiKey, inbox, cursor = 0, timeoutSeconds = 30) // capped at 5 s
-        val elapsedMs = (System.nanoTime() - started) / 1_000_000
 
+        // Found by the re-LISTEN re-query or the degraded tick, inside the window: a deadline would have been 200 TIMEOUT.
         response.statusCode.value() shouldBe 409
         json.readTree(response.body)["storageRefusalCount"].asLong() shouldBe 1
-        // Found by the re-LISTEN re-query or the degraded tick, inside the window.
-        elapsedMs shouldBeLessThan 4_900
         // The kill really happened, and the transport recovered on its own.
         await().atMost(Duration.ofSeconds(10)).until { notifier.health().listening && notifier.health().epoch > epochBefore }
         notifier.health().reconnectCount shouldBeGreaterThan reconnectsBefore
@@ -195,7 +200,14 @@ class WaitStoragePrecedenceApiTest : ApiIntegrationTestBase() {
         recordRefusal(deleted)
         delete("/v1/inboxes/${deleted.value}", tenant.apiKey).statusCode.value() shouldBe 204
         val gone = wait(tenant.apiKey, deleted, cursor = 0, timeoutSeconds = 1)
-        // The sweep may hard-delete between the DELETE and the wait: 410 or 404, never 409.
-        check(gone.statusCode.value() in setOf(404, 410)) { "got ${gone.statusCode}" }
+        // The sweep may hard-delete between the DELETE and the wait: 410 or 404, each with its own type, never 409.
+        val expectedType =
+            when (gone.statusCode.value()) {
+                410 -> "https://testinbox.email/problems/inbox-gone"
+                404 -> "https://testinbox.email/problems/inbox-not-found"
+                else -> error("got ${gone.statusCode}")
+            }
+        json.readTree(gone.body)["type"].asText() shouldBe expectedType
+        gone.body!!.contains("storage") shouldBe false
     }
 }

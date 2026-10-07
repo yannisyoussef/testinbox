@@ -7,11 +7,12 @@ import email.testinbox.domain.InboxId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.storage.StorageCapacityPolicy
 import email.testinbox.domain.storage.StorageRefusalReason
+import email.testinbox.notification.PgListenNotifier
 import email.testinbox.persistence.JdbcStorageReservations
-import io.kotest.matchers.longs.shouldBeLessThan
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import io.micrometer.core.instrument.MeterRegistry
+import org.awaitility.Awaitility.await
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -19,6 +20,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.http.ResponseEntity
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.transaction.support.TransactionOperations
+import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -47,6 +49,8 @@ class WaitStorageRefusalApiTest : ApiIntegrationTestBase() {
     @Autowired lateinit var hook: ScriptableWaitHook
 
     @Autowired lateinit var registry: MeterRegistry
+
+    @Autowired lateinit var notifier: PgListenNotifier
 
     @Autowired lateinit var policy: StorageCapacityPolicy
 
@@ -109,6 +113,23 @@ class WaitStorageRefusalApiTest : ApiIntegrationTestBase() {
         }
     }
 
+    /**
+     * Runs [block] with LISTEN proven live before and after, with no reconnect
+     * and no epoch bump in between. The degraded ticker wakes waiters only while
+     * LISTEN is down, so a wake observed inside this scope came from a
+     * `pg_notify`, never from the fallback.
+     */
+    private fun <T> withLiveListen(block: () -> T): T {
+        await().atMost(Duration.ofSeconds(10)).until { notifier.health().listening }
+        val before = notifier.health()
+        val result = block()
+        val after = notifier.health()
+        after.listening shouldBe true
+        after.epoch shouldBe before.epoch
+        after.reconnectCount shouldBe before.reconnectCount
+        return result
+    }
+
     private fun refusedCount(): Double =
         registry
             .find("testinbox_wait_request_duration_seconds")
@@ -143,7 +164,7 @@ class WaitStorageRefusalApiTest : ApiIntegrationTestBase() {
         problem["refusalReason"].asText() shouldBe "INBOX_LIMIT"
         problem["afterStorageRefusalCount"].asLong() shouldBe 0
         problem["storageRefusalCount"].asLong() shouldBe 1
-        problem["lastStorageRefusalAt"].isNull shouldBe false
+        java.time.Instant.parse(problem["lastStorageRefusalAt"].asText()) // RFC 3339 date-time on the wire
         problem["quota"].asText() shouldBe "STORED_BYTES"
         problem["limit"].asLong() shouldBe policy.inboxLimitBytes
         problem["current"].asLong() shouldBe 0 // the refused copy was never stored or reserved
@@ -166,9 +187,8 @@ class WaitStorageRefusalApiTest : ApiIntegrationTestBase() {
                 awaitParked(t.workspaceId)
                 guardedRefusals.refuse(t.workspaceId, inbox, StorageRefusalReason.WORKSPACE_LIMIT)
             }
-        val started = System.nanoTime()
-        val response = t.wait(inbox, cursor = 0, timeoutSeconds = 30) // capped at 5 s by the suite
-        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        // LISTEN live throughout, no reconnect: the wake below is the refusal's pg_notify.
+        val response = withLiveListen { t.wait(inbox, cursor = 0, timeoutSeconds = 30) } // capped at 5 s by the suite
         refusal.get()
 
         response.statusCode.value() shouldBe 409
@@ -179,8 +199,6 @@ class WaitStorageRefusalApiTest : ApiIntegrationTestBase() {
         problem["quota"].asText() shouldBe "STORED_BYTES"
         problem["limit"].asLong() shouldBe policy.workspaceLimitBytes
         problem["current"].asLong() shouldBe 50 // the fixture's seeded workspace base; the refused copy itself is not counted
-        // Woken by the refusal's pg_notify, well inside the 5 s window.
-        elapsedMs shouldBeLessThan 4_000
         hook.pointsFor(inbox) shouldBe listOf("afterInitialCheck", "afterSubscribe", "afterDecision")
         // The slot it held was released with the outcome.
         leases(t.workspaceId) shouldBe 0
@@ -267,11 +285,13 @@ class WaitStorageRefusalApiTest : ApiIntegrationTestBase() {
         val t = tenant("t41b")
         val (inbox, _) = t.createInbox()
         recordRefusal(inbox) // count 1
-        executor.submit {
-            awaitParked(t.workspaceId)
-            recordRefusal(inbox) // count 2, while parked
-        }
+        val second =
+            executor.submit {
+                awaitParked(t.workspaceId)
+                recordRefusal(inbox) // count 2, while parked
+            }
         val response = t.wait(inbox, cursor = 100, timeoutSeconds = 5)
+        second.get()
         response.statusCode.value() shouldBe 409
         val problem = response.problem()
         problem["afterStorageRefusalCount"].asLong() shouldBe 1 // min(100, 1), fixed at the first evaluation
@@ -280,11 +300,13 @@ class WaitStorageRefusalApiTest : ApiIntegrationTestBase() {
         // Long.MAX_VALUE behaves the same way.
         val (other, _) = t.createInbox()
         recordRefusal(other)
-        executor.submit {
-            awaitParked(t.workspaceId)
-            recordRefusal(other)
-        }
+        val third =
+            executor.submit {
+                awaitParked(t.workspaceId)
+                recordRefusal(other)
+            }
         val max = t.wait(other, cursor = Long.MAX_VALUE, timeoutSeconds = 5)
+        third.get()
         max.statusCode.value() shouldBe 409
         max.problem()["afterStorageRefusalCount"].asLong() shouldBe 1
     }
@@ -300,6 +322,12 @@ class WaitStorageRefusalApiTest : ApiIntegrationTestBase() {
         post("/v1/inboxes/${inbox.value}/messages/wait", """{"timeoutSeconds":1,"afterStorageRefusalCount":"soon"}""", t.key)
             .statusCode
             .value() shouldBe 400
+        // An explicit null is the member absent: the legacy contract, never a boundary of zero.
+        recordRefusal(inbox)
+        val explicitNull =
+            post("/v1/inboxes/${inbox.value}/messages/wait", """{"timeoutSeconds":1,"afterStorageRefusalCount":null}""", t.key)
+        explicitNull.statusCode.value() shouldBe 200
+        json.readTree(explicitNull.body)["status"].asText() shouldBe "TIMEOUT"
     }
 
     @Test
@@ -315,12 +343,14 @@ class WaitStorageRefusalApiTest : ApiIntegrationTestBase() {
         json.readTree(timeout.body)["status"].asText() shouldBe "TIMEOUT"
         json.readTree(timeout.body)["storageRefusalCount"].asLong() shouldBe 2
 
-        // Another refusal arriving while parked: woken, re-evaluated, and STILL a timeout.
-        executor.submit {
-            awaitParked(t.workspaceId)
-            guardedRefusals.refuse(t.workspaceId, inbox, StorageRefusalReason.INBOX_LIMIT)
-        }
-        val woken = t.wait(inbox, cursor = null, timeoutSeconds = 2)
+        // Another refusal arriving while parked: woken by its pg_notify, re-evaluated, and STILL a timeout.
+        val refusal =
+            executor.submit {
+                awaitParked(t.workspaceId)
+                guardedRefusals.refuse(t.workspaceId, inbox, StorageRefusalReason.INBOX_LIMIT)
+            }
+        val woken = withLiveListen { t.wait(inbox, cursor = null, timeoutSeconds = 2) }
+        refusal.get()
         woken.statusCode.value() shouldBe 200
         json.readTree(woken.body)["status"].asText() shouldBe "TIMEOUT"
         json.readTree(woken.body)["storageRefusalCount"].asLong() shouldBe 3

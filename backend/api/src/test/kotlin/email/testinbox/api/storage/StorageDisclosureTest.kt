@@ -7,6 +7,7 @@ import email.testinbox.domain.InboxId
 import email.testinbox.domain.storage.StorageRefusalReason
 import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldContainAll
 import io.kotest.matchers.shouldBe
 import io.swagger.v3.parser.OpenAPIV3Parser
 import org.junit.jupiter.api.Test
@@ -115,11 +116,7 @@ class StorageDisclosureTest : ApiIntegrationTestBase() {
             withClue("$label: ${propertyNames(body)}") { offenders(propertyNames(body)).shouldBeEmpty() }
         }
         // Guard the guard: the walk sees nested members (it would catch a global member inside `storage`).
-        propertyNames(responses.getValue("create")) shouldBe
-            propertyNames(responses.getValue("create")).also { names ->
-                (names.contains("storage") && names.contains("limitBytes")) shouldBe
-                    true
-            }
+        propertyNames(responses.getValue("create")) shouldContainAll listOf("storage", "limitBytes", "storageRefusalCount")
         offenders(listOf("globalLimitBytes", "G", "finalizeBudgetBytes", "nodeId", "reservationBacklog")).size shouldBe 5
     }
 

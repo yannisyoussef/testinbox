@@ -131,6 +131,20 @@ class WaitForMessageStorageRefusalTest {
         }
     }
 
+    /** The first wake does [onFirstWake] and reports WOKEN; any later wake ends the window, so a regression fails instead of hanging. */
+    private fun onFirstWakeThenExpire(onFirstWake: () -> Unit) {
+        var wakes = 0
+        notifier.onAwait = {
+            if (++wakes == 1) {
+                onFirstWake()
+                WakeOutcome.WOKEN
+            } else {
+                clock.advanceSeconds(11)
+                WakeOutcome.DEADLINE
+            }
+        }
+    }
+
     // --- test 37: refusal before the first wait --------------------------------------------
 
     @Test
@@ -187,6 +201,7 @@ class WaitForMessageStorageRefusalTest {
 
         val matched = useCase().execute(command(cursor = 0)).shouldBeInstanceOf<WaitForMessage.Result.Matched>()
         matched.refusals shouldBe recorded
+        observations.evaluations.get() shouldBe 1 // decided by the initial check, no later read
 
         // The same unadvanced boundary, with a matcher the old message does not satisfy: the refusal was not swallowed.
         useCase()
@@ -207,6 +222,7 @@ class WaitForMessageStorageRefusalTest {
         notifier.onAwait = { error("must not park") }
         val matched = useCase().execute(command()).shouldBeInstanceOf<WaitForMessage.Result.Matched>()
         matched.refusals.count shouldBe 1
+        observations.evaluations.get() shouldBe 2 // check, then the recheck that decided
     }
 
     @Test
@@ -241,9 +257,8 @@ class WaitForMessageStorageRefusalTest {
     @Test
     fun `a refusal arriving while parked wakes the waiter, answers 409 and releases the slot`() {
         maxConcurrentWaits = 1
-        notifier.onAwait = {
+        onFirstWakeThenExpire {
             refuse()
-            WakeOutcome.WOKEN
         }
         val result = useCase().execute(command(cursor = 0)).shouldBeInstanceOf<WaitForMessage.Result.StorageLimitExceeded>()
         result.refusals.count shouldBe 1
@@ -293,9 +308,8 @@ class WaitForMessageStorageRefusalTest {
     @Test
     fun `a cursor above the count is clamped ONCE to the initial count, so the next refusal is still a 409`() {
         repeat(5) { refuse() }
-        notifier.onAwait = {
+        onFirstWakeThenExpire {
             refuse() // count becomes 6 while parked
-            WakeOutcome.WOKEN
         }
         val result = useCase().execute(command(cursor = 100)).shouldBeInstanceOf<WaitForMessage.Result.StorageLimitExceeded>()
         // Re-clamping at the wake would have computed min(100, 6) = 6 and parked forever.
@@ -306,9 +320,8 @@ class WaitForMessageStorageRefusalTest {
     @Test
     fun `Long MAX_VALUE as a cursor behaves as the current count`() {
         repeat(2) { refuse() }
-        notifier.onAwait = {
+        onFirstWakeThenExpire {
             refuse()
-            WakeOutcome.WOKEN
         }
         val result = useCase().execute(command(cursor = Long.MAX_VALUE)).shouldBeInstanceOf<WaitForMessage.Result.StorageLimitExceeded>()
         result.afterStorageRefusalCount shouldBe 2

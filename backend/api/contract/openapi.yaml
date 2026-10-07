@@ -272,7 +272,6 @@ components:
         overLimit:
           type: boolean
           description: Whether `storedBytes + reservedBytes` exceeds `limitBytes`. Equality is not over.
-      required: [limitBytes, storedBytes, reservedBytes, availableBytes, overLimit]
     CreateInboxRequest:
       type: object
       properties:

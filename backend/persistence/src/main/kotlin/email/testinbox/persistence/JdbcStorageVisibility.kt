@@ -25,7 +25,8 @@ import java.util.UUID
  *   the ledger and the compactor moves them from a delta into a base row;
  *   each move is atomic, and one statement sees each wholly or not at all.
  *   The figures therefore always add up to the same bytes, folded or not
- *   (`StorageVisibilityTest` proves it against a concurrent compaction).
+ *   (`StorageVisibilityTest` reads the same figures before, between and after
+ *   compaction steps).
  * - **Missing rows read as zero.** A new inbox has no `inbox_storage` row
  *   until accounting or a refusal creates one, and a workspace created after
  *   the backfill has no account row until the compactor upserts it. Every

@@ -50,7 +50,12 @@ class StorageVisibilityAcceptanceTest {
 
     private fun JsonNode.member(field: String): JsonNode = checkNotNull(get(field)) { "missing $field in $this" }
 
-    /** The ADR-035 §6a refusal record and its notification, as T2 or the refusal-only transaction commit them. */
+    /**
+     * The ADR-035 §6a refusal record and its notification, as T2 or the
+     * refusal-only transaction commit them. The SQL mirrors
+     * `JdbcStorageReservations.recordRefusals` (the e2e module must not depend
+     * on the persistence adapter); keep the two in step.
+     */
     private fun recordRefusal(inboxId: String) {
         E2eStack.dbConnection().use { connection ->
             connection.autoCommit = false

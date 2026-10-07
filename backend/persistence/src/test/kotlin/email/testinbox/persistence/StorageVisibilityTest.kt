@@ -247,7 +247,8 @@ class StorageVisibilityTest : PersistenceIntegrationTest() {
         fx.base(stranger, db.inbox(stranger), 1_000_000)
         val figures = read(ws, inbox)
         figures.workspace shouldBe StorageUsage.ZERO
-        // Structural: the adapter's SQL names no unscoped sum over the account, delta or reservation tables.
+        // A tripwire only (a whitespace or alias change would slip past it): the
+        // value assertions above and in the other tests are what pin the figures.
         val sql =
             JdbcStorageVisibility::class.java
                 .getResourceAsStream(

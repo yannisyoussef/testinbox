@@ -56,6 +56,10 @@ class GuardedRefusals(
 ) {
     private val template = TransactionTemplate(transactionManager)
 
+    /** One node generation for the fixture's lifetime, registered once, not one abandoned generation per refusal. */
+    private val node = StorageNode("api-test-refusals", UUID.randomUUID())
+    private val lifecycle by lazy { StorageNodeLifecycle(ambiguity, node).also { it.start() } }
+
     /**
      * Runs one single-recipient event against [inboxId] so that the narrowest
      * ENFORCED ceiling reached is [reason]. Returns the protocol's own report,
@@ -92,8 +96,7 @@ class GuardedRefusals(
                     Triple(StorageCapacityPolicy(1L shl 30, InboxShare.of("1"), 100, 0), StorageEnforcement.ALL, 150L)
                 }
             }
-        val node = StorageNode("api-test-refusals-${UUID.randomUUID().toString().take(8)}", UUID.randomUUID())
-        StorageNodeLifecycle(ambiguity, node).start()
+        lifecycle
         val guarded =
             GuardedStorage(
                 admission = StorageAdmission(JdbcStorageAdmission(jdbc, template), policy, enforcement),

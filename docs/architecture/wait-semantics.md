@@ -138,6 +138,10 @@ never arrive. The behaviour is **opt-in** and additive (ADR-015):
 6. **Omitting the cursor is exactly the pre-ADR-035 contract.** A storage
    refusal never produces a `409`; the call ends `MATCHED` or `TIMEOUT`, and
    `TIMEOUT` carries the count for diagnosis. Released SDKs omit it.
+7. **A rolled-back server ignores the cursor** (ADR-028). An artifact that
+   predates this contract accepts the member and never answers `409`, and its
+   `200` carries no `storageRefusalCount`. A client must therefore read "no
+   `409`" as "no refusal" only when the `200` carries the count.
 
 The ergonomic per-`Inbox` cursor and typed error in the SDKs are a later slice
 (ADR-035 §13c, TI-STORAGE-005); everything above is reachable with raw REST.

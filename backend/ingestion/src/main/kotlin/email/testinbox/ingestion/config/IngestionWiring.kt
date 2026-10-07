@@ -196,9 +196,10 @@ class IngestionWiring(
      * runs and every ceiling is observed, but nothing is refused. No property,
      * environment variable or profile reaches this value (TI-STORAGE-003).
      *
-     * The ceilings it observes are [EffectiveStoragePolicy]'s: the same ones
-     * the API shows a tenant as `limitBytes` (TI-STORAGE-004), so what is
-     * admitted against and what is reported can never drift apart.
+     * The ceilings it observes are [EffectiveStoragePolicy]'s: the same formula
+     * the API applies for `limitBytes` (TI-STORAGE-004). Each deployable reads
+     * its own `max-stored-bytes`, so the two agree exactly when their configured
+     * value does; a split configuration is an operations error, not a code path.
      */
     @Bean
     fun storageAdmission(

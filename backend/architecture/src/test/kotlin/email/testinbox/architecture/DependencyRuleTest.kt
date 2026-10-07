@@ -338,10 +338,27 @@ class DependencyRuleTest {
         // Two formulas could show a tenant a limit admission does not apply.
         // Only the domain (its reference constant) and the one application
         // factory may construct a policy; the api and ingestion wirings, and
-        // every other adapter, obtain it from `EffectiveStoragePolicy`.
+        // every other class, obtain it from `EffectiveStoragePolicy`.
+        policyRule().check(allClasses)
+    }
+
+    @Test
+    fun `the policy rule catches a rogue construction, so it can fail`() {
+        val failure =
+            runCatching {
+                policyRule().check(ClassFileImporter().importClasses(email.testinbox.architecture.fixtures.RoguePolicyFixture::class.java))
+            }.exceptionOrNull()
+        check(failure is AssertionError && "StorageCapacityPolicy.<init>" in failure.message.orEmpty()) {
+            "the rule did not catch RoguePolicyFixture: $failure"
+        }
+    }
+
+    private fun policyRule() =
         noClasses()
             .that()
-            .resideOutsideOfPackages("email.testinbox.domain..", "email.testinbox.application.storage..")
+            .resideOutsideOfPackage("email.testinbox.domain..")
+            .and()
+            .doNotHaveFullyQualifiedName("email.testinbox.application.storage.EffectiveStoragePolicy")
             .should()
             .callConstructorWhere(
                 com.tngtech.archunit.core.domain.JavaCall.Predicates.target(
@@ -352,21 +369,29 @@ class DependencyRuleTest {
                     ),
                 ),
             ).because("the ceilings T1 admits against and the ones the API reports must be the same object (ADR-035 §3)")
-            .check(allClasses)
-        // Guard the guard: the factory itself does construct one.
-        classes()
+
+    @Test
+    fun `the wait seams exist only in tests - no production hook, no subclass of the observation adapter (ADR-035 §17)`() {
+        // The NOOP is the one production implementation; a second one would be
+        // a way to interleave with, or observe, every tenant's waits.
+        noClasses()
             .that()
-            .haveFullyQualifiedName("email.testinbox.application.storage.EffectiveStoragePolicy")
+            .doNotHaveFullyQualifiedName("email.testinbox.application.usecase.WaitSyncHook")
+            .and()
+            .haveNameNotMatching("email[.]testinbox[.]application[.]usecase[.]WaitSyncHook[$]Companion[$]NOOP[$]1")
             .should()
-            .callConstructorWhere(
-                com.tngtech.archunit.core.domain.JavaCall.Predicates.target(
-                    com.tngtech.archunit.core.domain.properties.HasOwner.Predicates.With.owner(
-                        com.tngtech.archunit.core.domain.JavaClass.Predicates.type(
-                            email.testinbox.domain.storage.StorageCapacityPolicy::class.java,
-                        ),
-                    ),
-                ),
-            ).check(allClasses)
+            .implement("email.testinbox.application.usecase.WaitSyncHook")
+            .because("the wait hook is a test seam; production runs WaitSyncHook.NOOP (ApiWiring)")
+            .check(allClasses)
+        // The isolation statement is the control that makes an evaluation one
+        // snapshot; only a test mutant may weaken it.
+        noClasses()
+            .that()
+            .doNotHaveFullyQualifiedName("email.testinbox.persistence.JdbcWaitObservations")
+            .should()
+            .beAssignableTo("email.testinbox.persistence.JdbcWaitObservations")
+            .because("JdbcWaitObservations is open for test mutants only")
+            .check(allClasses)
     }
 
     @Test

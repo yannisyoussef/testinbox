@@ -55,10 +55,18 @@ open class JdbcWaitObservations(
                 // Stated, never inherited (the same reason JdbcStorageAdmission
                 // states its own). It must be the transaction's first statement.
                 jdbc.sql(isolation()).update()
-                val visible = messages.listVisible(inboxId)
+                // Ownership was proven by the use case; filtering again here means
+                // a future caller that skips that step still cannot match another
+                // tenant's messages.
+                val visible = messages.listVisible(inboxId).filter { it.workspaceId == workspaceId }
                 betweenReads()
                 val refusals = visibility.refusalsOf(workspaceId, inboxId)
-                evaluate(Observation(workspaceId, inboxId, visible, refusals))
+                val observation = Observation(workspaceId, inboxId, visible, refusals)
+                try {
+                    evaluate(observation)
+                } finally {
+                    observation.closed = true
+                }
             },
         )
     }
@@ -75,9 +83,14 @@ open class JdbcWaitObservations(
         override val messages: List<Message>,
         override val refusals: StorageRefusalSnapshot,
     ) : InboxObservation {
+        /** Set when the evaluation returns: a stashed observation cannot read a later snapshot. */
+        @Volatile var closed = false
+
         /** Inside the same transaction, so the same snapshot: the thread-bound connection is reused. */
         override fun storage(): TenantStorageFigures {
-            check(TransactionSynchronizationManager.isActualTransactionActive()) { "storage figures are read inside the evaluation only" }
+            check(!closed && TransactionSynchronizationManager.isActualTransactionActive()) {
+                "storage figures are read inside the evaluation only"
+            }
             val figures = visibility.read(workspaceId, setOf(inboxId))
             return TenantStorageFigures(inbox = figures.inbox(inboxId).usage, workspace = figures.workspace)
         }

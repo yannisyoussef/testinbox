@@ -5,6 +5,7 @@ import email.testinbox.application.port.CorruptStorageStateException
 import email.testinbox.application.port.InboxObservation
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.MessageNotifier
+import email.testinbox.application.port.StorageAccountingOverflowException
 import email.testinbox.application.port.StorageRefusalSnapshot
 import email.testinbox.application.port.WaitHandle
 import email.testinbox.application.port.WaitMetrics
@@ -258,19 +259,24 @@ class WaitForMessage(
                 observed.refusals.lastReason
                     ?: throw CorruptStorageStateException("refusal_count is ${observed.refusals.count} but no refusal reason is recorded")
             val scope =
-                when (reason) {
-                    StorageRefusalReason.INBOX_LIMIT -> {
-                        TenantScopeFigures(policy.inboxLimitBytes, observed.storage().inbox.usedBytes)
-                    }
+                try {
+                    when (reason) {
+                        StorageRefusalReason.INBOX_LIMIT -> {
+                            TenantScopeFigures(policy.inboxLimitBytes, observed.storage().inbox.usedBytes)
+                        }
 
-                    StorageRefusalReason.WORKSPACE_LIMIT -> {
-                        TenantScopeFigures(policy.workspaceLimitBytes, observed.storage().workspace.usedBytes)
-                    }
+                        StorageRefusalReason.WORKSPACE_LIMIT -> {
+                            TenantScopeFigures(policy.workspaceLimitBytes, observed.storage().workspace.usedBytes)
+                        }
 
-                    // One bit (ADR-035 §13d): no limit, no current, no global figure of any kind.
-                    StorageRefusalReason.SERVICE_CAPACITY -> {
-                        null
+                        // One bit (ADR-035 §13d): no limit, no current, no global figure of any kind.
+                        StorageRefusalReason.SERVICE_CAPACITY -> {
+                            null
+                        }
                     }
+                } catch (overflow: ArithmeticException) {
+                    // Corrupt accounting is an internal failure, never a tenant quota figure.
+                    throw StorageAccountingOverflowException("storage usage overflowed a signed 64-bit figure", overflow)
                 }
             return Result.StorageLimitExceeded(
                 inboxId = command.inboxId,
