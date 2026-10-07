@@ -314,6 +314,15 @@ class MetricCardinalityTest {
     }
 
     @Test
+    fun `the ADR-035 wait outcome is exported under the closed outcome label (§17 test 47)`() {
+        exerciseEverything()
+        val scrape = registry.scrape()
+        scrape shouldContain "testinbox_wait_request_duration_seconds_count{outcome=\"STORAGE_LIMIT_EXCEEDED\"}"
+        // One series per enum value: no refusal count, inbox or workspace ever becomes a label.
+        registry.find("testinbox_wait_request_duration_seconds").timers().size shouldBe WaitOutcome.entries.size
+    }
+
+    @Test
     fun `the storage ledger gauges report the observed values, each on its own meter`() {
         // Names and labels alone would pass with the two values swapped.
         exerciseEverything()

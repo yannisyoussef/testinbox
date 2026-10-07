@@ -111,4 +111,21 @@ class RateLimitOrderingTest : ApiIntegrationTestBase() {
         ),
         String::class.java,
     )
+
+    @Test
+    fun `the request-rate 429 precedes the cursor validation 400 (ADR-035 §13c precedence)`() {
+        val key = provisionIsolatedWorkspace("order-cursor").apiKey
+        val path = "/v1/inboxes/${UUID.randomUUID()}/messages/wait"
+        val body = """{"timeoutSeconds":1,"afterStorageRefusalCount":-1}"""
+        // Two in budget: the handler answers, and a negative cursor is a 400 (ahead of the 404 for the unknown inbox).
+        repeat(2) {
+            val response = post(path, body, key)
+            response.statusCode.value() shouldBe 400
+            json.readTree(response.body)["type"].asText() shouldContain "invalid-request"
+        }
+        // The third never reaches the handler.
+        val refused = post(path, body, key)
+        refused.statusCode.value() shouldBe 429
+        json.readTree(refused.body)["type"].asText() shouldContain "rate-limit-exceeded"
+    }
 }

@@ -1,6 +1,7 @@
 package email.testinbox.e2e
 
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.Test
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -26,10 +27,15 @@ class TsSdkIntegrationTest {
         return homebrewNode.absolutePath
     }
 
+    private class Run(
+        val exit: Int,
+        val output: String,
+    )
+
     private fun run(
         vararg command: String,
         env: Map<String, String> = emptyMap(),
-    ): Int {
+    ): Run {
         val process =
             ProcessBuilder(*command)
                 .directory(sdkDir)
@@ -41,7 +47,7 @@ class TsSdkIntegrationTest {
         if (process.exitValue() != 0) {
             System.err.println(output)
         }
-        return process.exitValue()
+        return Run(process.exitValue(), output)
     }
 
     @Test
@@ -49,9 +55,9 @@ class TsSdkIntegrationTest {
         val npm = findNpm()
         check(sdkDir.resolve("package.json").isFile) { "sdk/typescript missing at $sdkDir" }
         if (!sdkDir.resolve("node_modules").isDirectory) {
-            run(npm, "ci") shouldBe 0
+            run(npm, "ci").exit shouldBe 0
         }
-        val exit =
+        val result =
             run(
                 npm,
                 "run",
@@ -60,8 +66,15 @@ class TsSdkIntegrationTest {
                     mapOf(
                         "TESTINBOX_BASE_URL" to E2eStack.apiBaseUrl,
                         "TESTINBOX_API_KEY" to E2eStack.API_KEY,
+                        // ADR-035 §13c: the current SDK sends no cursor, so an inbox
+                        // whose refusal count is not zero must still time out, never 409.
+                        "TESTINBOX_REFUSED_INBOX_ID" to StorageVisibilityAcceptanceTest.inboxWithRefusals(),
                     ),
             )
-        exit shouldBe 0
+        result.exit shouldBe 0
+        // Both live cases ran: a skipped case (for instance a lost
+        // TESTINBOX_REFUSED_INBOX_ID) would still exit 0 and prove nothing.
+        result.output shouldContain "2 passed"
+        result.output.contains("skipped") shouldBe false
     }
 }

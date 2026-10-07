@@ -195,6 +195,28 @@ components:
           description: >
             On `idempotency-secret-not-replayable`, that credential's non-secret
             handle.
+        inboxId:
+          type: string
+          format: uuid
+          description: On `storage-limit-exceeded`, the inbox whose wait observed the refusal (ADR-035 §13c).
+        refusalReason:
+          allOf: [{ $ref: "#/components/schemas/StorageRefusalReason" }]
+          description: On `storage-limit-exceeded`, why the most recent copy was refused.
+        afterStorageRefusalCount:
+          type: integer
+          format: int64
+          description: >
+            On `storage-limit-exceeded`, the observation boundary this call
+            evaluated against: the caller's `afterStorageRefusalCount`, clamped
+            once to the count seen at the call's first evaluation.
+        storageRefusalCount:
+          type: integer
+          format: int64
+          description: On `storage-limit-exceeded`, the inbox's refusal count in the deciding snapshot.
+        lastStorageRefusalAt:
+          type: string
+          format: date-time
+          description: On `storage-limit-exceeded`, when the most recent refusal was recorded.
       required: [type, title, status]
     AddressMode:
       type: string
@@ -209,6 +231,47 @@ components:
     ParseStatus:
       type: string
       enum: [OK, FAILED]
+    StorageRefusalReason:
+      type: string
+      description: >
+        The narrowest storage ceiling that refused a copy (ADR-035 §4):
+        the inbox's own limit, its workspace's limit, or service capacity.
+        `SERVICE_CAPACITY` is one bit — no global figure accompanies it.
+        Clients must tolerate unknown future values.
+      enum: [INBOX_LIMIT, WORKSPACE_LIMIT, SERVICE_CAPACITY]
+    StorageUsage:
+      type: object
+      description: >
+        Physical storage accounting for ONE scope of the caller's own tenancy
+        (ADR-035 §13). `storedBytes` is committed content; `reservedBytes`
+        counts in-flight reservations in every state (a stale reservation is
+        not free). `overLimit` is `storedBytes + reservedBytes > limitBytes`
+        for this scope; `availableBytes` is what this scope can still admit,
+        never below zero. No figure here ever describes another workspace or
+        the service as a whole.
+      properties:
+        limitBytes:
+          type: integer
+          format: int64
+          description: The effective limit of this scope. A policy value, not a constant.
+        storedBytes:
+          type: integer
+          format: int64
+          description: Committed bytes (raw MIME plus every extracted attachment).
+        reservedBytes:
+          type: integer
+          format: int64
+          description: Bytes held by unreleased reservations, whatever their state or age.
+        availableBytes:
+          type: integer
+          format: int64
+          description: >
+            `max(0, limitBytes - storedBytes - reservedBytes)` for a workspace.
+            For an inbox, the minimum of the inbox's and its workspace's
+            headroom, since both must admit a copy.
+        overLimit:
+          type: boolean
+          description: Whether `storedBytes + reservedBytes` exceeds `limitBytes`. Equality is not over.
     CreateInboxRequest:
       type: object
       properties:
@@ -235,6 +298,29 @@ components:
         state: { $ref: "#/components/schemas/InboxState" }
         createdAt: { type: string, format: date-time }
         expiresAt: { type: string, format: date-time }
+        storage:
+          allOf: [{ $ref: "#/components/schemas/StorageUsage" }]
+          description: >
+            This inbox's storage accounting, read live at response time
+            (ADR-035 §13b) — including on an idempotent create replay. Its
+            `limitBytes` is the effective inbox limit; `availableBytes` is the
+            minimum of inbox and workspace headroom.
+        storageRefusalCount:
+          type: integer
+          format: int64
+          description: >
+            How many copies were refused for this inbox because of a storage
+            ceiling. Monotonic, starts at 0. Pass it as a wait's
+            `afterStorageRefusalCount` to observe later refusals.
+        lastStorageRefusalAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the most recent refusal was recorded; null while none has been.
+        lastStorageRefusalReason:
+          oneOf:
+            - $ref: "#/components/schemas/StorageRefusalReason"
+            - type: "null"
+          description: The most recent refusal's reason; null while none has been. Clients must tolerate unknown future values.
       required: [id, address, addressMode, state, createdAt, expiresAt]
     EmailHeader:
       type: object
@@ -352,6 +438,22 @@ components:
             Requested wait window; the server caps a single call (default
             cap 60s). SDKs chain calls for longer caller timeouts
             (ADR-012/020).
+        afterStorageRefusalCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Opt in to storage-refusal observation (ADR-035 §13c). The inbox's
+            `storageRefusalCount` the caller has already observed: 0 from the
+            create response, the value from a `GET`, or the
+            `storageRefusalCount` of a `409` it has handled. When a snapshot
+            holds no matching message and the inbox's refusal count exceeds
+            this boundary, the call answers `409 storage-limit-exceeded`
+            instead of parking. A value above the current count is clamped,
+            once, to the count seen at the call's first evaluation, so a
+            future value never suppresses a real refusal. A negative value is
+            `400`. **Omit it for the pre-ADR-035 behaviour:** a storage
+            refusal then never produces a `409`.
       required: [timeoutSeconds]
     WaitResult:
       type: object
@@ -373,6 +475,19 @@ components:
         parseFailedCount:
           type: integer
           description: Messages that became visible during the window with parseStatus FAILED.
+        storageRefusalCount:
+          type: integer
+          format: int64
+          description: >
+            Informational (ADR-035 §13c): the inbox's refusal count in the
+            SAME snapshot that decided this result, never a fresh read. A
+            refusal committed after that snapshot is not echoed. Adopting it
+            as the next `afterStorageRefusalCount` is the caller's explicit
+            choice and would skip any refusal that a match outranked.
+        lastStorageRefusalAt:
+          type: [string, "null"]
+          format: date-time
+          description: Informational; from the same snapshot as `storageRefusalCount`.
       required: [status, elapsedMs]
     ApiScope:
       type: string
@@ -492,7 +607,11 @@ paths:
             a previous identical request created. A replay reports the resource
             as it was at creation; it is a record of what the request did, not
             an assertion that the inbox still exists, so a replay followed by a
-            fetch may yield `404` once the inbox has expired.
+            fetch may yield `404` once the inbox has expired. The `storage`,
+            `storageRefusalCount`, `lastStorageRefusalAt` and
+            `lastStorageRefusalReason` members are read live at response time,
+            on a replay too (ADR-035 §13b); only the inbox's identity and state
+            are replayed from the record.
           headers:
             X-Correlation-Id: { $ref: "#/components/headers/correlationId" }
             Idempotency-Replayed: { $ref: "#/components/headers/idempotencyReplayed" }
@@ -591,13 +710,38 @@ paths:
             schema: { $ref: "#/components/schemas/WaitRequest" }
       responses:
         "200":
-          description: MATCHED with the message, or TIMEOUT with diagnostics (never 408 — ADR-020).
+          description: >
+            MATCHED with the message, or TIMEOUT with diagnostics (never 408 —
+            ADR-020). Both carry the informational `storageRefusalCount` and
+            `lastStorageRefusalAt` from the deciding snapshot. A visible match
+            always wins over a refusal (ADR-035 §13c).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WaitResult" }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "409":
+          description: >
+            Only when the request carried `afterStorageRefusalCount`
+            (`type: https://testinbox.email/problems/storage-limit-exceeded`,
+            ADR-035 §13c): the deciding snapshot held no matching message and
+            the inbox's refusal count exceeds the observation boundary. A
+            storage ceiling refused a copy for this inbox — possibly the one
+            being awaited — so waiting does not help and there is no
+            `Retry-After`. The body carries `inboxId`, `refusalReason`, the
+            effective `afterStorageRefusalCount`, `storageRefusalCount` and
+            `lastStorageRefusalAt`. For `INBOX_LIMIT` and `WORKSPACE_LIMIT` it
+            also carries `quota: STORED_BYTES`, `limit` and `current`
+            (`stored + reserved`) for the named scope; for `SERVICE_CAPACITY`
+            those members are ABSENT, because no global figure is disclosed.
+            It is decided before any concurrent wait slot is claimed, so it
+            consumes none. Requests that omit `afterStorageRefusalCount` can
+            never receive it. Precedence: request-rate `429` → `400` → `404` →
+            `410` → `200 MATCHED` → this `409` → slot `429` → `200 TIMEOUT`.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
         "410":
           description: >
             Inbox is no longer ACTIVE
@@ -620,6 +764,26 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
+  /workspace/storage:
+    get:
+      operationId: getWorkspaceStorage
+      summary: Storage accounting of the authenticated key's own workspace (ADR-035 §13a).
+      description: >
+        Requires `messages:read`. The workspace is always the authenticated
+        key's own: no workspace id is accepted from the path, query, body or
+        a header. `limitBytes` is the effective workspace limit;
+        `availableBytes` is `max(0, limitBytes - storedBytes - reservedBytes)`.
+        The response never carries a global or another workspace's figure.
+        Charged against the `READ` rate category.
+      responses:
+        "200":
+          description: The workspace's storage usage, read from one database snapshot.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StorageUsage" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /messages/{id}:
     get:
       operationId: getMessage

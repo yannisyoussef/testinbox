@@ -76,6 +76,12 @@
    discriminate on the problem `type`, never on the status code. Limits are
    workspace-scoped and derived from the authenticated key, so rotating or
    minting a key does not reset them.
+   A storage ceiling observed by a wait is also state-shaped:
+   `409 .../storage-limit-exceeded`, only for requests that opted in with
+   `afterStorageRefusalCount`, with no `Retry-After` (ADR-035 §13c). Its
+   `quota`/`limit`/`current` members name the caller's own scope and are
+   absent for `SERVICE_CAPACITY`: no global figure is ever disclosed (§13d).
+
 10. **No breaking changes within a major version.** Additive changes
     (new optional fields, new endpoints) are always safe; anything else
     requires a new version per [ADR-015](../adr/0015-rest-compatibility-versioning.md).

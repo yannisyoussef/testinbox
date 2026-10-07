@@ -1,5 +1,7 @@
 package email.testinbox.api.web
 
+import email.testinbox.application.usecase.WaitForMessage
+import email.testinbox.domain.limits.QuotaDimension
 import jakarta.servlet.http.HttpServletRequest
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
@@ -49,6 +51,41 @@ object Problems {
                 "Use a new key.",
             request,
         )
+
+    /**
+     * ADR-035 §13c: a wait that opted in observed a storage refusal after its
+     * boundary. Rendered ENTIRELY from the use-case result, which came from
+     * the deciding snapshot; this never reads the database.
+     *
+     * `quota`, `limit` and `current` reuse the existing quota members and are
+     * present only for the two tenant scopes. `SERVICE_CAPACITY` is one bit:
+     * no member of this problem carries a global figure, and the members are
+     * absent, not zero (§13d). No `Retry-After`: waiting does not help
+     * (ADR-027 §8).
+     */
+    fun storageLimitExceeded(
+        result: WaitForMessage.Result.StorageLimitExceeded,
+        request: HttpServletRequest,
+    ): ProblemDetail =
+        of(
+            HttpStatus.CONFLICT,
+            "storage-limit-exceeded",
+            "Storage limit exceeded",
+            "A storage ceiling (${result.refusalReason.name}) refused a copy for this inbox after the observed refusal count " +
+                "${result.afterStorageRefusalCount}; the awaited message may have been the refused copy",
+            request,
+        ).also {
+            it.setProperty("inboxId", result.inboxId.value)
+            it.setProperty("refusalReason", result.refusalReason.name)
+            it.setProperty("afterStorageRefusalCount", result.afterStorageRefusalCount)
+            it.setProperty("storageRefusalCount", result.refusals.count)
+            it.setProperty("lastStorageRefusalAt", result.refusals.lastAt)
+            result.tenantScope?.let { scope ->
+                it.setProperty("quota", QuotaDimension.STORED_BYTES.name)
+                it.setProperty("limit", scope.limitBytes)
+                it.setProperty("current", scope.currentBytes)
+            }
+        }
 
     fun of(
         status: HttpStatus,

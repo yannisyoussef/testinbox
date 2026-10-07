@@ -14,6 +14,8 @@ import { TestInboxClient, TestInboxTimeoutError } from "../../src/index";
 
 const baseUrl = process.env.TESTINBOX_BASE_URL;
 const apiKey = process.env.TESTINBOX_API_KEY;
+/** Optional: an inbox the harness pre-loaded with storage refusals (ADR-035 §13c). */
+const refusedInboxId = process.env.TESTINBOX_REFUSED_INBOX_ID;
 
 describe.skipIf(!baseUrl || !apiKey)("live TestInbox API", () => {
   it(
@@ -51,5 +53,25 @@ describe.skipIf(!baseUrl || !apiKey)("live TestInbox API", () => {
       }
     },
     60_000,
+  );
+
+  it.skipIf(!refusedInboxId)(
+    "a released SDK omits afterStorageRefusalCount, so a refused inbox still times out rather than erroring (ADR-035 §13c)",
+    async () => {
+      const client = new TestInboxClient({ apiKey: apiKey!, baseUrl: baseUrl! });
+      const inbox = await client.getInbox(refusedInboxId!);
+      expect(inbox.id).toBe(refusedInboxId);
+      // The server reports the refusal on the representation; this SDK version has no field for it and ignores it.
+      const error = await inbox
+        .waitForMessage({ timeoutMs: 2_000, subjectContains: "will-never-match" })
+        .then(
+          () => {
+            throw new Error("expected waitForMessage to time out on a refused inbox");
+          },
+          (e: unknown) => e,
+        );
+      expect(error).toBeInstanceOf(TestInboxTimeoutError);
+    },
+    30_000,
   );
 });

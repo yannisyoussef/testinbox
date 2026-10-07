@@ -15,6 +15,7 @@ import email.testinbox.application.port.SmtpMetrics
 import email.testinbox.application.port.StorageInspection
 import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.TransactionRunner
+import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.GuardedStorage
 import email.testinbox.application.storage.StorageBreaker
 import email.testinbox.application.storage.StorageNode
@@ -22,7 +23,6 @@ import email.testinbox.application.storage.StorageNodeLifecycle
 import email.testinbox.application.storage.WriteSlots
 import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.application.usecase.StorageAdmission
-import email.testinbox.domain.storage.InboxShare
 import email.testinbox.domain.storage.StorageCapacityPolicy
 import email.testinbox.domain.storage.StorageEnforcement
 import email.testinbox.ingestion.mime.JakartaMimeParser
@@ -195,6 +195,11 @@ class IngestionWiring(
      * T1 with enforcement OFF, a literal. ADR-035 Phase 2: the whole protocol
      * runs and every ceiling is observed, but nothing is refused. No property,
      * environment variable or profile reaches this value (TI-STORAGE-003).
+     *
+     * The ceilings it observes are [EffectiveStoragePolicy]'s: the same formula
+     * the API applies for `limitBytes` (TI-STORAGE-004). Each deployable reads
+     * its own `max-stored-bytes`, so the two agree exactly when their configured
+     * value does; a split configuration is an operations error, not a code path.
      */
     @Bean
     fun storageAdmission(
@@ -202,7 +207,11 @@ class IngestionWiring(
         transactionManager: PlatformTransactionManager,
         limits: LimitsConfig,
     ): StorageAdmission =
-        StorageAdmission(JdbcStorageAdmission(jdbc, template(transactionManager)), storagePolicy(limits), StorageEnforcement.OFF)
+        StorageAdmission(
+            JdbcStorageAdmission(jdbc, template(transactionManager)),
+            EffectiveStoragePolicy.of(limits),
+            StorageEnforcement.OFF,
+        )
 
     /** A @Bean method's parameters are its dependencies: one per protocol collaborator. */
     @Bean
@@ -277,20 +286,4 @@ class IngestionWiring(
             metrics = limitMetrics,
             inboundMetrics = inboundMetrics,
         )
-
-    companion object {
-        /**
-         * The observed ceilings: the workspace limit is the existing
-         * `max-stored-bytes`, and the rest are the ADR-035 reference values. They
-         * only feed observation while enforcement is OFF.
-         */
-        fun storagePolicy(limits: LimitsConfig): StorageCapacityPolicy {
-            val reference = StorageCapacityPolicy.ADR_035_REFERENCE
-            val workspace = limits.quotas.maxStoredBytes.coerceAtMost(reference.globalLimitBytes)
-            // A workspace limit too small for the reference share to floor above
-            // zero (only ever a test setting) observes against the whole workspace.
-            val share = if (reference.inboxShare.floorOf(workspace) > 0) reference.inboxShare else InboxShare.of("1")
-            return StorageCapacityPolicy(workspace, share, reference.globalLimitBytes, reference.finalizeBudgetBytes)
-        }
-    }
 }

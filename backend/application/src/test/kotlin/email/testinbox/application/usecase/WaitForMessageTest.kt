@@ -4,6 +4,8 @@ import email.testinbox.application.FakeNotifier
 import email.testinbox.application.FakeWaitSlots
 import email.testinbox.application.InMemoryInboxRepository
 import email.testinbox.application.InMemoryMessageRepository
+import email.testinbox.application.InMemoryRefusals
+import email.testinbox.application.InMemoryWaitObservations
 import email.testinbox.application.MutableClock
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.WaitOutcome
@@ -19,6 +21,7 @@ import email.testinbox.domain.message.Message
 import email.testinbox.domain.message.MessageMatcher
 import email.testinbox.domain.message.ParseStatus
 import email.testinbox.domain.message.ParsedContent
+import email.testinbox.domain.storage.StorageCapacityPolicy
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
@@ -62,9 +65,21 @@ class WaitForMessageTest {
     }
 
     private val metrics = RecordingWaitMetrics()
+    private val refusals = InMemoryRefusals()
 
     private fun useCase(): WaitForMessage =
-        WaitForMessage(inboxes, messages, notifier, waitSlots, maxConcurrentWaits, clock, config, hook, metrics)
+        WaitForMessage(
+            inboxes,
+            InMemoryWaitObservations(messages, refusals),
+            notifier,
+            waitSlots,
+            maxConcurrentWaits,
+            clock,
+            config,
+            StorageCapacityPolicy.ADR_035_REFERENCE,
+            hook,
+            metrics,
+        )
 
     private fun command(
         matcher: MessageMatcher = MessageMatcher(),

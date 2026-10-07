@@ -242,3 +242,20 @@ below the first floor anyway. An intermediate guarded-ingest artifact, between
 know V7, so it would ignore a recorded clock episode and could release on the
 plain horizon. That is exactly why it sits below the safety floor and is
 refused, unless the hazard is explicitly acknowledged.
+
+## Adding a `StorageRefusalReason` is reader-first (TI-STORAGE-004)
+
+The API reads `inbox_storage.last_refusal_reason` into the closed
+`StorageRefusalReason` enum and **fails closed** on a value it does not know
+(`JdbcStorageVisibility`): a positive refusal count with an unreadable reason is
+treated as corrupt state and answers `500 internal-error` on `GET /v1/inboxes/{id}`,
+on the live members of `POST /v1/inboxes`, and on every wait against that inbox.
+No made-up reason is ever shown to a tenant.
+
+So a fourth reason is not a free additive change. It must be deployed
+**reader-first**: the API digest that knows the new value is deployed and
+recorded as a rollback floor before any ingestion artifact may write it.
+Rolling the API back below that floor while the new value exists in a row
+reproduces the `500`s above. The wire contract already tells clients to
+tolerate unknown values; this rule is what keeps the server able to produce them.
+

@@ -40,6 +40,9 @@ object RateCategories {
             Regex("^/v1/inboxes/[^/]+/messages$"),
             Regex("^/v1/messages/[^/]+$"),
             Regex("^/v1/messages/[^/]+/attachments$"),
+            // ADR-035 §13a: a metadata read, charged like one. Not a free
+            // metadata endpoint a refused waiter could hot-poll instead.
+            Regex("^/v1/workspace/storage$"),
         )
 
     /**

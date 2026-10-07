@@ -98,6 +98,23 @@
   operationally costly, and terms-of-service enforcement — this is a
   business/legal control, not purely a technical one, and is called out in
   `VISION.md`'s Human Decisions (compliance/abuse-reporting posture).
+- **Inference of aggregate service usage through storage refusals**
+  ([ADR-035](../adr/0035-physical-storage-bound-at-ingest.md) §13d, TI-STORAGE-004).
+  An authenticated tenant can learn exactly one bit about the service as a
+  whole: that a copy of its own mail was refused for `SERVICE_CAPACITY`,
+  through the inbox representation's refusal record and through a wait that
+  opted in with `afterStorageRefusalCount`. It never sees the global limit,
+  global stored, reserved or available bytes, the reservation backlog, or
+  another workspace's figures: the `409` for `SERVICE_CAPACITY` carries no
+  `quota`, `limit` or `current` member at all, `StorageUsage` describes only
+  the caller's own inbox or workspace, and the visibility SQL selects no
+  unscoped sum (`StorageDisclosureTest`, `StorageVisibilityTest`). The
+  accepted residual: by sending one `DATA` to up to 50 of its own inboxes, a
+  tenant can place global headroom within one copy's size, up to its own
+  workspace headroom, and repeated probing yields a coarse time series of
+  other tenants' aggregate usage near the cap. Workspaces are operator
+  provisioned; quantising the admission cap or adding hysteresis are named
+  follow-ups. While live enforcement is OFF, no refusal is recorded at all.
 - **Enumeration via limit responses**: none. Rate and quota enforcement never
   changes an SMTP reply — a syntactically valid recipient always receives the
   uniform `250` of ADR-025, whether its workspace is over quota, over its
