@@ -148,22 +148,31 @@ open class JdbcStorageAdmission(
                          -- Each sum is aggregated once for the involved ids, not
                          -- once per id: the statement's cost must not grow with
                          -- the recipient count times the ledger backlog.
-                         ws_delta AS (SELECT d.workspace_id AS id, sum(d.bytes) AS bytes FROM storage_delta d
+                         ws_delta AS (SELECT d.workspace_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d
                                        WHERE d.workspace_id IN (SELECT id FROM ws) GROUP BY d.workspace_id),
-                         ws_reserved AS (SELECT r.workspace_id AS id, sum(r.bytes) AS bytes FROM storage_reservation r
+                         ws_reserved AS (SELECT r.workspace_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
+                                           FROM storage_reservation r
                                           WHERE r.workspace_id IN (SELECT id FROM ws) GROUP BY r.workspace_id),
-                         ib_delta AS (SELECT d.inbox_id AS id, sum(d.bytes) AS bytes FROM storage_delta d
+                         ib_delta AS (SELECT d.inbox_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d
                                        WHERE d.inbox_id IN (SELECT id FROM ib) GROUP BY d.inbox_id),
-                         ib_reserved AS (SELECT r.inbox_id AS id, sum(r.bytes) AS bytes FROM storage_reservation r
+                         ib_reserved AS (SELECT r.inbox_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
+                                           FROM storage_reservation r
                                           WHERE r.inbox_id IN (SELECT id FROM ib) GROUP BY r.inbox_id)
+                    -- Objects beside bytes (TI-STORAGE-006E): the footprint bound is
+                    -- applied by the caller, from the same snapshot.
                     SELECT 'GLOBAL' AS scope, NULL::uuid AS id, NULL::uuid AS owner, now() AS t0,
                            (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
                          + (SELECT coalesce(sum(bytes), 0) FROM storage_delta) AS committed,
-                           (SELECT coalesce(sum(bytes), 0) FROM storage_reservation) AS reserved
+                           (SELECT coalesce(sum(bytes), 0) FROM storage_reservation) AS reserved,
+                           (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)
+                         + (SELECT coalesce(sum(objects), 0) FROM storage_delta) AS committed_objects,
+                           (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation) AS reserved_objects
                     UNION ALL
                     SELECT 'WORKSPACE', ws.id, ws.id, now(),
                            coalesce(a.base_bytes, 0) + coalesce(d.bytes, 0),
-                           coalesce(r.bytes, 0)
+                           coalesce(r.bytes, 0),
+                           coalesce(a.base_objects, 0) + coalesce(d.objects, 0),
+                           coalesce(r.objects, 0)
                       FROM ws
                       LEFT JOIN workspace_storage_account a ON a.workspace_id = ws.id
                       LEFT JOIN ws_delta d ON d.id = ws.id
@@ -171,7 +180,9 @@ open class JdbcStorageAdmission(
                     UNION ALL
                     SELECT 'INBOX', ib.id, x.workspace_id, now(),
                            coalesce(s.base_bytes, 0) + coalesce(d.bytes, 0),
-                           coalesce(r.bytes, 0)
+                           coalesce(r.bytes, 0),
+                           coalesce(s.base_objects, 0) + coalesce(d.objects, 0),
+                           coalesce(r.objects, 0)
                       FROM ib
                       LEFT JOIN inbox x ON x.id = ib.id
                       LEFT JOIN inbox_storage s ON s.inbox_id = ib.id
@@ -186,7 +197,14 @@ open class JdbcStorageAdmission(
                         id = rs.getObject("id", UUID::class.java),
                         owner = rs.getObject("owner", UUID::class.java),
                         t0 = checkNotNull(Timestamps.fromDb(rs, "t0")),
-                        usage = StorageUsage(exactLong(rs.getBigDecimal("committed")), exactLong(rs.getBigDecimal("reserved"))),
+                        usage =
+                            StorageUsage(
+                                exactLong(rs.getBigDecimal("committed")),
+                                exactLong(rs.getBigDecimal("reserved")),
+                                // Counts can only drift negative through corruption; a bound cannot carry that.
+                                maxOf(0L, exactLong(rs.getBigDecimal("committed_objects"))),
+                                maxOf(0L, exactLong(rs.getBigDecimal("reserved_objects"))),
+                            ),
                     )
                 }.list()
         val global = rows.single { it.scope == "GLOBAL" }

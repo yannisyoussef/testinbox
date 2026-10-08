@@ -243,6 +243,26 @@ know V7, so it would ignore a recorded clock episode and could release on the
 plain horizon. That is exactly why it sits below the safety floor and is
 refused, unless the hazard is explicitly acknowledged.
 
+**Schema V8** (TI-STORAGE-006E, the filesystem-containment contract) is
+expand-only: three `NOT NULL DEFAULT 0` columns (`storage_delta.objects`,
+`workspace_storage_account.base_objects`, `inbox_storage.base_objects`), two
+new tables (`storage_deletion_debt`, `storage_filesystem_observation`), the
+ledger trigger bodies replaced to count objects and append deletion debt, a
+trigger on `storage_reservation`, and a recompute of the counts under the V6
+lock set plus `storage_reservation` (locked last, in T2's order). No down
+migration. A rolled-back artifact at or above the TI-STORAGE-006 floor keeps
+working: its inserts, deletes and reservation releases run the new trigger
+bodies, which count for it, and it never reads a column or table V8 created.
+Rolling forward again finds the counts exact. **Precondition, not a
+consequence:** the rolled-back artifact's roles must already hold the V8
+grants (`INSERT` on `storage_deletion_debt` for the ingestion AND API roles,
+`docs/dev/production.md`), because its T2 consume and retention deletes run
+the V8 trigger bodies; promoting V8 without them is a full ingestion outage
+whatever artifact is running. What rollback DOES lose: nothing
+observes the footprint or the deletion debt while the older artifact runs,
+and the debt rows it appends are compacted only once a newer artifact runs
+the compactor again. Both are observational while enforcement is `OFF`.
+
 ## Adding a `StorageRefusalReason` is reader-first (TI-STORAGE-004)
 
 The API reads `inbox_storage.last_refusal_reason` into the closed

@@ -2,10 +2,15 @@ package email.testinbox.application.usecase
 
 import email.testinbox.application.port.AccountingDrift
 import email.testinbox.application.port.CompactionOutcome
+import email.testinbox.application.port.DeletionDebtState
+import email.testinbox.application.port.FootprintKind
 import email.testinbox.application.port.ReconciliationOutcome
 import email.testinbox.application.port.StorageAccountingMetrics
 import email.testinbox.application.port.StorageLedger
+import email.testinbox.domain.storage.FootprintModel
 import org.slf4j.LoggerFactory
+import java.time.Clock
+import java.time.Duration
 
 /**
  * ADR-035 §10 compaction: folds the trigger-written deltas into the base
@@ -21,6 +26,13 @@ class CompactStorageLedger(
     private val metrics: StorageAccountingMetrics = StorageAccountingMetrics.NOOP,
     private val batch: Int = DEFAULT_BATCH,
     private val maxPasses: Int = DEFAULT_MAX_PASSES,
+    /**
+     * The footprint model the observed figures are bounded with (filesystem-
+     * containment contract §3, TI-STORAGE-006E). The reference model until a
+     * deployment declares its combination's own; observational in every mode.
+     */
+    private val footprint: FootprintModel = FootprintModel.REFERENCE,
+    private val clock: Clock = Clock.systemUTC(),
 ) {
     init {
         require(batch > 0) { "batch must be positive" }
@@ -53,12 +65,62 @@ class CompactStorageLedger(
             }
         metrics.compactionCompleted(outcome)
         runCatching { ledger.state() }
-            .onSuccess { metrics.ledgerObserved(it.unfoldedRows, it.committedBytes) }
-            .onFailure { log.warn("storage ledger state could not be read", it) }
+            .onSuccess {
+                metrics.ledgerObserved(it.unfoldedRows, it.committedBytes)
+                // Bounds, never measurements: what the committed and reserved
+                // objects CAN cost on the filesystem (contract §3.3).
+                metrics.footprintObserved(
+                    FootprintKind.COMMITTED,
+                    footprint.bound(maxOf(0L, it.committedBytes), maxOf(0L, it.committedObjects)),
+                )
+                metrics.footprintObserved(
+                    FootprintKind.RESERVED,
+                    footprint.bound(maxOf(0L, it.reservedBytes), maxOf(0L, it.reservedObjects)),
+                )
+            }.onFailure { log.warn("storage ledger state could not be read", it) }
+        observeDeletionDebt()
         return folded
     }
 
+    /**
+     * Contract §5: debt rows an observation has superseded are folded away,
+     * and `D_est = trash_bytes(newest observation) + F(debt since it)` is
+     * metered, together with the observation's age. Nothing here releases
+     * debt on a timer: only an Ops observation ever lowers the estimate, and
+     * with no observation the estimate is every debt row there is (§5.5).
+     */
+    private fun observeDeletionDebt() {
+        runCatching { ledger.compactDeletionDebt() }
+            .onFailure { log.warn("storage deletion debt could not be compacted; rows are intact", it) }
+        runCatching {
+            val debt = ledger.deletionDebt()
+            // Both figures computed INSIDE the guard: an observation carrying an
+            // absurd value (trash_bytes near Long.MAX) must not throw out of the
+            // compaction tick, and must not leave the gauges at a stale "fresh".
+            estimate(debt) to (debt.observation?.let { Duration.between(it.observedAt, clock.instant()).seconds } ?: NEVER_OBSERVED)
+        }.onSuccess { (estimate, age) ->
+            metrics.footprintObserved(FootprintKind.DELETION_DEBT, estimate)
+            metrics.filesystemObservationAge(age)
+        }.onFailure {
+            log.warn("storage deletion debt could not be read or bounded; reported as unbounded and never observed", it)
+            metrics.footprintObserved(FootprintKind.DELETION_DEBT, UNBOUNDED)
+            metrics.filesystemObservationAge(NEVER_OBSERVED)
+        }
+    }
+
+    /** `D_est` (contract §5.3): the observed trash plus the bound of everything deleted since the observation began. */
+    private fun estimate(debt: DeletionDebtState): Long =
+        Math.addExact(
+            debt.observation?.trashBytes ?: 0L,
+            footprint.bound(debt.unsupersededBytes, debt.unsupersededObjects),
+        )
+
     companion object {
+        /** The age reported while no filesystem observation has ever been recorded, or the newest one cannot be read. */
+        const val NEVER_OBSERVED: Long = -1
+
+        /** The debt estimate reported when it cannot be computed: the conservative reading, never a stale small one. */
+        const val UNBOUNDED: Long = Long.MAX_VALUE
         const val DEFAULT_BATCH = 5_000
         const val DEFAULT_MAX_PASSES = 20
         private val log = LoggerFactory.getLogger(CompactStorageLedger::class.java)

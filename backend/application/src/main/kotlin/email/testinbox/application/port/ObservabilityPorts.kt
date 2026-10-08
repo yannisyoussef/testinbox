@@ -346,6 +346,23 @@ interface StorageAccountingMetrics {
         committedBytes: Long,
     ) {}
 
+    /**
+     * `testinbox_storage_footprint_bytes{kind}` (filesystem-containment
+     * contract §12, TI-STORAGE-006E): the bound of what a class of objects can
+     * cost on the MinIO filesystem, observed in every mode. Closed label.
+     */
+    fun footprintObserved(
+        kind: FootprintKind,
+        bytes: Long,
+    ) {}
+
+    /**
+     * `testinbox_storage_filesystem_observation_age_seconds`: how old the newest
+     * Ops observation is. [seconds] is negative when none has ever been
+     * recorded (the gauge reads −1), so "never" cannot read as "fresh".
+     */
+    fun filesystemObservationAge(seconds: Long) {}
+
     fun driftRepaired(direction: DriftDirection) {}
 
     fun reconciliationCompleted(outcome: ReconciliationOutcome) {}
@@ -359,6 +376,9 @@ interface StorageAccountingMetrics {
 
 /** ADR-035 §16 `storage_admission_total{outcome}`. */
 enum class StorageAdmissionOutcome { ADMITTED, REFUSED_INBOX, REFUSED_WORKSPACE, REFUSED_GLOBAL }
+
+/** The closed `kind` vocabulary of `testinbox_storage_footprint_bytes` (contract §12). */
+enum class FootprintKind { COMMITTED, RESERVED, DELETION_DEBT }
 
 /** ADR-035 §16 `storage_physical_failure_total{kind}`: infrastructure, never capacity. */
 enum class PhysicalFailureKind { QUOTA, UNAVAILABLE, TIMEOUT, AMBIGUOUS, DEADLINE, LOCK_TIMEOUT, SLOT_WAIT, CLOCK_OFFSET }

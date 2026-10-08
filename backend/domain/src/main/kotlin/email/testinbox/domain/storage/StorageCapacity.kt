@@ -241,11 +241,34 @@ enum class StorageRefusalReason(
 data class StorageUsage(
     val committedBytes: Long,
     val reservedBytes: Long,
+    /** Objects behind [committedBytes]: every `message` row and every `attachment` row (TI-STORAGE-006E). */
+    val committedObjects: Long = 0,
+    /** Objects behind [reservedBytes]: Σ `cardinality(object_keys)` of every unreleased reservation. */
+    val reservedObjects: Long = 0,
 ) {
+    init {
+        require(committedObjects >= 0 && reservedObjects >= 0) { "object counts cannot be negative: $committedObjects / $reservedObjects" }
+    }
+
     val usedBytes: Long get() = Math.addExact(committedBytes, reservedBytes)
 
     /** What [limitBytes] still allows, never below zero. */
     fun availableBytes(limitBytes: Long): Long = maxOf(0L, Math.subtractExact(limitBytes, usedBytes))
+
+    /**
+     * The footprint bound of the committed objects under [model]
+     * (contract §3.3): what they can cost on the filesystem, never less. A
+     * negative committed figure (drift, until reconciliation) is read as zero
+     * here, since a bound cannot be negative; the payload figure is carried
+     * as it is.
+     */
+    fun committedFootprintBytes(model: FootprintModel): Long = model.bound(maxOf(0L, committedBytes), committedObjects)
+
+    /** The footprint bound of the reserved objects under [model]. */
+    fun reservedFootprintBytes(model: FootprintModel): Long = model.bound(maxOf(0L, reservedBytes), reservedObjects)
+
+    /** `F_c + F_r`: what the committed and reserved objects together can cost on the filesystem. */
+    fun usedFootprintBytes(model: FootprintModel): Long = Math.addExact(committedFootprintBytes(model), reservedFootprintBytes(model))
 
     companion object {
         val ZERO = StorageUsage(0, 0)

@@ -99,6 +99,10 @@ class MetricCardinalityTest {
 
         val storage = MicrometerStorageAccountingMetrics(registry)
         storage.ledgerObserved(unfoldedRows = 12, committedBytes = 3_456)
+        // TI-STORAGE-006E: the footprint bounds and the observation age, closed label.
+        email.testinbox.application.port.FootprintKind.entries
+            .forEach { storage.footprintObserved(it, 1_000) }
+        storage.filesystemObservationAge(7)
         DriftDirection.entries.forEach { storage.driftRepaired(it) }
         ReconciliationOutcome.entries.forEach { storage.reconciliationCompleted(it) }
         CompactionOutcome.entries.forEach { storage.compactionCompleted(it) }
@@ -187,7 +191,7 @@ class MetricCardinalityTest {
             "quota" to QuotaDimension.entries.map { it.name }.toSet(),
             "direction" to DriftDirection.entries.map { it.name.lowercase() }.toSet(),
             // `committed` from the ledger, `reserved` from the cleanup pass (ADR-035 §16).
-            "kind" to setOf("committed", "reserved") + PhysicalFailureKind.entries.map { it.name.lowercase() },
+            "kind" to setOf("committed", "reserved", "deletion_debt") + PhysicalFailureKind.entries.map { it.name.lowercase() },
             "ceiling" to StorageScope.entries.map { it.name.lowercase() }.toSet(),
             "path" to ReleasePath.entries.map { it.name.lowercase() }.toSet(),
             "state" to setOf("reserved", "releasing"),
@@ -306,6 +310,8 @@ class MetricCardinalityTest {
             "testinbox_idempotency_total",
             "testinbox_storage_ledger_unfolded_rows",
             "testinbox_storage_covered_bytes",
+            "testinbox_storage_footprint_bytes",
+            "testinbox_storage_filesystem_observation_age_seconds",
             "testinbox_storage_accounting_drift_total",
             "testinbox_storage_reconciliation_total",
             "testinbox_storage_ledger_compaction_total",
@@ -351,6 +357,12 @@ class MetricCardinalityTest {
         // Names and labels alone would pass with the two values swapped.
         exerciseEverything()
         registry.get("testinbox_storage_ledger_unfolded_rows").gauge().value() shouldBe 12.0
+        registry
+            .get("testinbox_storage_footprint_bytes")
+            .tag("kind", "deletion_debt")
+            .gauge()
+            .value() shouldBe 1_000.0
+        registry.get("testinbox_storage_filesystem_observation_age_seconds").gauge().value() shouldBe 7.0
         registry
             .get("testinbox_storage_covered_bytes")
             .tag("kind", "committed")

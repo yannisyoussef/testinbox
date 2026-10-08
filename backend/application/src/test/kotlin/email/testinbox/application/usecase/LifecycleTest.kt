@@ -110,6 +110,33 @@ class LifecycleTest {
     }
 
     @Test
+    fun `an inbox whose prefix cannot be fully deleted keeps its rows and does not block the inboxes behind it`() {
+        val stuck = inbox()
+        val stuckKey = ObjectKeys.raw(workspaceId, stuck.id, MessageId(UUID.randomUUID()))
+        blobs.put(stuckKey, byteArrayOf(1), "x")
+        val fine = inbox()
+        blobs.put(ObjectKeys.raw(workspaceId, fine.id, MessageId(UUID.randomUUID())), byteArrayOf(2), "x")
+        blobs.failingPrefixes += ObjectKeys.inboxPrefix(workspaceId, stuck.id)
+
+        clock.advanceSeconds(601)
+        sweeper().sweep()
+        clock.advanceSeconds(31)
+        val report = sweeper().sweep()
+
+        // Only the healthy inbox is hard-deleted; the stuck one keeps its rows AND its object
+        // (rows gone with the object left would be bytes no figure describes), and is retried.
+        report.hardDeleted shouldBe 1
+        inboxes.inboxes.containsKey(fine.id) shouldBe false
+        inboxes.inboxes.containsKey(stuck.id) shouldBe true
+        blobs.blobs.keys.toList() shouldBe listOf(stuckKey)
+
+        blobs.failingPrefixes.clear()
+        sweeper().sweep().hardDeleted shouldBe 1
+        inboxes.inboxes.containsKey(stuck.id) shouldBe false
+        blobs.blobs.isEmpty() shouldBe true
+    }
+
+    @Test
     fun `exact inbox expiry starts the configured cooldown (ADR-021)`() {
         val target = inbox(mode = AddressMode.EXACT)
         clock.advanceSeconds(601)
@@ -204,6 +231,24 @@ class LifecycleTest {
         val sweep = OrphanBlobSweep(blobs, reservations, ambiguity, ambiguity, inspection, clock, Duration.ofHours(1))
         sweep.sweep() shouldBe 1
         blobs.blobs.keys.toSet() shouldBe setOf(referencedKey, freshOrphanKey, reservedKey, ambiguousKey)
+    }
+
+    @Test
+    fun `the orphan sweep removes a probe object its writer failed to delete, and leaves a fresh one alone`() {
+        val messages = InMemoryMessageRepository()
+        val ambiguity = InMemoryStorageAmbiguity(clock)
+        val reservations = InMemoryStorageReservations(messages, ambiguity, clock)
+        blobs.storedAtClock = clock
+        val stale = "_probe/api-1/stale"
+        blobs.put(stale, ByteArray(0), "x")
+        clock.advanceSeconds(7200)
+        val fresh = "_probe/api-1/fresh"
+        blobs.put(fresh, ByteArray(0), "x")
+        val inspection = InMemoryStorageInspection(blobs, clock)
+
+        val sweep = OrphanBlobSweep(blobs, reservations, ambiguity, ambiguity, inspection, clock, Duration.ofHours(1))
+        sweep.sweep() shouldBe 1
+        blobs.blobs.keys.toSet() shouldBe setOf(fresh)
     }
 
     @Test

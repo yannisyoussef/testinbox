@@ -293,7 +293,11 @@ class InMemoryBlobStore : BlobStore {
         blobs.remove(key)
     }
 
+    /** Prefixes whose delete fails as a partial `DeleteObjects` would (TI-STORAGE-006E): nothing under them is removed. */
+    val failingPrefixes = mutableSetOf<String>()
+
     override fun deletePrefix(prefix: String) {
+        if (prefix in failingPrefixes) throw IllegalStateException("1 of the listed objects were not deleted: {InternalError=1}")
         blobs.keys.removeAll { it.startsWith(prefix) }
     }
 

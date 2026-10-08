@@ -90,6 +90,10 @@ class SweepSchedulerTest {
         }
 
         override fun repairDrift(): List<AccountingDrift> = error("database gone")
+
+        override fun deletionDebt(): email.testinbox.application.port.DeletionDebtState = error("database gone")
+
+        override fun compactDeletionDebt(): Int = error("database gone")
     }
 
     private val watch = mock(email.testinbox.application.storage.activation.ActivationWatch::class.java)

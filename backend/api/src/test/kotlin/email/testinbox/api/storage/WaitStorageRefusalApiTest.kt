@@ -419,9 +419,19 @@ class WaitStorageRefusalApiTest : ApiIntegrationTestBase() {
         json.readTree(t.wait(inbox, cursor = current).body)["status"].asText() shouldBe "TIMEOUT"
 
         // The server keeps no per-client observation state: no table or column of the schema holds a cursor.
+        // The one table whose name carries the word is V8's `storage_filesystem_observation`: Ops-written
+        // filesystem telemetry (TI-STORAGE-006E), with no client, key, inbox or workspace in it.
         jdbc
             .sql(
-                "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND (column_name ILIKE '%cursor%' OR table_name ILIKE '%cursor%' OR table_name ILIKE '%observation%')",
+                "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' " +
+                    "AND (column_name ILIKE '%cursor%' OR table_name ILIKE '%cursor%' " +
+                    "OR (table_name ILIKE '%observation%' AND table_name <> 'storage_filesystem_observation'))",
+            ).query(Long::class.java)
+            .single() shouldBe 0
+        jdbc
+            .sql(
+                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'storage_filesystem_observation' " +
+                    "AND (column_name ILIKE '%key%' OR column_name ILIKE '%inbox%' OR column_name ILIKE '%workspace%' OR column_name ILIKE '%cursor%')",
             ).query(Long::class.java)
             .single() shouldBe 0
     }

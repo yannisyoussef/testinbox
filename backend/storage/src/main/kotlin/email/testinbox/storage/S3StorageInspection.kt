@@ -111,9 +111,23 @@ class S3StorageInspection(
                 .build(),
             RequestBody.fromBytes(ByteArray(0)), // the ADR-035 §8 zero-byte probe
         )
-        val listed = objectExists(probeKey)
-        deleteObject(probeKey)
-        return listed
+        // Deleted whatever the listing does: a probe left behind after a
+        // failed listing would be allocated bytes no ledger row describes
+        // (filesystem-containment contract §5.3, TI-STORAGE-006E).
+        var failure: Throwable? = null
+        try {
+            return objectExists(probeKey)
+        } catch (e: RuntimeException) {
+            failure = e
+            throw e
+        } finally {
+            try {
+                deleteObject(probeKey)
+            } catch (e: RuntimeException) {
+                // The listing's own failure is the one to report; the leftover probe is the sweep's.
+                failure?.addSuppressed(e) ?: throw e
+            }
+        }
     }
 
     override fun serverTime(): ServerTime {

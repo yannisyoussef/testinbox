@@ -60,6 +60,15 @@ class OrphanBlobSweep(
         val threshold = clock.instant().minus(minAge)
         var removed = 0
         for (key in blobs.listKeysOlderThan("", threshold)) {
+            if (key.startsWith(email.testinbox.application.storage.ReleaseStaleReservations.PROBE_PREFIX)) {
+                // A witness or breaker probe is deleted by the call that wrote it;
+                // one this old outlived a failed listing. It has no row, no
+                // reservation and no debt row, so nothing else would ever free it
+                // (filesystem-containment contract §5.3, TI-STORAGE-006E).
+                blobs.delete(key)
+                removed++
+                continue
+            }
             val messageId = ObjectKeys.messageIdOf(key)?.let(::parseUuid) ?: continue
             if (reservations.isOrphan(MessageId(messageId), key)) {
                 if (ambiguity.wasAmbiguous(key, AMBIGUITY_RETENTION)) {

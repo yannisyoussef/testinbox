@@ -166,13 +166,20 @@ class S3BlobStore(
                     )
                 val keys = listing.contents().map { ObjectIdentifier.builder().key(it.key()).build() }
                 if (keys.isNotEmpty()) {
-                    s3.deleteObjects(
-                        DeleteObjectsRequest
-                            .builder()
-                            .bucket(config.bucket)
-                            .delete(Delete.builder().objects(keys).build())
-                            .build(),
-                    )
+                    val response =
+                        s3.deleteObjects(
+                            DeleteObjectsRequest
+                                .builder()
+                                .bucket(config.bucket)
+                                .delete(Delete.builder().objects(keys).build())
+                                .build(),
+                        )
+                    // DeleteObjects is per-key best effort: a 200 can carry <Error>
+                    // entries for keys that stayed. Retention deletes rows only after
+                    // this returned, so a key that stayed must FAIL here, or it would
+                    // be an object no row, no reservation and no debt row describes
+                    // (filesystem-containment contract §2.2 (f), §4.6).
+                    failOnPartialDelete(response)
                 }
                 continuation = listing.nextContinuationToken()
             } while (continuation != null)
@@ -208,6 +215,16 @@ class S3BlobStore(
         s3.close()
     }
 
+    companion object {
+        /** Throws when [response] reports any key that was not deleted. Codes only: a key names a tenant's prefix. */
+        internal fun failOnPartialDelete(response: software.amazon.awssdk.services.s3.model.DeleteObjectsResponse) {
+            val errors = response.errors()
+            if (errors.isNullOrEmpty()) return
+            val codes = errors.map { it.code() ?: "unknown" }.groupingBy { it }.eachCount()
+            throw PartialDeleteException("${errors.size} of the listed objects were not deleted: $codes")
+        }
+    }
+
     /**
      * Times one call and records it under a fixed operation label. Object
      * storage is on the critical path of every inbound delivery — raw bytes are
@@ -233,3 +250,8 @@ class S3BlobStore(
         }
     }
 }
+
+/** `DeleteObjects` answered 200 but left objects behind; the caller must not delete their rows. */
+class PartialDeleteException(
+    message: String,
+) : RuntimeException(message)
