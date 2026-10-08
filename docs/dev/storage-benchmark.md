@@ -2,32 +2,20 @@
 
 ## Status
 
-**As encoded, this gate cannot PASS on any host, and the owner must clarify
-§11 before it can.** The matrix pairs concurrency 1 with 2× the expected load
-(520 events/s), and `--concurrency` is the worker pool size: one worker runs
-the whole protocol (slot, T1, fence rows, T2 with every message and
-attachment row) serially, so it cannot offer 520 events/s, and `sustained2x`
-and `t1P99` fail at concurrency 1 for a reason that is not the admission
-lock. The harness encodes §11 literally and does not exempt that row.
-Proposed clarification for the ADR owners: concurrency 1 is the uncontended
-baseline row, reported but excluded from `sustained2x`/`t1P99`; concurrency
-≥ 10 is judged. Until §11 says so, a full run on the staging host class ends
-`FAIL` on `sustained2x` whatever the lock does. See "Limits worth knowing".
+ADR-035 §11 was amended on 2026-10-08 (owner decision TI-STORAGE-006b):
+concurrency 1 is the **uncontended diagnostic baseline**. It stays in the
+matrix, is measured and reported in full and is required for the run to be
+complete, but the offered-load criteria (`sustained2x`, `t1P99`) are read at
+concurrency 10/25/50/100 only (`GateEvaluator.LOAD_GATED_CONCURRENCY`).
+`retentionP99VsReference` is relative to a NO_LOCK reference facing the same
+offered load, so it is judged at every CHOSEN 2× scenario, concurrency 1
+included, as are the integrity criteria (deadlocks, lock-timeout rate,
+slot-queueing deadline misses, other errors, starved retention ticks).
+No latency threshold exists for concurrency 1. `scripts/check-storage-activation.sh`
+gate D recomputes the same split.
 
-`backend/benchmark` is the formal harness for the hard enablement gate of
-[ADR-035 §11](../adr/0035-physical-storage-bound-at-ingest.md): before the
-**global** storage ceiling is turned on, the chosen admission design (one
-global advisory lock in T1, derived sums) must be measured on the **staging
-host class**, against a representative population plus 10 000 synthetic
-workspaces, under a live reservation and delta backlog, and must meet §11's
-pass criterion unchanged. The result goes in
-[`production-ops-acceptance.md`](production-ops-acceptance.md) row G.
-
-It replaces nothing. The laptop evidence in `docs/adr/0035-benchmark/` (pgbench
-SQL scripts, three admission designs) is what the ADR's *choice* rests on; the
-T1 sanity run in `docs/adr/0035-benchmark/t1-admission/` catches pathologies in
-the adapter. Neither is the gate. This harness is, and it runs on the real
-host class or it is not evidence.
+No staging-host-class run has been recorded; only laptop smoke runs exist,
+and they are `adrEvidence: false` by construction.
 
 ## What it exercises
 
@@ -222,7 +210,7 @@ launcher directly, so **its exit code is the verdict**: 0 `PASS`, 1 `FAIL`,
 3 `INCOMPLETE`, 2 usage or safety refusal. Evidence lands in
 `backend/benchmark/build/benchmark-evidence/<UTC stamp>/` (gitignored) as
 `evidence.json` and `SUMMARY.md`; the paths are printed. Copying a result into
-row G is a human step, and a laptop result is never copied anywhere.
+row P is a human step, and a laptop result is never copied anywhere.
 
 Run from `backend/` by hand: `./gradlew :benchmark:installDist` then
 `benchmark/build/install/storage-benchmark/bin/storage-benchmark <flags>`.
@@ -341,18 +329,7 @@ proof, one criteria table and one row per scenario.
 
 ## Limits worth knowing
 
-- **Concurrency 1 cannot offer 2× the expected load (see Status).** `--concurrency` is the
-  worker pool size, and one event is the whole protocol (slot, T1, one fence
-  row per copy, T2 with every message and attachment row): on the laptop
-  smoke a single worker already lagged at 50 events/s (T1 p99 53 ms from
-  schedule lag alone, T1 transaction p99 7 ms). At 520/s one worker queues
-  without bound, so `sustained2x` and `t1P99` fail at concurrency 1 on any
-  host, for a reason that is not the admission lock. The evaluator encodes
-  §11's matrix literally and does not exempt that row; whether concurrency 1
-  is a contention baseline exempt from the 2× criteria is a decision for the
-  ADR's owners, recorded in §11, not something this harness decides. Until
-  then the verdict of a full staging run is `FAIL` on `sustained2x`, and the
-  `ADR REVIEW REQUIRED` line it prints is literally right: §11 needs review.
+- **Concurrency 1** is the uncontended baseline (ADR-035 §11 as amended 2026-10-08): one open-loop worker cannot offer 2× the load, so it is measured and reported but the sustained-load and T1 criteria are read at concurrency ≥ 10; the retention ratio (relative to a reference at the same offered load) and the integrity criteria still apply to it.
 - One ingestion node's slots (16) are modelled, because the protocol is per
   node. At concurrency 50 and 100 the extra workers wait for a slot, and that
   wait is inside `t1` and `event`; `slotQueueingDeadlineMisses` says whether

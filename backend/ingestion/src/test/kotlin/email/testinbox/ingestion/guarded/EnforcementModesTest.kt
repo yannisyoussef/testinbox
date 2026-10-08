@@ -122,6 +122,40 @@ class EnforcementModesTest {
     }
 
     @Test
+    fun `F - an activation check that cannot be evaluated under TENANT_LIMITS is infrastructure 451 with zero reservation rows`() {
+        val h = harness(StorageEnforcement.TENANT_LIMITS, GuardedIngestHarness.GENEROUS)
+        val (_, address) = h.inbox(h.workspace())
+        val broken =
+            object : email.testinbox.application.port.ActivationInventory {
+                override fun sessions(): List<email.testinbox.application.port.DatabaseSession> = error("pg_stat_activity unavailable")
+
+                override fun applicationRole() = "testinbox_app"
+
+                override fun nodes(): List<email.testinbox.application.port.StorageNodeRow> = emptyList()
+
+                override fun now() = h.clock.now()
+            }
+        val watch =
+            email.testinbox.application.storage.activation.ActivationWatch(
+                broken,
+                email.testinbox.application.storage.activation
+                    .ExpectedNodes(emptySet(), setOf(h.nodeId)),
+                StorageEnforcement.TENANT_LIMITS,
+                h.activation,
+                h.metrics,
+            )
+        watch.run().holds shouldBe false // the same guard GuardedStorage consults is now set by the watch's own rule
+
+        val failure = assertThrows<StorageUnavailableException> { h.deliver(listOf(address)) }
+
+        failure.reason shouldBe StorageUnavailableReason.ACTIVATION_VIOLATED
+        h.count("SELECT count(*) FROM storage_reservation") shouldBe 0
+        h.fencedWrites.size shouldBe 0
+        h.refusalCount() shouldBe 0
+        h.metrics.events shouldNotContain "admission:ADMITTED"
+    }
+
+    @Test
     fun `a set activation guard answers as infrastructure before the slot and before T1, reserving nothing (§22)`() {
         val h = harness(StorageEnforcement.TENANT_LIMITS, GuardedIngestHarness.GENEROUS)
         val (_, address) = h.inbox(h.workspace())

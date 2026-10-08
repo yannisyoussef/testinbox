@@ -59,8 +59,8 @@ class SweepScheduler(
         runCatching { releaseStaleReservations.run() }
             .onFailure { log.warn("storage reservation cleanup failed; reservations stay charged and the next pass retries", it) }
         // ADR-035 §14 Phase 4: the allowlist and inventory checks re-run on every cleanup pass.
-        runCatching { activationWatch.run() }
-            .onFailure { log.warn("storage activation check failed; the gates keep their last value until the next pass", it) }
+        // The watch never throws; an evaluation it cannot complete is recorded by the watch itself.
+        activationWatch.run()
     }
 
     /** ADR-035 §9: verifies persisted ambiguity once `T_verify` has passed, and latches on a late object. */

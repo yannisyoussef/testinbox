@@ -235,6 +235,31 @@ only "D: other errors in any scenario block" D-benchmark "otherErrors: 3 across 
 jq '.harness.sustainedTolerance = 0.5 | (.scenarios[] | select(.name == "chosen-ws10000-c50-r520") | .achievedRate) = 300' "$TMP/bench-pass.json" > "$TMP/bench-loose.json"
 with --benchmark-evidence "$TMP/bench-loose.json" > "$TMP/d12"
 only "D: a tolerance written into the evidence is ignored; the pinned 0.995 judges" D-benchmark "sustained2x: chosen-ws10000-c50-r520 achieved 300" "$TMP/d12"
+# ADR-035 §11 as amended 2026-10-08: concurrency 1 is the uncontended baseline. The PASS fixture's
+# c1 run cannot sustain 520/s (achieved 301.5, T1 p99 412.7 ms) and that alone must not block;
+# the same shortfall at a load-gated concurrency still blocks.
+good > "$TMP/d1x"
+case_ "D: concurrency 1 failing the load criteria does not block (baseline, reported only)" 0 '^D-benchmark[[:space:]]+PASS' "$TMP/d1x"
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c25-r520") | .achievedRate) = 301.5' "$TMP/bench-pass.json" > "$TMP/bench-c25.json"
+with --benchmark-evidence "$TMP/bench-c25.json" > "$TMP/d13"
+only "D: the same shortfall at concurrency 25 still blocks" D-benchmark "sustained2x: chosen-ws10000-c25-r520 achieved 301.5" "$TMP/d13"
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c1-r520") | .errors.deadlocks) = 1 | (.scenarios[] | select(.name == "chosen-ws10000-c1-r520") | .deadlocks) = 1' "$TMP/bench-pass.json" > "$TMP/bench-c1dl.json"
+with --benchmark-evidence "$TMP/bench-c1dl.json" > "$TMP/d14"
+only "D: an integrity failure at concurrency 1 (a deadlock) still blocks" D-benchmark "deadlocks: 1 across all scenarios" "$TMP/d14"
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c100-r520") | .achievedRate) = 301.5' "$TMP/bench-pass.json" > "$TMP/bench-c100.json"
+with --benchmark-evidence "$TMP/bench-c100.json" > "$TMP/d15"
+only "D: the same shortfall at concurrency 100 still blocks" D-benchmark "sustained2x: chosen-ws10000-c100-r520 achieved 301.5" "$TMP/d15"
+# Coverage is not exempted at concurrency 1: its reference and samples are still required, and the
+# retention ratio (relative to a reference at the same offered load) is still judged there.
+jq 'del(.scenarios[] | select(.name == "reference-ws10000-c1-r520"))' "$TMP/bench-pass.json" > "$TMP/bench-c1noref.json"
+with --benchmark-evidence "$TMP/bench-c1noref.json" > "$TMP/d16"
+only "D: a missing NO_LOCK reference at concurrency 1 still blocks" D-benchmark "retentionP99VsReference: no REFERENCE scenario for chosen-ws10000-c1-r520" "$TMP/d16"
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c1-r520") | .percentiles.retention.p99Ms) = 999' "$TMP/bench-pass.json" > "$TMP/bench-c1ret.json"
+with --benchmark-evidence "$TMP/bench-c1ret.json" > "$TMP/d17"
+only "D: retention above twice the reference at concurrency 1 still blocks" D-benchmark "retentionP99VsReference: chosen-ws10000-c1-r520 retention p99 999" "$TMP/d17"
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c1-r520") | .percentiles.t1.p99Ms) = null' "$TMP/bench-pass.json" > "$TMP/bench-c1not1.json"
+with --benchmark-evidence "$TMP/bench-c1not1.json" > "$TMP/d18"
+only "D: concurrency 1 without T1 samples still blocks (coverage, not a load criterion)" D-benchmark "t1P99: chosen-ws10000-c1-r520 has no T1 samples" "$TMP/d18"
 with --benchmark-evidence "$TMP/bench-unknown-sha.json" > "$TMP/d6"
 case_ "D: a benchmark gitSha that cannot be related to the running API warns but passes" 0 'WARNING: cannot relate benchmark gitSha ffffffffffff' "$TMP/d6"
 printf '{"verdict":"PASS","gitSha":"x"}' > "$TMP/bench-shapeless.json"

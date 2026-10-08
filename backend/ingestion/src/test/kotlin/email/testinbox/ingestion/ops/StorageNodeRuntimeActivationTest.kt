@@ -34,15 +34,30 @@ class StorageNodeRuntimeActivationTest {
 
     private class Inventory(
         var sessions: List<DatabaseSession>,
+        /** When set, the named read throws: the inventory cannot be evaluated. */
+        var failing: String? = null,
     ) : ActivationInventory {
-        override fun sessions() = sessions
+        override fun sessions() =
+            when (failing) {
+                "sessions" -> error("database gone: sessions")
+                "error" -> throw InventoryError()
+                else -> sessions
+            }
 
         override fun applicationRole() = "testinbox_app"
 
-        override fun nodes() = listOf(StorageNodeRow("ingest-1", "storage-v1", Instant.parse("2026-10-08T09:59:55Z"), false))
+        override fun nodes() =
+            if (failing == "nodes") {
+                error("database gone: nodes")
+            } else {
+                listOf(StorageNodeRow("ingest-1", "storage-v1", Instant.parse("2026-10-08T09:59:55Z"), false))
+            }
 
         override fun now() = Instant.parse("2026-10-08T10:00:00Z")
     }
+
+    /** Not an Exception: the watch does not catch it, the heartbeat call site must survive it. */
+    private class InventoryError : Error("JVM-level failure inside the inventory read")
 
     private val healthy = listOf(DatabaseSession("testinbox-ingestion:ingest-1:storage-v1", "testinbox_app"))
     private val old = healthy + DatabaseSession("PostgreSQL JDBC Driver", "testinbox_app")
@@ -97,6 +112,73 @@ class StorageNodeRuntimeActivationTest {
             runtime.heartbeatNow()
             checkNotNull(guard.violated()) shouldContain "PostgreSQL JDBC Driver"
             inventory.sessions = healthy
+            runtime.heartbeatNow()
+            guard.violated() shouldBe null
+        } finally {
+            runtime.stop()
+        }
+    }
+
+    @Test
+    fun `A and B - a non-OFF node whose inventory read throws at start is guarded before its first DATA`() {
+        for (where in listOf("sessions", "nodes")) {
+            val guard = ActivationGuard()
+            val runtime = runtime(Inventory(healthy, failing = where), guard, StorageEnforcement.TENANT_LIMITS)
+            try {
+                runtime.start()
+                checkNotNull(guard.violated()) shouldContain "could not be evaluated"
+                checkNotNull(guard.violated()) shouldContain where
+            } finally {
+                runtime.stop()
+            }
+        }
+    }
+
+    @Test
+    fun `C and D - a healthy non-OFF node is guarded the moment a heartbeat evaluation throws, and clears on the next healthy one`() {
+        val inventory = Inventory(healthy)
+        val guard = ActivationGuard()
+        val runtime = runtime(inventory, guard, StorageEnforcement.ALL)
+        try {
+            runtime.start()
+            guard.violated() shouldBe null
+            inventory.failing = "nodes"
+            runtime.heartbeatNow()
+            checkNotNull(guard.violated()) shouldContain "database gone: nodes"
+            inventory.failing = null
+            runtime.heartbeatNow()
+            guard.violated() shouldBe null
+        } finally {
+            runtime.stop()
+        }
+    }
+
+    @Test
+    fun `an Error escaping the watch does not kill the heartbeat - the thread survives and the next tick still judges`() {
+        val inventory = Inventory(healthy)
+        val guard = ActivationGuard()
+        val runtime = runtime(inventory, guard, StorageEnforcement.ALL)
+        try {
+            runtime.start()
+            inventory.failing = "error"
+            // scheduleWithFixedDelay stops for good on an uncaught throwable; the tick must not throw.
+            runtime.heartbeatNow()
+            inventory.sessions = old
+            inventory.failing = null
+            runtime.heartbeatNow()
+            checkNotNull(guard.violated()) shouldContain "PostgreSQL JDBC Driver"
+        } finally {
+            runtime.stop()
+        }
+    }
+
+    @Test
+    fun `E - under OFF the same evaluation failures leave the guard clear`() {
+        val inventory = Inventory(healthy, failing = "sessions")
+        val guard = ActivationGuard()
+        val runtime = runtime(inventory, guard, StorageEnforcement.OFF)
+        try {
+            runtime.start()
             runtime.heartbeatNow()
             guard.violated() shouldBe null
         } finally {

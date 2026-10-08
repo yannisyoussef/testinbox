@@ -80,6 +80,11 @@ LOCK_TIMEOUT_RATE="0.001"
 MIN_WORKSPACES="10000"
 MIN_RESERVATION_BACKLOG="1000"
 REQUIRED_CONCURRENCY="1,10,25,50,100"
+# ADR-035 §11 as amended 2026-10-08: concurrency 1 is the uncontended baseline, measured and
+# required for coverage, but the sustained-load and T1 criteria are read at these concurrencies only;
+# the retention ratio (relative to a reference at the same offered load) and the integrity criteria
+# are read at every scenario.
+LOAD_GATED_CONCURRENCY="10,25,50,100"
 
 usage() {
     sed -n '/^# Usage:/,/^# Exit:/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
@@ -433,10 +438,12 @@ gate_benchmark() {
     # docs/dev/storage-benchmark.md defines them (schemaVersion 1).
     recomputed="$(jq -r --argjson expected "$EXPECTED_RATE" --argjson tol "$SUSTAIN_TOLERANCE" --argjson t1max "$T1_P99_MS" \
                      --argjson ratio "$RETENTION_RATIO" --argjson ltr "$LOCK_TIMEOUT_RATE" --argjson minws "$MIN_WORKSPACES" \
-                     --argjson minres "$MIN_RESERVATION_BACKLOG" --arg conc "$REQUIRED_CONCURRENCY" '
+                     --argjson minres "$MIN_RESERVATION_BACKLOG" --arg conc "$REQUIRED_CONCURRENCY" --arg gated "$LOAD_GATED_CONCURRENCY" '
         (.scenarios // []) as $s
         | ($conc | split(",") | map(tonumber)) as $required
+        | ($gated | split(",") | map(tonumber)) as $loadgated
         | [ $s[] | select(.mode == "CHOSEN" and .offeredRate != null and (.offeredRate | round) == ((2 * $expected) | round)) ] as $chosen2x
+        | [ $chosen2x[] | select(.concurrency as $c | $loadgated | index($c) != null) ] as $gated2x
         | def ref($c): [ $s[] | select(.mode == "REFERENCE" and .workspaceCount == $c.workspaceCount and .concurrency == $c.concurrency
                                         and .offeredRate != null and (.offeredRate | round) == ($c.offeredRate | round)) ] | first;
           def dl: (.errors.deadlocks // .deadlocks // 0);
@@ -448,10 +455,10 @@ gate_benchmark() {
         + ( if ($chosen2x | length) == 0 then ["no CHOSEN scenario offered 2× the expected rate (\(2 * $expected)/s)"] else [] end )
         + [ ($required - ([ $chosen2x[] | select(.workspaceCount >= $minws and (.reservationBacklog // 0) >= $minres) | .concurrency ]))[]
               | "coverage: no CHOSEN 2× scenario at concurrency \(.) with ≥ \($minws) workspaces and ≥ \($minres) live reservations" ]
-        + [ $chosen2x[] | select(.achievedRate == null or .achievedRate / .offeredRate < $tol)
+        + [ $gated2x[] | select(.achievedRate == null or .achievedRate / .offeredRate < $tol)
               | "sustained2x: \(.name) achieved \(.achievedRate // "nothing") of \(.offeredRate)/s offered (ratio below \($tol))" ]
         + [ $chosen2x[] | select(.percentiles.t1.p99Ms == null) | "t1P99: \(.name) has no T1 samples" ]
-        + [ $chosen2x[] | select(.percentiles.t1.p99Ms != null and .percentiles.t1.p99Ms > $t1max)
+        + [ $gated2x[] | select(.percentiles.t1.p99Ms != null and .percentiles.t1.p99Ms > $t1max)
               | "t1P99: \(.name) T1 p99 \(.percentiles.t1.p99Ms) ms > \($t1max) ms" ]
         + [ $chosen2x[] | . as $c | ref($c) as $r
               | if $r == null then "retentionP99VsReference: no REFERENCE scenario for \($c.name) at (workspaces \($c.workspaceCount), concurrency \($c.concurrency), \($c.offeredRate | round)/s)"

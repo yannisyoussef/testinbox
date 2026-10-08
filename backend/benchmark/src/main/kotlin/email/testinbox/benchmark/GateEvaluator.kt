@@ -32,14 +32,22 @@ data class GateVerdict(
  * - `lock_timeout` < 0.1 %;
  * - no deadline miss caused by slot queueing;
  *
- * plus two harness-level soundness criteria that §11 implies rather than
- * lists: no other error of any kind, and no starved retention tick (a sweep
- * that found nothing is not a retention sample, and a run that ran out of
- * targets has not measured retention at the offered load).
+ * plus "no other error" (listed by §11 as amended) and one harness-level
+ * soundness criterion §11 implies: no starved retention tick (a sweep that
+ * found nothing is not a retention sample, and a run that ran out of targets
+ * has not measured retention at the offered load).
  *
- * The first three are read on the CHOSEN scenarios at 2× [expectedRate]; the
- * rest on every scenario that ran, since a deadlock at 1× is still a
- * deadlock. Coverage decides between a verdict and INCOMPLETE: §11's matrix
+ * The sustained-load and T1 criteria are read on the CHOSEN scenarios at 2×
+ * [expectedRate] at the load-gated concurrencies ([LOAD_GATED_CONCURRENCY];
+ * ADR-035 §11 as amended 2026-10-08: concurrency 1 is the uncontended
+ * diagnostic baseline, measured, reported and required for coverage, but one
+ * open-loop worker cannot offer 2× the load). The retention ratio is read on
+ * EVERY CHOSEN 2× scenario, concurrency 1 included: it is relative to a
+ * reference facing the same offered load, so it is meaningful where the load
+ * itself cannot be. The rest are read on every scenario that ran, concurrency
+ * 1 included, since a deadlock at 1× is still a deadlock.
+ *
+ * Coverage decides between a verdict and INCOMPLETE: §11's matrix
  * is concurrency 1/10/25/50/100 at 2×, on a population of at least
  * [requiredWorkspaces] workspaces, each with a NO_LOCK reference at the same
  * point and at least [MIN_T1_SAMPLES] T1 and [MIN_RETENTION_SAMPLES]
@@ -52,6 +60,7 @@ class GateEvaluator(
     private val expectedRate: Double = EXPECTED_RATE,
     private val requiredConcurrency: Set<Int> = REQUIRED_CONCURRENCY,
     private val requiredWorkspaces: Int = REQUIRED_WORKSPACES,
+    private val loadGatedConcurrency: Set<Int> = LOAD_GATED_CONCURRENCY,
 ) {
     fun evaluate(
         results: List<ScenarioResult>,
@@ -59,11 +68,17 @@ class GateEvaluator(
     ): GateVerdict {
         val twiceRate = 2 * expectedRate
         val chosenAt2x = results.filter { it.mode == AdmissionMode.CHOSEN && isRate(it.offeredRate, twiceRate) }
+        // ADR-035 §11 as amended (TI-STORAGE-006b, owner decision 1): concurrency 1 is the
+        // uncontended diagnostic baseline. It is measured and reported, and it is required for
+        // coverage, but the sustained-load and T1 criteria are read at the load-gated concurrencies only;
+        // the retention ratio (relative to a reference at the same offered load) and the integrity
+        // criteria are read everywhere.
+        val loadGated = chosenAt2x.filter { it.concurrency in loadGatedConcurrency }
         val references = results.filter { it.mode == AdmissionMode.REFERENCE }.associateBy { keyOf(it) }
 
         val criteria = linkedMapOf<String, Criterion>()
-        criteria += sustained(chosenAt2x)
-        criteria += t1P99(chosenAt2x)
+        criteria += sustained(loadGated)
+        criteria += t1P99(loadGated)
         criteria += retention(chosenAt2x, references)
         criteria += deadlocks(results)
         criteria += lockTimeoutRate(results.filter { it.mode == AdmissionMode.CHOSEN })
@@ -88,7 +103,9 @@ class GateEvaluator(
                 SUSTAINED,
                 pass = worst != null && worst >= SUSTAINED_TOLERANCE,
                 observed = worst,
-                threshold = "achieved / offered >= $SUSTAINED_TOLERANCE at ${2 * expectedRate} events/s, every concurrency",
+                threshold =
+                    "achieved / offered >= $SUSTAINED_TOLERANCE at ${2 * expectedRate} events/s at concurrency " +
+                        "${loadGatedConcurrency.sorted()} (concurrency 1 is the uncontended baseline, reported only)",
                 detail =
                     if (worst == null) {
                         "no CHOSEN scenario at 2x the expected rate"
@@ -107,7 +124,9 @@ class GateEvaluator(
                 T1_P99,
                 pass = worst != null && withT1.size == chosen.size && worst <= T1_P99_MS,
                 observed = worst,
-                threshold = "T1 p99 <= $T1_P99_MS ms (completion - due, schedule lag included)",
+                threshold =
+                    "T1 p99 <= $T1_P99_MS ms (completion - due, schedule lag included) at concurrency " +
+                        "${loadGatedConcurrency.sorted()}; concurrency 1 is reported only",
                 detail = if (worst == null) "no T1 sample" else "worst T1 p99 over ${chosen.size} scenario(s)",
             )
     }
@@ -255,6 +274,9 @@ class GateEvaluator(
     companion object {
         const val EXPECTED_RATE = 260.0
         val REQUIRED_CONCURRENCY = setOf(1, 10, 25, 50, 100)
+
+        /** ADR-035 §11 as amended 2026-10-08: the concurrencies the offered-load criteria are read at. */
+        val LOAD_GATED_CONCURRENCY = setOf(10, 25, 50, 100)
         const val REQUIRED_WORKSPACES = 10_000
 
         /**

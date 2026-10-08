@@ -253,11 +253,58 @@ class ActivationWatch(
     data class Outcome(
         val sessions: GateResult,
         val nodes: GateResult,
+        /** Set when the evaluation itself could not complete (the inventory read threw); the gates are then unknown. */
+        val evaluationFailure: String? = null,
     ) {
-        val holds: Boolean get() = sessions.verdict == GateVerdict.PASS && nodes.verdict == GateVerdict.PASS
+        val holds: Boolean get() = evaluationFailure == null && sessions.verdict == GateVerdict.PASS && nodes.verdict == GateVerdict.PASS
     }
 
-    fun run(): Outcome {
+    /**
+     * Never throws. THE rule for an evaluation that cannot complete (a database
+     * read failing, a malformed row): under OFF it is observed; under
+     * TENANT_LIMITS or ALL a node that cannot PROVE the activation invariant
+     * must not admit as though it held, so the guard is set and the node
+     * answers 451 until a later evaluation completes and passes its
+     * admission-relevant gates (TI-STORAGE-006b P1). An evaluation failure
+     * is never a tenant refusal. Every [Exception] is caught (a checked one
+     * leaking from an adapter included); an [Error] is not — that is a dying
+     * JVM, not an inventory the node could not read.
+     */
+    fun run(): Outcome =
+        try {
+            evaluate()
+        } catch (e: Exception) {
+            unavailable(e)
+        }
+
+    private fun unavailable(cause: Exception): Outcome {
+        val detail = "activation check could not be evaluated: ${cause.javaClass.simpleName}: ${cause.message}"
+        val unknown = GateVerdict.NOT_RUN
+        val outcome =
+            Outcome(
+                GateResult(ActivationGate.SESSION_ALLOWLIST, unknown, detail),
+                GateResult(ActivationGate.NODE_INVENTORY, unknown, detail),
+                evaluationFailure = detail,
+            )
+        metrics.activationGate(ActivationGate.SESSION_ALLOWLIST, false)
+        metrics.activationGate(ActivationGate.NODE_INVENTORY, false)
+        if (enforcement == StorageEnforcement.OFF) {
+            metrics.activationViolation(false)
+            guard.clear()
+            log.warn("storage_activation_check_failed (enforcement OFF, observing): {}", detail)
+        } else {
+            guard.set(detail)
+            metrics.activationViolation(true)
+            log.error(
+                "storage_activation_violation enforcement {}: the barrier cannot be proven; this node answers 451: {}",
+                enforcement,
+                detail,
+            )
+        }
+        return outcome
+    }
+
+    private fun evaluate(): Outcome {
         val sessions = SessionAllowlist.evaluate(inventory.sessions(), inventory.applicationRole())
         val rows = inventory.nodes()
         val now = inventory.now()

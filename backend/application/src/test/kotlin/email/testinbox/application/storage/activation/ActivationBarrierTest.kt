@@ -250,6 +250,83 @@ class ActivationBarrierTest {
         SessionAllowlist.evaluate(healthySessions + others).verdict shouldBe GateVerdict.BLOCKED
     }
 
+    private class Throwing(
+        private val cause: RuntimeException,
+        private val healthy: Inventory,
+        var throwOnSessions: Boolean = true,
+        var throwOnNodes: Boolean = false,
+    ) : ActivationInventory {
+        override fun sessions() = if (throwOnSessions) throw cause else healthy.sessions()
+
+        override fun applicationRole() = healthy.applicationRole()
+
+        override fun nodes() = if (throwOnNodes) throw cause else healthy.nodes()
+
+        override fun now() = healthy.now()
+    }
+
+    @Test
+    fun `an evaluation that cannot complete is a violation under TENANT_LIMITS and ALL - the node cannot prove the barrier`() {
+        val healthy = Inventory(healthySessions, healthyNodes, now)
+        for (enforcement in listOf(StorageEnforcement.TENANT_LIMITS, StorageEnforcement.ALL)) {
+            for (where in listOf("sessions", "nodes")) {
+                val guard = ActivationGuard()
+                val metrics = RecordingMetrics()
+                val inventory =
+                    Throwing(
+                        IllegalStateException("database gone"),
+                        healthy,
+                        throwOnSessions = where == "sessions",
+                        throwOnNodes =
+                            where == "nodes",
+                    )
+                val outcome = ActivationWatch(inventory, expected, enforcement, guard, metrics).run()
+                outcome.holds shouldBe false
+                checkNotNull(outcome.evaluationFailure) shouldContain "database gone"
+                checkNotNull(guard.violated()) shouldContain "could not be evaluated"
+                metrics.violation shouldBe true
+                metrics.gates[ActivationGate.SESSION_ALLOWLIST] shouldBe false
+            }
+        }
+    }
+
+    @Test
+    fun `a previously clear non-OFF guard is set the moment an evaluation throws, and clears on the next complete, passing one`() {
+        val healthy = Inventory(healthySessions, healthyNodes, now)
+        val inventory = Throwing(IllegalStateException("pool exhausted"), healthy, throwOnSessions = false)
+        val guard = ActivationGuard()
+        val metrics = RecordingMetrics()
+        val watch = ActivationWatch(inventory, expected, StorageEnforcement.TENANT_LIMITS, guard, metrics)
+        watch.run().holds shouldBe true
+        guard.violated() shouldBe null
+        inventory.throwOnSessions = true
+        watch.run().holds shouldBe false
+        checkNotNull(guard.violated()) shouldContain "pool exhausted"
+        metrics.violation shouldBe true
+        inventory.throwOnSessions = false
+        watch.run().holds shouldBe true
+        guard.violated() shouldBe null
+        metrics.violation shouldBe false
+    }
+
+    @Test
+    fun `under OFF an evaluation failure is observed and the guard stays clear - Phase 2 traffic is not refused`() {
+        val healthy = Inventory(healthySessions, healthyNodes, now)
+        val guard = ActivationGuard()
+        val metrics = RecordingMetrics()
+        val outcome =
+            ActivationWatch(
+                Throwing(IllegalStateException("database gone"), healthy),
+                expected,
+                StorageEnforcement.OFF,
+                guard,
+                metrics,
+            ).run()
+        outcome.holds shouldBe false
+        guard.violated() shouldBe null
+        metrics.violation shouldBe false
+    }
+
     @Test
     fun `the expected inventory refuses blank ids and an id declared under both roles`() {
         runCatching { ExpectedNodes(setOf(" "), emptySet()) }.isFailure shouldBe true

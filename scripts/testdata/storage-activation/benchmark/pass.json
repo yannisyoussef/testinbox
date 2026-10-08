@@ -660,18 +660,18 @@
       "deltaBacklog": 500,
       "concurrency": 1,
       "offeredRate": 520.0,
-      "achievedRate": 518.1800000000001,
+      "achievedRate": 301.5,
       "durationSeconds": 30.0,
       "scheduledEvents": 15600,
-      "completedEvents": 15600,
+      "completedEvents": 9045,
       "copiesCommitted": 31000,
       "percentiles": {
         "t1": {
           "samples": 15600,
           "p50Ms": 2.5,
           "p95Ms": 7.0,
-          "p99Ms": 12.5,
-          "maxMs": 40.0
+          "p99Ms": 412.7,
+          "maxMs": 900.0
         },
         "retention": {
           "samples": 780,
@@ -696,8 +696,8 @@
       "lockTimeoutRate": 6.41e-05,
       "deadlocks": 0,
       "deadlineMissesFromSlotQueueing": 0,
-      "completionRatio": 1.0,
-      "terminalLagMs": 8.0,
+      "completionRatio": 0.58,
+      "terminalLagMs": 12000.0,
       "deltaBacklogObserved": {
         "samples": 120,
         "meanRows": 1900.0,

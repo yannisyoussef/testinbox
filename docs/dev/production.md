@@ -212,10 +212,25 @@ The defaults are the ADR-035 values, and nothing needs to set them.
 - **An API deploy under a non-OFF mode is visible, not blocking.** The API
   marks its generation clean on stop and re-registers on start; during a
   stop-then-start the inventory reports the API absent and the violation gauge
-  blips. API blue/green with ONE id is impossible (the second process refuses
-  to start while the first holds the id); with two ids the declared set must
-  name both. Ops should confirm the reconciler's API replacement strategy
-  before enabling.
+  blips (owner decision TI-STORAGE-006b: an absent API node is observed and
+  alerted; mail may continue).
+- **Ops prerequisite before staging `TENANT_LIMITS` (owner decision
+  TI-STORAGE-006b): the reconciler's replacement model for BOTH deployables
+  is declared and evidenced**, as one of exactly two shapes:
+  1. **fixed node id → stop the old process before starting its replacement**
+     (the id is claimed with a session lock; a second process with the same
+     id refuses to start while the first lives); or
+  2. **overlapping replacement → distinct declared node ids**, every one of
+     them listed in `TESTINBOX_STORAGE_EXPECTED_*_NODES`, with
+     `declared-max-ingestion-processes` counting the overlap.
+  The evidence (the reconcile recipe and one observed replacement) goes in
+  `production-ops-acceptance.md` row W. Nothing in this repository can observe
+  the reconciler; the declaration is Ops's word.
+- **An activation check that cannot be evaluated** (the database read fails,
+  a malformed row) is itself a violation under a non-OFF mode: the gateway
+  answers `451` until a later check completes and passes its admission-relevant gates; under OFF it is
+  logged and observed only. A node that cannot prove the invariant never
+  admits as though it held.
 - **The activation barrier.** Before any `OFF → TENANT_LIMITS` change, Ops
   runs `scripts/check-storage-activation.sh` (docs/architecture/storage-activation.md)
   and records its evidence JSON in `production-ops-acceptance.md`. The

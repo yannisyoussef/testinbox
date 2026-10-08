@@ -143,6 +143,34 @@ class GateEvaluatorTest {
     }
 
     @Test
+    fun `concurrency 1 failing the offered-load criteria at 2x does not fail the gate - the uncontended baseline (ADR §11 as amended)`() {
+        val matrix = passingMatrix().mutate(1) { it.copy(achievedRate = 301.5, t1 = latency(412.7), terminalLagMs = 12_000.0) }
+        val verdict = evaluator.evaluate(matrix)
+        verdict.verdict shouldBe Verdict.PASS
+        verdict.incompleteReasons.shouldBeEmpty()
+        // Reported, not judged: the worst sustained/T1 figures come from the load-gated concurrencies.
+        verdict.criteria.getValue(GateEvaluator.SUSTAINED).observed!! shouldBe 1.0
+        verdict.criteria.getValue(GateEvaluator.T1_P99).observed shouldBe 10.0
+        verdict.criteria.getValue(GateEvaluator.SUSTAINED).threshold shouldContain "concurrency 1 is the uncontended baseline"
+    }
+
+    @Test
+    fun `concurrency 1 is still required for coverage, and its integrity failures still fail the gate`() {
+        val without = passingMatrix().filterNot { it.concurrency == 1 && it.offeredRate == 520.0 && it.mode == AdmissionMode.CHOSEN }
+        evaluator.evaluate(without).verdict shouldBe Verdict.INCOMPLETE
+        evaluator.evaluate(passingMatrix().mutate(1) { it.copy(deadlocks = 1) }).failsOnly(GateEvaluator.DEADLOCKS)
+        evaluator.evaluate(passingMatrix().mutate(1) { it.copy(otherErrors = 2) }).failsOnly(GateEvaluator.OTHER_ERRORS)
+        // The retention ratio is relative to a reference at the same offered load, so it is judged at concurrency 1 too.
+        evaluator.evaluate(passingMatrix().mutate(1) { it.copy(retention = latency(10.01, 780)) }).failsOnly(GateEvaluator.RETENTION)
+    }
+
+    @Test
+    fun `the same offered-load shortfall at a gated concurrency still fails`() {
+        evaluator.evaluate(passingMatrix().mutate(10) { it.copy(achievedRate = 301.5) }).failsOnly(GateEvaluator.SUSTAINED)
+        evaluator.evaluate(passingMatrix().mutate(25) { it.copy(t1 = latency(412.7)) }).failsOnly(GateEvaluator.T1_P99)
+    }
+
+    @Test
     fun `T1 p99 above 50 ms at 1x does not fail the gate, since the criterion is read at 2x`() {
         val verdict = evaluator.evaluate(passingMatrix().mutate(50, rate = 260.0) { it.copy(t1 = latency(400.0)) })
         verdict.verdict shouldBe Verdict.PASS
@@ -315,6 +343,7 @@ class GateEvaluatorTest {
         GateEvaluator.LOCK_TIMEOUT_RATE shouldBe 0.001
         GateEvaluator.EXPECTED_RATE shouldBe 260.0
         GateEvaluator.REQUIRED_CONCURRENCY shouldBe setOf(1, 10, 25, 50, 100)
+        GateEvaluator.LOAD_GATED_CONCURRENCY shouldBe setOf(10, 25, 50, 100)
         GateEvaluator.REQUIRED_WORKSPACES shouldBe 10_000
         GateEvaluator.SUSTAINED_TOLERANCE shouldBe 0.995
         GateEvaluator.MIN_T1_SAMPLES shouldBe 1_000
