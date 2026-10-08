@@ -51,11 +51,11 @@ means computed by the application from rows.
 | *B* | filesystem block size (`f_frsize`) | bytes | declared, verified by gate F against `statvfs` | fixed per filesystem | `DeploymentSafety` (shape), gate F (truth) |
 | *O_max* | per-object fixed footprint overhead, above the payload's block rounding | bytes | declared; must be ≥ the qualified maximum of the storage combination (§3, §10) | per qualification record | `DeploymentSafety`, gate F |
 | *ε* | proportional allowance for extent-tree metadata of large part files | ratio | constant 1/256 (§3.4) | fixed | code |
-| *K* | `(B − 1)·(1 + ε) + O_max`: the most one object can cost above its payload under the closed form | bytes | derived | per deployment | T1 |
-| φ(p) | footprint bound of one object of payload *p*: `⌈p⌉_B + O_max + ε·⌈p⌉_B` | bytes | derived | per object | T1, ledger reads |
+| *K* | `(B − 1)·(1 + ε) + O_max + 1`: the most one object can cost above its payload under the closed form (the `+ 1` absorbs the per-object rounding-up of the ε allowance) | bytes | derived | per deployment | T1 |
+| φ(p) | footprint bound of one object of payload *p*: `⌈p⌉_B + ⌈ε·⌈p⌉_B⌉ + O_max` | bytes | derived | per object | T1, ledger reads |
 | *P* | payload bytes of a set of objects (what the ledger holds today) | bytes | derived (ledger) | live | T1 snapshot |
 | *N* | object count of a set of objects (new ledger quantity) | objects | derived (ledger) | live | T1 snapshot |
-| *F(P, N)* | closed-form footprint bound of a set: `(P + N·(B − 1))·(1 + ε) + N·O_max = P·(1+ε) + N·K` (§3.3) | bytes | derived | live | T1 snapshot |
+| *F(P, N)* | closed-form footprint bound of a set: `(P + N·(B − 1))·(1 + ε) + N·(O_max + 1) = P·(1+ε) + N·K` (§3.3) | bytes | derived | live | T1 snapshot |
 | *F_c* | footprint of committed objects: `F(P_c, N_c)` over `message`/`attachment` rows | bytes | derived (ledger bases + deltas) | live | T1 |
 | *F_r* | footprint of reserved objects: `F(Σ bytes, Σ cardinality(object_keys))` over `storage_reservation` | bytes | derived | live | T1 |
 | *G_F* | global ceiling in footprint bytes (replaces payload *G* for the GLOBAL scope) | bytes | declared | per deployment | T1: `F_c + F_r + φ_copy ≤ min(G_F, C_fs − R_ops − M − D_est) − H_F` |
@@ -227,12 +227,17 @@ filesystem, and the triggers cannot know the payload distribution; but a set
 of objects with payload sum *P* and count *N* satisfies
 
 ```
-Σ φ(p_i) = Σ ⌈p_i⌉_B·(1+ε) + N·O_max
-        ≤ Σ (p_i + B − 1)·(1+ε) + N·O_max
-        = (P + N·(B − 1))·(1+ε) + N·O_max              =: F(P, N)
+Σ φ(p_i) = Σ (⌈p_i⌉_B + ⌈ε·⌈p_i⌉_B⌉) + N·O_max
+        ≤ Σ ⌈p_i⌉_B·(1+ε) + N + N·O_max             (each ⌈x⌉ ≤ x + 1)
+        ≤ Σ (p_i + B − 1)·(1+ε) + N·(O_max + 1)
+        = (P + N·(B − 1))·(1+ε) + N·(O_max + 1)      =: F(P, N)
 ```
 
-(computed with checked arithmetic, rounding every division up). So the database keeps **payload sums and
+(computed with checked arithmetic, rounding every division up). The `+ N`
+is load-bearing: ε is applied per object and rounded up each time, so without
+it a set of objects each one byte past a block boundary is under-counted
+(`FootprintModelTest` exhibits such a set, and proves the inequality by
+property over boundary-biased payloads and non-power-of-two denominators). So the database keeps **payload sums and
 object counts**, both environment-independent, and the application applies
 the deployment's *B*, *O_max* and ε at read time, inside T1's snapshot. The
 same *P* and *N* serve the OFF-mode metrics, so the footprint is observable
@@ -370,8 +375,14 @@ fast default, no rewrite), two `CREATE OR REPLACE FUNCTION`, two new tables
 (§5), one function replaced to backfill counts, and a recompute. It takes the
 V6 lock set for the backfill so the counts describe exactly the rows that
 exist. A rolled-back artifact keeps appending correct deltas through the new
-triggers and ignores the counts; a rolled-forward artifact after a rollback
-finds the counts exact. `check-migration-safety.sh` accepts it without a
+triggers and ignores the counts. Its compactor, however, predates the counts:
+it folds the bytes into the bases and deletes the deltas, so their object
+counts are lost. After a rollback the counts are therefore UNDER (bytes stay
+exact) until the next reconciliation repairs them from the rows; a
+rolled-forward artifact finds them exact only after its first reconciliation
+or a recompute, and the footprint gauges under-read until then. Footprint
+admission (PR D) must therefore require a clean reconciliation after any
+roll-forward before it may refuse on footprint. `check-migration-safety.sh` accepts it without a
 declaration; `check-backup-scope.sh` classifies the new tables `-` (derived,
 never restored).
 
@@ -398,7 +409,7 @@ Without this, class (f) of §2.2 is unbounded.
 
 ### 4.7 Consequence: effective payload capacity
 
-With *B* = 4 KiB, *O_max* = 24 KiB, ε = 1/256 (so *K* ≈ 28 687 B), a
+With *B* = 4 KiB, *O_max* = 24 KiB, ε = 1/256 (so *K* = 4 095 + 16 + 24 576 + 1 = 28 688 B), a
 20 GiB *G_F* holds:
 
 | Message | Objects | Payload per message | F bound per message | Messages in 20 GiB | Payload fraction of *G_F* |
@@ -409,7 +420,7 @@ With *B* = 4 KiB, *O_max* = 24 KiB, ε = 1/256 (so *K* ≈ 28 687 B), a
 | 1 MiB raw + one 700 KiB attachment | 2 | 1.68 MiB | 1.74 MiB | ≈ 11 700 | 96.5 % |
 | 15 MiB, no attachment | 1 | 15 MiB | 15.09 MiB | ≈ 1 357 | 99.4 % |
 
-`F(15 MiB, 1)` = 15 818 767 B (φ itself is 15 814 656 B; *H_F* uses the
+`F(15 MiB, 1)` = 15 818 768 B (φ itself is 15 814 656 B; *H_F* uses the
 closed form, since that is what every ledger read uses), so *H_F* = 241.4 MiB
 per declared ingestion process (482.8 MiB with a deploy surge of 2).
 
@@ -555,8 +566,9 @@ trash baseline for pre-V8 objects and probe residue, so `D_est` is
 Ops writes the first observation (gate F requires a live one before
 activation, so a non-OFF node never starts in this state except by tampering,
 which this rule fails closed on). The observation's age is a metric
-(`testinbox_storage_filesystem_observation_age_seconds`), alerted above
-*A_obs*; Ops policy may latch admission earlier. No timer in the application
+(`testinbox_storage_filesystem_observation_age_seconds`, `−1` while no
+observation exists), alerted on `age < 0 OR age > A_obs` so that the
+never-observed state alerts too; Ops policy may latch admission earlier. No timer in the application
 ever *releases* debt; only an observation does.
 
 If observations are **inconsistent** (an observation whose `used_bytes` exceeds
