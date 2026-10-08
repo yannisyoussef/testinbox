@@ -275,18 +275,46 @@ nothing TestInbox owns is uncounted when the first admission happens.
 window in which a rolled-back artifact whose T1 does not apply (C) runs —
 which the rollback floor forbids (§4.5). ∎
 
-**Executable check.** `FootprintAdmissionTest` drives random operation
-sequences through a world whose operations are split into their real
-sub-steps (debt row commit, S3 delete, re-stamp; observation start,
-measurement, commit; compaction) and interleaved, with sets occupying up to
-their closed-form bound. After every sub-step it asserts the potential chain
-of the proof directly — `Φ_k*(t) + Σ_{X} F(p, 1) ≤ Φ_k*(A) + H_F` against the
-observation newest at the last admission — besides physical containment.
-Each mutant named in the test (the φ_copy rule, *H_F* = 0 or `slots × φ`,
-pending debt not counted, pending debt compacted, a debt row before the trash
-move, a non-pending row before the delete, the slot premise removed) is a
-committed test that must fail the property; they are listed in the test, not
-asserted in prose.
+**Executable check.** `FootprintWorldTest` (PR #83) drives 400 pinned
+worlds of 600 atomic steps each:
+- **The steps are split where the implementation splits them**, and any
+  other step may run in between: upload per object; release (keys, then
+  row); retention (blobs to trash, then rows and one debt row); the sweep
+  (pending row, delete, resolve under a new order); observation (order,
+  walk, row); compaction keyed on the newest-started observation.
+- **The world is tight and adversarial**:
+  - every object costs exactly φ;
+  - copies often materialize at once;
+  - a walk sees only trash present at its start and still present at its
+    end;
+  - purges are rare;
+  - late objects surface whenever the §9 slots allow.
+
+After every step it asserts, from the physical state:
+- **injection**, the core of the proof above: every object on the
+  filesystem, in trash or not, is covered by a live row or reservation, a
+  debt row the snapshot counts, or the newest observation's measured set.
+  The only exceptions are late objects whose write slot is still held;
+- **the theorem**: physical ≤ *C_fs* − *R_ops* − *M*;
+- **Lemma 1**;
+- **the admission invariant** on the exact post-admission aggregate.
+
+Coverage floors (admissions, refusals by each rule, late objects, resolved
+pending rows, observations overlapping a trash move, compacted rows, steps
+within 10 % of the ceiling) make a vacuous pass fail.
+
+Each committed mutant must be caught in the same worlds:
+- **With the admission oracle off**, eight mutants must be caught by a
+  *physical* oracle: *H_F* = 0, *D* outside (C), *W* outside (C), the debt
+  row before the trash move, the observation's order taken at its end,
+  pending rows compacted, resolution keeping the old order, and T1 reading
+  the latest-arrived observation. The first three breach the theorem; the
+  other five break injection.
+- **The φ_copy rule** is caught by the admission invariant it breaks. Under
+  the per-object premise it is not physically unsafe on its own
+  (Σφ(*L*) + φ(*c*) ≤ *F*(*L*) + φ(*c*)), but every other argument of the
+  proof is built on that invariant. The owner's counterexample is pinned
+  separately in `FootprintAdmissionTest`.
 
 **Mixed-recipient and multi-copy events.** T1 evaluates the event's copies in
 envelope order against running totals in **one** snapshot under the
@@ -729,9 +757,9 @@ by a trigger, never supplied) — and **never falls back** to an older
 observation, whose debt rows may already be compacted. A
 row whose `started_at` is in the future is refused by a trigger (it would hide
 every deletion until the clock caught up), `observed_at < started_at` is
-refused by a constraint, and "newest" is by `started_at`, not by insertion
-order, so a late-arriving stale measurement cannot resurrect an old
-`trash_bytes`. A `du` that fails (anything but "entry vanished mid-walk")
+refused by a constraint, and "newest" is by `started_seq`, not by insertion
+order or by any clock, so a late-arriving stale measurement cannot resurrect
+an old `trash_bytes`. A `du` that fails (anything but "entry vanished mid-walk")
 writes no row. Compaction of superseded debt rows (§5.4) is sound because the
 observation it keys on is committed before the compaction commits, and a later
 T1 statement sees both or neither under READ COMMITTED.
