@@ -3,16 +3,13 @@ package email.testinbox.domain.storage
 import email.testinbox.domain.storage.FootprintAdmission.Load
 import email.testinbox.domain.storage.FootprintAdmission.Snapshot
 import email.testinbox.domain.storage.FootprintAdmission.Verdict
-import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
 import io.kotest.property.Arb
-import io.kotest.property.arbitrary.int
 import io.kotest.property.arbitrary.list
 import io.kotest.property.arbitrary.long
 import io.kotest.property.checkAll
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
-import java.util.Random
 
 /**
  * The filesystem-containment admission rules (contract §2.1, §2.4). The point is
@@ -120,10 +117,34 @@ class FootprintAdmissionTest {
     }
 
     @Test
-    fun `an overflowing aggregate refuses, never wraps`() {
+    fun `an overflowing aggregate is indeterminate - an infrastructure refusal, never a capacity verdict, never wrapped`() {
         val huge = Snapshot(Load(Long.MAX_VALUE / 2, 1), Load.ZERO, 0)
         FootprintAdmission.decide(model, limits(g = Long.MAX_VALUE, c = Long.MAX_VALUE), huge, listOf(Load(Long.MAX_VALUE / 2, 1))) shouldBe
-            listOf(Verdict.CONTAINMENT)
+            listOf(Verdict.INDETERMINATE)
+        // An overflowing copy adds nothing: the next, small copy is still decided on the real totals.
+        FootprintAdmission.decide(
+            model,
+            limits(g = Long.MAX_VALUE, c = Long.MAX_VALUE),
+            huge,
+            listOf(Load(Long.MAX_VALUE / 2, 1), Load(10, 1)),
+        ) shouldBe listOf(Verdict.INDETERMINATE, Verdict.ADMITTED)
+    }
+
+    @Test
+    fun `Lemma 2 over sets - a copy of several objects raises F by at least the sum of their phi and at most F of the copy`() {
+        runBlocking {
+            checkAll(
+                2_000,
+                Arb.long(0L, 1L shl 34),
+                Arb.long(0L, 100_000L),
+                Arb.list(Arb.long(0L, 15L * 1024 * 1024), 1..8),
+            ) { p, n, objects ->
+                val copy = Load(objects.sum(), objects.size.toLong())
+                val delta = model.bound(p + copy.bytes, n + copy.objects) - model.bound(p, n)
+                (delta >= objects.sumOf { model.ofObject(it) }) shouldBe true
+                (delta <= model.bound(copy.bytes, copy.objects)) shouldBe true
+            }
+        }
     }
 
     @Test
@@ -136,226 +157,5 @@ class FootprintAdmissionTest {
             }
         }
     }
-
-    // --- containment across arbitrary operation sequences (contract §2.4, the theorem) -----------
-
-    /**
-     * A worst-case world: every object physically occupies exactly φ of its
-     * payload, an observation's measurement misses every trash move after it
-     * began, and late objects surface whenever the H bound allows. After EVERY
-     * operation, TestInbox's physical bytes must stay within C_fs − R_ops − M.
-     */
-    private class World(
-        private val model: FootprintModel,
-        private val limits: FootprintAdmission.Limits,
-        private val slots: Int,
-        private val maxObject: Long,
-    ) {
-        var t = 0L
-
-        class Reservation(
-            val objects: List<Long>,
-            var uploaded: Boolean = false,
-        )
-
-        class Debt(
-            val bytes: Long,
-            val objects: Long,
-            var incurredAt: Long,
-            var pending: Boolean,
-        )
-
-        val reservations = mutableListOf<Reservation>()
-        val committed = mutableListOf<List<Long>>()
-        val trash = mutableListOf<Pair<Long, Long>>() // physical bytes, moved at
-        val pendingLate = mutableListOf<Long>() // objects of released ambiguous reservations that may still surface
-        val uncovered = mutableListOf<Long>()
-        val debts = mutableListOf<Debt>()
-        var observation: Pair<Long, Long> = 0L to 0L // started at, trash bytes measured
-
-        fun tick() = t++
-
-        fun snapshot(): Snapshot {
-            val liveObjects = committed + reservations.map { it.objects }
-            val live = liveObjects.fold(Load.ZERO) { acc, objs -> acc + Load(objs.sum(), objs.size.toLong()) }
-            val debt =
-                debts
-                    .filter { it.pending || it.incurredAt >= observation.first }
-                    .fold(Load.ZERO) { acc, d -> acc + Load(d.bytes, d.objects) }
-            return Snapshot(live, debt, observation.second)
-        }
-
-        fun physical(): Long =
-            committed.flatten().sumOf(model::ofObject) +
-                reservations.filter { it.uploaded }.flatMap { it.objects }.sumOf(model::ofObject) +
-                uncovered.sumOf(model::ofObject) +
-                trash.sumOf { it.first }
-
-        private fun moveToTrash(objects: List<Long>) {
-            objects.forEach { trash += model.ofObject(it) to tick() }
-        }
-
-        private fun debtAfter(objects: List<Long>) {
-            debts += Debt(objects.sum(), objects.size.toLong(), tick(), pending = false)
-        }
-
-        @Suppress("CyclomaticComplexMethod") // one branch per operation of the state machine, by design
-        fun step(
-            op: Int,
-            rnd: Random,
-        ) {
-            when (op) {
-                0, 1 -> {
-                    val objects =
-                        List(1 + rnd.nextInt(3)) {
-                            if (rnd.nextBoolean()) {
-                                rnd.nextLong(maxObject + 1)
-                            } else {
-                                rnd.nextLong(5) * 4096 +
-                                    1
-                            }
-                        }.map { it.coerceAtMost(maxObject) }
-                    val copies = 1 + rnd.nextInt(3)
-                    val verdicts =
-                        FootprintAdmission.decide(model, limits, snapshot(), List(copies) { Load(objects.sum(), objects.size.toLong()) })
-                    verdicts.filter { it == Verdict.ADMITTED }.forEach { reservations += Reservation(objects) }
-                }
-
-                2 -> {
-                    reservations.filter { !it.uploaded }.randomOrNull(rnd)?.uploaded = true
-                }
-
-                3 -> {
-                    reservations.filter { it.uploaded }.randomOrNull(rnd)?.let {
-                        // T2: a transfer
-                        reservations.remove(it)
-                        committed += it.objects
-                    }
-                }
-
-                4 -> {
-                    reservations.randomOrNull(rnd)?.let {
-                        // definitive failure or duplicate: deleted, proven, released
-                        reservations.remove(it)
-                        if (it.uploaded) moveToTrash(it.objects)
-                        debtAfter(it.objects)
-                    }
-                }
-
-                5 -> {
-                    // ADR-035 §9: an unresolved ambiguity holds a write slot until it is verified,
-                    // so at most `slots` objects can surface late (pending or already surfaced).
-                    if (pendingLate.size + uncovered.size < slots) {
-                        reservations.filter { !it.uploaded }.randomOrNull(rnd)?.let {
-                            // ambiguous: proven absent at release, may still surface
-                            reservations.remove(it)
-                            debtAfter(it.objects)
-                            pendingLate += it.objects.max()
-                        }
-                    }
-                }
-
-                6 -> {
-                    if (pendingLate.isNotEmpty()) uncovered += pendingLate.removeAt(0) // surfaces late
-                }
-
-                7 -> {
-                    committed.randomOrNull(rnd)?.let {
-                        // retention: blobs first, then rows (trigger debt)
-                        committed.remove(it)
-                        moveToTrash(it)
-                        debtAfter(it)
-                    }
-                }
-
-                8 -> {
-                    uncovered.randomOrNull(rnd)?.let {
-                        // orphan / verifier: pending row, delete, prove, re-stamp
-                        val row = Debt(it, 1, tick(), pending = true)
-                        debts += row
-                        uncovered.remove(it)
-                        moveToTrash(listOf(it))
-                        row.incurredAt = tick()
-                        row.pending = false
-                    }
-                }
-
-                9 -> {
-                    if (trash.isNotEmpty()) trash.removeAt(rnd.nextInt(trash.size))
-                }
-
-                // purge
-
-                10 -> { // observe: the measurement sees only what was in trash when it began
-                    val start = tick()
-                    observation = start to trash.filter { it.second < start }.sumOf { it.first }
-                }
-
-                11 -> {
-                    debts.removeAll { !it.pending && it.incurredAt < observation.first }
-                }
-
-                // debt compaction
-
-                12 -> {
-                    if (pendingLate.isNotEmpty()) pendingLate.removeAt(0) // verified absent at T_verify: the slot frees
-                }
-            }
-        }
-
-        private fun <T> List<T>.randomOrNull(rnd: Random): T? = if (isEmpty()) null else this[rnd.nextInt(size)]
-    }
-
-    @Test
-    fun `containment holds after every step of arbitrary operation sequences`() {
-        val maxObject = 64 * kib
-        val slots = 2
-        val h = slots * model.bound(maxObject, 1)
-        val gF = 2L * 1024 * 1024
-        val m = 100 * kib
-        val r = 200 * kib
-        val capacity = gF + 1024 * kib + m + r
-        val limits = FootprintAdmission.Limits(gF, h, m, r, capacity)
-        runBlocking {
-            checkAll(1_000, Arb.long(), Arb.list(Arb.int(0, 12), 50..400)) { seed, ops ->
-                val world = World(model, limits, slots, maxObject)
-                val rnd = Random(seed)
-                ops.forEach { op ->
-                    val before = world.reservations.size
-                    world.step(op, rnd)
-                    val potential = checkNotNull(FootprintAdmission.potential(model, world.snapshot()))
-                    val state =
-                        "op=$op physical=${world.physical()} potential=$potential uncovered=${world.uncovered} " +
-                            "trash=${world.trash} debts=${world.debts.map {
-                                "${it.bytes}/${it.objects}@${it.incurredAt}${if (it.pending) "p" else ""}"
-                            }} " +
-                            "observation=${world.observation} pendingLate=${world.pendingLate}"
-                    // The theorem: TestInbox's physical bytes stay contained.
-                    withClue("theorem: $state") { (world.physical() <= capacity - r - m) shouldBe true }
-                    // Lemma 1, the ordering lemma included: physical ≤ Φ + the uncovered late objects.
-                    withClue("lemma 1: $state") { (world.physical() <= potential + world.uncovered.sumOf(model::ofObject)) shouldBe true }
-                    // The invariant admission maintains: right after an admission, Φ + H_F + M + R_ops ≤ C_fs.
-                    if (world.reservations.size >
-                        before
-                    ) {
-                        withClue("admission: $state") { (potential + h + m + r <= capacity) shouldBe true }
-                    }
-                }
-            }
-        }
-    }
-
-    @Test
-    fun `the same worlds under the old phi rule breach containment - the regression the owner found`() {
-        // Admitting on F(L + D) + W + φ(copy) instead of the post-admission aggregate.
-        val b = 4096L
-        val capacity = 30_000L
-        val physicalAfterPhiRule =
-            run {
-                val phiAdmits = model.bound(0, 0) + model.ofObject(b) <= capacity
-                if (phiAdmits) model.bound(b, 1) else 0
-            }
-        // The aggregate the admitted copy must be covered by exceeds the capacity.
-        (physicalAfterPhiRule > capacity) shouldBe true
-    }
+    // Containment across arbitrary interleavings of atomic steps: FootprintWorldTest.
 }

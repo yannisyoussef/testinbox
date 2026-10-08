@@ -112,11 +112,24 @@ class StorageLedgerPropertyTest : PersistenceIntegrationTest() {
                     }
 
                     Op.RESIZE -> {
-                        db.jdbc
-                            .sql(
-                                "UPDATE message SET raw_size_bytes = greatest(raw_size_bytes + ?, 0) WHERE id = (SELECT id FROM message ORDER BY id DESC LIMIT 1)",
-                            ).param(random.nextLong(-5, 500))
-                            .update()
+                        // V8 (contract §2.4): a size is written once. A resize would move
+                        // L with no debt row, so it is refused, and the ledger moves nothing.
+                        val delta = random.nextLong(-5, 500)
+                        val exists =
+                            db.jdbc
+                                .sql("SELECT count(*) FROM message WHERE raw_size_bytes + ? >= 0 AND ? <> 0")
+                                .params(delta, delta)
+                                .query(Long::class.java)
+                                .single() > 0
+                        val resized =
+                            runCatching {
+                                db.jdbc
+                                    .sql(
+                                        "UPDATE message SET raw_size_bytes = raw_size_bytes + ? WHERE id = (SELECT id FROM message ORDER BY id DESC LIMIT 1)",
+                                    ).param(delta)
+                                    .update()
+                            }
+                        if (exists && delta != 0L) check(resized.isFailure) { "a resize was not refused" }
                     }
 
                     Op.COMPACT -> {

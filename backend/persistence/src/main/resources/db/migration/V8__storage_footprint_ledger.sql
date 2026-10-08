@@ -5,11 +5,14 @@
 --
 -- EXPAND ONLY. Three columns are added with a default (PostgreSQL 11+ writes
 -- no rows for that), two trigger bodies and the recompute function are
--- replaced, two tables are created, and the object counts are backfilled from
--- rows that already exist. Nothing is dropped, renamed or narrowed. An
--- artifact that predates this migration keeps working (ADR-029): its message,
--- attachment and reservation writes run the new trigger bodies, which count
--- for it, and it never reads a column or table created here.
+-- replaced, four tables and a sequence are created, and the object counts are
+-- backfilled from rows that already exist. Nothing is dropped, renamed or
+-- narrowed. An artifact that predates this migration keeps working (ADR-029):
+-- its message, attachment and reservation writes run the new trigger bodies,
+-- which count for it, and its compactor's dropped object counts are folded by
+-- a trigger (contract §4.5), which also marks the counts distrusted until a
+-- clean reconciliation. The new refusals (UPDATE or TRUNCATE of the ledger, a
+-- change of a row's size or object key) refuse nothing any artifact does.
 --
 -- It enables nothing. The footprint bound is applied by the application at
 -- read time (`FootprintModel`); the database keeps only payload sums and
@@ -48,13 +51,54 @@ ALTER TABLE inbox_storage ADD COLUMN base_objects bigint NOT NULL DEFAULT 0;
 -- The application reads it with the newest filesystem observation and
 -- compacts the rows an observation has superseded.
 -- ---------------------------------------------------------------------------
+-- Ordering is a SEQUENCE, never a wall clock: a failover or an NTP step can
+-- move a clock backwards, a sequence never moves back (contract §5.3). A debt
+-- row takes nextval when it is written; an observation takes one BEFORE its
+-- measurement begins.
+CREATE SEQUENCE storage_debt_order_seq;
+
+-- PENDING is incurred_at = 'infinity': written BEFORE a row-free deletion
+-- (the orphan sweep, the ambiguity verifier), it counts for every reader and
+-- no compactor of any version ever deletes it. storage_resolve_pending_debt()
+-- stamps it after the key is proven absent. One pending row per key.
 CREATE TABLE storage_deletion_debt (
     id          bigserial   PRIMARY KEY,
     bytes       bigint      NOT NULL CHECK (bytes >= 0),
     objects     bigint      NOT NULL CHECK (objects >= 0),
-    incurred_at timestamptz NOT NULL DEFAULT clock_timestamp()
+    incurred_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    seq         bigint      NOT NULL DEFAULT nextval('storage_debt_order_seq'),
+    object_key  text,
+    source      text,
+    CHECK (incurred_at <> 'infinity' OR object_key IS NOT NULL)
 );
-CREATE INDEX ix_storage_deletion_debt_incurred ON storage_deletion_debt (incurred_at);
+CREATE INDEX ix_storage_deletion_debt_seq ON storage_deletion_debt (seq);
+CREATE UNIQUE INDEX ux_storage_deletion_debt_pending ON storage_deletion_debt (object_key)
+    WHERE incurred_at = 'infinity';
+
+-- Records a pending debt row for one key, committed BEFORE its S3 delete. An
+-- existing pending row for the key is kept: retries never add a second.
+CREATE FUNCTION storage_record_pending_debt(p_key text, p_bytes bigint, p_objects bigint, p_source text)
+    RETURNS void
+    LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public AS
+$$
+    INSERT INTO storage_deletion_debt (bytes, objects, incurred_at, object_key, source)
+    VALUES (p_bytes, p_objects, 'infinity', p_key, p_source)
+    ON CONFLICT (object_key) WHERE incurred_at = 'infinity' DO NOTHING;
+$$;
+
+-- Resolves a pending row AFTER its key was proven absent: the row gets a
+-- sequence value later than the trash move. Bytes and objects are immutable.
+CREATE FUNCTION storage_resolve_pending_debt(p_key text) RETURNS integer
+    LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public AS
+$$
+    WITH resolved AS (
+        UPDATE storage_deletion_debt
+           SET incurred_at = clock_timestamp(), seq = nextval('storage_debt_order_seq')
+         WHERE object_key = p_key AND incurred_at = 'infinity'
+        RETURNING 1
+    )
+    SELECT count(*)::integer FROM resolved;
+$$;
 
 -- ---------------------------------------------------------------------------
 -- Filesystem observations (contract §5.3, §6). Written ONLY by the Ops
@@ -69,7 +113,12 @@ CREATE INDEX ix_storage_deletion_debt_incurred ON storage_deletion_debt (incurre
 -- ---------------------------------------------------------------------------
 CREATE TABLE storage_filesystem_observation (
     id               bigserial   PRIMARY KEY,
+    -- nextval('storage_debt_order_seq'), taken by the monitor BEFORE measuring.
+    started_seq      bigint      NOT NULL,
     started_at       timestamptz NOT NULL,
+    -- Stamped session_user by a trigger, never supplied: T1 and gate F require
+    -- it to be the declared monitor role.
+    written_by       name        NOT NULL DEFAULT session_user,
     observed_at      timestamptz NOT NULL DEFAULT clock_timestamp(),
     source           text        NOT NULL,
     block_size_bytes bigint      NOT NULL CHECK (block_size_bytes > 0),
@@ -82,16 +131,54 @@ CREATE TABLE storage_filesystem_observation (
     minio_sys_bytes  bigint      NOT NULL CHECK (minio_sys_bytes >= 0),
     CHECK (observed_at >= started_at)
 );
-CREATE INDEX ix_storage_filesystem_observation_started ON storage_filesystem_observation (started_at DESC);
+CREATE INDEX ix_storage_filesystem_observation_started ON storage_filesystem_observation (started_seq DESC);
+
+-- The compaction watermark: debt rows below it are gone, so no observation
+-- below it may ever be used, or deleted while it could be the newest.
+CREATE TABLE storage_debt_watermark (
+    id                    smallint PRIMARY KEY CHECK (id = 1),
+    compacted_through_seq bigint   NOT NULL CHECK (compacted_through_seq >= 0)
+);
+INSERT INTO storage_debt_watermark VALUES (1, 0);
+
+-- Superseded debt rows are deleted, never pending ones, and the watermark
+-- rises in the same transaction.
+CREATE FUNCTION storage_compact_deletion_debt() RETURNS integer
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS
+$$
+DECLARE
+    newest bigint;
+    deleted integer;
+BEGIN
+    SELECT max(started_seq) INTO newest FROM storage_filesystem_observation;
+    IF newest IS NULL THEN
+        RETURN 0;
+    END IF;
+    DELETE FROM storage_deletion_debt WHERE seq < newest AND incurred_at <> 'infinity';
+    GET DIAGNOSTICS deleted = ROW_COUNT;
+    UPDATE storage_debt_watermark SET compacted_through_seq = greatest(compacted_through_seq, newest) WHERE id = 1;
+    RETURN deleted;
+END
+$$;
 
 -- A start in the future would hide every deletion until the clock caught up
 -- with it. The database clock is the only clock either side uses, so a
 -- future start can only be a monitor reading a replica's clock or replaying
 -- a stale value: refused, never bounded by.
+-- SECURITY DEFINER so the monitor role needs no SELECT on the sequence;
+-- session_user is the login role whatever the function runs as.
 CREATE FUNCTION storage_filesystem_observation_check() RETURNS trigger
-    LANGUAGE plpgsql AS
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS
 $$
 BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        RAISE EXCEPTION 'storage_filesystem_observation is append-only' USING ERRCODE = 'check_violation';
+    END IF;
+    NEW.written_by := session_user;
+    IF NEW.started_seq > (SELECT last_value FROM storage_debt_order_seq) THEN
+        RAISE EXCEPTION 'storage_filesystem_observation.started_seq % was never issued', NEW.started_seq
+            USING ERRCODE = 'check_violation';
+    END IF;
     IF NEW.started_at > clock_timestamp() THEN
         RAISE EXCEPTION 'storage_filesystem_observation.started_at % is in the future', NEW.started_at
             USING ERRCODE = 'check_violation';
@@ -107,6 +194,146 @@ $$;
 CREATE TRIGGER storage_filesystem_observation_not_future
     BEFORE INSERT OR UPDATE ON storage_filesystem_observation
     FOR EACH ROW EXECUTE FUNCTION storage_filesystem_observation_check();
+
+-- Deleting the newest observation would make an older one the newest, whose
+-- superseded debt rows may already be compacted; deleting one at or above the
+-- watermark could do the same later. Both are refused. TRUNCATE is refused
+-- outright.
+CREATE FUNCTION storage_filesystem_observation_retain() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS
+$$
+BEGIN
+    IF TG_OP = 'TRUNCATE' THEN
+        RAISE EXCEPTION 'storage_filesystem_observation cannot be truncated' USING ERRCODE = 'check_violation';
+    END IF;
+    IF OLD.started_seq >= (SELECT compacted_through_seq FROM storage_debt_watermark WHERE id = 1)
+       OR OLD.started_seq >= (SELECT max(started_seq) FROM storage_filesystem_observation) THEN
+        RAISE EXCEPTION 'storage_filesystem_observation % is at or above the compaction watermark, or the newest', OLD.id
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN OLD;
+END
+$$;
+
+CREATE TRIGGER storage_filesystem_observation_retain
+    BEFORE DELETE ON storage_filesystem_observation
+    FOR EACH ROW EXECUTE FUNCTION storage_filesystem_observation_retain();
+CREATE TRIGGER storage_filesystem_observation_no_truncate
+    BEFORE TRUNCATE ON storage_filesystem_observation
+    FOR EACH STATEMENT EXECUTE FUNCTION storage_filesystem_observation_retain();
+
+-- ---------------------------------------------------------------------------
+-- Trust in the counts (contract §4.5). Starts untrusted. Folding by the
+-- trigger below, and drift found by reconciliation, increment distrust_epoch;
+-- a clean reconciliation under the ledger lock sets trusted_epoch to the
+-- epoch it read, compare-and-set.
+-- ---------------------------------------------------------------------------
+CREATE TABLE storage_footprint_trust (
+    id             smallint PRIMARY KEY CHECK (id = 1),
+    distrust_epoch bigint   NOT NULL CHECK (distrust_epoch >= 0),
+    trusted_epoch  bigint
+);
+INSERT INTO storage_footprint_trust VALUES (1, 0, NULL);
+
+-- A pre-V8 compactor folds bytes and drops the deltas' object counts. This
+-- trigger folds them, with that compactor's own EXISTS filters, in the same
+-- statement, and marks the counts distrusted. The V8 compactor and
+-- storage_account_recompute() set testinbox.ledger_counts = 'v8' and fold the
+-- objects themselves. SECURITY DEFINER: it runs whatever role deletes.
+CREATE FUNCTION storage_delta_fold_objects() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS
+$$
+BEGIN
+    IF current_setting('testinbox.ledger_counts', true) IS NOT DISTINCT FROM 'v8' THEN
+        RETURN NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM storage_old_rows) THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO workspace_storage_account (workspace_id, base_bytes, base_objects)
+    SELECT o.workspace_id, 0, sum(o.objects)
+      FROM storage_old_rows o
+     WHERE EXISTS (SELECT 1 FROM workspace w WHERE w.id = o.workspace_id)
+     GROUP BY o.workspace_id
+     ORDER BY o.workspace_id
+    ON CONFLICT (workspace_id)
+        DO UPDATE SET base_objects = workspace_storage_account.base_objects + EXCLUDED.base_objects;
+
+    INSERT INTO inbox_storage (inbox_id, workspace_id, base_bytes, base_objects)
+    SELECT o.inbox_id, (array_agg(o.workspace_id))[1], 0, sum(o.objects)
+      FROM storage_old_rows o
+     WHERE o.inbox_id IS NOT NULL
+       AND EXISTS (SELECT 1 FROM inbox i WHERE i.id = o.inbox_id)
+     GROUP BY o.inbox_id
+     ORDER BY o.inbox_id
+    ON CONFLICT (inbox_id)
+        DO UPDATE SET base_objects = inbox_storage.base_objects + EXCLUDED.base_objects;
+
+    UPDATE storage_footprint_trust SET distrust_epoch = distrust_epoch + 1 WHERE id = 1;
+    RETURN NULL;
+END
+$$;
+
+CREATE TRIGGER storage_delta_fold_objects
+    AFTER DELETE ON storage_delta REFERENCING OLD TABLE AS storage_old_rows
+    FOR EACH STATEMENT EXECUTE FUNCTION storage_delta_fold_objects();
+
+-- The ledger is append-only: an UPDATE could move bytes or objects without a
+-- base seeing it, and a TRUNCATE fires no row trigger.
+CREATE FUNCTION storage_ledger_append_only() RETURNS trigger
+    LANGUAGE plpgsql AS
+$$
+BEGIN
+    RAISE EXCEPTION '% of % is refused: the storage ledger is append-only', TG_OP, TG_TABLE_NAME
+        USING ERRCODE = 'check_violation';
+END
+$$;
+
+CREATE TRIGGER storage_delta_no_update
+    BEFORE UPDATE ON storage_delta
+    FOR EACH STATEMENT EXECUTE FUNCTION storage_ledger_append_only();
+CREATE TRIGGER storage_delta_no_truncate
+    BEFORE TRUNCATE ON storage_delta
+    FOR EACH STATEMENT EXECUTE FUNCTION storage_ledger_append_only();
+CREATE TRIGGER storage_deletion_debt_no_truncate
+    BEFORE TRUNCATE ON storage_deletion_debt
+    FOR EACH STATEMENT EXECUTE FUNCTION storage_ledger_append_only();
+
+-- Shrinking a size, or re-pointing a key, would lower L with no debt row.
+-- Sizes and keys are written once.
+CREATE FUNCTION storage_sizes_immutable() RETURNS trigger
+    LANGUAGE plpgsql AS
+$$
+BEGIN
+    -- One branch per table: plpgsql resolves NEW.<column> when it evaluates
+    -- the expression, and each table has only its own columns.
+    IF TG_TABLE_NAME = 'message' THEN
+        IF NEW.raw_size_bytes IS DISTINCT FROM OLD.raw_size_bytes
+           OR NEW.raw_object_key IS DISTINCT FROM OLD.raw_object_key THEN
+            RAISE EXCEPTION 'the size and object key of a message row are immutable' USING ERRCODE = 'check_violation';
+        END IF;
+    ELSIF TG_TABLE_NAME = 'attachment' THEN
+        IF NEW.size_bytes IS DISTINCT FROM OLD.size_bytes
+           OR NEW.object_key IS DISTINCT FROM OLD.object_key THEN
+            RAISE EXCEPTION 'the size and object key of an attachment row are immutable' USING ERRCODE = 'check_violation';
+        END IF;
+    ELSIF NEW.bytes IS DISTINCT FROM OLD.bytes OR NEW.object_keys IS DISTINCT FROM OLD.object_keys THEN
+        RAISE EXCEPTION 'the bytes and object keys of a storage_reservation row are immutable' USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER message_sizes_immutable
+    BEFORE UPDATE OF raw_size_bytes, raw_object_key ON message
+    FOR EACH ROW EXECUTE FUNCTION storage_sizes_immutable();
+CREATE TRIGGER attachment_sizes_immutable
+    BEFORE UPDATE OF size_bytes, object_key ON attachment
+    FOR EACH ROW EXECUTE FUNCTION storage_sizes_immutable();
+CREATE TRIGGER storage_reservation_sizes_immutable
+    BEFORE UPDATE OF bytes, object_keys ON storage_reservation
+    FOR EACH ROW EXECUTE FUNCTION storage_sizes_immutable();
 
 -- ---------------------------------------------------------------------------
 -- The ledger triggers, now counting. Same shape as V6: statement-level,
@@ -233,6 +460,9 @@ $$
 BEGIN
     LOCK TABLE workspace, inbox, message, attachment IN SHARE ROW EXCLUSIVE MODE;
     PERFORM pg_advisory_xact_lock(35, 2);
+    -- The counts are rebuilt below from the rows, so the folding trigger must
+    -- not also fold them.
+    PERFORM set_config('testinbox.ledger_counts', 'v8', true);
 
     DELETE FROM storage_delta;
 
@@ -257,6 +487,12 @@ BEGIN
     ON CONFLICT (inbox_id) DO UPDATE SET base_bytes = EXCLUDED.base_bytes, base_objects = EXCLUDED.base_objects;
 END
 $$;
+
+-- The SECURITY DEFINER entry points run as the migrator, so only the roles
+-- production.md names may call them; trigger functions are not callable.
+REVOKE EXECUTE ON FUNCTION storage_record_pending_debt(text, bigint, bigint, text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION storage_resolve_pending_debt(text) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION storage_compact_deletion_debt() FROM PUBLIC;
 
 -- ---------------------------------------------------------------------------
 -- Backfill the counts. Under the locks above, so the counts describe exactly

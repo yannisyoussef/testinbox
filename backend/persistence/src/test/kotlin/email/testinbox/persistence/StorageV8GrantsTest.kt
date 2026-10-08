@@ -112,6 +112,9 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
             .single() shouldBe 1
 
         db.grant(api, "GRANT INSERT ON storage_deletion_debt", "GRANT USAGE ON storage_deletion_debt_id_seq")
+        // A debt row takes its order from the sequence (contract §5.3): without it the delete still fails.
+        permissionDenied { asApi.sql("DELETE FROM inbox WHERE id = ?").param(inbox).update() } shouldContain "storage_debt_order_seq"
+        db.grant(api, "GRANT USAGE ON storage_debt_order_seq")
         asApi.sql("DELETE FROM inbox WHERE id = ?").param(inbox).update() shouldBe 1
         db.debtRows().map { it.first to it.second }.sortedBy { it.first } shouldBe listOf(10L to 1L, 100L to 1L)
     }
@@ -123,19 +126,32 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
         val api = role("ti_app")
         db.createRole(monitor)
         db.createRole(api)
-        db.grant(monitor, "GRANT INSERT ON storage_filesystem_observation", "GRANT USAGE ON storage_filesystem_observation_id_seq")
-        db.grant(api, "GRANT SELECT ON storage_filesystem_observation", "GRANT SELECT, DELETE ON storage_deletion_debt")
+        db.grant(
+            monitor,
+            "GRANT INSERT ON storage_filesystem_observation",
+            "GRANT USAGE ON storage_filesystem_observation_id_seq, storage_debt_order_seq",
+        )
+        db.grant(
+            api,
+            "GRANT SELECT ON storage_filesystem_observation, storage_debt_watermark",
+            "GRANT SELECT ON storage_deletion_debt",
+            "GRANT SELECT, UPDATE ON storage_footprint_trust",
+        )
         val asMonitor = db.connectAs(monitor)
         val asApi = db.connectAs(api)
 
+        // The order is taken BEFORE measuring, in its own statement (contract §5.3).
+        val started = asMonitor.sql("SELECT nextval('storage_debt_order_seq')").query(Long::class.java).single()
         asMonitor
             .sql(
                 """
                 INSERT INTO storage_filesystem_observation
-                    (started_at, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total, inodes_used, trash_bytes, minio_sys_bytes)
-                VALUES (clock_timestamp(), 'ops-monitor', 4096, 1, 1, 0, 1, 1, 0, 0)
+                    (started_seq, started_at, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total,
+                     inodes_used, trash_bytes, minio_sys_bytes)
+                VALUES (?, clock_timestamp(), 'ops-monitor', 4096, 1, 1, 0, 1, 1, 0, 0)
                 """.trimIndent(),
-            ).update() shouldBe 1
+            ).param(started)
+            .update() shouldBe 1
         permissionDenied { asMonitor.sql("SELECT count(*) FROM storage_filesystem_observation").query(Long::class.java).single() }
         permissionDenied { asMonitor.sql("DELETE FROM storage_filesystem_observation").update() }
 
@@ -145,8 +161,9 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
                 .sql(
                     """
                     INSERT INTO storage_filesystem_observation
-                        (started_at, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total, inodes_used, trash_bytes, minio_sys_bytes)
-                    VALUES (clock_timestamp(), 'app', 4096, 1, 1, 0, 1, 1, 0, 0)
+                        (started_seq, started_at, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total,
+                         inodes_used, trash_bytes, minio_sys_bytes)
+                    VALUES (1, clock_timestamp(), 'app', 4096, 1, 1, 0, 1, 1, 0, 0)
                     """.trimIndent(),
                 ).update()
         }
@@ -154,8 +171,22 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
         permissionDenied { asApi.sql("DELETE FROM storage_filesystem_observation").update() }
         // The reads the compactor makes are exactly what the API role holds.
         val ledger = JdbcStorageLedger(asApi, db.transactions)
-        checkNotNull(ledger.deletionDebt().observation).source shouldBe "ops-monitor"
+        checkNotNull(ledger.deletionDebt().observation).let {
+            it.source shouldBe "ops-monitor"
+            it.writtenBy shouldBe monitor.name
+        }
+        // The API role deletes no debt row directly: only through the definer
+        // function, which never deletes a pending row and raises the watermark.
+        permissionDenied { asApi.sql("DELETE FROM storage_deletion_debt").update() }
+        permissionDenied { ledger.compactDeletionDebt() }
+        permissionDenied { asApi.sql("SELECT storage_resolve_pending_debt('k')").query().listOfRows() }
+        db.grant(
+            api,
+            "GRANT EXECUTE ON FUNCTION storage_compact_deletion_debt(), storage_resolve_pending_debt(text), " +
+                "storage_record_pending_debt(text, bigint, bigint, text)",
+        )
         ledger.compactDeletionDebt() shouldBe 0
+        permissionDenied { asMonitor.sql("SELECT storage_compact_deletion_debt()").query().listOfRows() }
     }
 
     private fun seedReservation(

@@ -77,8 +77,15 @@ object FootprintAdmission {
         /** Rule (C): the potential would breach containment (debt reduces the ceiling). */
         CONTAINMENT,
 
-        /** No observation: trash is unbounded, nothing is admitted. */
+        /** No observation: trash is unbounded, nothing is admitted. An infrastructure state (451). */
         UNOBSERVED,
+
+        /**
+         * The arithmetic cannot bound the potential (an overflow): neither a
+         * capacity verdict nor an admission. An infrastructure state (451),
+         * never SERVICE_CAPACITY, so it is never cached as a capacity refusal.
+         */
+        INDETERMINATE,
     }
 
     /** Φ = F(L + D) + W, or null when unobserved. Checked arithmetic. */
@@ -94,7 +101,8 @@ object FootprintAdmission {
     /**
      * Decides each candidate copy in order against running totals: copy *i*
      * is checked with every earlier ADMITTED copy already added. A refused copy
-     * adds nothing. Any arithmetic overflow refuses (fail closed).
+     * adds nothing. An arithmetic overflow refuses as [Verdict.INDETERMINATE]
+     * (fail closed).
      */
     fun decide(
         model: FootprintModel,
@@ -107,7 +115,7 @@ object FootprintAdmission {
         return copies.map { copy ->
             val verdict =
                 runCatching { verdict(model, limits, snapshot, trash, admitted + copy) }
-                    .getOrElse { if (it is ArithmeticException) Verdict.CONTAINMENT else throw it }
+                    .getOrElse { if (it is ArithmeticException) Verdict.INDETERMINATE else throw it }
             if (verdict == Verdict.ADMITTED) admitted += copy
             verdict
         }

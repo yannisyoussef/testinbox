@@ -8,8 +8,8 @@ import java.time.Duration
 
 /**
  * Reads the database clock and the newest `storage_filesystem_observation`
- * (V8) in one statement. "Newest" is the latest `started_at`, as the debt
- * ledger reads it. Its age is measured from `started_at` by `clock_timestamp()`
+ * (V8) in one statement. "Newest" is the latest `started_seq`, as the debt
+ * ledger reads it (contract §5.3: an order, never a clock). Its age is measured from `started_at` by `clock_timestamp()`
  * (not `now()`, which a caller's long transaction would freeze), the clock
  * that wrote it, never the JVM's.
  */
@@ -26,7 +26,7 @@ class JdbcFilesystemObservations(
                   LEFT JOIN LATERAL (
                       SELECT started_at, avail_bytes, inodes_total - inodes_used AS inodes_free
                         FROM storage_filesystem_observation
-                       ORDER BY started_at DESC, id DESC
+                       ORDER BY started_seq DESC, id DESC
                        LIMIT 1
                   ) o ON true
                 """.trimIndent(),

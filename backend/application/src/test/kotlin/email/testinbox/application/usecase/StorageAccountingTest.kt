@@ -39,6 +39,7 @@ class StorageAccountingTest {
         var debt = DeletionDebtState(0, 0, null)
         var debtCompactions = 0
         var debtFailure: RuntimeException? = null
+        var trustConfirmations = 0
 
         override fun compact(batch: Int): LedgerCompaction {
             batches += batch
@@ -68,6 +69,11 @@ class StorageAccountingTest {
             repairs++
             repairFailure?.let { throw it }
             return repaired
+        }
+
+        override fun confirmTrust(): Boolean {
+            trustConfirmations++
+            return drift.isEmpty()
         }
     }
 
@@ -264,6 +270,19 @@ class StorageAccountingTest {
 
         ledger.repairs shouldBe 0
         metrics.outcomes shouldBe listOf(ReconciliationOutcome.CLEAN)
+    }
+
+    @Test
+    fun `only a clean pass confirms trust in the counts, and a repair never does`() {
+        // Contract §4.5: trust is restored by a clean pass, never by the pass
+        // that found drift, so a repair is followed by a proving pass first.
+        val clean = FakeLedger()
+        ReconcileStorageAccounting(clean).reconcile()
+        clean.trustConfirmations shouldBe 1
+
+        val drifted = FakeLedger(drift = listOf(drift(derived = 10, accounted = 5)))
+        ReconcileStorageAccounting(drifted).reconcile() shouldBe ReconciliationOutcome.REPAIRED
+        drifted.trustConfirmations shouldBe 0
     }
 
     @Test

@@ -50,6 +50,9 @@ class JdbcStorageLedger(
     private fun compactInTransaction(batch: Int): LedgerCompaction {
         readCommitted()
         if (!tryLedgerLock()) return LedgerCompaction(lockAcquired = false, foldedRows = 0)
+        // This compactor folds the objects itself, so V8's folding trigger
+        // (there for a pre-V8 compactor, contract §4.5) must not fold them too.
+        markCountsFolded()
 
         // One statement. The DELETE's RETURNING feeds both upserts, so a
         // delta leaves the ledger in the same instant its bytes reach a base.
@@ -133,22 +136,32 @@ class JdbcStorageLedger(
             }.single()
 
     /**
-     * ONE statement (contract §5.3): the newest observation and the debt rows
-     * incurred at or after its `started_at`, so a compaction or a new
-     * observation is seen wholly before or wholly after. With no observation,
-     * every row counts.
+     * ONE statement (contract §5.3): the newest observation by `started_seq`,
+     * the debt rows ordered at or after it, every PENDING row whatever its
+     * sequence, the compaction watermark and the trust marker, so a
+     * compaction, a resolution or a new observation is seen wholly before or
+     * wholly after. With no observation, every row counts.
      */
     override fun deletionDebt(): DeletionDebtState =
         jdbc
             .sql(
                 """
                 WITH newest AS (
-                    SELECT * FROM storage_filesystem_observation ORDER BY started_at DESC, id DESC LIMIT 1
+                    SELECT * FROM storage_filesystem_observation ORDER BY started_seq DESC, id DESC LIMIT 1
+                ),
+                debt AS (
+                    SELECT d.bytes, d.objects, d.incurred_at = 'infinity'::timestamptz AS pending
+                      FROM storage_deletion_debt d
+                     WHERE d.incurred_at = 'infinity'::timestamptz
+                        OR d.seq >= coalesce((SELECT started_seq FROM newest), 0)
                 )
-                SELECT (SELECT coalesce(sum(d.bytes), 0) FROM storage_deletion_debt d
-                         WHERE d.incurred_at >= coalesce((SELECT started_at FROM newest), '-infinity'::timestamptz)) AS bytes,
-                       (SELECT coalesce(sum(d.objects), 0) FROM storage_deletion_debt d
-                         WHERE d.incurred_at >= coalesce((SELECT started_at FROM newest), '-infinity'::timestamptz)) AS objects,
+                SELECT (SELECT coalesce(sum(bytes), 0) FROM debt) AS bytes,
+                       (SELECT coalesce(sum(objects), 0) FROM debt) AS objects,
+                       (SELECT coalesce(sum(bytes), 0) FROM debt WHERE pending) AS pending_bytes,
+                       (SELECT compacted_through_seq FROM storage_debt_watermark WHERE id = 1) AS watermark,
+                       (SELECT trusted_epoch IS NOT DISTINCT FROM distrust_epoch FROM storage_footprint_trust WHERE id = 1)
+                           AS trusted,
+                       n.started_seq, n.written_by,
                        n.started_at, n.observed_at, n.source, n.block_size_bytes, n.capacity_bytes, n.used_bytes, n.avail_bytes,
                        n.inodes_total, n.inodes_used, n.trash_bytes, n.minio_sys_bytes
                   FROM (SELECT 1) AS one
@@ -158,9 +171,15 @@ class JdbcStorageLedger(
                 DeletionDebtState(
                     unsupersededBytes = rs.getLong("bytes"),
                     unsupersededObjects = rs.getLong("objects"),
+                    pendingBytes = rs.getLong("pending_bytes"),
+                    compactedThroughSeq = rs.getLong("watermark"),
+                    // A missing trust row reads as untrusted.
+                    countsTrusted = rs.getBoolean("trusted"),
                     observation =
                         Timestamps.fromDb(rs, "started_at")?.let { startedAt ->
                             FilesystemObservation(
+                                startedSeq = rs.getLong("started_seq"),
+                                writtenBy = rs.getString("written_by"),
                                 startedAt = startedAt,
                                 observedAt = checkNotNull(Timestamps.fromDb(rs, "observed_at")),
                                 source = rs.getString("source"),
@@ -177,15 +196,49 @@ class JdbcStorageLedger(
                 )
             }.single()
 
-    /** One statement: rows older than the newest observation's start are inside its `trash_bytes` already. */
+    /**
+     * One statement: V8's `storage_compact_deletion_debt()` deletes the rows
+     * ordered before the newest observation's start, which are inside its
+     * `trash_bytes` already, never a pending one, and raises the watermark in
+     * the same transaction.
+     */
     override fun compactDeletionDebt(): Int =
         jdbc
+            .sql("SELECT storage_compact_deletion_debt()")
+            .query(Int::class.java)
+            .single()
+
+    override fun confirmTrust(): Boolean = checkNotNull(transactions.execute { confirmTrustInTransaction() })
+
+    /**
+     * Contract §4.5: the ledger lock FIRST, so no compaction or repair moves
+     * a figure between the check and the mark; then the epoch is read, the
+     * counts are proven clean against the rows, and the epoch read is marked
+     * trusted compare-and-set, so a folding or a drift that bumped the epoch
+     * meanwhile is never overwritten. Returns whether the counts are trusted.
+     */
+    private fun confirmTrustInTransaction(): Boolean {
+        readCommitted()
+        ledgerLock()
+        return jdbc
             .sql(
                 """
-                DELETE FROM storage_deletion_debt
-                 WHERE incurred_at < (SELECT max(started_at) FROM storage_filesystem_observation)
+                $DRIFT,
+                epoch AS (SELECT distrust_epoch FROM storage_footprint_trust WHERE id = 1),
+                marked AS (
+                    UPDATE storage_footprint_trust t
+                       SET trusted_epoch = e.distrust_epoch
+                      FROM epoch e
+                     WHERE t.id = 1
+                       AND t.distrust_epoch = e.distrust_epoch
+                       AND NOT EXISTS (SELECT 1 FROM drift)
+                    RETURNING 1
+                )
+                SELECT EXISTS (SELECT 1 FROM marked) AS trusted
                 """.trimIndent(),
-            ).update()
+            ).query(Boolean::class.java)
+            .single()
+    }
 
     override fun findDrift(): List<AccountingDrift> =
         jdbc
@@ -199,12 +252,7 @@ class JdbcStorageLedger(
         readCommitted()
         // Blocking, unlike the compactor's try-lock: a repair is rare, and it
         // must not interleave with a compaction moving the same bytes.
-        jdbc
-            .sql("SELECT pg_advisory_xact_lock(:class, :ledger)")
-            .param("class", STORAGE_LOCK_CLASS)
-            .param("ledger", LEDGER_LOCK)
-            .query()
-            .listOfRows()
+        ledgerLock()
 
         // One statement: the derivation, the deltas and the bases are all read
         // in the snapshot the corrections are written from. base := derived −
@@ -231,9 +279,17 @@ class JdbcStorageLedger(
                      ORDER BY d.id
                     ON CONFLICT (inbox_id) DO UPDATE SET base_bytes = EXCLUDED.base_bytes, base_objects = EXCLUDED.base_objects
                     RETURNING 1
+                ),
+                -- Drift found revokes trust in the repair transaction itself
+                -- (contract §4.5): admission waits for a clean pass after it.
+                distrusted AS (
+                    UPDATE storage_footprint_trust SET distrust_epoch = distrust_epoch + 1
+                     WHERE id = 1 AND EXISTS (SELECT 1 FROM drift)
+                    RETURNING 1
                 )
                 SELECT scope, id, derived, accounted, derived_objects, accounted_objects,
-                       (SELECT count(*) FROM workspace_fix) + (SELECT count(*) FROM inbox_fix) AS fixed
+                       (SELECT count(*) FROM workspace_fix) + (SELECT count(*) FROM inbox_fix) AS fixed,
+                       (SELECT count(*) FROM distrusted) AS distrusted
                   FROM drift
                 """.trimIndent(),
             ).query { rs, _ -> drift(rs) }
@@ -250,6 +306,20 @@ class JdbcStorageLedger(
      */
     private fun readCommitted() {
         jdbc.sql("SET TRANSACTION ISOLATION LEVEL READ COMMITTED").update()
+    }
+
+    private fun ledgerLock() {
+        jdbc
+            .sql("SELECT pg_advisory_xact_lock(:class, :ledger)")
+            .param("class", STORAGE_LOCK_CLASS)
+            .param("ledger", LEDGER_LOCK)
+            .query()
+            .listOfRows()
+    }
+
+    /** Transaction-local: V8's folding trigger skips the deletes of this transaction. */
+    private fun markCountsFolded() {
+        jdbc.sql("SELECT set_config('testinbox.ledger_counts', 'v8', true)").query().listOfRows()
     }
 
     private fun tryLedgerLock(): Boolean =

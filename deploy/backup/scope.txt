@@ -45,3 +45,8 @@
 # both are rebuilt by the next deletion and the next Ops observation.
 - storage_deletion_debt
 - storage_filesystem_observation
+# The compaction watermark and the trust marker describe those rows and the
+# ledger; restored without them, a missing trust row reads as untrusted, so
+# footprint admission waits for a clean reconciliation (contract §4.5).
+- storage_debt_watermark
+- storage_footprint_trust

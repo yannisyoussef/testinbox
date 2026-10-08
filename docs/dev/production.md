@@ -132,18 +132,31 @@ promoted**, every role that deletes `message`, `attachment` or
 `storage_reservation` rows — the ingestion role (T2 consume), the API role
 (retention sweep, reservation cleanup) and any pre-V8 artifact still running
 as either — needs `INSERT` on `storage_deletion_debt` and `USAGE` on
-`storage_deletion_debt_id_seq`. Without the ingestion grant **every T2 commit
+`storage_deletion_debt_id_seq`, and every role whose deletes actually write a
+debt row (the API role) also needs `USAGE` on `storage_debt_order_seq`, the
+order every debt row and observation takes (contract §5.3). Without the ingestion grant **every T2 commit
 fails and every delivery is answered `451`** the moment V8 commits (uniformly
 for every recipient, so not an oracle — an outage, with silent loss once the
 edge queue's 4 h expire); without the API grant retention stops. The API role
-also reads `storage_deletion_debt` and `storage_filesystem_observation` and
-deletes superseded debt rows (`SELECT, DELETE` on the former, `SELECT` on the
-latter). `storage_filesystem_observation` is written **only by the Ops
-filesystem monitor**, as its own role with `INSERT` on it (and `USAGE` on its
-sequence) and nothing else: the application never writes an observation, and
-treats every row as data to be bounded by, never as an instruction. The table
-has no application-side retention; the monitor (or an Ops job) prunes rows
-older than its own retention window — one row per minute is ≈ 50 MB a year.
+also reads `storage_deletion_debt`, `storage_filesystem_observation` and
+`storage_debt_watermark` (`SELECT`), reads and marks `storage_footprint_trust`
+(`SELECT, UPDATE`: reconciliation's compare-and-set, contract §4.5), and
+holds `EXECUTE` on `storage_compact_deletion_debt()`,
+`storage_record_pending_debt(text, bigint, bigint, text)` and
+`storage_resolve_pending_debt(text)`. Those three are `SECURITY DEFINER`
+with `EXECUTE` revoked from `PUBLIC`; the API role holds **no** `DELETE` on
+`storage_deletion_debt`, so no application path can delete a pending row or
+compact without raising the watermark. `storage_filesystem_observation` is
+written **only by the Ops filesystem monitor**, as its own role with `INSERT`
+on it and `USAGE` on its id sequence and on `storage_debt_order_seq` (it takes
+`nextval` before measuring) and nothing else: a trigger stamps `written_by`
+with `session_user`, and the activation gate requires that to be the monitor
+role. The application never writes an observation, and treats every row as
+data to be bounded by, never as an instruction. Observations are append-only:
+`UPDATE` and `TRUNCATE` are refused, and so is a `DELETE` of the newest row or
+of any row at or above the compaction watermark. An Ops prune job (with
+`DELETE` only) removes older rows within its retention window — one row per
+minute is ≈ 50 MB a year.
 `StorageV8GrantsTest` runs each path as a role with exactly these grants.
 
 The API's accounting jobs read three optional settings:
@@ -161,9 +174,9 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   `storage_admission_latch` and `storage_clock_episode` (V7), and `USAGE` on
   `storage_ambiguity_id_seq`; with V8, `INSERT` on `storage_deletion_debt` and
   `USAGE` on `storage_deletion_debt_id_seq` for every role that deletes
-  message, attachment or reservation rows (the triggers write it), and for the
-  API role `SELECT, DELETE` on `storage_deletion_debt` and `SELECT` on
-  `storage_filesystem_observation` (see the V8 paragraph above).
+  message, attachment or reservation rows (the triggers write it), `USAGE` on
+  `storage_debt_order_seq` for the API role, and the API role's reads, trust
+  marking and function grants of the V8 paragraph above.
   Staging's owner role already has them.
 - **Object storage.** Cleanup and the orphan sweep need `ListBucket`,
   `ListBucketMultipartUploads` and `AbortMultipartUpload` on the bucket,

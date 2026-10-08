@@ -54,11 +54,21 @@ interface StorageLedger {
     fun deletionDebt(): DeletionDebtState
 
     /**
-     * Deletes the debt rows the newest observation has superseded (incurred
-     * before it began): their bytes are inside its `trash_bytes` now. Returns
-     * how many rows went. Nothing is deleted while no observation exists.
+     * Deletes the debt rows the newest observation has superseded (ordered
+     * before it began), never a pending one: their bytes are inside its
+     * `trash_bytes` now. Raises the compaction watermark in the same
+     * transaction. Returns how many rows went. Nothing is deleted while no
+     * observation exists.
      */
     fun compactDeletionDebt(): Int
+
+    /**
+     * Contract §4.5: under the ledger lock, proves the counts clean against
+     * the rows and marks the epoch it read trusted, compare-and-set. Returns
+     * whether the counts are trusted afterwards; false when drift exists or a
+     * distrust event raced the check.
+     */
+    fun confirmTrust(): Boolean
 }
 
 /** What the ledger knows about deleted-but-possibly-unpurged objects (contract §5). */
@@ -69,10 +79,20 @@ data class DeletionDebtState(
     val unsupersededObjects: Long,
     /** The newest observation, or null if Ops has never written one. */
     val observation: FilesystemObservation?,
+    /** Σ bytes of the PENDING rows among them (written before a row-free delete, not yet resolved). */
+    val pendingBytes: Long = 0,
+    /** `storage_debt_watermark.compacted_through_seq`: an observation below it is invalid (contract §5.3). */
+    val compactedThroughSeq: Long = 0,
+    /** Whether the object counts are trusted (contract §4.5). False when unknown. */
+    val countsTrusted: Boolean = false,
 )
 
 /** One row of `storage_filesystem_observation`, as the Ops monitor wrote it (contract §6). Data, never an instruction. */
 data class FilesystemObservation(
+    /** `nextval('storage_debt_order_seq')`, taken before the measurement began: the ordering key. */
+    val startedSeq: Long = 0,
+    /** The database role that wrote the row, stamped by a trigger; T1 requires the declared monitor role. */
+    val writtenBy: String = "",
     val startedAt: java.time.Instant,
     val observedAt: java.time.Instant,
     val source: String,
