@@ -51,8 +51,12 @@ data class FootprintModel(
         require(objectOverheadMaxBytes / blockSizeBytes >= INODES_PER_OBJECT_MAX) {
             "O_max must cover at least $INODES_PER_OBJECT_MAX blocks (one per inode an object can take), was $objectOverheadMaxBytes"
         }
-        require(fragmentationDenominator >= MIN_FRAGMENTATION_DENOMINATOR) {
-            "the fragmentation denominator must be at least $MIN_FRAGMENTATION_DENOMINATOR, was $fragmentationDenominator"
+        // A larger denominator is a SMALLER allowance: ε may only grow. Below the
+        // qualified 1/256 needs its own accepted qualification and a code change,
+        // never a value a caller or a deployment can pass (owner review, §3).
+        require(fragmentationDenominator in MIN_FRAGMENTATION_DENOMINATOR..MAX_FRAGMENTATION_DENOMINATOR) {
+            "the fragmentation denominator must be in $MIN_FRAGMENTATION_DENOMINATOR..$MAX_FRAGMENTATION_DENOMINATOR " +
+                "(ε ≥ 1/$MAX_FRAGMENTATION_DENOMINATOR), was $fragmentationDenominator"
         }
     }
 
@@ -78,8 +82,11 @@ data class FootprintModel(
     }
 
     /**
-     * `H_F = processes × writes × φ(maxObjectBytes)`: the finalize budget of
-     * ADR-035 §9 in footprint units.
+     * `H_F = processes × writes × F(maxObjectBytes, 1)`: the finalize budget of
+     * ADR-035 §9 in footprint units. `F(p, 1)`, not φ(p): a late object that
+     * leaves the uncovered class is charged the closed form's increment when
+     * its debt row is written, and that increment is at most `F(p, 1)`
+     * (contract §2.4, Lemma 3).
      */
     fun finalizeBudgetBytes(
         declaredMaxIngestionProcesses: Int,
@@ -90,7 +97,7 @@ data class FootprintModel(
         require(maxConcurrentWrites > 0) { "maxConcurrentWrites must be positive" }
         return Math.multiplyExact(
             Math.multiplyExact(declaredMaxIngestionProcesses.toLong(), maxConcurrentWrites.toLong()),
-            ofObject(maxObjectBytes),
+            bound(maxObjectBytes, 1),
         )
     }
 
@@ -113,6 +120,9 @@ data class FootprintModel(
 
         /** Below this the allowance would exceed the extent worst case by an order of magnitude: a typo, not a policy. */
         const val MIN_FRAGMENTATION_DENOMINATOR: Long = 16
+
+        /** ε ≥ 1/256 is what the qualified ext4 combination relies on (§3.4); a larger denominator is less conservative. */
+        const val MAX_FRAGMENTATION_DENOMINATOR: Long = 256
 
         /** Three or five files plus amortized directories (§3.5). */
         const val INODES_PER_OBJECT_MAX: Long = 6

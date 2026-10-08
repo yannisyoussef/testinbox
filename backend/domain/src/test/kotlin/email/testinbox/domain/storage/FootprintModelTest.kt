@@ -45,9 +45,9 @@ class FootprintModelTest {
             Arb.long(0L, max),
         )
 
-    /** Denominators that are not powers of two, so `⌈x / d⌉` rounds on almost every object. */
+    /** Allowed denominators (16..256), biased to ones that are not powers of two, so `⌈x / d⌉` rounds on almost every object. */
     private val denominators: Arb<Long> =
-        Arb.choice(Arb.element(listOf(16L, 17L, 23L, 256L, 339L, 4096L)), Arb.long(16L, 4096L))
+        Arb.choice(Arb.element(listOf(16L, 17L, 23L, 255L, 256L)), Arb.long(16L, 256L))
 
     @Test
     fun `the reference model is ext4 at 4 KiB with a 24 KiB per-object overhead and a 1 over 256 allowance`() {
@@ -122,10 +122,10 @@ class FootprintModelTest {
     fun `the plus-N term is load-bearing - without it, one byte past a block under-counts`() {
         // N objects of k·B + 1 bytes: ⌈p⌉_B = p + B − 1 for each, and the ε allowance
         // rounds up once PER object. Dropping the + N must fail somewhere here.
-        val m = FootprintModel(4096, 24 * kib, fragmentationDenominator = 339)
+        val m = FootprintModel(4096, 24 * kib, fragmentationDenominator = 255)
         val withoutPlusN = { p: Long, n: Long ->
             val base = p + n * 4095
-            base + FootprintModel.ceilDiv(base, 339) + n * m.objectOverheadMaxBytes
+            base + FootprintModel.ceilDiv(base, 255) + n * m.objectOverheadMaxBytes
         }
         val found =
             (1L..200L).any { n ->
@@ -153,9 +153,19 @@ class FootprintModelTest {
     }
 
     @Test
-    fun `the finalize budget is procs times writes times phi of the largest object`() {
-        model.finalizeBudgetBytes(1, 16, 15 * mib) shouldBe 16 * model.ofObject(15 * mib)
-        model.finalizeBudgetBytes(2, 16, 15 * mib) shouldBe 32 * model.ofObject(15 * mib)
+    fun `the finalize budget is procs times writes times F of the largest object - not phi`() {
+        model.finalizeBudgetBytes(1, 16, 15 * mib) shouldBe 16 * model.bound(15 * mib, 1)
+        model.finalizeBudgetBytes(2, 16, 15 * mib) shouldBe 32 * model.bound(15 * mib, 1)
+        (model.bound(15 * mib, 1) > model.ofObject(15 * mib)) shouldBe true
+    }
+
+    @Test
+    fun `the fragmentation allowance may only grow - a denominator above 256 is refused`() {
+        assertThrows<IllegalArgumentException> { FootprintModel(4096, 24 * kib, fragmentationDenominator = 257) }
+        assertThrows<IllegalArgumentException> { FootprintModel(4096, 24 * kib, fragmentationDenominator = 339) }
+        assertThrows<IllegalArgumentException> { FootprintModel(4096, 24 * kib, fragmentationDenominator = Long.MAX_VALUE) }
+        FootprintModel(4096, 24 * kib, fragmentationDenominator = 256).fragmentationDenominator shouldBe 256
+        FootprintModel(4096, 24 * kib, fragmentationDenominator = 16).fragmentationDenominator shouldBe 16
     }
 
     @Test
