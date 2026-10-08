@@ -66,7 +66,7 @@ BACKEND_MODULES=(
   "backend/benchmark:57"
 )
 E2E_MODULES=(
-  "backend/e2e:24"
+  "backend/e2e:25"
 )
 
 case "$SCOPE" in
