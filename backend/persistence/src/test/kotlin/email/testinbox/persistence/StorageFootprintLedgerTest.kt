@@ -105,6 +105,68 @@ class StorageFootprintLedgerTest : PersistenceIntegrationTest() {
         db.debtRows().shouldBeEmpty()
     }
 
+    @Test
+    fun `moving a message with a zero-byte attachment moves that object too - counted by objects, not bytes`() {
+        val ws = db.workspace()
+        val from = db.inbox(ws)
+        val to = db.inbox(ws)
+        val id = checkNotNull(db.message(ws, from, rawBytes = 0, attachments = listOf(0)))
+
+        db.jdbc
+            .sql("UPDATE message SET inbox_id = ? WHERE id = ?")
+            .params(to, id)
+            .update() shouldBe 1
+
+        db.accountedInboxObjects(from) shouldBe 0
+        db.accountedInboxObjects(to) shouldBe 2
+        db.accountedWorkspaceObjects(ws) shouldBe 2
+        db.ledger.findDrift().shouldBeEmpty()
+    }
+
+    @Test
+    fun `re-pointing a zero-byte attachment to a message in another inbox moves its object`() {
+        val ws = db.workspace()
+        val a = db.inbox(ws)
+        val b = db.inbox(ws)
+        val first = checkNotNull(db.message(ws, a, rawBytes = 10, attachments = listOf(0)))
+        val second = checkNotNull(db.message(ws, b, rawBytes = 10))
+
+        db.jdbc
+            .sql("UPDATE attachment SET message_id = ? WHERE message_id = ?")
+            .params(second, first)
+            .update() shouldBe 1
+
+        db.accountedInboxObjects(a) shouldBe 1
+        db.accountedInboxObjects(b) shouldBe 2
+        db.accountedWorkspaceObjects(ws) shouldBe 3
+        db.ledger.findDrift().shouldBeEmpty()
+        db.debtRows().shouldBeEmpty()
+    }
+
+    @Test
+    fun `a delete that removes no row appends no debt and no delta`() {
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        db.message(ws, inbox, rawBytes = 10)
+        val deltas = db.deltaRows()
+
+        db.jdbc
+            .sql("DELETE FROM attachment WHERE message_id = ?")
+            .param(UUID.randomUUID())
+            .update() shouldBe 0
+        db.jdbc
+            .sql("DELETE FROM message WHERE id = ?")
+            .param(UUID.randomUUID())
+            .update() shouldBe 0
+        db.jdbc
+            .sql("DELETE FROM storage_reservation WHERE message_id = ?")
+            .param(UUID.randomUUID())
+            .update() shouldBe 0
+
+        db.debtRows().shouldBeEmpty()
+        db.deltaRows() shouldBe deltas
+    }
+
     // --- compaction, recompute, reconciliation -------------------------------------------
 
     @Test
@@ -145,6 +207,7 @@ class StorageFootprintLedgerTest : PersistenceIntegrationTest() {
         db.message(ws, inbox, rawBytes = 100, attachments = listOf(1, 2, 3))
         db.ledger.compact(batch = 100)
         db.jdbc.sql("UPDATE workspace_storage_account SET base_objects = 99").update()
+        db.jdbc.sql("UPDATE inbox_storage SET base_objects = -7").update()
 
         db.jdbc
             .sql("SELECT storage_account_recompute()")
@@ -179,6 +242,69 @@ class StorageFootprintLedgerTest : PersistenceIntegrationTest() {
         metrics.drift shouldBe listOf(DriftDirection.UNDER)
         baseObjects(ws) shouldBe 2
         db.ledger.findDrift().shouldBeEmpty()
+    }
+
+    @Test
+    fun `an inbox count that drifts is found UNDER, and an object-only excess is found OVER`() {
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        db.message(ws, inbox, rawBytes = 100, attachments = listOf(0))
+        db.ledger.compact(batch = 100)
+
+        db.jdbc
+            .sql("UPDATE inbox_storage SET base_objects = base_objects - 1 WHERE inbox_id = ?")
+            .param(inbox)
+            .update()
+        db.ledger.findDrift().single().let {
+            it.scope shouldBe AccountingScope.INBOX
+            it.direction shouldBe DriftDirection.UNDER
+        }
+        db.ledger.repairDrift()
+        db.ledger.findDrift().shouldBeEmpty()
+
+        db.jdbc
+            .sql("UPDATE workspace_storage_account SET base_objects = base_objects + 5 WHERE workspace_id = ?")
+            .param(ws)
+            .update()
+        db.ledger.findDrift().single().let {
+            it.scope shouldBe AccountingScope.WORKSPACE
+            it.accountedBytes shouldBe it.derivedBytes
+            it.direction shouldBe DriftDirection.OVER // conservative, but still drift
+        }
+        db.ledger.repairDrift()
+        db.ledger.findDrift().shouldBeEmpty()
+    }
+
+    @Test
+    fun `a rolled-back compactor folds the counts away - drift UNDER on both scopes until the next reconciliation repairs it`() {
+        // The pre-V8 compactor (develop 2894947, JdbcStorageLedger.compactInTransaction),
+        // verbatim: it moves bytes into the bases and DELETEs the deltas, so their
+        // objects are lost. This is what a rollback below V8 runs against a V8 schema.
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        db.message(ws, inbox, rawBytes = 100, attachments = listOf(10, 0))
+        val deltas = db.deltaRows()
+        db.jdbc
+            .sql(PRE_V8_FOLD)
+            .param("batch", 100)
+            .query { rs, _ -> rs.getInt("folded").toLong() }
+            .single() shouldBe deltas
+
+        val drift = db.ledger.findDrift().associateBy { it.scope }
+        drift.keys shouldBe setOf(AccountingScope.WORKSPACE, AccountingScope.INBOX)
+        drift.values.forEach {
+            it.accountedBytes shouldBe it.derivedBytes // bytes stay exact
+            it.accountedObjects shouldBe 0
+            it.derivedObjects shouldBe 3
+            it.direction shouldBe DriftDirection.UNDER // the footprint gauges under-read until repaired
+        }
+
+        val metrics = RecordingMetrics()
+        ReconcileStorageAccounting(db.ledger, metrics).reconcile()
+        metrics.drift.toSet() shouldBe setOf(DriftDirection.UNDER)
+        db.ledger.findDrift().shouldBeEmpty()
+        baseObjects(ws) shouldBe 3
+        inboxBaseObjects(inbox) shouldBe 3
     }
 
     // --- deletion debt ------------------------------------------------------------------
@@ -243,6 +369,20 @@ class StorageFootprintLedgerTest : PersistenceIntegrationTest() {
         db.ledger.compactDeletionDebt() shouldBe 1
         db.debtRows().map { it.first } shouldBe listOf(5_000L)
         db.ledger.deletionDebt().unsupersededBytes shouldBe 5_000
+    }
+
+    @Test
+    fun `debt incurred exactly when an observation began is counted, and survives compaction`() {
+        val startedAt = db.dbNow()
+        db.observe(trashBytes = 1, startedAt = startedAt)
+        db.jdbc
+            .sql("INSERT INTO storage_deletion_debt (bytes, objects, incurred_at) VALUES (777, 1, ?)")
+            .param(Timestamps.toDb(startedAt))
+            .update()
+
+        db.ledger.deletionDebt().unsupersededBytes shouldBe 777 // ">=": the boundary is inside the sum
+        db.ledger.compactDeletionDebt() shouldBe 0 // "<": and outside the compaction
+        db.debtRows().map { it.first } shouldBe listOf(777L)
     }
 
     @Test
@@ -360,5 +500,43 @@ class StorageFootprintLedgerTest : PersistenceIntegrationTest() {
         override fun driftRepaired(direction: DriftDirection) {
             drift += direction
         }
+    }
+
+    private companion object {
+        /** The develop (pre-V8) fold statement, copied verbatim. Never edit it to match V8: that is the point. */
+        val PRE_V8_FOLD =
+            """
+            WITH folded AS (
+                DELETE FROM storage_delta
+                 WHERE id IN (SELECT id FROM storage_delta ORDER BY id LIMIT :batch)
+                RETURNING workspace_id, inbox_id, bytes
+            ),
+            workspaces AS (
+                INSERT INTO workspace_storage_account (workspace_id, base_bytes)
+                SELECT f.workspace_id, sum(f.bytes)
+                  FROM folded f
+                 WHERE EXISTS (SELECT 1 FROM workspace w WHERE w.id = f.workspace_id)
+                 GROUP BY f.workspace_id
+                 ORDER BY f.workspace_id
+                ON CONFLICT (workspace_id)
+                    DO UPDATE SET base_bytes = workspace_storage_account.base_bytes + EXCLUDED.base_bytes
+                RETURNING 1
+            ),
+            inboxes AS (
+                INSERT INTO inbox_storage (inbox_id, workspace_id, base_bytes)
+                SELECT f.inbox_id, (array_agg(f.workspace_id))[1], sum(f.bytes)
+                  FROM folded f
+                 WHERE f.inbox_id IS NOT NULL
+                   AND EXISTS (SELECT 1 FROM inbox i WHERE i.id = f.inbox_id)
+                 GROUP BY f.inbox_id
+                 ORDER BY f.inbox_id
+                ON CONFLICT (inbox_id)
+                    DO UPDATE SET base_bytes = inbox_storage.base_bytes + EXCLUDED.base_bytes
+                RETURNING 1
+            )
+            SELECT (SELECT count(*) FROM folded) AS folded,
+                   (SELECT count(*) FROM workspaces) AS workspaces,
+                   (SELECT count(*) FROM inboxes) AS inboxes
+            """.trimIndent()
     }
 }

@@ -297,7 +297,7 @@ class InMemoryBlobStore : BlobStore {
     val failingPrefixes = mutableSetOf<String>()
 
     override fun deletePrefix(prefix: String) {
-        if (prefix in failingPrefixes) throw IllegalStateException("1 of the listed objects were not deleted: {InternalError=1}")
+        check(prefix !in failingPrefixes) { "1 of the listed objects were not deleted: {InternalError=1}" }
         blobs.keys.removeAll { it.startsWith(prefix) }
     }
 

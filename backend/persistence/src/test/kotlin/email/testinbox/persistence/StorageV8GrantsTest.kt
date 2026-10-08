@@ -117,7 +117,7 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
     }
 
     @Test
-    fun `the monitor role writes observations and can neither read nor delete them; the application role reads and never writes`() {
+    fun `the monitor role writes observations and can neither read nor delete them, the application role reads and never writes`() {
         val db = LedgerTestDatabase.create(postgres, admin)
         val monitor = role("ti_monitor")
         val api = role("ti_app")

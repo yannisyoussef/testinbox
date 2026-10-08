@@ -334,6 +334,20 @@ class DependencyRuleTest {
     }
 
     @Test
+    fun `only the four ADR-035 deleters remove storage objects (filesystem-containment contract section 5)`() {
+        deletingPortRule().check(allClasses)
+        val failure =
+            runCatching {
+                deletingPortRule().check(
+                    ClassFileImporter().importClasses(email.testinbox.architecture.fixtures.RogueDeleterFixture::class.java),
+                )
+            }.exceptionOrNull()
+        check(failure is AssertionError && "deletePrefix" in failure.message.orEmpty() && "deleteObject" in failure.message.orEmpty()) {
+            "the deleting-port rule did not catch a rogue deleter: $failure"
+        }
+    }
+
+    @Test
     fun `the effective storage policy is derived in one place, shared by T1 and the API (ADR-035 §3, TI-STORAGE-004)`() {
         // Two formulas could show a tenant a limit admission does not apply.
         // Only the domain (its reference constant) and the one application
@@ -691,6 +705,43 @@ class DependencyRuleTest {
                 "every payload object is written by the presigned, create-only, size-bound FencedUploader; " +
                     "the only other write is the storage witness under _probe/ (ADR-035 §5, §7)",
             )
+
+    /**
+     * Only the four ADR-035 deleters remove storage objects: retention, the
+     * orphan sweep, reservation cleanup and ambiguity verification. Every
+     * object deletion must leave a deletion-debt row (filesystem-containment
+     * contract §5), and these are the paths the ledger knows about; a new
+     * deleter would free payload accounting while MinIO keeps the bytes.
+     * Adapters implementing the ports may call their own methods.
+     */
+    private fun deletingPortRule() =
+        noClasses()
+            .that()
+            .doNotHaveFullyQualifiedName("email.testinbox.application.usecase.ExpireInboxes")
+            .and()
+            .doNotHaveFullyQualifiedName("email.testinbox.application.usecase.OrphanBlobSweep")
+            .and()
+            .doNotHaveFullyQualifiedName("email.testinbox.application.storage.ReleaseStaleReservations")
+            .and()
+            .doNotHaveFullyQualifiedName("email.testinbox.application.storage.VerifyAmbiguousUploads")
+            .and()
+            .areNotAssignableTo(email.testinbox.application.port.BlobStore::class.java)
+            .and()
+            .areNotAssignableTo(email.testinbox.application.port.StorageInspection::class.java)
+            .should()
+            .callMethodWhere(
+                describe("a storage-deleting port method") { call: com.tngtech.archunit.core.domain.JavaMethodCall ->
+                    val owner = call.targetOwner
+                    (
+                        owner.isAssignableTo(email.testinbox.application.port.BlobStore::class.java) &&
+                            call.name in setOf("delete", "deletePrefix")
+                    ) ||
+                        (
+                            owner.isAssignableTo(email.testinbox.application.port.StorageInspection::class.java) &&
+                                call.name in setOf("deleteObject", "abortIncompleteUpload")
+                        )
+                },
+            ).because("every object deletion is a known deletion-debt path (filesystem-containment contract §5)")
 
     /** Only the guarded protocol calls the fenced write, and only the blob store drives the uploader. */
     private fun fencedCallerRule() =

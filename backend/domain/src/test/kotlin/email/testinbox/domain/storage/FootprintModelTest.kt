@@ -3,9 +3,12 @@ package email.testinbox.domain.storage
 import io.kotest.matchers.longs.shouldBeGreaterThanOrEqual
 import io.kotest.matchers.shouldBe
 import io.kotest.property.Arb
+import io.kotest.property.arbitrary.choice
+import io.kotest.property.arbitrary.element
 import io.kotest.property.arbitrary.int
 import io.kotest.property.arbitrary.list
 import io.kotest.property.arbitrary.long
+import io.kotest.property.arbitrary.map
 import io.kotest.property.checkAll
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Test
@@ -22,6 +25,29 @@ class FootprintModelTest {
     private val kib = 1024L
     private val mib = 1024L * kib
     private val model = FootprintModel.REFERENCE
+
+    /**
+     * Payloads biased to where the closed form is tight. A uniform draw over
+     * 0..15 MiB almost never lands one byte past a block boundary, which is
+     * exactly where `⌈p⌉_B = p + B − 1` and the `+ N` term is needed.
+     */
+    private fun payloads(
+        block: Long,
+        max: Long,
+    ): Arb<Long> =
+        Arb.choice(
+            Arb.element(
+                listOf(0L, 1L, block - 1, block, block + 1, 131_071L, 131_072L, 131_073L, max - 1, max)
+                    .filter { it in 0..max },
+            ),
+            Arb.long(0L, max / block - 1).map { it * block + 1 }, // one byte into a fresh block
+            Arb.long(1L, max / block).map { it * block }, // exactly on a boundary
+            Arb.long(0L, max),
+        )
+
+    /** Denominators that are not powers of two, so `⌈x / d⌉` rounds on almost every object. */
+    private val denominators: Arb<Long> =
+        Arb.choice(Arb.element(listOf(16L, 17L, 23L, 256L, 339L, 4096L)), Arb.long(16L, 4096L))
 
     @Test
     fun `the reference model is ext4 at 4 KiB with a 24 KiB per-object overhead and a 1 over 256 allowance`() {
@@ -71,7 +97,7 @@ class FootprintModelTest {
     @Test
     fun `the closed form never under-counts a sum of phi`() {
         runBlocking {
-            checkAll(500, Arb.list(Arb.long(0L, 15L * mib), 0..60)) { payloads ->
+            checkAll(2_000, Arb.list(payloads(4 * kib, 15L * mib), 0..60)) { payloads ->
                 val exact = payloads.sumOf { model.ofObject(it) }
                 model.bound(payloads.sum(), payloads.size.toLong()) shouldBeGreaterThanOrEqual exact
             }
@@ -81,8 +107,10 @@ class FootprintModelTest {
     @Test
     fun `the closed form never under-counts for every supported block size and denominator`() {
         runBlocking {
-            checkAll(300, Arb.int(0, 2), Arb.long(16L, 4096L), Arb.list(Arb.long(0L, 2L * mib), 0..40)) { b, d, payloads ->
+            checkAll(2_000, Arb.int(0, 2), denominators, Arb.list(payloads(1024, 2L * mib), 0..40)) { b, d, raw ->
                 val block = listOf(1024L, 2048L, 4096L)[b]
+                // Re-aim the boundary payloads at this block size: k·B + 1 for every draw that was 1 past a KiB.
+                val payloads = raw.map { if (it % 1024 == 1L) (it / 1024) * block + 1 else it }
                 val m = FootprintModel(block, 6 * block, d)
                 val exact = payloads.sumOf { m.ofObject(it) }
                 m.bound(payloads.sum(), payloads.size.toLong()) shouldBeGreaterThanOrEqual exact
@@ -91,9 +119,31 @@ class FootprintModelTest {
     }
 
     @Test
+    fun `the plus-N term is load-bearing - without it, one byte past a block under-counts`() {
+        // N objects of k·B + 1 bytes: ⌈p⌉_B = p + B − 1 for each, and the ε allowance
+        // rounds up once PER object. Dropping the + N must fail somewhere here.
+        val m = FootprintModel(4096, 24 * kib, fragmentationDenominator = 339)
+        val withoutPlusN = { p: Long, n: Long ->
+            val base = p + n * 4095
+            base + FootprintModel.ceilDiv(base, 339) + n * m.objectOverheadMaxBytes
+        }
+        val found =
+            (1L..200L).any { n ->
+                val payloads = List(n.toInt()) { i -> (i % 7) * 4096L + 1 }
+                withoutPlusN(payloads.sum(), n) < payloads.sumOf { m.ofObject(it) }
+            }
+        found shouldBe true
+        // And the real closed form holds on the same inputs.
+        (1L..200L).forEach { n ->
+            val payloads = List(n.toInt()) { i -> (i % 7) * 4096L + 1 }
+            m.bound(payloads.sum(), n) shouldBeGreaterThanOrEqual payloads.sumOf { m.ofObject(it) }
+        }
+    }
+
+    @Test
     fun `the closed form is tight to within one block plus one byte per object`() {
         runBlocking {
-            checkAll(300, Arb.list(Arb.long(0L, 15L * mib), 1..30)) { payloads ->
+            checkAll(1_000, Arb.list(payloads(4 * kib, 15L * mib), 1..30)) { payloads ->
                 val exact = payloads.sumOf { model.ofObject(it) }
                 val bound = model.bound(payloads.sum(), payloads.size.toLong())
                 // Slack: at most (B − 1)(1+ε) + 1 per object, plus one for the final rounding.

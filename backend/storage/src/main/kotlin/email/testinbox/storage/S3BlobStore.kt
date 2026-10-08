@@ -44,12 +44,19 @@ data class S3BlobStoreConfig(
  * S3-compatible blob adapter (ADR-005): MinIO locally, any S3 provider in
  * production. Path-style access for MinIO compatibility.
  */
-class S3BlobStore(
+class S3BlobStore internal constructor(
     private val config: S3BlobStoreConfig,
-    private val metrics: BlobStoreMetrics = BlobStoreMetrics.NOOP,
+    private val metrics: BlobStoreMetrics,
+    /** The client. Production builds it from [config]; tests can hand in a stub. */
+    private val s3: S3Client,
 ) : BlobStore,
     AutoCloseable {
-    private val s3: S3Client =
+    constructor(
+        config: S3BlobStoreConfig,
+        metrics: BlobStoreMetrics = BlobStoreMetrics.NOOP,
+    ) : this(
+        config,
+        metrics,
         S3Client
             .builder()
             .endpointOverride(URI.create(config.endpoint))
@@ -59,7 +66,8 @@ class S3BlobStore(
                     AwsBasicCredentials.create(config.accessKey, config.secretKey),
                 ),
             ).forcePathStyle(true)
-            .build()
+            .build(),
+    )
 
     init {
         if (config.createBucket) ensureBucket()

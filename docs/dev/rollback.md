@@ -253,7 +253,15 @@ lock set plus `storage_reservation` (locked last, in T2's order). No down
 migration. A rolled-back artifact at or above the TI-STORAGE-006 floor keeps
 working: its inserts, deletes and reservation releases run the new trigger
 bodies, which count for it, and it never reads a column or table V8 created.
-Rolling forward again finds the counts exact. **Precondition, not a
+**Its compactor, though, does not know `storage_delta.objects`:** it folds
+the bytes into the bases and deletes the deltas, so their object counts are
+lost. After a rollback the counts are therefore UNDER (bytes stay exact) until
+the next reconciliation, which repairs them from the rows; rolling forward
+again finds them exact only after that first reconciliation or a recompute
+(`StorageFootprintLedgerTest` proves both the drift and the repair). The
+footprint gauges under-read until then, and footprint admission (when it
+exists) must not be enabled after a roll-forward before a clean
+reconciliation has run. **Precondition, not a
 consequence:** the rolled-back artifact's roles must already hold the V8
 grants (`INSERT` on `storage_deletion_debt` for the ingestion AND API roles,
 `docs/dev/production.md`), because its T2 consume and retention deletes run

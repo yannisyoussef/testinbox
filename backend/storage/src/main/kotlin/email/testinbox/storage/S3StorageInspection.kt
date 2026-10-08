@@ -114,20 +114,15 @@ class S3StorageInspection(
         // Deleted whatever the listing does: a probe left behind after a
         // failed listing would be allocated bytes no ledger row describes
         // (filesystem-containment contract §5.3, TI-STORAGE-006E).
-        var failure: Throwable? = null
-        try {
-            return objectExists(probeKey)
-        } catch (e: RuntimeException) {
-            failure = e
-            throw e
-        } finally {
-            try {
-                deleteObject(probeKey)
-            } catch (e: RuntimeException) {
-                // The listing's own failure is the one to report; the leftover probe is the sweep's.
-                failure?.addSuppressed(e) ?: throw e
-            }
+        val listed = runCatching { objectExists(probeKey) }
+        val deleted = runCatching { deleteObject(probeKey) }
+        // The listing's own failure is the one to report; a leftover probe is the sweep's.
+        listed.exceptionOrNull()?.let { listing ->
+            deleted.exceptionOrNull()?.let(listing::addSuppressed)
+            throw listing
         }
+        deleted.getOrThrow()
+        return listed.getOrThrow()
     }
 
     override fun serverTime(): ServerTime {
