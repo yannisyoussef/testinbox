@@ -261,7 +261,7 @@ function validateBoundary(value: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(`afterStorageRefusalCount must be a safe non-negative integer, got ${String(value)}`);
   }
-  return value;
+  return value + 0; // -0 is a valid safe integer; normalise it so the cursor never serialises oddly
 }
 
 class InboxImpl implements Inbox {

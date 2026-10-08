@@ -211,48 +211,58 @@ internal class Transport(
     // Forward compatibility: unknown fields and enum values must never break parsing.
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 
+    /**
+     * A body that does not decode is a contract violation, reported as a
+     * typed protocol error (docs/sdk/principles.md #6) rather than as the
+     * serialisation library's own exception escaping the public API.
+     */
+    private fun <T> decode(
+        serializer: kotlinx.serialization.KSerializer<T>,
+        body: ByteArray,
+        label: String,
+    ): T =
+        runCatching { json.decodeFromString(serializer, String(body)) }
+            .getOrElse { throw TestInboxProtocolException("the server sent an undecodable $label") }
+
     suspend fun createInbox(request: CreateInboxRequestDto, idempotencyKey: String? = null): InboxDto =
-        json.decodeFromString(
+        decode(
             InboxDto.serializer(),
             execute(
                 "POST",
                 "/v1/inboxes",
                 json.encodeToString(CreateInboxRequestDto.serializer(), request),
                 idempotencyKey,
-            ).let { String(it) },
+            ),
+            "inbox",
         )
 
     suspend fun getInbox(id: String): InboxDto =
-        json.decodeFromString(InboxDto.serializer(), String(execute("GET", "/v1/inboxes/$id")))
+        decode(InboxDto.serializer(), execute("GET", "/v1/inboxes/$id"), "inbox")
 
     suspend fun deleteInbox(id: String) {
         execute("DELETE", "/v1/inboxes/$id")
     }
 
     suspend fun listMessages(inboxId: String): MessagePageDto =
-        json.decodeFromString(
-            MessagePageDto.serializer(),
-            String(execute("GET", "/v1/inboxes/$inboxId/messages")),
-        )
+        decode(MessagePageDto.serializer(), execute("GET", "/v1/inboxes/$inboxId/messages"), "message page")
 
     suspend fun wait(inboxId: String, request: WaitRequestDto): WaitResultDto =
-        json.decodeFromString(
+        decode(
             WaitResultDto.serializer(),
-            String(
-                execute(
-                    "POST",
-                    "/v1/inboxes/$inboxId/messages/wait",
-                    json.encodeToString(WaitRequestDto.serializer(), request),
-                ),
+            execute(
+                "POST",
+                "/v1/inboxes/$inboxId/messages/wait",
+                json.encodeToString(WaitRequestDto.serializer(), request),
             ),
+            "wait result",
         )
 
     /** ADR-035 §13a: the authenticated key's own workspace. */
     suspend fun getWorkspaceStorage(): StorageUsageDto =
-        json.decodeFromString(StorageUsageDto.serializer(), String(execute("GET", "/v1/workspace/storage")))
+        decode(StorageUsageDto.serializer(), execute("GET", "/v1/workspace/storage"), "workspace storage")
 
     suspend fun getMessage(id: String): MessageDto =
-        json.decodeFromString(MessageDto.serializer(), String(execute("GET", "/v1/messages/$id")))
+        decode(MessageDto.serializer(), execute("GET", "/v1/messages/$id"), "message")
 
     suspend fun rawMime(messageId: String): ByteArray = execute("GET", "/v1/messages/$messageId/raw")
 
@@ -260,16 +270,15 @@ internal class Transport(
         request: CreateApiKeyRequestDto,
         idempotencyKey: String? = null,
     ): CreatedApiKeyDto =
-        json.decodeFromString(
+        decode(
             CreatedApiKeyDto.serializer(),
-            String(
-                execute(
-                    "POST",
-                    "/v1/api-keys",
-                    json.encodeToString(CreateApiKeyRequestDto.serializer(), request),
-                    idempotencyKey,
-                ),
+            execute(
+                "POST",
+                "/v1/api-keys",
+                json.encodeToString(CreateApiKeyRequestDto.serializer(), request),
+                idempotencyKey,
             ),
+            "created API key",
         )
 
     suspend fun listApiKeys(cursor: String?, limit: Int?): ApiKeyPageDto {
@@ -278,14 +287,12 @@ internal class Transport(
                 cursor?.let { "cursor=" + java.net.URLEncoder.encode(it, Charsets.UTF_8) },
                 limit?.let { "limit=$it" },
             ).joinToString("&")
-        return json.decodeFromString(
-            ApiKeyPageDto.serializer(),
-            String(execute("GET", "/v1/api-keys" + if (query.isEmpty()) "" else "?$query")),
-        )
+        val path = "/v1/api-keys" + if (query.isEmpty()) "" else "?$query"
+        return decode(ApiKeyPageDto.serializer(), execute("GET", path), "API key page")
     }
 
     suspend fun getApiKey(id: String): ApiKeyDto =
-        json.decodeFromString(ApiKeyDto.serializer(), String(execute("GET", "/v1/api-keys/$id")))
+        decode(ApiKeyDto.serializer(), execute("GET", "/v1/api-keys/$id"), "API key")
 
     suspend fun revokeApiKey(id: String) {
         execute("DELETE", "/v1/api-keys/$id")
@@ -323,7 +330,11 @@ internal class Transport(
     ): RuntimeException {
         val problem =
             runCatching { json.decodeFromString(ProblemDto.serializer(), String(body)) }
-                .getOrElse { ProblemDto() }
+                // A member of the wrong type (a count sent as a string) must not
+                // erase the problem TYPE: the storage-limit mapping below then
+                // reports the malformed body as a protocol error instead of a
+                // generic conflict.
+                .getOrElse { ProblemDto(type = problemTypeOf(body), detail = "malformed problem body") }
         val detail = problem.detail ?: problem.title ?: "HTTP $status"
         val retryAfter =
             (problem.retryAfterSeconds ?: headers.firstValue("Retry-After").orElse(null)?.toLongOrNull())
@@ -348,6 +359,20 @@ internal class Transport(
             else -> TestInboxApiException(status, problem.type, detail, problem.correlationId)
         }
     }
+
+    private companion object {
+        const val STORAGE_LIMIT_STATUS = 409
+    }
+
+    /** The `type` member alone, from a body the full DTO could not decode; null when even that is unreadable. */
+    private fun problemTypeOf(body: ByteArray): String? =
+        runCatching {
+            (json.parseToJsonElement(String(body)) as? kotlinx.serialization.json.JsonObject)
+                ?.get("type")
+                ?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                ?.takeIf { it.isString }
+                ?.content
+        }.getOrNull()
 
     /**
      * Several distinct `409`s share that status (ADR-021, ADR-027, ADR-033)
@@ -409,18 +434,38 @@ internal class Transport(
             listOfNotNull(
                 "inboxId".takeIf { problem.inboxId == null },
                 "refusalReason".takeIf { problem.refusalReason == null },
-                "afterStorageRefusalCount".takeIf { (problem.afterStorageRefusalCount ?: -1) < 0 },
-                "storageRefusalCount".takeIf { (problem.storageRefusalCount ?: -1) < 0 },
+                "afterStorageRefusalCount".takeIf { problem.afterStorageRefusalCount == null },
+                "storageRefusalCount".takeIf { problem.storageRefusalCount == null },
                 "lastStorageRefusalAt".takeIf { problem.lastStorageRefusalAt == null },
             )
-        if (missing.isNotEmpty()) {
+        val negative =
+            listOfNotNull(
+                "afterStorageRefusalCount".takeIf { (problem.afterStorageRefusalCount ?: 0) < 0 },
+                "storageRefusalCount".takeIf { (problem.storageRefusalCount ?: 0) < 0 },
+            )
+        if (missing.isNotEmpty() || negative.isNotEmpty()) {
+            val what =
+                listOfNotNull(
+                    missing.takeIf { it.isNotEmpty() }?.let { "without " + it.joinToString(", ") },
+                    negative.takeIf { it.isNotEmpty() }?.let { "with a negative " + it.joinToString(", ") },
+                ).joinToString(" and ")
             return TestInboxProtocolException(
-                "the server sent a storage-limit-exceeded problem without ${missing.joinToString(", ")}",
+                "the server sent a storage-limit-exceeded problem $what",
+                problem.correlationId,
+                problem.type,
+                STORAGE_LIMIT_STATUS,
             )
         }
         val lastRefusalAt =
             runCatching { java.time.Instant.parse(problem.lastStorageRefusalAt) }
-                .getOrElse { return TestInboxProtocolException("the server sent an unparseable 'lastStorageRefusalAt'") }
+                .getOrElse {
+                    return TestInboxProtocolException(
+                        "the server sent an unparseable 'lastStorageRefusalAt'",
+                        problem.correlationId,
+                        problem.type,
+                        STORAGE_LIMIT_STATUS,
+                    )
+                }
         return TestInboxStorageLimitExceededException(
             message = detail,
             correlationId = problem.correlationId,

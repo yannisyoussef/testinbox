@@ -78,7 +78,7 @@ class JavaInteropTest {
         assertEquals(100L, usage.getStoredBytes());
         assertEquals(20L, usage.getReservedBytes());
         assertEquals(392L, usage.getAvailableBytes());
-        assertEquals(false, usage.getOverLimit());
+        assertEquals(false, usage.isOverLimit());
 
         StorageRefusalReason inbox = StorageRefusalReason.INBOX_LIMIT;
         StorageRefusalReason workspace = StorageRefusalReason.WORKSPACE_LIMIT;

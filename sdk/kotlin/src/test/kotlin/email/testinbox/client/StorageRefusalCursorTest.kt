@@ -1,6 +1,7 @@
 package email.testinbox.client
 
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -47,20 +48,49 @@ class StorageRefusalCursorTest {
         assertEquals(expected, cursor.current)
     }
 
+    /** Eight threads released through one barrier, each submitting a distinct value: the maximum, every time. */
+    @RepeatedTest(5)
+    fun `crossing advances released together leave exactly the maximum`() {
+        val cursor = StorageRefusalCursor(0)
+        val expected = cross { cursor.advance(it) }
+        assertEquals(expected, cursor.current)
+    }
+
     @Test
-    fun `the detector detects - a read-compare-write mutant loses the maximum under the same contention`() {
+    fun `the detector detects - a read-compare-write mutant loses the maximum under crossing advances`() {
         // The shape a careless implementation would have: no atomicity between
-        // the read and the write. Run until it is caught losing an update; a
-        // bounded number of rounds, so a lucky interleaving cannot make the
-        // mutant look correct.
+        // the read and the write. Every thread reads the same stale value,
+        // every comparison passes, and the last plain write wins — so the
+        // mutant ends below the maximum unless the maximum happens to write
+        // last (one chance in eight per round). Bounded rounds: a lucky
+        // interleaving cannot make the mutant look correct.
         var caught = false
         repeat(50) {
             if (caught) return@repeat
             val mutant = LastWriterWinsCursor(0)
-            val expected = hammer { mutant.advance(it) }
+            val expected = cross { mutant.advance(it) }
             if (mutant.current != expected) caught = true
         }
-        assertTrue(caught, "the last-writer-wins mutant was never caught losing the maximum; the contention harness is too weak")
+        assertTrue(caught, "the last-writer-wins mutant was never caught losing the maximum; the crossing harness is too weak")
+    }
+
+    /** Releases 8 threads through a barrier, thread `t` advancing to `1000 + t`; returns the maximum handed in. */
+    private fun cross(advance: (Long) -> Unit): Long {
+        val threads = 8
+        val barrier = CyclicBarrier(threads)
+        val pool = Executors.newFixedThreadPool(threads)
+        try {
+            (0 until threads)
+                .map { t ->
+                    pool.submit {
+                        barrier.await(10, TimeUnit.SECONDS)
+                        advance(1_000L + t)
+                    }
+                }.forEach { it.get(20, TimeUnit.SECONDS) }
+        } finally {
+            pool.shutdownNow()
+        }
+        return 1_007L
     }
 
     /** Drives [advance] from 8 threads with values that interleave, returning the maximum handed in. */

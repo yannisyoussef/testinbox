@@ -27,7 +27,12 @@ open class TestInboxException(
  * from a dependency's internals is not something a caller can reasonably
  * handle, and it violates principle #6.
  */
-class TestInboxProtocolException(message: String) : TestInboxException(message)
+class TestInboxProtocolException(
+    message: String,
+    correlationId: String? = null,
+    problemType: String? = null,
+    status: Int? = null,
+) : TestInboxException(message, correlationId, problemType, status)
 
 class TestInboxAuthException(
     message: String,

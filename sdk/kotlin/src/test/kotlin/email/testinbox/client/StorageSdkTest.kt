@@ -5,8 +5,10 @@ import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
@@ -48,7 +50,8 @@ class StorageSdkTest {
             val body = exchange.requestBody.readAllBytes().toString(Charsets.UTF_8)
             requests += Recorded(exchange.requestMethod, exchange.requestURI.path, body)
             val scripted = responses.poll() ?: Scripted(500, """{"title":"unscripted"}""")
-            scripted.gate?.await(10, TimeUnit.SECONDS)
+            // A gate that is never released is a harness bug: fail loudly, never serve the answer late.
+            scripted.gate?.let { check(it.await(10, TimeUnit.SECONDS)) { "a scripted gate was never released" } }
             if (scripted.delayMillis > 0) Thread.sleep(scripted.delayMillis)
             val bytes = scripted.body.toByteArray()
             exchange.responseHeaders.set("Content-Type", if (scripted.status >= 400) "application/problem+json" else "application/json")
@@ -257,12 +260,13 @@ class StorageSdkTest {
         val short = TestInboxClient("tk_unit", "http://localhost:${server.address.port}", Duration.ofSeconds(1))
         script(200, inboxJson(count = 3, lastAt = "2026-10-07T11:59:00Z", reason = "INBOX_LIMIT"))
         val inbox = short.getInboxBlocking("x")
-        repeat(3) { script(200, timeout(5), delayMillis = 1_000) }
+        // One spare answer, so an unscripted 500 can never stand in for a window.
+        repeat(4) { script(200, timeout(5), delayMillis = 1_000) }
         assertThrows(TestInboxTimeoutException::class.java) {
             inbox.awaitMessageBlocking(Duration.ofMillis(2_100), MessageMatcher.ANY, null, observeStorageRefusals = false)
         }
         val bodies = waitBodies()
-        assertTrue(bodies.size >= 2)
+        assertTrue(bodies.size in 2..3, "windows: ${bodies.size}")
         bodies.forEach { assertFalse(it.contains("afterStorageRefusalCount"), it) }
         assertEquals(3L, inbox.storageRefusalCursor)
     }
@@ -285,10 +289,10 @@ class StorageSdkTest {
         val short = TestInboxClient("tk_unit", "http://localhost:${server.address.port}", Duration.ofSeconds(1))
         script(200, inboxJson(count = 4, lastAt = "2026-10-07T11:59:00Z", reason = "INBOX_LIMIT"))
         val inbox = short.getInboxBlocking("x")
-        repeat(3) { script(200, timeout(6), delayMillis = 1_000) }
+        repeat(4) { script(200, timeout(6), delayMillis = 1_000) }
         assertThrows(TestInboxTimeoutException::class.java) { inbox.awaitMessageBlocking(Duration.ofMillis(2_100)) }
         val bodies = waitBodies()
-        assertTrue(bodies.size >= 2)
+        assertTrue(bodies.size in 2..3, "windows: ${bodies.size}")
         bodies.forEach { assertEquals(4L, boundarySent(it), it) }
         assertEquals(4L, inbox.storageRefusalCursor)
     }
@@ -346,10 +350,14 @@ class StorageSdkTest {
         assertNull(error.quota)
         assertNull(error.limit)
         assertNull(error.current)
-        // Structural: nothing on the type names a global figure.
-        TestInboxStorageLimitExceededException::class.java.methods
-            .map { it.name.lowercase() }
-            .forEach { assertFalse(it.contains("global") || it.contains("finalize") || it.contains("backlog"), it) }
+        // Structural, as an allowlist: the exception declares exactly these members and nothing else.
+        assertEquals(
+            setOf("inboxId", "refusalReason", "afterStorageRefusalCount", "storageRefusalCount", "lastStorageRefusalAt", "quota", "limit", "current"),
+            TestInboxStorageLimitExceededException::class.java.declaredFields
+                .map { it.name }
+                .filterNot { it.startsWith("$") || it == "Companion" || it == "STORAGE_LIMIT_EXCEEDED_TYPE" }
+                .toSet(),
+        )
     }
 
     @Test
@@ -374,6 +382,9 @@ class StorageSdkTest {
         )
         val error = assertThrows(TestInboxProtocolException::class.java) { inbox.awaitMessageBlocking(Duration.ofSeconds(5)) }
         assertTrue(error.message!!.contains("storageRefusalCount"))
+        // The protocol error still says where it came from.
+        assertEquals(409, error.status)
+        assertEquals("https://testinbox.email/problems/storage-limit-exceeded", error.problemType)
         assertEquals(0L, inbox.storageRefusalCursor)
         script(409, refused(lastAt = "not-a-date"))
         assertThrows(TestInboxProtocolException::class.java) { inbox.awaitMessageBlocking(Duration.ofSeconds(5)) }
@@ -403,17 +414,22 @@ class StorageSdkTest {
             script(409, refused(count = first), gate = releaseFirst)
             script(409, refused(count = second), gate = releaseSecond)
             val pool = Executors.newFixedThreadPool(2)
+            // Which wait reaches the stub first is not controlled, so the test waits for
+            // WHICHEVER completes first rather than for a particular future.
+            val completion = ExecutorCompletionService<Throwable?>(pool)
             try {
-                val a = pool.submit<Throwable?> { runCatching { inbox.awaitMessageBlocking(Duration.ofSeconds(10)) }.exceptionOrNull() }
-                val b = pool.submit<Throwable?> { runCatching { inbox.awaitMessageBlocking(Duration.ofSeconds(10)) }.exceptionOrNull() }
+                repeat(2) {
+                    completion.submit(Callable<Throwable?> { runCatching { inbox.awaitMessageBlocking(Duration.ofSeconds(10)) }.exceptionOrNull() })
+                }
                 // Both requests are parked on the stub before either answer is released.
                 val until = System.nanoTime() + 5_000_000_000L
                 while (waitBodies().size < 2) check(System.nanoTime() < until) { "both waits must be in flight" }
                 releaseFirst.countDown()
-                val firstDone = a.get(10, TimeUnit.SECONDS) ?: b.get(10, TimeUnit.SECONDS)
+                val firstDone = checkNotNull(completion.poll(10, TimeUnit.SECONDS)) { "no wait completed after the first release" }.get()
                 assertTrue(firstDone is TestInboxStorageLimitExceededException)
                 releaseSecond.countDown()
-                listOf(a, b).forEach { assertTrue(it.get(10, TimeUnit.SECONDS) is TestInboxStorageLimitExceededException) }
+                val secondDone = checkNotNull(completion.poll(10, TimeUnit.SECONDS)) { "no wait completed after the second release" }.get()
+                assertTrue(secondDone is TestInboxStorageLimitExceededException)
                 assertEquals(5L, inbox.storageRefusalCursor, "order $first then $second")
             } finally {
                 pool.shutdownNow()

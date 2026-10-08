@@ -129,6 +129,7 @@ class StorageUsage(
     /** What this scope can still admit, never below zero; for an inbox, the minimum of inbox and workspace headroom. */
     val availableBytes: Long,
     /** Whether `storedBytes + reservedBytes` exceeds `limitBytes`. Equality is not over. */
+    @get:JvmName("isOverLimit")
     val overLimit: Boolean,
 ) {
     override fun equals(other: Any?): Boolean =
@@ -387,8 +388,10 @@ class Inbox internal constructor(
      * `observeStorageRefusals = false` — that contradiction is refused locally
      * with an [IllegalArgumentException] before any request is made.
      *
-     * The two-argument form keeps its exact JVM signature, so callers compiled
-     * against an earlier release still link.
+     * The two-argument form keeps its exact JVM signature, so Java callers
+     * compiled against an earlier release still link. (Kotlin callers that
+     * relied on default arguments go through a synthetic bridge whose shape
+     * follows the parameter list; nothing has been released, so nothing breaks.)
      */
     @JvmOverloads
     suspend fun awaitMessage(

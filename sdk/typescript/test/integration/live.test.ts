@@ -10,7 +10,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { TestInboxClient, TestInboxStorageLimitExceededError, TestInboxTimeoutError } from "../../src/index";
 
@@ -97,12 +97,16 @@ describe.skipIf(!baseUrl || !apiKey)("live TestInbox API", () => {
       try {
         expect(inbox.storageRefusalCursor).toBe(0);
         // Ask the harness to record a real §6a refusal for THIS inbox, and wait until it has.
-        await writeFile(refusalRequestFile!, inbox.id);
+        // Write complete, then rename into place: the harness never reads a half-written file.
+        await writeFile(`${refusalRequestFile!}.tmp`, inbox.id);
+        await rename(`${refusalRequestFile!}.tmp`, refusalRequestFile!);
         const until = Date.now() + 60_000;
         while (!existsSync(refusalDoneFile!)) {
           if (Date.now() > until) throw new Error("the harness never recorded the refusal");
           await new Promise((r) => setTimeout(r, 50));
         }
+        const verdict = await readFile(refusalDoneFile!, "utf8");
+        if (!verdict.startsWith("refused")) throw new Error(`the harness could not record the refusal: ${verdict}`);
 
         let cursorInHandler: number | undefined;
         const error = await inbox.waitForMessage({ timeoutMs: 5_000, subjectContains: "will-never-match" }).then(

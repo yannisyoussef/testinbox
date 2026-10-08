@@ -348,7 +348,10 @@ describe("the typed storage-limit error", () => {
     expect("quota" in error).toBe(false);
     expect("limit" in error).toBe(false);
     expect("current" in error).toBe(false);
-    for (const name of Object.getOwnPropertyNames(error)) expect(name).not.toMatch(/global|finalize|^[gh]$|backlog/i);
+    // Structural, as an allowlist: exactly these own members, nothing else.
+    expect(Object.getOwnPropertyNames(error).sort()).toEqual(
+      ["afterStorageRefusalCount", "correlationId", "detail", "inboxId", "lastStorageRefusalAt", "message", "name", "problemType", "refusalReason", "stack", "status", "storageRefusalCount", "title"].sort(),
+    );
   });
 
   it("an unknown future refusal reason is still the typed error and still advances the cursor", async () => {

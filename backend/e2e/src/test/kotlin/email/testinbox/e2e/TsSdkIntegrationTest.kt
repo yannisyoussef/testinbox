@@ -5,6 +5,7 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.Test
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -63,10 +64,27 @@ class TsSdkIntegrationTest {
     ): Thread =
         Thread {
             val until = System.nanoTime() + 120_000_000_000L
-            while (!request.isFile && System.nanoTime() < until) Thread.sleep(50)
-            if (request.isFile) {
-                E2eStorage.recordRefusal(request.readText().trim())
-                done.writeText("refused\n")
+            // The TS side renames a complete file into place; reading until the
+            // content is a UUID also tolerates a writer that did not.
+            var inboxId: String? = null
+            while (inboxId == null && System.nanoTime() < until) {
+                inboxId =
+                    request
+                        .takeIf { it.isFile }
+                        ?.readText()
+                        ?.trim()
+                        ?.takeIf { runCatching { UUID.fromString(it) }.isSuccess }
+                if (inboxId == null) Thread.sleep(50)
+            }
+            if (inboxId != null) {
+                // A failure is reported through the same channel, so the TS side
+                // fails on it at once instead of waiting out its own bound. The
+                // verdict is written complete, then renamed, so a reader never sees
+                // an empty file.
+                val verdict = runCatching { E2eStorage.recordRefusal(inboxId) }.fold({ "refused\n" }, { "failed: ${it.message}\n" })
+                val staging = done.resolveSibling(done.name + ".tmp")
+                staging.writeText(verdict)
+                check(staging.renameTo(done)) { "could not publish the handshake verdict" }
             }
         }.apply {
             isDaemon = true
@@ -91,20 +109,27 @@ class TsSdkIntegrationTest {
         val preRefused = TestInboxClient(apiKey = E2eStack.API_KEY, baseUrl = E2eStack.apiBaseUrl).createInboxBlocking()
         E2eStorage.recordRefusal(preRefused.id)
         val result =
-            run(
-                npm,
-                "run",
-                "test:integration",
-                env =
-                    mapOf(
-                        "TESTINBOX_BASE_URL" to E2eStack.apiBaseUrl,
-                        "TESTINBOX_API_KEY" to E2eStack.API_KEY,
-                        "TESTINBOX_REFUSED_INBOX_ID" to preRefused.id,
-                        "TESTINBOX_REFUSAL_REQUEST_FILE" to request.absolutePath,
-                        "TESTINBOX_REFUSAL_DONE_FILE" to done.absolutePath,
-                    ),
-            )
-        refuser.join(5_000)
+            try {
+                run(
+                    npm,
+                    "run",
+                    "test:integration",
+                    env =
+                        mapOf(
+                            "TESTINBOX_BASE_URL" to E2eStack.apiBaseUrl,
+                            "TESTINBOX_API_KEY" to E2eStack.API_KEY,
+                            "TESTINBOX_REFUSED_INBOX_ID" to preRefused.id,
+                            "TESTINBOX_REFUSAL_REQUEST_FILE" to request.absolutePath,
+                            "TESTINBOX_REFUSAL_DONE_FILE" to done.absolutePath,
+                        ),
+                )
+            } finally {
+                refuser.join(5_000)
+                preRefused.deleteBlocking()
+                handshake.deleteRecursively()
+            }
+        // The refuser must have finished on its own, without dying on an exception.
+        refuser.isAlive shouldBe false
         result.exit shouldBe 0
         // All four live cases ran: a skipped case (for instance a lost
         // environment variable) would still exit 0 and prove nothing.

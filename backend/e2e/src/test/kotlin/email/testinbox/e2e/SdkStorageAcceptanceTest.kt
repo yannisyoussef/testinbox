@@ -103,18 +103,19 @@ class SdkStorageAcceptanceTest {
             created.storage!!.limitBytes shouldBeGreaterThan 0L
             created.storageRefusalCursor shouldBe 0L
 
+            val reservedBefore = created.storage!!.reservedBytes
             reserve(created.id, 2_048)
             recordRefusal(created.id, StorageRefusalReason.WORKSPACE_LIMIT)
 
             val fresh = client.getInboxBlocking(created.id)
-            fresh.storage!!.reservedBytes shouldBe created.storage!!.reservedBytes + 2_048
+            fresh.storage!!.reservedBytes shouldBe reservedBefore + 2_048
             fresh.storageRefusalCount shouldBe 1L
             fresh.lastStorageRefusalReason shouldBe StorageRefusalReason.WORKSPACE_LIMIT
             fresh.lastStorageRefusalAt shouldNotBe null
             fresh.storageRefusalCursor shouldBe 1L
             // The earlier object's snapshot is untouched.
             created.storageRefusalCount shouldBe 0L
-            created.storage!!.reservedBytes shouldBe created.storage!!.reservedBytes
+            created.storage!!.reservedBytes shouldBe reservedBefore
         } finally {
             created.deleteBlocking()
         }

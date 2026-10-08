@@ -1,3 +1,5 @@
+import type { StorageRefusalReason } from "./types.js";
+
 /**
  * Typed error taxonomy for `@testinbox/client`.
  *
@@ -48,7 +50,11 @@ export interface ProblemDetails {
   lastStorageRefusalAt?: string;
 }
 
-/** Base class for every error thrown by the TestInbox SDK. */
+/**
+ * Base class for every error the TestInbox SDK raises about the server or the
+ * protocol. Local argument validation uses the platform's own `TypeError` and
+ * `RangeError`, as a native library would.
+ */
 export class TestInboxError extends Error {
   /** HTTP status code, when the error originates from an HTTP response. */
   readonly status?: number;
@@ -198,7 +204,7 @@ export class TestInboxProtocolError extends TestInboxError {
 export class TestInboxStorageLimitExceededError extends TestInboxError {
   readonly inboxId: string;
   /** Known values are `INBOX_LIMIT`, `WORKSPACE_LIMIT` and `SERVICE_CAPACITY`; future values pass through. */
-  readonly refusalReason: string;
+  readonly refusalReason: StorageRefusalReason;
   /** The boundary the server evaluated against: your cursor, clamped once to the count at the first evaluation. */
   readonly afterStorageRefusalCount: number;
   /** The inbox's refusal count in the deciding snapshot — what the cursor advanced to. */
