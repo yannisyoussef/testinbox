@@ -82,7 +82,12 @@ done
 real "A: a candidate before the first guarded-ingest commit is refused" 1 "$(git -C "$REPO" rev-parse "$FIRST_GUARDED^")" "$FIRST_GUARDED"
 real "B: the first guarded-ingest commit itself is refused: it lacks the safety floor" 1 "$FIRST_GUARDED" "$SAFETY_FLOOR"
 real "C: 597abf7 is refused: it predates the durable clock episode" 1 "$PRE_EPISODE" "$SAFETY_FLOOR"
-real "D: the safety floor itself is allowed" 0 "$SAFETY_FLOOR"
+# TI-STORAGE-006 added a third ADR-035 floor (the enforcement controls), so the
+# TI-STORAGE-003 safety floor is now itself below a floor: it must be refused,
+# naming the newer one, and the TI-006 commit itself must be allowed.
+ENFORCEMENT_FLOOR=006c468d64bbbab11d15f93d05d888676461c826 # TI-STORAGE-006 enforcement controls (floor 3)
+real "D: the TI-STORAGE-003 safety floor is refused once TI-STORAGE-006 is a floor: it lacks the enforcement controls" 1 "$SAFETY_FLOOR" "$ENFORCEMENT_FLOOR"
+real "D2: the TI-STORAGE-006 floor itself is allowed" 0 "$ENFORCEMENT_FLOOR"
 real "E: this checkout's head is allowed" 0 "$(git -C "$REPO" rev-parse HEAD)"
 
 echo "----"
