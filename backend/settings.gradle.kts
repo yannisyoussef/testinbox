@@ -12,6 +12,7 @@ include(
     "migrator",
     "architecture",
     "e2e",
+    "benchmark",
 )
 
 dependencyResolutionManagement {

@@ -40,6 +40,7 @@ full_backend() {
   fixture "$root" backend/ingestion "$ABOVE_ANY_MINIMUM"
   fixture "$root" backend/api "$ABOVE_ANY_MINIMUM"
   fixture "$root" backend/migrator "$ABOVE_ANY_MINIMUM"
+  fixture "$root" backend/benchmark "$ABOVE_ANY_MINIMUM"
 }
 
 check() {

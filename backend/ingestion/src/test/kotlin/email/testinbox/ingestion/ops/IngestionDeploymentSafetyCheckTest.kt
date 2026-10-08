@@ -32,7 +32,15 @@ class IngestionDeploymentSafetyCheckTest {
             properties: IngestionProperties,
             dataSourceProperties: DataSourceProperties,
             environment: Environment,
-        ) = IngestionDeploymentSafetyCheck(properties, dataSourceProperties, environment)
+        ) = IngestionDeploymentSafetyCheck(
+            properties,
+            dataSourceProperties,
+            environment,
+            properties.storageDeclarations(
+                email.testinbox.storage.QualificationRecords
+                    .load(),
+            ),
+        )
     }
 
     private val runner = ApplicationContextRunner().withUserConfiguration(UnderTest::class.java)
@@ -129,5 +137,49 @@ class IngestionDeploymentSafetyCheckTest {
         runner
             .withPropertyValues("spring.datasource.password=testinbox", "testinbox.storage.access-key=testinbox")
             .run { context -> assertThat(context).hasNotFailed() }
+    }
+
+    // --- TI-STORAGE-006: enforcement may exist, safely ---------------------------------------------
+
+    @Test
+    fun `TENANT_LIMITS on a deployed gateway with no ADR-035 declarations fails startup, naming every missing one`() {
+        runner.withPropertyValues(*deployed, "testinbox.storage.enforcement=TENANT_LIMITS").run { context ->
+            assertThat(context).hasFailed()
+            val message = context.startupFailure!!.stackTraceToString()
+            for (key in listOf(
+                "global-limit-bytes",
+                "declared-bucket-quota-bytes",
+                "declared-max-ingestion-processes",
+                "inbox-share",
+                "measured-quota-lag-churn-bytes",
+                "backend-identity",
+            )) {
+                message shouldContain "testinbox.storage.$key"
+            }
+        }
+    }
+
+    @Test
+    fun `ALL is refused on a gateway that declares no environment - no ceiling may refuse outside a validated deployment`() {
+        runner.withPropertyValues("testinbox.storage.enforcement=ALL").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain "testinbox.deployment.environment"
+        }
+    }
+
+    @Test
+    fun `an unknown enforcement value fails to bind - there are exactly three states`() {
+        runner.withPropertyValues(*deployed, "testinbox.storage.enforcement=INBOX_ONLY").run { context ->
+            assertThat(context).hasFailed()
+        }
+    }
+
+    @Test
+    fun `OFF remains the default, and the property default is OFF`() {
+        runner.withPropertyValues(*deployed).run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean(IngestionProperties::class.java).storage.enforcement shouldBe
+                email.testinbox.domain.storage.StorageEnforcement.OFF
+        }
     }
 }

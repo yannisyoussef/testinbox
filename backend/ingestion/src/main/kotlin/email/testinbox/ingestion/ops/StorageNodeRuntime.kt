@@ -44,6 +44,8 @@ class StorageNodeRuntime(
     private val slots: WriteSlots? = null,
     /** Where an out-of-bound offset is made durable; the same hold cleanup applies. */
     private val reservations: StorageReservations? = null,
+    /** ADR-035 §14 Phase 4: re-run on every heartbeat; a non-OFF node fails closed through its guard. */
+    private val activation: email.testinbox.application.storage.activation.ActivationWatch? = null,
 ) : SmartLifecycle {
     private var executors: List<ScheduledExecutorService> = emptyList()
     private var claim: StorageNodeClaims.Claim? = null
@@ -54,6 +56,13 @@ class StorageNodeRuntime(
                 ?: error("storage node id '${lifecycle.node.nodeId}' is held by another live process; every process needs its own")
         }
         lifecycle.start()
+        // The first allowlist/inventory check happens BEFORE the gateway accepts
+        // anything, not one heartbeat later: a non-OFF node next to an old binary
+        // fails closed from its first DATA.
+        // The watch never throws: an evaluation it cannot complete is itself a
+        // violation under a non-OFF mode (ActivationWatch.run), so this node
+        // fails closed BEFORE its first DATA rather than one heartbeat later.
+        activation?.run()
         executors =
             listOf(
                 scheduled("storage-node-heartbeat").also {
@@ -75,6 +84,16 @@ class StorageNodeRuntime(
 
     @Synchronized
     private fun heartbeat() {
+        // Re-run first, so a check that cannot complete under a non-OFF mode sets the guard on this very tick.
+        // The watch never throws — that is THE rule (ActivationWatch.run). This wrapper decides nothing about
+        // the guard: it only keeps this thread alive should an Error escape the watch, because
+        // scheduleWithFixedDelay silently stops on an uncaught throwable, and a dead heartbeat thread would
+        // freeze the guard at its last value while every other node reads this one as stale.
+        try {
+            activation?.run()
+        } catch (t: Throwable) {
+            log.error("storage_activation_watch_threw: heartbeat thread kept alive; the guard keeps its last value", t)
+        }
         runCatching {
             lifecycle.heartbeat()
             val c = claims ?: return@runCatching

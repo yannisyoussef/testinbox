@@ -10,6 +10,8 @@ dependencies {
     implementation("org.springframework:spring-context")
     implementation(libs.aws.s3)
     implementation("org.slf4j:slf4j-api")
+    // The ADR-035 §9a qualification records shipped inside the artifact are JSON.
+    implementation("tools.jackson.core:jackson-databind")
 
     testImplementation(platform(libs.spring.boot.dependencies))
     testImplementation("org.junit.jupiter:junit-jupiter")

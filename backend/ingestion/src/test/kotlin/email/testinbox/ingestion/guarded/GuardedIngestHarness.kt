@@ -88,6 +88,10 @@ class GuardedIngestHarness(
     private val afterUpload: (ReservedUpload) -> Unit = {},
     /** Runs before the guarded path persists an ambiguity: a throw here is a failed persist. */
     private val beforeAmbiguityRecord: () -> Unit = {},
+    /** TI-STORAGE-006 §22: the activation guard the guarded path consults before the slot and T1. */
+    val activation: email.testinbox.application.storage.activation.ActivationGuard =
+        email.testinbox.application.storage.activation
+            .ActivationGuard(),
 ) : AutoCloseable {
     val dbName: String = shared?.dbName ?: "guarded_${UUID.randomUUID().toString().replace("-", "")}"
     val bucket: String = shared?.bucket ?: "g-${UUID.randomUUID().toString().take(12)}"
@@ -177,6 +181,7 @@ class GuardedIngestHarness(
             clock = clock,
             metrics = metrics,
             hook = hook,
+            activation = activation,
         )
 
     val messages = JdbcMessageRepository(jdbc)

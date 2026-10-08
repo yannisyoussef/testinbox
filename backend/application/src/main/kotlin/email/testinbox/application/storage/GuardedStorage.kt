@@ -94,6 +94,10 @@ class GuardedStorage(
     private val clock: DatabaseClock,
     private val metrics: StorageProtocolMetrics = StorageProtocolMetrics.NOOP,
     private val hook: IngestSyncHook = IngestSyncHook.NONE,
+    /** TI-STORAGE-006 §22: a non-OFF node whose activation invariant is broken fails closed here. */
+    private val activation: email.testinbox.application.storage.activation.ActivationGuard =
+        email.testinbox.application.storage.activation
+            .ActivationGuard(),
 ) {
     private class Attempt(
         val messageId: MessageId,
@@ -148,6 +152,8 @@ class GuardedStorage(
         latch.latched()?.let { reason ->
             metrics.latched(true)
             StorageUnavailableException(StorageUnavailableReason.LATCHED, "storage admission is latched: $reason")
+        } ?: activation.violated()?.let { detail ->
+            StorageUnavailableException(StorageUnavailableReason.ACTIVATION_VIOLATED, "storage activation invariant broken: $detail")
         } ?: if (breaker.isBlocked()) {
             StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open")
         } else {
@@ -288,6 +294,9 @@ class GuardedStorage(
         latch.latched()?.let { reason ->
             metrics.latched(true)
             throw StorageUnavailableException(StorageUnavailableReason.LATCHED, "storage admission is latched: $reason")
+        }
+        activation.violated()?.let { detail ->
+            throw StorageUnavailableException(StorageUnavailableReason.ACTIVATION_VIOLATED, "storage activation invariant broken: $detail")
         }
     }
 

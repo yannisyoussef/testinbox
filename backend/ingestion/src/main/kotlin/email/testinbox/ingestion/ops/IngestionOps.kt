@@ -4,6 +4,7 @@ import email.testinbox.application.deployment.DeploymentSafety
 import email.testinbox.application.deployment.DeploymentSettings
 import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.port.BlobStore
+import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.ingestion.config.IngestionProperties
 import email.testinbox.ingestion.smtp.SmtpGateway
 import org.slf4j.LoggerFactory
@@ -26,6 +27,8 @@ class IngestionDeploymentSafetyCheck(
     properties: IngestionProperties,
     dataSourceProperties: DataSourceProperties,
     springEnvironment: Environment,
+    /** Built by the wiring from the properties and the records shipped in this artifact (ADR-035 §9a). */
+    storage: StorageDeclarations,
 ) {
     init {
         val environment = properties.deployment.environment?.takeIf { it.isNotBlank() }
@@ -36,15 +39,19 @@ class IngestionDeploymentSafetyCheck(
             "Refusing to start: deployed configuration is unsafe.\n  - testinbox.deployment.environment is not set " +
                 "although profile '${deployedProfiles.sorted().joinToString(",")}' is active"
         }
-        if (environment != null) {
+        // ADR-035 §14: see the API's DeploymentSafetyCheck — a non-OFF value is
+        // validated even without an environment name, and refused for it.
+        val enforced = properties.storage.enforcement != email.testinbox.domain.storage.StorageEnforcement.OFF
+        if (environment != null || enforced) {
             val violations =
                 DeploymentSafety.validate(
                     DeploymentSettings(
-                        environment = environment,
+                        environment = environment.orEmpty(),
                         mailDomain = properties.mailDomain,
-                        databaseUrl = dataSourceProperties.determineUrl().orEmpty(),
-                        databaseUsername = dataSourceProperties.determineUsername().orEmpty(),
-                        databasePassword = dataSourceProperties.determinePassword().orEmpty(),
+                        // A URL Spring cannot determine (no value, no embedded database) is "not set".
+                        databaseUrl = runCatching { dataSourceProperties.determineUrl() }.getOrNull().orEmpty(),
+                        databaseUsername = runCatching { dataSourceProperties.determineUsername() }.getOrNull().orEmpty(),
+                        databasePassword = runCatching { dataSourceProperties.determinePassword() }.getOrNull().orEmpty(),
                         storageEndpoint = properties.storage.endpoint,
                         storageAccessKey = properties.storage.accessKey,
                         storageSecretKey = properties.storage.secretKey,
@@ -59,15 +66,17 @@ class IngestionDeploymentSafetyCheck(
                         // No public HTTP origin, so the production base-URL rule does not apply here.
                         publicSurface = false,
                         createBucket = properties.storage.createBucket,
+                        storage = storage,
                     ),
                 )
             check(violations.isEmpty()) { DeploymentSafety.describe(violations) }
             log.info(
-                "deployment configuration validated (environment={} profiles={} gitSha={} imageDigest={})",
+                "deployment configuration validated (environment={} profiles={} gitSha={} imageDigest={} storageEnforcement={})",
                 environment,
                 springEnvironment.activeProfiles.joinToString(","),
                 properties.deployment.gitSha,
                 properties.deployment.imageDigest,
+                properties.storage.enforcement,
             )
         }
     }

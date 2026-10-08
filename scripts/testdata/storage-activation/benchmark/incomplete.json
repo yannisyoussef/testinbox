@@ -1,0 +1,278 @@
+{
+  "schemaVersion": 1,
+  "gitSha": "@GIT_SHA@",
+  "timestamp": "2026-10-07T10:00:00Z",
+  "architecture": "aarch64",
+  "kernel": "fixture",
+  "hostClass": "laptop",
+  "postgresVersion": "PostgreSQL 16.x (fixture)",
+  "jvmVersion": "25.0.3+9-LTS",
+  "harness": {
+    "measures": "fixture: the database protocol only",
+    "arrivals": "POISSON",
+    "durationSeconds": 30,
+    "warmupSeconds": 3,
+    "expectedRate": 260.0,
+    "referenceMode": "NO_LOCK",
+    "recipientMix": "1:60,3:25,10:12,50:3",
+    "bytesPerCopy": 24576,
+    "slots": 16,
+    "slotsPerWorkspace": 4,
+    "compactionIntervalSeconds": 5,
+    "retentionMessagesPerInbox": 200,
+    "inboxesPerWorkspace": 10,
+    "sustainedTolerance": 0.995
+  },
+  "safety": {
+    "databaseName": "testinbox_bench",
+    "createdByHarness": true,
+    "tenantRowCountsAtStart": {
+      "workspace": 0,
+      "inbox": 0,
+      "message": 0
+    },
+    "acknowledgementVariable": "TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK"
+  },
+  "scenarios": [
+    {
+      "name": "reference-ws10000-c10-r260",
+      "mode": "REFERENCE",
+      "referenceMode": "CEILING_OFF",
+      "workspaceCount": 10000,
+      "inboxCount": 100000,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 10,
+      "offeredRate": 260.0,
+      "achievedRate": 260.4,
+      "durationSeconds": 30.0,
+      "scheduledEvents": 7800,
+      "completedEvents": 7800,
+      "copiesCommitted": 31000,
+      "percentiles": {
+        "t1": {
+          "samples": 7800,
+          "p50Ms": 1.9,
+          "p95Ms": 4.1,
+          "p99Ms": 6.0,
+          "maxMs": 14.2
+        },
+        "retention": {
+          "samples": 780,
+          "p50Ms": 3.1,
+          "p95Ms": 6.8,
+          "p99Ms": 9.0,
+          "maxMs": 15.0
+        }
+      },
+      "retentionOfferedRate": 13.0,
+      "retentionAchievedRate": 13.0,
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 0,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [],
+        "physicalFailures": {}
+      },
+      "lockTimeouts": 0,
+      "lockTimeoutRate": 0.0,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0
+    },
+    {
+      "name": "chosen-ws10000-c10-r260",
+      "mode": "CHOSEN",
+      "referenceMode": null,
+      "workspaceCount": 10000,
+      "inboxCount": 100000,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 10,
+      "offeredRate": 260.0,
+      "achievedRate": 259.8,
+      "durationSeconds": 30.0,
+      "scheduledEvents": 7800,
+      "completedEvents": 7799,
+      "copiesCommitted": 31000,
+      "percentiles": {
+        "t1": {
+          "samples": 7799,
+          "p50Ms": 2.4,
+          "p95Ms": 5.0,
+          "p99Ms": 7.3,
+          "maxMs": 18.0
+        },
+        "retention": {
+          "samples": 780,
+          "p50Ms": 3.3,
+          "p95Ms": 7.0,
+          "p99Ms": 9.8,
+          "maxMs": 16.1
+        }
+      },
+      "retentionOfferedRate": 13.0,
+      "retentionAchievedRate": 13.0,
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 0,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [],
+        "physicalFailures": {}
+      },
+      "lockTimeouts": 0,
+      "lockTimeoutRate": 0.0,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0
+    },
+    {
+      "name": "reference-ws10000-c10-r520",
+      "mode": "REFERENCE",
+      "referenceMode": "CEILING_OFF",
+      "workspaceCount": 10000,
+      "inboxCount": 100000,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 10,
+      "offeredRate": 520.0,
+      "achievedRate": 521.0,
+      "durationSeconds": 30.0,
+      "scheduledEvents": 15600,
+      "completedEvents": 15600,
+      "copiesCommitted": 62000,
+      "percentiles": {
+        "t1": {
+          "samples": 15600,
+          "p50Ms": 2.3,
+          "p95Ms": 6.0,
+          "p99Ms": 8.9,
+          "maxMs": 21.0
+        },
+        "retention": {
+          "samples": 1560,
+          "p50Ms": 4.0,
+          "p95Ms": 9.1,
+          "p99Ms": 13.2,
+          "maxMs": 22.4
+        }
+      },
+      "retentionOfferedRate": 26.0,
+      "retentionAchievedRate": 26.0,
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 0,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [],
+        "physicalFailures": {}
+      },
+      "lockTimeouts": 0,
+      "lockTimeoutRate": 0.0,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0
+    },
+    {
+      "name": "chosen-ws10000-c10-r520",
+      "mode": "CHOSEN",
+      "referenceMode": null,
+      "workspaceCount": 10000,
+      "inboxCount": 100000,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 10,
+      "offeredRate": 520.0,
+      "achievedRate": 518.2,
+      "durationSeconds": 30.1,
+      "scheduledEvents": 15600,
+      "completedEvents": 15599,
+      "copiesCommitted": 62000,
+      "percentiles": {
+        "t1": {
+          "samples": 15599,
+          "p50Ms": 3.0,
+          "p95Ms": 7.2,
+          "p99Ms": 12.5,
+          "maxMs": 31.0
+        },
+        "retention": {
+          "samples": 1560,
+          "p50Ms": 4.2,
+          "p95Ms": 9.9,
+          "p99Ms": 14.5,
+          "maxMs": 24.0
+        }
+      },
+      "retentionOfferedRate": 26.0,
+      "retentionAchievedRate": 25.9,
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 1,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [
+          "LOCK_TIMEOUT: fixture"
+        ],
+        "physicalFailures": {
+          "LOCK_TIMEOUT": 1
+        }
+      },
+      "lockTimeouts": 1,
+      "lockTimeoutRate": 6.41e-05,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0
+    }
+  ],
+  "criteria": {
+    "sustained2x": {
+      "pass": true,
+      "observed": 0.9965,
+      "threshold": ">= 0.98 of offered at 2x expected",
+      "detail": "fixture"
+    },
+    "t1P99": {
+      "pass": true,
+      "observed": 12.5,
+      "threshold": "<= 50 ms",
+      "detail": "fixture"
+    },
+    "retentionP99VsReference": {
+      "pass": true,
+      "observed": 1.1,
+      "threshold": "<= 2.0x reference",
+      "detail": "fixture"
+    },
+    "deadlocks": {
+      "pass": true,
+      "observed": 0.0,
+      "threshold": "= 0",
+      "detail": "fixture"
+    },
+    "lockTimeoutRate": {
+      "pass": true,
+      "observed": 6.41e-05,
+      "threshold": "< 0.001",
+      "detail": "fixture"
+    },
+    "slotQueueingDeadlineMisses": {
+      "pass": true,
+      "observed": 0.0,
+      "threshold": "= 0",
+      "detail": "fixture"
+    }
+  },
+  "incompleteReasons": [
+    "only one population was run (laptop smoke)",
+    "concurrency matrix 1,10 instead of 1,10,25,50,100"
+  ],
+  "verdict": "INCOMPLETE",
+  "adrEvidence": false,
+  "adrEvidenceReasons": [
+    "not ADR evidence: hostClass is unspecified",
+    "not ADR evidence: --local target"
+  ]
+}

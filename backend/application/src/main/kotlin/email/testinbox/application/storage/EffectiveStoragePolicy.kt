@@ -1,31 +1,56 @@
 package email.testinbox.application.storage
 
 import email.testinbox.application.LimitsConfig
+import email.testinbox.domain.storage.FinalizeBudget
 import email.testinbox.domain.storage.InboxShare
 import email.testinbox.domain.storage.StorageCapacityPolicy
 
 /**
  * The ONE effective ADR-035 storage policy of a deployment (§3), derived from
- * the ADR-027 limits: the workspace limit is the existing `max-stored-bytes`,
- * and the inbox share, *G* and *H* are the ADR-035 reference values.
+ * the ADR-027 limits and the deployment's storage declarations: the
+ * workspace limit is the existing `max-stored-bytes`; the inbox share, *G*
+ * and the declared process count behind *H* are the deployment's own
+ * declarations (§18 prerequisite 10), with the ADR-035 reference values as
+ * the OFF defaults (§14 Phase 2).
  *
  * It is shared, by construction, between the two places that read a ceiling:
- * T1 admission in the ingestion gateway (observational while enforcement is
- * OFF) and the authenticated visibility API (`StorageUsage.limitBytes`,
- * TI-STORAGE-004). Two formulas could drift apart and show a tenant a limit
- * that admission does not apply; one factory cannot. `EffectiveStoragePolicyTest`
- * asserts the equality.
+ * T1 admission in the ingestion gateway and the authenticated visibility API
+ * (`StorageUsage.limitBytes`, TI-STORAGE-004). Two formulas could drift apart
+ * and show a tenant a limit that admission does not apply; one factory
+ * cannot. `EffectiveStoragePolicyTest` asserts the equality, and an ArchUnit
+ * rule keeps every other constructor call out.
  *
- * This decides limits only. Whether any of them refuses is a separate
- * `StorageEnforcement` value, and the live wiring passes `OFF` as a literal.
+ * This decides limits only. Whether any of them refuses is the
+ * `StorageEnforcement` value of the same declarations, validated by
+ * `DeploymentSafety` before any node starts.
  */
 object EffectiveStoragePolicy {
-    fun of(limits: LimitsConfig): StorageCapacityPolicy {
+    fun of(
+        limits: LimitsConfig,
+        declarations: StorageDeclarations = StorageDeclarations.OFF,
+    ): StorageCapacityPolicy {
         val reference = StorageCapacityPolicy.ADR_035_REFERENCE
-        val workspace = limits.quotas.maxStoredBytes.coerceAtMost(reference.globalLimitBytes)
-        // A workspace limit too small for the reference share to floor above
-        // zero (only ever a test setting) observes against the whole workspace.
-        val share = if (reference.inboxShare.floorOf(workspace) > 0) reference.inboxShare else InboxShare.of("1")
-        return StorageCapacityPolicy(workspace, share, reference.globalLimitBytes, reference.finalizeBudgetBytes)
+        val globalLimit = declarations.globalLimitBytes ?: reference.globalLimitBytes
+        val workspace = limits.quotas.maxStoredBytes.coerceAtMost(globalLimit)
+        val declaredShare = declarations.inboxShare?.let(InboxShare::of) ?: reference.inboxShare
+        // A workspace limit too small for the share to floor above zero (only
+        // ever a test setting) observes against the whole workspace.
+        val share = if (declaredShare.floorOf(workspace) > 0) declaredShare else InboxShare.of("1")
+        return StorageCapacityPolicy(workspace, share, globalLimit, finalizeBudget(declarations).bytes)
     }
+
+    /**
+     * `H = declaredMaxIngestionProcesses × maxConcurrentWrites × maxObjectBytes`
+     * (ADR-035 §9), checked. The reference process count (1) stands in only
+     * while enforcement is OFF; `DeploymentSafety` refuses a non-OFF
+     * deployment that has not declared it, deploy surge included.
+     */
+    fun finalizeBudget(declarations: StorageDeclarations): FinalizeBudget =
+        FinalizeBudget(
+            declaredMaxIngestionProcesses =
+                declarations.declaredMaxIngestionProcesses
+                    ?: StorageCapacityPolicy.REFERENCE_FINALIZE_BUDGET.declaredMaxIngestionProcesses,
+            maxConcurrentWrites = declarations.maxConcurrentWrites,
+            maxObjectBytes = declarations.maxObjectBytes,
+        )
 }

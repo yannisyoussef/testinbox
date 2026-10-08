@@ -170,7 +170,7 @@ class FencedUploader(
             null
         }
 
-    private fun head(
+    internal fun head(
         url: URI,
         contentLength: Long,
     ): ByteArray {
@@ -265,6 +265,14 @@ class FencedUploader(
     }
 
     companion object {
+        /**
+         * ADR-035 §9a: the protocol implementation this class IS. Bump
+         * `StorageProtocol.UPLOAD_IMPLEMENTATION_VERSION` whenever this class
+         * changes presigning, signed headers, attempts, `T_put`, the RST, the
+         * connection path or anything else a qualification could depend on.
+         */
+        const val IMPLEMENTATION_VERSION = email.testinbox.application.storage.StorageProtocol.UPLOAD_IMPLEMENTATION_VERSION
+
         /** ADR-035 §5: the total wall-clock bound of one upload. */
         val DEFAULT_T_PUT: Duration = Duration.ofSeconds(30)
         val DEFAULT_CONNECT_TIMEOUT: Duration = Duration.ofSeconds(5)

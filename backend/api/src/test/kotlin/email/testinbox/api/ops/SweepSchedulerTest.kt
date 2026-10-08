@@ -92,6 +92,8 @@ class SweepSchedulerTest {
         override fun repairDrift(): List<AccountingDrift> = error("database gone")
     }
 
+    private val watch = mock(email.testinbox.application.storage.activation.ActivationWatch::class.java)
+
     private fun scheduler(
         records: IdempotencyRecords = CountingRecords(fullPasses = 0),
         ledger: StorageLedger = BrokenLedger(),
@@ -106,6 +108,7 @@ class SweepSchedulerTest {
         reconcileStorageAccounting = ReconcileStorageAccounting(ledger),
         releaseStaleReservations = cleanup,
         verifyAmbiguousUploads = verification,
+        activationWatch = watch,
         clock = Clock.fixed(Instant.parse("2026-09-08T12:00:00Z"), ZoneOffset.UTC),
     )
 
@@ -169,6 +172,8 @@ class SweepSchedulerTest {
 
         verify(cleanup).run()
         verify(verification).run()
+        // ADR-035 §14 Phase 4: the activation re-check is part of every cleanup pass, even a failing one.
+        verify(watch).run()
     }
 
     @Test

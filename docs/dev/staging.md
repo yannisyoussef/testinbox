@@ -349,6 +349,13 @@ which is why this environment connects to PostgreSQL directly.
 same place. The image digest is deliberately not a label — an image cannot know
 its own digest, and Ops owns that fact.
 
+`testinbox_storage_enforcement_mode{mode}` answers "may a storage ceiling
+refuse here?" — it is `off` on staging, and stays so until the ADR-035
+activation barrier (`scripts/check-storage-activation.sh`) has been run and
+recorded. `testinbox_storage_activation_gate_ready{gate}` shows the two gates a
+node re-checks itself; `testinbox_storage_activation_violation` is 1 only on a
+non-OFF node whose barrier broke.
+
 ## Host provisioning (self-hosted reference only)
 
 > The Infinity estate provisions itself; this section applies to the

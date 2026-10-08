@@ -1,0 +1,51 @@
+ADR-035 §9a slow-W: status of this scenario for the laptop qualification
+=========================================================================
+
+Date:         2026-10-08 (UTC; preflights at 02:47:01Z and 02:50:27Z, smoke 02:50:30Z–02:50:45Z)
+Host:         the same laptop as QUALIFICATION.md: Docker Desktop VM on Apple Silicon, Docker Engine 29.5.2 (linux/arm64),
+              kernel 6.12.76-linuxkit aarch64; privileged container from qualification/Dockerfile;
+              pinned MinIO binary extracted BY DIGEST from ghcr.io/yannisyoussef/testinbox-mirror/minio@sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d,
+              sha256 6c2f3142c94240206123177f4ba1e360daa5d1e0a4962e90757ef4f92c3ab57c (identical to minio-binary.sha256).
+Verdict:      slow-W is EXECUTABLE (harness.py revision 3, run-slow.sh) but NOT RUN as a qualification on this host.
+              dm-delay (the preferred mechanism) is UNAVAILABLE on this kernel. The cgroup v2 io.max fallback IS available
+              and passed the preflight; only a 2-trial smoke was run with it (18 s). A smoke is not the §9a procedure:
+              no plan-sized sample, no strict sweep >= 17 min later, so slowWExecuted stays false in the shipped record.
+
+1. Kernel facts (zcat /proc/config.gz inside a privileged container, 2026-10-08)
+   # CONFIG_DM_DELAY is not set
+   CONFIG_BLK_DEV_DM=y
+   CONFIG_BLK_DEV_THROTTLING=y
+   # CONFIG_BLK_CGROUP_IOCOST is not set
+   # CONFIG_BLK_CGROUP_IOLATENCY is not set
+   CONFIG_BLK_DEV_LOOP=y
+   dmsetup targets: crypt, striped, linear, error   (no delay); dmsetup create ... delay ... -> "reload ioctl ... failed: Invalid argument"
+   /sys/fs/cgroup/cgroup.controllers: cpuset cpu io memory hugetlb pids rdma
+
+2. Preflight, forced dm-delay (./run-slow.sh --mode dm --out <dir> --preflight-only), verbatim, exit 2:
+   {"scenario": "slow-W", "status": "NOT RUN", "reason": "dm: dmsetup targets does not list `delay` (kernel built without CONFIG_DM_DELAY, or module absent)", "detail": [{"mode": "dm", "data_source": "/dev/loop0", "entry_env": {"SLOW": "dm", "SLOW_MODE": "none", "SLOW_REASON": "dmsetup targets does not list delay (kernel built without CONFIG_DM_DELAY)", "LOOPDEV": "/dev/loop0", "LOOP_MAJMIN": "7:0", "DATADEV": "/dev/loop0"}, "dmsetup_targets_has_delay": false, "data_on_mapper": false, "reason": "dmsetup targets does not list `delay` (kernel built without CONFIG_DM_DELAY, or module absent)"}], "t": 1791427623.512297}
+
+3. Preflight, auto (./run-slow.sh --mode auto --out <dir> --preflight-only; entry.sh fell back to cgroup), verbatim, exit 0:
+   {"scenario": "slow-W", "status": "PREFLIGHT OK", "mode": "cgroup", "detail": {"mode": "cgroup", "data_source": "/dev/loop0", "entry_env": {"SLOW": "1", "SLOW_MODE": "cgroup", "SLOW_REASON": "dmsetup targets does not list delay (kernel built without CONFIG_DM_DELAY)", "LOOPDEV": "/dev/loop0", "LOOP_MAJMIN": "7:0", "DATADEV": "/dev/loop0"}, "controllers": ["cpuset", "cpu", "io", "memory", "hugetlb", "pids", "rdma"], "cgroup_procs": ["21"], "loop_majmin": "7:0", "io_max": "(empty: every limit is max)"}, "t": 1791427830.0218842}
+
+4. Smoke (./run-slow.sh --mode auto --out <dir> --smoke): 2 trials of 15 MiB, cgroup io.max wbps=1 MiB/s on the loop device 7:0,
+   MinIO inside the cgroup, client connected and silent after the body, witness every ~1 s with a 5 s timeout. 18 s wall clock.
+   Rows verbatim (times in seconds after the full-body acknowledgement):
+   {"scenario": "slow-smoke-cg1MiBps-W", "i": 0, "key": "slow-smoke-cg1MiBps-W/0-d7246717/raw.eml", "client": "W", "slow_mode": "cgroup", "throttle_ms": null, "io_max_wbps": 1048576, "throttle_at": "after_ack", "throttle_after_ms": 0, "throttle_applied": "7:0 rbps=max wbps=1048576 riops=max wiops=max", "hold_s": 20, "body_ack_s": 0.044, "throughput_mib_s": 344.3, "disk_at_throttle": false, "disk_before_unthrottle": true, "disk_after_poll": true, "throttled_for_s": 0.109, "throttled_after_ack_for_s": 0.11, "first_visible_at": 0.052, "first_on_disk_at": 0.11, "commit_at": 0.052, "visible_after_thaw_s": 0.0, "absent_checks_before_visible": 0, "poll_errors": 0, "witnesses": [{"issued_s": 0.002, "completed_s": 0.01, "outcome": "completed:200"}], "witnesses_issued": 1, "witnesses_completed": 1, "witnesses_blocked": 0, "witnesses_completed_before_commit": 1, "commit_after_completed_witness": true, "commit_lag_after_first_completed_witness_s": 0.042, "commit_lag_after_last_completed_witness_s": 0.042, "never_committed": false, "t": 1791427830.2490232}
+   {"scenario": "slow-smoke-cg1MiBps-before-W", "i": 0, "key": "slow-smoke-cg1MiBps-before-W/0-c1fdc6c8/raw.eml", "client": "W", "slow_mode": "cgroup", "throttle_ms": null, "io_max_wbps": 1048576, "throttle_at": "before_put", "throttle_after_ms": null, "throttle_applied": "7:0 rbps=max wbps=1048576 riops=max wiops=max", "hold_s": 20, "body_ack_s": 0.042, "throughput_mib_s": 358.1, "disk_at_throttle": false, "disk_before_unthrottle": true, "disk_after_poll": true, "throttled_for_s": 15.107, "throttled_after_ack_for_s": 15.065, "first_visible_at": 15.001, "first_on_disk_at": 15.062, "commit_at": 15.001, "visible_after_thaw_s": 0.0, "absent_checks_before_visible": 0, "poll_errors": 1, "witnesses": [{"issued_s": 0.0, "completed_s": null, "outcome": "blocked:TimeoutError"}, {"issued_s": 5.013, "completed_s": null, "outcome": "blocked:TimeoutError"}, {"issued_s": 10.021, "completed_s": 14.998, "outcome": "completed:200"}, {"issued_s": 14.998, "completed_s": 15.002, "outcome": "completed:200"}], "witnesses_issued": 4, "witnesses_completed": 2, "witnesses_blocked": 2, "witnesses_completed_before_commit": 1, "commit_after_completed_witness": true, "commit_lag_after_first_completed_witness_s": 0.003, "commit_lag_after_last_completed_witness_s": 0.003, "never_committed": false, "t": 1791427845.3592923}
+
+   Reading of the two rows (no more is claimed than they show):
+   - after_ack (throttle applied 0 ms after the ack): the commit landed 0.052 s after the ack; the body had already reached the
+     device at ~344 MiB/s before the cap applied, so only the fsync+rename tail ran throttled. One witness, issued 2 ms after the
+     ack, completed at 10 ms, 42 ms BEFORE the upload's commit.
+   - before_put (throttle applied before the PUT): the kernel still acknowledged the body in 42 ms (MinIO buffered it), the commit
+     landed at 15.001 s (15 MiB at 1 MiB/s), witnesses issued at 0.0 s and 5.0 s BLOCKED (5 s timeout), the witness issued at
+     10.021 s completed at 14.998 s, 3 ms before the commit; 1 poll error (a HEAD exceeded its 10 s timeout under throttle).
+   - So in both trials a witness ISSUED after the upload COMPLETED before the upload's commit landed (commit_after_completed_witness
+     = true), by 42 ms and 3 ms. That is exactly A_F's residual the scenario exists to measure; these two numbers are a smoke on a
+     laptop with the fallback mechanism, not a qualification of anything. The commit timestamps are bounded by a 50 ms poll.
+   cgroup io.stat for 7:0 after the smoke: wbytes=31522816 (= 2 x 15 MiB plus metadata), i.e. MinIO's writes were accounted and capped.
+
+5. What a qualification run on the production host must do (ADR-035 §18 gate 7a):
+   ./run-slow.sh --mode dm --out <dir>            # dm-delay, plan-slow.json (18 trials); --mode cgroup / plan-slow-cgroup.json only if dm-delay is absent
+   ./run-slow.sh --out <dir> --sweep              # >= 17 min after the last trial
+   and commit <dir>/results-slow.jsonl, sweep-slow.jsonl, timeline-slow.txt, devices.env, mount.txt, uname.txt, minio-binary.sha256.

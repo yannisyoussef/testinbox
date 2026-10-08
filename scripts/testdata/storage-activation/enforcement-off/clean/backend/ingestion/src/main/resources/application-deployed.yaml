@@ -1,0 +1,3 @@
+testinbox:
+  storage:
+    enforcement: ${TESTINBOX_STORAGE_ENFORCEMENT:-OFF}

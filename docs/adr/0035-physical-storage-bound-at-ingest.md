@@ -1,6 +1,6 @@
 # ADR-035: Physical Storage Bound at Ingest
 
-**Status:** Accepted (2026-09-29, owner acceptance TI-DEC-001b). This is revision 5 (2026-09-29).
+**Status:** Accepted (2026-09-29, owner acceptance TI-DEC-001b). This is revision 5 (2026-09-29), amended 2026-10-08 (TI-STORAGE-006b owner decisions; see the amendments section at the end).
 
 > **Acceptance authorizes implementation, not enablement.** It does not turn
 > on `testinbox.storage.enforcement`, global capacity enforcement in staging
@@ -772,8 +772,9 @@ proof and the bucket-wide sweep guard (§7) catch anything else.
 - **no object-lock or retention rule**;
 - **no retrying proxy or load balancer** between ingestion and MinIO, since a
   proxy retry would create a second request per slot;
-- quota `Q ≥ G + max(1 GiB, 10 %, H + the bytes MinIO can accept during one
-  usage-refresh lag)`, where Ops measures that last term.
+- quota `Q ≥ G + max(1 GiB, 10 % of G, H + the bytes MinIO can accept during
+  one usage-refresh lag)`, where Ops measures that last term (the proportional
+  term is ten per cent of *G*, `floor(G / 10)`; clarified 2026-10-08).
 
 The bucket quota is a fuse, never the bound. It lags: probes Q2–Q7 stored
 2.4 MiB in a 1 MiB-quota bucket.
@@ -1035,15 +1036,29 @@ the **staging host class** with the revision 4 schema:
 | Reported | p50, p95 and p99 for T1, T2 and retention; lock wait; throughput; the rate of timeouts and errors |
 | Event mix | multi-recipient events |
 
-**Pass criterion:**
-- 2× the expected load is sustained;
-- T1 p99 ≤ 50 ms;
-- retention p99 ≤ 2× the no-ceiling reference at the same offered load;
+**Pass criterion** (as amended 2026-10-08, owner decision TI-STORAGE-006b):
+
+Concurrency 1 is the **uncontended diagnostic baseline**. It stays in the
+matrix, is measured and reported in full, and is required for the run to be
+complete, but one open-loop worker cannot offer 2× the expected load, so the
+offered-load criteria are read at concurrency **10 / 25 / 50 / 100**:
+- 2× the expected load is sustained (at concurrency 10, 25, 50 and 100);
+- T1 p99 ≤ 50 ms (schedule lag included; at concurrency 10, 25, 50 and 100);
+- retention p99 ≤ 2× the no-ceiling reference at the same offered load (at
+  **every** concurrency, 1 included: the reference is mode `c`, no global
+  ceiling and no global lock, and it faces the same offered load, so the
+  ratio is meaningful even where that load cannot be reached).
+
+The integrity criteria apply to **every executed scenario**, concurrency 1
+included, because they do not depend on offered-load capacity:
 - zero deadlocks;
 - `lock_timeout` < 0.1 %;
-- no deadline miss caused by slot queueing.
+- no deadline miss caused by slot queueing;
+- no other error.
 
-The result is recorded in `production-ops-acceptance.md` row G. If it fails,
+No separate latency threshold is defined for concurrency 1.
+
+The result is recorded in `production-ops-acceptance.md` row P. If it fails,
 the design **returns to ADR review**. Per-node escrow is the named fallback,
 and it is not pre-built. Nothing outside PostgreSQL is introduced.
 
@@ -1628,8 +1643,8 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
 **Ops prerequisites, before production enforcement:**
 
 8. Versioning off, no object lock, and no retrying proxy in front of MinIO.
-   Quota `Q ≥ G + max(1 GiB, 10 %, H + the measured MinIO usage-lag churn)`.
-   Evidence goes in `production-ops-acceptance.md` row G.
+   Quota `Q ≥ G + max(1 GiB, 10 % of G, H + the measured MinIO usage-lag churn)`.
+   Evidence goes in `production-ops-acceptance.md` row P.
 9. NTP on the database and MinIO hosts.
 10. Declared values: `global-limit-bytes`, `declared-bucket-quota-bytes`,
     `declared-max-ingestion-processes` (including deploy surge).
@@ -1647,6 +1662,30 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
 13. Edge queue-age and deferred-mail alerting, early enough to act before the
     4 h expiry. This does not block acceptance, implementation, staging or a
     dark production.
+
+## Amendments to this ADR (effective 2026-10-08, owner decisions TI-STORAGE-006b)
+
+- **§11 pass criterion.** Concurrency 1 is the uncontended diagnostic
+  baseline: measured, reported, required for coverage, but the offered-load
+  criteria (2× sustained, T1 p99 ≤ 50 ms) are read at concurrency
+  10/25/50/100. The retention-vs-reference ratio (relative to a reference at
+  the same offered load) and the integrity criteria apply to every executed
+  scenario. No separate latency threshold is defined for concurrency 1. The benchmark gate (`backend/benchmark`) and the activation
+  checker (`scripts/check-storage-activation.sh`) encode exactly this.
+- **§9 and §18, the bucket-quota fuse.** "10 %" is ten per cent of *G*,
+  `floor(G / 10)`: `Q ≥ G + max(1 GiB, 10 % of G, H + measured usage-lag churn)`.
+  No formula change; `BucketQuotaFuse` already computes it so.
+- **§14 Phase 4, runtime re-checks (clarification).** After activation, a
+  missing or stale API node is an observed violation (alerted; mail may
+  continue, since lost cleanup capacity only keeps reservations charged
+  longer), while a missing, stale or wrong-capability ingestion node, an
+  undeclared node, a session-allowlist violation, or an activation check that
+  cannot be evaluated at all, fail closed with `451`. Before activation,
+  every declared API and ingestion node must be present and healthy.
+- **§14 (a), node identity.** API processes are protocol participants and
+  claim their node id like the gateway. Ops must run either a fixed node id
+  with stop-before-start, or distinct declared ids for an overlapping
+  replacement, and show which before staging enablement.
 
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
@@ -1756,7 +1795,7 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
     `failure-modes`, `observability`, `data-ownership`);
   - `docs/security/abuse-model.md`, which keeps its anti-enumeration
     statement and gains the O1 and O3 residuals and the persistence residual;
-  - `docs/dev/production.md`, `production-ops-acceptance.md` (row G, plus
+  - `docs/dev/production.md`, `production-ops-acceptance.md` (row P, plus
     rows for restore, clock, latch, edge queue and activation), and
     `rollback.md`;
   - `deploy/backup/scope.txt`, `deploy/mail-edge/contract.yaml`,

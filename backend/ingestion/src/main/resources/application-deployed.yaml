@@ -41,6 +41,20 @@ testinbox:
     secret-key: ${TESTINBOX_S3_SECRET_KEY}
     bucket: ${TESTINBOX_S3_BUCKET:testinbox-mime}
     create-bucket: ${TESTINBOX_S3_CREATE_BUCKET:true}
+    # ADR-035 §14 / TI-STORAGE-006: OFF | TENANT_LIMITS | ALL. The default, and
+    # the only value any committed environment may carry, is OFF
+    # (scripts/check-storage-enforcement-off.sh). A non-OFF value is refused at
+    # startup unless every §18 declaration below is set and consistent, and the
+    # declared backend matches a shipped qualification record (§9a).
+    enforcement: ${TESTINBOX_STORAGE_ENFORCEMENT:OFF}
+    global-limit-bytes: ${TESTINBOX_STORAGE_GLOBAL_LIMIT_BYTES:}
+    declared-bucket-quota-bytes: ${TESTINBOX_STORAGE_DECLARED_BUCKET_QUOTA_BYTES:}
+    declared-max-ingestion-processes: ${TESTINBOX_STORAGE_DECLARED_MAX_INGESTION_PROCESSES:}
+    inbox-share: ${TESTINBOX_STORAGE_INBOX_SHARE:}
+    measured-quota-lag-churn-bytes: ${TESTINBOX_STORAGE_MEASURED_QUOTA_LAG_CHURN_BYTES:}
+    activation:
+      expected-api-nodes: ${TESTINBOX_STORAGE_EXPECTED_API_NODES:}
+      expected-ingestion-nodes: ${TESTINBOX_STORAGE_EXPECTED_INGESTION_NODES:}
   deployment:
     environment: ${TESTINBOX_ENVIRONMENT}
     proxy-read-timeout: ${TESTINBOX_PROXY_READ_TIMEOUT}

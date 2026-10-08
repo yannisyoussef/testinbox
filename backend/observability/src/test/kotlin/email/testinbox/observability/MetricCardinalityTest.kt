@@ -127,6 +127,16 @@ class MetricCardinalityTest {
         protocol.incompleteUploads(0)
         protocol.lockWait(java.time.Duration.ofMillis(2))
         protocol.slotWait(java.time.Duration.ofMillis(3))
+        // TI-STORAGE-006: activation and enablement signals.
+        protocol.activationViolation(true)
+        email.testinbox.application.storage.activation.ActivationGate.entries
+            .forEach { protocol.activationGate(it, true) }
+        email.testinbox.domain.storage.StorageEnforcement.entries
+            .forEach { protocol.enforcementMode(it) }
+        protocol.orphanSweepCompleted(java.time.Instant.parse("2026-10-08T00:00:00Z"))
+        protocol.orphanSweepFinished(ok = true)
+        protocol.orphanSweepFinished(ok = false)
+        protocol.reservedBytes(2_000)
     }
 
     /** Every label key any TestInbox metric is allowed to carry. */
@@ -147,11 +157,16 @@ class MetricCardinalityTest {
             "ceiling",
             "path",
             "state",
+            "gate",
         )
 
     private val allowedLabelValues: Map<String, Set<String>> =
         mapOf(
-            "mode" to AddressMode.entries.map { it.name }.toSet(),
+            "mode" to
+                AddressMode.entries.map { it.name }.toSet() +
+                email.testinbox.domain.storage.StorageEnforcement.entries
+                    .map { it.name.lowercase() }
+                    .toSet(),
             "parse_status" to ParseStatus.entries.map { it.name }.toSet(),
             "outcome" to
                 WaitOutcome.entries.map { it.name }.toSet() +
@@ -161,6 +176,7 @@ class MetricCardinalityTest {
                 ReconciliationOutcome.entries.map { it.name.lowercase() }.toSet() +
                 CompactionOutcome.entries.map { it.name.lowercase() }.toSet() +
                 StorageAdmissionOutcome.entries.map { it.name.lowercase() }.toSet() +
+                MicrometerStorageProtocolMetrics.SWEEP_OUTCOMES.toSet() +
                 setOf("allowed", "rejected"),
             "operation" to
                 BlobOperation.entries.map { it.name }.toSet() +
@@ -170,11 +186,13 @@ class MetricCardinalityTest {
             "category" to RateCategory.entries.map { it.name }.toSet(),
             "quota" to QuotaDimension.entries.map { it.name }.toSet(),
             "direction" to DriftDirection.entries.map { it.name.lowercase() }.toSet(),
-            // Only `committed` until reservations exist (ADR-035, later slice).
-            "kind" to setOf("committed") + PhysicalFailureKind.entries.map { it.name.lowercase() },
+            // `committed` from the ledger, `reserved` from the cleanup pass (ADR-035 §16).
+            "kind" to setOf("committed", "reserved") + PhysicalFailureKind.entries.map { it.name.lowercase() },
             "ceiling" to StorageScope.entries.map { it.name.lowercase() }.toSet(),
             "path" to ReleasePath.entries.map { it.name.lowercase() }.toSet(),
             "state" to setOf("reserved", "releasing"),
+            // Only the two gates a node re-checks at run time are exported (ADR-035 §14 Phase 4).
+            "gate" to setOf("session_allowlist", "node_inventory"),
         )
 
     @Test
@@ -310,6 +328,12 @@ class MetricCardinalityTest {
             "testinbox_storage_reservations",
             "testinbox_storage_global_limit_bytes",
             "testinbox_storage_finalize_budget_bytes",
+            // TI-STORAGE-006: activation and enablement (ADR-035 §14, §16).
+            "testinbox_storage_activation_violation",
+            "testinbox_storage_activation_gate_ready",
+            "testinbox_storage_enforcement_mode",
+            "testinbox_storage_orphan_sweep_completed_at_seconds",
+            "testinbox_storage_orphan_sweep_total",
         ).forEach { name -> scrape shouldContain name }
     }
 

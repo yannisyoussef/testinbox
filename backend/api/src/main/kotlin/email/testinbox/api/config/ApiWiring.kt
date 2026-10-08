@@ -38,6 +38,7 @@ import email.testinbox.application.query.MessageQueries
 import email.testinbox.application.query.StorageQueries
 import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.ReleaseStaleReservations
+import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.application.storage.VerifyAmbiguousUploads
 import email.testinbox.application.usecase.AuthenticateApiKey
 import email.testinbox.application.usecase.CoalescingLastUsedRecorder
@@ -121,9 +122,13 @@ class ApiMetricsWiring {
     @Bean
     fun storageAccountingMetrics(registry: MeterRegistry): StorageAccountingMetrics = MicrometerStorageAccountingMetrics(registry)
 
+    /** The EFFECTIVE policy's G and H, and the effective mode, so Ops reads what admission really applies. */
     @Bean
-    fun storageProtocolMetrics(registry: MeterRegistry): StorageProtocolMetrics =
-        MicrometerStorageProtocolMetrics(registry, StorageCapacityPolicy.ADR_035_REFERENCE)
+    fun storageProtocolMetrics(
+        registry: MeterRegistry,
+        policy: StorageCapacityPolicy,
+        declarations: StorageDeclarations,
+    ): StorageProtocolMetrics = MicrometerStorageProtocolMetrics(registry, policy, declarations.enforcement)
 
     /** Credential lifecycle audit trail (TI-002 §14) on its own `testinbox.audit` logger. */
     @Bean
@@ -298,7 +303,10 @@ class ApiWiring(
      * tenant sees; it enforces nothing on its own.
      */
     @Bean
-    fun storageCapacityPolicy(limits: LimitsConfig): StorageCapacityPolicy = EffectiveStoragePolicy.of(limits)
+    fun storageCapacityPolicy(
+        limits: LimitsConfig,
+        declarations: StorageDeclarations,
+    ): StorageCapacityPolicy = EffectiveStoragePolicy.of(limits, declarations)
 
     /** ADR-035 §13a/§13b read side: workspace and inbox `StorageUsage`, tenant-scoped. */
     @Bean

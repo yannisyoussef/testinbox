@@ -17,21 +17,24 @@ import java.time.Duration
 import java.util.UUID
 
 /**
- * TI-STORAGE-003 §35 and §61: the live deployable runs the whole ADR-035
- * protocol, and NO configuration can make it refuse.
+ * TI-STORAGE-003 §35/§61 and TI-STORAGE-006 §43: the live deployable runs the
+ * whole ADR-035 protocol, and its DEFAULT refuses nothing.
  *
  * The hostile setup:
- * - every plausible enforcement key is set to `ALL` (as a property, and in
- *   the relaxed environment spelling);
+ * - every misspelled or relaxed-spelling enforcement key is set to `ALL`;
+ *   none of them is the real key (`testinbox.storage.enforcement`), which is
+ *   absent and therefore OFF, as in every committed environment;
  * - the workspace storage limit is 100 bytes, so every copy exceeds the
  *   inbox, workspace and global ceilings it is observed against.
  *
  * Real SMTP mail is still stored. The ceilings are observed (metered as
- * unenforced), and nothing is refused or recorded as a refusal.
+ * unenforced), and nothing is refused or recorded as a refusal. The real key
+ * with a non-OFF value is a different story, told by
+ * `IngestionDeploymentSafetyCheckTest`: it refuses startup until every
+ * ADR-035 §18 declaration is present, and this process declares none.
  */
 @SpringBootTest(
     properties = [
-        "testinbox.storage.enforcement=ALL",
         "testinbox.storage.enforcement-mode=ALL",
         "testinbox.storage.admission.enforcement=ALL",
         "TESTINBOX_STORAGE_ENFORCEMENT=ALL",
@@ -89,6 +92,18 @@ class EnforcementOffLiveTest {
         }
         counter("testinbox_storage_admission_total", "outcome", "admitted") shouldBe 6.0
         (counter("testinbox_storage_admission_unenforced_total", "ceiling", "inbox") > 0) shouldBe true
+        // TI-STORAGE-006 §41: the effective mode is observable, and it is OFF.
+        registry
+            .find("testinbox_storage_enforcement_mode")
+            .tag("mode", "off")
+            .gauge()
+            ?.value() shouldBe 1.0
+        registry
+            .find("testinbox_storage_enforcement_mode")
+            .tag("mode", "all")
+            .gauge()
+            ?.value() shouldBe 0.0
+        registry.find("testinbox_storage_activation_violation").gauge()?.value() shouldBe 0.0
     }
 
     @Test

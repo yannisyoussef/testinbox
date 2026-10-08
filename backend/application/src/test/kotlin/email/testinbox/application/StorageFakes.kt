@@ -257,6 +257,8 @@ class InMemoryStorageReservations(
             .groupingBy { it.state }
             .eachCount()
             .mapValues { it.value.toLong() }
+
+    override fun reservedBytes(): Long = rows.values.sumOf { it.bytes }
 }
 
 class InMemoryStorageAmbiguity(

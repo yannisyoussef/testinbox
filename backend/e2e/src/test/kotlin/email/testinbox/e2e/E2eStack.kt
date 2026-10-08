@@ -40,6 +40,16 @@ object E2eStack {
      * [API_KEY] out from under every other test in this module.
      */
     const val KEY_ADMIN_BOOTSTRAP_KEY = "tk_e2e_key_admin_bootstrap"
+
+    /**
+     * Workspace-storage figures are a live aggregate (ADR-035 §13): every
+     * suite's mail, expiry sweep and reservation release in the shared
+     * acceptance workspace moves them between any two requests, so equality
+     * of two snapshots taken at different instants is only an invariant in a
+     * workspace nothing else touches. The SDK storage proof gets one of its
+     * own, on its own node, exactly like the limit and key-admin scenarios.
+     */
+    const val STORAGE_API_KEY = "tk_e2e_storage_key"
     const val MAIL_DOMAIN = "testinbox.local"
 
     val postgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:16-alpine").also { it.start() }
@@ -81,6 +91,10 @@ object E2eStack {
                     commonProperties +
                         mapOf(
                             "server.port" to "0",
+                            // ADR-035 §9/§19: every live process needs its own node id; the API
+                            // claims it like the gateway does (TI-STORAGE-006), so the several API
+                            // nodes this stack runs cannot share the default.
+                            "testinbox.storage.node-id" to "e2e-api-main",
                             "testinbox.bootstrap.api-key" to API_KEY,
                             "testinbox.sweep-interval" to "1s",
                             "testinbox.expiry-grace" to "1s",
@@ -103,6 +117,10 @@ object E2eStack {
     val apiPort: Int = apiContext.environment.getProperty("local.server.port")!!.toInt()
     val apiBaseUrl: String = "http://localhost:$apiPort"
 
+    private val restrictedNodes =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
     private fun restrictedNode(
         bootstrapKey: String,
         workspaceId: String,
@@ -114,6 +132,7 @@ object E2eStack {
                     commonProperties +
                         mapOf(
                             "server.port" to "0",
+                            "testinbox.storage.node-id" to "e2e-api-${restrictedNodes.incrementAndGet()}",
                             "testinbox.bootstrap.api-key" to bootstrapKey,
                             "testinbox.bootstrap.workspace-id" to workspaceId,
                             "testinbox.bootstrap.project-id" to workspaceId,
@@ -179,6 +198,21 @@ object E2eStack {
 
     val keyAdminApiBaseUrl: String =
         "http://localhost:${keyAdminApiContext.environment.getProperty("local.server.port")!!}"
+
+    /** Quiet workspace for the storage-figure proofs; generous limits, nothing else uses it. */
+    val storageApiContext: ConfigurableApplicationContext =
+        restrictedNode(
+            STORAGE_API_KEY,
+            "00000000-0000-0000-0000-0000000000d1",
+            mapOf(
+                "testinbox.limits.max-active-inboxes" to "1000",
+                "testinbox.limits.inbox-create.capacity" to "1000",
+                "testinbox.limits.inbox-create.refill-per-second" to "1000",
+            ),
+        )
+
+    val storageApiBaseUrl: String =
+        "http://localhost:${storageApiContext.environment.getProperty("local.server.port")!!}"
 
     val ingestionContext: ConfigurableApplicationContext =
         SpringApplicationBuilder(IngestionApplication::class.java)

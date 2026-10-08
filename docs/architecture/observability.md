@@ -66,7 +66,7 @@ have queried a series that does not exist. `MetricCardinalityTest` asserts the
 | `testinbox_api_key_last_used_writes_total` | counter | — | A coalesced `last_used_at` write actually reached the database |
 | `testinbox_idempotency_total` | counter | `operation`, `outcome` | Every request carrying an `Idempotency-Key` resolves (ADR-033) |
 | `testinbox_storage_ledger_unfolded_rows` | gauge | — | After each ADR-035 compaction tick, including a failed or contended one: delta rows not yet folded. The figure is global, so aggregate replicas with `max`. |
-| `testinbox_storage_covered_bytes` | gauge | `kind=committed` | After each compaction tick: committed physical bytes (Σ base + Σ delta), global, so aggregate with `max`. `kind=reserved` arrives with reservations. |
+| `testinbox_storage_covered_bytes` | gauge | `kind` (`committed`/`reserved`) | `committed`: after each compaction tick, Σ base + Σ delta. `reserved`: after each cleanup pass, Σ bytes of every unreleased reservation. Both global, so aggregate replicas with `max`. `committed + reserved` is the covered total the ADR-035 §14 (b) physical baseline compares `physical_listed_bytes` against. |
 | `testinbox_storage_ledger_compaction_total` | counter | `outcome` (`ok`/`contended`/`failed`) | Every compaction tick. `contended` is normal with several replicas; a sustained `failed` means the ledger is not being folded. |
 | `testinbox_storage_admission_total` | counter | `outcome` (`admitted`/`refused_inbox`/`refused_workspace`/`refused_global`) | Every recipient copy decided by ADR-035 T1. Enforcement is OFF, so the `refused_*` series stay 0 in every deployment. |
 | `testinbox_storage_admission_unenforced_total` | counter | `ceiling` (`inbox`/`workspace`/`global`) | A copy exceeded a ceiling whose enforcement is OFF: observed, not refused (ADR-035 Phase 2). |
@@ -84,7 +84,12 @@ have queried a series that does not exist. `MetricCardinalityTest` asserts the
 | `testinbox_storage_reservations` | gauge | `state` (`reserved`/`releasing`) | Live reservations, after each cleanup pass. |
 | `testinbox_storage_physical_listed_bytes` | gauge | — | Payload bytes actually listed in the bucket (orphan sweep). |
 | `testinbox_storage_incomplete_uploads` | gauge | — | Incomplete multipart uploads in the bucket. TestInbox never starts one, so any is a defect. |
-| `testinbox_storage_global_limit_bytes`, `testinbox_storage_finalize_budget_bytes` | gauge | — | The observed G and H. |
+| `testinbox_storage_global_limit_bytes`, `testinbox_storage_finalize_budget_bytes` | gauge | — | The EFFECTIVE G and H of this deployment (declared values, or the ADR-035 reference while OFF). H is what the activation barrier's physical-baseline check reads. |
+| `testinbox_storage_enforcement_mode` | gauge (0/1) | `mode` (`off`/`tenant_limits`/`all`) | 1 on the effective ADR-035 enforcement mode, 0 on the others (TI-STORAGE-006). Operators read the mode here; it never appears in a tenant response. Alert: `off` in production for more than 24 h once enablement has begun (§16). |
+| `testinbox_storage_activation_violation` | gauge (0/1) | — | 1 while a non-OFF node's re-check of the §14 barrier (session allowlist, node inventory) fails. The node answers `451` meanwhile. Any 1 alerts; identities are in the `storage_activation_violation` error log, never a label. |
+| `testinbox_storage_activation_gate_ready` | gauge (0/1) | `gate` (`session_allowlist`/`node_inventory`) | The two runtime-checkable barrier gates as this node last saw them, in EVERY mode (OFF observes, non-OFF fails closed). The remaining gates are evaluated by `scripts/check-storage-activation.sh`. |
+| `testinbox_storage_orphan_sweep_completed_at_seconds` | gauge (epoch s) | — | When the last FULL orphan sweep completed on this API node; 0 until one has since process start. Barrier (b) requires it later than `process_start_time_seconds` of the candidate. |
+| `testinbox_storage_orphan_sweep_total` | counter | `outcome` (`ok`/`failed`) | Every orphan sweep pass. A `failed` pass never moves the completion marker. |
 | `testinbox_storage_accounting_drift_total` | counter | `direction` (`under`/`over`) | Reconciliation repaired a drifted figure. Always a defect. |
 | `testinbox_storage_reconciliation_total` | counter | `outcome` (`clean`/`repaired`/`failed`) | Every ADR-035 reconciliation run |
 
