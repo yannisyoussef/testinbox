@@ -37,7 +37,7 @@ package email.testinbox.domain.storage
 data class FootprintModel(
     val blockSizeBytes: Long,
     val objectOverheadMaxBytes: Long,
-    val fragmentationDenominator: Long = DEFAULT_FRAGMENTATION_DENOMINATOR,
+    val fragmentationDenominator: Long = maxFragmentationDenominator(blockSizeBytes),
 ) {
     init {
         require(blockSizeBytes in SUPPORTED_BLOCK_SIZES) { "block size must be one of $SUPPORTED_BLOCK_SIZES, was $blockSizeBytes" }
@@ -54,9 +54,12 @@ data class FootprintModel(
         // A larger denominator is a SMALLER allowance: ε may only grow. Below the
         // qualified 1/256 needs its own accepted qualification and a code change,
         // never a value a caller or a deployment can pass (owner review, §3).
-        require(fragmentationDenominator in MIN_FRAGMENTATION_DENOMINATOR..MAX_FRAGMENTATION_DENOMINATOR) {
-            "the fragmentation denominator must be in $MIN_FRAGMENTATION_DENOMINATOR..$MAX_FRAGMENTATION_DENOMINATOR " +
-                "(ε ≥ 1/$MAX_FRAGMENTATION_DENOMINATOR), was $fragmentationDenominator"
+        // The cap depends on B: a leaf block holds (B − 12)/12 extents, so the
+        // worst-case ratio is 1/339 at 4 KiB but 1/168 at 2 KiB and 1/83 at 1 KiB.
+        val max = maxFragmentationDenominator(blockSizeBytes)
+        require(fragmentationDenominator in MIN_FRAGMENTATION_DENOMINATOR..max) {
+            "the fragmentation denominator must be in $MIN_FRAGMENTATION_DENOMINATOR..$max for $blockSizeBytes B blocks " +
+                "(ε ≥ 1/$max), was $fragmentationDenominator"
         }
     }
 
@@ -123,6 +126,19 @@ data class FootprintModel(
 
         /** ε ≥ 1/256 is what the qualified ext4 combination relies on (§3.4); a larger denominator is less conservative. */
         const val MAX_FRAGMENTATION_DENOMINATOR: Long = 256
+
+        /** Bytes of an ext4 extent-tree header, and of one extent entry. */
+        private const val EXTENT_ENTRY_BYTES: Long = 12
+
+        /**
+         * `min(256, ⌊(B − 12)/12⌋ − 1)`: 256 at 4 KiB, 168 at 2 KiB, 83 at 1 KiB
+         * (§3.4). Strictly below the extents per leaf block, so ε exceeds the
+         * worst-case proportional metadata at every supported block size.
+         */
+        fun maxFragmentationDenominator(blockSizeBytes: Long): Long {
+            require(blockSizeBytes in SUPPORTED_BLOCK_SIZES) { "block size must be one of $SUPPORTED_BLOCK_SIZES, was $blockSizeBytes" }
+            return minOf(MAX_FRAGMENTATION_DENOMINATOR, (blockSizeBytes - EXTENT_ENTRY_BYTES) / EXTENT_ENTRY_BYTES - 1)
+        }
 
         /** Three or five files plus amortized directories (§3.5). */
         const val INODES_PER_OBJECT_MAX: Long = 6

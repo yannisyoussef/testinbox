@@ -81,7 +81,7 @@ class StorageV8MigrationTest : PersistenceIntegrationTest() {
     }
 
     @Test
-    fun `the two new tables start empty, and a V7 reservation gets the release-debt trigger`() {
+    fun `the new tables start empty, the counts start untrusted, and a V7 reservation gets the release-debt trigger`() {
         val db = atV7()
         val ws = db.workspace()
         val inbox = db.inbox(ws)
@@ -104,6 +104,11 @@ class StorageV8MigrationTest : PersistenceIntegrationTest() {
             .single() shouldBe 0
         db.jdbc
             .sql("SELECT count(*) FROM storage_filesystem_observation")
+            .query(Long::class.java)
+            .single() shouldBe 0
+        db.trust() shouldBe (0L to null)
+        db.jdbc
+            .sql("SELECT compacted_through_seq FROM storage_debt_watermark")
             .query(Long::class.java)
             .single() shouldBe 0
         db.jdbc
@@ -163,6 +168,13 @@ class StorageV8MigrationTest : PersistenceIntegrationTest() {
                 "storage_ledger_message_update",
                 "storage_reservation_release_debt",
                 "storage_filesystem_observation_not_future",
+                // contract §4.5 and §5.3 (TRUNCATE triggers are not listed by information_schema)
+                "storage_filesystem_observation_retain",
+                "storage_delta_fold_objects",
+                "storage_delta_no_update",
+                "message_sizes_immutable",
+                "attachment_sizes_immutable",
+                "storage_reservation_sizes_immutable",
             ).sorted()
     }
 }

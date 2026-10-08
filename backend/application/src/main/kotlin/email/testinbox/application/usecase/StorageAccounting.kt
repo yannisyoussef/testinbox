@@ -147,6 +147,12 @@ class ReconcileStorageAccounting(
                 // takes no lock a writer could wait on.
                 val detected = ledger.findDrift()
                 if (detected.isEmpty()) {
+                    // Contract §4.5: a clean pass is what makes the object
+                    // counts trusted again after a folding or a repair. The
+                    // check is repeated under the ledger lock and marked
+                    // compare-and-set, so a drift that appeared since the
+                    // lock-free read leaves the counts untrusted.
+                    if (!ledger.confirmTrust()) log.warn("storage footprint counts remain untrusted; the next pass retries")
                     ReconciliationOutcome.CLEAN
                 } else {
                     // Logged before the repair, so a repair that then fails

@@ -111,7 +111,7 @@ class FootprintModelTest {
                 val block = listOf(1024L, 2048L, 4096L)[b]
                 // Re-aim the boundary payloads at this block size: k·B + 1 for every draw that was 1 past a KiB.
                 val payloads = raw.map { if (it % 1024 == 1L) (it / 1024) * block + 1 else it }
-                val m = FootprintModel(block, 6 * block, d)
+                val m = FootprintModel(block, 6 * block, minOf(d, FootprintModel.maxFragmentationDenominator(block)))
                 val exact = payloads.sumOf { m.ofObject(it) }
                 m.bound(payloads.sum(), payloads.size.toLong()) shouldBeGreaterThanOrEqual exact
             }
@@ -169,10 +169,32 @@ class FootprintModelTest {
     }
 
     @Test
+    fun `the denominator cap follows the block size - fewer extents per leaf block need a larger allowance`() {
+        // (B − 12)/12 extents per leaf: 340, 169, 84. The cap stays strictly below each.
+        FootprintModel.maxFragmentationDenominator(4096) shouldBe 256
+        FootprintModel.maxFragmentationDenominator(2048) shouldBe 168
+        FootprintModel.maxFragmentationDenominator(1024) shouldBe 83
+        listOf(1024L to 83L, 2048L to 168L, 4096L to 256L).forEach { (block, cap) ->
+            FootprintModel(block, 6 * block).fragmentationDenominator shouldBe cap // the default is the cap
+            FootprintModel(block, 6 * block, cap).fragmentationDenominator shouldBe cap
+            assertThrows<IllegalArgumentException> { FootprintModel(block, 6 * block, cap + 1) }
+            // ε covers the worst-case proportional extent metadata, < n/(extents per leaf − 1) (§3.4).
+            val extentsPerLeaf = (block - 12) / 12
+            (cap <= extentsPerLeaf - 1) shouldBe true
+        }
+        // The 4 KiB default copied onto 1 KiB blocks is exactly the mistake the cap refuses.
+        assertThrows<IllegalArgumentException> { FootprintModel(1024, 6 * 1024, 256) }
+        assertThrows<IllegalArgumentException> { FootprintModel(2048, 6 * 2048, 256) }
+    }
+
+    @Test
     fun `the inode argument - one inode per block suffices because every object takes at least as many blocks as inodes`() {
         // O_max / B = 6 ≥ INODES_PER_OBJECT_MAX, so blocks per object ≥ inodes per object.
         model.objectOverheadMaxBytes / model.blockSizeBytes shouldBe FootprintModel.INODES_PER_OBJECT_MAX
         model.minimumInodes(44L * 1024 * mib) shouldBe 44L * 1024 * mib / 4096
+        // A capacity that is not a whole number of blocks still needs its last partial block's inode.
+        model.minimumInodes(4096L * 10 + 1) shouldBe 11
+        model.minimumInodes(0) shouldBe 0
         // A model whose overhead covers fewer blocks than inodes cannot be constructed.
         assertThrows<IllegalArgumentException> { FootprintModel(4096, 4 * kib) }
     }

@@ -263,22 +263,28 @@ class StorageLedgerTriggerTest : PersistenceIntegrationTest() {
     // --- D. update accounting --------------------------------------------------------
 
     @Test
-    fun `an update that changes bytes moves exactly the difference`() {
+    fun `a size change is refused since V8, so the ledger moves nothing`() {
+        // V6 netted a resize exactly; V8 refuses it outright (contract §2.4), because a
+        // shrink would lower the live footprint with no deletion-debt row behind it.
         val ws = db.workspace()
         val inbox = db.inbox(ws)
         val message = db.message(ws, inbox, rawBytes = 100, attachments = listOf(10))!!
 
-        db.jdbc
-            .sql("UPDATE message SET raw_size_bytes = 250 WHERE id = ?")
-            .param(message)
-            .update()
-        db.jdbc
-            .sql("UPDATE attachment SET size_bytes = 3 WHERE message_id = ?")
-            .param(message)
-            .update()
+        runCatching {
+            db.jdbc
+                .sql("UPDATE message SET raw_size_bytes = 250 WHERE id = ?")
+                .param(message)
+                .update()
+        }.isFailure shouldBe true
+        runCatching {
+            db.jdbc
+                .sql("UPDATE attachment SET size_bytes = 3 WHERE message_id = ?")
+                .param(message)
+                .update()
+        }.isFailure shouldBe true
 
-        db.accountedWorkspace(ws) shouldBe 253
-        db.accountedInbox(inbox) shouldBe 253
+        db.accountedWorkspace(ws) shouldBe 110
+        db.accountedInbox(inbox) shouldBe 110
     }
 
     @Test

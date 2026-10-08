@@ -94,6 +94,8 @@ class SweepSchedulerTest {
         override fun deletionDebt(): email.testinbox.application.port.DeletionDebtState = error("database gone")
 
         override fun compactDeletionDebt(): Int = error("database gone")
+
+        override fun confirmTrust(): Boolean = error("database gone")
     }
 
     private val watch = mock(email.testinbox.application.storage.activation.ActivationWatch::class.java)

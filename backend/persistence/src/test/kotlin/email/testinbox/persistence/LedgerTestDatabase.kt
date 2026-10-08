@@ -200,27 +200,33 @@ class LedgerTestDatabase private constructor(
             .single()
             .toInstant()
 
-    /** What the Ops monitor writes: started_at read from the database clock first, then the measurement. */
+    /** `nextval('storage_debt_order_seq')`: what the monitor takes BEFORE measuring (contract §5.3). */
+    fun nextOrder(): Long = jdbc.sql("SELECT nextval('storage_debt_order_seq')").query(Long::class.java).single()
+
+    /** What the Ops monitor writes: the order and started_at read from the primary first, then the measurement. */
     fun observe(
         trashBytes: Long,
+        startedSeq: Long = nextOrder(),
         startedAt: java.time.Instant = dbNow(),
-        usedBytes: Long = 0,
-        availBytes: Long = 0,
-        capacityBytes: Long = 0,
-        minioSysBytes: Long = 0,
-        source: String = "test-monitor",
     ) {
         jdbc
             .sql(
                 """
                 INSERT INTO storage_filesystem_observation
-                    (started_at, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total, inodes_used,
-                     trash_bytes, minio_sys_bytes)
-                VALUES (?, ?, 4096, ?, ?, ?, 0, 0, ?, ?)
+                    (started_seq, started_at, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total,
+                     inodes_used, trash_bytes, minio_sys_bytes)
+                VALUES (?, ?, 'test-monitor', 4096, 0, 0, 0, 0, 0, ?, 0)
                 """.trimIndent(),
-            ).params(Timestamps.toDb(startedAt), source, capacityBytes, usedBytes, availBytes, trashBytes, minioSysBytes)
+            ).params(startedSeq, Timestamps.toDb(startedAt), trashBytes)
             .update()
     }
+
+    /** distrust_epoch, trusted_epoch (contract §4.5). */
+    fun trust(): Pair<Long, Long?> =
+        jdbc
+            .sql("SELECT distrust_epoch, trusted_epoch FROM storage_footprint_trust WHERE id = 1")
+            .query { rs, _ -> rs.getLong(1) to rs.getObject(2)?.let { (it as Number).toLong() } }
+            .single()
 
     fun liveInboxes(): List<UUID> =
         jdbc
