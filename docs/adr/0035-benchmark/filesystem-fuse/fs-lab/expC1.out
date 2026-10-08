@@ -1,0 +1,13 @@
+PUT 1KiB (inline) at full: {"ok": true} {"used": 2017378304, "avail": 0, "inodes_used": 3513, "inodes_free": 127559}
+PUT 0B probe at full: {"ok": true} {"used": 2017390592, "avail": 0, "inodes_used": 3516, "inodes_free": 127556}
+LIST at full: {"ok": true} {"used": 2017390592, "avail": 0, "inodes_used": 3516, "inodes_free": 127556}
+HEAD at full: {"ok": true} {"used": 2017390592, "avail": 0, "inodes_used": 3516, "inodes_free": 127556}
+DELETE one 15MiB at full: {"ok": true} {"used": 2001641472, "avail": 0, "inodes_used": 3511, "inodes_free": 127561}
+HEAD deleted: {"ok": false, "status": 404, "code": "404", "msg": "Not Found"} {"used": 2001641472, "avail": 0, "inodes_used": 3511, "inodes_free": 127561}
+DeleteObjects x15 (prefix-style) at full: {"ok": true} {"used": 1765404672, "avail": 150818816, "inodes_used": 3436, "inodes_free": 127636}
+free right after deletes: 150818816
+free >= 200 MiB after 904 s: 150638592
+PUT 15MiB after purge: {"ok": true} {"used": 1781334016, "avail": 134889472, "inodes_used": 3485, "inodes_free": 127587}
+268K	/srv/fuselab/data/.minio.sys/tmp
+
+[exited with code 0]

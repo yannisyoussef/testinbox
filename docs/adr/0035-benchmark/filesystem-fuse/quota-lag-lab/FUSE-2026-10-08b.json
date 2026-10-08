@@ -1,0 +1,40 @@
+{
+ "date": "2026-10-08",
+ "environment": "isolated churn lab (same image 3f97c565, 1536m, runtime-config hash b0821e88, ext4 rw,relatime, kernel 6.8.0-142-generic)",
+ "G": 21474836480,
+ "H": 251658240,
+ "Q_target": 42949672960,
+ "writers": 16,
+ "objectMiB": 15,
+ "lagsS": [
+  48.49,
+  18.83,
+  70.39,
+  109.33,
+  99.44
+ ],
+ "overshootsBytes": [
+  10820255744,
+  4308598784,
+  15711862784,
+  24425529344,
+  22648193024,
+  9247391744
+ ],
+ "throughputMiBs": [
+  209.0,
+  217.5,
+  213.6,
+  211.3,
+  215.3,
+  192.0
+ ],
+ "peakAnonMiB": 631,
+ "run6": "aborted by watchdog (lab fs < 6 GiB: MinIO trash purge lag)",
+ "observedMaxChurnBytes": 24425529344,
+ "requiredMinQBytes": 46152024064,
+ "requiredMinQGiB": 42.982,
+ "fuse": "FAILS",
+ "mechanism": "quota sees usage only as of the last completed scanner cycle (+ cache); live idle cadence 60 s; lab under ingestion-level load 7-117 s gaps; lag 18.8-109.3 s grows with stored objects and write load",
+ "notABound": "observed maximum on a near-empty deployment; churn grows with scan duration, i.e. with object count, so the worst case at G=20 GiB of real mail is unmeasured and larger"
+}
