@@ -76,6 +76,62 @@ expires. A server-side window expiry is **not** an error — only budget
 exhaustion throws `TestInboxTimeoutError`, carrying the last poll's
 `arrivedButUnmatchedCount` / `parseFailedCount` diagnostics.
 
+### Storage visibility and refusal-aware waits (ADR-035)
+
+Every inbox has a storage ceiling, and so does your workspace. A message that
+would exceed one is **refused at ingest**, silently over SMTP; the API records
+the refusal on the inbox, and the SDK surfaces it where you are looking:
+
+```ts
+import { TestInboxClient, TestInboxStorageLimitExceededError } from "@testinbox/client";
+
+const inbox = await client.createInbox();
+try {
+  const message = await inbox.waitForMessage({ subjectContains: "Verify your email" });
+} catch (error) {
+  if (error instanceof TestInboxStorageLimitExceededError) {
+    // A storage ceiling refused a copy for this inbox after the boundary this
+    // object had observed — possibly the message you were waiting for.
+    console.error(error.refusalReason, error.storageRefusalCount, error.limit, error.current);
+  }
+  throw error;
+}
+```
+
+- `inbox.storage`, `inbox.storageRefusalCount`, `inbox.lastStorageRefusalAt`
+  and `inbox.lastStorageRefusalReason` are **snapshots** of the representation
+  you created or fetched; they never change on that object.
+- `inbox.storageRefusalCursor` is this object's **observation boundary**: the
+  refusal count it has observed. It is seeded from `storageRefusalCount`, and
+  it advances in exactly two cases — when a wait surfaces a
+  `TestInboxStorageLimitExceededError` (to that error's count) and when you pass
+  an explicit `afterStorageRefusalCount` — always to the maximum, never
+  backwards. A `MATCHED` or `TIMEOUT` result never advances it, so do not copy
+  counts out of those results into it: a match may have outranked a refusal
+  you have not seen yet.
+- `client.getWorkspaceStorage()` returns your workspace's own `StorageUsage`
+  (`limitBytes`, `storedBytes`, `reservedBytes`, `availableBytes`, `overLimit`).
+  Every figure is yours; the API never discloses another workspace's or the
+  service's totals. A refusal for `SERVICE_CAPACITY` carries the reason only.
+
+Opt out to get the pre-ADR-035 wait, in which a refusal is never surfaced:
+
+```ts
+await inbox.waitForMessage({ subjectContains: "Verify", observeStorageRefusals: false });
+```
+
+Resume a boundary you persisted yourself (for example across a process restart):
+
+```ts
+await inbox.waitForMessage({ subjectContains: "Verify", afterStorageRefusalCount: savedBoundary });
+```
+
+The explicit value is applied monotonically to the object's cursor, so a value
+below it is overridden by the cursor. Combining it with
+`observeStorageRefusals: false` is contradictory and throws a `TypeError`
+before any request; a negative, fractional or unsafe value throws a
+`RangeError`. The SDK never retries a storage refusal: waiting does not help.
+
 ### Error taxonomy
 
 All errors extend `TestInboxError` and carry RFC 7807 problem details
@@ -87,8 +143,12 @@ All errors extend `TestInboxError` and carry RFC 7807 problem details
 | `TestInboxForbiddenError` | 403 |
 | `TestInboxNotFoundError` | 404 |
 | `TestInboxConflictError` (`retryAfterSeconds`) | 409 |
+| `TestInboxQuotaExceededError` (`quota`, `limit`, `current`) | 409 `quota-exceeded` |
+| `TestInboxStorageLimitExceededError` (`inboxId`, `refusalReason`, `afterStorageRefusalCount`, `storageRefusalCount`, `lastStorageRefusalAt`, tenant-scope `quota`/`limit`/`current`) | 409 `storage-limit-exceeded` |
 | `TestInboxInboxGoneError` | 410 |
+| `TestInboxRateLimitError` (`retryAfterSeconds`, `category`) | 429 |
 | `TestInboxApiError` | other non-2xx |
+| `TestInboxProtocolError` | a response that violates the contract (a required member absent or malformed) |
 | `TestInboxTimeoutError` | overall wait budget expired |
 
 ## Development

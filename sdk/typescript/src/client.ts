@@ -6,16 +6,19 @@
  * lives here (docs/sdk/principles.md #4, ADR-020).
  */
 
-import { TestInboxError, TestInboxTimeoutError } from "./errors";
+import { TestInboxError, TestInboxProtocolError, TestInboxStorageLimitExceededError, TestInboxTimeoutError } from "./errors";
 import {
   Transport,
+  parseInstant,
   type ApiKeyDto,
+  type StorageUsageDto,
   type AttachmentMetaDto,
   type EmailHeaderDto,
   type EmailLinkDto,
   type InboxDto,
   type MessageDto,
   type MessageMatcherDto,
+  type WaitRequestDto,
 } from "./internal/transport";
 import type {
   ApiKeyMetadata,
@@ -30,6 +33,8 @@ import type {
   EmailLink,
   Inbox,
   Message,
+  StorageRefusalReason,
+  StorageUsage,
   TestInboxClientOptions,
   WaitForMessageOptions,
 } from "./types";
@@ -92,6 +97,16 @@ export class TestInboxClient {
   /** Explicit early teardown of an inbox by id. */
   async deleteInbox(id: string): Promise<void> {
     await this.#transport.deleteInbox(id);
+  }
+
+  /**
+   * Storage accounting of this key's own workspace (ADR-035 §13a): what is
+   * stored, what is reserved by in-flight deliveries, and what can still be
+   * admitted. Requires `messages:read`. The figures are the caller's own;
+   * nothing about other workspaces or the service as a whole is returned.
+   */
+  async getWorkspaceStorage(): Promise<StorageUsage> {
+    return toStorageUsage(await this.#transport.getWorkspaceStorage(), "workspace storage");
   }
 
   /**
@@ -206,6 +221,49 @@ function toApiKeyMetadata(dto: ApiKeyDto): ApiKeyMetadata {
   };
 }
 
+/**
+ * Maps and validates the five ADR-035 §13 members. Explicit, never a spread:
+ * an unknown server member can never land on the public type, and a member
+ * that is absent or of the wrong type is a protocol error rather than a
+ * plausible-looking zero.
+ */
+function toStorageUsage(dto: StorageUsageDto, label: string): StorageUsage {
+  const bytes = (name: "limitBytes" | "storedBytes" | "reservedBytes" | "availableBytes"): number => {
+    const value = dto[name];
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+      throw new TestInboxProtocolError(`the server sent ${label} without a valid '${name}'`);
+    }
+    return value;
+  };
+  if (typeof dto.overLimit !== "boolean") {
+    throw new TestInboxProtocolError(`the server sent ${label} without a valid 'overLimit'`);
+  }
+  return Object.freeze({
+    limitBytes: bytes("limitBytes"),
+    storedBytes: bytes("storedBytes"),
+    reservedBytes: bytes("reservedBytes"),
+    availableBytes: bytes("availableBytes"),
+    overLimit: dto.overLimit,
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A caller-supplied observation boundary must be a safe, non-negative
+ * integer. Anything else is refused here, before any request: `NaN`,
+ * `Infinity`, a fraction or a negative would either be rejected by the server
+ * or, worse, serialise to something the server reads differently.
+ */
+function validateBoundary(value: number): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`afterStorageRefusalCount must be a safe non-negative integer, got ${String(value)}`);
+  }
+  return value + 0; // -0 is a valid safe integer; normalise it so the cursor never serialises oddly
+}
+
 class InboxImpl implements Inbox {
   readonly id: string;
   readonly address: string;
@@ -213,7 +271,18 @@ class InboxImpl implements Inbox {
   readonly state: string;
   readonly createdAt: Date;
   readonly expiresAt: Date;
+  readonly storage?: StorageUsage;
+  readonly storageRefusalCount?: number;
+  readonly lastStorageRefusalAt?: Date;
+  readonly lastStorageRefusalReason?: StorageRefusalReason;
   readonly #transport: Transport;
+  /**
+   * The ADR-035 §13c observation boundary: SDK state, distinct from the
+   * `storageRefusalCount` snapshot. `undefined` means the representation
+   * predates storage visibility, in which case default waits send no
+   * boundary rather than inventing one (ADR-028).
+   */
+  #cursor: number | undefined;
 
   constructor(transport: Transport, dto: InboxDto) {
     this.#transport = transport;
@@ -223,9 +292,60 @@ class InboxImpl implements Inbox {
     this.state = dto.state ?? "ACTIVE";
     this.createdAt = new Date(dto.createdAt ?? NaN);
     this.expiresAt = new Date(dto.expiresAt ?? NaN);
+
+    // ADR-035 §13b members. Entirely absent: an older server, and that is
+    // fine. Present but malformed: a protocol error, never a partial object.
+    if (dto.storage !== undefined) {
+      if (!isRecord(dto.storage)) throw new TestInboxProtocolError("the server sent a malformed inbox 'storage'");
+      this.storage = toStorageUsage(dto.storage, "inbox storage");
+    }
+    if (dto.storageRefusalCount !== undefined) {
+      const count = dto.storageRefusalCount;
+      if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+        throw new TestInboxProtocolError("the server sent a malformed 'storageRefusalCount'");
+      }
+      this.storageRefusalCount = count;
+      this.#cursor = count;
+    }
+    if (dto.lastStorageRefusalAt !== undefined && dto.lastStorageRefusalAt !== null) {
+      this.lastStorageRefusalAt = parseInstant(dto.lastStorageRefusalAt, "lastStorageRefusalAt");
+    }
+    if (dto.lastStorageRefusalReason !== undefined && dto.lastStorageRefusalReason !== null) {
+      if (typeof dto.lastStorageRefusalReason !== "string") {
+        throw new TestInboxProtocolError("the server sent a malformed 'lastStorageRefusalReason'");
+      }
+      this.lastStorageRefusalReason = dto.lastStorageRefusalReason;
+    }
+  }
+
+  get storageRefusalCursor(): number | undefined {
+    return this.#cursor;
+  }
+
+  /**
+   * Monotonic, and synchronous: no `await` sits between the read and the
+   * write, so two waits whose results settle in either order leave the
+   * maximum observed count, never the last one to complete. A boundary can
+   * only move forward.
+   */
+  #advanceCursor(value: number): number {
+    this.#cursor = this.#cursor === undefined ? value : Math.max(this.#cursor, value);
+    return this.#cursor;
   }
 
   async waitForMessage(options: WaitForMessageOptions = {}): Promise<Message> {
+    const observe = options.observeStorageRefusals ?? true;
+    if (!observe && options.afterStorageRefusalCount !== undefined) {
+      // Contradictory: the caller named a boundary and asked for none to be sent.
+      // Refused rather than one input silently winning over the other.
+      throw new TypeError("afterStorageRefusalCount cannot be combined with observeStorageRefusals: false");
+    }
+    if (observe && options.afterStorageRefusalCount !== undefined) {
+      // An explicit boundary is an instruction to advance this object's cursor;
+      // the request then carries the resulting monotonic boundary, so a value
+      // below the cursor never re-surfaces a refusal already handled here.
+      this.#advanceCursor(validateBoundary(options.afterStorageRefusalCount));
+    }
     const budgetMs = options.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
     const startedAt = Date.now();
     const deadline = startedAt + budgetMs;
@@ -258,12 +378,30 @@ class InboxImpl implements Inbox {
         1,
         Math.min(MAX_SERVER_WINDOW_SECONDS, Math.ceil(Math.max(remainingMs, 0) / 1000)),
       );
-      const result = await this.#transport.wait(this.id, {
+      // Each window carries the CURRENT cursor (a concurrent wait may have
+      // advanced it since the last window). No cursor — an older server, and
+      // the caller did not supply one — means the legacy request, exactly.
+      const request: WaitRequestDto = {
         ...(matcher !== undefined && { matcher }),
         timeoutSeconds,
-      });
+        ...(observe && this.#cursor !== undefined && { afterStorageRefusalCount: this.#cursor }),
+      };
+      let result;
+      try {
+        result = await this.#transport.wait(this.id, request);
+      } catch (error) {
+        // ADR-035 §13c: the refusal is acknowledged on this object BEFORE the
+        // caller sees it, so a handler already observes the advanced cursor.
+        // State-shaped: never retried, never turned into another window or a
+        // timeout. A malformed 409 is a protocol error and advances nothing.
+        if (error instanceof TestInboxStorageLimitExceededError) this.#advanceCursor(error.storageRefusalCount);
+        throw error;
+      }
       polled = true;
 
+      // A MATCHED or TIMEOUT echo of `storageRefusalCount` is informational
+      // and is deliberately NOT adopted: a match may have outranked a refusal
+      // the caller has not seen, and adopting it would skip that refusal.
       if (result.status === "MATCHED" && result.message !== undefined) {
         return new MessageImpl(this.#transport, result.message);
       }

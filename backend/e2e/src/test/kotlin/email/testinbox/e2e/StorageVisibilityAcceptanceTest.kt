@@ -25,7 +25,9 @@ import java.util.UUID
  *
  * Live enforcement is OFF in both deployables, so no SMTP traffic produces a
  * refusal here; the record is written exactly as the §6a upsert writes it,
- * with its notify, on the stack's own database.
+ * with its notify, on the stack's own database. The default SDK wait now
+ * observes refusals (TI-STORAGE-005, `SdkStorageAcceptanceTest`); the legacy
+ * contract is reached through the opt-out.
  */
 class StorageVisibilityAcceptanceTest {
     private val json = ObjectMapper()
@@ -82,23 +84,36 @@ class StorageVisibilityAcceptanceTest {
     }
 
     @Test
-    fun `the current JVM SDK omits the cursor, so a non-zero refusal count never changes its MATCHED or TIMEOUT behaviour`() {
+    fun `the opt-out wait omits the cursor, so a non-zero refusal count never changes MATCHED or TIMEOUT`() {
+        // Before TI-STORAGE-005 this was every SDK wait; it is now the opt-out,
+        // and the server's legacy contract behind it is unchanged.
         val client = client()
         val inbox = client.createInboxBlocking(CreateInboxOptions(ttl = Duration.ofMinutes(5)))
         recordRefusal(inbox.id)
         json.readTree(rest("GET", "/v1/inboxes/${inbox.id}").body()).member("storageRefusalCount").asLong() shouldBe 1
 
-        // A released SDK against a refused inbox: the window chains to the typed timeout, never a 409.
+        // No cursor on the wire: the window chains to the typed timeout, never a 409.
         val timeout =
             assertThrows<TestInboxTimeoutException> {
-                inbox.awaitMessageBlocking(Duration.ofSeconds(2), MessageMatcher.builder().subjectContains("never-arrives").build())
+                inbox.awaitMessageBlocking(
+                    Duration.ofSeconds(2),
+                    MessageMatcher.builder().subjectContains("never-arrives").build(),
+                    null,
+                    observeStorageRefusals = false,
+                )
             }
         timeout.arrivedButUnmatchedCount shouldBe 0
 
         // And real mail still matches, with another refusal recorded meanwhile.
         recordRefusal(inbox.id)
         E2eStack.sendRawSmtp("no-reply@example.com", inbox.address, E2eStack.verificationEmail(inbox.address, "SDK compat after refusals"))
-        val message = inbox.awaitMessageBlocking(Duration.ofSeconds(20), MessageMatcher.builder().subjectContains("SDK compat").build())
+        val message =
+            inbox.awaitMessageBlocking(
+                Duration.ofSeconds(20),
+                MessageMatcher.builder().subjectContains("SDK compat").build(),
+                null,
+                observeStorageRefusals = false,
+            )
         message.subject shouldBe "SDK compat after refusals"
 
         inbox.deleteBlocking()
@@ -141,17 +156,5 @@ class StorageVisibilityAcceptanceTest {
         json.readTree(rest("GET", "/v1/inboxes/$inboxId").body()).member("lastStorageRefusalReason").asString() shouldBe "INBOX_LIMIT"
 
         rest("DELETE", "/v1/inboxes/$inboxId").statusCode() shouldBe 204
-    }
-
-    /** Hands the TS live suite an inbox that already carries refusals; see `TsSdkIntegrationTest`. */
-    companion object {
-        fun inboxWithRefusals(): String {
-            val test = StorageVisibilityAcceptanceTest()
-            return with(test) {
-                val inboxId = json.readTree(rest("POST", "/v1/inboxes", """{"ttlSeconds":600}""").body()).member("id").asString()
-                recordRefusal(inboxId)
-                inboxId
-            }
-        }
     }
 }

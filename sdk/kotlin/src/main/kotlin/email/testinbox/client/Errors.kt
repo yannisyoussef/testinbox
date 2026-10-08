@@ -27,7 +27,12 @@ open class TestInboxException(
  * from a dependency's internals is not something a caller can reasonably
  * handle, and it violates principle #6.
  */
-class TestInboxProtocolException(message: String) : TestInboxException(message)
+class TestInboxProtocolException(
+    message: String,
+    correlationId: String? = null,
+    problemType: String? = null,
+    status: Int? = null,
+) : TestInboxException(message, correlationId, problemType, status)
 
 class TestInboxAuthException(
     message: String,
@@ -97,6 +102,45 @@ class TestInboxQuotaExceededException(
     val limit: Long? = null,
     val current: Long? = null,
 ) : TestInboxException(message, correlationId)
+
+/**
+ * HTTP 409 with problem type `storage-limit-exceeded` (ADR-035 §13c): a wait
+ * that observed storage refusals found none of the awaited messages, and a
+ * storage ceiling had refused a copy for this inbox after the observation
+ * boundary — possibly the very message being awaited.
+ *
+ * State-shaped: waiting does not help and the SDK never retries it. By the
+ * time a handler runs, the inbox's `storageRefusalCursor` has already
+ * advanced to [storageRefusalCount], so the next wait on that object observes
+ * only later refusals.
+ *
+ * [quota], [limit] and [current] describe the refusing scope — the inbox for
+ * `INBOX_LIMIT`, the workspace for `WORKSPACE_LIMIT` — and are null for
+ * `SERVICE_CAPACITY`, which is one bit: no global figure is ever disclosed
+ * (ADR-035 §13d). Every field is a plain getter for Java callers; nothing has
+ * to be parsed out of [message].
+ */
+@Suppress("LongParameterList") // one constructor parameter per RFC 7807 member, each a Java getter; see the class comment
+class TestInboxStorageLimitExceededException(
+    message: String,
+    correlationId: String? = null,
+    val inboxId: String,
+    /** Forward compatible: a value this SDK predates is carried as its exact wire string. */
+    val refusalReason: StorageRefusalReason,
+    /** The boundary the server evaluated against: the cursor, clamped once to the count at the first evaluation. */
+    val afterStorageRefusalCount: Long,
+    /** The inbox's refusal count in the deciding snapshot — what the cursor advanced to. */
+    val storageRefusalCount: Long,
+    val lastStorageRefusalAt: java.time.Instant,
+    /** `STORED_BYTES` for a tenant scope; null for `SERVICE_CAPACITY`. */
+    val quota: String? = null,
+    val limit: Long? = null,
+    val current: Long? = null,
+) : TestInboxException(message, correlationId, STORAGE_LIMIT_EXCEEDED_TYPE, 409) {
+    companion object {
+        const val STORAGE_LIMIT_EXCEEDED_TYPE: String = "https://testinbox.email/problems/storage-limit-exceeded"
+    }
+}
 
 /**
  * Any failure the SDK does not model more specifically.

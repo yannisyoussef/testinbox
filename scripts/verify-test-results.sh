@@ -63,7 +63,7 @@ BACKEND_MODULES=(
   "backend/migrator:6"
 )
 E2E_MODULES=(
-  "backend/e2e:20"
+  "backend/e2e:24"
 )
 
 case "$SCOPE" in

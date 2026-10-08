@@ -284,7 +284,7 @@ jobs:
         working-directory: sdk/kotlin
         run: |
           COUNT=$(grep -ho 'tests="[0-9]*"' build/test-results/test/TEST-*.xml | grep -o '[0-9]*' | paste -sd+ - | bc)
-          test "${COUNT:-0}" -ge 8 || { echo "expected >= 8 SDK tests, got ${COUNT:-0}"; exit 1; }
+          test "${COUNT:-0}" -ge 60 || { echo "expected >= 60 SDK tests, got ${COUNT:-0}"; exit 1; }
 
   sdk-typescript:
     name: TypeScript SDK (consumer matrix)
@@ -304,7 +304,14 @@ jobs:
       - working-directory: sdk/typescript
         run: npm run build
       - working-directory: sdk/typescript
-        run: npm test
+        run: npx vitest run src --reporter=default --reporter=junit --outputFile=build/test-results/vitest.xml
+      - name: Verify SDK tests produced results
+        working-directory: sdk/typescript
+        # Ratcheted when tests are added (TI-STORAGE-005: 69). A green exit
+        # proves the suite ran; only the floor proves it did not quietly shrink.
+        run: |
+          COUNT=$(grep -ho 'tests="[0-9]*"' build/test-results/vitest.xml | head -1 | grep -o '[0-9]*')
+          test "${COUNT:-0}" -ge 60 || { echo "expected >= 60 TypeScript SDK tests, got ${COUNT:-0}"; exit 1; }
 
   web:
     name: Web UI (build + Playwright sandbox proofs)
