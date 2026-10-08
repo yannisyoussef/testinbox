@@ -50,18 +50,24 @@ data class FilesystemDeclarations(
     val effectiveObservationMaxAge: Duration get() = observationMaxAge ?: DEFAULT_OBSERVATION_MAX_AGE
 
     /**
-     * *R_ops* for the `STORAGE_FULL` evidence gate: the declared value, or the
-     * contract's floor (`max(5 % of C_fs, 2 GiB)`, or 2 GiB with no `C_fs`).
-     * A default can only make recovery harder, never easier.
+     * *R_ops* for the `STORAGE_FULL` evidence gate: never below the contract's
+     * floor (`max(5 % of C_fs, 2 GiB)`, or 2 GiB with no `C_fs`), whatever is
+     * declared. A declaration can only make recovery harder, never easier.
      */
     val effectiveOperationalReserveBytes: Long
-        get() =
-            operationalReserveBytes
-                ?: capacityBytes?.takeIf { it > 0 }?.let(FilesystemContainment::minimumOperationalReserveBytes)
-                ?: MINIMUM_OPERATIONAL_RESERVE_BYTES
+        get() {
+            val floor =
+                capacityBytes?.takeIf { it > 0 }?.let(FilesystemContainment::minimumOperationalReserveBytes)
+                    ?: MINIMUM_OPERATIONAL_RESERVE_BYTES
+            return maxOf(operationalReserveBytes ?: 0, floor)
+        }
+
+    /** *B* for the inode floor of the evidence gate: the declared size, or 4 KiB. */
+    val effectiveBlockSizeBytes: Long get() = blockSizeBytes?.takeIf { it > 0 } ?: DEFAULT_BLOCK_SIZE_BYTES
 
     companion object {
         val DEFAULT_OBSERVATION_MAX_AGE: Duration = Duration.ofMinutes(15)
         const val MINIMUM_OPERATIONAL_RESERVE_BYTES: Long = 2 * FilesystemContainment.GIB
+        const val DEFAULT_BLOCK_SIZE_BYTES: Long = 4096
     }
 }

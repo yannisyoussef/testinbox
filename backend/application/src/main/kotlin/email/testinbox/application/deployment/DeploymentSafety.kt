@@ -4,6 +4,7 @@ import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.NodeRole
 import email.testinbox.application.storage.QualificationMatch
 import email.testinbox.application.storage.StorageDeclarations
+import email.testinbox.domain.storage.BucketQuotaFuse
 import email.testinbox.domain.storage.FilesystemContainment
 import email.testinbox.domain.storage.FootprintModel
 import email.testinbox.domain.storage.InboxShare
@@ -546,6 +547,7 @@ object StorageEnforcementSafety {
     private const val INGESTION_NODES = "testinbox.storage.activation.expected-ingestion-nodes"
     private const val UPLOAD = "upload-implementation-version"
     private const val FS = "testinbox.storage.filesystem"
+    private val MAX_OBSERVATION_AGE: java.time.Duration = java.time.Duration.ofHours(1)
 
     fun check(settings: DeploymentSettings): List<DeploymentViolation> {
         val storage = settings.storage
@@ -622,11 +624,12 @@ object StorageEnforcementSafety {
             ) {
                 add(DeploymentViolation(GLOBAL, "is not declared; a non-OFF deployment must state G (ADR-035 §18 prerequisite 10)"))
             }
-            // The bucket quota Q is no longer load-bearing (filesystem-containment
-            // contract, TI-STORAGE-006E): MinIO's scanner-based quota overshot by
-            // ~22.75 GiB. It may still be declared as a secondary control, and is
-            // then sanity-checked; containment rests on the filesystem below.
             val q = storage.declaredBucketQuotaBytes
+            if (q ==
+                null
+            ) {
+                add(DeploymentViolation(QUOTA, "is not declared; the bucket quota fuse Q cannot be checked (ADR-035 §9, §18 gate 8)"))
+            }
             val processes = storage.declaredMaxIngestionProcesses
             if (processes == null) {
                 add(
@@ -642,9 +645,22 @@ object StorageEnforcementSafety {
                 add(DeploymentViolation(SHARE, "is not declared; a non-OFF deployment must state the inbox share (ADR-035 §3)"))
             }
             addAll(nodeDeclarations(storage, processes))
-            // Independent of G: every filesystem gap is reported with the others.
+            // Independent of G: every filesystem gap is reported with the others. The
+            // bucket-quota fuse below stays REQUIRED: T1 still admits on payload G only,
+            // and until footprint admission (I-G) is wired (TI-STORAGE-006E PR D, after
+            // #82 is accepted) the fuse is what links G to physical bytes.
             addAll(filesystemContainment(storage, processes))
             val churn = storage.measuredQuotaLagChurnBytes
+            if (churn ==
+                null
+            ) {
+                add(
+                    DeploymentViolation(
+                        CHURN,
+                        "is not declared; Ops measures the bytes MinIO accepts during one usage-refresh lag (ADR-035 §9)",
+                    ),
+                )
+            }
             // The arithmetic below only runs on well-formed inputs; the sanity pass reported the others.
             val usable =
                 listOf(
@@ -666,6 +682,26 @@ object StorageEnforcementSafety {
                         )
                         return@buildList
                     }
+            if (q != null && churn != null) {
+                runCatching { BucketQuotaFuse.minimumQuotaBytes(g, h, churn) }
+                    .onSuccess { minimum ->
+                        if (q < minimum) {
+                            add(
+                                DeploymentViolation(
+                                    QUOTA,
+                                    "is $q but the fuse needs at least $minimum = G + max(1 GiB, 10 % of G, H + churn) with G=$g H=$h churn=$churn (ADR-035 §9)",
+                                ),
+                            )
+                        }
+                    }.onFailure {
+                        add(
+                            DeploymentViolation(
+                                QUOTA,
+                                "the fuse minimum G + max(1 GiB, 10 % of G, H + churn) overflows; refused, never wrapped",
+                            ),
+                        )
+                    }
+            }
         }
 
     /** Every declared filesystem figure must be well-formed, in any mode. */
@@ -689,8 +725,17 @@ object StorageEnforcementSafety {
             }
             fs.observationMaxAge?.let {
                 if (it.isNegative || it.isZero) add(DeploymentViolation("$FS.observation-max-age", "is $it; must be positive"))
+                // A typo such as 1000d would let a stale observation count as evidence for ever.
+                if (it > MAX_OBSERVATION_AGE) {
+                    add(DeploymentViolation("$FS.observation-max-age", "is $it; must be at most $MAX_OBSERVATION_AGE"))
+                }
             }
-            val b = fs.blockSizeBytes?.takeIf { it > 0 }
+            fs.blockSizeBytes?.let {
+                if (it > 0 && it !in FootprintModel.SUPPORTED_BLOCK_SIZES) {
+                    add(DeploymentViolation("$FS.block-size-bytes", "is $it; must be one of ${FootprintModel.SUPPORTED_BLOCK_SIZES}"))
+                }
+            }
+            val b = fs.blockSizeBytes?.takeIf { it in FootprintModel.SUPPORTED_BLOCK_SIZES }
             val oMax = fs.objectOverheadMaxBytes?.takeIf { it > 0 }
             if (b != null && oMax != null) {
                 runCatching { FootprintModel(b, oMax) }.onFailure {

@@ -105,16 +105,19 @@ class StorageEnforcementSafetyTest {
     fun `invalid G`() = only(complete.copy(globalLimitBytes = -1), "testinbox.storage.global-limit-bytes", "must be positive")
 
     @Test
-    fun `the bucket quota fuse is no longer load-bearing - Q and churn may be absent, or below the old fuse`() {
-        // MinIO's scanner-based quota overshot by ~22.75 GiB (PR #81): containment rests on the filesystem.
-        violations(complete.copy(declaredBucketQuotaBytes = null, measuredQuotaLagChurnBytes = null)).shouldBeEmpty()
-        violations(complete.copy(declaredBucketQuotaBytes = 1)).shouldBeEmpty()
-    }
+    fun `missing Q`() =
+        only(complete.copy(declaredBucketQuotaBytes = null), "testinbox.storage.declared-bucket-quota-bytes", "is not declared")
 
     @Test
-    fun `a declared Q or churn must still be well-formed`() {
-        only(complete.copy(declaredBucketQuotaBytes = 0), "testinbox.storage.declared-bucket-quota-bytes", "must be positive")
-        only(complete.copy(measuredQuotaLagChurnBytes = -1), "testinbox.storage.measured-quota-lag-churn-bytes", "must not be negative")
+    fun `Q too small - one byte below the fuse`() {
+        // G = 40 GiB, H = 2 × 16 × 15 MiB = 480 MiB, churn 64 MiB: 10 % of G (4 GiB) is the margin → 44 GiB.
+        val minimum = 44 * gib
+        violations(complete.copy(declaredBucketQuotaBytes = minimum)).shouldBeEmpty()
+        only(
+            complete.copy(declaredBucketQuotaBytes = minimum - 1),
+            "testinbox.storage.declared-bucket-quota-bytes",
+            "the fuse needs at least $minimum",
+        )
     }
 
     // --- the filesystem-containment declarations (TI-STORAGE-006E) ------------------------------
@@ -146,6 +149,51 @@ class StorageEnforcementSafetyTest {
         found.map { it.setting } shouldContain "testinbox.storage.filesystem.capacity-bytes"
         found.single { it.setting == "testinbox.storage.filesystem.capacity-bytes" }.problem shouldContain
             "G_F + D_budget + M + R_ops = $needed"
+    }
+
+    @Test
+    fun `the operational reserve exactly at its floor passes, one byte under refuses`() {
+        val floor = 48 * gib / 20
+        violations(complete.copy(filesystem = filesystem.copy(operationalReserveBytes = floor))).shouldBeEmpty()
+        only(
+            complete.copy(filesystem = filesystem.copy(operationalReserveBytes = floor - 1)),
+            "testinbox.storage.filesystem.operational-reserve-bytes",
+            "max(5 % of C_fs, 2 GiB)",
+        )
+    }
+
+    @Test
+    fun `exactly one inode per block passes, one fewer refuses`() {
+        violations(complete.copy(filesystem = filesystem.copy(inodes = 48 * gib / 4096))).shouldBeEmpty()
+        only(
+            complete.copy(filesystem = filesystem.copy(inodes = 48 * gib / 4096 - 1)),
+            "testinbox.storage.filesystem.inodes",
+            "one inode per block",
+        )
+    }
+
+    @Test
+    fun `G_F equal to H_F leaves a zero cap and refuses, one byte above passes`() {
+        val hF =
+            email.testinbox.domain.storage
+                .FootprintModel(4096, 24 * 1024)
+                .finalizeBudgetBytes(2, 16, 15 * mib)
+        only(
+            complete.copy(filesystem = filesystem.copy(globalFootprintLimitBytes = hF)),
+            "testinbox.storage.filesystem.global-footprint-limit-bytes",
+            "G_F − H_F must be positive",
+        )
+        violations(complete.copy(filesystem = filesystem.copy(globalFootprintLimitBytes = hF + 1))).shouldBeEmpty()
+    }
+
+    @Test
+    fun `an unsupported block size alone, or an observation age above an hour, is refused in every mode`() {
+        val off = StorageDeclarations()
+        settingsOf(off.copy(filesystem = FilesystemDeclarations(blockSizeBytes = 512))) shouldBe
+            listOf("testinbox.storage.filesystem.block-size-bytes")
+        settingsOf(off.copy(filesystem = FilesystemDeclarations(observationMaxAge = Duration.ofDays(1000)))) shouldBe
+            listOf("testinbox.storage.filesystem.observation-max-age")
+        settingsOf(off.copy(filesystem = FilesystemDeclarations(observationMaxAge = Duration.ofHours(1)))).shouldBeEmpty()
     }
 
     @Test
@@ -235,6 +283,10 @@ class StorageEnforcementSafetyTest {
     fun `missing share`() = only(complete.copy(inboxShare = null), "testinbox.storage.inbox-share", "is not declared")
 
     @Test
+    fun `missing measured churn`() =
+        only(complete.copy(measuredQuotaLagChurnBytes = null), "testinbox.storage.measured-quota-lag-churn-bytes", "is not declared")
+
+    @Test
     fun `missing backend identity`() = only(complete.copy(backendIdentity = null), "testinbox.storage.backend-identity", "is not declared")
 
     @Test
@@ -315,10 +367,10 @@ class StorageEnforcementSafetyTest {
     fun `every missing declaration is reported at once, not one restart at a time`() {
         val found = settingsOf(StorageDeclarations(enforcement = StorageEnforcement.ALL))
         found shouldContain "testinbox.storage.global-limit-bytes"
-        found shouldNotContain "testinbox.storage.declared-bucket-quota-bytes" // no longer load-bearing
+        found shouldContain "testinbox.storage.declared-bucket-quota-bytes" // the fuse stays load-bearing until footprint admission (PR D)
         found shouldContain "testinbox.storage.declared-max-ingestion-processes"
         found shouldContain "testinbox.storage.inbox-share"
-        found shouldNotContain "testinbox.storage.measured-quota-lag-churn-bytes"
+        found shouldContain "testinbox.storage.measured-quota-lag-churn-bytes"
         found shouldContain "testinbox.storage.filesystem.capacity-bytes"
         found shouldContain "testinbox.storage.filesystem.inodes"
         found shouldContain "testinbox.storage.backend-identity"

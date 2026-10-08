@@ -31,14 +31,38 @@ class StorageFullBreakerTest {
 
     private val reserve = 1L * 1024 * 1024 * 1024
 
-    /** A harness whose breaker reads its evidence from the harness's own database. */
+    /** Witness probes issued by the breaker: a STORAGE_FULL trial must never be one. */
+    private val witnesses =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
+    /**
+     * A harness whose breaker reads its evidence, through the production gate,
+     * from the harness's own database. No negative cache, so a test's fresh
+     * observation is seen at once.
+     */
     private fun harness(): GuardedIngestHarness {
         lateinit var h: GuardedIngestHarness
-        val breaker =
-            StorageBreaker(Duration.ofMillis(300), Duration.ofSeconds(1)) {
-                StorageFullEvidence(JdbcFilesystemObservations(h.jdbc), Duration.ofMinutes(15), reserve)()
+        val gate =
+            object : email.testinbox.application.storage.StorageFullGate {
+                val real by lazy {
+                    StorageFullEvidence(JdbcFilesystemObservations(h.jdbc), Duration.ofMinutes(15), reserve, 1_000, Duration.ZERO)
+                }
+
+                override fun tripped() = real.tripped()
+
+                override fun evidence() = real.evidence()
             }
-        h = GuardedIngestHarness(viaProxy = true, breaker = breaker).also { harnesses += it }
+        val breaker = StorageBreaker(Duration.ofMillis(300), Duration.ofSeconds(1), storageFullGate = gate)
+        val counting = { real: email.testinbox.application.port.StorageInspection ->
+            object : email.testinbox.application.port.StorageInspection by real {
+                override fun witness(probeKey: String): Boolean {
+                    witnesses.incrementAndGet()
+                    return real.witness(probeKey)
+                }
+            }
+        }
+        h = GuardedIngestHarness(viaProxy = true, breaker = breaker, inspectionOverride = counting).also { harnesses += it }
         return h
     }
 
@@ -63,7 +87,7 @@ class StorageFullBreakerTest {
                 INSERT INTO storage_filesystem_observation
                     (started_at, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total, inodes_used,
                      trash_bytes, minio_sys_bytes)
-                VALUES (now(), 'test-monitor', 4096, 0, 0, ?, 0, 0, 0, 0)
+                VALUES (clock_timestamp(), 'test-monitor', 4096, 0, 0, ?, 1000000, 0, 0, 0)
                 """.trimIndent(),
             ).param(availBytes)
             .update()
@@ -79,6 +103,7 @@ class StorageFullBreakerTest {
 
         h.metrics.events shouldContain "failure:STORAGE_FULL"
         h.metrics.events shouldNotContain "failure:AMBIGUOUS" // its own kind, so the zero-byte probe never reopens it
+        h.breaker.openKinds shouldBe setOf(StorageBreaker.Kind.STORAGE_FULL) // and ONLY that kind
         h.unresolvedAmbiguity() shouldBe 1 // ambiguous: persisted, the slot held, H unchanged
         h.reservationStates() shouldBe mapOf("RESERVED" to 1L) // still charged
         h.breaker.isOpen shouldBe true
@@ -100,12 +125,47 @@ class StorageFullBreakerTest {
         observe(h, availBytes = 10 * reserve) // Ops recovered the filesystem
         h.deliver(listOf(a)).accepted.size shouldBe 1 // the real event WAS the trial
         h.breaker.isOpen shouldBe false
+        witnesses.get() shouldBe 0 // never a zero-byte probe: a full filesystem accepts one
+    }
+
+    @Test
+    fun `a trial on fresh evidence that hits ENOSPC again re-trips, and the same observation cannot license another`() {
+        val h = harness()
+        val (_, a) = h.inbox(h.workspace())
+        answer(h, "507 Insufficient Storage", "XMinioStorageFull", "Storage backend has reached its minimum free drive threshold.")
+        shouldThrow<StorageUnavailableException> { h.deliver(listOf(a)) }
+        Thread.sleep(h.breaker.currentBackoff.toMillis() + 100)
+        shouldThrow<StorageUnavailableException> { h.deliver(listOf(a)) }.reason shouldBe StorageUnavailableReason.BREAKER_OPEN
+
+        observe(h, availBytes = 10 * reserve) // the monitor thinks it is fine; MinIO still answers 507
+        shouldThrow<StorageUnavailableException> { h.deliver(listOf(a)) }.reason shouldBe StorageUnavailableReason.UPLOAD_FAILED
+
+        h.breaker.openKinds shouldBe setOf(StorageBreaker.Kind.STORAGE_FULL) // re-tripped as its own kind
+        h.unresolvedAmbiguity() shouldBe 2 // the failed trial's upload is ambiguous too, and holds its slot
+        h.metrics.events.count { it == "failure:STORAGE_FULL" } shouldBe 2
+
+        // The same observation cannot license a second trial, however long we wait.
+        Thread.sleep(h.breaker.currentBackoff.toMillis() + 100)
+        val writes = h.fencedWrites.size
+        shouldThrow<StorageUnavailableException> { h.deliver(listOf(a)) }.reason shouldBe StorageUnavailableReason.BREAKER_OPEN
+        h.fencedWrites.size shouldBe writes
+
+        observe(h, availBytes = 10 * reserve) // a NEW observation, after the trip
+        h.proxy!!.mode = TcpFaultProxy.Mode.PASS
+        h.deliver(listOf(a)).accepted.size shouldBe 1
+        h.breaker.isOpen shouldBe false
     }
 
     @Test
     fun `500 naming ENOSPC is STORAGE_FULL, and a plain 500 is not`() {
         val enospc = harness()
-        answer(enospc, "500 Internal Server Error", "InternalError", "write /data/.minio.sys/tmp/x/part.1: no space left on device")
+        // Longer than any short bound: the message is read in full before it is matched.
+        answer(
+            enospc,
+            "500 Internal Server Error",
+            "InternalError",
+            "a".repeat(2_000) + " write /data/.minio.sys/tmp/x/part.1: no space left on device",
+        )
         shouldThrow<StorageUnavailableException> { enospc.deliver(listOf(enospc.inbox(enospc.workspace()).second)) }
         enospc.metrics.events shouldContain "failure:STORAGE_FULL"
 

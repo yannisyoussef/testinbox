@@ -24,14 +24,12 @@ class StorageBreaker(
     private val maxBackoff: Duration = Duration.ofMinutes(2),
     private val nanoTime: () -> Long = System::nanoTime,
     /**
-     * Whether the newest filesystem observation is fresh and shows the
-     * operational reserve available (containment contract §8). A
-     * `STORAGE_FULL` trial is issued only when it holds: a full filesystem
-     * accepts a zero-byte probe, so only evidence may reopen it. It defaults
-     * to "never": without a monitor, only a restart clears a STORAGE_FULL trip.
-     * Evaluated outside the breaker's lock; any failure counts as "no".
+     * What reopens a `STORAGE_FULL` trip (filesystem-containment contract §8):
+     * a full filesystem accepts a zero-byte probe, so only Ops evidence may.
+     * The default never does: without a monitor, only a restart clears it.
+     * Its evidence is read outside the breaker's lock; a failure counts as "no".
      */
-    private val storageFullEvidence: () -> Boolean = { false },
+    private val storageFullGate: StorageFullGate = StorageFullGate.NEVER,
 ) {
     enum class Kind { UNAVAILABLE, TIMEOUT, SERVER_ERROR, AMBIGUOUS, QUOTA, CLOCK_OFFSET, STORAGE_FULL }
 
@@ -103,7 +101,12 @@ class StorageBreaker(
             synchronized(this) {
                 Kind.STORAGE_FULL in kinds && !trialInFlight && nanoTime() - retryAt >= 0
             }
-        return if (due) runCatching(storageFullEvidence).getOrDefault(false) else null
+        if (!due) return null
+        return try {
+            storageFullGate.evidence()
+        } catch (e: Exception) {
+            false
+        }
     }
 
     /** A physical failure: open, or re-open after a failed trial with a doubled backoff. */
@@ -121,7 +124,13 @@ class StorageBreaker(
         epoch++
         trialInFlight = false
         retryAt = nanoTime() + backoff.toNanos()
+        // Every STORAGE_FULL trip, a failed trial's included, invalidates every earlier observation.
+        if (kind == Kind.STORAGE_FULL) storageFullGate.tripped()
     }
+
+    /** The kinds currently open, for metrics, logs and tests. */
+    @get:Synchronized
+    val openKinds: Set<Kind> get() = kinds.toSet()
 
     /** The trial ended without an answer (the event stored nothing): the next caller trials instead. */
     @Synchronized

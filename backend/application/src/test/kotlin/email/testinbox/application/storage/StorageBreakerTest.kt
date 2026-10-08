@@ -108,11 +108,23 @@ class StorageBreakerTest {
 
     private var evidence = false
     private var evidenceChecks = 0
-    private val full =
-        StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now }) {
-            evidenceChecks++
-            evidence
-        }
+    private lateinit var full: StorageBreaker
+
+    init {
+        full =
+            StorageBreaker(
+                Duration.ofSeconds(15),
+                Duration.ofMinutes(2),
+                nanoTime = { now },
+                storageFullGate =
+                    StorageFullGate.of {
+                        // The evidence reads the database: never while holding the breaker's lock.
+                        Thread.holdsLock(full) shouldBe false
+                        evidenceChecks++
+                        evidence
+                    },
+            )
+    }
 
     @Test
     fun `a full filesystem stays shut without evidence, and consumes no trial while it waits`() {
@@ -127,6 +139,36 @@ class StorageBreakerTest {
         trial.shouldBeInstanceOf<Admission.Trial>()
         trial.needsRealEvent shouldBe true // a zero-byte probe succeeds on a full filesystem
         full.admit() shouldBe Admission.Blocked(setOf(Kind.STORAGE_FULL)) // one trial at a time
+        val checks = evidenceChecks
+        full.isBlocked() shouldBe true
+        evidenceChecks shouldBe checks // a trial in flight: no database read
+        full.openKinds shouldBe setOf(Kind.STORAGE_FULL)
+    }
+
+    @Test
+    fun `every STORAGE_FULL trip, a failed trial included, tells the gate`() {
+        var trips = 0
+        val counted =
+            StorageBreaker(
+                Duration.ofSeconds(15),
+                Duration.ofMinutes(2),
+                nanoTime = { now },
+                storageFullGate =
+                    object : StorageFullGate {
+                        override fun tripped() {
+                            trips++
+                        }
+
+                        override fun evidence() = true
+                    },
+            )
+        counted.trip(Kind.AMBIGUOUS)
+        trips shouldBe 0
+        counted.trip(Kind.STORAGE_FULL)
+        advance(Duration.ofMinutes(1))
+        counted.admit().shouldBeInstanceOf<Admission.Trial>()
+        counted.trip(Kind.STORAGE_FULL) // the trial's real event hit ENOSPC again
+        trips shouldBe 2
     }
 
     @Test
@@ -147,7 +189,13 @@ class StorageBreakerTest {
 
     @Test
     fun `an evidence check that fails counts as no evidence`() {
-        val failing = StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now }) { error("database down") }
+        val failing =
+            StorageBreaker(
+                Duration.ofSeconds(15),
+                Duration.ofMinutes(2),
+                nanoTime = { now },
+                storageFullGate = StorageFullGate.of { error("database down") },
+            )
         failing.trip(Kind.STORAGE_FULL)
         advance(Duration.ofMinutes(1))
         failing.admit() shouldBe Admission.Blocked(setOf(Kind.STORAGE_FULL))

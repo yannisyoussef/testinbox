@@ -242,7 +242,7 @@ class FencedUploader(
             }.getOrDefault(ByteArray(0))
         val text = String(body, Charsets.UTF_8)
         val code = Regex("<Code>([^<]{1,100})</Code>").find(text)?.groupValues?.get(1)
-        val message = Regex("<Message>([^<]{1,1000})</Message>").find(text)?.groupValues?.get(1)
+        val message = Regex("<Message>([^<]{1,8000})</Message>").find(text)?.groupValues?.get(1)
         return Response(status, code, message)
     }
 
@@ -332,7 +332,11 @@ class FencedUploader(
          * Still ambiguous for the reservation; only the breaker kind differs.
          */
         internal fun isStorageFull(response: Response): Boolean =
-            (response.status == 507 && response.errorCode == "XMinioStorageFull") ||
+            // 507 Insufficient Storage is the full-storage status. With MinIO's code, or with
+            // no code at all (a lost or truncated body), it is storage-full: the conservative
+            // reading, since a SERVER_ERROR trial is a zero-byte probe a full filesystem
+            // passes. Another code under 507 is not assumed.
+            (response.status == 507 && (response.errorCode == null || response.errorCode == "XMinioStorageFull")) ||
                 (
                     response.status == 500 &&
                         response.errorMessage?.contains("no space left on device", ignoreCase = true) == true

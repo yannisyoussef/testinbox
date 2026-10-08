@@ -148,8 +148,10 @@ class IngestionDeploymentSafetyCheckTest {
             val message = context.startupFailure!!.stackTraceToString()
             for (key in listOf(
                 "global-limit-bytes",
+                "declared-bucket-quota-bytes",
                 "declared-max-ingestion-processes",
                 "inbox-share",
+                "measured-quota-lag-churn-bytes",
                 "backend-identity",
                 "filesystem.block-size-bytes",
                 "filesystem.object-overhead-max-bytes",
@@ -164,6 +166,40 @@ class IngestionDeploymentSafetyCheckTest {
                 message shouldContain "testinbox.storage.$key"
             }
         }
+    }
+
+    @Test
+    fun `every filesystem declaration binds on the gateway too`() {
+        runner
+            .withPropertyValues(
+                *deployed,
+                "testinbox.storage.filesystem.block-size-bytes=4096",
+                "testinbox.storage.filesystem.object-overhead-max-bytes=24576",
+                "testinbox.storage.filesystem.global-footprint-limit-bytes=21474836480",
+                "testinbox.storage.filesystem.deletion-debt-budget-bytes=8589934592",
+                "testinbox.storage.filesystem.metadata-budget-bytes=268435456",
+                "testinbox.storage.filesystem.operational-reserve-bytes=3221225472",
+                "testinbox.storage.filesystem.capacity-bytes=51539607552",
+                "testinbox.storage.filesystem.inodes=12582912",
+                "testinbox.storage.filesystem.observation-max-age=15m",
+            ).run { context ->
+                assertThat(context).hasNotFailed()
+                context
+                    .getBean(IngestionProperties::class.java)
+                    .storageDeclarations(emptyList())
+                    .filesystem shouldBe
+                    email.testinbox.application.storage.FilesystemDeclarations(
+                        blockSizeBytes = 4096,
+                        objectOverheadMaxBytes = 24576,
+                        globalFootprintLimitBytes = 21474836480,
+                        deletionDebtBudgetBytes = 8589934592,
+                        metadataBudgetBytes = 268435456,
+                        operationalReserveBytes = 3221225472,
+                        capacityBytes = 51539607552,
+                        inodes = 12582912,
+                        observationMaxAge = java.time.Duration.ofMinutes(15),
+                    )
+            }
     }
 
     @Test

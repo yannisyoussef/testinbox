@@ -41,9 +41,15 @@ class StorageFullClassificationTest {
     }
 
     @Test
-    fun `507 without MinIO's code is not assumed to be storage-full`() {
-        outcome(507, null, null) shouldBe UploadOutcome.Ambiguous(AmbiguityKind.SERVER_ERROR)
+    fun `a 507 whose body was lost is storage-full - the conservative reading - but another code under 507 is not`() {
+        outcome(507, null, null) shouldBe UploadOutcome.Ambiguous(AmbiguityKind.STORAGE_FULL)
         outcome(507, "InsufficientStorage", null) shouldBe UploadOutcome.Ambiguous(AmbiguityKind.SERVER_ERROR)
+    }
+
+    @Test
+    fun `a long ENOSPC message is still recognised`() {
+        val long = "x".repeat(3_000) + " no space left on device"
+        outcome(500, "InternalError", long) shouldBe UploadOutcome.Ambiguous(AmbiguityKind.STORAGE_FULL)
     }
 
     @Test

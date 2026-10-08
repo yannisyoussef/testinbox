@@ -197,12 +197,7 @@ class IngestionWiring(
     ): StorageBreaker {
         val filesystem = properties.storage.filesystem.toDeclarations()
         return StorageBreaker(
-            storageFullEvidence =
-                StorageFullEvidence(
-                    JdbcFilesystemObservations(jdbc),
-                    filesystem.effectiveObservationMaxAge,
-                    filesystem.effectiveOperationalReserveBytes,
-                ),
+            storageFullGate = StorageFullEvidence.forDeclarations(JdbcFilesystemObservations(jdbc), filesystem),
         )
     }
 
