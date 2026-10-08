@@ -82,6 +82,12 @@ jobs:
           ./scripts/check-backup-scope.test.sh
           ./scripts/await-candidate-build.test.sh
           ./scripts/check-minio-mirror-pin.test.sh
+          # ADR-035 §14 / §18 gates 6–7a (TI-STORAGE-006): the activation
+          # barrier evaluator and the enforcement-OFF gate. Fixture-driven; no
+          # database, network or Docker. The real repository's rollback floors
+          # are evaluated against origin/master inside the suite.
+          ./scripts/check-storage-activation.test.sh
+          ./scripts/check-storage-enforcement-off.test.sh
       # TI-005. Separate step because the 220-banner mutation needs Docker: its
       # whole point is that static validation cannot see a configuration which
       # passes `postfix check` and then leaves smtpd answering nothing. The
@@ -95,6 +101,14 @@ jobs:
       # prove two different MinIO versions.
       - name: MinIO mirror pinned consistently (one digest, no withdrawn upstream)
         run: ./scripts/check-minio-mirror-pin.sh
+      # ADR-035 §14 phase 2 / §18 gate 6: enforcement is configuration on the
+      # same digests, so a committed TENANT_LIMITS or ALL — in a YAML value, a
+      # `${VAR:-ALL}` default or the Kotlin property default — would turn it on
+      # at the next deploy with no activation barrier evaluated. Only Ops turn
+      # it on, after scripts/check-storage-activation.sh reports READY
+      # (docs/architecture/storage-activation.md).
+      - name: Storage enforcement ships OFF (ADR-035 §14 phase 2)
+        run: ./scripts/check-storage-enforcement-off.sh
       # ADR-023: @types/node is a compile-time ceiling. Above the floor it lets
       # TypeScript accept an API the oldest supported runtime does not have, and
       # nothing fails until a consumer on that runtime calls it — which no green

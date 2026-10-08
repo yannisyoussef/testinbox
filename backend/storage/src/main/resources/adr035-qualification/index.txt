@@ -1,0 +1,5 @@
+# ADR-035 §9a qualification records shipped in the artifact, one record filename per line.
+# A deployment's declared `testinbox.storage.backend-identity` must equal one of these records
+# exactly, and the record must be enablement-eligible, before enforcement may be ON.
+# Values are copied only from committed evidence (docs/adr/0035-benchmark/qualification/).
+laptop-arm64-reference-2026-09-29.json

@@ -17,13 +17,27 @@ B="sha256:0a7215f643cdaa475b6c4d674e8be6a06f71459158a677c98ff1a9f89d71853d"
 pass=0
 fail=0
 
-# fixture <dir> <compose-ref> <staging-ref> <kt-ref-1..4 (one value, reused)> <doc-ref> [kt-count]
+# fixture <dir> <compose-ref> <staging-ref> <kt-ref-1..4 (one value, reused)> <doc-ref> [kt-count] [qual-digest] [index-mode]
+#   qual-digest: the minio.imageIndexDigest of the one ADR-035 §9a qualification record (default: A)
+#   index-mode:  listed (default) | unlisted (record present, index.txt omits it) | none (no qualification dir)
+QUAL_DIR="backend/storage/src/main/resources/adr035-qualification"
 fixture() {
-    local root="$1" compose="$2" staging="$3" kt="$4" doc="$5" kt_count="${6:-4}"
+    local root="$1" compose="$2" staging="$3" kt="$4" doc="$5" kt_count="${6:-4}" qual="${7:-$A}" index_mode="${8:-listed}"
     rm -rf "$root"
     mkdir -p "$root/deploy/staging" "$root/docs/dev" \
         "$root/backend/storage/src/test/kotlin" "$root/backend/ingestion/src/test/kotlin" \
         "$root/backend/api/src/test/kotlin" "$root/backend/e2e/src/test/kotlin"
+
+    if [ "$index_mode" != none ]; then
+        mkdir -p "$root/$QUAL_DIR"
+        printf '{\n  "recordId": "fixture-laptop-arm64",\n  "minio": { "imageIndexDigest": "%s", "mode": "single-node-single-drive" },\n  "enablementEligible": false,\n  "ineligibilityReasons": ["fixture"]\n}\n' "$qual" \
+            > "$root/$QUAL_DIR/laptop-arm64.json"
+        if [ "$index_mode" = listed ]; then
+            printf '# fixture index\nlaptop-arm64.json\n' > "$root/$QUAL_DIR/index.txt"
+        else
+            printf '# fixture index: the record exists but is not listed, so it does not ship\n' > "$root/$QUAL_DIR/index.txt"
+        fi
+    fi
 
     printf 'services:\n  minio:\n    image: %s\n' "$compose" > "$root/docker-compose.yml"
     printf 'services:\n  minio:\n    image: %s\n' "$staging" > "$root/deploy/staging/compose.data.yaml"
@@ -113,6 +127,44 @@ DOC
 mkdir -p "$TMP/prose/.github/workflows"
 printf 'jobs:\n  x:\n    steps:\n      - run: echo quay.io/minio/minio\n' > "$TMP/prose/.github/workflows/ci.yml"
 check "prose and workflows may name the withdrawn images" 0 "$TMP/prose"
+
+# --- ADR-035 §9a: the pinned digest must be the digest of a SHIPPED qualification record ---
+# A re-mirror is a new MinIO combination. Six consumers agreeing on the new
+# digest, the provenance doc updated, and no qualification record: that is
+# exactly the state this extension exists to refuse.
+check_finding() {
+    local name="$1" root="$2" text="$3"
+    local output
+    output="$(SCAN_ROOT="$root" "$GATE" 2>&1)"
+    if printf '%s\n' "$output" | grep -qF -- "$text"; then
+        echo "ok   — $name"
+        pass=$((pass + 1))
+    else
+        echo "FAIL — $name (output lacks '$text')"
+        printf '%s\n' "$output" | sed 's/^/       /'
+        fail=$((fail + 1))
+    fi
+}
+
+fixture "$TMP/repin" "$MIRROR@$B" "$MIRROR@$B" "$MIRROR@$B" "$MIRROR@$B" 4 "$A"
+check "a consistent re-pin with no qualification record for the new digest fails" 1 "$TMP/repin"
+check_finding "the finding names the §9a rule" "$TMP/repin" "has no qualification record — a re-mirror cannot silently preserve qualification (ADR-035 §9a)"
+
+fixture "$TMP/other-record" "$MIRROR@$A" "$MIRROR@$A" "$MIRROR@$A" "$MIRROR@$A" 4 "$B"
+check "a qualification record for ANOTHER digest does not qualify this pin" 1 "$TMP/other-record"
+
+fixture "$TMP/unlisted" "$MIRROR@$A" "$MIRROR@$A" "$MIRROR@$A" "$MIRROR@$A" 4 "$A" unlisted
+check "a record omitted from index.txt does not ship and does not count" 1 "$TMP/unlisted"
+check_finding "the unlisted record is named" "$TMP/unlisted" "laptop-arm64.json is not listed in index.txt"
+
+fixture "$TMP/noqual" "$MIRROR@$A" "$MIRROR@$A" "$MIRROR@$A" "$MIRROR@$A" 4 "$A" none
+check "no qualification directory at all fails (nothing is qualified)" 1 "$TMP/noqual"
+
+fixture "$TMP/dangling" "$MIRROR@$A" "$MIRROR@$A" "$MIRROR@$A" "$MIRROR@$A"
+printf 'missing-record.json\n' >> "$TMP/dangling/$QUAL_DIR/index.txt"
+check "an index entry whose record file is missing fails" 1 "$TMP/dangling"
+
+check_finding "a clean tree reports which record qualifies the pin" "$TMP/good" "qualified by $QUAL_DIR/laptop-arm64.json"
 
 echo "----"
 echo "check-minio-mirror-pin.test.sh: $pass passed, $fail failed"

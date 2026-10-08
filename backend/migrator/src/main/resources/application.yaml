@@ -15,6 +15,11 @@ spring:
     hikari:
       # One short-lived connection is all a one-shot job needs.
       maximum-pool-size: 2
+      data-source-properties:
+        # ADR-035 §14 (a): the activation barrier allowlists application
+        # sessions by name and EXCLUDES `testinbox-migrator:%`. pgJDBC's default
+        # ("PostgreSQL JDBC Driver") would read as an old, unaware binary.
+        ApplicationName: testinbox-migrator:${TESTINBOX_GIT_SHA:unknown}
   flyway:
     enabled: true
     # Explicitly OFF. Baselining would let the migrator adopt a non-empty

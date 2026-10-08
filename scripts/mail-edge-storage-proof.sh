@@ -113,7 +113,7 @@ bad() { printf '  FAIL %s\n' "$1" >&2; fail=1; }
 # the whole ADR-025 storage half green.
 psql_count() {
   local sql="$1" out status
-  out="$("${COMPOSE[@]}" exec -T postgres psql -U "${TESTINBOX_DB_USER:?}" -d "${TESTINBOX_DB_NAME:?}" -tAc "$sql" 2>&1)"
+  out="$("${COMPOSE[@]}" exec -T -e PGAPPNAME=ops:rehearsal postgres psql -U "${TESTINBOX_DB_USER:?}" -d "${TESTINBOX_DB_NAME:?}" -tAc "$sql" 2>&1)"
   status=$?
   out="$(tr -d ' \r\n' <<<"$out")"
   if (( status != 0 )) || ! [[ "$out" =~ ^[0-9]+$ ]]; then

@@ -49,6 +49,30 @@ class EffectiveStoragePolicyTest {
     }
 
     @Test
+    fun `the deployment's declarations replace the reference G, share and process count (ADR-035 §18 prerequisite 10)`() {
+        val declared =
+            StorageDeclarations(
+                globalLimitBytes = 10L * 1024 * 1024 * 1024,
+                declaredMaxIngestionProcesses = 2,
+                inboxShare = "0.5",
+            )
+        val policy = EffectiveStoragePolicy.of(LimitsProperties().toConfig(), declared)
+        policy.globalLimitBytes shouldBe 10L * 1024 * 1024 * 1024
+        policy.inboxShare.value shouldBe java.math.BigDecimal("0.5")
+        policy.inboxLimitBytes shouldBe 1L * 1024 * 1024 * 1024
+        // H = 2 × 16 × 15 MiB = 480 MiB: a rolling deploy that overlaps two processes declares 2 (§9).
+        policy.finalizeBudgetBytes shouldBe 2L * 16 * 15 * 1024 * 1024
+        policy.globalAdmissionCapBytes shouldBe policy.globalLimitBytes - policy.finalizeBudgetBytes
+    }
+
+    @Test
+    fun `OFF with nothing declared is exactly the reference, so Phase 2 keeps its planning values`() {
+        EffectiveStoragePolicy.of(LimitsProperties().toConfig(), StorageDeclarations.OFF).shape() shouldBe
+            EffectiveStoragePolicy.of(LimitsProperties().toConfig()).shape()
+        EffectiveStoragePolicy.finalizeBudget(StorageDeclarations.OFF).bytes shouldBe StorageCapacityPolicy.REFERENCE_FINALIZE_BUDGET.bytes
+    }
+
+    @Test
     fun `the workspace limit never exceeds G, and G and H stay the reference values`() {
         val policy = EffectiveStoragePolicy.of(limits(Long.MAX_VALUE))
         policy.workspaceLimitBytes shouldBe StorageCapacityPolicy.ADR_035_REFERENCE.globalLimitBytes

@@ -335,6 +335,12 @@ class JdbcStorageReservations(
             .list()
             .toMap()
 
+    override fun reservedBytes(): Long =
+        jdbc
+            .sql("SELECT coalesce(sum(bytes), 0) FROM storage_reservation")
+            .query(Long::class.java)
+            .single()
+
     private companion object {
         /** How long a clock-offset hold waits for a row another transaction holds. */
         val HOLD_LOCK_TIMEOUT: Duration = Duration.ofSeconds(2)

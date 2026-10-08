@@ -4,32 +4,48 @@ import email.testinbox.application.port.PhysicalFailureKind
 import email.testinbox.application.port.ReleasePath
 import email.testinbox.application.port.StorageAdmissionOutcome
 import email.testinbox.application.port.StorageProtocolMetrics
+import email.testinbox.application.storage.activation.ActivationGate
 import email.testinbox.domain.storage.StorageCapacityPolicy
+import email.testinbox.domain.storage.StorageEnforcement
 import email.testinbox.domain.storage.StorageScope
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tags
 import io.micrometer.core.instrument.Timer
 import java.time.Duration
+import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * ADR-035 §16 signals of the guarded ingest protocol (TI-STORAGE-003).
- * Every label value comes from a closed enum, and every counter is
- * pre-registered at zero so dashboards and alerts see the series before the
- * first event.
+ * ADR-035 §16 signals of the guarded ingest protocol (TI-STORAGE-003), and
+ * the activation and enablement signals of TI-STORAGE-006 (§14 Phase 4,
+ * §16 `activation_violation`). Every label value comes from a closed enum,
+ * and every counter is pre-registered at zero so dashboards and alerts see
+ * the series before the first event.
+ *
+ * [policy] is the deployment's EFFECTIVE policy, so `global_limit_bytes` and
+ * `finalize_budget_bytes` report the G and H admission really applies: the
+ * activation barrier's physical-baseline check reads H from here.
  */
 class MicrometerStorageProtocolMetrics(
     private val registry: MeterRegistry,
     policy: StorageCapacityPolicy,
+    enforcement: StorageEnforcement = StorageEnforcement.OFF,
 ) : StorageProtocolMetrics {
     private val breakerOpen = AtomicLong(0)
     private val latched = AtomicLong(0)
     private val clockOffsetMillis = AtomicLong(0)
     private val ambiguous = AtomicLong(0)
     private val listedBytes = AtomicLong(0)
+    private val reservedBytes = AtomicLong(0)
     private val incomplete = AtomicLong(0)
+    private val activationViolation = AtomicLong(0)
+    private val orphanSweepCompletedAt = AtomicLong(0)
     private val byState = mapOf("RESERVED" to AtomicLong(0), "RELEASING" to AtomicLong(0))
+
+    /** Only the two gates a node can re-check at run time are exported per node (§14 Phase 4). */
+    private val gates = mapOf(ActivationGate.SESSION_ALLOWLIST to AtomicLong(0), ActivationGate.NODE_INVENTORY to AtomicLong(0))
+    private val modes = StorageEnforcement.entries.associateWith { AtomicLong(if (it == enforcement) 1 else 0) }
     private val lockWait = Timer.builder(LOCK_WAIT).register(registry)
     private val slotWait = Timer.builder(SLOT_WAIT).register(registry)
 
@@ -39,14 +55,20 @@ class MicrometerStorageProtocolMetrics(
         Gauge.builder(CLOCK_OFFSET, clockOffsetMillis) { it.get() / 1000.0 }.register(registry)
         gauge(AMBIGUOUS, ambiguous)
         gauge(LISTED, listedBytes)
+        gauge(COVERED, reservedBytes, Tags.of("kind", "reserved"))
         gauge(INCOMPLETE, incomplete)
+        gauge(ACTIVATION_VIOLATION, activationViolation)
+        gauge(ORPHAN_SWEEP_COMPLETED_AT, orphanSweepCompletedAt)
         byState.forEach { (state, value) -> gauge(RESERVATIONS, value, Tags.of("state", state.lowercase())) }
+        gates.forEach { (gate, value) -> gauge(ACTIVATION_GATE, value, Tags.of("gate", gate.name.lowercase())) }
+        modes.forEach { (mode, value) -> gauge(ENFORCEMENT_MODE, value, Tags.of("mode", mode.name.lowercase())) }
         Gauge.builder(GLOBAL_LIMIT) { policy.globalLimitBytes.toDouble() }.register(registry)
         Gauge.builder(FINALIZE_BUDGET) { policy.finalizeBudgetBytes.toDouble() }.register(registry)
         StorageAdmissionOutcome.entries.forEach { registry.counter(ADMISSION, "outcome", it.name.lowercase()) }
         StorageScope.entries.forEach { registry.counter(UNENFORCED, "ceiling", it.name.lowercase()) }
         PhysicalFailureKind.entries.forEach { registry.counter(PHYSICAL_FAILURE, "kind", it.name.lowercase()) }
         ReleasePath.entries.forEach { registry.counter(RELEASED, "path", it.name.lowercase()) }
+        SWEEP_OUTCOMES.forEach { registry.counter(ORPHAN_SWEEP, "outcome", it) }
         registry.counter(COMMIT_FENCED)
         registry.counter(LATE_OBJECT)
         registry.counter(WITNESS_FAILED)
@@ -108,6 +130,27 @@ class MicrometerStorageProtocolMetrics(
         registry.counter(WITNESS_FAILED).increment()
     }
 
+    override fun activationViolation(violated: Boolean) = activationViolation.set(if (violated) 1 else 0)
+
+    override fun activationGate(
+        gate: ActivationGate,
+        ready: Boolean,
+    ) {
+        gates[gate]?.set(if (ready) 1 else 0)
+    }
+
+    override fun enforcementMode(mode: StorageEnforcement) {
+        modes.forEach { (m, value) -> value.set(if (m == mode) 1 else 0) }
+    }
+
+    override fun orphanSweepCompleted(at: Instant) = orphanSweepCompletedAt.set(at.epochSecond)
+
+    override fun orphanSweepFinished(ok: Boolean) {
+        registry.counter(ORPHAN_SWEEP, "outcome", if (ok) SWEEP_OUTCOMES[0] else SWEEP_OUTCOMES[1]).increment()
+    }
+
+    override fun reservedBytes(bytes: Long) = reservedBytes.set(bytes)
+
     companion object {
         const val ADMISSION = "testinbox_storage_admission_total"
         const val UNENFORCED = "testinbox_storage_admission_unenforced_total"
@@ -127,5 +170,16 @@ class MicrometerStorageProtocolMetrics(
         const val RESERVATIONS = "testinbox_storage_reservations"
         const val GLOBAL_LIMIT = "testinbox_storage_global_limit_bytes"
         const val FINALIZE_BUDGET = "testinbox_storage_finalize_budget_bytes"
+
+        /** Shares its name with the accounting side's `kind=committed` series; this adapter owns `kind=reserved`. */
+        const val COVERED = "testinbox_storage_covered_bytes"
+        const val ACTIVATION_VIOLATION = "testinbox_storage_activation_violation"
+        const val ACTIVATION_GATE = "testinbox_storage_activation_gate_ready"
+        const val ENFORCEMENT_MODE = "testinbox_storage_enforcement_mode"
+        const val ORPHAN_SWEEP_COMPLETED_AT = "testinbox_storage_orphan_sweep_completed_at_seconds"
+        const val ORPHAN_SWEEP = "testinbox_storage_orphan_sweep_total"
+
+        /** The closed outcome vocabulary of the sweep counter. */
+        val SWEEP_OUTCOMES: List<String> = listOf("ok", "failed")
     }
 }

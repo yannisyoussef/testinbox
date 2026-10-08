@@ -44,6 +44,8 @@ class StorageNodeRuntime(
     private val slots: WriteSlots? = null,
     /** Where an out-of-bound offset is made durable; the same hold cleanup applies. */
     private val reservations: StorageReservations? = null,
+    /** ADR-035 §14 Phase 4: re-run on every heartbeat; a non-OFF node fails closed through its guard. */
+    private val activation: email.testinbox.application.storage.activation.ActivationWatch? = null,
 ) : SmartLifecycle {
     private var executors: List<ScheduledExecutorService> = emptyList()
     private var claim: StorageNodeClaims.Claim? = null
@@ -54,6 +56,16 @@ class StorageNodeRuntime(
                 ?: error("storage node id '${lifecycle.node.nodeId}' is held by another live process; every process needs its own")
         }
         lifecycle.start()
+        // The first allowlist/inventory check happens BEFORE the gateway accepts
+        // anything, not one heartbeat later: a non-OFF node next to an old binary
+        // fails closed from its first DATA.
+        runCatching { activation?.run() }
+            .onFailure {
+                log.warn(
+                    "storage activation check failed at start; the guard stays clear until the first heartbeat: {}",
+                    it.toString(),
+                )
+            }
         executors =
             listOf(
                 scheduled("storage-node-heartbeat").also {
@@ -75,6 +87,13 @@ class StorageNodeRuntime(
 
     @Synchronized
     private fun heartbeat() {
+        runCatching { activation?.run() }
+            .onFailure {
+                log.warn(
+                    "storage activation check failed; the guard keeps its last state until the next heartbeat: {}",
+                    it.toString(),
+                )
+            }
         runCatching {
             lifecycle.heartbeat()
             val c = claims ?: return@runCatching

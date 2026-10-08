@@ -151,16 +151,85 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   process started with the same id **fails to start**. If the claim's session
   dies and another process takes the id meanwhile, the first opens its
   storage breaker (`451`) rather than share it.
-- **Enforcement is OFF, and there is no setting for it.** No property,
-  environment variable or profile switches refusal on in this release (ADR-035
-  Phase 2). Enabling it is a later, gated release.
+- **Enforcement is OFF by default, and the setting exists (TI-STORAGE-006).**
+  `TESTINBOX_STORAGE_ENFORCEMENT` is `OFF` | `TENANT_LIMITS` | `ALL`, exactly
+  those three states (ADR-035 §14). Every committed environment is OFF, and
+  `scripts/check-storage-enforcement-off.sh` fails CI if one is not. A non-OFF
+  value is refused at startup unless ALL of these are set and consistent:
+  `TESTINBOX_STORAGE_GLOBAL_LIMIT_BYTES` (*G*),
+  `TESTINBOX_STORAGE_DECLARED_BUCKET_QUOTA_BYTES` (*Q*, the fuse
+  `Q ≥ G + max(1 GiB, 10 % of G, H + churn)`),
+  `TESTINBOX_STORAGE_DECLARED_MAX_INGESTION_PROCESSES` (deploy surge INCLUDED:
+  a rolling deploy that overlaps two gateways declares 2, so H doubles),
+  `TESTINBOX_STORAGE_INBOX_SHARE`, `TESTINBOX_STORAGE_MEASURED_QUOTA_LAG_CHURN_BYTES`
+  (Ops measures it), and the declared backend identity
+  (`testinbox.storage.backend-identity.*`: image index digest, platform member
+  digest, release, commit id, mode, drive count, timeout environment and CLI
+  flags, runtime admin-config hash, kernel release, filesystem type, mount
+  options, storage-class defaults, direct path, proxy), which must EXACTLY
+  match a qualification record shipped in the artifact that is
+  enablement-eligible (ADR-035 §9a). The only shipped record today is the
+  laptop one, and it is not eligible, so no artifact can currently enforce
+  anywhere: that is the intended state until the production combination is
+  qualified with `slow-W` (§18 gate 7a). OFF keeps starting with any of these
+  absent, stale or changed — it is the requalification mode of the MinIO
+  change rule.
+- **Node identity, both deployables.** The API registers in `storage_node`
+  too (it runs cleanup and the orphan sweep, so it is a protocol participant)
+  and claims its `TESTINBOX_STORAGE_NODE_ID` with the same session lock as the
+  gateway, so two API processes with one id cannot overlap either. The one
+  asymmetry: a gateway that loses its claim opens its breaker (`451`); an API
+  that loses its claim only logs, because the API admits no mail and two APIs
+  sharing an id can only duplicate cleanup work that `SKIP LOCKED` already
+  tolerates. A node id must not contain `:` (the session name cannot carry
+  one); startup refuses it.
+- **The declared inventory is REQUIRED under a non-OFF mode.** The barrier's
+  positive inventory compares `TESTINBOX_STORAGE_EXPECTED_API_NODES` and
+  `TESTINBOX_STORAGE_EXPECTED_INGESTION_NODES` (comma-separated, exact ids)
+  with the healthy `storage-v1` rows; nothing is inferred from what happens to
+  be heartbeating. A non-OFF node refuses to start when either list is empty,
+  when its own id is not in its list, or when more ingestion nodes are declared
+  than `declared-max-ingestion-processes` (each holds 16 write slots). Surge
+  ABOVE the declared set is Ops's declaration; the application cannot observe
+  it.
+- **What a non-OFF node does with a broken barrier.** Each gateway re-checks
+  the session allowlist and the inventory before its first `DATA` and then on
+  every heartbeat (10 s); each API re-checks on every cleanup pass (30 s). A
+  session of the application role outside the allowlist, a missing, stale or
+  wrong-capability INGESTION node, or an undeclared node makes every gateway
+  answer `451` until the check passes again; a missing API node raises
+  `testinbox_storage_activation_violation` and is logged but does NOT turn mail
+  away (an API deploy is not an old ingress instance). Alert on the gauge
+  sustained for more than a minute, not on a blip.
+- **Every session AS the application database role must be tagged under a
+  non-OFF mode.** The allowlist is scoped to the application role, as ADR-035
+  §14 (a) words it: a `pg_dump` under a backup role, a metrics exporter under
+  its own role or a DBA's `psql` under theirs are not evaluated. A human or
+  tool that connects AS the application role must set
+  `PGAPPNAME=ops:<purpose>` (the latch runbook below included), or it reads as
+  an old binary and every gateway defers mail while it is connected. Use a
+  separate role for backups and exporters.
+- **An API deploy under a non-OFF mode is visible, not blocking.** The API
+  marks its generation clean on stop and re-registers on start; during a
+  stop-then-start the inventory reports the API absent and the violation gauge
+  blips. API blue/green with ONE id is impossible (the second process refuses
+  to start while the first holds the id); with two ids the declared set must
+  name both. Ops should confirm the reconciler's API replacement strategy
+  before enabling.
+- **The activation barrier.** Before any `OFF → TENANT_LIMITS` change, Ops
+  runs `scripts/check-storage-activation.sh` (docs/architecture/storage-activation.md)
+  and records its evidence JSON in `production-ops-acceptance.md`. The
+  rollback-floor gate (e) is expected to report BLOCKED until the ADR-035
+  floors reach `master` through a release pull request.
 - **The admission latch.** A late object sets `storage_admission_latch`, and
   every ingestion node then answers SMTP `451` before admission. The edge
   queues mail for up to 4 h. **Runbook:**
   1. Investigate the late object (`testinbox_storage_late_object_total`, and
      the `storage_late_object` error logs).
   2. Confirm the storage combination is still the qualified one.
-  3. Clear the latch by hand: `DELETE FROM storage_admission_latch;`.
+  3. Clear the latch by hand: `DELETE FROM storage_admission_latch;` — from a
+     session tagged `PGAPPNAME=ops:latch-runbook` when enforcement is not OFF,
+     or the session itself trips the activation guard.
 
   No endpoint clears it.
 

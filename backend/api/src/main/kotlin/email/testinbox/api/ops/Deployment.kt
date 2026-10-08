@@ -6,6 +6,7 @@ import email.testinbox.application.deployment.DeploymentSafety
 import email.testinbox.application.deployment.DeploymentSettings
 import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.port.BlobStore
+import email.testinbox.application.storage.StorageDeclarations
 import org.slf4j.LoggerFactory
 import org.springframework.boot.health.contributor.Health
 import org.springframework.boot.health.contributor.HealthIndicator
@@ -30,6 +31,8 @@ class DeploymentSafetyCheck(
     properties: TestInboxProperties,
     dataSourceProperties: DataSourceProperties,
     springEnvironment: Environment,
+    /** Built by the wiring from the properties and the records shipped in this artifact (ADR-035 §9a). */
+    storage: StorageDeclarations,
 ) {
     init {
         val environment = properties.deployment.environment?.takeIf { it.isNotBlank() }
@@ -40,15 +43,20 @@ class DeploymentSafetyCheck(
             "Refusing to start: deployed configuration is unsafe.\n  - testinbox.deployment.environment is not set " +
                 "although profile '${deployedProfiles.sorted().joinToString(",")}' is active"
         }
-        if (environment != null) {
+        // ADR-035 §14: a ceiling may refuse only in a declared, validated deployed
+        // environment, so a non-OFF enforcement value is validated even where the
+        // environment name is absent — and then refused for that very reason.
+        val enforced = properties.storage.enforcement != email.testinbox.domain.storage.StorageEnforcement.OFF
+        if (environment != null || enforced) {
             val violations =
                 DeploymentSafety.validate(
                     DeploymentSettings(
-                        environment = environment,
+                        environment = environment.orEmpty(),
                         mailDomain = properties.mailDomain,
-                        databaseUrl = dataSourceProperties.determineUrl().orEmpty(),
-                        databaseUsername = dataSourceProperties.determineUsername().orEmpty(),
-                        databasePassword = dataSourceProperties.determinePassword().orEmpty(),
+                        // A URL Spring cannot determine (no value, no embedded database) is "not set".
+                        databaseUrl = runCatching { dataSourceProperties.determineUrl() }.getOrNull().orEmpty(),
+                        databaseUsername = runCatching { dataSourceProperties.determineUsername() }.getOrNull().orEmpty(),
+                        databasePassword = runCatching { dataSourceProperties.determinePassword() }.getOrNull().orEmpty(),
                         storageEndpoint = properties.storage.endpoint,
                         storageAccessKey = properties.storage.accessKey,
                         storageSecretKey = properties.storage.secretKey,
@@ -62,15 +70,17 @@ class DeploymentSafetyCheck(
                         publicSurface = true,
                         createBucket = properties.storage.createBucket,
                         requireDatabaseSessionTimeout = properties.deployment.requireDatabaseSessionTimeout,
+                        storage = storage,
                     ),
                 )
             check(violations.isEmpty()) { DeploymentSafety.describe(violations) }
             log.info(
-                "deployment configuration validated (environment={} profiles={} gitSha={} imageDigest={})",
+                "deployment configuration validated (environment={} profiles={} gitSha={} imageDigest={} storageEnforcement={})",
                 environment,
                 springEnvironment.activeProfiles.joinToString(","),
                 properties.deployment.gitSha,
                 properties.deployment.imageDigest,
+                properties.storage.enforcement,
             )
         }
     }

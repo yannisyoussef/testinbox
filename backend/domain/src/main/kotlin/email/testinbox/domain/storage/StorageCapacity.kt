@@ -119,9 +119,9 @@ class StorageCapacityPolicy(
 
         /**
          * The ADR-035 planning values: a 2 GiB workspace, a 0.25 inbox share,
-         * *G* = 40 GiB, and the reference H. Nothing reads configuration for
-         * these yet, because nothing on a live path uses the policy
-         * (TI-STORAGE-002).
+         * *G* = 40 GiB, and the reference H. They are the OFF (Phase 2)
+         * defaults; a non-OFF deployment must declare G, Q, the process count
+         * and the share itself (TI-STORAGE-006, ADR-035 §18 prerequisite 10).
          */
         val ADR_035_REFERENCE =
             StorageCapacityPolicy(
@@ -137,6 +137,54 @@ class StorageCapacityPolicy(
 enum class StorageScope { INBOX, WORKSPACE, GLOBAL }
 
 /**
+ * The bucket-quota fuse of ADR-035 §9 and §18 prerequisite 8:
+ *
+ * ```
+ * Q ≥ G + max(1 GiB, 10 %, H + the bytes MinIO can accept during one usage-refresh lag)
+ * ```
+ *
+ * **Interpretation of "10 %", fixed here and documented by a test:** ten per
+ * cent of *G*, computed as `floor(G / 10)`. Every term of the margin is
+ * headroom above *G* (the fixed 1 GiB, the finalize budget plus the lag
+ * churn), so the proportional term is read against the same base. The owner
+ * decision in §0 (a 40 GiB ceiling under a 50 GiB quota) satisfies it:
+ * `40 + max(1, 4, 0.23 + churn) = 44 GiB ≤ 50 GiB` for any churn under 3.77 GiB.
+ *
+ * *Q* is a fuse, never the bound (§9: MinIO's quota is checked against
+ * lagging usage, probes Q2–Q7). A quota below this minimum does not make the
+ * bound wrong; it makes the fuse useless, so a non-OFF deployment refuses to
+ * start on it (§18 gate 8).
+ *
+ * All arithmetic is checked: an overflow is a configuration failure, never a
+ * wrapped margin.
+ */
+object BucketQuotaFuse {
+    const val GIB: Long = 1024L * 1024 * 1024
+
+    /** The smallest quota the fuse accepts for [globalLimitBytes], [finalizeBudgetBytes] and [lagChurnBytes]. */
+    fun minimumQuotaBytes(
+        globalLimitBytes: Long,
+        finalizeBudgetBytes: Long,
+        lagChurnBytes: Long,
+    ): Long {
+        require(globalLimitBytes > 0) { "G must be positive, was $globalLimitBytes" }
+        require(finalizeBudgetBytes >= 0) { "H must not be negative, was $finalizeBudgetBytes" }
+        require(lagChurnBytes >= 0) { "the measured usage-lag churn must not be negative, was $lagChurnBytes" }
+        val tenPercentOfG = globalLimitBytes / 10
+        val finalizeAndChurn = Math.addExact(finalizeBudgetBytes, lagChurnBytes)
+        return Math.addExact(globalLimitBytes, maxOf(GIB, tenPercentOfG, finalizeAndChurn))
+    }
+
+    /** Whether [declaredQuotaBytes] satisfies the fuse. Throws [ArithmeticException] on overflow, never wraps. */
+    fun holds(
+        declaredQuotaBytes: Long,
+        globalLimitBytes: Long,
+        finalizeBudgetBytes: Long,
+        lagChurnBytes: Long,
+    ): Boolean = declaredQuotaBytes >= minimumQuotaBytes(globalLimitBytes, finalizeBudgetBytes, lagChurnBytes)
+}
+
+/**
  * Which ceilings may refuse a copy: exactly the rollout states ADR-035 §14
  * needs.
  *
@@ -146,8 +194,10 @@ enum class StorageScope { INBOX, WORKSPACE, GLOBAL }
  *   refuse, and the global one is observed until the §11 gate has passed.
  * - [ALL] (Phase 4): all three refuse.
  *
- * TI-STORAGE-003: the live path is constructed with [OFF] only, and no
- * configuration can select anything else.
+ * TI-STORAGE-006: `testinbox.storage.enforcement` selects one of exactly these
+ * three states, OFF by default. A non-OFF value is refused at startup unless
+ * every ADR-035 §18 declaration is present and consistent (DeploymentSafety).
+ * No other combination of ceilings exists.
  */
 enum class StorageEnforcement(
     private val enforced: Set<StorageScope>,

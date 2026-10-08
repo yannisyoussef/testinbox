@@ -44,6 +44,22 @@ object StorageProtocol {
     /** The capability a node publishes in `storage_node` and its `application_name` (§14). */
     const val CAPABILITY = "storage-v1"
 
+    /**
+     * The identity of the physical upload protocol implementation (ADR-035
+     * §9a, TI-STORAGE-006 §14): presigned single-part PUT with the signed
+     * `content-length` and `If-None-Match: *` headers, one attempt, total
+     * wall-clock `T_put`, abort by RST, no pipelining, direct connection.
+     *
+     * It is compared against the qualification record a deployment declares,
+     * so it MUST change whenever a change could invalidate that record:
+     * presigning semantics, signed headers, retry behaviour, the PUT
+     * implementation, `T_put`, the RST, pipelining or the connection path.
+     * It is deliberately not derived from a build timestamp or a Git SHA,
+     * which change without the protocol changing. `FencedUploaderVersionTest`
+     * pins the behaviour this string names.
+     */
+    const val UPLOAD_IMPLEMENTATION_VERSION = "adr035-presigned-put-v1"
+
     init {
         check(T_VERIFY >= SETTLE) { "T_verify must be at least S" }
         check(SETTLE >= EPSILON_MAX.plus(T_PUT).plusMillis(30_250).plus(C_MAX)) { "S must cover ε_max + T_put + 30.25 s + C_max" }
@@ -62,6 +78,9 @@ enum class StorageUnavailableReason {
     LOCK_TIMEOUT,
     UPLOAD_FAILED,
     COMMIT_FENCED,
+
+    /** TI-STORAGE-006 §22: a non-OFF node re-checked the §14 barrier and found it broken. Infrastructure, never capacity. */
+    ACTIVATION_VIOLATED,
 }
 
 class StorageUnavailableException(

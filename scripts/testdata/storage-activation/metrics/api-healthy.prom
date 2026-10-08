@@ -1,0 +1,23 @@
+# Fixture: an ADR-035 API node that satisfies barriers B and C.
+# @GIT_SHA@ is substituted by check-storage-activation.test.sh with the throwaway repository's head.
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds{service="testinbox-api",environment="staging"} 1.7596E9
+testinbox_build{service="testinbox-api",environment="staging",git_sha="@GIT_SHA@",version="0.1.0-fixture"} 1
+testinbox_storage_clock_offset_seconds{service="testinbox-api",environment="staging"} 0.42
+testinbox_storage_physical_listed_bytes{service="testinbox-api",environment="staging"} 1.048576E8
+testinbox_storage_covered_bytes{service="testinbox-api",environment="staging",kind="committed"} 9.437184E7
+testinbox_storage_covered_bytes{service="testinbox-api",environment="staging",kind="reserved"} 1.572864E7
+testinbox_storage_finalize_budget_bytes{service="testinbox-api",environment="staging"} 2.5165824E8
+testinbox_storage_global_limit_bytes{service="testinbox-api",environment="staging"} 5.36870912E10
+testinbox_storage_orphan_sweep_completed_at_seconds{service="testinbox-api",environment="staging"} 1.7596036E9
+testinbox_storage_orphan_sweep_total{service="testinbox-api",environment="staging",outcome="ok"} 3
+testinbox_storage_orphan_sweep_total{service="testinbox-api",environment="staging",outcome="failed"} 0
+testinbox_storage_admission_latched{service="testinbox-api",environment="staging"} 0
+testinbox_storage_breaker_open{service="testinbox-api",environment="staging"} 0
+testinbox_storage_activation_violation{service="testinbox-api",environment="staging"} 0
+testinbox_storage_activation_gate_ready{service="testinbox-api",environment="staging",gate="session_allowlist"} 1
+testinbox_storage_activation_gate_ready{service="testinbox-api",environment="staging",gate="node_inventory"} 1
+testinbox_storage_enforcement_mode{service="testinbox-api",environment="staging",mode="off"} 1
+testinbox_storage_enforcement_mode{service="testinbox-api",environment="staging",mode="tenant_limits"} 0
+testinbox_storage_enforcement_mode{service="testinbox-api",environment="staging",mode="all"} 0

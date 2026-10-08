@@ -1,7 +1,13 @@
 package email.testinbox.api.config
 
+import email.testinbox.application.ActivationProperties
+import email.testinbox.application.BackendIdentityProperties
 import email.testinbox.application.LimitsProperties
+import email.testinbox.application.StorageDeclarationsFactory
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.storage.QualificationRecord
+import email.testinbox.application.storage.StorageDeclarations
+import email.testinbox.domain.storage.StorageEnforcement
 import org.springframework.boot.context.properties.ConfigurationProperties
 import java.time.Duration
 import java.util.UUID
@@ -38,7 +44,46 @@ data class TestInboxProperties(
         val createBucket: Boolean = true,
         /** ADR-035: this API node's id, naming its witness probes and its DB sessions. */
         val nodeId: String = "testinbox-api",
+        /**
+         * ADR-035 §14: OFF | TENANT_LIMITS | ALL, exactly those three states.
+         * OFF is the default and the only value any committed environment may
+         * carry (`scripts/check-storage-enforcement-off.sh`). A non-OFF value
+         * is refused at startup unless every §18 declaration below is present
+         * and consistent (`DeploymentSafety`).
+         */
+        val enforcement: StorageEnforcement = StorageEnforcement.OFF,
+        /** *G*, the global application ceiling in bytes (ADR-035 §3). Required when enforcement is not OFF. */
+        val globalLimitBytes: Long? = null,
+        /** *Q*, the bucket quota Ops set, in bytes; the fuse `Q ≥ G + max(1 GiB, 10 % of G, H + churn)` (§9). */
+        val declaredBucketQuotaBytes: Long? = null,
+        /** Ingestion processes that can run at once, deploy surge INCLUDED (§9: a rolling deploy that overlaps two must declare 2). */
+        val declaredMaxIngestionProcesses: Int? = null,
+        /** The inbox share of the workspace limit, decimal text in (0, 1] (§3). */
+        val inboxShare: String? = null,
+        /** The bytes MinIO can accept during one usage-refresh lag, as Ops measured it (§9, §18 gate 8). */
+        val measuredQuotaLagChurnBytes: Long? = null,
+        /** The declared storage combination, matched against the shipped qualification records (§9a). */
+        val backendIdentity: BackendIdentityProperties = BackendIdentityProperties(),
+        /** The node inventory the activation barrier expects (TI-STORAGE-006 §20). */
+        val activation: ActivationProperties = ActivationProperties(),
     )
+
+    /** The framework-free declarations `DeploymentSafety` and `EffectiveStoragePolicy` read (ADR-035 §18). */
+    fun storageDeclarations(records: List<QualificationRecord>): StorageDeclarations =
+        StorageDeclarationsFactory.from(
+            enforcement = storage.enforcement,
+            globalLimitBytes = storage.globalLimitBytes,
+            declaredBucketQuotaBytes = storage.declaredBucketQuotaBytes,
+            declaredMaxIngestionProcesses = storage.declaredMaxIngestionProcesses,
+            inboxShare = storage.inboxShare,
+            measuredQuotaLagChurnBytes = storage.measuredQuotaLagChurnBytes,
+            backendIdentity = storage.backendIdentity,
+            maxObjectBytes = maxRawSizeBytes,
+            qualificationRecords = records,
+            activation = storage.activation,
+            nodeId = storage.nodeId,
+            nodeRole = email.testinbox.application.storage.NodeRole.API,
+        )
 
     /**
      * Deployment identity and environment coupling (ADR-028/029). All of it is

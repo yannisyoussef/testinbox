@@ -1,0 +1,18 @@
+<configuration>
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{20} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <logger name="com.zaxxer.hikari" level="WARN"/>
+    <!-- One INFO line per sweep is the production signal; here it would be 26 lines a second. -->
+    <logger name="email.testinbox.application.usecase.ExpireInboxes" level="WARN"/>
+    <logger name="org.flywaydb" level="WARN"/>
+    <logger name="org.testcontainers" level="WARN"/>
+    <logger name="tc" level="WARN"/>
+    <logger name="com.github.dockerjava" level="WARN"/>
+    <root level="INFO">
+        <appender-ref ref="STDERR"/>
+    </root>
+</configuration>

@@ -18,13 +18,15 @@ import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.GuardedStorage
 import email.testinbox.application.storage.StorageBreaker
+import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.application.storage.StorageNode
 import email.testinbox.application.storage.StorageNodeLifecycle
 import email.testinbox.application.storage.WriteSlots
+import email.testinbox.application.storage.activation.ActivationGuard
+import email.testinbox.application.storage.activation.ActivationWatch
 import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.application.usecase.StorageAdmission
 import email.testinbox.domain.storage.StorageCapacityPolicy
-import email.testinbox.domain.storage.StorageEnforcement
 import email.testinbox.ingestion.mime.JakartaMimeParser
 import email.testinbox.ingestion.ops.StorageNodeRuntime
 import email.testinbox.observability.BuildInfoMetric
@@ -34,12 +36,14 @@ import email.testinbox.observability.MicrometerLimitMetrics
 import email.testinbox.observability.MicrometerSmtpMetrics
 import email.testinbox.observability.MicrometerStorageProtocolMetrics
 import email.testinbox.persistence.BundledMigrations
+import email.testinbox.persistence.JdbcActivationInventory
 import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.persistence.JdbcSchemaHistory
 import email.testinbox.persistence.JdbcStorageAdmission
 import email.testinbox.persistence.JdbcStorageAmbiguity
 import email.testinbox.persistence.JdbcStorageNodeClaims
 import email.testinbox.persistence.JdbcStorageReservations
+import email.testinbox.storage.QualificationRecords
 import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
 import org.springframework.context.annotation.Bean
@@ -187,30 +191,80 @@ class IngestionWiring(
         node: StorageNode,
     ): WriteSlots = WriteSlots(ambiguous = { ambiguity.unresolvedFor(node.nodeId) })
 
+    /**
+     * ADR-035 §18: what this deployment declares, with the qualification
+     * records shipped in this artifact. `IngestionDeploymentSafetyCheck` has
+     * already refused a non-OFF value that is incomplete or unqualified by the
+     * time this bean exists; nothing below re-checks, and nothing can widen it.
+     */
     @Bean
-    fun storageProtocolMetrics(registry: io.micrometer.core.instrument.MeterRegistry): StorageProtocolMetrics =
-        MicrometerStorageProtocolMetrics(registry, StorageCapacityPolicy.ADR_035_REFERENCE)
+    fun storageDeclarations(properties: IngestionProperties): StorageDeclarations =
+        properties.storageDeclarations(QualificationRecords.load())
+
+    /** The ONE effective policy (ADR-035 §3), the same factory the API uses for `limitBytes`. */
+    @Bean
+    fun storageCapacityPolicy(
+        limits: LimitsConfig,
+        declarations: StorageDeclarations,
+    ): StorageCapacityPolicy = EffectiveStoragePolicy.of(limits, declarations)
+
+    /** The EFFECTIVE G and H, and the effective mode, so Ops reads what admission really applies. */
+    @Bean
+    fun storageProtocolMetrics(
+        registry: io.micrometer.core.instrument.MeterRegistry,
+        policy: StorageCapacityPolicy,
+        declarations: StorageDeclarations,
+    ): StorageProtocolMetrics = MicrometerStorageProtocolMetrics(registry, policy, declarations.enforcement)
+
+    /** TI-STORAGE-006 §22: the in-process fail-closed guard a broken activation invariant sets on a non-OFF node. */
+    @Bean
+    fun activationGuard(): ActivationGuard = ActivationGuard()
 
     /**
-     * T1 with enforcement OFF, a literal. ADR-035 Phase 2: the whole protocol
-     * runs and every ceiling is observed, but nothing is refused. No property,
-     * environment variable or profile reaches this value (TI-STORAGE-003).
+     * ADR-035 §14 Phase 4: this node re-runs the allowlist and inventory checks
+     * on its heartbeat cadence. OFF observes; TENANT_LIMITS and ALL fail closed
+     * through [activationGuard].
+     */
+    @Bean
+    fun activationWatch(
+        jdbc: JdbcClient,
+        properties: IngestionProperties,
+        declarations: StorageDeclarations,
+        guard: ActivationGuard,
+        storageMetrics: StorageProtocolMetrics,
+    ): ActivationWatch =
+        ActivationWatch(
+            JdbcActivationInventory(jdbc),
+            properties.storage.activation.toExpectedNodes(),
+            declarations.enforcement,
+            guard,
+            storageMetrics,
+        )
+
+    /**
+     * T1 with the deployment's enforcement mode (ADR-035 §14). OFF, the
+     * default and the only committed value, observes every ceiling and refuses
+     * nothing (Phase 2). A non-OFF value reaches here only after
+     * `DeploymentSafety` proved every §18 declaration present and the backend
+     * qualified (TI-STORAGE-006).
      *
-     * The ceilings it observes are [EffectiveStoragePolicy]'s: the same formula
-     * the API applies for `limitBytes` (TI-STORAGE-004). Each deployable reads
-     * its own `max-stored-bytes`, so the two agree exactly when their configured
-     * value does; a split configuration is an operations error, not a code path.
+     * The ceilings it decides against are [EffectiveStoragePolicy]'s: the same
+     * formula the API applies for `limitBytes` (TI-STORAGE-004). Each deployable
+     * reads its own `max-stored-bytes` and declarations, so the two agree
+     * exactly when their configuration does; a split configuration is an
+     * operations error, not a code path.
      */
     @Bean
     fun storageAdmission(
         jdbc: JdbcClient,
         transactionManager: PlatformTransactionManager,
-        limits: LimitsConfig,
+        policy: StorageCapacityPolicy,
+        declarations: StorageDeclarations,
     ): StorageAdmission =
         StorageAdmission(
             JdbcStorageAdmission(jdbc, template(transactionManager)),
-            EffectiveStoragePolicy.of(limits),
-            StorageEnforcement.OFF,
+            policy,
+            declarations.enforcement,
         )
 
     /** A @Bean method's parameters are its dependencies: one per protocol collaborator. */
@@ -227,6 +281,7 @@ class IngestionWiring(
         node: StorageNode,
         transactions: TransactionRunner,
         storageMetrics: StorageProtocolMetrics,
+        activation: ActivationGuard,
     ): GuardedStorage =
         GuardedStorage(
             admission = admission,
@@ -241,6 +296,7 @@ class IngestionWiring(
             transactions = transactions,
             clock = reservations,
             metrics = storageMetrics,
+            activation = activation,
         )
 
     /** A @Bean method's parameters are its dependencies: one per runtime collaborator. */
@@ -255,6 +311,7 @@ class IngestionWiring(
         storageMetrics: StorageProtocolMetrics,
         slots: WriteSlots,
         dataSource: DataSource,
+        activationWatch: ActivationWatch,
     ): StorageNodeRuntime =
         StorageNodeRuntime(
             StorageNodeLifecycle(ambiguity, node),
@@ -265,6 +322,7 @@ class IngestionWiring(
             claims = JdbcStorageNodeClaims(dataSource),
             slots = slots,
             reservations = reservations,
+            activation = activationWatch,
         )
 
     @Bean

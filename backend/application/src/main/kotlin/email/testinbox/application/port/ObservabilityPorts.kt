@@ -410,6 +410,29 @@ interface StorageProtocolMetrics {
 
     fun witnessFailed() {}
 
+    // --- TI-STORAGE-006: activation and enablement observability (ADR-035 §14, §16) ---
+
+    /** `testinbox_storage_activation_violation`: 1 while a non-OFF node's barrier is broken (ADR-035 §14 Phase 4). */
+    fun activationViolation(violated: Boolean) {}
+
+    /** `testinbox_storage_activation_gate_ready{gate}`: the runtime-checkable gates, observed in every mode. */
+    fun activationGate(
+        gate: email.testinbox.application.storage.activation.ActivationGate,
+        ready: Boolean,
+    ) {}
+
+    /** `testinbox_storage_enforcement_mode{mode}`: 1 on the effective mode, 0 on the others. Never a tenant endpoint. */
+    fun enforcementMode(mode: email.testinbox.domain.storage.StorageEnforcement) {}
+
+    /** `testinbox_storage_orphan_sweep_completed_at_seconds`: when the last FULL orphan sweep completed (barrier (b)). */
+    fun orphanSweepCompleted(at: java.time.Instant) {}
+
+    /** `testinbox_storage_orphan_sweep_total{outcome}`. */
+    fun orphanSweepFinished(ok: Boolean) {}
+
+    /** `testinbox_storage_covered_bytes{kind=reserved}`: Σ bytes of every unreleased reservation, each cleanup pass. */
+    fun reservedBytes(bytes: Long) {}
+
     companion object {
         val NOOP: StorageProtocolMetrics = object : StorageProtocolMetrics {}
     }

@@ -32,6 +32,7 @@ import java.util.UUID
 
 /** Bounded lifecycle sweep scheduler (ADR-009). */
 @Component
+@Suppress("LongParameterList") // one collaborator per scheduled job; the schedule reads as the list of jobs
 class SweepScheduler(
     private val expireInboxes: ExpireInboxes,
     private val orphanBlobSweep: OrphanBlobSweep,
@@ -41,6 +42,7 @@ class SweepScheduler(
     private val reconcileStorageAccounting: ReconcileStorageAccounting,
     private val releaseStaleReservations: ReleaseStaleReservations,
     private val verifyAmbiguousUploads: VerifyAmbiguousUploads,
+    private val activationWatch: email.testinbox.application.storage.activation.ActivationWatch,
     private val clock: Clock,
 ) {
     /**
@@ -56,6 +58,9 @@ class SweepScheduler(
     fun storageReservationCleanup() {
         runCatching { releaseStaleReservations.run() }
             .onFailure { log.warn("storage reservation cleanup failed; reservations stay charged and the next pass retries", it) }
+        // ADR-035 §14 Phase 4: the allowlist and inventory checks re-run on every cleanup pass.
+        runCatching { activationWatch.run() }
+            .onFailure { log.warn("storage activation check failed; the gates keep their last value until the next pass", it) }
     }
 
     /** ADR-035 §9: verifies persisted ambiguity once `T_verify` has passed, and latches on a late object. */

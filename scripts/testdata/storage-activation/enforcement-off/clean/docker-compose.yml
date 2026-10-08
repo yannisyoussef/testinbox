@@ -1,0 +1,4 @@
+# Fixture: local dependencies only; no application configuration here.
+services:
+  postgres:
+    image: postgres:16

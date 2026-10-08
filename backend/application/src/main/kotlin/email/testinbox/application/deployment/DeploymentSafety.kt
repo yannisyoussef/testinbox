@@ -1,5 +1,11 @@
 package email.testinbox.application.deployment
 
+import email.testinbox.application.storage.EffectiveStoragePolicy
+import email.testinbox.application.storage.NodeRole
+import email.testinbox.application.storage.QualificationMatch
+import email.testinbox.application.storage.StorageDeclarations
+import email.testinbox.domain.storage.BucketQuotaFuse
+import email.testinbox.domain.storage.InboxShare
 import email.testinbox.domain.tenant.ApiKeyFormat
 import java.time.Duration
 
@@ -63,6 +69,11 @@ data class DeploymentSettings(
      * indicator (the SMTP gateway); production requires true on the API.
      */
     val requireDatabaseSessionTimeout: Boolean? = null,
+    /**
+     * ADR-035 §18: the enforcement mode and every declaration a non-OFF
+     * deployment must carry. OFF with nothing declared is Phase 2 as it ships.
+     */
+    val storage: StorageDeclarations = StorageDeclarations.OFF,
 )
 
 /**
@@ -163,6 +174,7 @@ object DeploymentSafety {
             addAll(checkEdgeCeiling(settings))
             addAll(checkLimits(settings))
             addAll(checkProduction(settings))
+            addAll(StorageEnforcementSafety.check(settings))
         }
 
     private fun checkMailDomain(settings: DeploymentSettings): List<DeploymentViolation> =
@@ -504,4 +516,282 @@ object DeploymentSafety {
             .findAll(value.lowercase())
             .map { it.groupValues[1].removeSurrounding("[", "]") }
             .any { it in LOCAL_HOSTS }
+}
+
+/**
+ * ADR-035 §9a and §18: what a deployment must declare, and prove consistent,
+ * before any ceiling may refuse a tenant copy (TI-STORAGE-006 §5–§14).
+ *
+ * OFF is the requalification and recovery mode (§14 Phase 2, the MinIO
+ * change rule): it must keep starting with nothing declared, with a stale or
+ * absent qualification, and with a changed backend. So OFF checks only the
+ * SANITY of whatever is declared (a negative *G* is a mistake in any mode),
+ * never its completeness, the fuse or the qualification match.
+ *
+ * A non-OFF mode refuses on every one of the §18 prerequisites separately,
+ * and reports all of them at once, so an operator sees the whole gap rather
+ * than one restart at a time.
+ */
+object StorageEnforcementSafety {
+    private const val ENFORCEMENT = "testinbox.storage.enforcement"
+    private const val GLOBAL = "testinbox.storage.global-limit-bytes"
+    private const val QUOTA = "testinbox.storage.declared-bucket-quota-bytes"
+    private const val PROCESSES = "testinbox.storage.declared-max-ingestion-processes"
+    private const val SHARE = "testinbox.storage.inbox-share"
+    private const val CHURN = "testinbox.storage.measured-quota-lag-churn-bytes"
+    private const val IDENTITY = "testinbox.storage.backend-identity"
+    private const val API_NODES = "testinbox.storage.activation.expected-api-nodes"
+    private const val NODE_ID = "testinbox.storage.node-id"
+    private const val INGESTION_NODES = "testinbox.storage.activation.expected-ingestion-nodes"
+    private const val UPLOAD = "upload-implementation-version"
+
+    fun check(settings: DeploymentSettings): List<DeploymentViolation> {
+        val storage = settings.storage
+        return if (storage.enforced) enforced(settings, storage) else sanity(storage)
+    }
+
+    /** OFF: declared values must still be well-formed; absence is fine. */
+    private fun sanity(storage: StorageDeclarations): List<DeploymentViolation> =
+        buildList {
+            storage.globalLimitBytes?.let { if (it <= 0) add(DeploymentViolation(GLOBAL, "is $it; G must be positive")) }
+            storage.declaredBucketQuotaBytes?.let { if (it <= 0) add(DeploymentViolation(QUOTA, "is $it; Q must be positive")) }
+            storage.declaredMaxIngestionProcesses?.let { if (it <= 0) add(DeploymentViolation(PROCESSES, "is $it; must be at least 1")) }
+            storage.measuredQuotaLagChurnBytes?.let { if (it < 0) add(DeploymentViolation(CHURN, "is $it; must not be negative")) }
+            storage.inboxShare?.let { share -> shareProblem(share)?.let { add(DeploymentViolation(SHARE, it)) } }
+            storage.node?.let { node ->
+                // The allowlist is `testinbox-<service>:<node>:storage-v1`: a colon in the
+                // node id would make this node's OWN sessions read as violations.
+                if (node.nodeId.isBlank()) {
+                    add(
+                        DeploymentViolation(NODE_ID, "is blank; every process needs its own stable node id (ADR-035 §9)"),
+                    )
+                }
+                if (':' in
+                    node.nodeId
+                ) {
+                    add(
+                        DeploymentViolation(
+                            NODE_ID,
+                            "contains ':'; the §14 (a) session name 'testinbox-<service>:<node>:storage-v1' cannot carry one",
+                        ),
+                    )
+                }
+            }
+            // H ≥ G would make the policy itself unconstructible: a mistake in any
+            // mode, named here rather than thrown at wiring.
+            val g = storage.globalLimitBytes
+            if (g != null && g > 0 && (storage.declaredMaxIngestionProcesses ?: 1) > 0) {
+                runCatching { EffectiveStoragePolicy.finalizeBudget(storage).bytes }
+                    .onSuccess { h ->
+                        if (h >=
+                            g
+                        ) {
+                            add(DeploymentViolation(GLOBAL, "is $g but H is $h; the admission cap G − H must be positive (ADR-035 §9)"))
+                        }
+                    }
+            }
+        }
+
+    private fun enforced(
+        settings: DeploymentSettings,
+        storage: StorageDeclarations,
+    ): List<DeploymentViolation> =
+        buildList {
+            if (settings.environment.isBlank()) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.deployment.environment",
+                        "is not set although $ENFORCEMENT is ${storage.enforcement}; a ceiling may refuse only in a " +
+                            "declared, fully validated deployed environment (ADR-035 §14)",
+                    ),
+                )
+            }
+            addAll(sanity(storage))
+            addAll(declarations(storage))
+            addAll(qualification(storage))
+        }
+
+    private fun declarations(storage: StorageDeclarations): List<DeploymentViolation> =
+        buildList {
+            val g = storage.globalLimitBytes
+            if (g ==
+                null
+            ) {
+                add(DeploymentViolation(GLOBAL, "is not declared; a non-OFF deployment must state G (ADR-035 §18 prerequisite 10)"))
+            }
+            val q = storage.declaredBucketQuotaBytes
+            if (q ==
+                null
+            ) {
+                add(DeploymentViolation(QUOTA, "is not declared; the bucket quota fuse Q cannot be checked (ADR-035 §9, §18 gate 8)"))
+            }
+            val processes = storage.declaredMaxIngestionProcesses
+            if (processes == null) {
+                add(
+                    DeploymentViolation(
+                        PROCESSES,
+                        "is not declared; H needs the ingestion process count INCLUDING deploy surge (ADR-035 §9)",
+                    ),
+                )
+            }
+            if (storage.inboxShare ==
+                null
+            ) {
+                add(DeploymentViolation(SHARE, "is not declared; a non-OFF deployment must state the inbox share (ADR-035 §3)"))
+            }
+            addAll(nodeDeclarations(storage, processes))
+            val churn = storage.measuredQuotaLagChurnBytes
+            if (churn ==
+                null
+            ) {
+                add(
+                    DeploymentViolation(
+                        CHURN,
+                        "is not declared; Ops measures the bytes MinIO accepts during one usage-refresh lag (ADR-035 §9)",
+                    ),
+                )
+            }
+            // The arithmetic below only runs on well-formed inputs; the sanity pass reported the others.
+            val usable =
+                listOf(
+                    g != null && g > 0,
+                    processes == null || processes > 0,
+                    churn == null || churn >= 0,
+                    q == null || q > 0,
+                ).all { it }
+            if (!usable) return@buildList
+            checkNotNull(g)
+            val h =
+                runCatching { EffectiveStoragePolicy.finalizeBudget(storage).bytes }
+                    .getOrElse {
+                        add(
+                            DeploymentViolation(
+                                PROCESSES,
+                                "makes H = processes × ${storage.maxConcurrentWrites} × ${storage.maxObjectBytes} overflow; refused, never wrapped",
+                            ),
+                        )
+                        return@buildList
+                    }
+            if (q != null && churn != null) {
+                runCatching { BucketQuotaFuse.minimumQuotaBytes(g, h, churn) }
+                    .onSuccess { minimum ->
+                        if (q < minimum) {
+                            add(
+                                DeploymentViolation(
+                                    QUOTA,
+                                    "is $q but the fuse needs at least $minimum = G + max(1 GiB, 10 % of G, H + churn) with G=$g H=$h churn=$churn (ADR-035 §9)",
+                                ),
+                            )
+                        }
+                    }.onFailure {
+                        add(
+                            DeploymentViolation(
+                                QUOTA,
+                                "the fuse minimum G + max(1 GiB, 10 % of G, H + churn) overflows; refused, never wrapped",
+                            ),
+                        )
+                    }
+            }
+        }
+
+    /** The declared inventory (§14 (a)), this node's place in it, and the process count it implies. */
+    private fun nodeDeclarations(
+        storage: StorageDeclarations,
+        processes: Int?,
+    ): List<DeploymentViolation> =
+        buildList {
+            // The positive inventory (§14 (a)) needs a DECLARED node set; nothing may be inferred from heartbeats.
+            if (storage.expectedApiNodes.isEmpty()) {
+                add(
+                    DeploymentViolation(
+                        API_NODES,
+                        "is not declared; the activation inventory needs the exact api node ids (TI-STORAGE-006 §20)",
+                    ),
+                )
+            }
+            if (storage.expectedIngestionNodes.isEmpty()) {
+                add(
+                    DeploymentViolation(
+                        INGESTION_NODES,
+                        "is not declared; the activation inventory needs the exact ingestion node ids (TI-STORAGE-006 §20)",
+                    ),
+                )
+            }
+            storage.node?.let { node ->
+                val declaredFor = if (node.role == NodeRole.API) storage.expectedApiNodes else storage.expectedIngestionNodes
+                val key = if (node.role == NodeRole.API) API_NODES else INGESTION_NODES
+                if (declaredFor.isNotEmpty() && node.nodeId !in declaredFor) {
+                    add(
+                        DeploymentViolation(
+                            key,
+                            "does not include this node's own id '${node.nodeId}' (${node.role.name.lowercase()}); it would start as an " +
+                                "undeclared node and break the inventory it must satisfy",
+                        ),
+                    )
+                }
+            }
+            if (processes != null && processes > 0 && storage.expectedIngestionNodes.size > processes) {
+                // What the application CAN check: the declared inventory alone already
+                // exceeds the declared count. Surge above the inventory stays Ops's word.
+                add(
+                    DeploymentViolation(
+                        PROCESSES,
+                        "is $processes but ${storage.expectedIngestionNodes.size} ingestion nodes are declared " +
+                            "(${storage.expectedIngestionNodes.sorted().joinToString(",")}); each holds 16 write slots, so H would " +
+                            "under-count them (ADR-035 §9)",
+                    ),
+                )
+            }
+        }
+
+    private fun qualification(storage: StorageDeclarations): List<DeploymentViolation> =
+        buildList {
+            if (storage.uploadImplementationVersion.isBlank()) {
+                add(DeploymentViolation("$IDENTITY.$UPLOAD", "the running binary carries no upload implementation version"))
+            }
+            val identity = storage.backendIdentity
+            if (identity == null) {
+                add(
+                    DeploymentViolation(
+                        IDENTITY,
+                        "is not declared; a non-OFF deployment must state the storage combination so it can be matched " +
+                            "against a shipped qualification record (ADR-035 §9a)",
+                    ),
+                )
+                return@buildList
+            }
+            if (storage.qualificationRecords.isEmpty()) {
+                add(DeploymentViolation(IDENTITY, "cannot be matched: this artifact ships no qualification record (ADR-035 §9a)"))
+                return@buildList
+            }
+            val comparisons = QualificationMatch.compareAll(identity, storage.uploadImplementationVersion, storage.qualificationRecords)
+            val matching = storage.qualificationRecords.filterIndexed { i, _ -> comparisons[i].matches }
+            if (matching.isEmpty()) {
+                val closest = comparisons.minByOrNull { it.mismatchedElements.size }
+                val uploadOnly = closest != null && closest.mismatchedElements == listOf(QualificationMatch.UPLOAD_IMPLEMENTATION)
+                add(
+                    DeploymentViolation(
+                        if (uploadOnly) "$IDENTITY.$UPLOAD" else IDENTITY,
+                        "matches no shipped qualification record; closest is '${closest?.recordId}' differing in " +
+                            "${closest?.mismatchedElements?.joinToString(", ")} (ADR-035 §9a: a mismatch is a refusal, not a warning)",
+                    ),
+                )
+                return@buildList
+            }
+            val eligible = matching.filter { it.eligibility().eligible }
+            if (eligible.isEmpty()) {
+                val record = matching.first()
+                add(
+                    DeploymentViolation(
+                        IDENTITY,
+                        "matches record '${record.recordId}', which is not enablement-eligible: " +
+                            record.eligibility().reasons.joinToString("; ") + " (ADR-035 §18 gate 7a)",
+                    ),
+                )
+            }
+        }
+
+    private fun shareProblem(share: String): String? =
+        runCatching { InboxShare.of(share) }
+            .fold(onSuccess = { null }, onFailure = { "is '$share'; the inbox share must be a decimal in (0, 1] (ADR-035 §3)" })
 }

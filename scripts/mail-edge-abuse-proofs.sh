@@ -296,7 +296,7 @@ fi
 # Recipient spraying must never cause unknown-recipient bodies to be stored. The
 # refusals above are protocol-level and happen before DATA, so nothing should
 # have been relayed at all.
-SPRAY_ROWS="$("${COMPOSE[@]}" exec -T postgres psql -U "${TESTINBOX_DB_USER:?}" -d "${TESTINBOX_DB_NAME:?}" \
+SPRAY_ROWS="$("${COMPOSE[@]}" exec -T -e PGAPPNAME=ops:rehearsal postgres psql -U "${TESTINBOX_DB_USER:?}" -d "${TESTINBOX_DB_NAME:?}" \
   -tAc "SELECT count(*) FROM message WHERE envelope_to LIKE 'r%@${MAIL_DOMAIN}';" 2>&1 | tr -d ' \r\n')"
 if [[ "$SPRAY_ROWS" == "0" ]]; then
   ok "recipient spraying stored nothing"

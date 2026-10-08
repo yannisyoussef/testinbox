@@ -1,0 +1,48 @@
+{
+  "recordId": "fixture-production-amd64-candidate",
+  "minio": {
+    "imageIndexDigest": "sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d",
+    "platformMemberDigest": "sha256:3f97c565e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e264bb",
+    "release": "RELEASE.2025-04-22T22-12-26Z",
+    "commitId": "fixture-commit-a1ea29fa",
+    "mode": "single-node-single-drive",
+    "driveCount": 1,
+    "timeoutEnvironment": {
+      "MINIO_IDLE_TIMEOUT": "30s",
+      "MINIO_CONN_USER_TIMEOUT": "10m",
+      "MINIO_DRIVE_MAX_TIMEOUT": "default"
+    },
+    "timeoutCliFlags": [
+      "--idle-timeout=30s"
+    ],
+    "runtimeConfig": {
+      "hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "storageClassInlineDefaults": "release-defaults"
+  },
+  "host": {
+    "kernelRelease": "6.8.0-fixture-amd64",
+    "filesystemType": "xfs",
+    "mountOptions": "rw,relatime,attr2,inode64"
+  },
+  "network": {
+    "directPath": true,
+    "proxy": "none"
+  },
+  "uploadImplementationVersion": "adr035-upload-v1",
+  "qualification": {
+    "slowWExecuted": false,
+    "trials": 0,
+    "maxObservedFinalizeLatencyMs": null,
+    "platformClass": "production-host",
+    "scenarios": [
+      "base-W",
+      "base-R100ms"
+    ]
+  },
+  "enablementEligible": false,
+  "ineligibilityReasons": [
+    "slow-W scenario not executed (ADR-035 \u00a79a procedure step 5)",
+    "production host not yet re-qualified on its own combination (\u00a718 gate 7a)"
+  ]
+}

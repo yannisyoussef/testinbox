@@ -43,7 +43,20 @@ class OrphanBlobSweep(
     private val minAge: Duration = Duration.ofHours(1),
     private val metrics: StorageProtocolMetrics = StorageProtocolMetrics.NOOP,
 ) {
-    fun sweep(): Int {
+    fun sweep(): Int =
+        try {
+            fullSweep().also {
+                // The completion marker ADR-035 §14 (b) needs: a FULL pass over the
+                // bucket finished at this instant. A pass that threw never sets it.
+                metrics.orphanSweepCompleted(clock.instant())
+                metrics.orphanSweepFinished(ok = true)
+            }
+        } catch (e: RuntimeException) {
+            metrics.orphanSweepFinished(ok = false)
+            throw e
+        }
+
+    private fun fullSweep(): Int {
         val threshold = clock.instant().minus(minAge)
         var removed = 0
         for (key in blobs.listKeysOlderThan("", threshold)) {

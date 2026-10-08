@@ -42,6 +42,9 @@ an earlier check, then appears later" event.
 | `freeze{45,120}-R2s` | the same freeze, with an RST 2 s into it |
 | `phase{1,3,5,10,20}ms-R2s` | the freeze starts 1–20 ms after acknowledgement, to vary where in the commit it lands |
 | `v3-*` | the freeze scenarios repeated, with direct on-disk checks at the freeze, after the RST, before the thaw, and after the poll |
+| `slow-*-W` (**executable, NOT RUN here**) | ADR-035 §9a `slow-W`: the data filesystem is **throttled, not frozen**, by a real block-device mechanism: `dm-delay` on the loop device (`/data` is an ext4 on `/dev/mapper/qualslow`, the write delay set by a table reload; `plan-slow.json`, 500 ms and 2 000 ms) or, as the fallback, cgroup v2 `io.max` on the loop device's `major:minor` with MinIO inside the cgroup (`plan-slow-cgroup.json`, 1 MiB/s and 256 KiB/s). The client stays connected and silent after the body is acknowledged; the 1-byte, 5 s-timeout witness is issued every ~1 s concurrently, each issue/complete time recorded; the key is polled strictly (`HEAD` and on-disk `xl.meta`). The row answers whether the commit landed **after a later-issued witness had already completed** (`commit_after_completed_witness`) and by how much (`commit_lag_after_first_completed_witness_s`). A preflight refuses to run without `dmsetup targets` listing `delay` or a writable cgroup `io.max` (`{"scenario":"slow-W","status":"NOT RUN",...}`, exit 2) and never substitutes sleep, CPU throttling or network latency. Run on the host under qualification with `qualification/run-slow.sh --mode dm --out <dir>` (or `--mode cgroup`), then `qualification/run-slow.sh --out <dir> --sweep` at least 17 min after the last trial. **It has not been run as part of this qualification**: see `qualification/slow-w-status.txt` for this laptop's preflight outcome. |
+
+Measurement resolution of `slow-*-W`: the harness stamps the commit at the returning 50 ms poll, so a commit lag below about 50 ms after a completed witness is within resolution and must not be read as a measured positive lag.
 
 **Storage witness.** During every freeze, a 1-byte probe `PUT` with a 5 s client timeout checks whether a *new*
 commit can complete.
@@ -99,4 +102,31 @@ and **none of its numbers are used**.
   without freezing it, with a silent connected client and the witness running concurrently. It probes A_F's residual:
   a commit still pending after a later witness has completed. **It is a required part of qualifying the production
   combination (§18 gate 7a).** No `C_drain` claim is made here beyond what was observed after thaw: pending commits
-  landed within 0.34 s, at healthy throughput.
+  landed within 0.34 s, at healthy throughput. The harness now implements `slow-W` (`harness.py` revision 3,
+  `run-slow.sh`, `plan-slow.json`, `plan-slow-cgroup.json`); on this laptop's Docker Desktop kernel
+  (`6.12.76-linuxkit`) the preflight found **no `dm-delay` target** (`CONFIG_DM_DELAY` is not set) while cgroup v2
+  `io.max` is available. The outcome, and a short smoke that is **not** a qualification run, are recorded verbatim in
+  `qualification/slow-w-status.txt`. The 111 trials above remain the only qualification data.
+
+## Machine-readable record
+
+The record this qualification ships inside the artifact (ADR-035 §9a: "a machine-readable record shipped inside the
+artifact") is
+`backend/storage/src/main/resources/adr035-qualification/laptop-arm64-reference-2026-09-29.json`, listed in
+`backend/storage/src/main/resources/adr035-qualification/index.txt`. Every value in it is copied from the evidence
+files in [`../qualification/`](../qualification/) and from `docs/dev/third-party-mirrors.md` (the full index and
+arm64 member digests); `qualifiedAt` is the `sweep-v3 FULL-WINDOW start` line of `timeline.txt`. A value the evidence
+does not contain is `null`, never guessed.
+
+**The record is NOT enablement-eligible** (`enablementEligible: false`), and `DeploymentSafety` must refuse
+`testinbox.storage.enforcement=ON` against it, because:
+
+1. its `platformClass` is `laptop`: §18 gate 7a requires the deployed host's own combination (amd64, Ops-owned
+   filesystem), qualified on its own hardware;
+2. `slow-W` was not executed (`slowWExecuted: false`), and §9a / gate 7a require it;
+3. the runtime admin configuration (`mc admin config get` for `api`, `drive`, `storage_class`, `scanner`) was asserted
+   to be the release defaults on a fresh data directory but was never captured or hashed, so
+   `minio.runtimeConfig.hash` is `null` and the Ops `qualification-check` has nothing to compare against.
+
+It exists so that the record format is exercised by a real combination and so that the laptop evidence is
+identifiable by `recordId`, not so that it can enable anything.

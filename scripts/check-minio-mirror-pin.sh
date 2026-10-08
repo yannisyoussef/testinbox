@@ -27,6 +27,9 @@ MINIMUM_REFERENCES="${MINIMUM_REFERENCES:-6}"
 EXPECTED_REPO="ghcr.io/yannisyoussef/testinbox-mirror/minio"
 # Where the digest must also be written down, so code and provenance cannot drift.
 PROVENANCE_DOC="docs/dev/third-party-mirrors.md"
+# ADR-035 §9a: the qualification records shipped in the artifact. The pinned
+# digest must be one of theirs, or a re-mirror silently invalidates A_F.
+QUALIFICATION_DIR="backend/storage/src/main/resources/adr035-qualification"
 
 status=0
 finding() { printf '%s\n' "$*" >&2; status=1; }
@@ -101,7 +104,47 @@ if [ "${distinct:-0}" -eq 1 ] && [ -f "$SCAN_ROOT/$PROVENANCE_DOC" ]; then
         finding "$PROVENANCE_DOC does not record the digest the code pins ($pinned). Update the provenance record."
 fi
 
+# ADR-035 §9a: the pinned digest must be the digest of a shipped qualification
+# record. A_F is qualified for ONE exact MinIO combination, and a re-mirror with
+# a new digest is a new combination: without this check it could land with the
+# six consumers in perfect agreement and the qualification silently invalid.
+# Only records listed in index.txt ship in the artifact, so only they count.
+qualified_by=""
+if [ "${distinct:-0}" -eq 1 ]; then
+    pinned="$(printf '%s' "$digests" | sort -u | grep . )"
+    index="$SCAN_ROOT/$QUALIFICATION_DIR/index.txt"
+    if [ ! -f "$index" ]; then
+        finding "pinned digest $pinned has no qualification record — a re-mirror cannot silently preserve qualification (ADR-035 §9a): $QUALIFICATION_DIR/index.txt is missing"
+    elif ! command -v jq >/dev/null 2>&1; then
+        finding "jq is required to read the qualification records in $QUALIFICATION_DIR"
+    else
+        listed="$(sed -e 's/#.*//' -e 's/ //g' "$index" | grep .)"
+        while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            rec="$SCAN_ROOT/$QUALIFICATION_DIR/$entry"
+            if [ ! -f "$rec" ]; then
+                finding "$QUALIFICATION_DIR/index.txt lists $entry but the record is missing"
+                continue
+            fi
+            if ! rec_digest="$(jq -r '.minio.imageIndexDigest // ""' "$rec" 2>/dev/null)"; then
+                finding "$QUALIFICATION_DIR/$entry is not valid JSON"
+                continue
+            fi
+            [ "$rec_digest" = "$pinned" ] && qualified_by="${qualified_by:-$entry}"
+        done <<EOF
+$listed
+EOF
+        for rec in "$SCAN_ROOT/$QUALIFICATION_DIR"/*.json; do
+            [ -f "$rec" ] || continue
+            printf '%s\n' "$listed" | grep -qx -- "$(basename "$rec")" ||
+                finding "$QUALIFICATION_DIR/$(basename "$rec") is not listed in index.txt; an unlisted record does not ship and qualifies nothing"
+        done
+        [ -n "$qualified_by" ] ||
+            finding "pinned digest $pinned has no qualification record — a re-mirror cannot silently preserve qualification (ADR-035 §9a)"
+    fi
+fi
+
 if [ "$status" -eq 0 ]; then
-    echo "MinIO mirror pin: $unique reference(s), one digest, recorded in $PROVENANCE_DOC"
+    echo "MinIO mirror pin: $unique reference(s), one digest, recorded in $PROVENANCE_DOC, qualified by $QUALIFICATION_DIR/$qualified_by"
 fi
 exit "$status"

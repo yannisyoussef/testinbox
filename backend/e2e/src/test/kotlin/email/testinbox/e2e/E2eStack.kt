@@ -81,6 +81,10 @@ object E2eStack {
                     commonProperties +
                         mapOf(
                             "server.port" to "0",
+                            // ADR-035 §9/§19: every live process needs its own node id; the API
+                            // claims it like the gateway does (TI-STORAGE-006), so the several API
+                            // nodes this stack runs cannot share the default.
+                            "testinbox.storage.node-id" to "e2e-api-main",
                             "testinbox.bootstrap.api-key" to API_KEY,
                             "testinbox.sweep-interval" to "1s",
                             "testinbox.expiry-grace" to "1s",
@@ -103,6 +107,10 @@ object E2eStack {
     val apiPort: Int = apiContext.environment.getProperty("local.server.port")!!.toInt()
     val apiBaseUrl: String = "http://localhost:$apiPort"
 
+    private val restrictedNodes =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
     private fun restrictedNode(
         bootstrapKey: String,
         workspaceId: String,
@@ -114,6 +122,7 @@ object E2eStack {
                     commonProperties +
                         mapOf(
                             "server.port" to "0",
+                            "testinbox.storage.node-id" to "e2e-api-${restrictedNodes.incrementAndGet()}",
                             "testinbox.bootstrap.api-key" to bootstrapKey,
                             "testinbox.bootstrap.workspace-id" to workspaceId,
                             "testinbox.bootstrap.project-id" to workspaceId,

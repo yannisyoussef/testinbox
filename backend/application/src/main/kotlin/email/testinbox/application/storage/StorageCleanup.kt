@@ -92,6 +92,7 @@ class ReleaseStaleReservations(
         ambiguity.recoverDeadGenerations(null, null, staleHeartbeat, StorageProtocol.MAX_CONCURRENT_WRITES, StorageProtocol.T_VERIFY)
         val expired = reservations.expireOverdue(settle)
         metrics.reservations(reservations.countsByState())
+        metrics.reservedBytes(reservations.reservedBytes())
 
         val offset = ClockOffset.measure(inspection, clock)
         metrics.clockOffset(offset.offset)
@@ -326,7 +327,7 @@ class StorageNodeLifecycle(
         if (!ambiguity.heartbeat(node.nodeId, node.generation, StorageProtocol.CAPABILITY)) {
             log.error(
                 "storage_node_resurrected this generation was declared dead while alive (heartbeat stale); " +
-                    "re-registered, and its in-flight uploads were recorded as ambiguity",
+                    "re-registered. Any uploads it had started were recorded as ambiguity (an api node starts none)",
             )
         }
     }

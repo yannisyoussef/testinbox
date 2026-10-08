@@ -157,6 +157,9 @@ interface StorageReservations : StorageClockHold {
     ): Boolean
 
     fun countsByState(): Map<String, Long>
+
+    /** Σ `bytes` of every reservation in any state: the `reserved` half of covered (ADR-035 §16, §14 (b)). */
+    fun reservedBytes(): Long
 }
 
 data class LockedReservation(

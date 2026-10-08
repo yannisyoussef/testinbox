@@ -259,3 +259,25 @@ Rolling the API back below that floor while the new value exists in a row
 reproduces the `500`s above. The wire contract already tells clients to
 tolerate unknown values; this rule is what keeps the server able to produce them.
 
+## Rolling back across TI-STORAGE-006 (enforcement controls)
+
+TI-STORAGE-006 adds no migration and every new key defaults to `OFF` or
+empty, so an older artifact starts cleanly against the same schema, and under
+`OFF` an old API (which never claimed a node id) coexists with a new one.
+
+What rollback must never do is run an artifact without the enforcement
+controls while a ceiling is enforced:
+
+- **Set `TESTINBOX_STORAGE_ENFORCEMENT=OFF` on BOTH deployables first, then
+  roll back.** A TI-STORAGE-003/004/005 ingestion artifact has no enforcement
+  setting and no activation guard; it names its sessions `storage-v1` and
+  registers in `storage_node` exactly like the TI-006 one, so the barrier
+  cannot tell them apart and would admit every message above every ceiling
+  with every gate green. The TI-STORAGE-006 commit is therefore a rollback
+  **floor** in `deploy/rollback-floors.txt`, and `check-storage-activation.sh`
+  gate E refuses a running artifact below it.
+- Rolling the API back under a non-OFF mode reports the API absent from the
+  inventory (the old API registers nothing); mail is still admitted, the
+  violation gauge stays 1 until the API returns or enforcement is set OFF.
+- `OFF` is the escape hatch in every direction: it must be in place on both
+  deployables before either artifact changes.

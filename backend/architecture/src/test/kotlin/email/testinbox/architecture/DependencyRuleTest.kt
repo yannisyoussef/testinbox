@@ -359,6 +359,10 @@ class DependencyRuleTest {
             .resideOutsideOfPackage("email.testinbox.domain..")
             .and()
             .doNotHaveFullyQualifiedName("email.testinbox.application.storage.EffectiveStoragePolicy")
+            .and()
+            // The §11 benchmark CLI measures the protocol under policies it chooses; it is
+            // not a deployable and never serves tenants (TI-STORAGE-006).
+            .doNotHaveFullyQualifiedName("email.testinbox.benchmark.ProtocolAssembly")
             .should()
             .callConstructorWhere(
                 com.tngtech.archunit.core.domain.JavaCall.Predicates.target(
@@ -393,6 +397,47 @@ class DependencyRuleTest {
             .because("JdbcWaitObservations is open for test mutants only")
             .check(allClasses)
     }
+
+    @Test
+    fun `T1 is constructed once, in the ingestion wiring, from the validated declarations (TI-STORAGE-006)`() {
+        // The enforcement mode T1 runs with must be the one DeploymentSafety
+        // validated. A second construction site could pass a literal.
+        admissionRule().check(allClasses)
+    }
+
+    @Test
+    fun `the T1 rule catches a rogue construction, so it can fail`() {
+        val failure =
+            runCatching {
+                admissionRule().check(
+                    ClassFileImporter().importClasses(email.testinbox.architecture.fixtures.RogueAdmissionFixture::class.java),
+                )
+            }.exceptionOrNull()
+        check(failure is AssertionError && "StorageAdmission.<init>" in failure.message.orEmpty()) {
+            "the rule did not catch RogueAdmissionFixture: $failure"
+        }
+    }
+
+    private fun admissionRule() =
+        noClasses()
+            .that()
+            .doNotHaveFullyQualifiedName("email.testinbox.ingestion.config.IngestionWiring")
+            .and()
+            // Its own default-argument bridge calls the primary constructor.
+            .doNotHaveFullyQualifiedName("email.testinbox.application.usecase.StorageAdmission")
+            .and()
+            // The §11 benchmark CLI, the one named exemption: not a deployable, no tenant path.
+            .doNotHaveFullyQualifiedName("email.testinbox.benchmark.ProtocolAssembly")
+            .should()
+            .callConstructorWhere(
+                com.tngtech.archunit.core.domain.JavaCall.Predicates.target(
+                    com.tngtech.archunit.core.domain.properties.HasOwner.Predicates.With.owner(
+                        com.tngtech.archunit.core.domain.JavaClass.Predicates.type(
+                            email.testinbox.application.usecase.StorageAdmission::class.java,
+                        ),
+                    ),
+                ),
+            ).because("only the ingestion wiring may build T1, with the enforcement value DeploymentSafety validated (ADR-035 §14)")
 
     @Test
     fun `the admission adapter is not a Spring bean, so no context can obtain it (TI-STORAGE-002)`() {

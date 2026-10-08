@@ -35,7 +35,15 @@ class DeploymentSafetyCheckTest {
             properties: TestInboxProperties,
             dataSourceProperties: DataSourceProperties,
             environment: Environment,
-        ) = DeploymentSafetyCheck(properties, dataSourceProperties, environment)
+        ) = DeploymentSafetyCheck(
+            properties,
+            dataSourceProperties,
+            environment,
+            properties.storageDeclarations(
+                email.testinbox.storage.QualificationRecords
+                    .load(),
+            ),
+        )
     }
 
     private val runner = ApplicationContextRunner().withUserConfiguration(UnderTest::class.java)
@@ -207,6 +215,89 @@ class DeploymentSafetyCheckTest {
         runner.withPropertyValues(*deployed, "testinbox.limits.enabled=false").run { context ->
             assertThat(context).hasFailed()
             context.startupFailure!!.stackTraceToString() shouldContain "testinbox.limits.enabled"
+        }
+    }
+
+    // --- TI-STORAGE-006: enforcement may exist, safely ---------------------------------------------
+
+    @Test
+    fun `TENANT_LIMITS on a deployed node with no ADR-035 declarations fails startup, naming every missing one`() {
+        runner.withPropertyValues(*deployed, "testinbox.storage.enforcement=TENANT_LIMITS").run { context ->
+            assertThat(context).hasFailed()
+            val message = context.startupFailure!!.stackTraceToString()
+            for (key in listOf(
+                "global-limit-bytes",
+                "declared-bucket-quota-bytes",
+                "declared-max-ingestion-processes",
+                "inbox-share",
+                "measured-quota-lag-churn-bytes",
+                "backend-identity",
+            )) {
+                message shouldContain "testinbox.storage.$key"
+            }
+        }
+    }
+
+    @Test
+    fun `a non-OFF value is refused even where no environment is declared - enforcement needs a deployed, validated node`() {
+        runner.withPropertyValues("testinbox.storage.enforcement=ALL").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain "testinbox.deployment.environment"
+        }
+    }
+
+    @Test
+    fun `declaring the laptop backend identity still refuses - its record has no runtime-config hash, so no match completes`() {
+        val laptop =
+            email.testinbox.storage.QualificationRecords
+                .load()
+                .single { it.recordId == "laptop-arm64-reference-2026-09-29" }
+                .identity
+        runner
+            .withPropertyValues(
+                *deployed,
+                "testinbox.storage.enforcement=TENANT_LIMITS",
+                "testinbox.storage.global-limit-bytes=42949672960",
+                "testinbox.storage.declared-bucket-quota-bytes=53687091200",
+                "testinbox.storage.declared-max-ingestion-processes=2",
+                "testinbox.storage.inbox-share=0.25",
+                "testinbox.storage.measured-quota-lag-churn-bytes=0",
+                "testinbox.storage.backend-identity.image-index-digest=${laptop.imageIndexDigest}",
+                "testinbox.storage.backend-identity.platform-member-digest=${laptop.platformMemberDigest}",
+                "testinbox.storage.backend-identity.release=${laptop.release}",
+                "testinbox.storage.backend-identity.commit-id=${laptop.commitId}",
+                "testinbox.storage.backend-identity.mode=${laptop.mode}",
+                "testinbox.storage.backend-identity.drive-count=${laptop.driveCount}",
+                "testinbox.storage.backend-identity.kernel-release=${laptop.kernelRelease}",
+                "testinbox.storage.backend-identity.filesystem-type=${laptop.filesystemType}",
+                "testinbox.storage.backend-identity.mount-options=${laptop.mountOptions}",
+                "testinbox.storage.backend-identity.storage-class-inline-defaults=${laptop.storageClassInlineDefaults}",
+                "testinbox.storage.backend-identity.direct-path=${laptop.directPath}",
+                "testinbox.storage.backend-identity.proxy=${laptop.proxy}",
+            ).run { context ->
+                assertThat(context).hasFailed()
+                val message = context.startupFailure!!.stackTraceToString()
+                // The laptop record has no runtime-configuration hash, so the match itself cannot complete.
+                message shouldContain "testinbox.storage.backend-identity"
+                message shouldContain "minio.runtimeConfig.hash"
+            }
+    }
+
+    @Test
+    fun `OFF with a declared G still starts, and the declaration is what the policy reads`() {
+        runner.withPropertyValues(*deployed, "testinbox.storage.global-limit-bytes=10737418240").run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean(TestInboxProperties::class.java).storage.globalLimitBytes shouldBe 10737418240L
+            context.getBean(TestInboxProperties::class.java).storage.enforcement shouldBe
+                email.testinbox.domain.storage.StorageEnforcement.OFF
+        }
+    }
+
+    @Test
+    fun `OFF with a malformed declared share is refused - a mistake in any mode`() {
+        runner.withPropertyValues(*deployed, "testinbox.storage.inbox-share=1.5").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain "testinbox.storage.inbox-share"
         }
     }
 }
