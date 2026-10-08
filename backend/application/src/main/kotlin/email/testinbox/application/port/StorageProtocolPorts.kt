@@ -351,3 +351,18 @@ data class ServerTime(
 fun interface DatabaseClock {
     fun now(): Instant
 }
+
+/**
+ * The newest filesystem observation the Ops monitor wrote, as the DATABASE
+ * clock sees it (containment contract §5.3, §8). The application only ever
+ * reads it, and only to be more conservative.
+ */
+fun interface FilesystemObservations {
+    fun newest(): ObservedFilesystem?
+}
+
+data class ObservedFilesystem(
+    /** `now() − observed_at` on the database clock; negative only for a corrupt row. */
+    val age: java.time.Duration,
+    val availBytes: Long,
+)

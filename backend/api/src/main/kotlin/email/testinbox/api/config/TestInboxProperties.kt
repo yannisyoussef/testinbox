@@ -66,6 +66,8 @@ data class TestInboxProperties(
         val backendIdentity: BackendIdentityProperties = BackendIdentityProperties(),
         /** The node inventory the activation barrier expects (TI-STORAGE-006 §20). */
         val activation: ActivationProperties = ActivationProperties(),
+        /** The dedicated filesystem's declared budgets (filesystem-containment contract, TI-STORAGE-006E). */
+        val filesystem: email.testinbox.application.FilesystemProperties = email.testinbox.application.FilesystemProperties(),
     )
 
     /** The framework-free declarations `DeploymentSafety` and `EffectiveStoragePolicy` read (ADR-035 §18). */
@@ -83,6 +85,7 @@ data class TestInboxProperties(
             activation = storage.activation,
             nodeId = storage.nodeId,
             nodeRole = email.testinbox.application.storage.NodeRole.API,
+            filesystem = storage.filesystem,
         )
 
     /**

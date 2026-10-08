@@ -77,6 +77,18 @@ testinbox:
     activation:
       expected-api-nodes: ${TESTINBOX_STORAGE_EXPECTED_API_NODES:}
       expected-ingestion-nodes: ${TESTINBOX_STORAGE_EXPECTED_INGESTION_NODES:}
+    # The dedicated filesystem's declared budgets (filesystem-containment
+    # contract, TI-STORAGE-006E). Declarations, not proof: gate F verifies them.
+    filesystem:
+      block-size-bytes: ${TESTINBOX_STORAGE_FS_BLOCK_SIZE_BYTES:}
+      object-overhead-max-bytes: ${TESTINBOX_STORAGE_FS_OBJECT_OVERHEAD_MAX_BYTES:}
+      global-footprint-limit-bytes: ${TESTINBOX_STORAGE_FS_GLOBAL_FOOTPRINT_LIMIT_BYTES:}
+      deletion-debt-budget-bytes: ${TESTINBOX_STORAGE_FS_DELETION_DEBT_BUDGET_BYTES:}
+      metadata-budget-bytes: ${TESTINBOX_STORAGE_FS_METADATA_BUDGET_BYTES:}
+      operational-reserve-bytes: ${TESTINBOX_STORAGE_FS_OPERATIONAL_RESERVE_BYTES:}
+      capacity-bytes: ${TESTINBOX_STORAGE_FS_CAPACITY_BYTES:}
+      inodes: ${TESTINBOX_STORAGE_FS_INODES:}
+      observation-max-age: ${TESTINBOX_STORAGE_FS_OBSERVATION_MAX_AGE:}
   bootstrap:
     # The dedicated synthetic-test credential (docs/dev/staging.md). Injected
     # from the environment's secret store; only its SHA-256 is ever persisted.

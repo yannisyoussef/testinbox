@@ -10,7 +10,7 @@ import java.time.Duration
 /** ADR-035 §8, on a manual clock: no sleeps. */
 class StorageBreakerTest {
     private var now = 0L
-    private val breaker = StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2)) { now }
+    private val breaker = StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now })
 
     private fun advance(by: Duration) {
         now += by.toNanos()
@@ -102,5 +102,63 @@ class StorageBreakerTest {
         advance(breaker.currentBackoff)
         breaker.close(breaker.admit() as Admission.Trial)
         breaker.isOpen shouldBe false
+    }
+
+    // --- STORAGE_FULL (filesystem-containment contract §8, TI-STORAGE-006E) ---------------------
+
+    private var evidence = false
+    private var evidenceChecks = 0
+    private val full =
+        StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now }) {
+            evidenceChecks++
+            evidence
+        }
+
+    @Test
+    fun `a full filesystem stays shut without evidence, and consumes no trial while it waits`() {
+        full.trip(Kind.STORAGE_FULL)
+        advance(Duration.ofMinutes(10)) // far past any backoff: a timer never reopens it
+
+        repeat(3) { full.admit() shouldBe Admission.Blocked(setOf(Kind.STORAGE_FULL)) }
+        full.isBlocked() shouldBe true
+
+        evidence = true // a fresh observation shows R_ops available
+        val trial = full.admit()
+        trial.shouldBeInstanceOf<Admission.Trial>()
+        trial.needsRealEvent shouldBe true // a zero-byte probe succeeds on a full filesystem
+        full.admit() shouldBe Admission.Blocked(setOf(Kind.STORAGE_FULL)) // one trial at a time
+    }
+
+    @Test
+    fun `the evidence is read only when a storage-full trial could be due`() {
+        full.admit() shouldBe Admission.Closed
+        full.trip(Kind.AMBIGUOUS)
+        advance(Duration.ofSeconds(15))
+        full.admit().shouldBeInstanceOf<Admission.Trial>()
+        evidenceChecks shouldBe 0 // no STORAGE_FULL kind, no database read
+
+        full.trip(Kind.STORAGE_FULL)
+        full.admit() shouldBe Admission.Blocked(setOf(Kind.AMBIGUOUS, Kind.STORAGE_FULL)) // backoff first
+        evidenceChecks shouldBe 0
+        advance(Duration.ofMinutes(1))
+        full.admit() shouldBe Admission.Blocked(setOf(Kind.AMBIGUOUS, Kind.STORAGE_FULL))
+        evidenceChecks shouldBe 1
+    }
+
+    @Test
+    fun `an evidence check that fails counts as no evidence`() {
+        val failing = StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now }) { error("database down") }
+        failing.trip(Kind.STORAGE_FULL)
+        advance(Duration.ofMinutes(1))
+        failing.admit() shouldBe Admission.Blocked(setOf(Kind.STORAGE_FULL))
+        failing.isBlocked() shouldBe true
+    }
+
+    @Test
+    fun `by default there is never evidence - only a restart clears a full filesystem without a monitor`() {
+        val plain = StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now })
+        plain.trip(Kind.STORAGE_FULL)
+        advance(Duration.ofHours(1))
+        plain.admit() shouldBe Admission.Blocked(setOf(Kind.STORAGE_FULL))
     }
 }

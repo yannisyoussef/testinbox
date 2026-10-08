@@ -4,7 +4,8 @@ import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.NodeRole
 import email.testinbox.application.storage.QualificationMatch
 import email.testinbox.application.storage.StorageDeclarations
-import email.testinbox.domain.storage.BucketQuotaFuse
+import email.testinbox.domain.storage.FilesystemContainment
+import email.testinbox.domain.storage.FootprintModel
 import email.testinbox.domain.storage.InboxShare
 import email.testinbox.domain.tenant.ApiKeyFormat
 import java.time.Duration
@@ -544,6 +545,7 @@ object StorageEnforcementSafety {
     private const val NODE_ID = "testinbox.storage.node-id"
     private const val INGESTION_NODES = "testinbox.storage.activation.expected-ingestion-nodes"
     private const val UPLOAD = "upload-implementation-version"
+    private const val FS = "testinbox.storage.filesystem"
 
     fun check(settings: DeploymentSettings): List<DeploymentViolation> {
         val storage = settings.storage
@@ -558,6 +560,7 @@ object StorageEnforcementSafety {
             storage.declaredMaxIngestionProcesses?.let { if (it <= 0) add(DeploymentViolation(PROCESSES, "is $it; must be at least 1")) }
             storage.measuredQuotaLagChurnBytes?.let { if (it < 0) add(DeploymentViolation(CHURN, "is $it; must not be negative")) }
             storage.inboxShare?.let { share -> shareProblem(share)?.let { add(DeploymentViolation(SHARE, it)) } }
+            addAll(filesystemSanity(storage.filesystem))
             storage.node?.let { node ->
                 // The allowlist is `testinbox-<service>:<node>:storage-v1`: a colon in the
                 // node id would make this node's OWN sessions read as violations.
@@ -619,12 +622,11 @@ object StorageEnforcementSafety {
             ) {
                 add(DeploymentViolation(GLOBAL, "is not declared; a non-OFF deployment must state G (ADR-035 §18 prerequisite 10)"))
             }
+            // The bucket quota Q is no longer load-bearing (filesystem-containment
+            // contract, TI-STORAGE-006E): MinIO's scanner-based quota overshot by
+            // ~22.75 GiB. It may still be declared as a secondary control, and is
+            // then sanity-checked; containment rests on the filesystem below.
             val q = storage.declaredBucketQuotaBytes
-            if (q ==
-                null
-            ) {
-                add(DeploymentViolation(QUOTA, "is not declared; the bucket quota fuse Q cannot be checked (ADR-035 §9, §18 gate 8)"))
-            }
             val processes = storage.declaredMaxIngestionProcesses
             if (processes == null) {
                 add(
@@ -640,17 +642,9 @@ object StorageEnforcementSafety {
                 add(DeploymentViolation(SHARE, "is not declared; a non-OFF deployment must state the inbox share (ADR-035 §3)"))
             }
             addAll(nodeDeclarations(storage, processes))
+            // Independent of G: every filesystem gap is reported with the others.
+            addAll(filesystemContainment(storage, processes))
             val churn = storage.measuredQuotaLagChurnBytes
-            if (churn ==
-                null
-            ) {
-                add(
-                    DeploymentViolation(
-                        CHURN,
-                        "is not declared; Ops measures the bytes MinIO accepts during one usage-refresh lag (ADR-035 §9)",
-                    ),
-                )
-            }
             // The arithmetic below only runs on well-formed inputs; the sanity pass reported the others.
             val usable =
                 listOf(
@@ -672,25 +666,126 @@ object StorageEnforcementSafety {
                         )
                         return@buildList
                     }
-            if (q != null && churn != null) {
-                runCatching { BucketQuotaFuse.minimumQuotaBytes(g, h, churn) }
-                    .onSuccess { minimum ->
-                        if (q < minimum) {
+        }
+
+    /** Every declared filesystem figure must be well-formed, in any mode. */
+    private fun filesystemSanity(fs: email.testinbox.application.storage.FilesystemDeclarations): List<DeploymentViolation> =
+        buildList {
+            listOf(
+                "block-size-bytes" to fs.blockSizeBytes,
+                "object-overhead-max-bytes" to fs.objectOverheadMaxBytes,
+                "global-footprint-limit-bytes" to fs.globalFootprintLimitBytes,
+                "deletion-debt-budget-bytes" to fs.deletionDebtBudgetBytes,
+                "metadata-budget-bytes" to fs.metadataBudgetBytes,
+                "operational-reserve-bytes" to fs.operationalReserveBytes,
+                "capacity-bytes" to fs.capacityBytes,
+                "inodes" to fs.inodes,
+            ).forEach { (key, value) ->
+                if (value != null &&
+                    value <= 0
+                ) {
+                    add(DeploymentViolation("$FS.$key", "is $value; must be positive"))
+                }
+            }
+            fs.observationMaxAge?.let {
+                if (it.isNegative || it.isZero) add(DeploymentViolation("$FS.observation-max-age", "is $it; must be positive"))
+            }
+            val b = fs.blockSizeBytes?.takeIf { it > 0 }
+            val oMax = fs.objectOverheadMaxBytes?.takeIf { it > 0 }
+            if (b != null && oMax != null) {
+                runCatching { FootprintModel(b, oMax) }.onFailure {
+                    add(DeploymentViolation("$FS.object-overhead-max-bytes", "${it.message} (filesystem-containment contract §3)"))
+                }
+            }
+        }
+
+    /**
+     * The static containment condition of the filesystem-containment contract
+     * (§2.1 I-C, §3.5), on DECLARED figures: the declared filesystem holds the
+     * declared budgets, has an inode per block, and leaves a positive footprint
+     * admission cap `G_F − H_F`. Whether the filesystem really is that size is
+     * gate F's question (independent Ops evidence), never this check's.
+     */
+    private fun filesystemContainment(
+        storage: StorageDeclarations,
+        processes: Int?,
+    ): List<DeploymentViolation> =
+        buildList {
+            val fs = storage.filesystem
+            val required =
+                listOf(
+                    "block-size-bytes" to fs.blockSizeBytes,
+                    "object-overhead-max-bytes" to fs.objectOverheadMaxBytes,
+                    "global-footprint-limit-bytes" to fs.globalFootprintLimitBytes,
+                    "deletion-debt-budget-bytes" to fs.deletionDebtBudgetBytes,
+                    "metadata-budget-bytes" to fs.metadataBudgetBytes,
+                    "operational-reserve-bytes" to fs.operationalReserveBytes,
+                    "capacity-bytes" to fs.capacityBytes,
+                    "inodes" to fs.inodes,
+                    "observation-max-age" to fs.observationMaxAge,
+                )
+            required.filter { it.second == null }.forEach { (key, _) ->
+                add(
+                    DeploymentViolation(
+                        "$FS.$key",
+                        "is not declared; a non-OFF deployment must declare its dedicated filesystem (filesystem-containment contract §1)",
+                    ),
+                )
+            }
+            if (required.any { it.second == null } || filesystemSanity(fs).isNotEmpty()) return@buildList
+            val model = FootprintModel(checkNotNull(fs.blockSizeBytes), checkNotNull(fs.objectOverheadMaxBytes))
+            val capacity = checkNotNull(fs.capacityBytes)
+            val gF = checkNotNull(fs.globalFootprintLimitBytes)
+            val reserve = checkNotNull(fs.operationalReserveBytes)
+            runCatching {
+                FilesystemContainment.requiredCapacityBytes(
+                    gF,
+                    checkNotNull(fs.deletionDebtBudgetBytes),
+                    checkNotNull(fs.metadataBudgetBytes),
+                    reserve,
+                )
+            }.onSuccess { needed ->
+                if (needed > capacity) {
+                    add(
+                        DeploymentViolation(
+                            "$FS.capacity-bytes",
+                            "is $capacity but G_F + D_budget + M + R_ops = $needed (filesystem-containment contract §2.1, I-C)",
+                        ),
+                    )
+                }
+            }.onFailure { add(DeploymentViolation("$FS.capacity-bytes", "G_F + D_budget + M + R_ops overflows; refused, never wrapped")) }
+            val minimumReserve = FilesystemContainment.minimumOperationalReserveBytes(capacity)
+            if (reserve < minimumReserve) {
+                add(
+                    DeploymentViolation(
+                        "$FS.operational-reserve-bytes",
+                        "is $reserve but the recovery reserve must be at least max(5 % of C_fs, 2 GiB) = $minimumReserve",
+                    ),
+                )
+            }
+            val minimumInodes = model.minimumInodes(capacity)
+            if (checkNotNull(fs.inodes) < minimumInodes) {
+                add(
+                    DeploymentViolation(
+                        "$FS.inodes",
+                        "is ${fs.inodes} but one inode per block needs $minimumInodes (filesystem-containment contract §3.5: mkfs -i ${model.blockSizeBytes})",
+                    ),
+                )
+            }
+            // When the payload H already overflows, that one violation names the cause.
+            val payloadBudgetComputable = runCatching { EffectiveStoragePolicy.finalizeBudget(storage) }.isSuccess
+            if (processes != null && processes > 0 && payloadBudgetComputable) {
+                runCatching { model.finalizeBudgetBytes(processes, storage.maxConcurrentWrites, storage.maxObjectBytes) }
+                    .onSuccess { hF ->
+                        if (hF >= gF) {
                             add(
                                 DeploymentViolation(
-                                    QUOTA,
-                                    "is $q but the fuse needs at least $minimum = G + max(1 GiB, 10 % of G, H + churn) with G=$g H=$h churn=$churn (ADR-035 §9)",
+                                    "$FS.global-footprint-limit-bytes",
+                                    "is $gF but H_F = processes × writes × φ(max object) = $hF; the footprint cap G_F − H_F must be positive",
                                 ),
                             )
                         }
-                    }.onFailure {
-                        add(
-                            DeploymentViolation(
-                                QUOTA,
-                                "the fuse minimum G + max(1 GiB, 10 % of G, H + churn) overflows; refused, never wrapped",
-                            ),
-                        )
-                    }
+                    }.onFailure { add(DeploymentViolation(PROCESSES, "makes H_F overflow; refused, never wrapped")) }
             }
         }
 

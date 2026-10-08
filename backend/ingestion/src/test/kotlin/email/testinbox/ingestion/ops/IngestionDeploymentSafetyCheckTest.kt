@@ -148,11 +148,18 @@ class IngestionDeploymentSafetyCheckTest {
             val message = context.startupFailure!!.stackTraceToString()
             for (key in listOf(
                 "global-limit-bytes",
-                "declared-bucket-quota-bytes",
                 "declared-max-ingestion-processes",
                 "inbox-share",
-                "measured-quota-lag-churn-bytes",
                 "backend-identity",
+                "filesystem.block-size-bytes",
+                "filesystem.object-overhead-max-bytes",
+                "filesystem.global-footprint-limit-bytes",
+                "filesystem.deletion-debt-budget-bytes",
+                "filesystem.metadata-budget-bytes",
+                "filesystem.operational-reserve-bytes",
+                "filesystem.capacity-bytes",
+                "filesystem.inodes",
+                "filesystem.observation-max-age",
             )) {
                 message shouldContain "testinbox.storage.$key"
             }

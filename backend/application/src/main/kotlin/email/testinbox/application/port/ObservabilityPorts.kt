@@ -381,7 +381,7 @@ enum class StorageAdmissionOutcome { ADMITTED, REFUSED_INBOX, REFUSED_WORKSPACE,
 enum class FootprintKind { COMMITTED, RESERVED, DELETION_DEBT }
 
 /** ADR-035 §16 `storage_physical_failure_total{kind}`: infrastructure, never capacity. */
-enum class PhysicalFailureKind { QUOTA, UNAVAILABLE, TIMEOUT, AMBIGUOUS, DEADLINE, LOCK_TIMEOUT, SLOT_WAIT, CLOCK_OFFSET }
+enum class PhysicalFailureKind { QUOTA, UNAVAILABLE, TIMEOUT, AMBIGUOUS, DEADLINE, LOCK_TIMEOUT, SLOT_WAIT, CLOCK_OFFSET, STORAGE_FULL }
 
 /** ADR-035 §16 `storage_reservation_released_total{path}`. */
 enum class ReleasePath { COMMITTED, ABSENT, DELETED, RECONCILED }
