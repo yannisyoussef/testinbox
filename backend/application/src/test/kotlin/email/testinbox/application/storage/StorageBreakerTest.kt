@@ -209,4 +209,67 @@ class StorageBreakerTest {
         advance(Duration.ofHours(1))
         plain.admit() shouldBe Admission.Blocked(setOf(Kind.STORAGE_FULL))
     }
+
+    // --- trip generations under concurrency (owner review §6) --------------------------------------
+
+    @Test
+    fun `evidence read for one trip never authorizes a trial after a newer trip, even once the backoff has passed`() {
+        val reading = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        lateinit var gated: StorageBreaker
+        gated =
+            StorageBreaker(
+                Duration.ofSeconds(15),
+                Duration.ofMinutes(2),
+                nanoTime = { now },
+                storageFullGate =
+                    StorageFullGate.of {
+                        reading.countDown()
+                        release.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                        true // evidence that was valid for the trip it was read for
+                    },
+            )
+        gated.trip(Kind.STORAGE_FULL)
+        advance(Duration.ofMinutes(1))
+        val pool =
+            java.util.concurrent.Executors
+                .newSingleThreadExecutor()
+        try {
+            val admission = pool.submit<Admission> { gated.admit() }
+            reading.await(10, java.util.concurrent.TimeUnit.SECONDS) shouldBe true
+            gated.trip(Kind.STORAGE_FULL) // a newer trip lands while the evidence is being read
+            advance(Duration.ofMinutes(10)) // and its backoff passes too: only the generation can refuse
+            release.countDown()
+            admission.get(10, java.util.concurrent.TimeUnit.SECONDS) shouldBe Admission.Blocked(setOf(Kind.STORAGE_FULL))
+        } finally {
+            pool.shutdownNow()
+        }
+        // A fresh read for the new generation does authorize it.
+        gated.admit().shouldBeInstanceOf<Admission.Trial>()
+    }
+
+    @Test
+    fun `many callers racing on one generation's evidence get exactly one trial`() {
+        val gated =
+            StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now }, storageFullGate = StorageFullGate.of { true })
+        gated.trip(Kind.STORAGE_FULL)
+        advance(Duration.ofMinutes(1))
+        val start = java.util.concurrent.CountDownLatch(1)
+        val pool =
+            java.util.concurrent.Executors
+                .newFixedThreadPool(8)
+        try {
+            val results =
+                (1..32).map {
+                    pool.submit<Admission> {
+                        start.await()
+                        gated.admit()
+                    }
+                }
+            start.countDown()
+            results.map { it.get(10, java.util.concurrent.TimeUnit.SECONDS) }.count { it is Admission.Trial } shouldBe 1
+        } finally {
+            pool.shutdownNow()
+        }
+    }
 }

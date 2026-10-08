@@ -73,8 +73,9 @@ class StorageBreaker(
         synchronized(this) {
             if (kinds.isEmpty()) return Admission.Closed
             if (trialInFlight || nanoTime() - retryAt < 0) return Admission.Blocked(kinds.toSet())
-            // No trial, and no trial consumed, while a full filesystem has no evidence of recovery.
-            if (Kind.STORAGE_FULL in kinds && evidence != true) return Admission.Blocked(kinds.toSet())
+            // No trial, and no trial consumed, while a full filesystem has no evidence of
+            // recovery FOR THIS trip generation: evidence read before a later trip is void.
+            if (Kind.STORAGE_FULL in kinds && !evidence.holdsFor(epoch)) return Admission.Blocked(kinds.toSet())
             trialInFlight = true
             return Admission.Trial(kinds.toSet(), epoch)
         }
@@ -86,9 +87,17 @@ class StorageBreaker(
         synchronized(this) {
             if (kinds.isEmpty()) return false
             if (trialInFlight || nanoTime() - retryAt < 0) return true
-            return Kind.STORAGE_FULL in kinds && evidence != true
+            return Kind.STORAGE_FULL in kinds && !evidence.holdsFor(epoch)
         }
     }
+
+    /** An evidence answer, and the trip generation it was read for. */
+    private data class Evidence(
+        val epoch: Long,
+        val holds: Boolean,
+    )
+
+    private fun Evidence?.holdsFor(current: Long): Boolean = this != null && holds && epoch == current
 
     /**
      * The evidence check, run OUTSIDE the lock (it reads the database), and
@@ -96,17 +105,18 @@ class StorageBreaker(
      * a STORAGE_FULL trip that lands between the two looks counts as no
      * evidence, so the race can only keep the breaker shut.
      */
-    private fun evidenceIfNeeded(): Boolean? {
-        val due =
+    private fun evidenceIfNeeded(): Evidence? {
+        val generation =
             synchronized(this) {
-                Kind.STORAGE_FULL in kinds && !trialInFlight && nanoTime() - retryAt >= 0
+                epoch.takeIf { Kind.STORAGE_FULL in kinds && !trialInFlight && nanoTime() - retryAt >= 0 }
+            } ?: return null
+        val holds =
+            try {
+                storageFullGate.evidence()
+            } catch (e: Exception) {
+                false
             }
-        if (!due) return null
-        return try {
-            storageFullGate.evidence()
-        } catch (e: Exception) {
-            false
-        }
+        return Evidence(generation, holds)
     }
 
     /** A physical failure: open, or re-open after a failed trial with a doubled backoff. */
