@@ -1,0 +1,18 @@
+2026-10-08T14:40:52Z qualification start (testinbox , kernel 6.8.0-142-generic)
+2026-10-08T14:40:52Z pass main start
+2026-10-08T15:52:52Z pass main trials done rc=0
+2026-10-08T16:11:52Z sweep main start
+2026-10-08T16:11:53Z sweep main done rc=0
+2026-10-08T16:11:55Z capture main done
+2026-10-08T16:11:55Z pass v3 start
+2026-10-08T17:02:09Z pass v3 trials done rc=0
+2026-10-08T17:21:09Z sweep v3 start
+2026-10-08T17:21:09Z sweep v3 done rc=0
+2026-10-08T17:21:12Z capture v3 done
+2026-10-08T17:21:12Z pass slow start
+2026-10-08T17:24:18Z pass slow trials done rc=0
+2026-10-08T17:43:18Z sweep slow start
+2026-10-08T17:43:18Z sweep slow done rc=0
+2026-10-08T17:43:20Z capture slow done
+2026-10-08T17:43:20Z all passes finished rc=0
+2026-10-08T17:43:22Z harness container removed

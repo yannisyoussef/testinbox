@@ -1,0 +1,2 @@
+registry.yvnn.is/infinity/mirror/minio/minio@sha256:3f97c5651cb6662b880c787a232b6b34fec8d8922e08d6617b25d241a21164bb (amd64 member; extracted /usr/bin/minio)
+53e2a2cb16c5366ea6fbbc479c19ddb4c6a0948273e752f740fb1fbf27bb817c  /opt/infinity/workspace/ti-storage-006c/qual/main/minio

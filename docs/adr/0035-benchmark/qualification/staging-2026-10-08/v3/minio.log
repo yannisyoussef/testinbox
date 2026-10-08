@@ -1,0 +1,504 @@
+INFO: Formatting 1st pool, 1 set(s), 1 drives per set.
+INFO: WARNING: Host local has more than 0 drives of set. A host failure will result in data becoming unavailable.
+MinIO Object Storage Server
+Copyright: 2015-2026 MinIO, Inc.
+License: GNU AGPLv3 - https://www.gnu.org/licenses/agpl-3.0.html
+Version: RELEASE.2025-04-22T22-12-26Z (go1.24.2 linux/amd64)
+
+API: http://127.0.0.1:9000 
+WebUI: http://172.17.0.2:33153 http://127.0.0.1:33153  
+
+Docs: https://docs.min.io
+
+API: SYSTEM.storage
+Time: 16:12:46 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:14:31 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:14:33 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: .minio.sys/buckets/qual/.usage-cache.bin has incomplete body (cmd.IncompleteBody)
+       3: internal/logger/logger.go:268:logger.LogIf()
+       2: cmd/logging.go:136:cmd.scannerLogIf()
+       1: cmd/erasure.go:566:cmd.erasureObjects.nsScanner.func2()
+
+API: SYSTEM.scanner
+Time: 16:14:33 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.usage-cache.bin (cmd.InsufficientWriteQuorum)
+       4: internal/logger/logonce.go:118:logger.(*logOnceType).logOnceIf()
+       3: internal/logger/logonce.go:149:logger.LogOnceIf()
+       2: cmd/logging.go:140:cmd.scannerLogOnceIf()
+       1: cmd/erasure.go:465:cmd.erasureObjects.nsScanner.func1()
+
+API: SYSTEM.scanner
+Time: 16:14:33 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+
+API: SYSTEM.scanner
+Time: 16:14:33 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.usage.json (cmd.InsufficientWriteQuorum)
+       4: internal/logger/logonce.go:118:logger.(*logOnceType).logOnceIf()
+       3: internal/logger/logonce.go:149:logger.LogOnceIf()
+       2: cmd/logging.go:140:cmd.scannerLogOnceIf()
+       1: cmd/data-usage.go:59:cmd.storeDataUsageInBackend()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:16:16 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:16:18 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/qual/.usage-cache.bin (cmd.InsufficientWriteQuorum)
+       3: internal/logger/logger.go:268:logger.LogIf()
+       2: cmd/logging.go:136:cmd.scannerLogIf()
+       1: cmd/erasure.go:566:cmd.erasureObjects.nsScanner.func2()
+
+API: SYSTEM.scanner
+Time: 16:16:18 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:18:01 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:18:03 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/qual/.usage-cache.bin (cmd.InsufficientWriteQuorum)
+       3: internal/logger/logger.go:268:logger.LogIf()
+       2: cmd/logging.go:136:cmd.scannerLogIf()
+       1: cmd/erasure.go:566:cmd.erasureObjects.nsScanner.func2()
+
+API: SYSTEM.scanner
+Time: 16:18:03 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:19:46 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:21:30 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:21:34 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: .minio.sys/buckets/qual/.usage-cache.bin has incomplete body (cmd.IncompleteBody)
+       3: internal/logger/logger.go:268:logger.LogIf()
+       2: cmd/logging.go:136:cmd.scannerLogIf()
+       1: cmd/erasure.go:566:cmd.erasureObjects.nsScanner.func2()
+
+API: SYSTEM.scanner
+Time: 16:21:34 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:23:16 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:23:19 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/qual/.usage-cache.bin (cmd.InsufficientWriteQuorum)
+       3: internal/logger/logger.go:268:logger.LogIf()
+       2: cmd/logging.go:136:cmd.scannerLogIf()
+       1: cmd/erasure.go:566:cmd.erasureObjects.nsScanner.func2()
+
+API: SYSTEM.scanner
+Time: 16:23:19 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:25:01 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.002s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:25:04 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/qual/.usage-cache.bin (cmd.InsufficientWriteQuorum)
+       3: internal/logger/logger.go:268:logger.LogIf()
+       2: cmd/logging.go:136:cmd.scannerLogIf()
+       1: cmd/erasure.go:566:cmd.erasureObjects.nsScanner.func2()
+
+API: SYSTEM.scanner
+Time: 16:25:04 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:26:46 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:28:31 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:28:35 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: .minio.sys/buckets/qual/.usage-cache.bin has incomplete body (cmd.IncompleteBody)
+       3: internal/logger/logger.go:268:logger.LogIf()
+       2: cmd/logging.go:136:cmd.scannerLogIf()
+       1: cmd/erasure.go:566:cmd.erasureObjects.nsScanner.func2()
+
+API: SYSTEM.scanner
+Time: 16:28:35 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:30:16 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:32:16 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:34:16 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.003s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:36:01 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:38:01 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:40:01 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:41:46 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:42:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+
+API: SYSTEM.scanner
+Time: 16:43:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:44:45 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:45:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+
+API: SYSTEM.scanner
+Time: 16:46:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:47:46 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:48:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+
+API: SYSTEM.scanner
+Time: 16:49:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:50:46 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:51:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+
+API: SYSTEM.scanner
+Time: 16:52:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:53:45 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:54:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+
+API: SYSTEM.scanner
+Time: 16:55:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:56:46 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.001s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 16:57:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+
+API: SYSTEM.scanner
+Time: 16:58:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
+
+API: SYSTEM.storage
+Time: 16:59:46 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: node(127.0.0.1:9000): taking drive /data offline: unable to write+read for 30.002s (*errors.errorString)
+       4: internal/logger/logger.go:258:logger.LogAlwaysIf()
+       3: cmd/logging.go:160:cmd.storageLogAlwaysIf()
+       2: cmd/xl-storage-disk-id-check.go:1015:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.1()
+       1: cmd/xl-storage-disk-id-check.go:1035:cmd.(*xlStorageDiskIDCheck).monitorDiskWritable.func1.2()
+
+API: SYSTEM.scanner
+Time: 17:00:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+
+API: SYSTEM.scanner
+Time: 17:01:00 UTC 10/08/2026
+DeploymentID: eac4b1f0-b028-4d88-b3b6-921cac742eba
+Error: Storage resources are insufficient for the write operation .minio.sys/buckets/.bloomcycle.bin, Object buckets/.bloomcycle.bin (*fmt.wrapError)
+       4: internal/logger/logger.go:268:logger.LogIf()
+       3: cmd/logging.go:136:cmd.scannerLogIf()
+       2: cmd/data-scanner.go:229:cmd.runDataScanner()
+       1: cmd/data-scanner.go:80:cmd.initDataScanner.func1()
+node(127.0.0.1:9000): Read/Write/Delete successful, bringing drive /data online
