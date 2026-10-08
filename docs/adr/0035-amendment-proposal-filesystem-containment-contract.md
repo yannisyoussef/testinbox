@@ -684,10 +684,13 @@ close on the probe and re-trip on every real upload.
 
 Changes:
 
-- `AmbiguityKind.STORAGE_FULL`: `507` with `<Code>XMinioStorageFull</Code>`,
+- `AmbiguityKind.STORAGE_FULL`: `507` with `<Code>XMinioStorageFull</Code>`
+  or with no code at all (a lost or truncated body: the conservative reading,
+  since a `SERVER_ERROR` trial is a zero-byte probe a full filesystem passes),
   or `500` whose `<Message>` contains `no space left on device`
-  (case-insensitive, bounded body already read). **Never by status alone**: a
-  `500` without that message stays `SERVER_ERROR`. The classifier is a pure
+  (case-insensitive, bounded body already read). **A `500` is never
+  storage-full by status alone**: without that message it stays
+  `SERVER_ERROR`; a `507` with another code is not assumed either. The classifier is a pure
   function with a corpus test for both bodies and for a plain `500`.
 - `StorageBreaker.Kind.STORAGE_FULL`, tripped by that ambiguity kind
   **instead of** `AMBIGUOUS` (today `GuardedStorage.abandon` trips `AMBIGUOUS`
@@ -696,9 +699,15 @@ Changes:
   ambiguity row and a slot for `T_verify`). `Trial.needsRealEvent` is true for
   it, and the probe step skips the zero-byte witness for it.
 - **The trial is gated by evidence, not by a timer.** A `STORAGE_FULL` trial is
-  issued only when the newest filesystem observation is younger than *A_obs*
-  and shows `avail_bytes ≥ R_ops`; otherwise the breaker stays open **without
-  consuming a trial** (and without a slot). A full filesystem is an incident,
+  issued only when the newest filesystem observation **began after the latest
+  `STORAGE_FULL` trip** (on the database clock), is younger than *A_obs*
+  measured from its start, and shows `avail_bytes ≥ R_ops` **and at least
+  `R_ops / B` free inodes** (MinIO answers ENOSPC on inode exhaustion too);
+  otherwise the breaker stays open **without consuming a trial** (and without
+  a slot). An observation the 507/ENOSPC just contradicted can therefore never
+  license a trial, and each failed trial (itself a trip) needs a newer
+  observation, so a stale-but-fresh observation cannot spend a slot on every
+  backoff. A full filesystem is an incident,
   and each failed real-event trial would otherwise hold a write slot for
   `T_verify`; sixteen of them would wedge the node for an hour.
 - The whole-event `451`, the ambiguity row, the held slot and *H_F* are
