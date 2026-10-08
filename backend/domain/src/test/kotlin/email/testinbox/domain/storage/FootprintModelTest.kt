@@ -69,16 +69,17 @@ class FootprintModelTest {
     }
 
     @Test
-    fun `the closed form never under-counts a sum of phi`() =
+    fun `the closed form never under-counts a sum of phi`() {
         runBlocking {
             checkAll(500, Arb.list(Arb.long(0L, 15L * mib), 0..60)) { payloads ->
                 val exact = payloads.sumOf { model.ofObject(it) }
                 model.bound(payloads.sum(), payloads.size.toLong()) shouldBeGreaterThanOrEqual exact
             }
         }
+    }
 
     @Test
-    fun `the closed form never under-counts for every supported block size and denominator`() =
+    fun `the closed form never under-counts for every supported block size and denominator`() {
         runBlocking {
             checkAll(300, Arb.int(0, 2), Arb.long(16L, 4096L), Arb.list(Arb.long(0L, 2L * mib), 0..40)) { b, d, payloads ->
                 val block = listOf(1024L, 2048L, 4096L)[b]
@@ -87,9 +88,10 @@ class FootprintModelTest {
                 m.bound(payloads.sum(), payloads.size.toLong()) shouldBeGreaterThanOrEqual exact
             }
         }
+    }
 
     @Test
-    fun `the closed form is tight to within one block plus one byte per object`() =
+    fun `the closed form is tight to within one block plus one byte per object`() {
         runBlocking {
             checkAll(300, Arb.list(Arb.long(0L, 15L * mib), 1..30)) { payloads ->
                 val exact = payloads.sumOf { model.ofObject(it) }
@@ -98,6 +100,7 @@ class FootprintModelTest {
                 ((bound - exact) <= payloads.size * (4095 + 16 + 1) + 1) shouldBe true
             }
         }
+    }
 
     @Test
     fun `the finalize budget is procs times writes times phi of the largest object`() {
