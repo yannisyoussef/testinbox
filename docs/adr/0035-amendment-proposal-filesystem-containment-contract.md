@@ -1,7 +1,9 @@
 # ADR-035 amendment proposal, part 2: the filesystem-containment safety contract
 
 **Status: PROPOSED — not accepted.** Prepared by the application team for owner
-review (TI-STORAGE-006E, 2026-10-08). It answers the owner's conditional
+review (TI-STORAGE-006E, 2026-10-08; corrected after the owner review of
+2026-10-08, which approved the direction and found that admitting on the
+copy's own φ under-charges the aggregate bound — §2.4 replaces that rule). It answers the owner's conditional
 approval of the filesystem-containment direction: *the mechanism is approved,
 the numerical safety model of PR #81 is not accepted as proven.* This document
 is that model, re-derived so that every term is defined, every bound has a
@@ -50,7 +52,7 @@ means computed by the application from rows.
 |---|---|---|---|---|---|
 | *B* | filesystem block size (`f_frsize`) | bytes | declared, verified by gate F against `statvfs` | fixed per filesystem | `DeploymentSafety` (shape), gate F (truth) |
 | *O_max* | per-object fixed footprint overhead, above the payload's block rounding | bytes | declared; must be ≥ the qualified maximum of the storage combination (§3, §10) | per qualification record | `DeploymentSafety`, gate F |
-| *ε* | proportional allowance for extent-tree metadata of large part files | ratio | constant 1/256 (§3.4) | fixed | code |
+| *ε* | proportional allowance for extent-tree metadata of large part files | ratio | at least 1/256 (§3.4): the code refuses a denominator above 256 | fixed | code |
 | *K* | `(B − 1)·(1 + ε) + O_max + 1`: the most one object can cost above its payload under the closed form (the `+ 1` absorbs the per-object rounding-up of the ε allowance) | bytes | derived | per deployment | T1 |
 | φ(p) | footprint bound of one object of payload *p*: `⌈p⌉_B + ⌈ε·⌈p⌉_B⌉ + O_max` | bytes | derived | per object | T1, ledger reads |
 | *P* | payload bytes of a set of objects (what the ledger holds today) | bytes | derived (ledger) | live | T1 snapshot |
@@ -58,9 +60,13 @@ means computed by the application from rows.
 | *F(P, N)* | closed-form footprint bound of a set: `(P + N·(B − 1))·(1 + ε) + N·(O_max + 1) = P·(1+ε) + N·K` (§3.3) | bytes | derived | live | T1 snapshot |
 | *F_c* | footprint of committed objects: `F(P_c, N_c)` over `message`/`attachment` rows | bytes | derived (ledger bases + deltas) | live | T1 |
 | *F_r* | footprint of reserved objects: `F(Σ bytes, Σ cardinality(object_keys))` over `storage_reservation` | bytes | derived | live | T1 |
-| *G_F* | global ceiling in footprint bytes (replaces payload *G* for the GLOBAL scope) | bytes | declared | per deployment | T1: `F_c + F_r + φ_copy ≤ min(G_F, C_fs − R_ops − M − D_est) − H_F` |
-| *H_F* | finalize budget in footprint: `procs × 16 × φ(15 MiB)` | bytes | derived from declarations | per deployment | T1 (held back from *G_F*) |
-| *D_est* | bound on deleted-but-unpurged footprint (trash) at time *t* (§5) | bytes | derived from the debt ledger and the newest Ops observation | live | T1, retention pacing |
+| *G_F* | global ceiling in footprint bytes, key `global-footprint-limit-bytes`; the payload `global-limit-bytes` is never reinterpreted as it | bytes | declared | per deployment | T1, rule (G) of §2.4 |
+| *H_F* | finalize budget in footprint: `procs × 16 × F(15 MiB, 1)`. **F, not φ**: a late object leaving the uncovered class is charged `ΔF ≤ F(p, 1)` when its debt row is written (§2.4, Lemma 3) | bytes | derived from declarations | per deployment | T1 (held back) |
+| *L* | live set: `(P_c + P_r, N_c + N_r)` over `message`/`attachment` rows and `storage_reservation` (`RESERVED` and `RELEASING`) | bytes, objects | derived (ledger + reservations) | live | T1 snapshot |
+| *D* | unsuperseded debt: `(Σ bytes, Σ objects)` over `storage_deletion_debt` rows that are pending or have `incurred_at ≥ T_obs` | bytes, objects | derived | live | T1 snapshot |
+| *W* | `trash_bytes` of the newest observation; **⊥ (unbounded) when there is none** | bytes | observed | per observation | T1 snapshot |
+| Φ | **the admission potential**: `F(L + D) + W`, one aggregate, rounded once (§2.4) | bytes | derived | live | T1, rule (C) |
+| *D_est* | `Φ − F(L)`: the deletion-debt estimate, for metrics and pacing only | bytes | derived | live | metrics, retention pacing |
 | *D_budget* | the debt up to which the configured *G_F* stays the binding ceiling (I-C); above it the ceiling shrinks by the excess | bytes | declared | per deployment | `DeploymentSafety` (sizing), retention pacing |
 | *M* | budget for everything MinIO allocates that is not an object or trash (`.minio.sys`, tmp residue, caches) | bytes and inodes | declared; observed by Ops; gate F compares | per deployment | gate F, monitor |
 | *R_ops* | operational reserve never planned for use (recovery, metadata ops) | bytes | declared, ≥ max(5 % of *C_fs*, 2 GiB) | per deployment | `DeploymentSafety` |
@@ -78,52 +84,61 @@ means computed by the application from rows.
 ### 2.1 Statement
 
 Let the storage combination be the qualified one (ADR-035 §9a) **plus** the
-filesystem elements of gate F (§9). Then at every instant *t*:
+filesystem elements of gate F (§9), and let the ledger's object counts be
+trusted (§4.5). Under `ALL`, a copy *c* with payload *p_c* in *n_c* objects is
+admitted only if, evaluated in T1's single snapshot **after** adding it (and
+every copy of the same event admitted before it):
 
 ```
-U(t) ≤ F_c(t) + F_r(t) + H_F + D_est(t) + M            (decomposition, §2.2)
+(G)  F(L + c) + H_F                    ≤ G_F                     policy ceiling (live footprint)
+(C)  F(L + D + c) + W + H_F + M + R_ops ≤ C_fs                   containment (the potential Φ)
 ```
 
-and the GLOBAL ceiling of ADR-035 §4, read in footprint units, becomes
-**dynamic**: a copy is admitted only if
-
-```
-F_c + F_r + φ_copy ≤ min(G_F, C_fs − R_ops − M − D_est) − H_F     (I-G, the global ceiling)
-```
-
-with the static sizing condition
+with `W ≠ ⊥` (no observation, no admission), and the static sizing condition
 
 ```
 G_F + D_budget + M + R_ops ≤ C_fs                                  (I-C)
 ```
 
-which only says that while `D_est ≤ D_budget` the configured *G_F* is the
-binding term, so tenants get the full declared ceiling; above `D_budget` the
-ceiling shrinks by the excess debt and nothing else changes.
+which only says that while the debt part of Φ stays within `D_budget`, (G) is
+the binding rule and tenants get the full declared ceiling; above it (C)
+binds, so **deletion debt reduces the available global ceiling** by exactly
+the excess (the owner's decision 3). Then at every instant *t*:
 
-**Why the bound holds (the potential argument).** Let `Φ = F_c + F_r + D_est`.
-A deletion moves a charge from *F_c* (or *F_r*) to *D_est* at the same bound
-`F(bytes, objects)`, so Φ does not grow (it grows transiently only by the
-conservative double counts of §5.3); a purge, observed by Ops, lowers it;
-**only admission raises Φ**, and admission raises it only when
-`Φ + φ_copy ≤ C_fs − R_ops − M − H_F`. So `Φ ≤ C_fs − R_ops − M − H_F` at
-every instant, and with the decomposition
-`U ≤ Φ + H_F + M ≤ C_fs − R_ops < C_fs`: the filesystem is never exhausted by
-TestInbox's own objects while the decomposition holds. No pacing, timer or
-purge latency appears in the argument. Inodes: §3.5 shows that with
-`I_fs ≥ C_fs / B` (one inode per block, `mkfs.ext4 -i 4096` for *B* = 4 KiB)
-inodes cannot run out before blocks do, so the same inequality bounds them.
+```
+U_TI(t) ≤ C_fs − R_ops − M                                         (the theorem)
+```
+
+where *U_TI* is the bytes TestInbox's objects (classes a–d, f of §2.2)
+occupy; *M* bounds class (e) by observation, so `U(t) ≤ C_fs − R_ops`.
+
+**Not φ_copy.** An earlier draft admitted on `F(L) + φ_copy`. That
+under-charges: the closed form rounds per object, so its increment for one
+object can exceed φ. For *B* = 4096, *O_max* = 24 576, ε = 1/256 and a
+4 096 B object, φ = 28 688 B but `F(4096, 1) − F(0, 0)` = 32 800 B; with
+30 000 B of headroom the φ rule admits and the aggregate bound then exceeds
+the capacity. The rules above evaluate the post-admission aggregate exactly;
+`FootprintAdmissionTest` pins this counterexample. A conservative additive
+charge would also be sound — `ΔF ≤ F(p_c, n_c)` (Lemma 2) — but the exact
+aggregate is no more expensive, refuses less, and is what the property tests
+check.
+
+The proof is §2.4. Inodes: §3.5 shows that with `I_fs ≥ C_fs / B` inodes
+cannot run out before blocks do, so the same inequality bounds them.
 
 I-G is decided inside T1's single snapshot, under the admission lock, exactly
-like today's ceilings (ADR-035 §4): the snapshot statement gains the debt sum
-and the newest observation as two more CTEs. A refusal on it is
+like today's ceilings (ADR-035 §4): the snapshot statement gains the debt sums,
+the newest observation and the trust marker. A refusal on (G) or (C) is
 `SERVICE_CAPACITY` (`250` and discard, one bit to the tenant, §13d), never a
-different SMTP reply (§5.4). **I-C is static**: checked at startup from
-declarations, verified against the real filesystem by gate F and the monitor.
+different SMTP reply (§5.4). Untrusted counts or no observation are not a
+capacity verdict; they are an infrastructure state, answered `451` **before
+recipient resolution** like a latch (§4.5), so the reply is the same for
+every recipient. **I-C is static**: checked at startup from declarations,
+verified against the real filesystem by gate F and the monitor.
 
 **Under `TENANT_LIMITS` the theorem does not hold.** ADR-035 §14 Phase 4
 enforces the GLOBAL scope only under `ALL`; under `TENANT_LIMITS` nothing
-bounds `F_c + F_r`, ENOSPC is reachable, and containment there means *fails
+bounds Φ, ENOSPC is reachable, and containment there means *fails
 closed at ENOSPC* through the `STORAGE_FULL` breaker (§8) and the latch, not
 *unreachable*. The filesystem is still the dedicated, preallocated one, so
 what fails is TestInbox's storage, not the host.
@@ -161,6 +176,113 @@ watched, with the kernel as the backstop the application never plans to reach.
   mount), not an application one.
 - It does not depend on MinIO's purge latency, scanner cadence or quota. None
   of them appears in any inequality.
+
+### 2.4 The admission potential and its proof over every transition
+
+**State.** At any instant: *L* = `(P_c + P_r, N_c + N_r)` (rows and live
+reservations); *D* = the pending debt rows plus the debt rows incurred at or
+after the newest observation's `started_at`; *W* = that observation's
+`trash_bytes`. For **any** committed observation *k* define
+
+```
+Φ_k(t) = F(L(t) + D_k(t)) + W_k        D_k = pending rows + rows with incurred_at ≥ started_at_k
+```
+
+and the uncovered set *X_k(t)*: TestInbox objects physically present that are
+in none of *L*, *D_k* or *W_k* (late objects of reservations released before
+`started_at_k`; ADR-035 §9 bounds them by the occupied ambiguity slots).
+`Φ_k` is defined abstractly even after compaction deleted the rows it sums.
+
+**Lemma 1 (soundness).** For every observation *k* already started,
+`U_TI(t) ≤ Φ_k(t) + |X_k(t)|`, where |X| is X's allocated bytes. *Proof:* every
+present TestInbox object is in *L* (a row or a live reservation), in trash
+(then: moved after `started_at_k`, so its debt row — incurred after the move,
+or pending — is in *D_k*; or moved before, so it is in *W_k*), or in *X_k*.
+`F(P, N) ≥ Σ φ(p_i)` for every finite set of objects (§3.3, property-tested),
+so `F(L + D_k) ≥ Σ φ` over the objects of *L* and *D_k* together, and each
+object's allocation is ≤ its φ (§3.1–3.4). Double counts only add. ∎
+
+**Lemma 2 (increments).** For every set *S* and object set *c*:
+`F(S + c) − F(S) ≤ F(c)` (the ceiling is subadditive), and for one object
+`F(S + p) − F(S) ≥ φ(p)` (the increment is an integer ≥ ⌈p⌉_B·(1+ε) + O_max).
+So the exact aggregate rule is never stricter than charging `F(c)`, and a row
+moved out of the uncovered class raises Φ by at least what it occupies. ∎
+
+**Lemma 3 (late objects).** Let Λ_k be the objects that can surface late
+relative to *k*: the ambiguous keys of reservations released **before**
+`started_at_k` whose ambiguity was still unresolved at that instant (a
+release after `started_at_k` has its debt row in *D_k*, so its late object is
+covered there — a phantom count until it surfaces). ADR-035 §9 bounds Λ_k:
+each holds one write slot until it is verified, an event stops at its first
+non-`Stored` upload (one ambiguous key per slot), and keyless crash rows cap at
+the slots, so `|Λ_k| ≤ procs × 16`. *X_k* ⊆ Λ_k at every instant, and *X_k*
+can **grow** after any instant (a member of Λ_k surfaces) as well as shrink.
+When a member leaves *X_k* into *D_k* (the orphan sweep or the verifier
+deletes it after writing its debt row), Φ_k rises by `ΔF ≤ F(p, 1)`
+(Lemma 2) and |X_k| falls. So for every instant *A* and every *t ≥ A* until
+Λ_k is exhausted:
+`Φ_k(t) + |X_k(t)| ≤ Φ_k(A) + Σ_{x ∈ Λ_k} F(p_x, 1) ≤ Φ_k(A) + H_F`. ∎
+
+*This lemma was corrected by its own property test:* an earlier wording
+claimed *X_k* only shrinks after *A*; the operation-sequence property found a
+late landing after *A* that breached the bound until the model enforced the
+slot premise. The premise, not the uncovered set at *A*, is what bounds *H_F*.
+
+**Transitions.** For the observation *k\** newest at the last admission,
+every transition between admissions leaves `Φ_k* + H-charge` unchanged or
+lower. Each row is an obligation on code, and each is tested (§17 map):
+
+| Transition | Effect on *L*, *D* | Φ_k* | Why exact |
+|---|---|---|---|
+| T1 creates a reservation | *L* += (p, n) | **rises, checked by (G) and (C)** | the only uncharged-by-construction increase, and it is charged |
+| upload of a reserved key | physical only | = | the key is in *L* as reserved |
+| T2 consumes a reservation | *L*: reserved −(p, n), committed +(p, n) | = | one transaction; T2 refuses unless the reservation's bytes equal the copy's bytes, and its key count is the copy's object count by construction (`CopyPlan.objects`) |
+| ADR-026 duplicate | reservation → `RELEASING` | = | still in *L* until released |
+| definitive failure, ambiguous upload, expiry | reservation → `RELEASING`, then released | = | release below |
+| release (cleanup, after the keys were deleted and proven absent) | *L* −(p, n), *D* +(p, n) | = | the `storage_reservation` delete trigger appends the debt row in the **same statement**; it is incurred after the deletes |
+| retention cascade (`message`/`attachment` delete) | *L* −, *D* + | = | statement triggers, same statement; `deletePrefix` ran and was proven complete before it (§4.6) |
+| partial `DeleteObjects`, crash between S3 and the row delete | none | = | the rows stay, so the objects stay in *L* until a retry deletes them |
+| late object found inside a release (reservation postponed `S`) | none | = | still in *L* as reserved; its release later writes the debt row |
+| orphan sweep, ambiguity verifier deleting a late object | *X* → *D* | rises by ΔF ≤ F(p, 1), within *H_F* | Lemma 3; a **pending** debt row is committed before the S3 delete and re-stamped after the key is proven absent (§5.2) |
+| ledger compaction | deltas → bases | = | bytes **and objects** folded in one statement; a pre-V8 compactor drops objects, which marks the counts untrusted (§4.5) |
+| debt compaction | rows with `incurred_at < started_at_newest` deleted | = for Φ_newest | they are superseded by `W_newest`, not lost; Φ_k* is abstract |
+| new observation | *k\** may change | — | Lemma 1 holds for every *k*; admissions use the newest |
+| purge, probe objects, metadata | physical only | = | *M* (class e) |
+| reconciliation repair, recompute | counts corrected to the rows | corrects | the true potential never changed; an UNDER drift means admissions used a low Φ, which is why enforcement needs trusted counts (§4.5) |
+| rollback to a pre-V8 artifact | its compactor drops counts | — | detected, counts untrusted, enforcement waits (§4.5) |
+
+**Theorem.** At every instant, `U_TI ≤ C_fs − R_ops − M`. *Proof:* let *A* be
+the last admission and *k\** the observation newest at *A*. At *A*, (C) gives
+`Φ_k*(A) + H_F + M + R_ops ≤ C_fs`. Between *A* and the next admission,
+Φ_k* changes only by the transitions above: unchanged, or (Lemma 3) by
+moving a member of Λ_k* into *D* at a charge covered by *H_F*. With Lemmas 1
+and 3, `U_TI(t) ≤ Φ_k*(t) + |X_k*(t)| ≤ Φ_k*(A) + H_F ≤ C_fs − R_ops − M`.
+At the next admission the same holds for the then-newest observation. Before
+any admission, nothing TestInbox owns is reserved. ∎
+
+**Executable check.** `FootprintAdmissionTest` runs 1 000 random operation
+sequences (admit, upload, T2, definitive and ambiguous release, late landing,
+retention, orphan deletion, purge, observation, debt compaction, verification)
+against a worst-case world (every object at its full φ, every measurement
+missing every concurrent trash move). After **every** step it asserts the
+theorem, Lemma 1, and `Φ + H_F + M + R_ops ≤ C_fs` after each admission.
+Mutation checks: the φ_copy rule, and a debt row written before the delete
+without `pending`, each fail it.
+
+**Mixed-recipient and multi-copy events.** T1 evaluates the event's copies in
+envelope order against running totals in **one** snapshot under the
+admission lock: copy *i* is checked with copies 1..i−1 that passed already
+added, so the event's admitted set satisfies (G) and (C) as a whole.
+Narrowest ceiling first: a copy refused by INBOX or WORKSPACE (payload, as
+today) adds nothing; GLOBAL refusals are per copy. Different workspaces and
+inboxes in one event change nothing above: (G) and (C) are global sums.
+
+**Under `TENANT_LIMITS`** (owner decision 9) the rules are evaluated and
+metered, never enforced, so the theorem does not hold: ENOSPC is reachable
+and fails closed through `STORAGE_FULL` (§8) and the latch. `TENANT_LIMITS`
+is approved for **dark staging qualification only**; it must never be
+represented as making filesystem exhaustion unreachable, nor authorize
+public traffic.
 
 ---
 
@@ -267,6 +389,11 @@ entries. Metadata blocks are therefore at most
 `ε = 1/256 > 1/339`. For a 15 MiB object that is at most 60 KiB, 0.4 %.
 Inline objects have no part file and the term is harmless slack.
 
+**The denominator can only make ε larger.** `FootprintModel` refuses a
+fragmentation denominator above 256 (a smaller ε) and below 16 (a typo, not a
+policy). A smaller allowance needs its own accepted qualification first, and
+then a code change, never a configuration value.
+
 ### 3.5 Inodes
 
 Per object: 3 or 5 inodes (§3.1) plus amortized directory inodes (`{inbox}/`,
@@ -332,12 +459,12 @@ declaration).
 
 T1's single snapshot statement (ADR-035 §4, "why one statement") adds the
 object sums to the GLOBAL row — `Σ base_objects + Σ delta.objects` and
-`Σ cardinality(object_keys)` — and returns the GLOBAL usage as
-`(P_c, N_c, P_r, N_r)`. The application computes `F_c = F(P_c, N_c)` and
-`F_r = F(P_r, N_r)` with the deployment's *B*, *O_max*, ε, and the copy's own
-cost `φ_copy = Σ φ(object bytes)` from the exact bytes it already holds
-(`CopyPlan.objects`). Inbox and workspace rows are unchanged and stay in
-payload bytes.
+`Σ cardinality(object_keys)` — plus the unsuperseded debt sums, the newest
+observation's `trash_bytes` and the trust marker (§4.5), and returns the
+GLOBAL usage as `(P_c + P_r, N_c + N_r)`, `(P_d, N_d)`, *W*. The application
+applies `F` **once** to each aggregate it needs — `F(L + c)` for (G) and
+`F(L + D + c)` for (C) — never to separately rounded parts. Inbox and
+workspace rows are unchanged and stay in payload bytes.
 
 ### 4.3 The rule
 
@@ -346,12 +473,13 @@ ADR-035 §4's rule, with the GLOBAL scope in footprint:
 ```
 INBOX:      used_payload + bytesPerCopy ≤ inboxLimit          (unchanged)
 WORKSPACE:  used_payload + bytesPerCopy ≤ workspaceLimit      (unchanged)
-GLOBAL:     F_c + F_r + φ_copy ≤ min(G_F, C_fs − R_ops − M − D_est) − H_F   (footprint, §2.1)
+GLOBAL (G): F(L + A + c) + H_F                     ≤ G_F                (footprint, §2.1)
+GLOBAL (C): F(L + D + A + c) + W + H_F + M + R_ops  ≤ C_fs
 ```
 
-Running totals within one event add `φ_copy` to the global figure per admitted
-copy (every copy of an event has the same objects, so the same φ). Narrowest
-ceiling first, enforced scopes only refuse — unchanged.
+*A* is the sum of the event's copies already admitted in this snapshot; *c*
+is the candidate (its payload and its object count). Narrowest ceiling first,
+enforced scopes only refuse — unchanged.
 
 ### 4.4 Exactly-once, cascades, updates, failures
 
@@ -380,9 +508,24 @@ it folds the bytes into the bases and deletes the deltas, so their object
 counts are lost. After a rollback the counts are therefore UNDER (bytes stay
 exact) until the next reconciliation repairs them from the rows; a
 rolled-forward artifact finds them exact only after its first reconciliation
-or a recompute, and the footprint gauges under-read until then. Footprint
-admission (PR D) must therefore require a clean reconciliation after any
-roll-forward before it may refuse on footprint. `check-migration-safety.sh` accepts it without a
+or a recompute, and the footprint gauges under-read until then.
+
+**Machine-enforced rollback protection.** Counts that may be low must never
+admit. V8 keeps a one-row `storage_footprint_trust(trusted_since)`:
+- The V8 compactor and `storage_account_recompute()` fold deltas inside a
+  transaction that sets `testinbox.ledger_counts = 'v8'` (`SET LOCAL`). A
+  statement trigger on `storage_delta` `AFTER DELETE` that sees deleted rows
+  with `objects ≠ 0` **without** that setting — only a pre-V8 compactor folds
+  that way — sets `trusted_since = NULL`. It never fails the old artifact's
+  statement: the rollback keeps working, the counts are simply untrusted.
+- Reconciliation that finds **no** drift (after repairing any, it runs once
+  more) sets `trusted_since = now()` in the same transaction as its check.
+- Under `ALL`, T1 reads the marker in its snapshot; untrusted counts are an
+  infrastructure state: every event is answered `451` before recipient
+  resolution (the pre-T1 check of `GuardedStorage.unavailable()`), never a
+  capacity refusal. Gate F (§9) and the activation barrier refuse while it is
+  untrusted. No operator memory is involved: the trigger detects the rollback,
+  and the scheduled reconciliation restores trust. `check-migration-safety.sh` accepts it without a
 declaration; `check-backup-scope.sh` classifies the new tables `-` (derived,
 never restored).
 
@@ -451,15 +594,26 @@ assumed.
 ### 5.2 The debt ledger
 
 `storage_deletion_debt(id bigserial, bytes bigint, objects bigint,
-incurred_at timestamptz NOT NULL DEFAULT clock_timestamp())`, append-only,
-one row per deleting statement, written by:
+incurred_at timestamptz NOT NULL DEFAULT clock_timestamp(), pending boolean
+NOT NULL DEFAULT false)`, one row per deleting statement, written by:
 
 | Path | How | When |
 |---|---|---|
 | `message`/`attachment` `DELETE` (retention teardown, cascades) | the same statement triggers, `AFTER DELETE`, `sum(bytes), count(*)` | inside the deleting transaction; `ExpireInboxes` ran `deletePrefix` **before** it |
 | reservation release after proof (`ReleaseStaleReservations.release`) | a trigger on `storage_reservation` `AFTER DELETE` where `OLD.state = 'RELEASING'`, `bytes, cardinality(object_keys)` | the release transaction; the keys were deleted and proven absent before it |
 | T2 consume (`DELETE … state = 'RESERVED'`) | **no** debt row: the objects live on as rows | — |
-| orphan sweep, late-object deletions | application insert with the listed sizes, in the same pass | after each S3 delete returned |
+| orphan sweep, ambiguity verifier deleting a late object | application insert of a **pending** row with the object's size (a sized listing or `HEAD`), **committed before** the S3 delete; after the key is proven absent the row is re-stamped (`incurred_at = clock_timestamp()`, `pending = false`) | before the delete, then after the proof |
+| late object found inside a release (reservation still `RELEASING`) | none: the object is still in *L* as reserved; the release's own trigger row comes later | — |
+
+**Why pending, then re-stamped.** A debt row written *after* the delete loses
+the debt if the process dies in between; one written *before* breaks the
+ordering lemma (an observation starting between the row and the trash move
+would supersede the row and miss the object). A pending row is never
+superseded, so it counts until the proof; re-stamping after the proof gives
+an `incurred_at` later than the trash move. A crash leaves a pending row that
+over-counts until the next pass re-proves the key absent and re-stamps it.
+Every row-free deletion path writes one; a path that cannot size its object
+does not delete it (fail closed).
 
 Debt is charged by **footprint**: the application applies `F(bytes, objects)`
 at read time, as for every other figure.
@@ -473,13 +627,14 @@ minio_sys_bytes, source)`, where `started_at` is the database clock read
 .minio.sys/tmp/.trash` (apparent allocated blocks). Then
 
 ```
-D_est(t) = trash_bytes of the newest observation            (already physical: no φ)
-         + F(Σ bytes, Σ objects) over debt rows with incurred_at ≥ started_at
+D (the debt in Φ) = pending rows + rows with incurred_at ≥ started_at     (counts, F applied with L, §2.4)
+W                 = trash_bytes of the newest observation                (already physical: no φ)
+D_est             = Φ − F(L)                                              (metrics and pacing only)
 ```
 
 **Lemma (monotone trash).** Trash grows only by TestInbox deletions and
 shrinks only by MinIO's purge. So `trash(t) ≤ trash(t_du) + added(t_du, t)`.
-Its exact form is `trash(t) ≤ D_est(t) + R(t)`, where *R(t)* is the trashed
+Its exact form is `trash(t) ≤ F(D) + W + R(t)`, where *R(t)* is the trashed
 footprint that still has a live row or a live reservation (a retention
 transaction whose prefix delete succeeded and whose row delete rolled back:
 the objects are in trash **and** still in *F_c*, so Φ counts them, and the
@@ -494,7 +649,9 @@ began. Both are the same clock. Therefore an object moved to trash **after**
 `du` began has a debt row with `incurred_at > started_at` and is in the sum;
 an object moved before `du` began is in `trash_bytes`. Objects counted twice
 (moved before `du`, row written after `started_at`) only make the bound
-larger. Hence `trash(t) ≤ D_est(t)`.
+larger. Pending rows are never superseded, so the row-before-delete paths
+keep the lemma too (§5.2). Hence `trash(t) ≤ F(D) + W` — and Lemma 1 (§2.4)
+folds that into Φ.
 
 **Where the lemma could fail, and what pins it:** a path that deletes rows and
 only later deletes blobs would create a debt row *before* the trash move (the
@@ -522,9 +679,9 @@ T1 statement sees both or neither under READ COMMITTED.
 
 ### 5.4 Enforcement
 
-- **Admission (hard).** T1's snapshot includes `D_est`, and the GLOBAL
-  ceiling is `min(G_F, C_fs − R_ops − M − D_est)` (§2.1). A copy that does not
-  fit is refused with `SERVICE_CAPACITY`, exactly as a copy above *G_F* is:
+- **Admission (hard).** T1's snapshot includes *D* and *W*, and rule (C) of
+  §2.1 checks the potential Φ after the copy. A copy that does not fit is
+  refused with `SERVICE_CAPACITY`, exactly as a copy above *G_F* is:
   `250`, discarded, one bit to the tenant (§13d). **Why not `451`.** A `451`
   decided in T1 would be decided *after* recipient resolution, and T1 only
   runs when a recipient resolved (ADR-035 §4 step 4; `ReceiveInboundDelivery`
@@ -542,13 +699,21 @@ T1 statement sees both or neither under READ COMMITTED.
 - **Retention pacing (liveness only).** `ExpireInboxes` tears an expired inbox
   down **in bounded message batches** — each batch's prefixes deleted and
   proven, then its rows — and takes the next batch only while
-  `D_est + F(batch) ≤ D_budget`; otherwise it waits for the next sweep. The
+  `D_est ≤ D_budget`; otherwise it waits for the next sweep. The
   grain is the batch, never the inbox: an inbox whose footprint exceeds
   `D_budget` (501 near-empty parts per copy at the INGEST rate reach 8 GiB of
   footprint in under an hour, far below its payload limit) still drains batch
   by batch, so pacing can always make progress while `D_est < D_budget`.
   Pacing keeps the ceiling at *G_F* through mass expiries at the cost of
-  physical reclamation lagging the TTL; the theorem holds with or without it.
+  physical reclamation lagging the TTL; the theorem holds with or without it
+  (a teardown is a transfer *L* → *D*: Φ is unchanged).
+- **Logical expiry is independent of physical deletion.** Pacing delays only
+  the blob and row deletion. An inbox past its TTL is expired the moment its
+  state says so — not readable, not waitable, refusing new mail exactly as
+  today — whether or not its objects are gone. The delay is measured
+  (`testinbox_storage_retention_backlog_seconds`: the oldest expired-but-not-
+  torn-down inbox), alerted above one TTL, and escalates per the Ops runbook
+  (raise `D_budget` within I-C, or investigate the purge).
 - **Compaction.** Debt rows with `incurred_at < newest started_at` are
   superseded by that observation's `trash_bytes` and are deleted by the
   compactor; the table stays small.
@@ -582,7 +747,7 @@ rows: payload accounting falls by 10 GiB, debt rises by ≈ 10 GiB·(1+ε) + N·
 (3) MinIO's purge begins; (4) replacement mail is admitted; (5) another
 10 GiB expires before (3) finished. Under this contract: step (2) is paced in
 batches to `D_budget`; if `D_budget` = 8 GiB, the second teardown waits;
-admission in (4) continues against `min(G_F, C_fs − R_ops − M − D_est) − H_F`;
+admission in (4) continues against rules (G) and (C);
 at the next observation `trash_bytes` has fallen by whatever purged, the
 superseded debt rows are compacted, and retention proceeds. Physical usage
 never exceeds `C_fs − R_ops`. If MinIO never purges, retention stops at
@@ -618,7 +783,7 @@ host:
 |---|---|
 | `f_blocks × f_frsize < declared C_fs` or `f_files < declared I_fs` or mount source ≠ qualified | **latch** (`filesystem-identity`) |
 | image `allocated < size` (preallocation lost: sparse again) | **latch** (`preallocation`) |
-| `used_bytes > F_c + F_r + H_F + D_est + M` (the application exposes the first four as `testinbox_storage_footprint_bytes{kind}`) | alert; **latch** above `+ R_ops / 2` (`model-violation`) |
+| `used_bytes > Φ + H_F + M` (the application exposes Φ's parts as `testinbox_storage_footprint_bytes{kind}`) | alert; **latch** above `+ R_ops / 2` (`model-violation`) |
 | `minio_sys_bytes > M` or its inodes > *M*'s inode budget | alert; latch at `2·M` |
 | `avail_bytes < R_ops` | **latch** (`headroom`) — this should be unreachable; reaching it is a model failure |
 | observation write fails | page (the application's age metric rises) |
@@ -636,15 +801,19 @@ runbook needs room to act. Proposed `R_ops = max(5 % of C_fs, 2 GiB)`.
 
 ## 7. The containment condition in `DeploymentSafety`
 
-`FilesystemContainment` replaces `BucketQuotaFuse` as the **load-bearing**
-startup check for every non-`OFF` mode; *Q* stays optional and is never
-consulted for safety. A non-`OFF` process refuses to start unless all hold:
+`FilesystemContainment` becomes a required startup check for every non-`OFF`
+mode. **`BucketQuotaFuse` stays required as transitional protection** until
+footprint admission (rules G and C) is enforced in T1 and gate F exists:
+while T1 admits on payload *G* only, the fuse is the only startup check that
+links *G* to physical bytes (owner review §6). It becomes optional — never
+consulted for safety — in the release that enforces (G) and (C). A non-`OFF`
+process refuses to start unless all hold:
 
 | Declaration | Check |
 |---|---|
 | `filesystem-block-size-bytes` (*B*) | ∈ {1024, 2048, 4096}, equals the qualification record's |
 | `object-overhead-max-bytes` (*O_max*) | ≥ the record's `footprint.measuredObjectOverheadMaxBytes`; a multiple of *B* |
-| `global-footprint-limit-bytes` (*G_F*) | > `H_F`; `H_F` computed with φ(15 MiB) |
+| `global-footprint-limit-bytes` (*G_F*) | > `H_F`; `H_F` computed with `F(15 MiB, 1)` (§1) |
 | `deletion-debt-budget-bytes` (*D_budget*) | > 0 |
 | `minio-metadata-budget-bytes` (*M*) | > 0 |
 | `operational-reserve-bytes` (*R_ops*) | ≥ max(5 % of *C_fs*, 2 GiB) |
@@ -707,7 +876,13 @@ Changes:
   a slot). An observation the 507/ENOSPC just contradicted can therefore never
   license a trial, and each failed trial (itself a trip) needs a newer
   observation, so a stale-but-fresh observation cannot spend a slot on every
-  backoff. A full filesystem is an incident,
+  backoff.
+- **Evidence belongs to one trip generation.** The breaker bumps an epoch on
+  every trip. The evidence is read outside the breaker's lock (it is a
+  database read) for the epoch current when the read began, and a trial is
+  issued only if the epoch is still that one when the lock is taken again. A
+  trip landing during the read invalidates the answer, whatever it was.
+  Concurrency tests drive the interleavings with latches. A full filesystem is an incident,
   and each failed real-event trial would otherwise hold a write slot for
   `T_verify`; sixteen of them would wedge the node for an hour.
 - The whole-event `451`, the ambiguity row, the held slot and *H_F* are
@@ -733,8 +908,9 @@ a missing, stale (older than *A_obs*) or internally inconsistent input is
 | inode capacity | `f_files ≥ declared I_fs ≥ C_fs / B` |
 | preallocation | backing image `allocated == apparent size` (or a block device); not on a thin pool; `fstrim` exclusion recorded |
 | host-filesystem isolation | the image lives on a filesystem with ≥ its own size free at creation, or on a dedicated device; `/` exhaustion cannot shrink it |
-| physical headroom | newest observation: `used_bytes ≤ F_c + F_r + H_F + D_est + M` and `avail_bytes ≥ R_ops` |
+| physical headroom | newest observation: `used_bytes ≤ Φ + H_F + M` and `avail_bytes ≥ R_ops` |
 | deletion-debt | `D_est ≤ D_budget` from the live table and the newest observation |
+| trusted counts | `storage_footprint_trust.trusted_since` is set and later than the newest compaction by any pre-V8 artifact (§4.5) |
 | MinIO metadata | `minio_sys_bytes ≤ M` |
 | qualification identity | `qualification_valid = 1` from the Ops `qualification-check`, extended with the filesystem elements; record id equals the declared one |
 | observation liveness | the newest observation is younger than *A_obs* and was written by the expected source |
@@ -770,37 +946,36 @@ MinIO in Testcontainers and prove the accounting, not the filesystem.
 
 ---
 
-## 11. Open decisions for the owner
+## 11. Owner decisions (review of 2026-10-08) and what remains open
 
-1. **Unit of *G*.** Replace `testinbox.storage.global-limit-bytes` (payload)
-   with `global-footprint-limit-bytes` (*G_F*) and **refuse** the old key under
-   a non-`OFF` mode, so a value cannot be silently reinterpreted; or keep both
-   with the payload ceiling observational. This document proposes the former.
-2. **Effective capacity** (§4.7): accept 25–60 % payload efficiency for
-   realistic mixes and 3 % for tiny messages, with `SERVICE_CAPACITY` as the
-   tenant-visible outcome under `ALL`.
-3. **Deletion debt shrinks the GLOBAL ceiling** (§2.1, §5.4): a debt episode
-   under `ALL` refuses with `SERVICE_CAPACITY`, never with a different SMTP
-   reply. Alternative: a pre-resolution `451` in `GuardedStorage.unavailable()`
-   at one more ledger read per event; this document argues for the ceiling.
-4. **Retention pacing in message batches** (§5.4): an expired inbox may be
-   physically torn down later than its TTL while debt is high. Alternative:
-   no pacing (mass expiries then shrink the ceiling until an observation).
-5. **Staging values:** *G_F* 20 GiB, *D_budget* 8 GiB, *M* 256 MiB, *R_ops*
-   2.2 GiB (5 % of ≈ 44 GiB at `-i 4096`), *O_max* 24 KiB pending E1–E3,
-   *A_obs* 15 min. Sum 30.7 GiB ≤ 44 GiB.
-6. **The filesystem is recreated** (`-i 4096`, fully preallocated, dedicated
-   image or device, systemd mount) and the staging qualification record is
-   re-issued with the filesystem elements: an Ops change with downtime for
-   MinIO data migration.
-7. **Production** needs a dedicated MinIO on a dedicated filesystem (PR #81 §6);
-   the shared estate MinIO cannot satisfy gate F.
-8. **Issue #80** (an isolated workspace on a deployed environment) remains
-   required for the live `WORKSPACE_LIMIT` and retention acceptance; it is not
-   addressed here.
-9. **Under `TENANT_LIMITS`** containment is "fails closed at ENOSPC", not
-   "unreachable" (§2.1): accept that as the staging posture until `ALL`, or
-   require `ALL` before any live traffic beyond the synthetic suite.
+**Decided:**
+1. **The global key is `global-footprint-limit-bytes`** (*G_F*). The payload
+   `global-limit-bytes` is never silently reinterpreted as it: under a
+   non-`OFF` mode with footprint admission enforced, a node refuses to start
+   if only the payload key is set.
+2. **Effective capacity** (§4.7) is provisionally accepted for staging; §13
+   quantifies it for production readiness.
+3. **Deletion debt reduces the available global ceiling** (rule C), with
+   `SERVICE_CAPACITY` and the unchanged SMTP `250` under `ALL`.
+4. **Retention may be paced in bounded message batches**, with logical
+   expiry independent of physical deletion (§5.4).
+5. **Staging planning values:** *G_F* 20 GiB, *D_budget* 8 GiB, *M* 256 MiB,
+   *R_ops* ≥ 2.4 GiB and ≥ 5 % of *C_fs*, *O_max* 24 KiB (provisional, E1–E3),
+   *A_obs* 15 min. Planning inputs, not qualification.
+6. **A dedicated production MinIO** is required before production enforcement.
+7. **`TENANT_LIMITS`** is for dark staging qualification only (§2.4).
+
+**Still open:**
+1. Formal acceptance of this corrected contract, and of the merge sequence.
+2. Experiments E1–E11 (§10) on the recreated filesystem; *O_max*, *M* and ε
+   are assumptions until they pass.
+3. The filesystem recreation (`-i 4096`, preallocated, dedicated) and the
+   re-issued qualification record with the filesystem elements.
+4. The production database privilege review and issue #80 (unchanged
+   dependencies).
+5. §13's recommendations on fair use, before production readiness.
+
+---
 
 ## 12. If accepted: the ADR-035 text that changes
 
@@ -820,3 +995,38 @@ declared values extended). Implementation PR boundaries follow the owner's §6:
 (1) footprint model and persistence, (2) admission/retention integration and
 debt control, (3) `DeploymentSafety` and the breaker, (4) activation tooling
 and acceptance tests. None of them enables anything.
+
+---
+
+## 13. Capacity economics (for production readiness; recommendations only)
+
+With *B* = 4 KiB, *O_max* = 24 KiB, ε = 1/256 (*K* = 28 688 B) and
+*G_F* = 20 GiB − *H_F* (482.8 MiB with two processes):
+
+| Workload | Objects per message | Footprint per message | Payload efficiency |
+|---|---|---|---|
+| 1 KiB transactional mail | 1 | ≈ 29.0 KiB | 3.4 % |
+| 10 KiB HTML mail | 1 | ≈ 38.1 KiB | 26 % |
+| 100 KiB mail | 1 | ≈ 128.4 KiB | 78 % |
+| 200 KiB mail with three 50 KiB attachments (350 KiB stored: raw plus extracted parts) | 4 | ≈ 463 KiB | 75 % |
+| 1 MiB with a 700 KiB attachment | 2 | ≈ 1.74 MiB | 96.5 % |
+| 15 MiB | 1 | ≈ 15.09 MiB | 99.4 % |
+
+**Inodes.** At one inode per 4 KiB block, a 48 GiB filesystem has 12.6 M
+inodes; the worst object takes 6, and is charged at least 6 blocks, so
+blocks run out first (§3.5). Object count is therefore already priced into
+the footprint; no separate inode quota is needed for containment.
+
+**One tenant against the global ceiling.** Yes: a tenant within its payload
+quota can exhaust the global footprint. A workspace at a 1 GiB payload limit
+sending 1 KiB messages occupies ≈ 29 GiB of footprint, more than all of *G_F*.
+Containment still holds (rule G refuses), but every other tenant then gets
+`SERVICE_CAPACITY` until retention frees space. **Recommendations for the
+owner (none implemented here):**
+- an **object-count or footprint ceiling per workspace** (a fair-use limit in
+  the unit that actually costs disk), sized from the tenant mix;
+- or a per-workspace **share of *G_F*** (the inbox share already exists for
+  payload), refusing a tenant's copies above its share with `WORKSPACE_LIMIT`;
+- alerting on `SERVICE_CAPACITY` volume and on the top footprint consumers;
+- an operational runbook for `SERVICE_CAPACITY`: it means global footprint
+  exhaustion, mail is discarded with `250`, and the first lever is retention.
