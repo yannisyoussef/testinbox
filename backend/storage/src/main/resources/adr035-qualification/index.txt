@@ -3,3 +3,4 @@
 # exactly, and the record must be enablement-eligible, before enforcement may be ON.
 # Values are copied only from committed evidence (docs/adr/0035-benchmark/qualification/).
 laptop-arm64-reference-2026-09-29.json
+staging-amd64-vmi2932906-2026-10-08.json

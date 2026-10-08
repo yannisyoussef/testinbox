@@ -1,0 +1,14 @@
+{"status":"success","info":{"mode":"online","deploymentID":"05abf463-0b83-4ad4-b4d9-f417195bbcdf","buckets":{"count":1},"objects":{"count":55},"versions":{"count":0},"deletemarkers":{"count":0},"usage":{"size":865075200},"services":{"kms":{},"ldap":{}},"backend":{"backendType":"Erasure","onlineDisks":1,"offlineDisks":0,"standardSCParity":0,"rrSCParity":0,"totalSets":[1],"totalDrivesPerSet":[1]},"servers":[{"state":"online","endpoint":"127.0.0.1:9000","uptime":5459,"version":"2025-04-22T22:12:26Z","commitID":"0d7408fc9969caf07de6a8c3a84f9fbb10a6739e","network":{"127.0.0.1:9000":"online"},"drives":[{"endpoint":"/data","path":"/data","state":"ok","uuid":"88e49bce-35e8-40ab-942a-5a442ae2c3a2","major":252,"minor":0,"totalspace":2916290560,"usedspace":866582528,"availspace":2049708032,"metrics":{"totalErrorsAvailability":90,"totalErrorsTimeout":71},"used_inodes":371,"free_inodes":196237,"local":true,"pool_index":0,"set_index":0,"disk_index":0}],"poolNumber":1,"poolNumbers":[1],"mem_stats":{"Alloc":208480664,"TotalAlloc":2346270400,"Mallocs":22359074,"Frees":22215820,"HeapAlloc":208480664},"go_max_procs":8,"num_cpu":8,"runtime_version":"go1.24.2","gc_stats":{"last_gc":"2026-10-08T16:11:20.056739427Z","num_gc":52,"pause_total":94816389,"pause":[1631647,1051004,94776,40065,580042],"pause_end":["2026-10-08T14:40:55.877143729Z","2026-10-08T14:40:55.761389698Z","2026-10-08T14:40:55.446699423Z","2026-10-08T14:40:55.367223651Z","2026-10-08T14:40:55.358717503Z"]},"minio_env_vars":{"MINIO_ROOT_PASSWORD":"*** EXISTS, REDACTED ***","MINIO_ROOT_USER":"*** EXISTS, REDACTED ***"},"edition":"","is_leader":false,"ilm_expiry_in_progress":false}],"pools":{"0":{"0":{"id":0,"rawUsage":866582528,"rawCapacity":2916290560,"usage":865075200,"objectsCount":55,"versionsCount":0,"deleteMarkersCount":0,"healDisks":0}}}}}
+=====CONFIG
+### api
+api requests_max=0 cluster_deadline=10s cors_allow_origin=* remote_transport_deadline=2h list_quorum=strict replication_priority=auto replication_max_workers=500 replication_max_lrg_workers=10 transition_workers=100 stale_uploads_cleanup_interval=6h stale_uploads_expiry=24h delete_cleanup_interval=5m odirect=on gzip_objects=off root_access=on sync_events=off object_max_versions=9223372036854775807 
+### rc=0
+### drive
+drive max_timeout=30s 
+### rc=0
+### storage_class
+mc: <ERROR> Unable to get server '[storage_class]' config: unknown subsystem: storage_class.
+### rc=1
+### scanner
+scanner speed=default alert_excess_versions=100 alert_excess_folders=50000 
+### rc=0

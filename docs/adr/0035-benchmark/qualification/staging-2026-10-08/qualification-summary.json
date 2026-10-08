@@ -1,0 +1,37 @@
+{
+  "stats": {
+    "freezeAndBaseTrials": 111,
+    "lateCommits": 0,
+    "baseTrials": 60,
+    "baseInvisible": 0,
+    "baseRAbortedNeverCommitted": 5,
+    "witnessDuringFreeze": 51,
+    "witnessNotBlocked": 0,
+    "v3CaughtBeforeCommit": 23,
+    "v3CaughtThenCommitted": 0,
+    "maxBaseVisibleS": 0.293,
+    "slowTrials": 18,
+    "slowMode": [
+      "dm"
+    ],
+    "slowThrottlesMs": [
+      500,
+      2000
+    ],
+    "slowCommitAfterCompletedWitness": 15,
+    "slowNeverCommitted": 0,
+    "slowMaxCommitLagAfterWitnessS": 4.613,
+    "slowWitnessesBlocked": 16,
+    "mainSweepKeys": 88,
+    "mainAppearedAfterPollWindow": 0,
+    "v3SweepKeys": 23,
+    "v3AppearedAfterPollWindow": 0,
+    "slowSweepKeys": 18,
+    "slowAppearedAfterPollWindow": 0,
+    "mainSweepAfterMin": 19.0,
+    "v3SweepAfterMin": 19.0,
+    "slowSweepAfterMin": 19.0
+  },
+  "reasons": [],
+  "runtimeConfigNormalized": "api.cluster_deadline=10s\napi.cors_allow_origin=*\napi.delete_cleanup_interval=5m\napi.gzip_objects=off\napi.list_quorum=strict\napi.object_max_versions=9223372036854775807\napi.odirect=on\napi.remote_transport_deadline=2h\napi.replication_max_lrg_workers=10\napi.replication_max_workers=500\napi.replication_priority=auto\napi.requests_max=0\napi.root_access=on\napi.stale_uploads_cleanup_interval=6h\napi.stale_uploads_expiry=24h\napi.sync_events=off\napi.transition_workers=100\ndrive.max_timeout=30s\nscanner.alert_excess_folders=50000\nscanner.alert_excess_versions=100\nscanner.speed=default\nstorage_class=<unknown-subsystem>"
+}
