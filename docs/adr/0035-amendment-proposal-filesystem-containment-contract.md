@@ -1,7 +1,8 @@
 # ADR-035 amendment proposal, part 2: the filesystem-containment safety contract
 
-**Status: ANNEX to ADR-035 Amendment 2 — PROPOSED, accepted in principle
-2026-10-09.** This document is the normative derivation behind ADR-035
+**Status: ANNEX to ADR-035 Amendment 2 — ACCEPTED 2026-10-09** (owner
+review c; accepted as the implementation architecture, not as proof of
+E1–E11). This document is the normative derivation behind ADR-035
 Amendment 2 (the section of that name in
 [`0035-physical-storage-bound-at-ingest.md`](0035-physical-storage-bound-at-ingest.md)).
 It is **not a separate contract**: where the two differ, the amendment governs.
@@ -787,9 +788,10 @@ admit, and no operator memory is involved:
   floor is the first artifact carrying **every** debt-writing obligation —
   rules (G) and (C), pending rows for the sweep, verifier and probes,
   `deletePrefix` failing on per-key errors — not merely the two rules.
-  `deploy/rollback-floors.txt` names it once they enforce, gate F's "mixed
-  versions" row uses the same capability, and the fuse stays a real (not
-  merely declared) check below it.
+  `deploy/rollback-floors.txt` names it, and gate F's "mixed versions" row
+  uses the same capability. Below the floor no artifact may run with
+  enforcement on; the bucket quota is at most a secondary defence there
+  (ADR-035 Amendment 2 §A2.8).
 - **Sub-resolution oracle windows that remain.** The `STORAGE_FULL`
   half-open race (two events pass `isBlocked()`, the one with a known
   recipient gets the trial's `451`) and the T1 untrusted-race backstop are
@@ -1127,12 +1129,12 @@ runbook needs room to act. Proposed `R_ops = max(5 % of C_fs, 2 GiB)`.
 ## 7. The containment condition in `DeploymentSafety`
 
 `FilesystemContainment` becomes a required startup check for every non-`OFF`
-mode. **`BucketQuotaFuse` stays required as transitional protection** until
-footprint admission (rules G and C) is enforced in T1 and gate F exists:
-while T1 admits on payload *G* only, the fuse is the only startup check that
-links *G* to physical bytes (owner review §6). It becomes optional — never
-consulted for safety — in the release that enforces (G) and (C). A non-`OFF`
-process refuses to start unless all hold:
+mode. The bucket-quota fuse was transitional protection while T1 admitted
+on payload *G* only (owner review §6). **That release has arrived:** PR D
+enforces (G) and (C), and gate F exists. So the fuse is no longer required
+or consulted for safety (ADR-035 Amendment 2 §A2.8; owner review c). A
+configured MinIO quota may remain as an optional secondary defence. A
+non-`OFF` process refuses to start unless all hold:
 
 | Declaration | Check |
 |---|---|

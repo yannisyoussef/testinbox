@@ -1,6 +1,6 @@
 # ADR-035: Physical Storage Bound at Ingest
 
-**Status:** Accepted (2026-09-29, owner acceptance TI-DEC-001b). This is revision 5 (2026-09-29), amended 2026-10-08 (TI-STORAGE-006b owner decisions; see the amendments section at the end). **Amendment 2 (filesystem containment, TI-STORAGE-006E) is PROPOSED**: accepted in principle on 2026-10-09, and normative only on formal acceptance.
+**Status:** Accepted (2026-09-29, owner acceptance TI-DEC-001b). This is revision 5 (2026-09-29), amended 2026-10-08 (TI-STORAGE-006b owner decisions; see the amendments section at the end). **Amendment 2 (filesystem containment, TI-STORAGE-006E) is ACCEPTED** (owner, 2026-10-09, review c) as the implementation architecture. It authorizes implementation and controlled integration under `OFF`, not activation.
 
 > **Acceptance authorizes implementation, not enablement.** It does not turn
 > on `testinbox.storage.enforcement`, global capacity enforcement in staging
@@ -775,8 +775,10 @@ proof and the bucket-wide sweep guard (§7) catch anything else.
 - quota `Q ≥ G + max(1 GiB, 10 % of G, H + the bytes MinIO can accept during
   one usage-refresh lag)`, where Ops measures that last term (the proportional
   term is ten per cent of *G*, `floor(G / 10)`; clarified 2026-10-08).
+  **[Superseded by Amendment 2 §A2.8: the quota is optional, never required.]**
 
-The bucket quota is a fuse, never the bound. It lags: probes Q2–Q7 stored
+The bucket quota is a fuse, never the bound. **[Superseded by Amendment 2
+§A2.8: the filesystem-containment contract is the physical link.]** It lags: probes Q2–Q7 stored
 2.4 MiB in a 1 MiB-quota bucket.
 
 ### 9a. Storage compatibility contract (A_F qualification)
@@ -1558,7 +1560,8 @@ without sleeping:
 47. Metric cardinality, including `STORAGE_LIMIT_EXCEEDED`.
 48. `DeploymentSafety` refuses to start when any of these is missing or
     wrong: *G*, the declared quota, the declared process count, `Q` too
-    small, or the share outside `(0,1]`. With `enforcement=ON` it also refuses
+    small, or the share outside `(0,1]` **[the quota cases are superseded by
+    Amendment 2 §A2.8]**. With `enforcement=ON` it also refuses
     to start without a declared backend identity, or with one that does not
     exactly match a shipped qualification record (§9a). Every element is
     tested separately: digest, mode, timeouts (environment and flag),
@@ -1644,9 +1647,11 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
 
 8. Versioning off, no object lock, and no retrying proxy in front of MinIO.
    Quota `Q ≥ G + max(1 GiB, 10 % of G, H + the measured MinIO usage-lag churn)`.
+   **[The quota formula is superseded by Amendment 2 §A2.8.]**
    Evidence goes in `production-ops-acceptance.md` row P.
 9. NTP on the database and MinIO hosts.
-10. Declared values: `global-limit-bytes`, `declared-bucket-quota-bytes`,
+10. Declared values: `global-limit-bytes`, `declared-bucket-quota-bytes`
+    **[optional since Amendment 2 §A2.8]**,
     `declared-max-ingestion-processes` (including deploy surge).
 11. The restore procedure of §9.
 12. A runbook for the admission latch: investigate, then clear.
@@ -1672,7 +1677,8 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
   the same offered load) and the integrity criteria apply to every executed
   scenario. No separate latency threshold is defined for concurrency 1. The benchmark gate (`backend/benchmark`) and the activation
   checker (`scripts/check-storage-activation.sh`) encode exactly this.
-- **§9 and §18, the bucket-quota fuse.** "10 %" is ten per cent of *G*,
+- **§9 and §18, the bucket-quota fuse** **[superseded by Amendment 2
+  §A2.8]**. "10 %" is ten per cent of *G*,
   `floor(G / 10)`: `Q ≥ G + max(1 GiB, 10 % of G, H + measured usage-lag churn)`.
   No formula change; `BucketQuotaFuse` already computes it so.
 - **§14 Phase 4, runtime re-checks (clarification).** After activation, a
@@ -1687,14 +1693,27 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
   with stop-before-start, or distinct declared ids for an overlapping
   replacement, and show which before staging enablement.
 
-## Amendment 2: filesystem containment (TI-STORAGE-006E) — PROPOSED, accepted in principle 2026-10-09
+## Amendment 2: filesystem containment (TI-STORAGE-006E) — ACCEPTED 2026-10-09
 
-**Status: PROPOSED for acceptance.** The owner accepted the corrected
-containment architecture *in principle* as the implementation baseline
-(TI-STORAGE-006E owner review b, 2026-10-09). This amendment becomes
-normative only on the owner's formal acceptance. It authorizes **no**
-activation. The numerical storage bounds remain subject to real
-qualification.
+**Status: ACCEPTED** by the owner as the implementation architecture
+(TI-STORAGE-006E owner review c, 2026-10-09; accepted in principle in
+review b).
+
+**Scope.** It is normative for the physical storage bound: how footprint is
+modelled, admitted, accounted and proven against the filesystem. It
+authorizes implementation, final code alignment and controlled integration
+with enforcement `OFF`.
+
+**What acceptance does NOT authorize:**
+- `TENANT_LIMITS` or `ALL` activation;
+- filesystem recreation, or any change to the live MinIO quota or topology;
+- production deployment;
+- public SMTP/MX.
+
+**What acceptance does NOT prove.** It does not prove *O_max*, the metadata
+overhead *M*, the fragmentation allowance, ENOSPC behaviour, or any of
+experiments E1–E11. Those remain empirical assumptions (§A2.2) until a
+re-issued qualification record carries their results.
 
 **One contract.** This amendment is the only authoritative statement of
 filesystem containment. Its normative derivation, with every definition,
@@ -1864,6 +1883,48 @@ implemented both of the following, as separate scoped decisions
 
 A dedicated production MinIO, and production role separation, are also
 prerequisites.
+
+### A2.8 Text and invariants this amendment supersedes or carries over
+
+**The bucket-quota fuse is superseded.** The physical link is the
+filesystem-containment contract: its declarations and the static
+inequality I-C at startup (`DeploymentSafety`), then gate F's evidence
+before activation. The quota fuse `Q ≥ G + max(1 GiB, 10 % of G, H + churn)`
+is **no longer a requirement**, in any mode. The MinIO bucket quota may
+remain configured as an optional secondary defence. A declared quota or
+churn figure is only checked for being well-formed, never against a
+formula. This supersedes:
+- §9's Ops precondition naming the quota, and the paragraph "The bucket
+  quota is a fuse, never the bound";
+- §17 test 48's "`Q` too small" and "declared quota" cases;
+- §18 prerequisite 8's quota formula, and prerequisite 10's
+  `declared-bucket-quota-bytes`;
+- the 2026-10-08 amendment bullet "§9 and §18, the bucket-quota fuse".
+
+**Gate Q is a different thing.** Gate Q, the §9a backend qualification
+match, is unchanged and mandatory.
+
+**Invariants I1–I12:**
+- **Preserved unchanged:** I3–I12.
+- **I1 (payload coverage) and I2 (atomic ceilings) are preserved for
+  payload**, and extended by this amendment:
+  - Under `ALL` the global ceiling is also evaluated in footprint units, by
+    rules (G) and (C), in the same one snapshot and under the same admission
+    lock as I2.
+  - Physical containment is the theorem of §A2.1 under the assumptions of
+    §A2.2, not I1's payload bound.
+  - Under `TENANT_LIMITS` the global ceilings stay observational, as I2's
+    rollout states already allowed.
+
+**Release and rollback invariants:**
+- Migrations V8–V10 are expand-only.
+- The containment rollback floor (`deploy/rollback-floors.txt`, rationale
+  `TI-STORAGE-006E`) makes any deploy or rollback below PR D refused without
+  the explicit hazard acknowledgement.
+- Rolling back below it while enforcement is on is forbidden.
+- Under `OFF`, a rollback to an earlier artifact stays supported: the V8–V10
+  definer functions and triggers keep the ledger exact, and a pre-V10
+  artifact cannot mark trust.
 
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
