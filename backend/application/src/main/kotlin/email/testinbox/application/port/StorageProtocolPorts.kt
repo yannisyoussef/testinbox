@@ -208,6 +208,16 @@ interface StorageAmbiguity {
 
     fun unresolvedTotal(): Int
 
+    /**
+     * Marks the unresolved row [id] as a late object rule (P) refused to delete
+     * (TI-STORAGE-006E PR D): it stays unresolved, and V9 refuses clearing the
+     * latch while any such row is held. Default: nothing to mark.
+     */
+    fun holdRefused(id: Long) {}
+
+    /** How many late objects rule (P) holds right now. */
+    fun heldRefused(): Int = 0
+
     /** Rows whose `verify_at` has passed, oldest first. */
     fun due(limit: Int): List<AmbiguityRecord>
 

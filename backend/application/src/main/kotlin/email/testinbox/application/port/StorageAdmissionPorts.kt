@@ -80,6 +80,8 @@ data class ObservedFootprint(
     val blockSizeBytes: Long?,
     val capacityBytes: Long?,
     val writtenBy: String?,
+    /** The order of the last distrust event (V9): the newest observation must have begun after it (contract §4.5). */
+    val distrustedSeq: Long = 0,
 )
 
 /**

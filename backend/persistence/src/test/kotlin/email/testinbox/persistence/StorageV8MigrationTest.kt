@@ -18,7 +18,8 @@ class StorageV8MigrationTest : PersistenceIntegrationTest() {
 
     private fun atV7(): LedgerTestDatabase = LedgerTestDatabase.create(postgres, admin, target = "7")
 
-    private fun upgrade(db: LedgerTestDatabase) = LedgerTestDatabase.flyway(db.dataSource).migrate()
+    // Exactly V8: later migrations add their own triggers, proven by their own tests.
+    private fun upgrade(db: LedgerTestDatabase) = LedgerTestDatabase.flyway(db.dataSource, target = "8").migrate()
 
     @Test
     fun `existing rows are backfilled with exact counts, attachments as their own objects, and the deltas folded`() {

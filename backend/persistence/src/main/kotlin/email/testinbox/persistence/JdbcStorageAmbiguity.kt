@@ -66,6 +66,16 @@ class JdbcStorageAmbiguity(
     override fun unresolvedTotal(): Int =
         jdbc.sql("SELECT count(*) FROM storage_ambiguity WHERE resolved_at IS NULL").query(Int::class.java).single()
 
+    override fun holdRefused(id: Long) {
+        jdbc.sql("UPDATE storage_ambiguity SET held_by_rule_p = true WHERE id = :id AND resolved_at IS NULL").param("id", id).update()
+    }
+
+    override fun heldRefused(): Int =
+        jdbc
+            .sql("SELECT count(*) FROM storage_ambiguity WHERE resolved_at IS NULL AND held_by_rule_p")
+            .query(Int::class.java)
+            .single()
+
     override fun due(limit: Int): List<AmbiguityRecord> =
         jdbc
             .sql(

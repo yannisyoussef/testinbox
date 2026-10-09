@@ -31,6 +31,7 @@ internal object FootprintSql {
                            coalesce((SELECT trusted_epoch IS NOT DISTINCT FROM distrust_epoch FROM storage_footprint_trust WHERE id = 1), false)
                              AS fp_trusted,
                            coalesce((SELECT compacted_through_seq FROM storage_debt_watermark WHERE id = 1), 0) AS fp_watermark,
+                           coalesce((SELECT distrusted_seq FROM storage_footprint_trust WHERE id = 1), 0) AS fp_distrusted_seq,
                            (SELECT started_seq FROM fp_newest) AS fp_started_seq,
                            (SELECT trash_bytes FROM fp_newest) AS fp_trash_bytes,
                            (SELECT block_size_bytes FROM fp_newest) AS fp_block_size,
@@ -39,7 +40,7 @@ internal object FootprintSql {
 
     /** The same columns, typed, for the rows that do not carry them. */
     const val NONE = """NULL::numeric, NULL::numeric, NULL::numeric, NULL::numeric, NULL::boolean, NULL::bigint,
-                           NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text"""
+                           NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text"""
 
     /** The figures of a row carrying [COLUMNS]; null when a sum does not fit a signed 64-bit figure (corrupt totals). */
     fun read(rs: ResultSet): ObservedFootprint? {
@@ -59,6 +60,7 @@ internal object FootprintSql {
             blockSizeBytes = nullableLong("fp_block_size"),
             capacityBytes = nullableLong("fp_capacity"),
             writtenBy = rs.getString("fp_written_by"),
+            distrustedSeq = rs.getLong("fp_distrusted_seq"),
         )
     }
 }

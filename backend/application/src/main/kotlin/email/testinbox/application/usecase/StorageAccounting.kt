@@ -34,7 +34,16 @@ class CompactStorageLedger(
      */
     private val footprint: FootprintModel = FootprintModel.REFERENCE,
     private val clock: Clock = Clock.systemUTC(),
+    /**
+     * TI-STORAGE-006E PR D (contract §4.5): run when the counts read untrusted,
+     * at most every [untrustedRetry]. A distrust event left to the 6 h schedule
+     * would answer every delivery `451` under `ALL` until then.
+     */
+    private val onUntrusted: (() -> Unit)? = null,
+    private val untrustedRetry: Duration = Duration.ofMinutes(1),
 ) {
+    @Volatile private var lastUntrustedAttempt: java.time.Instant? = null
+
     init {
         require(batch > 0) { "batch must be positive" }
         require(maxPasses > 0) { "maxPasses must be positive" }
@@ -107,12 +116,22 @@ class CompactStorageLedger(
             metrics.footprintObserved(FootprintKind.DELETION_DEBT, estimate)
             metrics.filesystemObservationAge(age)
             metrics.footprintCountsTrusted(trusted)
+            if (!trusted) promptReconciliation()
         }.onFailure {
             log.warn("storage deletion debt could not be read or bounded; reported as unbounded and never observed", it)
             metrics.footprintObserved(FootprintKind.DELETION_DEBT, UNBOUNDED)
             metrics.filesystemObservationAge(NEVER_OBSERVED)
             metrics.footprintCountsTrusted(false)
         }
+    }
+
+    private fun promptReconciliation() {
+        val reconcile = onUntrusted ?: return
+        val now = clock.instant()
+        val last = lastUntrustedAttempt
+        if (last != null && Duration.between(last, now) < untrustedRetry) return
+        lastUntrustedAttempt = now
+        runCatching(reconcile).onFailure { log.warn("storage prompt reconciliation on distrust failed; retried at the next tick", it) }
     }
 
     /** `D_est` (contract §5.3): the observed trash plus the bound of everything deleted since the observation began. */

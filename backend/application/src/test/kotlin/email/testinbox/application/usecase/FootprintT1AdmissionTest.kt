@@ -182,6 +182,7 @@ class FootprintT1AdmissionTest {
                 FootprintUnavailability.UNTRUSTED to observed(trusted = false),
                 FootprintUnavailability.UNOBSERVED to observed(trash = null, startedSeq = null),
                 FootprintUnavailability.OBSERVATION_BELOW_WATERMARK to observed(startedSeq = 4, watermark = 5),
+                FootprintUnavailability.OBSERVATION_BEFORE_DISTRUST to observed(startedSeq = 10).copy(distrustedSeq = 10),
                 FootprintUnavailability.OBSERVATION_BLOCK_SIZE to observed(block = 1024),
                 FootprintUnavailability.OBSERVATION_WRITER to observed(writer = "testinbox_app"),
                 FootprintUnavailability.INDETERMINATE to observed(live = -1L to 0L),

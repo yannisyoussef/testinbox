@@ -271,6 +271,7 @@ class VerifyAmbiguousUploads(
             }
         }
         metrics.ambiguousUploads(ambiguity.unresolvedTotal())
+        metrics.heldLateObjects(ambiguity.heldRefused())
         return Report(resolved, deferred, late)
     }
 
@@ -298,7 +299,10 @@ class VerifyAmbiguousUploads(
                 // Rule (P): the late object's pending row is an admission. Refused, the
                 // object stays, and so do its ambiguity row and write slot (contract §2.1);
                 // the row is due again at the next pass.
-                if (!rowFree.beforeDelete(key, inspection.objectSize(key), "ambiguity-verifier")) return Verified.DEFERRED
+                if (!rowFree.beforeDelete(key, inspection.objectSize(key), "ambiguity-verifier")) {
+                    ambiguity.holdRefused(record.id)
+                    return Verified.DEFERRED
+                }
                 inspection.deleteObject(key)
                 if (!inspection.objectExists(key)) rowFree.afterProvenAbsent(key)
             }

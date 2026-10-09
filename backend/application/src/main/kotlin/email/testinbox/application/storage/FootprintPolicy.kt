@@ -32,6 +32,7 @@ data class FootprintPolicy(
             !observed.countsTrusted -> FootprintUnavailability.UNTRUSTED
             observed.trashBytes == null || observed.startedSeq == null -> FootprintUnavailability.UNOBSERVED
             observed.startedSeq < observed.compactedThroughSeq -> FootprintUnavailability.OBSERVATION_BELOW_WATERMARK
+            observed.startedSeq <= observed.distrustedSeq -> FootprintUnavailability.OBSERVATION_BEFORE_DISTRUST
             observed.blockSizeBytes != model.blockSizeBytes -> FootprintUnavailability.OBSERVATION_BLOCK_SIZE
             (observed.capacityBytes ?: -1) < capacityBytes -> FootprintUnavailability.OBSERVATION_CAPACITY
             observed.writtenBy != monitorRole -> FootprintUnavailability.OBSERVATION_WRITER
@@ -52,6 +53,13 @@ enum class FootprintUnavailability {
 
     /** The newest observation began below the compaction watermark: its superseded debt is gone. */
     OBSERVATION_BELOW_WATERMARK,
+
+    /**
+     * The newest observation began before the last distrust event (a
+     * roll-forward, a folding, a repaired drift): the trash baseline is
+     * re-measured before anything is admitted (contract §4.5).
+     */
+    OBSERVATION_BEFORE_DISTRUST,
 
     /** The newest observation measured another block size than the declared *B*. */
     OBSERVATION_BLOCK_SIZE,

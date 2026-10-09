@@ -122,6 +122,7 @@ class MetricCardinalityTest {
         PhysicalFailureKind.entries.forEach { protocol.physicalFailure(it) }
         ReleasePath.entries.forEach { protocol.released(it) }
         protocol.commitFenced()
+        protocol.heldLateObjects(1)
         email.testinbox.application.storage.FootprintUnavailability.entries
             .forEach(protocol::footprintUnavailable)
         protocol.lateObject()
@@ -334,6 +335,7 @@ class MetricCardinalityTest {
             "testinbox_storage_physical_failure_total",
             "testinbox_storage_commit_fenced_total",
             "testinbox_storage_footprint_unavailable_total",
+            "testinbox_storage_held_late_objects",
             "testinbox_storage_reservation_released_total",
             "testinbox_storage_late_object_total",
             "testinbox_storage_witness_failed_total",

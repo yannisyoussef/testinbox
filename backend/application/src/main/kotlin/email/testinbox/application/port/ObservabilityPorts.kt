@@ -425,6 +425,9 @@ interface StorageProtocolMetrics {
 
     fun commitFenced() {}
 
+    /** `testinbox_storage_held_late_objects`: late objects rule (P) refused to delete, held with their slots (TI-STORAGE-006E). */
+    fun heldLateObjects(count: Int) {}
+
     /** `testinbox_storage_footprint_unavailable_total{cause}`: closed label (TI-STORAGE-006E). */
     fun footprintUnavailable(reason: email.testinbox.application.storage.FootprintUnavailability) {}
 

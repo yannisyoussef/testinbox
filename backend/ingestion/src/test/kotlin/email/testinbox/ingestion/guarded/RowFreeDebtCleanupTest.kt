@@ -103,6 +103,9 @@ class RowFreeDebtCleanupTest {
         h.unresolvedAmbiguity() shouldBe 1
         h.latched() shouldBe "late object found at ambiguity verification"
         debt(key) shouldBe emptyList()
+        // Held: the operator cannot clear the latch while it is (V9).
+        h.ambiguity.heldRefused() shouldBe 1
+        runCatching { h.jdbc.sql("DELETE FROM storage_admission_latch").update() }.isFailure shouldBe true
     }
 
     @Test

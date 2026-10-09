@@ -381,7 +381,24 @@ class ApiWiring(
     fun compactStorageLedger(
         ledger: StorageLedger,
         metrics: StorageAccountingMetrics,
-    ): CompactStorageLedger = CompactStorageLedger(ledger, metrics)
+        reconcile: ReconcileStorageAccounting,
+        declarations: email.testinbox.application.storage.StorageDeclarations,
+    ): CompactStorageLedger =
+        CompactStorageLedger(
+            ledger,
+            metrics,
+            clock = clock,
+            // TI-STORAGE-006E PR D: with a declared filesystem, a distrust event is
+            // reconciled within a minute, not at the next 6 h pass.
+            onUntrusted =
+                if (email.testinbox.application.storage.EffectiveStoragePolicy
+                        .footprint(declarations) != null
+                ) {
+                    { reconcile.reconcile() }
+                } else {
+                    null
+                },
+        )
 
     /** ADR-035 §10 reconciliation of the ledger against the source rows. */
     @Bean

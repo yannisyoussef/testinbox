@@ -302,6 +302,26 @@ class StorageAccountingTest {
     }
 
     @Test
+    fun `untrusted counts trigger a prompt reconciliation, at most once per retry interval`() {
+        val ledger = FakeLedger()
+        ledger.debt = DeletionDebtState(0, 0, null, countsTrusted = false)
+        val clock = email.testinbox.application.MutableClock(java.time.Instant.parse("2026-10-08T12:00:00Z"))
+        var reconciled = 0
+        val compactor =
+            CompactStorageLedger(ledger, clock = clock, onUntrusted = { reconciled++ }, untrustedRetry = java.time.Duration.ofMinutes(1))
+        compactor.compact()
+        compactor.compact()
+        reconciled shouldBe 1
+        clock.advanceSeconds(60)
+        compactor.compact()
+        reconciled shouldBe 2
+        ledger.debt = DeletionDebtState(0, 0, null, countsTrusted = true)
+        clock.advanceSeconds(120)
+        compactor.compact()
+        reconciled shouldBe 2
+    }
+
+    @Test
     fun `the trust state is metered on every compaction tick, and an unreadable state reads untrusted`() {
         val ledger = FakeLedger()
         val metrics = RecordingMetrics()
