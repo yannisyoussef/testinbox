@@ -30,6 +30,16 @@ class WriteSlots(
     private val perWorkspace: Int = StorageProtocol.MAX_EVENTS_PER_WORKSPACE,
     private val waitTimeout: Duration = StorageProtocol.SLOT_WAIT,
     /**
+     * Unresolved ambiguity rows of EVERY node, and the cap on them
+     * (TI-STORAGE-006E PR D, contract Lemma 3: `procs × 16`). Slots are
+     * counted per node, so node ids that change across deploys while their rows
+     * stay unresolved — and a (P)-refused late object holds its row beyond
+     * `T_verify` — could otherwise hold `distinct ids × 16`, past what *H_F*
+     * reserves for. Unbounded unless the global footprint rules are enforced.
+     */
+    private val globalAmbiguous: () -> Int = { 0 },
+    private val globalCap: Int = Int.MAX_VALUE,
+    /**
      * Unresolved ambiguity rows of this node. Read on every attempt, never
      * cached, and never while holding the slot lock: a slow query must not
      * block slot releases or other waiters.
@@ -97,8 +107,9 @@ class WriteSlots(
         while (true) {
             val seen = lock.withLock { returns }
             val persisted = ambiguous() // outside the lock
+            val global = if (globalCap == Int.MAX_VALUE) 0 else globalAmbiguous()
             lock.withLock {
-                if (returns == seen && fits(persisted, workspaces)) {
+                if (returns == seen && fits(persisted, workspaces) && global < globalCap) {
                     inUse++
                     workspaces.forEach { perWorkspaceInUse.merge(it, 1, Int::plus) }
                     return Slot(workspaces)

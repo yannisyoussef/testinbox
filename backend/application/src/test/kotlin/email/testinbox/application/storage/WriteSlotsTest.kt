@@ -22,7 +22,23 @@ class WriteSlotsTest {
         perWorkspace: Int = 2,
         wait: Duration = Duration.ofMillis(100),
         ambiguous: () -> Int = { persisted.get() },
-    ) = WriteSlots(max, perWorkspace, wait, ambiguous)
+    ) = WriteSlots(max, perWorkspace, wait, ambiguous = ambiguous)
+
+    @Test
+    fun `the global ambiguity cap holds every node's slots once procs x 16 rows are unresolved anywhere`() {
+        // Contract Lemma 3 (TI-STORAGE-006E): a node id that changed across a deploy still holds
+        // its unresolved rows; per-node counting alone would let them exceed what H_F reserves.
+        val global = AtomicInteger(0)
+        val capped =
+            WriteSlots(4, 2, Duration.ofMillis(100), globalAmbiguous = { global.get() }, globalCap = 3) { 0 }
+        global.set(2)
+        capped.acquire(setOf(a)).close()
+        global.set(3)
+        shouldThrow<StorageUnavailableException> { capped.acquire(setOf(a)) }.reason shouldBe
+            StorageUnavailableReason.SLOT_WAIT
+        // Without a cap (OFF, TENANT_LIMITS) the global count is never even read.
+        WriteSlots(4, 2, Duration.ofMillis(100), globalAmbiguous = { error("not read") }) { 0 }.acquire(setOf(a)).close()
+    }
 
     @Test
     fun `persisted ambiguity occupies slots, and a full node is a 451, never a capacity refusal`() {

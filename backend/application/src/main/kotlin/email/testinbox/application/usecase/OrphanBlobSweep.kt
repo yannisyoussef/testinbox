@@ -42,6 +42,9 @@ class OrphanBlobSweep(
     private val clock: Clock,
     private val minAge: Duration = Duration.ofHours(1),
     private val metrics: StorageProtocolMetrics = StorageProtocolMetrics.NOOP,
+    /** TI-STORAGE-006E PR D: rule (P) before every deletion here; none of them has a row trigger. */
+    private val rowFree: email.testinbox.application.storage.RowFreeDebt =
+        email.testinbox.application.storage.RowFreeDebt.NONE,
 ) {
     fun sweep(): Int =
         try {
@@ -65,8 +68,7 @@ class OrphanBlobSweep(
                 // one this old outlived a failed listing. It has no row, no
                 // reservation and no debt row, so nothing else would ever free it
                 // (filesystem-containment contract §5.3, TI-STORAGE-006E).
-                blobs.delete(key)
-                removed++
+                if (deleteRowFree(key, "probe-residue")) removed++
                 continue
             }
             val messageId = ObjectKeys.messageIdOf(key)?.let(::parseUuid) ?: continue
@@ -77,11 +79,12 @@ class OrphanBlobSweep(
                     metrics.lateObject()
                     log.error("storage_late_object an ambiguous upload surfaced as an orphan; admission LATCHED")
                 }
-                blobs.delete(key)
-                removed++
+                if (deleteRowFree(key, "orphan-sweep")) removed++
             }
         }
         if (removed > 0) log.info("orphan_blob_sweep removed={}", removed)
+        // Pending rows whose writer crashed, or whose probe PUT was ambiguous (§5.2).
+        rowFree.resolveStale(inspection).let { if (it > 0) log.info("orphan_blob_sweep resolved_pending={}", it) }
 
         val incomplete = inspection.incompleteUploads()
         metrics.incompleteUploads(incomplete.size)
@@ -91,6 +94,21 @@ class OrphanBlobSweep(
         }
         metrics.physicalListedBytes(inspection.listedPayloadBytes())
         return removed
+    }
+
+    /**
+     * Rule (P) first: a pending row of the object's size, committed before the
+     * delete; refused, the object stays (and a late object keeps its slot).
+     * Proven absent after the delete, the row is resolved.
+     */
+    private fun deleteRowFree(
+        key: String,
+        source: String,
+    ): Boolean {
+        if (!rowFree.beforeDelete(key, inspection.objectSize(key), source)) return false
+        blobs.delete(key)
+        if (!inspection.objectExists(key)) rowFree.afterProvenAbsent(key)
+        return true
     }
 
     private fun parseUuid(value: String): UUID? = runCatching { UUID.fromString(value) }.getOrNull()

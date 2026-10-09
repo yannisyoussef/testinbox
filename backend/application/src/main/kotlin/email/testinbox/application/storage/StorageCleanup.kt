@@ -237,6 +237,8 @@ class VerifyAmbiguousUploads(
     private val inspection: StorageInspection,
     private val metrics: StorageProtocolMetrics = StorageProtocolMetrics.NOOP,
     private val batch: Int = 100,
+    /** TI-STORAGE-006E PR D: rule (P) before deleting a late object; refused, the row stays unresolved. */
+    private val rowFree: RowFreeDebt = RowFreeDebt.NONE,
 ) {
     data class Report(
         val resolved: Int,
@@ -292,7 +294,14 @@ class VerifyAmbiguousUploads(
             metrics.latched(true)
             metrics.lateObject()
             log.error("storage_late_object an ambiguous upload landed after its reservation was released; admission LATCHED")
-            if (present) inspection.deleteObject(key)
+            if (present) {
+                // Rule (P): the late object's pending row is an admission. Refused, the
+                // object stays, and so do its ambiguity row and write slot (contract §2.1);
+                // the row is due again at the next pass.
+                if (!rowFree.beforeDelete(key, inspection.objectSize(key), "ambiguity-verifier")) return Verified.DEFERRED
+                inspection.deleteObject(key)
+                if (!inspection.objectExists(key)) rowFree.afterProvenAbsent(key)
+            }
             if (incomplete) inspection.incompleteUploads().filter { it.key == key }.forEach(inspection::abortIncompleteUpload)
             result = Verified.LATE
         }

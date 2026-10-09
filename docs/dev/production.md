@@ -158,6 +158,19 @@ and `TRUNCATE` are refused, and so is a `DELETE` of the newest row or of any
 row at or above the compaction watermark. An Ops prune job (with `DELETE`
 only) removes older rows within its retention window — one row per minute is
 ≈ 50 MB a year. No role is granted anything on `storage_observation_walk`.
+
+**Footprint admission and rule (P) (TI-STORAGE-006E PR D)** read, under T1's
+admission lock, the same footprint inputs T1 reads: every role that runs T1,
+the pre-resolution footprint check, a probe or a row-free deletion — the
+ingestion role (T1, the breaker probe) and the API role (the orphan sweep,
+the ambiguity verifier, the cleanup witness) — needs `SELECT` on
+`storage_deletion_debt`, `storage_filesystem_observation`,
+`storage_debt_watermark` and `storage_footprint_trust`, and `EXECUTE` on
+`storage_record_pending_debt(text, bigint, bigint, text)` and
+`storage_resolve_pending_debt(text)`. They are used only where the deployment
+declares its filesystem (`testinbox.storage.filesystem.*`, now including
+`probe-budget-bytes` and `monitor-role`); an undeclared `OFF` deployment
+writes no pending row and reads none of it.
 `StorageV8GrantsTest` runs each path as a role with exactly these grants.
 
 The API's accounting jobs read three optional settings:

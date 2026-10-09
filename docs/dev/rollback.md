@@ -271,6 +271,16 @@ observes the footprint or the deletion debt while the older artifact runs,
 and the debt rows it appends are compacted only once a newer artifact runs
 the compactor again. Both are observational while enforcement is `OFF`.
 
+**Schema V9** (TI-STORAGE-006E PR D) is expand-only: one column with a
+stable default (`storage_deletion_debt.recorded_at DEFAULT now()`, no table
+rewrite) and a partial index on pending rows. A rolled-back artifact never
+names it. **Rolling back below PR D once footprint admission enforces is
+forbidden, not merely unsafe:** an older artifact's orphan sweep, verifier
+and probes delete without the rule-(P) pending rows, so containment no longer
+holds while it runs (contract §4.5). `deploy/rollback-floors.txt` names the
+PR D artifact as the floor before `ALL` is ever enabled; below it, the
+bucket-quota fuse remains the only physical link.
+
 ## Adding a `StorageRefusalReason` is reader-first (TI-STORAGE-004)
 
 The API reads `inbox_storage.last_refusal_reason` into the closed

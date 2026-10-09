@@ -18,6 +18,7 @@ import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.FootprintPrecheck
 import email.testinbox.application.storage.GuardedStorage
+import email.testinbox.application.storage.RowFreeDebt
 import email.testinbox.application.storage.StorageBreaker
 import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.application.storage.StorageFullEvidence
@@ -29,6 +30,7 @@ import email.testinbox.application.storage.activation.ActivationWatch
 import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.application.usecase.StorageAdmission
 import email.testinbox.domain.storage.StorageCapacityPolicy
+import email.testinbox.domain.storage.StorageScope
 import email.testinbox.ingestion.mime.JakartaMimeParser
 import email.testinbox.ingestion.ops.StorageNodeRuntime
 import email.testinbox.observability.BuildInfoMetric
@@ -42,6 +44,7 @@ import email.testinbox.persistence.JdbcActivationInventory
 import email.testinbox.persistence.JdbcFilesystemObservations
 import email.testinbox.persistence.JdbcFootprintGate
 import email.testinbox.persistence.JdbcRateLimiter
+import email.testinbox.persistence.JdbcRowFreeDebtStore
 import email.testinbox.persistence.JdbcSchemaHistory
 import email.testinbox.persistence.JdbcStorageAdmission
 import email.testinbox.persistence.JdbcStorageAmbiguity
@@ -165,8 +168,25 @@ class IngestionWiring(
 
     // --- ADR-035 guarded ingest protocol (TI-STORAGE-003) ------------------------------------------
 
+    /** The breaker's probe goes through rule (P) (TI-STORAGE-006E PR D). */
     @Bean
-    fun storageInspection(blobs: BlobStore): StorageInspection = (blobs as S3BlobStore).inspection()
+    fun storageInspection(
+        blobs: BlobStore,
+        rowFreeDebt: RowFreeDebt,
+    ): StorageInspection = rowFreeDebt.guard((blobs as S3BlobStore).inspection())
+
+    /** Rule (P) for the gateway's row-free writes: the breaker probe (contract §2.1). */
+    @Bean
+    fun rowFreeDebt(
+        jdbc: JdbcClient,
+        transactionManager: PlatformTransactionManager,
+        declarations: StorageDeclarations,
+    ): RowFreeDebt =
+        RowFreeDebt(
+            JdbcRowFreeDebtStore(jdbc, template(transactionManager)),
+            EffectiveStoragePolicy.footprint(declarations),
+            declarations.enforcement,
+        )
 
     /** Each adapter owns its transactions explicitly (READ COMMITTED is stated in the SQL). */
     private fun template(transactionManager: PlatformTransactionManager) = TransactionTemplate(transactionManager)
@@ -207,7 +227,21 @@ class IngestionWiring(
     fun writeSlots(
         ambiguity: JdbcStorageAmbiguity,
         node: StorageNode,
-    ): WriteSlots = WriteSlots(ambiguous = { ambiguity.unresolvedFor(node.nodeId) })
+        declarations: StorageDeclarations,
+    ): WriteSlots =
+        WriteSlots(
+            ambiguous = { ambiguity.unresolvedFor(node.nodeId) },
+            // Contract Lemma 3: a GLOBAL cap of procs × 16 unresolved ambiguities, so H_F
+            // bounds the late objects whatever node ids come and go. Only while the global
+            // footprint rules enforce: OFF and TENANT_LIMITS keep the per-node slots alone.
+            globalAmbiguous = { ambiguity.unresolvedTotal() },
+            globalCap =
+                if (declarations.enforcement.enforces(StorageScope.GLOBAL) && EffectiveStoragePolicy.footprint(declarations) != null) {
+                    (declarations.declaredMaxIngestionProcesses ?: 1) * declarations.maxConcurrentWrites
+                } else {
+                    Int.MAX_VALUE
+                },
+        )
 
     /**
      * ADR-035 §18: what this deployment declares, with the qualification

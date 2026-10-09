@@ -325,6 +325,13 @@ interface StorageInspection {
 
     fun deleteObject(key: String)
 
+    /**
+     * The object's size (`HEAD`), or null when it is absent or cannot be
+     * sized. Rule (P) charges a row-free deletion by it (TI-STORAGE-006E PR D);
+     * an unsized object is never deleted under `ALL`.
+     */
+    fun objectSize(key: String): Long? = null
+
     /** Every incomplete multipart upload in the bucket (probe M1). */
     fun incompleteUploads(): List<IncompleteUpload>
 
