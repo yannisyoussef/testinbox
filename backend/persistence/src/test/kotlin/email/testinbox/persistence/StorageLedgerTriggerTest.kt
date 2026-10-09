@@ -270,18 +270,18 @@ class StorageLedgerTriggerTest : PersistenceIntegrationTest() {
         val inbox = db.inbox(ws)
         val message = db.message(ws, inbox, rawBytes = 100, attachments = listOf(10))!!
 
-        runCatching {
+        db.sqlState {
             db.jdbc
                 .sql("UPDATE message SET raw_size_bytes = 250 WHERE id = ?")
                 .param(message)
                 .update()
-        }.isFailure shouldBe true
-        runCatching {
+        } shouldBe CHECK_VIOLATION
+        db.sqlState {
             db.jdbc
                 .sql("UPDATE attachment SET size_bytes = 3 WHERE message_id = ?")
                 .param(message)
                 .update()
-        }.isFailure shouldBe true
+        } shouldBe CHECK_VIOLATION
 
         db.accountedWorkspace(ws) shouldBe 110
         db.accountedInbox(inbox) shouldBe 110

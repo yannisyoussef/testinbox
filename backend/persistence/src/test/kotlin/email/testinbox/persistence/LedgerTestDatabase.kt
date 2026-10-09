@@ -13,6 +13,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.LockSupport
 import javax.sql.DataSource
 
+/** SQLSTATE 23514: what every V8 refusal trigger and CHECK raises. */
+const val CHECK_VIOLATION = "23514"
+
 /**
  * An isolated, freshly created database for the ADR-035 accounting tests.
  *
@@ -26,6 +29,7 @@ import javax.sql.DataSource
  * query. It re-derives usage with its own SQL, so a bug shared by the adapter
  * and its checker cannot cancel out.
  */
+
 class LedgerTestDatabase private constructor(
     val dataSource: DataSource,
     val name: String,
@@ -221,6 +225,12 @@ class LedgerTestDatabase private constructor(
             ).params(startedSeq, availBytes, inodesUsed, trashBytes)
             .update()
     }
+
+    /** The SQLSTATE a statement failed with, or null if it succeeded: refusals are asserted by code, not by "it threw". */
+    fun sqlState(block: () -> Unit): String? =
+        runCatching(block).exceptionOrNull()?.let { failure ->
+            generateSequence(failure) { it.cause }.filterIsInstance<java.sql.SQLException>().firstOrNull()?.sqlState ?: "not SQL: $failure"
+        }
 
     /** distrust_epoch, trusted_epoch (contract §4.5). */
     fun trust(): Pair<Long, Long?> =

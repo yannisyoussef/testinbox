@@ -19,8 +19,8 @@ import java.util.Random
  * a release deletes keys before its row goes; retention moves blobs to trash
  * before its rows go (one debt row); the orphan sweep writes a pending row,
  * deletes, and later resolves under a new order; an observation takes its
- * order, walks, and only then writes its row; a witness probe records its
- * pending row, writes, deletes and resolves. The world is adversarial: every
+ * order, walks, and only then writes its row; a witness probe is admitted by
+ * rule (P), records its pending row, writes, deletes and resolves. The world is adversarial: every
  * object physically costs [cost] — the most the contract's premise allows
  * (§2.4: any set S occupies at most F(P_S, N_S), and Σ cost ≤ F for every
  * set), which is MORE than φ for most payloads — copies often materialize at once, an observation sees only the trash present when
@@ -35,7 +35,8 @@ import java.util.Random
  *   the largest object size), which is what H_F reserves for;
  * - **theorem**: TestInbox's physical bytes ≤ C_fs − R_ops − M, and the
  *   bytes that are not late objects ≤ C_fs − R_ops − M − H_F;
- * - **Lemma 1**: physical ≤ Φ + Σ F(p, 1) over the uncovered, Φ = F(L + D) + W;
+ * - **Lemma 1**: physical ≤ Φ + Σ F(p, 1) over the uncovered, Φ = F(L + D) + W
+ *   — implied by injection under the set premise, kept as a byte-level cross-check;
  * - **admission** (main run only): right after an admission, (G) and (C) hold
  *   on the exact post-admission aggregate.
  *
@@ -102,8 +103,11 @@ class FootprintWorldTest {
         /** T1 reads the latest-ARRIVED observation, compaction the latest-started (§5.3). */
         NEWEST_BY_ARRIVAL,
 
-        /** Probes are neither capped nor reserved for by rule (C). */
-        PROBE_WITHOUT_BUDGET,
+        /** A witness probe writes without rule (P): its bytes are admitted by nothing. */
+        PROBE_UNCHECKED,
+
+        /** The sweep deletes a late object without rule (P), freeing its slot: late-origin trash accrues unadmitted. */
+        SWEEP_UNCHECKED,
     }
 
     private class Coverage {
@@ -116,11 +120,13 @@ class FootprintWorldTest {
         var debtRowsCompacted = 0L
         var nearBoundary = 0L
         var probesResolved = 0L
+        var probesRefused = 0L
+        var sweepsRefused = 0L
 
         override fun toString() =
             "admitted=$admitted refusedG=$refusedGlobal refusedC=$refusedContainment late=$lateSurfaced " +
                 "resolved=$sweepsResolved interleaved=$interleavedObservations compacted=$debtRowsCompacted nearBoundary=$nearBoundary " +
-                "probes=$probesResolved"
+                "probes=$probesResolved refusedProbes=$probesRefused refusedSweeps=$sweepsRefused"
     }
 
     @Suppress("TooManyFunctions")
@@ -129,6 +135,7 @@ class FootprintWorldTest {
         private val mutant: Mutant?,
         private val coverage: Coverage,
         private val checkAdmission: Boolean,
+        private val purgeStalled: Boolean,
     ) {
         private var seq = 0L
         private var nextId = 0L
@@ -255,10 +262,6 @@ class FootprintWorldTest {
 
                 Mutant.NO_TRASH_TERM -> {
                     FootprintAdmission.decide(model, limits, snapshot.copy(trashBytes = snapshot.trashBytes?.let { 0L }), copies)
-                }
-
-                Mutant.PROBE_WITHOUT_BUDGET -> {
-                    FootprintAdmission.decide(model, limits.copy(probeBudgetBytes = 0), snapshot, copies)
                 }
 
                 else -> {
@@ -418,10 +421,18 @@ class FootprintWorldTest {
                     val sweep = sweeps.randomOrNull()
                     when {
                         sweep == null -> {
-                            surfaced.firstOrNull()?.let { id ->
-                                val row = Debt(setOf(id), ++seq, pending = true)
-                                debts += row
-                                sweeps += Sweep(id, row)
+                            surfaced.firstOrNull { id -> sweeps.none { it.id == id } }?.let { id ->
+                                // Rule (P): the pending row of a late object is an admission. Refused,
+                                // the object stays and keeps its slot (fail closed).
+                                val load = Load(payload.getValue(id), 1)
+                                val admitted = FootprintAdmission.decideRowFreeDebt(model, limits, snapshot(), load) == Verdict.ADMITTED
+                                if (mutant == Mutant.SWEEP_UNCHECKED || admitted) {
+                                    val row = Debt(setOf(id), ++seq, pending = true)
+                                    debts += row
+                                    sweeps += Sweep(id, row)
+                                } else {
+                                    coverage.sweepsRefused++
+                                }
                             }
                         }
 
@@ -440,20 +451,24 @@ class FootprintWorldTest {
                     }
                 }
 
-                // The witness probe: a pending (0 B, 1 object) row committed first, the
-                // write, the delete, then the resolution under a new order. Skipped while
-                // the unsuperseded probe debt would pass P_F (contract §2.4).
+                // The witness probe: admitted by rule (P), a pending (0 B, 1 object) row
+                // committed first, the write, the delete, then the resolution under a new
+                // order (contract §2.4). Copies leave P_F unused so probes keep running.
                 18 -> {
-                    val probe = probes.randomOrNull()
+                    // Several nodes probe concurrently: a new probe may start while others are in flight.
+                    val probe = if (probes.isEmpty() || rnd.nextInt(3) == 0) null else probes.randomOrNull()
                     when {
                         probe == null -> {
-                            val inFlight = countedDebts().count { it.probe } * model.bound(0, 1)
-                            if (mutant == Mutant.PROBE_WITHOUT_BUDGET || inFlight + model.bound(0, 1) <= probeBudget) {
+                            // Rule (P): the probe is admitted against the potential, as a (0 B, 1) copy.
+                            val admitted = FootprintAdmission.decideProbe(model, limits, snapshot()) == Verdict.ADMITTED
+                            if (mutant == Mutant.PROBE_UNCHECKED || admitted) {
                                 val id = nextId++.also { payload[it] = 0L }
                                 val row = Debt(setOf(id), ++seq, pending = true, probe = true)
                                 debts += row
                                 materialized += id
                                 probes += Sweep(id, row)
+                            } else {
+                                coverage.probesRefused++
                             }
                         }
 
@@ -471,9 +486,10 @@ class FootprintWorldTest {
                     }
                 }
 
-                // MinIO purges one trash object.
+                // MinIO purges one trash object, unless this world's purge is stalled (§5.1:
+                // purge latency is unbounded, and a stall is the adversary trash bounds face).
                 14 -> {
-                    trash.keys.randomOrNull()?.let { trash.remove(it) }
+                    if (!purgeStalled) trash.keys.randomOrNull()?.let { trash.remove(it) }
                 }
 
                 // Observation, step 1: the order is taken BEFORE the walk begins.
@@ -544,7 +560,7 @@ class FootprintWorldTest {
         coverage: Coverage,
         checkAdmission: Boolean,
     ): AssertionError? {
-        val world = World(Random(seed), mutant, coverage, checkAdmission)
+        val world = World(Random(seed), mutant, coverage, checkAdmission, purgeStalled = seed % 4 == 0L)
         repeat(STEPS) { i ->
             val context = { "seed=$seed step=$i mutant=$mutant ${world.describe()}" }
             try {
@@ -562,18 +578,21 @@ class FootprintWorldTest {
         val coverage = Coverage()
         (1L..WORLDS).forEach { seed -> run(seed, mutant = null, coverage, checkAdmission = true)?.let { throw it } }
         println("FootprintWorldTest coverage: $coverage")
-        // Vacuity guard: the run must reach every state the proof is about. The floors are
-        // about half of what the pinned worlds reach, so a change that starves one fails here.
+        // Vacuity guard: the run must reach every state the proof is about. The seeds are
+        // pinned, and each floor is about half of what the worlds reach, so a change that
+        // starves one fails here.
         withClue("coverage: $coverage") {
-            coverage.admitted shouldBeGreaterThan 10_000
-            coverage.refusedGlobal shouldBeGreaterThan 100 // (C) binds first in these worlds: debt room is G_F / 8
-            coverage.refusedContainment shouldBeGreaterThan 1_000
+            coverage.admitted shouldBeGreaterThan 11_000
+            coverage.refusedGlobal shouldBeGreaterThan 60 // (C) binds first in these worlds: debt room is G_F / 8
+            coverage.refusedContainment shouldBeGreaterThan 14_000
             coverage.lateSurfaced shouldBeGreaterThan 1_000
             coverage.sweepsResolved shouldBeGreaterThan 1_000
-            coverage.interleavedObservations shouldBeGreaterThan 1_000
-            coverage.debtRowsCompacted shouldBeGreaterThan 1_000
-            coverage.nearBoundary shouldBeGreaterThan 1_000
-            coverage.probesResolved shouldBeGreaterThan 1_000
+            coverage.sweepsRefused shouldBeGreaterThan 2_000
+            coverage.interleavedObservations shouldBeGreaterThan 3_000
+            coverage.debtRowsCompacted shouldBeGreaterThan 13_000
+            coverage.nearBoundary shouldBeGreaterThan 9_000
+            coverage.probesResolved shouldBeGreaterThan 5_000
+            coverage.probesRefused shouldBeGreaterThan 4_000
         }
     }
 
@@ -650,7 +669,7 @@ class FootprintWorldTest {
                 15 to 2, // observation begins
                 16 to 2, // observation written
                 17 to 2, // debt compaction
-                18 to 2, // witness probes
+                18 to 6, // witness probes
             ).flatMap { (op, weight) -> List(weight) { op } }.toIntArray()
     }
 }

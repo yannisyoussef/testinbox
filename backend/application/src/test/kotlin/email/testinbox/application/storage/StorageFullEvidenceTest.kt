@@ -89,6 +89,41 @@ class StorageFullEvidenceTest {
     }
 
     @Test
+    fun `a trip that lands DURING the evidence read is marked by the next read, never lost`() {
+        // Owner review §6 / quality P2-4: the flag is cleared BEFORE the read, so a trip
+        // the breaker records while the snapshot is in flight survives to the next call.
+        var tripDuringRead: (() -> Unit)? = null
+        val racing =
+            StorageFullEvidence(
+                FilesystemObservations {
+                    reads++
+                    tripDuringRead?.invoke()
+                    tripDuringRead = null
+                    FilesystemSnapshot(dbNow, newest)
+                },
+                Duration.ofMinutes(15),
+                3 * gib,
+                inodeReserve = 1_000,
+                negativeCacheFor = Duration.ZERO,
+                nanoTime = { nanos },
+            )
+        racing.tripped() // trip #1
+        dbNow = t0.plusSeconds(10)
+        newest = null
+        tripDuringRead = { racing.tripped() } // trip #2, while read #1 is in flight
+        racing.evidence() shouldBe false // read #1 marks t0+10
+
+        // An observation that began after read #1's clock but before trip #2 was noticed:
+        // it predates the second trip and must not license a trial.
+        newest = observed(startedAt = t0.plusSeconds(15))
+        dbNow = t0.plusSeconds(20)
+        racing.evidence() shouldBe false // read #2 marks t0+20 for trip #2
+
+        newest = observed(startedAt = t0.plusSeconds(25))
+        racing.evidence() shouldBe true
+    }
+
+    @Test
     fun `a negative answer is cached so a blocked node does not query on every DATA, and a trip clears the cache`() {
         val g = gate(cache = Duration.ofSeconds(5))
         newest = null

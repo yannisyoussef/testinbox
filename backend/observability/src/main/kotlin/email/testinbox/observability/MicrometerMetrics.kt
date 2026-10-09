@@ -350,6 +350,7 @@ class MicrometerStorageAccountingMetrics(
 
     private val footprint = FootprintKind.entries.associateWith { AtomicLong(0) }
     private val observationAge = AtomicLong(-1)
+    private val countsTrusted = AtomicLong(0)
 
     init {
         Gauge.builder(UNFOLDED, unfoldedRows) { it.get().toDouble() }.register(registry)
@@ -361,6 +362,7 @@ class MicrometerStorageAccountingMetrics(
         }
         // -1 until an observation has ever been seen: "never" must not read as "fresh".
         Gauge.builder(OBSERVATION_AGE, observationAge) { it.get().toDouble() }.register(registry)
+        Gauge.builder(COUNTS_TRUSTED, countsTrusted) { it.get().toDouble() }.register(registry)
         Gauge
             .builder(COVERED, committedBytes) { it.get().toDouble() }
             .tags(Tags.of("kind", "committed"))
@@ -389,6 +391,10 @@ class MicrometerStorageAccountingMetrics(
         observationAge.set(if (seconds < 0) -1 else seconds)
     }
 
+    override fun footprintCountsTrusted(trusted: Boolean) {
+        countsTrusted.set(if (trusted) 1 else 0)
+    }
+
     override fun driftRepaired(direction: DriftDirection) {
         registry.counter(DRIFT, "direction", direction.name.lowercase()).increment()
     }
@@ -405,6 +411,7 @@ class MicrometerStorageAccountingMetrics(
         const val UNFOLDED = "testinbox_storage_ledger_unfolded_rows"
         const val FOOTPRINT = "testinbox_storage_footprint_bytes"
         const val OBSERVATION_AGE = "testinbox_storage_filesystem_observation_age_seconds"
+        const val COUNTS_TRUSTED = "testinbox_storage_footprint_counts_trusted"
         const val COVERED = "testinbox_storage_covered_bytes"
         const val DRIFT = "testinbox_storage_accounting_drift_total"
         const val RECONCILIATION = "testinbox_storage_reconciliation_total"

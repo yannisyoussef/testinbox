@@ -43,6 +43,20 @@ class FilesystemObservationsTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `an NTP step backwards between two walks does not change which observation is the evidence`() {
+        val early = db.beginObservation()
+        val late = db.beginObservation()
+        db.jdbc
+            .sql("UPDATE storage_observation_walk SET started_at = started_at - interval '1 hour' WHERE started_seq = ?")
+            .param(late)
+            .update()
+        db.observe(trashBytes = 0, startedSeq = late, availBytes = 9)
+        db.observe(trashBytes = 0, startedSeq = early, availBytes = 1)
+
+        checkNotNull(JdbcFilesystemObservations(db.jdbc).snapshot().newest).availBytes shouldBe 9
+    }
+
+    @Test
     fun `an observation is aged from when its walk BEGAN, and its free inodes are total minus used`() {
         val walk = db.beginObservation()
         // A walk that began an hour ago (the server stamped its start; the test backdates it).

@@ -3,6 +3,7 @@ package email.testinbox.persistence
 import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -90,11 +91,63 @@ class StorageDeletionDebtTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `an NTP step backwards between two walks does not change which observation is newest`() {
+        val early = db.beginObservation()
+        val late = db.beginObservation()
+        // The clock stepped back an hour between the two walks: the later walk's start is EARLIER.
+        db.jdbc
+            .sql("UPDATE storage_observation_walk SET started_at = started_at - interval '1 hour' WHERE started_seq = ?")
+            .param(late)
+            .update()
+        db.observe(trashBytes = 2, startedSeq = late)
+        db.observe(trashBytes = 3, startedSeq = early)
+
+        checkNotNull(db.ledger.deletionDebt().observation).let {
+            it.trashBytes shouldBe 2
+            it.startedSeq shouldBe late
+        }
+    }
+
+    @Test
+    fun `an order issued to one role cannot be used by another`() {
+        val other = "ti_other_${java.util.UUID.randomUUID().toString().take(8)}"
+        db.jdbc.sql("CREATE ROLE $other LOGIN PASSWORD 'pw'").update()
+        db.jdbc.sql("GRANT CONNECT ON DATABASE ${db.name} TO $other").update()
+        db.jdbc.sql("GRANT USAGE ON SCHEMA public TO $other").update()
+        db.jdbc.sql("GRANT INSERT ON storage_filesystem_observation TO $other").update()
+        db.jdbc.sql("GRANT USAGE ON storage_filesystem_observation_id_seq TO $other").update()
+        val issued = db.beginObservation() // issued to the owner's session
+
+        val asOther =
+            JdbcClient.create(
+                org.springframework.jdbc.datasource.SimpleDriverDataSource(
+                    org.postgresql.Driver(),
+                    postgres.jdbcUrl.substringBeforeLast('/') + "/" + db.name,
+                    other,
+                    "pw",
+                ),
+            )
+        val failure =
+            runCatching {
+                asOther
+                    .sql(
+                        "INSERT INTO storage_filesystem_observation (started_seq, source, block_size_bytes, capacity_bytes, " +
+                            "used_bytes, avail_bytes, inodes_total, inodes_used, trash_bytes, minio_sys_bytes) " +
+                            "VALUES (?, 'x', 4096, 0, 0, 0, 0, 0, 0, 0)",
+                    ).param(issued)
+                    .update()
+            }.exceptionOrNull()
+        checkNotNull(failure).let { e ->
+            generateSequence(e as Throwable) { it.cause }.joinToString(" | ") { it.message.orEmpty() } shouldContain "was not issued to"
+        }
+    }
+
+    @Test
     fun `an order no walk began is refused - neither invented nor replayed`() {
         val issued = db.beginObservation()
-        runCatching { db.observe(trashBytes = 1, startedSeq = issued + 1_000) }.isFailure shouldBe true
+        db.sqlState { db.observe(trashBytes = 1, startedSeq = issued + 1_000) } shouldBe CHECK_VIOLATION
         db.observe(trashBytes = 1, startedSeq = issued)
-        runCatching { db.observe(trashBytes = 1, startedSeq = issued) }.isFailure shouldBe true // one row per walk
+        db.sqlState { db.observe(trashBytes = 1, startedSeq = issued) } shouldBe "23505" // one row per walk: unique
         db.jdbc
             .sql("SELECT count(*) FROM storage_filesystem_observation")
             .query(Long::class.java)
@@ -146,7 +199,7 @@ class StorageDeletionDebtTest : PersistenceIntegrationTest() {
             "DELETE FROM storage_filesystem_observation WHERE started_seq >= $watermark",
             "DELETE FROM storage_filesystem_observation",
         ).forEach { statement ->
-            withClue(statement) { runCatching { db.jdbc.sql(statement).update() }.isFailure shouldBe true }
+            withClue(statement) { db.sqlState { db.jdbc.sql(statement).update() } shouldBe CHECK_VIOLATION }
         }
         // Pruning below the watermark is what the monitor's retention does.
         db.jdbc
@@ -198,8 +251,8 @@ class StorageDeletionDebtTest : PersistenceIntegrationTest() {
 
     @Test
     fun `a pending row must name its key`() {
-        runCatching {
+        db.sqlState {
             db.jdbc.sql("INSERT INTO storage_deletion_debt (bytes, objects, incurred_at) VALUES (1, 1, 'infinity')").update()
-        }.isFailure shouldBe true
+        } shouldBe CHECK_VIOLATION
     }
 }
