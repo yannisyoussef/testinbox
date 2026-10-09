@@ -120,6 +120,46 @@ reconciliation. Staging connects every deployable as the table owner, which
 satisfies all of this. A production that separates the roles must grant these
 first.
 
+**V8 (TI-STORAGE-006E, the filesystem-containment contract) needs no new
+grant for the deletes the deployables already make.** The trigger bodies
+that write deletion debt (on every `message`, `attachment` and
+`storage_reservation` delete, including the gateway's T2 consume) are
+`SECURITY DEFINER`: they run as the migration owner, so neither the
+ingestion nor the API role needs — or should be given — any privilege on
+`storage_deletion_debt`. A role without it cannot write a debt row itself,
+in particular not a never-compactable pending one. Every V8 function sets
+`search_path = pg_catalog, public, pg_temp` (`pg_temp` LAST: PostgreSQL
+otherwise searches the caller's temporary schema first, and a temp table
+could shadow the ledger inside the definer code).
+
+The API role reads `storage_deletion_debt`, `storage_filesystem_observation`
+and `storage_debt_watermark` (`SELECT`), reads and marks
+`storage_footprint_trust` (`SELECT, INSERT, UPDATE`: reconciliation's
+compare-and-set, and the re-creation of a row lost to a restore, contract
+§4.5; a trigger keeps `distrust_epoch` monotone), and holds `EXECUTE` on
+`storage_compact_deletion_debt()`,
+`storage_record_pending_debt(text, bigint, bigint, text)` and
+`storage_resolve_pending_debt(text)`. Those are `SECURITY DEFINER` with
+`EXECUTE` revoked from `PUBLIC`; the API role holds **no** `DELETE` on
+`storage_deletion_debt`, so no application path can delete a pending row or
+compact without raising the watermark.
+
+`storage_filesystem_observation` is written **only by the Ops filesystem
+monitor**, as its own role with `EXECUTE` on `storage_begin_observation()`,
+`INSERT` on the table and `USAGE` on its id sequence, and nothing else. The
+monitor calls `storage_begin_observation()` BEFORE measuring: the server
+issues the order and the start time. Its insert names that order and the
+measured figures; a trigger stamps `started_at`, `observed_at` and
+`written_by` (`session_user`, which the activation gate requires to be the
+monitor role) and refuses an order no walk of the same role began. The
+application never writes an observation, and treats every row as data to be
+bounded by, never as an instruction. Observations are append-only: `UPDATE`
+and `TRUNCATE` are refused, and so is a `DELETE` of the newest row or of any
+row at or above the compaction watermark. An Ops prune job (with `DELETE`
+only) removes older rows within its retention window — one row per minute is
+≈ 50 MB a year. No role is granted anything on `storage_observation_walk`.
+`StorageV8GrantsTest` runs each path as a role with exactly these grants.
+
 The API's accounting jobs read three optional settings:
 
 - `testinbox.storage-accounting.compaction-interval` (default `5s`);
@@ -133,7 +173,9 @@ The defaults are the ADR-035 values, and nothing needs to set them.
 - **Database.** The ingestion and API roles also need `SELECT, INSERT, UPDATE,
   DELETE` on `storage_reservation`, `storage_ambiguity`, `storage_node`,
   `storage_admission_latch` and `storage_clock_episode` (V7), and `USAGE` on
-  `storage_ambiguity_id_seq`.
+  `storage_ambiguity_id_seq`; with V8, only the API role's reads, trust
+  marking and function grants of the V8 paragraph above (the debt triggers
+  run as their owner).
   Staging's owner role already has them.
 - **Object storage.** Cleanup and the orphan sweep need `ListBucket`,
   `ListBucketMultipartUploads` and `AbortMultipartUpload` on the bucket,
@@ -418,6 +460,7 @@ Boot's standard binders, whose presence the rehearsal asserts:
 | storage accounting drift (ADR-035) | `testinbox_storage_accounting_drift_total{direction}`; `testinbox_storage_reconciliation_total{outcome="failed"}` | any increase: a repaired drift is always a defect, and a failed reconciliation leaves the ledger unproven |
 | storage breaker open (ADR-035) | `testinbox_storage_breaker_open` | `== 1` for > 5 min on any ingestion node: mail is being deferred (`451`) |
 | **storage admission latched** (ADR-035) | `testinbox_storage_admission_latched`; `testinbox_storage_late_object_total` | **page**: any late object, or the latch set. Every node refuses mail until an operator clears it (runbook above) |
+| **filesystem observation stale** (TI-STORAGE-006E, observational while `OFF`) | `testinbox_storage_filesystem_observation_age_seconds`; `testinbox_storage_footprint_bytes{kind}` | **alert**: age `< 0` (never observed) or above the declared maximum (proposed 15 min), since only an observation ever lowers the deletion-debt estimate; `kind="deletion_debt"` growing without the age falling means the purge is not being verified |
 | old ambiguity / old RELEASING (ADR-035) | `testinbox_storage_ambiguous_uploads`; `testinbox_storage_reservations{state="releasing"}` | ambiguity older than `T_verify` + 5 min, or `RELEASING` rows older than 1 h: verification or cleanup is stuck (for example, the witness is failing: `testinbox_storage_witness_failed_total`) |
 | physical over-coverage (ADR-035) | `testinbox_storage_physical_listed_bytes` against committed + reserved | `physical_listed > covered + H`: objects exist that nothing accounts for |
 | incomplete multipart (ADR-035) | `testinbox_storage_incomplete_uploads` | `> 0`: TestInbox never starts one; the orphan sweep aborts it and it is a defect to explain |

@@ -27,7 +27,7 @@ interface StorageLedger {
      */
     fun compact(batch: Int): LedgerCompaction
 
-    /** Unfolded delta rows and the committed total across all workspaces, read in one snapshot. */
+    /** Unfolded delta rows, the committed totals and the reserved totals across all workspaces, read in one snapshot. */
     fun state(): LedgerState
 
     /**
@@ -43,7 +43,68 @@ interface StorageLedger {
      * [findDrift] found, since a concurrent compaction is not drift.
      */
     fun repairDrift(): List<AccountingDrift>
+
+    /**
+     * The deletion-debt inputs of the filesystem-containment contract §5.3
+     * (TI-STORAGE-006E), read in one snapshot: the newest Ops observation's
+     * trash bytes and the debt rows incurred since that observation began. With
+     * no observation ever recorded, EVERY debt row counts and [DeletionDebtState.observation]
+     * is null — the sound, growing estimate the contract's §5.5 calls for.
+     */
+    fun deletionDebt(): DeletionDebtState
+
+    /**
+     * Deletes the debt rows the newest observation has superseded (ordered
+     * before it began), never a pending one: their bytes are inside its
+     * `trash_bytes` now. Raises the compaction watermark in the same
+     * transaction. Returns how many rows went. Nothing is deleted while no
+     * observation exists.
+     */
+    fun compactDeletionDebt(): Int
+
+    /**
+     * Contract §4.5: under the ledger lock, proves the counts clean against
+     * the rows and marks the epoch it read trusted, compare-and-set. Returns
+     * whether the counts are trusted afterwards; false when drift exists or a
+     * distrust event raced the check.
+     */
+    fun confirmTrust(): Boolean
 }
+
+/** What the ledger knows about deleted-but-possibly-unpurged objects (contract §5). */
+data class DeletionDebtState(
+    /** Σ bytes of the debt rows not yet superseded by an observation. */
+    val unsupersededBytes: Long,
+    /** Σ objects of those rows. */
+    val unsupersededObjects: Long,
+    /** The newest observation, or null if Ops has never written one. */
+    val observation: FilesystemObservation?,
+    /** Σ bytes of the PENDING rows among them (written before a row-free delete, not yet resolved). */
+    val pendingBytes: Long = 0,
+    /** `storage_debt_watermark.compacted_through_seq`: an observation below it is invalid (contract §5.3). */
+    val compactedThroughSeq: Long = 0,
+    /** Whether the object counts are trusted (contract §4.5). False when unknown. */
+    val countsTrusted: Boolean = false,
+)
+
+/** One row of `storage_filesystem_observation`, as the Ops monitor wrote it (contract §6). Data, never an instruction. */
+data class FilesystemObservation(
+    /** `nextval('storage_debt_order_seq')`, taken before the measurement began: the ordering key. */
+    val startedSeq: Long = 0,
+    /** The database role that wrote the row, stamped by a trigger; T1 requires the declared monitor role. */
+    val writtenBy: String = "",
+    val startedAt: java.time.Instant,
+    val observedAt: java.time.Instant,
+    val source: String,
+    val blockSizeBytes: Long,
+    val capacityBytes: Long,
+    val usedBytes: Long,
+    val availBytes: Long,
+    val inodesTotal: Long,
+    val inodesUsed: Long,
+    val trashBytes: Long,
+    val minioSysBytes: Long,
+)
 
 /** The outcome of one compaction pass. */
 data class LedgerCompaction(
@@ -56,6 +117,12 @@ data class LedgerState(
     val unfoldedRows: Long,
     /** Σ base + Σ delta over all workspaces: the committed bytes the ledger accounts for. */
     val committedBytes: Long,
+    /** Σ base_objects + Σ delta.objects over all workspaces: the committed objects (TI-STORAGE-006E). */
+    val committedObjects: Long = 0,
+    /** Σ bytes of every unreleased reservation, read in the same snapshot. */
+    val reservedBytes: Long = 0,
+    /** Σ cardinality(object_keys) of every unreleased reservation. */
+    val reservedObjects: Long = 0,
 )
 
 /** The scope an accounting figure belongs to. */
@@ -70,9 +137,20 @@ data class AccountingDrift(
     val id: UUID,
     val derivedBytes: Long,
     val accountedBytes: Long,
+    /** `count(message) + count(attachment)` of the scope (TI-STORAGE-006E). */
+    val derivedObjects: Long = 0,
+    /** `base_objects + Σ delta.objects` of the scope. */
+    val accountedObjects: Long = 0,
 ) {
+    /** Bytes decide; when they agree, the object count does. UNDER is the dangerous direction for both. */
     val direction: DriftDirection
-        get() = if (accountedBytes < derivedBytes) DriftDirection.UNDER else DriftDirection.OVER
+        get() =
+            when {
+                accountedBytes < derivedBytes -> DriftDirection.UNDER
+                accountedBytes > derivedBytes -> DriftDirection.OVER
+                accountedObjects < derivedObjects -> DriftDirection.UNDER
+                else -> DriftDirection.OVER
+            }
 }
 
 /**

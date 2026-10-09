@@ -172,7 +172,10 @@ class Harness(
 
     /** Between populations: every tenant and ledger row goes. The database is the harness's own by preflight. */
     private fun wipe(admin: JdbcClient) {
-        admin.sql("TRUNCATE workspace, storage_delta, storage_ambiguity CASCADE").update()
+        admin.sql("TRUNCATE workspace, storage_ambiguity CASCADE").update()
+        // V8 refuses TRUNCATE of the append-only ledger; a DELETE is folded by its
+        // trigger into bases that no longer exist, which is nothing.
+        admin.sql("DELETE FROM storage_delta").update()
     }
 
     private fun describeEnvironment(

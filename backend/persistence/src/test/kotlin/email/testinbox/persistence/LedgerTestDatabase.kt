@@ -13,6 +13,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.LockSupport
 import javax.sql.DataSource
 
+/** SQLSTATE 23514: what every V8 refusal trigger and CHECK raises. */
+const val CHECK_VIOLATION = "23514"
+
 /**
  * An isolated, freshly created database for the ADR-035 accounting tests.
  *
@@ -26,6 +29,7 @@ import javax.sql.DataSource
  * query. It re-derives usage with its own SQL, so a bug shared by the adapter
  * and its checker cannot cancel out.
  */
+
 class LedgerTestDatabase private constructor(
     val dataSource: DataSource,
     val name: String,
@@ -154,6 +158,87 @@ class LedgerTestDatabase private constructor(
             .query(Long::class.java)
             .single()
 
+    // --- objects and deletion debt (TI-STORAGE-006E) --------------------------------
+
+    fun derivedWorkspaceObjects(workspace: UUID): Long =
+        jdbc
+            .sql(
+                "SELECT (SELECT count(*) FROM message WHERE workspace_id = ?) + (SELECT count(*) FROM attachment WHERE workspace_id = ?)",
+            ).params(workspace, workspace)
+            .query(Long::class.java)
+            .single()
+
+    fun accountedWorkspaceObjects(workspace: UUID): Long =
+        jdbc
+            .sql(
+                """
+                SELECT (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account WHERE workspace_id = ?)
+                     + (SELECT coalesce(sum(objects), 0) FROM storage_delta WHERE workspace_id = ?)
+                """.trimIndent(),
+            ).params(workspace, workspace)
+            .query(Long::class.java)
+            .single()
+
+    fun accountedInboxObjects(inbox: UUID): Long =
+        jdbc
+            .sql(
+                """
+                SELECT (SELECT coalesce(sum(base_objects), 0) FROM inbox_storage WHERE inbox_id = ?)
+                     + (SELECT coalesce(sum(objects), 0) FROM storage_delta WHERE inbox_id = ?)
+                """.trimIndent(),
+            ).params(inbox, inbox)
+            .query(Long::class.java)
+            .single()
+
+    /** Every deletion-debt row: (bytes, objects, incurred_at), oldest first. */
+    fun debtRows(): List<Triple<Long, Long, java.time.Instant>> =
+        jdbc
+            .sql("SELECT bytes, objects, incurred_at FROM storage_deletion_debt ORDER BY id")
+            .query { rs, _ -> Triple(rs.getLong(1), rs.getLong(2), checkNotNull(Timestamps.fromDb(rs, "incurred_at"))) }
+            .list()
+
+    fun dbNow(): java.time.Instant =
+        jdbc
+            .sql("SELECT clock_timestamp()")
+            .query(java.time.OffsetDateTime::class.java)
+            .single()
+            .toInstant()
+
+    /** What the monitor calls BEFORE measuring: the server issues the order and the start (contract §5.3). */
+    fun beginObservation(): Long = jdbc.sql("SELECT storage_begin_observation()").query(Long::class.java).single()
+
+    /** What the Ops monitor writes after measuring: its walk's order and the figures; the server stamps the rest. */
+    fun observe(
+        trashBytes: Long,
+        startedSeq: Long = beginObservation(),
+        availBytes: Long = 0,
+        inodesUsed: Long = 0,
+    ) {
+        jdbc
+            .sql(
+                """
+                INSERT INTO storage_filesystem_observation
+                    (started_seq, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total,
+                     inodes_used, trash_bytes, minio_sys_bytes)
+                VALUES (?, 'test-monitor', 4096, 0, 0, ?, 100, ?, ?, 0)
+                """.trimIndent(),
+            ).params(startedSeq, availBytes, inodesUsed, trashBytes)
+            .update()
+    }
+
+    /** The SQLSTATE a statement failed with, or null if it succeeded: refusals are asserted by code, not by "it threw". */
+    fun sqlState(block: () -> Unit): String? =
+        runCatching(block).exceptionOrNull()?.let { failure ->
+            generateSequence(failure) { it.cause }.filterIsInstance<java.sql.SQLException>().firstOrNull()?.sqlState ?: "not SQL: $failure"
+        }
+
+    /** distrust_epoch, trusted_epoch (contract §4.5). */
+    fun trust(): Pair<Long, Long?> =
+        jdbc
+            .sql("SELECT distrust_epoch, trusted_epoch FROM storage_footprint_trust WHERE id = 1")
+            .query { rs, _ -> rs.getLong(1) to rs.getObject(2)?.let { (it as Number).toLong() } }
+            .single()
+
     fun liveInboxes(): List<UUID> =
         jdbc
             .sql("SELECT id FROM inbox")
@@ -179,6 +264,64 @@ class LedgerTestDatabase private constructor(
     fun assertInvariant(
         context: String = "",
         excludedInboxes: Set<UUID> = emptySet(),
+    ) {
+        if (!hasObjectCounts()) return assertByteInvariant(context, excludedInboxes)
+        val workspaceMismatches =
+            jdbc
+                .sql(
+                    """
+                    SELECT w.id,
+                           coalesce((SELECT sum(raw_size_bytes) FROM message m WHERE m.workspace_id = w.id), 0)
+                         + coalesce((SELECT sum(size_bytes) FROM attachment a WHERE a.workspace_id = w.id), 0) AS derived,
+                           coalesce((SELECT base_bytes FROM workspace_storage_account s WHERE s.workspace_id = w.id), 0)
+                         + coalesce((SELECT sum(bytes) FROM storage_delta d WHERE d.workspace_id = w.id), 0) AS accounted,
+                           (SELECT count(*) FROM message m WHERE m.workspace_id = w.id)
+                         + (SELECT count(*) FROM attachment a WHERE a.workspace_id = w.id) AS derived_objects,
+                           coalesce((SELECT base_objects FROM workspace_storage_account s WHERE s.workspace_id = w.id), 0)
+                         + coalesce((SELECT sum(objects) FROM storage_delta d WHERE d.workspace_id = w.id), 0) AS accounted_objects
+                      FROM workspace w
+                    """.trimIndent(),
+                ).query { rs, _ -> listOf(rs.getObject(1, UUID::class.java), rs.getLong(2), rs.getLong(3), rs.getLong(4), rs.getLong(5)) }
+                .list()
+                .filter { it[1] != it[2] || it[3] != it[4] }
+        val inboxMismatches =
+            jdbc
+                .sql(
+                    """
+                    SELECT i.id,
+                           coalesce((SELECT sum(raw_size_bytes) FROM message m WHERE m.inbox_id = i.id), 0)
+                         + coalesce((SELECT sum(a.size_bytes) FROM attachment a JOIN message m ON m.id = a.message_id
+                                      WHERE m.inbox_id = i.id), 0) AS derived,
+                           coalesce((SELECT base_bytes FROM inbox_storage s WHERE s.inbox_id = i.id), 0)
+                         + coalesce((SELECT sum(bytes) FROM storage_delta d WHERE d.inbox_id = i.id), 0) AS accounted,
+                           (SELECT count(*) FROM message m WHERE m.inbox_id = i.id)
+                         + (SELECT count(*) FROM attachment a JOIN message m ON m.id = a.message_id WHERE m.inbox_id = i.id) AS derived_objects,
+                           coalesce((SELECT base_objects FROM inbox_storage s WHERE s.inbox_id = i.id), 0)
+                         + coalesce((SELECT sum(objects) FROM storage_delta d WHERE d.inbox_id = i.id), 0) AS accounted_objects
+                      FROM inbox i
+                    """.trimIndent(),
+                ).query { rs, _ -> listOf(rs.getObject(1, UUID::class.java), rs.getLong(2), rs.getLong(3), rs.getLong(4), rs.getLong(5)) }
+                .list()
+                .filter { (it[1] != it[2] || it[3] != it[4]) && it[0] !in excludedInboxes }
+        withClue("ADR-035 invariant $context: workspace (id, derived, accounted, derivedObjects, accountedObjects) mismatches") {
+            workspaceMismatches shouldBe emptyList()
+        }
+        withClue("ADR-035 invariant $context: inbox (id, derived, accounted, derivedObjects, accountedObjects) mismatches") {
+            inboxMismatches shouldBe emptyList()
+        }
+    }
+
+    /** Whether V8 has run here: the V6 migration tests exercise the pre-V8 schema, where only bytes exist. */
+    private fun hasObjectCounts(): Boolean =
+        jdbc
+            .sql("SELECT count(*) FROM information_schema.columns WHERE table_name = 'storage_delta' AND column_name = 'objects'")
+            .query(Int::class.java)
+            .single() == 1
+
+    /** The V6-era invariant, bytes only, for a database that has not reached V8. */
+    private fun assertByteInvariant(
+        context: String,
+        excludedInboxes: Set<UUID>,
     ) {
         val workspaceMismatches =
             jdbc

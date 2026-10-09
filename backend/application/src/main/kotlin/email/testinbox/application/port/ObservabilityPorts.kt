@@ -346,6 +346,31 @@ interface StorageAccountingMetrics {
         committedBytes: Long,
     ) {}
 
+    /**
+     * `testinbox_storage_footprint_bytes{kind}` (filesystem-containment
+     * contract §12, TI-STORAGE-006E): the bound of what a class of objects can
+     * cost on the MinIO filesystem, observed in every mode. Closed label.
+     */
+    fun footprintObserved(
+        kind: FootprintKind,
+        bytes: Long,
+    ) {}
+
+    /**
+     * `testinbox_storage_filesystem_observation_age_seconds`: how old the newest
+     * Ops observation is. [seconds] is negative when none has ever been
+     * recorded (the gauge reads −1), so "never" cannot read as "fresh".
+     */
+    fun filesystemObservationAge(seconds: Long) {}
+
+    /**
+     * `testinbox_storage_footprint_counts_trusted`: 1 while the object counts are
+     * trusted (contract §4.5), 0 while they are not or cannot be read. Footprint
+     * admission must not enforce at 0; until PR D gates T1 on it, this gauge is
+     * what an operator alerts on.
+     */
+    fun footprintCountsTrusted(trusted: Boolean) {}
+
     fun driftRepaired(direction: DriftDirection) {}
 
     fun reconciliationCompleted(outcome: ReconciliationOutcome) {}
@@ -359,6 +384,9 @@ interface StorageAccountingMetrics {
 
 /** ADR-035 §16 `storage_admission_total{outcome}`. */
 enum class StorageAdmissionOutcome { ADMITTED, REFUSED_INBOX, REFUSED_WORKSPACE, REFUSED_GLOBAL }
+
+/** The closed `kind` vocabulary of `testinbox_storage_footprint_bytes` (contract §12). */
+enum class FootprintKind { COMMITTED, RESERVED, DELETION_DEBT }
 
 /** ADR-035 §16 `storage_physical_failure_total{kind}`: infrastructure, never capacity. */
 enum class PhysicalFailureKind { QUOTA, UNAVAILABLE, TIMEOUT, AMBIGUOUS, DEADLINE, LOCK_TIMEOUT, SLOT_WAIT, CLOCK_OFFSET }

@@ -41,6 +41,12 @@ passed. CI must additionally assert, from the test report output, that:
 - Zero skipped/ignored tests beyond an explicit, reviewed allow-list.
 - Coverage/mutation reports (where used) are generated and checked, not just
   attempted.
+- No test method is silently dropped at discovery. A JUnit `@Test` that
+  returns a value (an expression-bodied Kotlin test ending in a property
+  check, for example) is only a discovery WARNING and is never executed; the
+  backend build sets `junit.platform.discovery.issue.severity.critical=warning`,
+  so it fails the build instead. Three property tests went unexecuted this way
+  before the guard existed (TI-STORAGE-006E).
 
 This is implemented by `scripts/verify-test-results.sh`, which CI runs after
 the build. Because CI jobs execute disjoint suites, the verifier takes an

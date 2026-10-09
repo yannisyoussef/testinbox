@@ -55,9 +55,23 @@ class ExpireInboxes(
             if (transitioned) expired++
         }
 
+        var deferred = 0
         for (inbox in inboxes.findHardDeletable(config.sweepBatchSize)) {
-            // Blob prefix delete first: idempotent, retried on the next sweep if the row delete fails.
-            blobs.deletePrefix(ObjectKeys.inboxPrefix(inbox.workspaceId, inbox.id))
+            // Blob prefix delete first, and PROVEN (a per-key error throws), then the
+            // rows: an object left behind with its rows gone would be allocated bytes
+            // no ledger figure describes (filesystem-containment contract §4.6). A
+            // prefix that cannot be fully deleted keeps its rows and is retried next
+            // sweep — on its own, so one stuck inbox never blocks the batch behind it.
+            try {
+                blobs.deletePrefix(ObjectKeys.inboxPrefix(inbox.workspaceId, inbox.id))
+            } catch (e: RuntimeException) {
+                deferred++
+                log.warn(
+                    "inbox_hard_delete_deferred the blob prefix could not be fully deleted; rows kept, retried next sweep: {}",
+                    e.toString(),
+                )
+                continue
+            }
             inboxes.hardDelete(inbox.id)
             deleted++
         }
@@ -66,8 +80,8 @@ class ExpireInboxes(
         // lifecycle event (ADR-009), and the hard delete that follows is the
         // sweep reclaiming storage for something already expired.
         metrics.inboxExpired(expired)
-        if (expiring + expired + deleted > 0) {
-            log.info("inbox_sweep expiring={} expired={} hardDeleted={}", expiring, expired, deleted)
+        if (expiring + expired + deleted + deferred > 0) {
+            log.info("inbox_sweep expiring={} expired={} hardDeleted={} deferred={}", expiring, expired, deleted, deferred)
         }
         return SweepReport(expiring, expired, deleted)
     }

@@ -39,3 +39,16 @@
 # ADR-035 §5 (V7). A clock-offset episode describes the reservations, which
 # are not restored either.
 - storage_clock_episode
+# ADR-035 filesystem-containment contract (V8, TI-STORAGE-006E). Deletion
+# debt describes trash on the MinIO filesystem, and an observation describes
+# that filesystem at one instant; neither survives a restore meaningfully, and
+# both are rebuilt by the next deletion and the next Ops observation.
+- storage_deletion_debt
+- storage_filesystem_observation
+# The compaction watermark, the trust marker and the monitor's open walks
+# describe those rows and the ledger. Restored without them, a missing trust
+# row reads as untrusted and is recreated untrusted by the next clean
+# reconciliation, which marks it (contract §4.5).
+- storage_debt_watermark
+- storage_footprint_trust
+- storage_observation_walk

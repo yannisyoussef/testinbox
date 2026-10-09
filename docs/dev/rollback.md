@@ -243,6 +243,35 @@ know V7, so it would ignore a recorded clock episode and could release on the
 plain horizon. That is exactly why it sits below the safety floor and is
 refused, unless the hazard is explicitly acknowledged.
 
+**Schema V8** (TI-STORAGE-006E, the filesystem-containment contract) is
+expand-only:
+- three `NOT NULL DEFAULT 0` columns (`storage_delta.objects`,
+  `workspace_storage_account.base_objects`, `inbox_storage.base_objects`);
+- the debt ledger, observation, walk, watermark and trust tables, and the
+  ordering sequence;
+- the ledger trigger bodies replaced to count objects and append deletion
+  debt (`SECURITY DEFINER`, so no role needs a new grant);
+- refusal triggers that stop nothing any artifact does;
+- a recompute under the V6 lock set, taken after the ledger advisory lock.
+
+No down migration. A rolled-back artifact at or above the TI-STORAGE-006
+floor keeps working. Its inserts, deletes and reservation releases run the
+new trigger bodies, which count for it.
+
+**Its compactor does not know `storage_delta.objects`, and V8 compensates in
+the same statement.** A statement trigger on `storage_delta` folds the object
+counts that compactor drops (`testinbox.ledger_counts` is unset in its
+transaction), so the counts stay exact. It also revokes trust in them
+(`storage_footprint_trust`). Trust comes back only through a reconciliation
+pass that finds no workspace-scope drift, under the ledger lock and by
+compare-and-set (`StorageFootprintLedgerTest` replays the verbatim pre-V8
+fold, and a rollback/roll-forward sequence).
+
+While untrusted, footprint admission answers `451` under `ALL` (PR D), and
+`testinbox_storage_footprint_counts_trusted` reads 0. What rollback DOES
+lose: the older artifact neither observes the footprint nor compacts debt.
+Both only observe while enforcement is `OFF`.
+
 ## Adding a `StorageRefusalReason` is reader-first (TI-STORAGE-004)
 
 The API reads `inbox_storage.last_refusal_reason` into the closed
