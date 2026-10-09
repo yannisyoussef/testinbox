@@ -52,7 +52,7 @@ means computed by the application from rows.
 |---|---|---|---|---|---|
 | *B* | filesystem block size (`f_frsize`) | bytes | declared, verified by gate F against `statvfs` | fixed per filesystem | `DeploymentSafety` (shape), gate F (truth) |
 | *O_max* | per-object fixed footprint overhead, above the payload's block rounding | bytes | declared; must be ≥ the qualified maximum of the storage combination (§3, §10) | per qualification record | `DeploymentSafety`, gate F |
-| *ε* | proportional allowance for extent-tree metadata of large part files | ratio | at least 1/256 (§3.4): the code refuses a denominator above 256 | fixed | code |
+| *ε* | proportional allowance for extent-tree metadata of large part files | ratio | at least `1 / min(256, ⌊(B − 12)/12⌋ − 1)` (§3.4): the code refuses a denominator above 256, 168 and 83 at 4, 2 and 1 KiB blocks | fixed | code |
 | *K* | `(B − 1)·(1 + ε) + O_max + 1`: the most one object can cost above its payload under the closed form (the `+ 1` absorbs the per-object rounding-up of the ε allowance) | bytes | derived | per deployment | T1 |
 | φ(p) | footprint bound of one object of payload *p*: `⌈p⌉_B + ⌈ε·⌈p⌉_B⌉ + O_max` | bytes | derived | per object | T1, ledger reads |
 | *P* | payload bytes of a set of objects (what the ledger holds today) | bytes | derived (ledger) | live | T1 snapshot |
@@ -61,7 +61,8 @@ means computed by the application from rows.
 | *F_c* | footprint of committed objects: `F(P_c, N_c)` over `message`/`attachment` rows | bytes | derived (ledger bases + deltas) | live | T1 |
 | *F_r* | footprint of reserved objects: `F(Σ bytes, Σ cardinality(object_keys))` over `storage_reservation` | bytes | derived | live | T1 |
 | *G_F* | global ceiling in footprint bytes, key `global-footprint-limit-bytes`; the payload `global-limit-bytes` is never reinterpreted as it | bytes | declared | per deployment | T1, rule (G) of §2.4 |
-| *H_F* | finalize budget in footprint: `procs × 16 × F(15 MiB, 1)`. **F, not φ**: a late object leaving the uncovered class is charged `ΔF ≤ F(p, 1)` when its debt row is written (§2.4, Lemma 3) | bytes | derived from declarations | per deployment | T1 (held back) |
+| *H_F* | finalize budget in footprint: `procs × 16 × F(15 MiB, 1)`. **F, not φ**: a late object occupies up to `F(p, 1)` under the set premise, and leaving the uncovered class it is charged `ΔF ≤ F(p, 1)` when its debt row is written (§2.4, Lemma 3) | bytes | derived from declarations | per deployment | T1 (held back) |
+| *P_F* | probe budget: what witness and breaker probes may add to Φ between admissions; the witness stops probing (and reports unhealthy) while its unsuperseded probe-debt rows × `F(0, 1)` would exceed it (§2.4) | bytes | declared | per deployment | T1, rule (C); the witness |
 | *L* | live set: `(P_c + P_r, N_c + N_r)` over `message`/`attachment` rows and `storage_reservation` (`RESERVED` and `RELEASING`) | bytes, objects | derived (ledger + reservations) | live | T1 snapshot |
 | *D* | unsuperseded debt: `(Σ bytes, Σ objects)` over `storage_deletion_debt` rows that are pending (`incurred_at = 'infinity'`) or whose `seq ≥ started_seq` of the newest observation | bytes, objects | derived | live | T1 snapshot |
 | `seq` | `storage_debt_order_seq`: one database sequence orders debt rows against observations; never a wall clock, which can step backwards on failover | — | database | — | debt rows, observations |
@@ -75,7 +76,7 @@ means computed by the application from rows.
 | *I_fs* | inodes of the filesystem (`f_files`) | inodes | declared; observed | per filesystem | `DeploymentSafety`, gate F |
 | *i_max* | the most inodes one object can consume, amortized directories included | inodes | constant 6 (§3.5) | fixed | code |
 | *U(t)* | bytes actually allocated on the filesystem at *t* | bytes | observed (`f_blocks − f_bfree`) | live | monitor (detection only) |
-| *T_obs* | newest observation's `started_seq` (a `nextval` the monitor takes before measuring) and `started_at` (for age only) | sequence value, instant | observed | live | T1 |
+| *T_obs* | newest observation's `started_seq` and `started_at`, both **issued by the server** when the monitor calls `storage_begin_observation()` before measuring (`started_at` is for age only) | sequence value, instant | observed | live | T1 |
 | *A_obs* | maximum tolerated observation age before the deployment is "unverified" | duration | declared (proposed 15 min) | per deployment | metric + Ops latch policy; **not** a safety input (§5.5) |
 
 ---
@@ -91,14 +92,14 @@ admitted only if, evaluated in T1's single snapshot **after** adding it (and
 every copy of the same event admitted before it):
 
 ```
-(G)  F(L + c) + H_F                    ≤ G_F                     policy ceiling (live footprint)
-(C)  F(L + D + c) + W + H_F + M + R_ops ≤ C_fs                   containment (the potential Φ)
+(G)  F(L + c) + H_F                          ≤ G_F               policy ceiling (live footprint)
+(C)  F(L + D + c) + W + H_F + P_F + M + R_ops ≤ C_fs              containment (the potential Φ)
 ```
 
 with `W ≠ ⊥` (no observation, no admission), and the static sizing condition
 
 ```
-G_F + D_budget + M + R_ops ≤ C_fs                                  (I-C)
+G_F + D_budget + P_F + M + R_ops ≤ C_fs                            (I-C)
 ```
 
 which only says that while the debt part of Φ stays within `D_budget`, (G) is
@@ -110,16 +111,32 @@ the excess (the owner's decision 3). Then at every instant *t*:
 U_TI(t) ≤ C_fs − R_ops − M                                         (the theorem)
 ```
 
-where *U_TI* is the bytes TestInbox's objects (classes a–d, f of §2.2)
-occupy; *M* bounds class (e) by observation, so `U(t) ≤ C_fs − R_ops`.
+where *U_TI* is the bytes TestInbox's objects (classes a–d, f of §2.2, and
+probe objects) occupy; *M* bounds class (e) by observation, so
+`U(t) ≤ C_fs − R_ops`.
+
+**The physical premise (one, for the whole proof).** Any set *S* of
+TestInbox objects occupies at most `F(P_S, N_S)` blocks' worth of bytes,
+directory blocks amortized over the objects that share them, and directory
+blocks that outlive every object under them assigned to *M* (class e). It is
+a statement about **sets**: §3.3 explains why no single object is bounded by
+φ. Experiments E1–E3 (§10) measure per-size deltas and **totals ≤ Σφ**;
+since `F(P, N) ≥ Σφ(p_i)` for every set (§3.3, proved by property in
+`FootprintModelTest`), that evidence implies the premise. Nothing below
+assumes more than it: in particular no object is assumed to occupy at most
+φ of its payload.
 
 **Not φ_copy.** An earlier draft admitted on `F(L) + φ_copy`. That
 under-charges: the closed form rounds per object, so its increment for one
 object can exceed φ. For *B* = 4096, *O_max* = 24 576, ε = 1/256 and a
 4 096 B object, φ = 28 688 B but `F(4096, 1) − F(0, 0)` = 32 800 B; with
-30 000 B of headroom the φ rule admits and the aggregate bound then exceeds
-the capacity. The rules above evaluate the post-admission aggregate exactly;
-`FootprintAdmissionTest` pins this counterexample. A conservative additive
+30 000 B of headroom the φ rule admits. Under the premise above the rule is
+**physically** unsafe, not only a broken invariant: the object may occupy up
+to `F(4096, 1)`. The world test charges each object
+`cost(x) = a + ⌊a/d⌋ + O_max + 1` with `a = p + B − 1` and `d = 1/ε` —
+admissible, since `Σ cost ≤ F` for every set — and `cost(4096)` = 32 799 B
+> 30 000 B. The rules above evaluate the post-admission aggregate exactly;
+`FootprintAdmissionTest` and `FootprintWorldTest` pin this counterexample. A conservative additive
 charge would also be sound — `ΔF ≤ F(p_c, n_c)` (Lemma 2) — but the exact
 aggregate is no more expensive, refuses less, and is what the property tests
 check.
@@ -132,10 +149,15 @@ like today's ceilings (ADR-035 §4): the snapshot statement gains the debt sums,
 the newest observation and the trust marker. A refusal on (G) or (C) is
 `SERVICE_CAPACITY` (`250` and discard, one bit to the tenant, §13d), never a
 different SMTP reply (§5.4). Untrusted counts, no observation, an invalid
-observation, or an arithmetic overflow (corrupt totals) are not a capacity
-verdict; they are an infrastructure state, answered `451` **before recipient
-resolution** like a latch (§4.5), so the reply is the same for every
-recipient. **I-C is static**: checked at startup from declarations,
+observation, negative totals, or an arithmetic overflow (corrupt totals) are
+not a capacity verdict; they are an infrastructure state, answered `451`
+**before recipient resolution** like a latch (§4.5), so the reply is the same
+for every recipient. Because an overflow depends on the candidate, the
+pre-resolution check evaluates the rules with the **worst-case event**
+(the largest copy payload and object count × the maximum recipients); in T1
+an overflow anywhere makes the **whole event** `INDETERMINATE`, never a mix of
+verdicts (`FootprintAdmission.decide`, PR #83). Negative totals are mapped to
+`INDETERMINATE` by the T1 adapter (PR D; today it clamps them to 0). **I-C is static**: checked at startup from declarations,
 verified against the real filesystem by gate F and the monitor.
 
 **Under `TENANT_LIMITS` the theorem does not hold.** ADR-035 §14 Phase 4
@@ -153,11 +175,11 @@ instant, and each class has a bound. The obligations are what qualification
 
 | Class of allocated bytes | Bounded by | Obligation |
 |---|---|---|
-| **(a)** objects with a live `message`/`attachment` row | *F_c* | φ is an upper bound for every object (§3); every row-creating path is T2 for reserved bytes (ADR-035 I4, existing); the ledger counts every row exactly once (existing triggers, extended to counts) |
+| **(a)** objects with a live `message`/`attachment` row | *F_c* | the set premise (§2.1): any set occupies at most *F* of its payload and count (E1–E3); every row-creating path is T2 for reserved bytes (ADR-035 I4, existing); the ledger counts every row exactly once (existing triggers, extended to counts) |
 | **(b)** objects, or their `.minio.sys/tmp` upload files, whose reservation is live (`RESERVED` or `RELEASING`) | *F_r* | a reservation names exactly the keys and bytes it authorizes (existing fence, I7); nothing is written without one (ADR-035 §5, ArchUnit); a reservation is released only after its keys are proven absent (§7) |
-| **(c)** objects that may surface *after* their reservation's release (A_F violated up to `T_verify`) | *H_F* | ADR-035 §9: at most one per occupied slot per process, bounded by `procs × 16`, each ≤ φ(15 MiB). Unchanged argument, footprint unit |
+| **(c)** objects that may surface *after* their reservation's release (A_F violated up to `T_verify`) | *H_F* | ADR-035 §9: at most one per occupied slot, bounded by `procs × 16` — which needs a **global** cap on unresolved ambiguities (Lemma 3) — each ≤ `F(15 MiB, 1)`. Unchanged argument, footprint unit |
 | **(d)** deleted-but-unpurged objects (`.minio.sys/tmp/.trash`) and objects deleted directly whose blocks are not yet freed | *D_est* | §5: every path that moves an object to trash appends a debt row **after** the S3 delete returned; the newest Ops observation measures trash directly |
-| **(e)** MinIO's own metadata, caches, listing caches, tmp residue of aborted uploads after their ambiguity resolved, directory blocks not attributed to objects, the blocks of an unlinked object an in-flight GET still holds open (≤ in-flight GETs × 15 MiB), witness and breaker probe objects between their PUT and their DELETE | *M* | observed by Ops (`du` of `.minio.sys` excluding `.trash`, plus `_probe/`), gated (`≤ M`), alerted on growth. **Not provable by the application**; stated as a budget with a measurement obligation (§10 E7, at the E2 population, since listing caches and the usage cache scale with the number of prefixes) |
+| **(e)** MinIO's own metadata, caches, listing caches, tmp residue of aborted uploads after their ambiguity resolved, directory blocks not attributed to objects — including the bucket directories a partially drained inbox leaves behind (ext4 never shrinks a directory: an inbox of 100 000 messages torn down in batches keeps a `{inbox}/` directory of ≈ 1 200 blocks) — and the blocks of an unlinked object an in-flight GET still holds open (≤ in-flight GETs × 15 MiB) | *M* | observed by Ops (`du` of `.minio.sys` excluding `.trash`, **plus the directory blocks of the bucket tree**, which `minio_sys_bytes` alone does not see; PR E), gated (`≤ M`), alerted on growth. Witness and breaker probes are **not** here: they are budgeted by *P_F* (§2.4). **Not provable by the application**; stated as a budget with a measurement obligation (§10 E7, at the E2 population, since listing caches and the usage cache scale with the number of prefixes) |
 | **(f)** orphans: objects with no row and no reservation | 0 beyond (c) | the only row-deleting paths delete blobs first **and prove the deletion**: `ExpireInboxes` runs the prefix delete, which must fail on any per-key `<Error>` of `DeleteObjects` (today it ignores them — fixed with this contract), and only then deletes rows; `DeleteInbox` only marks, the sweep deletes. A probe object whose writer failed to delete it is removed by the orphan sweep once older than its minimum age (today the sweep skips `_probe/` — fixed). An orphan is then a crash remnant covered by (b)/(c) until the orphan sweep removes it (ADR-035 §9 point 2); a `physical_listed > covered + H` detection latches. Tests pin the order **and the outcome** (§4.6) |
 
 Classes (a)–(d) are bounded by **construction** (database rows and declared
@@ -192,7 +214,8 @@ or after the newest observation's `started_seq`; *W* = that observation's
 
 and the uncovered set *X_k(t)*: TestInbox objects physically present that are
 in none of *L*, *D_k* or *W_k* (late objects of reservations released before
-`started_at_k`; ADR-035 §9 bounds them by the occupied ambiguity slots).
+`started_seq_k` was issued; ADR-035 §9 bounds them by the occupied ambiguity
+slots).
 `Φ_k` is defined abstractly even after compaction deleted the rows it sums.
 
 **Lemma 1 (soundness, over sets).** For every observation *k* already
@@ -200,33 +223,38 @@ started, `U_TI(t) ≤ Φ_k(t) + Σ_{x ∈ X_k(t)} F(p_x, 1)`. *Proof:* every
 present TestInbox object is in *L* (a row or a live reservation), in trash
 (moved after `started_seq_k`, so its debt row — taken after the move, or
 pending — is in *D_k*; or moved before, so it is in *W_k*), or in *X_k*.
-The assumption of §3 is about **sets**, not single objects (§3.3: φ bounds no
-single object, since directory blocks are shared): the objects of any set *S*
-occupy at most `F(P_S, N_S)`, amortized directories included (E1–E2). Apply
-it to *L + D_k* and to each member of *X_k*. Directory blocks that outlive
-every object under them (ext4 never shrinks a directory) belong to class (e)
-and are bounded by *M* (§2.2). Double counts only add. ∎
+Apply the set premise (§2.1) to *L + D_k* and to each member of *X_k*; *W_k*
+is already physical. Directory blocks that outlive every object under them
+belong to class (e) and are bounded by *M* (§2.2). Double counts only add. ∎
 
 **Lemma 2 (increments).** For every set *S* and object set *c*:
-`F(S + c) − F(S) ≤ F(c)` (the ceiling is subadditive), and for one object
-`F(S + p) − F(S) ≥ φ(p)` (the increment is an integer ≥ ⌈p⌉_B·(1+ε) + O_max).
-So the exact aggregate rule is never stricter than charging `F(c)`, and a row
-moved out of the uncovered class raises Φ by at least what it occupies. ∎
+`F(S + c) − F(S) ≤ F(c)`, because `⌈(x + y)/d⌉ ≤ ⌈x/d⌉ + ⌈y/d⌉`. So the exact
+aggregate rule is never stricter than charging `F(c)`, and a late object
+moved into *D* raises Φ by at most `F(p, 1)`. (The increment is also ≥ φ for
+one object — an arithmetic fact the proof does not use: nothing assumes an
+object occupies at most φ.) ∎
 
 **Lemma 3 (late objects).** Let Λ_k be the objects that can surface late
-relative to *k*: the ambiguous keys of reservations released **before**
-`started_at_k` whose ambiguity was still unresolved at that instant (a
-release after `started_at_k` has its debt row in *D_k*, so its late object is
-covered there — a phantom count until it surfaces). ADR-035 §9 bounds Λ_k:
-each holds one write slot until it is verified, an event stops at its first
-non-`Stored` upload (one ambiguous key per slot), and keyless crash rows cap at
-the slots, so `|Λ_k| ≤ procs × 16`. *X_k* ⊆ Λ_k at every instant, and *X_k*
+relative to *k*: the ambiguous keys of reservations whose release debt row has
+`seq < started_seq_k` and whose ambiguity was still unresolved when
+`started_seq_k` was issued (a release ordered after it has its debt row in
+*D_k*, so its late object is covered there — a phantom count until it
+surfaces). ADR-035 §9 bounds Λ_k: each holds one write slot until it is
+verified, an event stops at its first non-`Stored` upload (one ambiguous key
+per slot), and keyless crash rows cap at the slots, so `|Λ_k| ≤ procs × 16`
+— **provided** the slots are bounded globally. Today they are counted per
+`node_id`, so node ids that change across deploys while their rows are
+unresolved within `T_verify` could hold `distinct ids × 16`. Either slot
+acquisition checks a **global** unresolved-ambiguity cap ≤ `procs × 16`
+(PR D), or *procs* is defined as the most distinct node ids live within
+`T_verify` and gate F verifies it (PR E); until one holds, *H_F* is not a
+bound. *X_k* ⊆ Λ_k at every instant, and *X_k*
 can **grow** after any instant (a member of Λ_k surfaces) as well as shrink.
 When a member leaves *X_k* into *D_k* (the orphan sweep or the verifier
 deletes it after writing its debt row), Φ_k rises by `ΔF ≤ F(p, 1)`
-(Lemma 2) and |X_k| falls. So for every instant *A* and every *t ≥ A* until
-Λ_k is exhausted:
-`Φ_k(t) + |X_k(t)| ≤ Φ_k(A) + Σ_{x ∈ Λ_k} F(p_x, 1) ≤ Φ_k(A) + H_F`. ∎
+(Lemma 2) and *X_k* loses it. So for every instant *A* and every *t ≥ A*
+until Λ_k is exhausted:
+`Φ_k(t) + Σ_{x ∈ X_k(t)} F(p_x, 1) ≤ Φ_k(A) + Σ_{x ∈ Λ_k} F(p_x, 1) ≤ Φ_k(A) + H_F`. ∎
 
 *An earlier wording* claimed *X_k* only shrinks after *A*; a late landing
 after *A* contradicts it. The slot premise, not the uncovered set at *A*, is
@@ -234,7 +262,9 @@ what bounds *H_F*.
 
 **Transitions.** For the observation *k\** newest at the last admission,
 every transition between admissions leaves `Φ_k* + H-charge` unchanged or
-lower. Each row is an obligation on code, and each is tested (§17 map):
+lower, **except probes**, which raise it by at most *P_F* in total (rule C
+reserves it). Each row is an obligation on code; where it is enforced today is
+the status table after this one, and **activation is gated on every row**:
 
 | Transition | Effect on *L*, *D* | Φ_k* | Why exact |
 |---|---|---|---|
@@ -248,14 +278,36 @@ lower. Each row is an obligation on code, and each is tested (§17 map):
 | partial `DeleteObjects`, crash between S3 and the row delete | none | = | the rows stay, so the objects stay in *L* until a retry deletes them |
 | late object found inside a release (reservation postponed `S`) | none | = | still in *L* as reserved; its release later writes the debt row |
 | orphan sweep, ambiguity verifier deleting a late object | *X* → *D* | rises by ΔF ≤ F(p, 1), within *H_F* | Lemma 3; a **pending** debt row (one per key, upserted) is committed before the S3 delete and re-stamped after the key is proven absent (§5.2) |
-| witness and breaker probe objects | probe → trash | +F(0, 1) per probe | the writer records a debt row after deleting its probe; probes not deleted are swept like orphans (pending rows); none is left in class (e) unbounded |
+| witness and breaker probe | pending (0 B, 1) row → probe written → deleted → resolved | +F(0, 1) per probe, **within *P_F*** | the probe writer commits a pending `(0 B, 1 object)` row **before** writing the probe, deletes it, and resolves the row after proving it absent; it skips the probe (and the node reports unhealthy) while its unsuperseded probe-debt rows × `F(0, 1)` would exceed *P_F*. Without the budget, probes during a debt episode in which (C) refuses everything grow trash past `C_fs − R_ops − M` with no admission involved |
 | size or key edits of `message`/`attachment` | — | refused | a trigger refuses any change of `raw_size_bytes`, `size_bytes` or `object_key`: shrinking one would lower *L* with no debt row |
 | ledger compaction | deltas → bases | = | bytes **and objects** folded in one statement; a pre-V8 compactor's fold is completed by a trigger that folds the objects it drops (§4.5) |
 | debt compaction | rows with `seq < started_seq_newest`, never pending, deleted; the watermark rises to `started_seq_newest` in the same transaction | = for Φ_newest | they are superseded by `W_newest`, not lost; observations at or above the watermark cannot be deleted (§5.3) |
 | new observation | *k\** may change | — | Lemma 1 holds for every *k*; admissions use the newest |
 | purge, probe objects, metadata | physical only | = | *M* (class e) |
-| reconciliation repair, recompute | counts corrected to the rows | corrects | the true potential never changed; any drift found revokes trust in the repair transaction, so admission waits for a clean pass (§4.5) |
-| rollback below the footprint-admission floor | its T1 does not apply (C) | — | forbidden by the rollback floor (`deploy/rollback-floors.txt` names the PR D artifact once (G) and (C) enforce); a rollback above it is covered by the folding trigger |
+| reconciliation repair, recompute | counts corrected to the rows | corrects | the true potential never changed; WORKSPACE-scope drift found revokes trust in the repair transaction, so admission waits for a clean pass (§4.5) |
+| rollback below the containment floor | its T1 does not apply (C), or its deletions write no debt | — | forbidden by the rollback floor: the **first artifact that carries every debt-writing obligation** — rules (G) and (C), pending rows for the sweep, verifier and probes, `deletePrefix` failing on per-key errors — not merely the two rules (`deploy/rollback-floors.txt` names it once they enforce); a rollback above it is covered by the folding trigger, and a roll-forward waits for a clean reconciliation **and** an observation begun after the last distrust event (§4.5) |
+
+**Where each obligation is enforced.** "Tested" above means a test exists
+for the enforcement that exists; many enforcements do not exist yet. This
+table is the gate: `ALL` and `TENANT_LIMITS` must not be enabled on any
+traffic while a row is not enforced, and the activation barrier refuses
+until every row is.
+
+| Obligation | Enforced in | Status |
+|---|---|---|
+| sequence ordering of debt rows and observations; pending rows (`'infinity'`, one per key, never compacted); append-only observations, retention of the newest and of rows at or above the watermark; compaction raising the watermark | V8 (PR #83) | built, tested (`StorageFootprintLedgerTest`) |
+| observation order and start **issued by the server** (`storage_begin_observation()`), `written_by` and `observed_at` stamped, an order no walk of the role began refused | V8 (PR #83) | built, tested |
+| trust epoch, folding trigger for a pre-V8 compactor, `distrust_epoch` monotone, trust scoped to WORKSPACE drift, missing trust row recreated | V8 + adapter (PR #83) | built, tested (incl. a rollback / roll-forward sequence and a lock race) |
+| size and object-key immutability; `storage_delta` `UPDATE`/`TRUNCATE` refused | V8 (PR #83) | built, tested |
+| every definer function and V8 trigger function with `search_path = pg_catalog, public, pg_temp`; debt-writing triggers `SECURITY DEFINER` | V8 (PR #83) | built; the temp-schema shadowing attack is replayed by `StorageV8GrantsTest` |
+| T2: inbox `FOR SHARE` and an `ACTIVE`/`EXPIRING` fence; key count equals rows inserted (asserted) | PR D | **not built** — today T2 takes `FOR KEY SHARE`, checks no state, and checks bytes only |
+| pending debt rows written by the orphan sweep, the ambiguity verifier and the witness / breaker probes, with a sized listing (`HEAD` fallback); fail closed when unsized | PR D | **not built** — the record/resolve functions exist with no production caller |
+| `deletePrefix` fails on any per-key `DeleteObjects` error; retention deletes exact proven message ids per batch, state change first, reads gated on inbox state; pacing with `T_max` | PR D | **not built** |
+| T1 reads *L*, *D*, *W*, watermark, trust and observation validity in **one statement**; `451` before resolution for untrusted / unobserved / invalid / worst-case overflow; negative totals `INDETERMINATE` | PR D | **not built** — today *L* and *D* are two adapter calls |
+| global unresolved-ambiguity cap ≤ `procs × 16` in slot acquisition (Lemma 3) | PR D | **not built** |
+| ArchUnit rule: only the four deleting use cases call the deleting ports (§4.6) | PR D | **not built** |
+| prompt reconciliation on a distrust event (otherwise `ALL` answers `451` until the 6 h pass) | PR D | **not built** |
+| gate F rows (§9), including privileges, sequence `CACHE 1`, bucket directory blocks in *M*, procs / node ids | PR E | **not built** |
 
 **Theorem.** At every instant, `U_TI ≤ C_fs − R_ops − M`. *Proof (by
 injection):* let *A* be the last admission and *k\** the observation newest
@@ -265,12 +317,15 @@ admitted at *A*); an object in trash to its debt row in *D_k*(A)* or to
 *W_k** (or, if its debt row was written after *A*, to the *L(A)* entry it was
 transferred from — transfers are exact); an object of *X_k*(t)* or of Λ_k*
 moved into *D* after *A* to its slot in *H_F* (Lemma 3, at most `F(p, 1)`
-each). The map is injective on charges, so `U_TI(t) ≤ F(L(A) + D_k*(A)) + W_k*
-+ H_F = Φ_k*(A) + H_F ≤ C_fs − R_ops − M` by (C) at *A*. The proof needs no
-monotonicity of *W* and no recomputation of Φ_k* after compaction. **Base
-case:** activation (gate F, §9) requires a completed orphan sweep that began
-after the counts became trusted and listed bytes within the covered total, so
-nothing TestInbox owns is uncounted when the first admission happens.
+each); a probe written after *A* to *P_F* (at most `F(0, 1)` each, the writer
+capped by the budget). The map is injective on charges, so
+`U_TI(t) ≤ F(L(A) + D_k*(A)) + W_k* + H_F + P_F = Φ_k*(A) + H_F + P_F
+≤ C_fs − R_ops − M` by (C) at *A*. The proof needs no monotonicity of *W* and
+no recomputation of Φ_k* after compaction. **Base case:** activation (gate F,
+§9) requires a completed orphan sweep that began after the counts became
+trusted and listed bytes within the covered total, and an observation begun
+after the last distrust event, so nothing TestInbox owns is uncounted when
+the first admission happens.
 **Excluded, as in ADR-035:** commits later than `T_verify` (A_F), and the
 window in which a rolled-back artifact whose T1 does not apply (C) runs —
 which the rollback floor forbids (§4.5). ∎
@@ -280,41 +335,58 @@ worlds of 600 atomic steps each:
 - **The steps are split where the implementation splits them**, and any
   other step may run in between: upload per object; release (keys, then
   row); retention (blobs to trash, then rows and one debt row); the sweep
-  (pending row, delete, resolve under a new order); observation (order,
-  walk, row); compaction keyed on the newest-started observation.
-- **The world is tight and adversarial**:
-  - every object costs exactly φ;
-  - copies often materialize at once;
-  - a walk sees only trash present at its start and still present at its
-    end;
-  - purges are rare;
-  - late objects surface whenever the §9 slots allow.
+  (pending row, delete, resolve under a new order); the probe (pending row,
+  write, delete, resolve, capped by *P_F*); observation (order, walk, row);
+  compaction keyed on the newest-started observation.
+- **The world is adversarial under the premise**: every object costs
+  `cost(x)` (above), the most the set premise allows and more than φ for most
+  payloads; copies often materialize at once; a walk sees only trash present
+  at its start and still present at its end; purges are rare; late objects
+  surface whenever the §9 slots allow.
 
 After every step it asserts, from the physical state:
 - **injection**, the core of the proof above: every object on the
   filesystem, in trash or not, is covered by a live row or reservation, a
   debt row the snapshot counts, or the newest observation's measured set.
   The only exceptions are late objects whose write slot is still held;
-- **the theorem**: physical ≤ *C_fs* − *R_ops* − *M*;
-- **Lemma 1**;
-- **the admission invariant** on the exact post-admission aggregate.
+- **the theorem**: physical ≤ *C_fs* − *R_ops* − *M*, and the sharper
+  *non-late physical* ≤ *C_fs* − *R_ops* − *M* − *H_F*;
+- **Lemma 1** in bytes: physical ≤ Φ + Σ `F(p, 1)` over the uncovered;
+- **the admission invariant** on the exact post-admission aggregate. This
+  oracle restates the rule, so it proves nothing about a correct rule; it is
+  there to catch the φ_copy mutant in random worlds.
 
 Coverage floors (admissions, refusals by each rule, late objects, resolved
-pending rows, observations overlapping a trash move, compacted rows, steps
-within 10 % of the ceiling) make a vacuous pass fail.
+pending rows, resolved probes, observations overlapping a trash move,
+compacted rows, steps within 10 % of the ceiling) make a vacuous pass fail.
 
 Each committed mutant must be caught in the same worlds:
-- **With the admission oracle off**, eight mutants must be caught by a
-  *physical* oracle: *H_F* = 0, *D* outside (C), *W* outside (C), the debt
-  row before the trash move, the observation's order taken at its end,
-  pending rows compacted, resolution keeping the old order, and T1 reading
-  the latest-arrived observation. The first three breach the theorem; the
-  other five break injection.
-- **The φ_copy rule** is caught by the admission invariant it breaks. Under
-  the per-object premise it is not physically unsafe on its own
-  (Σφ(*L*) + φ(*c*) ≤ *F*(*L*) + φ(*c*)), but every other argument of the
-  proof is built on that invariant. The owner's counterexample is pinned
-  separately in `FootprintAdmissionTest`.
+- **With the admission oracle off**, nine mutants must be caught by a
+  *physical* oracle: *H_F* = 0, *D* outside (C), *W* outside (C), probes
+  without a budget, the debt row before the trash move, the observation's
+  order taken at its end, pending rows compacted, resolution keeping the old
+  order, and T1 reading the latest-arrived observation. The first four breach
+  the theorem; the other five break injection.
+- **The φ_copy rule** is caught **physically** by a deterministic
+  exact-headroom test built from the owner's counterexample (`cost(4096)` =
+  32 799 B > 30 000 B of headroom), and by the admission invariant in the
+  random worlds. The random worlds do **not** resolve rounding-sized errors:
+  "within 10 % of the ceiling" is about 1.4 MB there, against a φ error of a
+  few KiB per object. The deterministic test is what pins that class.
+
+**Not modeled** (each is a code obligation of the status table, with its own
+test in the PR that builds it): a two-statement snapshot read, T2 inserting
+fewer rows than its reservation has keys, retention after a failed per-key
+delete, more late objects than the slots allow.
+
+**One snapshot.** T1 reads *L*, *D*, *W*, the watermark, the trust marker and
+the observation's validity in **one statement**. Today *L*
+(`JdbcStorageAdmission.readSnapshot`) and *D, W, trust*
+(`JdbcStorageLedger.deletionDebt`) are two adapter calls; PR D merges them.
+Reading *D* then *L* would under-charge: a release committing in between
+leaves *L* and enters *D* unseen by both reads. Reading *L* then *D* only
+double-counts, since every transfer goes *L* → *D*. PR D adds a persistence
+test for that window, as `StorageAdmissionSnapshotTest` does for payload.
 
 **Mixed-recipient and multi-copy events.** T1 evaluates the event's copies in
 envelope order against running totals in **one** snapshot under the
@@ -379,7 +451,7 @@ the lab's 21 KiB copied over.
    counts them as objects (`N`), which is exactly why *N* is needed: their
    payload is 0 and their footprint is not.
 7. **`message/rfc822` parts** are kept whole, so no object exceeds the 15 MiB
-   raw cap (ADR-035 §2), which bounds φ(15 MiB) and therefore *H_F*.
+   raw cap (ADR-035 §2), which bounds `F(15 MiB, 1)` and therefore *H_F*.
 
 **Proposed *O_max* = 24 KiB = 6 blocks:** `{message}/`, `{key}/`, `{uuid}/`,
 `xl.meta`, one extent-tree index/root block, and one block of slack for
@@ -416,7 +488,8 @@ long before anything refuses on it.
 `{inbox}/` leaf block, an htree split, a `{ws}/` leaf and an `attachments/`
 block at once — four blocks against one of slack. Those blocks are amortized
 over the objects that share the directories, which is why §3.2's terms are
-stated per set and E2 (§10) measures totals, never a single object.
+stated per set and E2 (§10) measures totals, never a single object. This is
+the premise of §2.1, and the only one the proof uses.
 
 Conservatism of the closed form against the exact φ: it over-charges each
 object by up to `B − 1` of rounding slack — a 15 MiB object by 0.03 %, a 4 KiB
@@ -513,7 +586,9 @@ observation's `trash_bytes` and the trust marker (§4.5), and returns the
 GLOBAL usage as `(P_c + P_r, N_c + N_r)`, `(P_d, N_d)`, *W*. The application
 applies `F` **once** to each aggregate it needs — `F(L + c)` for (G) and
 `F(L + D + c)` for (C) — never to separately rounded parts. Inbox and
-workspace rows are unchanged and stay in payload bytes.
+workspace rows are unchanged and stay in payload bytes. All of it is **one
+statement** (§2.4 "One snapshot"); PR D merges the two reads that exist
+today.
 
 ### 4.3 The rule
 
@@ -523,7 +598,7 @@ ADR-035 §4's rule, with the GLOBAL scope in footprint:
 INBOX:      used_payload + bytesPerCopy ≤ inboxLimit          (unchanged)
 WORKSPACE:  used_payload + bytesPerCopy ≤ workspaceLimit      (unchanged)
 GLOBAL (G): F(L + A + c) + H_F                     ≤ G_F                (footprint, §2.1)
-GLOBAL (C): F(L + D + A + c) + W + H_F + M + R_ops  ≤ C_fs
+GLOBAL (C): F(L + D + A + c) + W + H_F + P_F + M + R_ops  ≤ C_fs
 ```
 
 *A* is the sum of the event's copies already admitted in this snapshot; *c*
@@ -538,7 +613,7 @@ enforced scopes only refuse — unchanged.
 | inbox teardown cascades `message` → `attachment` | one negative delta per statement per (workspace, inbox); cascaded attachments carry `inbox_id = NULL` | the same rows carry `objects = −count`; the workspace figure is exact, the inbox figure can only over-count until the inbox row disappears (unchanged argument) |
 | `UPDATE` moving a message between inboxes | nets to zero at workspace level | nets to zero in objects too |
 | failed upload, definitive | reservation → `RELEASING`, released after proof; charged until then | identical: the reservation's keys are the count |
-| ambiguous upload | reservation stays; ambiguity row holds the slot; *H* covers late surfacing | identical in footprint units; the keys' φ is what *H_F* is sized for |
+| ambiguous upload | reservation stays; ambiguity row holds the slot; *H* covers late surfacing | identical in footprint units; *H_F* is sized at `F(15 MiB, 1)` per slot |
 | ADR-026 duplicate at T2 | `releaseDuplicates`: the copy's reservation → `RELEASING`; its stored objects are deleted at release | identical; the deletion appends **debt** (§5.2) |
 | crash / restart | rows are durable; `recoverDeadGenerations` records keyless ambiguity | identical |
 | compaction | folds `bytes` into bases | folds `objects` too, in the same `DELETE … RETURNING` statement |
@@ -548,8 +623,10 @@ enforced scopes only refuse — unchanged.
 ### 4.5 Compatibility and rollback
 
 V8 is expand-only: three `ADD COLUMN … NOT NULL DEFAULT 0` (PostgreSQL 11+
-fast default, no rewrite), two `CREATE OR REPLACE FUNCTION`, two new tables
-(§5), one function replaced to backfill counts, and a recompute. It takes the
+fast default, no rewrite), the trigger bodies replaced with `CREATE OR
+REPLACE FUNCTION`, new tables (debt, observations, observation walks,
+watermark, trust) and a sequence (§5), new refusal triggers that refuse
+nothing any artifact does, one function replaced to backfill counts, and a recompute. It takes the
 V6 lock set for the backfill so the counts describe exactly the rows that
 exist. A rolled-back artifact keeps appending correct deltas through the new
 triggers and ignores the counts. Its compactor, however, predates the counts:
@@ -558,6 +635,20 @@ counts are lost. After a rollback the counts are therefore UNDER (bytes stay
 exact) until the next reconciliation repairs them from the rows; a
 rolled-forward artifact finds them exact only after its first reconciliation
 or a recompute, and the footprint gauges under-read until then.
+
+**Every V8 function runs on a fixed path with `pg_temp` last.** Every
+`SECURITY DEFINER` function and every V8 trigger function sets
+`search_path = pg_catalog, public, pg_temp`. Without `pg_temp` listed,
+PostgreSQL searches the caller's temporary schema **first** for relations,
+and any role with the default `TEMP` privilege can shadow a table: the
+security review reproduced the API role compacting real debt rows through a
+temporary `storage_filesystem_observation` holding int8 max (and a monitor
+defeating the order check through a temporary sequence stand-in).
+`StorageV8GrantsTest` replays both attacks. The debt-writing triggers on
+`message`, `attachment` and `storage_reservation` are `SECURITY DEFINER`
+too: no deployable needs a V8 grant for its deletes (a missing grant used to
+fail every T2 commit), and the internet-facing ingestion role cannot write a
+debt row — such as a never-compactable pending one — itself.
 
 **Machine-enforced rollback protection.** Counts that may be low must never
 admit, and no operator memory is involved:
@@ -574,21 +665,53 @@ admit, and no operator memory is involved:
   application roles hold no `UPDATE` on it).
 - **Trust is an epoch, compared and set.** `storage_footprint_trust(id = 1,
   distrust_epoch, trusted_epoch)`. It starts untrusted (V8 creates it with
-  `trusted_epoch` NULL), and a missing row reads as untrusted. Every folding
-  by the trigger, and every drift found by reconciliation (in the repair
-  transaction), increments `distrust_epoch`. Reconciliation takes the ledger
-  lock (35,2) **before** its clean check and, in the same transaction, sets
-  `trusted_epoch = distrust_epoch WHERE distrust_epoch = :read` — a
-  compare-and-set, so a distrust event racing the check is never overwritten.
+  `trusted_epoch` NULL), and a missing row reads as untrusted; the next clean
+  pass recreates it untrusted and then marks it (a restore never brings it
+  back, `deploy/backup/scope.txt`). A trigger keeps `distrust_epoch`
+  monotone and `trusted_epoch ≤ distrust_epoch`. Every folding by the
+  trigger, and every **WORKSPACE-scope** drift found by reconciliation (in
+  the repair transaction), increments `distrust_epoch`. Reconciliation takes
+  the ledger lock (35,2) **before** its clean check and, in the same
+  transaction, sets `trusted_epoch = distrust_epoch WHERE distrust_epoch =
+  :read` — a compare-and-set, so a distrust event racing the check is never
+  overwritten.
+- **Trust is about the global sums.** The global potential is the sum of
+  WORKSPACE counts, so only WORKSPACE-scope drift revokes trust or withholds
+  it. An inbox-level over-count — a message deleted with its attachments in
+  one statement leaves their delta unattributed to the inbox (V6, accepted),
+  which is exactly what per-message-batch retention does — never does;
+  otherwise trust would flap, and with it every admission under `ALL`.
+- **What trust does not stop.** The API role holds `UPDATE` on the trust row
+  (it marks it), so it can assert trust it has not proven — the same trust
+  level as its existing `UPDATE` on the base figures; a database-side verify
+  function that checks the counts itself before marking is a follow-up.
+  `testinbox.ledger_counts` is a setting any role can set, which suppresses
+  folding: also no more than a role that can already write the bases. A
+  distrust event should trigger a reconciliation promptly (PR D): left to
+  the 6 h schedule, `ALL` answers `451` until then.
 - **Under `ALL`**, T1's single snapshot reads the marker; `trusted_epoch ≠
   distrust_epoch` is an infrastructure state, answered `451` before recipient
   resolution (the pre-T1 check). If the pre-check passed and T1 then sees
   untrusted counts (a race), T1 refuses with the same `451`, the documented
   noise profile of `LOCK_TIMEOUT`. Gate F and the activation barrier refuse
   while untrusted.
-- **A rollback below footprint admission is forbidden**, not detected: once
-  (G) and (C) enforce, `deploy/rollback-floors.txt` names that artifact, and
-  the fuse stays a real (not merely declared) check below it.
+- **After a roll-forward**, or any distrust event, admission waits for a
+  clean reconciliation **and** for an observation whose `started_seq` is
+  after the last distrust event: a rolled-back artifact's orphan sweep and
+  probes deleted without debt rows, and trust tracks counts only, so the
+  trash baseline must be re-measured (PR D reads it; gate F checks it).
+- **A rollback below the containment floor is forbidden**, not detected: the
+  floor is the first artifact carrying **every** debt-writing obligation —
+  rules (G) and (C), pending rows for the sweep, verifier and probes,
+  `deletePrefix` failing on per-key errors — not merely the two rules.
+  `deploy/rollback-floors.txt` names it once they enforce, gate F's "mixed
+  versions" row uses the same capability, and the fuse stays a real (not
+  merely declared) check below it.
+- **Sub-resolution oracle windows that remain.** The `STORAGE_FULL`
+  half-open race (two events pass `isBlocked()`, the one with a known
+  recipient gets the trial's `451`) and the T1 untrusted-race backstop are
+  bounded, share the `LOCK_TIMEOUT` noise profile the QUOTA trial already
+  has, and are recorded in `abuse-model.md` (PR D).
 
 `check-migration-safety.sh` accepts it without a
 declaration; `check-backup-scope.sh` classifies the new tables `-` (derived,
@@ -674,7 +797,7 @@ every version keeps it, with no code change; pending rows carry their
 | T2 consume (`DELETE … state = 'RESERVED'`) | **no** debt row: the objects live on as rows | — |
 | orphan sweep, ambiguity verifier deleting a late object | an upsert of a **pending** row for the key with its size (a sized listing or `HEAD`), **committed in its own transaction before** the S3 delete; after the key is proven absent, `resolve_pending_debt(key)` (`SECURITY DEFINER`: `incurred_at = clock_timestamp()`, `seq = nextval(...)`, bytes and objects immutable) | before the delete, then after the proof |
 | a crashed pending row | a resolver pass re-proves every pending key absent, then resolves it; one still present is retried, never dropped | each sweep |
-| probe objects | a debt row `(0 B, 1 object)` after the writer deletes its probe | after the delete |
+| witness and breaker probes | a **pending** `(0 B, 1 object)` row committed before the probe is written, resolved after the probe is deleted and proven absent; skipped while the unsuperseded probe rows × `F(0, 1)` would exceed *P_F* (§2.4) | before the write, then after the proof (PR D) |
 | late object found inside a release (reservation still `RELEASING`) | none: the object is still in *L* as reserved; the release's own trigger row comes later | — |
 
 **Why pending, then re-stamped.** A debt row written *after* the delete loses
@@ -686,21 +809,30 @@ a `seq` later than the trash move. A crash leaves a pending row that
 over-counts until the resolver re-proves the key absent and resolves it.
 Every row-free deletion path writes one; a path that cannot size its object
 does not delete it (fail closed), and counts it in
-`testinbox_storage_undeletable_orphans` so it is never silent.
+`testinbox_storage_undeletable_orphans` so it is never silent. The
+`storage_record_pending_debt` / `storage_resolve_pending_debt` functions are
+in V8 (PR #83); their callers — the sweep, the verifier, the probe writers,
+and the sized listing — are PR D, and until then those paths write no debt
+(status table, §2.4).
 
 Debt is charged by **footprint**: the application applies `F(bytes, objects)`
 at read time, as for every other figure.
 
 ### 5.3 The bound, and why it holds
 
-Ops publishes observations (§6): `storage_filesystem_observation(started_at,
-observed_at, trash_bytes, used_bytes, avail_bytes, inodes_used, inodes_free,
-minio_sys_bytes, source)`, where `started_at` is the database clock read
-**before** the measurement begins, and `trash_bytes` is `du -B1 -s
-.minio.sys/tmp/.trash` (apparent allocated blocks). Then
+Ops publishes observations (§6): `storage_filesystem_observation(started_seq,
+started_at, observed_at, written_by, trash_bytes, used_bytes, avail_bytes,
+inodes_total, inodes_used, minio_sys_bytes, source, …)`. The monitor calls
+`storage_begin_observation()` **before** the measurement begins: the server
+issues `started_seq` (a `nextval`) and `started_at`, and records the walk for
+`session_user`. The insert names that `started_seq` and the measured figures;
+a trigger stamps `started_at` from the walk, `observed_at = clock_timestamp()`
+and `written_by = session_user`, and refuses an order no walk of the same
+role began; `started_seq` is `UNIQUE`. `trash_bytes` is `du -B1 -s
+.minio.sys/tmp/.trash` (allocated blocks). Then
 
 ```
-D (the debt in Φ) = pending rows + rows with incurred_at ≥ started_at     (counts, F applied with L, §2.4)
+D (the debt in Φ) = pending rows + rows with seq ≥ started_seq             (counts, F applied with L, §2.4)
 W                 = trash_bytes of the newest observation                (already physical: no φ)
 D_est             = Φ − F(L)                                              (metrics and pacing only)
 ```
@@ -720,7 +852,8 @@ move a clock backwards; a sequence never does). Every resolved debt row's
 trash returned (§5.2: retention deletes the proven keys before the deleting
 statement; the release deletes before its statement; the sweep and the
 verifier resolve their pending row after the proof). An observation's
-`started_seq` is a `nextval` the monitor takes *before* its `du` began.
+`started_seq` is issued by the server when the monitor begins the walk,
+*before* its `du`.
 Therefore an object moved to trash **after** `du` began has a debt row with
 `seq > started_seq` and is in the sum; an object moved before `du` began is
 in `trash_bytes`. Objects counted twice (moved before `du`, row written after
@@ -752,14 +885,17 @@ watermark; debt compaction raises a monotone watermark
 its deletes. T1 uses the newest observation **unconditionally** and answers
 `451` before resolution if it is invalid — `started_seq` below the
 watermark, `block_size_bytes ≠ B`, `capacity_bytes < C_fs`, or `written_by`
-other than the declared monitor role (`written_by` is stamped `session_user`
-by a trigger, never supplied) — and **never falls back** to an older
-observation, whose debt rows may already be compacted. A
-row whose `started_at` is in the future is refused by a trigger (it would hide
-every deletion until the clock caught up), `observed_at < started_at` is
-refused by a constraint, and "newest" is by `started_seq`, not by insertion
-order or by any clock, so a late-arriving stale measurement cannot resurrect
-an old `trash_bytes`. A `du` that fails (anything but "entry vanished mid-walk")
+other than the declared monitor role (`written_by` is stamped `session_user`,
+which neither `SECURITY DEFINER` nor `SET ROLE` changes) — and **never falls
+back** to an older observation, whose debt rows may already be compacted.
+Because the server issues the order and both timestamps, neither an invented
+nor a replayed order can become the newest observation, and "newest" is by
+`started_seq`, not by insertion order or by any clock, so a late-arriving
+stale measurement cannot resurrect an old `trash_bytes`. **What the database
+cannot enforce** is that the monitor begins the walk *before* `du` and
+writes the figures it measured under that walk, rather than beginning after
+`du` or replaying old figures under a new walk: that is the monitor contract
+(Ops handoff, PR E) and evidence for gate F. A `du` that fails (anything but "entry vanished mid-walk")
 writes no row. Compaction of superseded debt rows (§5.4) is sound because the
 observation it keys on is committed before the compaction commits, and a later
 T1 statement sees both or neither under READ COMMITTED.
@@ -809,9 +945,17 @@ T1 statement sees both or neither under READ COMMITTED.
   (`testinbox_storage_retention_backlog_seconds`: the oldest expired-but-not-
   torn-down inbox), alerted above one TTL, and escalates per the Ops runbook
   (raise `D_budget` within I-C, or investigate the purge).
-- **Compaction.** Debt rows with `incurred_at < newest started_at` are
-  superseded by that observation's `trash_bytes` and are deleted by the
-  compactor; the table stays small.
+- **Pacing is bounded by `T_max`** (declared). If observations stop, *D_est*
+  only grows and pacing would stop teardown indefinitely, leaving a tenant's
+  explicitly deleted content on disk against the REST promise that "data
+  removal completes asynchronously but boundedly". A batch whose inbox has
+  waited longer than `T_max` is torn down anyway — a teardown is the
+  Φ-neutral transfer *L* → *D*, so rule (C) shrinks the ceiling instead — and
+  an alert fires. Pacing is liveness only; it never carries the theorem.
+- **Compaction.** Debt rows with `seq < started_seq` of the newest
+  observation, **never pending ones**, are superseded by that observation's
+  `trash_bytes` and are deleted by `storage_compact_deletion_debt()`, which
+  raises the watermark in the same transaction; the table stays small.
 
 ### 5.5 Fail-closed when purge progress cannot be verified
 
@@ -866,20 +1010,22 @@ reserve for that would consume the filesystem. PR #81's "preventive headroom"
 is therefore replaced by the deterministic terms above; the monitor's job is
 to detect **model violations** and to publish the observations §5 depends on.
 
-**The monitor (Ops, every minute, host side):** writes one
-`storage_filesystem_observation` row with the database clock taken first
-(`SELECT clock_timestamp()`), then `statvfs` of the mount (`f_blocks`,
-`f_bfree`, `f_bavail`, `f_frsize`, `f_files`, `f_ffree`), `du -B1 -s` of
-`.minio.sys/tmp/.trash` and of `.minio.sys` excluding `.trash`, the mount
-source and the image file's allocated vs apparent size. It evaluates, on the
+**The monitor (Ops, every minute, host side):** calls
+`storage_begin_observation()` first (on the primary), then measures `statvfs`
+of the mount (`f_blocks`, `f_bfree`, `f_bavail`, `f_frsize`, `f_files`,
+`f_ffree`), `du -B1 -s` of `.minio.sys/tmp/.trash`, of `.minio.sys` excluding
+`.trash`, and of the **directory blocks of the bucket tree** (which no other
+figure sees: a partially drained inbox keeps its directory), the mount source
+and the image file's allocated vs apparent size, and writes one
+`storage_filesystem_observation` row under the walk's `started_seq`. It evaluates, on the
 host:
 
 | Check | Action |
 |---|---|
 | `f_blocks × f_frsize < declared C_fs` or `f_files < declared I_fs` or mount source ≠ qualified | **latch** (`filesystem-identity`) |
 | image `allocated < size` (preallocation lost: sparse again) | **latch** (`preallocation`) |
-| `used_bytes > Φ + H_F + M` (the application exposes Φ's parts as `testinbox_storage_footprint_bytes{kind}`) | alert; **latch** above `+ R_ops / 2` (`model-violation`) |
-| `minio_sys_bytes > M` or its inodes > *M*'s inode budget | alert; latch at `2·M` |
+| `used_bytes > Φ + H_F + P_F + M` (the application exposes Φ's parts as `testinbox_storage_footprint_bytes{kind}`) | alert; **latch** above `+ R_ops / 2` (`model-violation`) |
+| `minio_sys_bytes` + bucket directory blocks `> M`, or their inodes > *M*'s inode budget | alert; latch at `2·M` |
 | `avail_bytes < R_ops` | **latch** (`headroom`) — this should be unreachable; reaching it is a model failure |
 | observation write fails | page (the application's age metric rises) |
 
@@ -911,18 +1057,21 @@ process refuses to start unless all hold:
 | `global-footprint-limit-bytes` (*G_F*) | > `H_F`; `H_F` computed with `F(15 MiB, 1)` (§1) |
 | `deletion-debt-budget-bytes` (*D_budget*) | > 0 |
 | `minio-metadata-budget-bytes` (*M*) | > 0 |
+| `probe-budget-bytes` (*P_F*) | ≥ `F(0, 1)` × the probes one node may have unsuperseded at once (PR D) |
 | `operational-reserve-bytes` (*R_ops*) | ≥ max(5 % of *C_fs*, 2 GiB) |
-| `filesystem-capacity-bytes` (*C_fs*) | `G_F + D_budget + M + R_ops ≤ C_fs` (checked arithmetic, never wrapped) |
+| `filesystem-capacity-bytes` (*C_fs*) | `G_F + D_budget + P_F + M + R_ops ≤ C_fs` (checked arithmetic, never wrapped) |
 | `filesystem-inodes` (*I_fs*) | `I_fs ≥ C_fs / B` |
 | backend identity | the existing §9a match, with the record carrying the filesystem elements of gate F |
 
 The application cannot verify that the filesystem *has* `C_fs` bytes or
 `I_fs` inodes, is dedicated, or is preallocated: an environment variable is a
-claim. **Roles:** the monitor's role may `INSERT` into
-`storage_filesystem_observation` and nothing else; the application role may
-`SELECT` it and never writes it; every role that deletes `message`,
-`attachment` or `storage_reservation` rows must be able to `INSERT` into
-`storage_deletion_debt` through the triggers (the V6 grant rule, extended;
+claim. **Roles:** the monitor's role may `EXECUTE`
+`storage_begin_observation()` and `INSERT` into
+`storage_filesystem_observation`, and nothing else; the application role may
+`SELECT` it and never writes it; the debt-writing triggers are
+`SECURITY DEFINER`, so no deployable needs a grant on `storage_deletion_debt`
+to delete rows, and none holds `INSERT`, `UPDATE` or `DELETE` on it
+(compaction and pending rows go through the definer functions;
 `docs/dev/production.md`). An Ops-written row is the only input that ever
 *loosens* admission, which is why it is write-only for Ops, read-only for the
 application, bounded by the lemma of §5.3 and refused when invalid.
@@ -1006,10 +1155,13 @@ a missing, stale (older than *A_obs*) or internally inconsistent input is
 | physical headroom | newest observation: `used_bytes ≤ Φ + H_F + M` and `avail_bytes ≥ R_ops` |
 | deletion-debt | `D_est ≤ D_budget` from the live table and the newest observation |
 | trusted counts | `storage_footprint_trust.trusted_epoch = distrust_epoch` (§4.5) |
-| base case | a full orphan sweep that **began after** the counts were last trusted and after the last lower-capability node's last heartbeat has completed, and `physical_listed ≤ covered` |
-| mixed versions | no `storage_node` with a capability below footprint admission is live (an older node admits without rule C) |
-| observation source | the newest observation's `written_by` is the declared monitor role, and the application roles hold no `INSERT` on `storage_filesystem_observation` (`has_table_privilege`) |
-| MinIO metadata | `minio_sys_bytes ≤ M` |
+| base case | a full orphan sweep that **began after** the counts were last trusted and after the last lower-capability node's last heartbeat has completed, and `physical_listed ≤ covered`; and the newest observation's `started_seq` is after the last distrust event |
+| mixed versions | no `storage_node` with a capability below the containment floor is live — the capability that carries **every** debt-writing obligation, not merely rules (G) and (C) (an older node admits without rule C, or deletes without debt) |
+| procs | the most distinct `node_id`s live within `T_verify` ≤ the declared *procs*, unless slot acquisition enforces a global unresolved-ambiguity cap (Lemma 3) |
+| observation source | the newest observation's `written_by` is the declared monitor role, and the monitor role is the only one holding `EXECUTE` on `storage_begin_observation()` and `INSERT` on `storage_filesystem_observation` (`has_function_privilege`, `has_table_privilege`) |
+| privileges | the application roles hold no `INSERT` on observations, no `EXECUTE` on `storage_begin_observation()`, no `INSERT`/`UPDATE`/`DELETE` on `storage_deletion_debt` or `storage_debt_watermark`, and own none of the V8 tables, sequences or functions. Staging, where the application connects as the owner, therefore **fails gate F by design**: every V8 privilege boundary is void there |
+| ordering sequence | `storage_debt_order_seq` has `CACHE 1` (`pg_sequences.cache_size = 1`) and every reader and writer uses the primary |
+| MinIO metadata | `minio_sys_bytes` + bucket directory blocks `≤ M` |
 | qualification identity | `qualification_valid = 1` from the Ops `qualification-check`, extended with the filesystem elements; record id equals the declared one |
 | observation liveness | the newest observation is younger than *A_obs* and was written by the expected source |
 
@@ -1026,7 +1178,7 @@ re-issued with them after E1–E8 (§10) run on the recreated filesystem.
 | # | Experiment | Discharges | PASS |
 |---|---|---|---|
 | E1 | amplification sweep: 0 B, 1 B, 4095/4096/4097 B, 64 KiB, 131 071/131 072/131 073 B, 1 MiB, 15 MiB; 200+ objects per size; `statvfs` deltas | §3.1–3.2 terms 3, 6 | every per-object delta ≤ `⌈p⌉_B + O_max` |
-| E2 | directory growth: 100 000 messages in one inbox, 10 000 inboxes in one workspace, 500 attachments in one message | §3.2 terms 1, 2, 5 | total delta ≤ Σ φ; amortized directory cost reported |
+| E2 | directory growth: 100 000 messages in one inbox, 10 000 inboxes in one workspace, 500 attachments in one message; then a **partially drained** inbox (paced teardown of 99 % of it) | §3.2 terms 1, 2, 5; the premise of §2.1 | total delta ≤ Σ φ; amortized directory cost reported; the directory blocks left after the partial drain are measured by the monitor's bucket-directory figure and fit *M* |
 | E3 | fragmentation: fill to 90 %, random deletes, refill with 15 MiB objects, repeat ×5; per-object delta | §3.4 | ≤ `⌈p⌉_B·(1+ε) + O_max` |
 | E4 | inode ratio at `-i 4096`: tiny objects until blocks run out | §3.5 | `f_ffree > 0` when `f_bavail = 0`; blocks exhaust first |
 | E5 | trash accounting: mass `DeleteObjects` while writing, with an injected per-key delete failure (a read-only object or a full drive) in one run; compare `du .trash` + debt rows vs model | §5.3 lemmas, §4.6 | `trash ≤ D_est + R` at every sample; the injected failure makes retention fail and retry, never delete rows |
@@ -1037,7 +1189,8 @@ re-issued with them after E1–E8 (§10) run on the recreated filesystem.
 | E10 | monitor and latch: identity, preallocation and model-violation latches fire on injected faults | §6 | each latch fires; `451` on every node; tenant sees nothing |
 | E11 | restart at full, deletes at full, recovery runbook end to end | PR #81 §5 | as PR #81 §7 rows 5, 6, 11 |
 
-E1–E4 fix *O_max* (and confirm ε and *i_max*) in the record; E5–E6 are the
+E1–E4 fix *O_max* (and confirm ε and *i_max*) in the record — and, because
+`F ≥ Σφ`, totals within Σφ discharge the set premise of §2.1; E5–E6 are the
 proof of §5 on the real combination; E7 fixes *M*; E8–E9 the breaker;
 E10–E11 the Ops side. The application tests of §4–§8 run against the pinned
 MinIO in Testcontainers and prove the accounting, not the filesystem.
@@ -1076,18 +1229,34 @@ MinIO in Testcontainers and prove the accounting, not the filesystem.
    - *Envelope-order oracle.* GLOBAL admission is an envelope-order prefix,
      so a tenant can place a foreign address before its own and compare its
      own refusal records with a control event, learning whether the foreign
-     address exists. Choose: charge GLOBAL for every syntactically valid
-     recipient whether or not it resolves; check every copy against the
-     pre-event snapshot with slack `(maxRecipients − 1) · F(15 MiB, 501)`; or
-     accept and record the residual in `abuse-model.md`.
+     address exists, and whether that inbox is under its payload limit. With
+     footprint amplification this is a practical single-tenant oracle (a
+     1 GiB-payload workspace of 1 KiB mail holds ≈ 29 GiB of footprint, enough
+     to park the global headroom at the cliff and binary-search it with its
+     own refusal bits), not a coarse residual. One of these is **mandatory**
+     before `ALL` on traffic beyond the synthetic suite: charge GLOBAL for
+     every syntactically valid recipient whether or not it resolves; or check
+     every copy against the pre-event snapshot with slack
+     `(maxRecipients − 1) · F(P_copy_max, N_copy_max)`, where `P_copy_max`
+     is the largest stored copy — raw MIME up to 15 MiB **plus** its
+     extracted parts, stored as separate objects — and `N_copy_max` its
+     object count (not `F(15 MiB, 501)`). Accepting the residual is not an
+     option this contract offers: it would need an explicit ADR-025
+     amendment.
    - *Single-sender exhaustion.* 501 near-empty objects cost ≈ 13.7 MiB of
      footprint per copy; one known address at the INGEST rate fills 20 GiB in
      about twelve minutes, and every tenant then gets `SERVICE_CAPACITY`. A
      per-workspace footprint or object ceiling (§13) is needed before public
      traffic; the activation barrier refuses `ALL` beyond dark staging until
-     it is decided.
+     it is decided. A per-workspace ceiling bounds global exhaustion by a
+     sender who knows addresses in many workspaces **only if the shares are
+     not overcommitted** (Σ shares ≤ *G_F*); otherwise an edge per-source
+     limit is needed as well. Deletion debt carries no workspace attribution,
+     so no per-tenant ceiling can charge it.
    - Whether payload of `EXPIRED` inboxes awaiting paced teardown counts
-     toward the workspace limit.
+     toward the workspace limit. **Recommendation: it counts.** Otherwise a
+     tenant can delete and refill repeatedly, and its payload awaiting
+     teardown grows global *L* past its own bound.
 
 ---
 
@@ -1140,7 +1309,9 @@ owner (none implemented here):**
 - an **object-count or footprint ceiling per workspace** (a fair-use limit in
   the unit that actually costs disk), sized from the tenant mix;
 - or a per-workspace **share of *G_F*** (the inbox share already exists for
-  payload), refusing a tenant's copies above its share with `WORKSPACE_LIMIT`;
+  payload), refusing a tenant's copies above its share with `WORKSPACE_LIMIT`
+  — which bounds a multi-workspace sender only if Σ shares ≤ *G_F*;
+  otherwise pair it with an edge per-source limit;
 - alerting on `SERVICE_CAPACITY` volume and on the top footprint consumers;
 - an operational runbook for `SERVICE_CAPACITY`: it means global footprint
   exhaustion, mail is discarded with `250`, and the first lever is retention.
