@@ -165,7 +165,7 @@ columns. A guard trigger refuses any other change to them, even for a role
 that still holds an older full grant.
 
 For the orphan sweep's database record (V10), the API role holds `EXECUTE` on
-`storage_begin_sweep(text)` and `storage_complete_sweep(bigint, bigint)`, and
+`storage_begin_sweep(text)` and `storage_complete_sweep(bigint, text, bigint)`, and
 no privilege on `storage_sweep_run`.
 
 It also holds `EXECUTE` on `storage_confirm_footprint_trust()`,

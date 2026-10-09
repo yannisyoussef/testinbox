@@ -170,6 +170,24 @@ CREATE TRIGGER storage_node_lower_stamp
     AFTER INSERT OR UPDATE OR DELETE ON storage_node
     FOR EACH ROW EXECUTE FUNCTION storage_node_lower_stamp();
 
+-- A row's containment level is the artifact's that registered it, and never
+-- changes: flipping an earlier artifact's row to 1 would hide a running lower
+-- node from gate F.
+CREATE FUNCTION storage_node_containment_fixed() RETURNS trigger
+    LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS
+$$
+BEGIN
+    IF NEW.containment IS DISTINCT FROM OLD.containment THEN
+        RAISE EXCEPTION 'storage_node.containment is fixed at registration' USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER storage_node_containment_fixed
+    BEFORE UPDATE ON storage_node
+    FOR EACH ROW EXECUTE FUNCTION storage_node_containment_fixed();
+
 -- The watermark only grows, and nobody but the trigger writes it.
 CREATE FUNCTION storage_containment_watermark_monotone() RETURNS trigger
     LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS

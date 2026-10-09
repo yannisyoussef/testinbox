@@ -294,7 +294,7 @@ bucket-quota fuse remains the only physical link.
 - the table `storage_sweep_run`;
 - the trust guard trigger, and the definer functions
   `storage_confirm_footprint_trust()`, `storage_begin_sweep(text)` and
-  `storage_complete_sweep(bigint, bigint)`.
+  `storage_complete_sweep(bigint, text, bigint)`.
 
 The upgrade is a distrust event, so admission under `ALL` waits for the
 verifying function to mark the counts trusted again. No artifact before PR D
