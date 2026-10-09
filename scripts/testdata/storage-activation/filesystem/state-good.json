@@ -49,6 +49,6 @@
     "physicalListedBytes": 1000000000,
     "coveredBytes": 1073741824
   },
-  "lowerLiveNodes": [],
-  "lastLowerHeartbeat": "2026-10-06T00:00:00Z"
+  "lowerSeq": 110,
+  "uncleanLowerNodes": []
 }

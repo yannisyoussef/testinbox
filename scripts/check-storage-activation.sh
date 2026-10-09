@@ -736,10 +736,13 @@ SELECT json_build_object(
                    'completedAt', to_char(completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
                    'physicalListedBytes', physical_listed_bytes, 'coveredBytes', covered_bytes)
               FROM storage_sweep_run WHERE completed_at IS NOT NULL ORDER BY started_seq DESC LIMIT 1),
-  'lowerLiveNodes', (SELECT coalesce(json_agg(DISTINCT node_id), '[]') FROM storage_node
-                      WHERE containment < 1 AND NOT clean_shutdown AND heartbeat_at > now() - interval '5 minutes'),
-  'lastLowerHeartbeat', (SELECT to_char(max(heartbeat_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-                           FROM storage_node WHERE containment < 1),
+  -- Node rows below level 1 that neither shut down cleanly nor were reaped: such a
+  -- node may still be running, or ran past its last heartbeat.
+  'uncleanLowerNodes', (SELECT coalesce(json_agg(DISTINCT node_id), '[]') FROM storage_node
+                         WHERE containment < 1 AND NOT clean_shutdown),
+  -- The durable order of the last lower-capability activity (registration,
+  -- heartbeat, shutdown or reaping), which survives node rows being deleted.
+  'lowerSeq', (SELECT last_lower_seq FROM storage_containment_watermark WHERE id = 1),
   'watermark', coalesce((SELECT compacted_through_seq FROM storage_debt_watermark WHERE id = 1), 0),
   'footprint', json_build_object(
       'liveBytes', (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
@@ -776,9 +779,28 @@ SELECT json_build_object(
                      ('trusted_epoch', 'INSERT'), ('trusted_seq', 'INSERT'), ('trusted_at', 'INSERT')) AS p(col, priv)
           ON has_column_privilege(r.goid, 'storage_footprint_trust', p.col, p.priv)
       UNION ALL
-      SELECT r.app || ': ' || p.priv || ' on storage_sweep_run'
-        FROM reach r JOIN (VALUES ('INSERT'), ('UPDATE'), ('DELETE')) AS p(priv)
-          ON has_table_privilege(r.goid, 'storage_sweep_run', p.priv)
+      SELECT r.app || ': ' || p.priv || ' on ' || p.tbl
+        FROM reach r
+        JOIN (SELECT tbl, priv FROM (VALUES ('storage_sweep_run'), ('storage_delta'), ('workspace_storage_account'),
+                                            ('storage_containment_watermark')) AS t(tbl)
+                     CROSS JOIN (VALUES ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE')) AS v(priv)
+              UNION ALL
+              SELECT tbl, priv FROM (VALUES ('inbox_storage'), ('storage_footprint_trust'), ('storage_deletion_debt'),
+                                            ('storage_debt_watermark'), ('storage_filesystem_observation'), ('storage_node'),
+                                            ('message'), ('attachment')) AS t(tbl)
+                     CROSS JOIN (VALUES ('TRIGGER'), ('TRUNCATE')) AS v(priv)
+              UNION ALL
+              SELECT tbl, 'TRIGGER' FROM (VALUES ('storage_sweep_run'), ('storage_delta'), ('workspace_storage_account'),
+                                                 ('storage_containment_watermark')) AS t(tbl)
+              UNION ALL
+              SELECT 'inbox_storage', 'DELETE') AS p(tbl, priv)
+          ON has_table_privilege(r.goid, p.tbl, p.priv)
+      UNION ALL
+      -- inbox_storage: the column grant of the refusal record is expected; the base columns are not.
+      SELECT r.app || ': ' || p.priv || ' on inbox_storage.' || p.col
+        FROM reach r
+        JOIN (VALUES ('base_bytes', 'INSERT'), ('base_bytes', 'UPDATE'), ('base_objects', 'INSERT'), ('base_objects', 'UPDATE')) AS p(col, priv)
+          ON has_column_privilege(r.goid, 'inbox_storage', p.col, p.priv)
       UNION ALL
       SELECT r.app || ': DELETE on ' || p.tbl
         FROM reach r JOIN (VALUES ('storage_deletion_debt'), ('storage_debt_watermark')) AS p(tbl)
@@ -898,11 +920,10 @@ gate_filesystem() {
           + ( if ($s.beginObservationExecutors | type) != "array" then ["state.beginObservationExecutors is not a list"] else [] end )
           + ( if ($s.roleViolations | type) != "array" then ["state.roleViolations is not a list"] else [] end )
           + ( if ($s.sessionRoles | type) != "array" then ["state.sessionRoles is not a list"] else [] end )
-          + ( if ($s.lowerLiveNodes | type) != "array" then ["state.lowerLiveNodes is not a list"] else [] end )
+          + ( if ($s.uncleanLowerNodes | type) != "array" then ["state.uncleanLowerNodes is not a list"] else [] end )
           + ( if $s.trust.trustedSeq != null and (($s.trust.trustedSeq | type) != "number" or $s.trust.trustedSeq < 0)
                 then ["state.trust.trustedSeq is not a non-negative integer"] else [] end )
-          + ( if $s.lastLowerHeartbeat != null and (($s.lastLowerHeartbeat | type) != "string" or ($s.lastLowerHeartbeat | try fromdateiso8601 catch null) == null)
-                then ["state.lastLowerHeartbeat is not an ISO-8601 UTC instant"] else [] end )
+          + [ need($s; "state"; ["lowerSeq"]; "count") ]
           + ( if $s.sweep == null then []
               else [ ( [["startedSeq"], "count"], [["startedAt"], "string"], [["completedAt"], "string"],
                        [["physicalListedBytes"], "count"], [["coveredBytes"], "count"] ) | need($s.sweep; "state.sweep"; .[0]; .[1]) ]
@@ -1040,12 +1061,12 @@ gate_filesystem() {
               elif $s.trust.trustedSeq != null and $s.sweep.startedSeq <= $s.trust.trustedSeq
                 then "base case: the newest complete sweep began at seq \($s.sweep.startedSeq), not after trust was marked (seq \($s.trust.trustedSeq))"
               else empty end ),
-            ( if $s.sweep != null and $s.lastLowerHeartbeat != null and (($s.sweep.startedAt | secs) <= ($s.lastLowerHeartbeat | secs))
-                then "base case: the newest complete sweep began \($s.sweep.startedAt), not after the last heartbeat of a node below containment level 1 (\($s.lastLowerHeartbeat))" else empty end ),
+            ( if $s.sweep != null and $s.sweep.startedSeq <= $s.lowerSeq
+                then "base case: the newest complete sweep began at seq \($s.sweep.startedSeq), not after the last activity of a node below containment level 1 (seq \($s.lowerSeq))" else empty end ),
             ( if $s.sweep != null and $s.sweep.physicalListedBytes > $s.sweep.coveredBytes
                 then "base case: the newest complete sweep listed \($s.sweep.physicalListedBytes) bytes, more than the \($s.sweep.coveredBytes) covered at its completion" else empty end ),
-            ( if ($s.lowerLiveNodes | length) > 0
-                then "mixed versions: live node(s) below containment level 1: \($s.lowerLiveNodes | join(", "))" else empty end ),
+            ( if ($s.uncleanLowerNodes | length) > 0
+                then "mixed versions: node(s) below containment level 1 neither shut down cleanly nor reaped: \($s.uncleanLowerNodes | join(", "))" else empty end ),
             ( if $floor == "" then "mixed versions: no TI-STORAGE-006E containment rollback floor is declared (it is added when PR D merges)" else empty end ),
             # The larger of the declared ingestion list and the OBSERVED live nodes: a declaration can
             # never shrink the count (an ingestion node declared as an API node still counts).
@@ -1097,7 +1118,7 @@ gate_filesystem() {
         # global potential applies, because nothing enforces it in that mode.
         | if $mode == "ALL" then .
           else ["identity", "dedicated mount", "capacity", "inodes", "preallocation", "isolation", "starting headroom",
-                "observation source", "observation liveness", "qualification identity", "experiments"] as $pre
+                "observation source", "observation liveness", "qualification identity", "experiments", "mixed versions"] as $pre
                | map(. as $m | select(any($pre[]; . as $p | $m | startswith($p + ":"))))
           end
         | join("; ")' 2>"$WORK/gate-f.err")" || { record "$gate" NOT_RUN "the evidence could not be evaluated: $(head -c 300 "$WORK/gate-f.err")"; return; }
@@ -1108,7 +1129,7 @@ gate_filesystem() {
         if [ -n "$verdicts" ]; then
             record "$gate" BLOCKED "TENANT_LIMITS isolation preflight: $verdicts ($caveat)"
         else
-            record "$gate" PASS "TENANT_LIMITS isolation preflight held on the $source (identity, dedicated mount, capacity, inodes, preallocation, isolation, starting headroom, observation source and liveness, qualification, E8–E11); physical isolation ONLY: $caveat"
+            record "$gate" PASS "TENANT_LIMITS isolation preflight held on the $source (identity, dedicated mount, capacity, inodes, preallocation, isolation, starting headroom, observation source and liveness, qualification, E8–E11, no artifact below the containment floor); physical isolation ONLY: $caveat"
         fi
     elif [ -n "$verdicts" ]; then
         record "$gate" BLOCKED "$verdicts"
