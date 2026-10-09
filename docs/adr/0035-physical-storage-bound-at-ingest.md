@@ -1,6 +1,6 @@
 # ADR-035: Physical Storage Bound at Ingest
 
-**Status:** Accepted (2026-09-29, owner acceptance TI-DEC-001b). This is revision 5 (2026-09-29), amended 2026-10-08 (TI-STORAGE-006b owner decisions; see the amendments section at the end).
+**Status:** Accepted (2026-09-29, owner acceptance TI-DEC-001b). This is revision 5 (2026-09-29), amended 2026-10-08 (TI-STORAGE-006b owner decisions; see the amendments section at the end). **Amendment 2 (filesystem containment, TI-STORAGE-006E) is ACCEPTED** (owner, 2026-10-09, review c) as the implementation architecture. It authorizes implementation and controlled integration under `OFF`, not activation.
 
 > **Acceptance authorizes implementation, not enablement.** It does not turn
 > on `testinbox.storage.enforcement`, global capacity enforcement in staging
@@ -51,7 +51,7 @@ contract (§7, §9, §9a).
 
 | # | Decision | Where |
 |---|---|---|
-| — | Authenticated refusal visibility. No grandfathering, no eviction. `maxStoredBytes` stays at 2 GiB. A global application ceiling of 40 GiB, under a 50 GiB bucket quota. The 120 s TTL is a **write deadline, not a release**. Accounting is physical. Ceilings answer `250`; physical failure answers `451`. | throughout |
+| — | Authenticated refusal visibility. No grandfathering, no eviction. `maxStoredBytes` stays at 2 GiB. A global application ceiling of 40 GiB, under a 50 GiB bucket quota (the quota is optional since Amendment 2 §A2.8). The 120 s TTL is a **write deadline, not a release**. Accounting is physical. Ceilings answer `250`; physical failure answers `451`. | throughout |
 | **O1** | **Accepted with refinement.** A per-inbox hard ceiling, expressed as a *policy share* of the workspace limit: default 25 %, which is 512 MiB today. Authenticated clients can discover it. Refusal reason `INBOX_LIMIT`. | §3, §13b |
 | **O2** | **Accepted with an explicit protocol.** The boundary is a cursor on the wire (`afterStorageRefusalCount`), not hidden SDK state. | §13c |
 | **O3** | **Accepted.** `SERVICE_CAPACITY` discloses one bit and no global figure. | §13d |
@@ -775,8 +775,10 @@ proof and the bucket-wide sweep guard (§7) catch anything else.
 - quota `Q ≥ G + max(1 GiB, 10 % of G, H + the bytes MinIO can accept during
   one usage-refresh lag)`, where Ops measures that last term (the proportional
   term is ten per cent of *G*, `floor(G / 10)`; clarified 2026-10-08).
+  **[Superseded by Amendment 2 §A2.8: the quota is optional, never required.]**
 
-The bucket quota is a fuse, never the bound. It lags: probes Q2–Q7 stored
+The bucket quota is a fuse, never the bound. **[Superseded by Amendment 2
+§A2.8: the filesystem-containment contract is the physical link.]** It lags: probes Q2–Q7 stored
 2.4 MiB in a 1 MiB-quota bucket.
 
 ### 9a. Storage compatibility contract (A_F qualification)
@@ -1558,7 +1560,8 @@ without sleeping:
 47. Metric cardinality, including `STORAGE_LIMIT_EXCEEDED`.
 48. `DeploymentSafety` refuses to start when any of these is missing or
     wrong: *G*, the declared quota, the declared process count, `Q` too
-    small, or the share outside `(0,1]`. With `enforcement=ON` it also refuses
+    small, or the share outside `(0,1]` **[the quota cases are superseded by
+    Amendment 2 §A2.8]**. With `enforcement=ON` it also refuses
     to start without a declared backend identity, or with one that does not
     exactly match a shipped qualification record (§9a). Every element is
     tested separately: digest, mode, timeouts (environment and flag),
@@ -1644,9 +1647,11 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
 
 8. Versioning off, no object lock, and no retrying proxy in front of MinIO.
    Quota `Q ≥ G + max(1 GiB, 10 % of G, H + the measured MinIO usage-lag churn)`.
+   **[The quota formula is superseded by Amendment 2 §A2.8.]**
    Evidence goes in `production-ops-acceptance.md` row P.
 9. NTP on the database and MinIO hosts.
-10. Declared values: `global-limit-bytes`, `declared-bucket-quota-bytes`,
+10. Declared values: `global-limit-bytes`, `declared-bucket-quota-bytes`
+    **[optional since Amendment 2 §A2.8]**,
     `declared-max-ingestion-processes` (including deploy surge).
 11. The restore procedure of §9.
 12. A runbook for the admission latch: investigate, then clear.
@@ -1672,7 +1677,8 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
   the same offered load) and the integrity criteria apply to every executed
   scenario. No separate latency threshold is defined for concurrency 1. The benchmark gate (`backend/benchmark`) and the activation
   checker (`scripts/check-storage-activation.sh`) encode exactly this.
-- **§9 and §18, the bucket-quota fuse.** "10 %" is ten per cent of *G*,
+- **§9 and §18, the bucket-quota fuse** **[superseded by Amendment 2
+  §A2.8]**. "10 %" is ten per cent of *G*,
   `floor(G / 10)`: `Q ≥ G + max(1 GiB, 10 % of G, H + measured usage-lag churn)`.
   No formula change; `BucketQuotaFuse` already computes it so.
 - **§14 Phase 4, runtime re-checks (clarification).** After activation, a
@@ -1686,6 +1692,240 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
   claim their node id like the gateway. Ops must run either a fixed node id
   with stop-before-start, or distinct declared ids for an overlapping
   replacement, and show which before staging enablement.
+
+## Amendment 2: filesystem containment (TI-STORAGE-006E) — ACCEPTED 2026-10-09
+
+**Status: ACCEPTED** by the owner as the implementation architecture
+(TI-STORAGE-006E owner review c, 2026-10-09; accepted in principle in
+review b).
+
+**Scope.** It is normative for the physical storage bound: how footprint is
+modelled, admitted, accounted and proven against the filesystem. It
+authorizes implementation, final code alignment and controlled integration
+with enforcement `OFF`.
+
+**What acceptance does NOT authorize:**
+- `TENANT_LIMITS` or `ALL` activation;
+- filesystem recreation, or any change to the live MinIO quota or topology;
+- production deployment;
+- public SMTP/MX.
+
+**What acceptance does NOT prove.** It does not prove *O_max*, the metadata
+overhead *M*, the fragmentation allowance, ENOSPC behaviour, or any of
+experiments E1–E11. Those remain empirical assumptions (§A2.2) until a
+re-issued qualification record carries their results.
+
+**One contract.** This amendment is the only authoritative statement of
+filesystem containment. Its normative derivation, with every definition,
+lemma and proof obligation, is the annex
+[`0035-amendment-proposal-filesystem-containment-contract.md`](0035-amendment-proposal-filesystem-containment-contract.md)
+(hereafter *the annex*). The annex is not a second contract: where its text
+and this amendment differ, this amendment governs.
+
+The initial proposal, PR #81, is **SUPERSEDED**. Its measured evidence (the
+quota lag, the amplification, ENOSPC bodies, and the zero-byte PUT at full)
+stands as evidence. Its capacity model has no authority.
+
+Where §2–§18 above say otherwise about the physical filesystem, this
+amendment supersedes them. It does so in exactly the places the annex §12
+lists:
+- §2: footprint beside payload;
+- §3: GLOBAL in footprint, *G_F*;
+- §4: rules (G), (C) and (P);
+- §8: `STORAGE_FULL`;
+- §9: *H_F*, the containment theorem, and the late-object rule;
+- §9a: filesystem elements;
+- §10: object counts, the debt ledger and observations;
+- §14: gate F;
+- §16: metrics;
+- §17: tests;
+- §18: filesystem prerequisites.
+
+Everything else in ADR-035 is unchanged.
+
+### A2.1 Mathematically established invariants (proved in the annex §2; machine-checked by property tests)
+
+- **The potential.** Φ = F(L + D) + W, where
+  F(P, N) = (P + N(B − 1))(1 + ε) + N(O_max + 1).
+  - *L* is the live and reserved payload and objects.
+  - *D* is the deletion debt not superseded by an observation.
+  - *W* is the trash the newest observation measured.
+  - For any set *S* of objects, F(P_S, N_S) ≥ Σ φ(p_i), so admission
+    charges the **exact increase of F on the aggregate**, never a copy's own
+    φ. The counterexample φ(4096) = 28 688 < F(4096, 1) − F(0, 0) = 32 800
+    is a regression test.
+- **Rules.**
+  - (G) F(L + A + c) + H_F ≤ G_F.
+  - (C) F(L + D + A + c) + W + H_F + P_F + M + R_ops ≤ C_fs, evaluated in
+    T1's one snapshot on running totals in envelope order.
+  - (P) admits every write that charges debt but has no row of its own
+    (probes, orphan-sweep deletions, late objects). A refused late object
+    is kept, holds its slot, and holds the latch.
+- **Transitions.** T1, T2, release, retention, compaction, observation,
+  reconciliation and rollback each preserve Φ ≤ C_fs − (M + R_ops); the
+  annex §2.4 gives the table.
+  - Unresolved rows that no live node answers for count against every
+    node's 16 write slots (Lemma 3).
+
+### A2.2 Empirically qualified storage assumptions (NOT proven; experiments E1–E11, annex §10)
+
+- The set premise: every object occupies at most F(p, 1) on the qualified
+  combination (E1–E3), with *O_max* measured into the qualification record.
+- ε covers the extent-tree metadata (E3), and blocks run out before inodes
+  at `-i 4096` (E4).
+- Trash is bounded by D_est plus the measured residue (E5–E6).
+- MinIO metadata stays within *M*, in **bytes and inodes** (E7).
+- The ENOSPC classifier, and the breaker under a real full disk (E8–E10).
+- Restart, deletes and recovery at full (E11).
+
+Until a re-issued record carries these, the bounds are planning values.
+
+### A2.3 Application-enforced guarantees (code, tests, CI)
+
+- Under `ALL`, every state that cannot be evaluated is a whole-`DATA` `451`
+  **before** recipient resolution:
+  - untrusted counts;
+  - no observation, or one that began before the last distrust event or
+    below the compaction watermark;
+  - the wrong writer, block size or capacity;
+  - overflow, or slot exhaustion.
+
+  An observation's **age** is not an admission input (annex §5.5). It is
+  checked by gate F's liveness row and the Ops observation-age latch
+  (A2.4). A rule-(G)/(C)
+  refusal is `SERVICE_CAPACITY` under the uniform `250`.
+- T2 commits only into an inbox that still receives, and only for exactly
+  the reserved keys. This applies under `OFF` too.
+- Every row-free deletion is admitted by rule (P) first.
+- Retention is paced in bounded batches under `ALL`. Logical expiry is
+  independent: an `EXPIRED` or `DELETED` inbox serves nothing, and its
+  payload stays accounted until teardown deletes it.
+- **Trust** in the object counts is established only by the database
+  function `storage_confirm_footprint_trust()` (V10).
+  - It verifies every workspace's bytes and objects against the
+    authoritative `message` and `attachment` rows, under the ledger lock,
+    and marks compare-and-set across distrust generations.
+  - The ledger itself is written only by definer code: the triggers, plus
+    `storage_compact_ledger()` and `storage_repair_ledger()`.
+  - A guard trigger refuses any other trust mark.
+  - Every distrust event stamps an order, and admission waits for an
+    observation that began after it. The upgrades to V9 and V10 are distrust
+    events.
+- **ε** is `1 / min(256, ⌊(B − 12)/12⌋ − 1)`. No configuration can make it
+  smaller.
+- Orphan sweeps are recorded by the database (`storage_sweep_run`): its
+  order and instants, and the covered figure it computes. The listed bytes
+  are the application's own figure.
+- Nodes register their containment level. Every write or deletion of a row
+  below level 1 stamps the monotone `storage_containment_watermark`.
+- `DeploymentSafety` refuses inconsistent declarations, refuses I-C
+  violations, and refuses `ALL` in production.
+
+### A2.4 Ops-observed guarantees (evidence the application cannot produce)
+
+- The filesystem's identity, dedicated mount, statvfs capacity and inodes,
+  preallocation and host isolation.
+- The monitor observation, written only by the monitor role.
+- Role separation: no application role can write observations, debt,
+  watermarks, trust marks or sweep runs, or own a triggered table.
+- The qualification record with filesystem elements, the measured
+  *O_max*, the E7 metadata inode figure, and E1–E11 results.
+
+Gate F of `scripts/check-storage-activation.sh` compares each observed value
+with its declared value, and never takes a declaration as an observation.
+
+### A2.5 Limitations under `TENANT_LIMITS`
+
+`TENANT_LIMITS` does not enforce the global footprint ceiling. **The
+containment theorem does not hold in that mode**, and filesystem exhaustion
+stays reachable. The mode is approved for dark staging qualification only.
+
+Before it is activated even there, gate F runs the **physical-isolation
+preflight**:
+- identity and dedicated mount;
+- capacity and inodes;
+- preallocation or a dedicated device;
+- host isolation;
+- starting block and inode headroom;
+- a live monitor observation from the monitor role;
+- Ops `qualification-check` valid;
+- the record's E8–E11 (`STORAGE_FULL` classification and trial, the
+  monitor latches, and recovery) recorded as PASS;
+- no node below the containment level, and the containment floor declared,
+  so the running code is the code those drills exercised.
+
+Gate Q (qualified backend identity) is required as before. A preflight PASS
+states that it is isolation only.
+
+### A2.6 Additional gates before `ALL`
+
+Gates A–E and Q are unchanged, and gate F holds every row of the annex §9.
+The base case's orderings come from database records:
+- a trust mark by the verifying function;
+- a completed sweep whose database-issued order follows the mark and the
+  containment watermark;
+- `physical_listed ≤ covered` at its completion (the listed bytes are the
+  application's figure, bounded independently by the monitor's headroom
+  row);
+- no node below level 1 that neither shut down cleanly nor was reaped.
+
+The containment rollback floor must also be declared, and every running
+artifact must contain it (gate E). E1–E11 must be recorded as PASS.
+
+### A2.7 Production and public activation restrictions
+
+`ALL` is refused in production by `DeploymentSafety`, and so is
+`TENANT_LIMITS` (it never contains the filesystem, §A2.5). It may not carry
+traffic beyond the synthetic suite until the owner has decided and
+implemented both of the following, as separate scoped decisions
+(`docs/security/storage-public-boundary-decisions.md`):
+- **(A)** the envelope-order oracle mitigation;
+- **(B)** the single-sender amplification bound.
+
+A dedicated production MinIO, and production role separation, are also
+prerequisites.
+
+### A2.8 Text and invariants this amendment supersedes or carries over
+
+**The bucket-quota fuse is superseded.** The physical link is the
+filesystem-containment contract: its declarations and the static
+inequality I-C at startup (`DeploymentSafety`), then gate F's evidence
+before activation. The quota fuse `Q ≥ G + max(1 GiB, 10 % of G, H + churn)`
+is **no longer a requirement**, in any mode. The MinIO bucket quota may
+remain configured as an optional secondary defence. A declared quota or
+churn figure is only checked for being well-formed, never against a
+formula. This supersedes:
+- §9's Ops precondition naming the quota, and the paragraph "The bucket
+  quota is a fuse, never the bound";
+- §17 test 48's "`Q` too small" and "declared quota" cases;
+- §18 prerequisite 8's quota formula, and prerequisite 10's
+  `declared-bucket-quota-bytes`;
+- the 2026-10-08 amendment bullet "§9 and §18, the bucket-quota fuse".
+
+**Gate Q is a different thing.** Gate Q, the §9a backend qualification
+match, is unchanged and mandatory.
+
+**Invariants I1–I12:**
+- **Preserved unchanged:** I3–I12.
+- **I1 (payload coverage) and I2 (atomic ceilings) are preserved for
+  payload**, and extended by this amendment:
+  - Under `ALL` the global ceiling is also evaluated in footprint units, by
+    rules (G) and (C), in the same one snapshot and under the same admission
+    lock as I2.
+  - Physical containment is the theorem of §A2.1 under the assumptions of
+    §A2.2, not I1's payload bound.
+  - Under `TENANT_LIMITS` the global ceilings stay observational, as I2's
+    rollout states already allowed.
+
+**Release and rollback invariants:**
+- Migrations V8–V10 are expand-only.
+- The containment rollback floor (`deploy/rollback-floors.txt`, rationale
+  `TI-STORAGE-006E`) makes any deploy or rollback below PR D refused without
+  the explicit hazard acknowledgement.
+- Rolling back below it while enforcement is on is forbidden.
+- Under `OFF`, a rollback to an earlier artifact stays supported: the V8–V10
+  definer functions and triggers keep the ledger exact, and a pre-V10
+  artifact cannot mark trust.
 
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
