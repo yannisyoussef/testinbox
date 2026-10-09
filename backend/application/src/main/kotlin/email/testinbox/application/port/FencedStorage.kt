@@ -90,4 +90,12 @@ enum class AmbiguityKind {
 
     /** Any status the ADR does not list as definitive. */
     UNEXPECTED_RESPONSE,
+
+    /**
+     * The filesystem is full: `507 XMinioStorageFull`, or a `500` naming
+     * ENOSPC (containment contract §8). Still ambiguous, so the reservation
+     * stays charged and the slot held, but it trips the `STORAGE_FULL`
+     * breaker, whose recovery needs evidence rather than a zero-byte probe.
+     */
+    STORAGE_FULL,
 }

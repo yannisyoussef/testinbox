@@ -9,6 +9,7 @@ import email.testinbox.application.port.StorageReservations
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.inbox.InboxState
 import email.testinbox.domain.storage.StorageRefusalReason
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.transaction.support.TransactionOperations
@@ -45,7 +46,7 @@ class JdbcStorageReservations(
         return jdbc
             .sql(
                 """
-                SELECT message_id, bytes, state FROM storage_reservation
+                SELECT message_id, bytes, state, object_keys FROM storage_reservation
                  WHERE message_id IN (:ids)
                  ORDER BY message_id
                    FOR UPDATE
@@ -55,17 +56,40 @@ class JdbcStorageReservations(
                 rs,
                 _,
                 ->
-                LockedReservation(MessageId(rs.getObject("message_id", UUID::class.java)), rs.getLong("bytes"), rs.getString("state"))
+                LockedReservation(
+                    MessageId(rs.getObject("message_id", UUID::class.java)),
+                    rs.getLong("bytes"),
+                    rs.getString("state"),
+                    @Suppress("UNCHECKED_CAST")
+                    (rs.getArray("object_keys").array as Array<String>).toList(),
+                )
             }.list()
     }
 
-    override fun lockInboxes(ids: Collection<InboxId>) {
-        if (ids.isEmpty()) return
-        jdbc
-            .sql("SELECT id FROM inbox WHERE id IN (:ids) ORDER BY id FOR KEY SHARE")
+    override fun committedKeys(ids: Collection<MessageId>): Map<MessageId, Set<String>> {
+        if (ids.isEmpty()) return emptyMap()
+        return jdbc
+            .sql(
+                """
+                SELECT id AS message_id, raw_object_key AS object_key FROM message WHERE id IN (:ids)
+                UNION ALL
+                SELECT message_id, object_key FROM attachment WHERE message_id IN (:ids)
+                """.trimIndent(),
+            ).param("ids", ids.map { it.value })
+            .query { rs, _ -> MessageId(rs.getObject("message_id", UUID::class.java)) to rs.getString("object_key") }
+            .list()
+            .groupBy({ it.first }, { it.second })
+            .mapValues { it.value.toSet() }
+    }
+
+    override fun lockInboxes(ids: Collection<InboxId>): Map<InboxId, InboxState> {
+        if (ids.isEmpty()) return emptyMap()
+        return jdbc
+            .sql("SELECT id, state FROM inbox WHERE id IN (:ids) ORDER BY id FOR SHARE")
             .param("ids", ids.map { it.value })
-            .query()
-            .listOfRows()
+            .query { rs, _ -> InboxId(rs.getObject("id", UUID::class.java)) to InboxState.valueOf(rs.getString("state")) }
+            .list()
+            .toMap()
     }
 
     override fun recordRefusals(refusals: Map<InboxId, StorageRefusalReason>) {

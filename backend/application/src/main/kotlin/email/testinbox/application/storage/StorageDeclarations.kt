@@ -104,7 +104,7 @@ data class StorageDeclarations(
     val declaredMaxIngestionProcesses: Int? = null,
     /** Decimal text, e.g. `0.25`; parsed as `InboxShare`. */
     val inboxShare: String? = null,
-    /** The bytes MinIO can accept during one usage-refresh lag, as Ops measured it (§9, §18 gate 8). */
+    /** OPTIONAL and informational since ADR-035 Amendment 2: the bytes MinIO accepted during one usage-refresh lag; if set, never negative. */
     val measuredQuotaLagChurnBytes: Long? = null,
     val maxConcurrentWrites: Int = StorageProtocol.MAX_CONCURRENT_WRITES,
     val maxObjectBytes: Long = DEFAULT_MAX_OBJECT_BYTES,
@@ -123,6 +123,8 @@ data class StorageDeclarations(
     val expectedApiNodes: Set<String> = emptySet(),
     /** This process's own node identity, so a non-OFF node can be checked against the declared set it must belong to. */
     val node: DeclaredNode? = null,
+    /** The dedicated filesystem's declared budgets (filesystem-containment contract, TI-STORAGE-006E). */
+    val filesystem: FilesystemDeclarations = FilesystemDeclarations(),
 ) {
     val enforced: Boolean get() = enforcement != StorageEnforcement.OFF
 

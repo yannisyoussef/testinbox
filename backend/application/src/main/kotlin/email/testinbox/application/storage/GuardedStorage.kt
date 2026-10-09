@@ -98,6 +98,8 @@ class GuardedStorage(
     private val activation: email.testinbox.application.storage.activation.ActivationGuard =
         email.testinbox.application.storage.activation
             .ActivationGuard(),
+    /** TI-STORAGE-006E PR D: under `ALL`, untrusted counts or an invalid observation fail closed here. */
+    private val footprint: FootprintPrecheck = FootprintPrecheck.NONE,
 ) {
     private class Attempt(
         val messageId: MessageId,
@@ -156,8 +158,13 @@ class GuardedStorage(
             StorageUnavailableException(StorageUnavailableReason.ACTIVATION_VIOLATED, "storage activation invariant broken: $detail")
         } ?: if (breaker.isBlocked()) {
             StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open")
+        } else if (slots.exhaustedBeforeResolution()) {
+            StorageUnavailableException(StorageUnavailableReason.SLOT_WAIT, "every write slot is held by unresolved ambiguity")
         } else {
-            null
+            footprint.unavailable()?.let { reason ->
+                metrics.footprintUnavailable(reason)
+                StorageUnavailableException(StorageUnavailableReason.FOOTPRINT_UNAVAILABLE, "global footprint rules not evaluable: $reason")
+            }
         }
 
     /**
@@ -344,7 +351,11 @@ class GuardedStorage(
         if (StorageBreaker.Kind.CLOCK_OFFSET in kinds && !passes { ClockOffset.measure(inspection, clock).withinBound() }) {
             return StorageBreaker.Kind.CLOCK_OFFSET
         }
-        val witnessed = kinds.filter { it != StorageBreaker.Kind.CLOCK_OFFSET && it != StorageBreaker.Kind.QUOTA }
+        // Quota and a full filesystem both accept a zero-byte probe: their trial is the real event.
+        val witnessed =
+            kinds.filter {
+                it != StorageBreaker.Kind.CLOCK_OFFSET && it != StorageBreaker.Kind.QUOTA && it != StorageBreaker.Kind.STORAGE_FULL
+            }
         if (witnessed.isNotEmpty() && !passes { inspection.witness("_probe/${node.nodeId}/${UUID.randomUUID()}") }) {
             return witnessed.first()
         }
@@ -394,6 +405,11 @@ class GuardedStorage(
     } catch (e: StorageAdmissionUnavailableException) {
         metrics.physicalFailure(PhysicalFailureKind.LOCK_TIMEOUT)
         throw StorageUnavailableException(StorageUnavailableReason.LOCK_TIMEOUT, "T1 could not take the admission lock", e)
+    } catch (e: StorageFootprintUnavailableException) {
+        // The pre-resolution check passed and T1's own snapshot disagrees: the
+        // documented race, answered with the same whole-event 451.
+        metrics.footprintUnavailable(e.reason)
+        throw StorageUnavailableException(StorageUnavailableReason.FOOTPRINT_UNAVAILABLE, "T1 found the footprint rules not evaluable", e)
     }
 
     /**
@@ -424,15 +440,23 @@ class GuardedStorage(
         val last = attempts.last().outcome
         val kind =
             when {
+                // ENOSPC is ambiguous for the reservation, but its own breaker kind (contract §8).
+                ambiguous.any { it.outcome == UploadOutcome.Ambiguous(AmbiguityKind.STORAGE_FULL) } -> PhysicalFailureKind.STORAGE_FULL
+
                 ambiguous.isNotEmpty() -> PhysicalFailureKind.AMBIGUOUS
+
                 last == UploadOutcome.Refused(UploadRefusal.QUOTA) -> PhysicalFailureKind.QUOTA
+
                 last == UploadOutcome.Refused(UploadRefusal.DENIED) -> PhysicalFailureKind.DEADLINE
+
                 last == UploadOutcome.NotStarted -> PhysicalFailureKind.UNAVAILABLE
+
                 else -> PhysicalFailureKind.UNAVAILABLE
             }
         metrics.physicalFailure(kind)
         when (kind) {
             PhysicalFailureKind.AMBIGUOUS -> breaker.trip(StorageBreaker.Kind.AMBIGUOUS)
+            PhysicalFailureKind.STORAGE_FULL -> breaker.trip(StorageBreaker.Kind.STORAGE_FULL)
             PhysicalFailureKind.QUOTA -> breaker.trip(StorageBreaker.Kind.QUOTA)
             PhysicalFailureKind.UNAVAILABLE -> breaker.trip(StorageBreaker.Kind.UNAVAILABLE)
             else -> Unit // a missed deadline is definitive and says nothing about storage health
@@ -465,10 +489,39 @@ class GuardedStorage(
                         "a reservation was no longer RESERVED at commit",
                     )
                 }
-                reservations.lockInboxes((admitted.map { it.candidate.inboxId } + refused.keys).toSet())
+                // TI-STORAGE-006E: a copy is committed only for exactly the keys T1
+                // reserved, or an extra uploaded key would be live and charged nowhere.
+                val keysById = admitted.associate { it.messageId to it.candidate.objectKeys }
+                if (locked.any { it.objectKeys.toSet() != keysById.getValue(it.messageId).toSet() }) {
+                    throw StorageUnavailableException(
+                        StorageUnavailableReason.COMMIT_FENCED,
+                        "a copy's keys differ from the keys its reservation holds",
+                    )
+                }
+                val states = reservations.lockInboxes((admitted.map { it.candidate.inboxId } + refused.keys).toSet())
+                // The contract's T2 fence: under FOR SHARE, no retention state change can
+                // commit meanwhile, and a copy whose inbox already stopped receiving
+                // (retention committed EXPIRED, then deleted its prefix while this upload
+                // was in flight) must not become a live object no row charges.
+                if (admitted.any { states[it.candidate.inboxId] !in RECEIVABLE }) {
+                    throw StorageUnavailableException(
+                        StorageUnavailableReason.COMMIT_FENCED,
+                        "an admitted copy's inbox no longer receives",
+                    )
+                }
                 reservations.recordRefusals(refused)
                 val outcomes = persist(admitted)
                 check(outcomes.keys == ids.toSet()) { "persist must report every admitted copy" }
+                // The contract's T2 assertion: the rows just inserted name exactly the reserved
+                // keys. A key uploaded but not committed would be a live object no row charges.
+                val reserved = locked.associate { it.messageId to it.objectKeys.toSet() }
+                val committed = reservations.committedKeys(outcomes.filterValues { it }.keys)
+                if (outcomes.filterValues { it }.keys.any { committed[it].orEmpty() != reserved.getValue(it) }) {
+                    throw StorageUnavailableException(
+                        StorageUnavailableReason.COMMIT_FENCED,
+                        "the committed rows do not name exactly the reserved keys",
+                    )
+                }
                 reservations.consume(outcomes.filterValues { it }.keys)
                 reservations.releaseDuplicates(outcomes.filterValues { !it }.keys)
                 outcomes
@@ -489,6 +542,9 @@ class GuardedStorage(
 
     private companion object {
         val log = LoggerFactory.getLogger(GuardedStorage::class.java)
+
+        /** The inbox states a copy may still be committed into (contract §2.4, T2 row). */
+        val RECEIVABLE = setOf(email.testinbox.domain.inbox.InboxState.ACTIVE, email.testinbox.domain.inbox.InboxState.EXPIRING)
     }
 }
 

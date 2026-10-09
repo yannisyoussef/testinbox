@@ -2,6 +2,8 @@ package email.testinbox.persistence
 
 import email.testinbox.application.port.AccountingDrift
 import email.testinbox.application.port.AccountingScope
+import email.testinbox.application.port.DeletionDebtState
+import email.testinbox.application.port.FilesystemObservation
 import email.testinbox.application.port.LedgerCompaction
 import email.testinbox.application.port.LedgerState
 import email.testinbox.application.port.StorageLedger
@@ -47,63 +49,19 @@ class JdbcStorageLedger(
 
     private fun compactInTransaction(batch: Int): LedgerCompaction {
         readCommitted()
-        if (!tryLedgerLock()) return LedgerCompaction(lockAcquired = false, foldedRows = 0)
-
-        // One statement. The DELETE's RETURNING feeds both upserts, so a
-        // delta leaves the ledger in the same instant its bytes reach a base.
-        // Only committed rows are visible, so an uncommitted delta, or a gap in
-        // the id sequence, just waits for the next pass. An inbox that no
-        // longer exists keeps only its workspace share. A delta naming a
-        // workspace that does not exist (only corrupt data can produce one,
-        // since attachment.workspace_id has no FK) is dropped rather than
-        // failing every pass and wedging compaction for good; reconciliation
-        // derives from the rows, so nothing it guards is lost. Rows are
-        // upserted in key order, so a later writer that locks base rows in
-        // ascending order (the ADR-035 §6 refusal upsert) cannot form a cycle
-        // with a compaction. If a concurrent inbox delete breaks a foreign key
-        // between the EXISTS and the insert, the statement fails, the
-        // transaction rolls back with every delta intact, and the next pass
-        // retries.
+        // V10 (owner review b, §2): the fold runs inside storage_compact_ledger(), a
+        // SECURITY DEFINER function holding exactly the statement this method ran:
+        // the ledger try-lock, the objects folded here (so V8's folding trigger stays
+        // out), and one DELETE ... RETURNING feeding both upserts in key order. The
+        // application role therefore holds no write on storage_delta or the base
+        // rows, and cannot under-count the footprint a trust mark vouches for.
         val folded =
             jdbc
-                .sql(
-                    """
-                    WITH folded AS (
-                        DELETE FROM storage_delta
-                         WHERE id IN (SELECT id FROM storage_delta ORDER BY id LIMIT :batch)
-                        RETURNING workspace_id, inbox_id, bytes
-                    ),
-                    workspaces AS (
-                        INSERT INTO workspace_storage_account (workspace_id, base_bytes)
-                        SELECT f.workspace_id, sum(f.bytes)
-                          FROM folded f
-                         WHERE EXISTS (SELECT 1 FROM workspace w WHERE w.id = f.workspace_id)
-                         GROUP BY f.workspace_id
-                         ORDER BY f.workspace_id
-                        ON CONFLICT (workspace_id)
-                            DO UPDATE SET base_bytes = workspace_storage_account.base_bytes + EXCLUDED.base_bytes
-                        RETURNING 1
-                    ),
-                    inboxes AS (
-                        INSERT INTO inbox_storage (inbox_id, workspace_id, base_bytes)
-                        SELECT f.inbox_id, (array_agg(f.workspace_id))[1], sum(f.bytes)
-                          FROM folded f
-                         WHERE f.inbox_id IS NOT NULL
-                           AND EXISTS (SELECT 1 FROM inbox i WHERE i.id = f.inbox_id)
-                         GROUP BY f.inbox_id
-                         ORDER BY f.inbox_id
-                        ON CONFLICT (inbox_id)
-                            DO UPDATE SET base_bytes = inbox_storage.base_bytes + EXCLUDED.base_bytes
-                        RETURNING 1
-                    )
-                    SELECT (SELECT count(*) FROM folded) AS folded,
-                           (SELECT count(*) FROM workspaces) AS workspaces,
-                           (SELECT count(*) FROM inboxes) AS inboxes
-                    """.trimIndent(),
-                ).param("batch", batch)
-                .query { rs, _ -> rs.getInt("folded") }
+                .sql("SELECT storage_compact_ledger(:batch)")
+                .param("batch", batch)
+                .query(Int::class.java)
                 .single()
-        return LedgerCompaction(lockAcquired = true, foldedRows = folded)
+        return if (folded < 0) LedgerCompaction(lockAcquired = false, foldedRows = 0) else LedgerCompaction(true, folded)
     }
 
     override fun state(): LedgerState =
@@ -112,14 +70,120 @@ class JdbcStorageLedger(
                 """
                 SELECT (SELECT count(*) FROM storage_delta) AS unfolded,
                        (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
-                     + (SELECT coalesce(sum(bytes), 0) FROM storage_delta) AS committed
+                     + (SELECT coalesce(sum(bytes), 0) FROM storage_delta) AS committed,
+                       (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)
+                     + (SELECT coalesce(sum(objects), 0) FROM storage_delta) AS objects,
+                       (SELECT coalesce(sum(bytes), 0) FROM storage_reservation) AS reserved,
+                       (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation) AS reserved_objects
                 """.trimIndent(),
-            ).query { rs, _ -> LedgerState(rs.getLong("unfolded"), rs.getLong("committed")) }
+            ).query { rs, _ ->
+                LedgerState(
+                    unfoldedRows = rs.getLong("unfolded"),
+                    committedBytes = rs.getLong("committed"),
+                    committedObjects = rs.getLong("objects"),
+                    reservedBytes = rs.getLong("reserved"),
+                    reservedObjects = rs.getLong("reserved_objects"),
+                )
+            }.single()
+
+    /**
+     * ONE statement (contract §5.3): the newest observation by `started_seq`,
+     * the debt rows ordered at or after it, every PENDING row whatever its
+     * sequence, the compaction watermark and the trust marker, so a
+     * compaction, a resolution or a new observation is seen wholly before or
+     * wholly after. With no observation, every row counts.
+     */
+    override fun deletionDebt(): DeletionDebtState =
+        jdbc
+            .sql(
+                """
+                WITH newest AS (
+                    SELECT * FROM storage_filesystem_observation ORDER BY started_seq DESC, id DESC LIMIT 1
+                ),
+                debt AS (
+                    SELECT d.bytes, d.objects, d.incurred_at = 'infinity'::timestamptz AS pending
+                      FROM storage_deletion_debt d
+                     WHERE d.incurred_at = 'infinity'::timestamptz
+                        OR d.seq >= coalesce((SELECT started_seq FROM newest), 0)
+                )
+                SELECT (SELECT coalesce(sum(bytes), 0) FROM debt) AS bytes,
+                       (SELECT coalesce(sum(objects), 0) FROM debt) AS objects,
+                       (SELECT coalesce(sum(bytes), 0) FROM debt WHERE pending) AS pending_bytes,
+                       (SELECT compacted_through_seq FROM storage_debt_watermark WHERE id = 1) AS watermark,
+                       (SELECT trusted_epoch IS NOT DISTINCT FROM distrust_epoch FROM storage_footprint_trust WHERE id = 1)
+                           AS trusted,
+                       n.started_seq, n.written_by,
+                       n.started_at, n.observed_at, n.source, n.block_size_bytes, n.capacity_bytes, n.used_bytes, n.avail_bytes,
+                       n.inodes_total, n.inodes_used, n.trash_bytes, n.minio_sys_bytes
+                  FROM (SELECT 1) AS one
+                  LEFT JOIN newest n ON true
+                """.trimIndent(),
+            ).query { rs, _ ->
+                DeletionDebtState(
+                    unsupersededBytes = rs.getLong("bytes"),
+                    unsupersededObjects = rs.getLong("objects"),
+                    pendingBytes = rs.getLong("pending_bytes"),
+                    compactedThroughSeq = rs.getLong("watermark"),
+                    // A missing trust row reads as untrusted.
+                    countsTrusted = rs.getBoolean("trusted"),
+                    observation =
+                        Timestamps.fromDb(rs, "started_at")?.let { startedAt ->
+                            FilesystemObservation(
+                                startedSeq = rs.getLong("started_seq"),
+                                writtenBy = rs.getString("written_by"),
+                                startedAt = startedAt,
+                                observedAt = checkNotNull(Timestamps.fromDb(rs, "observed_at")),
+                                source = rs.getString("source"),
+                                blockSizeBytes = rs.getLong("block_size_bytes"),
+                                capacityBytes = rs.getLong("capacity_bytes"),
+                                usedBytes = rs.getLong("used_bytes"),
+                                availBytes = rs.getLong("avail_bytes"),
+                                inodesTotal = rs.getLong("inodes_total"),
+                                inodesUsed = rs.getLong("inodes_used"),
+                                trashBytes = rs.getLong("trash_bytes"),
+                                minioSysBytes = rs.getLong("minio_sys_bytes"),
+                            )
+                        },
+                )
+            }.single()
+
+    /**
+     * One statement: V8's `storage_compact_deletion_debt()` deletes the rows
+     * ordered before the newest observation's start, which are inside its
+     * `trash_bytes` already, never a pending one, and raises the watermark in
+     * the same transaction.
+     */
+    override fun compactDeletionDebt(): Int =
+        jdbc
+            .sql("SELECT storage_compact_deletion_debt()")
+            .query(Int::class.java)
             .single()
+
+    override fun confirmTrust(): Boolean = checkNotNull(transactions.execute { confirmTrustInTransaction() })
+
+    /**
+     * Contract §4.5: the ledger lock FIRST, so no compaction or repair moves
+     * a figure between the check and the mark; then the epoch is read, the
+     * WORKSPACE counts (whose sum is the global potential) are proven clean
+     * against the rows, and the epoch read is marked trusted compare-and-set,
+     * so a folding or a drift that bumped the epoch meanwhile is never
+     * overwritten. Returns whether the counts are trusted.
+     */
+    private fun confirmTrustInTransaction(): Boolean {
+        readCommitted()
+        // V10 (owner review b, §2): the database verifies and marks. The function
+        // takes the ledger lock, recreates a row lost to a restore, checks every
+        // workspace's bytes and objects against the rows, and marks compare-and-set.
+        // The application holds EXECUTE on it and no write on the trusted columns.
+        return jdbc
+            .sql("SELECT storage_confirm_footprint_trust()")
+            .query(Boolean::class.java)
+            .single()
+    }
 
     override fun findDrift(): List<AccountingDrift> =
         jdbc
-            .sql("$DRIFT SELECT scope, id, derived, accounted FROM drift")
+            .sql("$DRIFT SELECT scope, id, derived, accounted, derived_objects, accounted_objects FROM drift")
             .query { rs, _ -> drift(rs) }
             .list()
 
@@ -127,45 +191,13 @@ class JdbcStorageLedger(
 
     private fun repairInTransaction(): List<AccountingDrift> {
         readCommitted()
-        // Blocking, unlike the compactor's try-lock: a repair is rare, and it
-        // must not interleave with a compaction moving the same bytes.
-        jdbc
-            .sql("SELECT pg_advisory_xact_lock(:class, :ledger)")
-            .param("class", STORAGE_LOCK_CLASS)
-            .param("ledger", LEDGER_LOCK)
-            .query()
-            .listOfRows()
-
-        // One statement: the derivation, the deltas and the bases are all read
-        // in the snapshot the corrections are written from. base := derived −
-        // Σdelta is therefore exact at that snapshot. A write that commits
-        // afterwards appends its own delta and never touches a base, so
-        // base + Σdelta stays equal to the derivation.
+        // V10: storage_repair_ledger() holds the statement this method ran. It takes
+        // the blocking ledger lock, and in ONE statement derives, writes
+        // base := derived − Σdelta for every drifted workspace and inbox, and
+        // revokes trust on workspace drift (contract §4.5).
         return jdbc
-            .sql(
-                """
-                $DRIFT,
-                workspace_fix AS (
-                    INSERT INTO workspace_storage_account (workspace_id, base_bytes, reconciled_at)
-                    SELECT id, derived - unfolded, now() FROM drift WHERE scope = 'WORKSPACE' ORDER BY id
-                    ON CONFLICT (workspace_id)
-                        DO UPDATE SET base_bytes = EXCLUDED.base_bytes, reconciled_at = EXCLUDED.reconciled_at
-                    RETURNING 1
-                ),
-                inbox_fix AS (
-                    INSERT INTO inbox_storage (inbox_id, workspace_id, base_bytes)
-                    SELECT d.id, i.workspace_id, d.derived - d.unfolded
-                      FROM drift d JOIN inbox i ON i.id = d.id
-                     WHERE d.scope = 'INBOX'
-                     ORDER BY d.id
-                    ON CONFLICT (inbox_id) DO UPDATE SET base_bytes = EXCLUDED.base_bytes
-                    RETURNING 1
-                )
-                SELECT scope, id, derived, accounted,
-                       (SELECT count(*) FROM workspace_fix) + (SELECT count(*) FROM inbox_fix) AS fixed
-                  FROM drift
-                """.trimIndent(),
-            ).query { rs, _ -> drift(rs) }
+            .sql("SELECT scope, id, derived, accounted, derived_objects, accounted_objects FROM storage_repair_ledger()")
+            .query { rs, _ -> drift(rs) }
             .list()
     }
 
@@ -181,20 +213,14 @@ class JdbcStorageLedger(
         jdbc.sql("SET TRANSACTION ISOLATION LEVEL READ COMMITTED").update()
     }
 
-    private fun tryLedgerLock(): Boolean =
-        jdbc
-            .sql("SELECT pg_try_advisory_xact_lock(:class, :ledger)")
-            .param("class", STORAGE_LOCK_CLASS)
-            .param("ledger", LEDGER_LOCK)
-            .query(Boolean::class.java)
-            .single()
-
     private fun drift(rs: ResultSet): AccountingDrift =
         AccountingDrift(
             scope = AccountingScope.valueOf(rs.getString("scope")),
             id = rs.getObject("id", UUID::class.java),
             derivedBytes = rs.getLong("derived"),
             accountedBytes = rs.getLong("accounted"),
+            derivedObjects = rs.getLong("derived_objects"),
+            accountedObjects = rs.getLong("accounted_objects"),
         )
 
     companion object {
@@ -211,51 +237,62 @@ class JdbcStorageLedger(
         /**
          * The ADR-027 §5 derivation (raw bytes plus every attachment, so an
          * attachment counts twice) against `base + Σdelta`, for every workspace
-         * and every live inbox. Figures that match are dropped. An inbox's
+         * and every live inbox, in bytes AND in objects (TI-STORAGE-006E: one
+         * object per message row and per attachment row). A scope drifts when
+         * either figure disagrees. Figures that match are dropped. An inbox's
          * attachments are found through their message, as in V6's recompute.
          */
         private val DRIFT =
             """
             WITH derived_workspace AS (
-                SELECT workspace_id, sum(bytes) AS bytes
+                SELECT workspace_id, sum(bytes) AS bytes, count(*) AS objects
                   FROM (SELECT workspace_id, raw_size_bytes AS bytes FROM message
                         UNION ALL
                         SELECT workspace_id, size_bytes FROM attachment) s
                  GROUP BY workspace_id
             ),
             unfolded_workspace AS (
-                SELECT workspace_id, sum(bytes) AS bytes FROM storage_delta GROUP BY workspace_id
+                SELECT workspace_id, sum(bytes) AS bytes, sum(objects) AS objects FROM storage_delta GROUP BY workspace_id
             ),
             derived_inbox AS (
-                SELECT inbox_id, sum(bytes) AS bytes
+                SELECT inbox_id, sum(bytes) AS bytes, count(*) AS objects
                   FROM (SELECT inbox_id, raw_size_bytes AS bytes FROM message
                         UNION ALL
                         SELECT m.inbox_id, a.size_bytes FROM attachment a JOIN message m ON m.id = a.message_id) s
                  GROUP BY inbox_id
             ),
             unfolded_inbox AS (
-                SELECT inbox_id, sum(bytes) AS bytes FROM storage_delta WHERE inbox_id IS NOT NULL GROUP BY inbox_id
+                SELECT inbox_id, sum(bytes) AS bytes, sum(objects) AS objects
+                  FROM storage_delta WHERE inbox_id IS NOT NULL GROUP BY inbox_id
             ),
             drift AS (
                 SELECT 'WORKSPACE' AS scope, w.id,
                        coalesce(d.bytes, 0) AS derived,
                        coalesce(u.bytes, 0) AS unfolded,
-                       coalesce(a.base_bytes, 0) + coalesce(u.bytes, 0) AS accounted
+                       coalesce(a.base_bytes, 0) + coalesce(u.bytes, 0) AS accounted,
+                       coalesce(d.objects, 0) AS derived_objects,
+                       coalesce(u.objects, 0) AS unfolded_objects,
+                       coalesce(a.base_objects, 0) + coalesce(u.objects, 0) AS accounted_objects
                   FROM workspace w
                   LEFT JOIN derived_workspace d ON d.workspace_id = w.id
                   LEFT JOIN unfolded_workspace u ON u.workspace_id = w.id
                   LEFT JOIN workspace_storage_account a ON a.workspace_id = w.id
                  WHERE coalesce(d.bytes, 0) <> coalesce(a.base_bytes, 0) + coalesce(u.bytes, 0)
+                    OR coalesce(d.objects, 0) <> coalesce(a.base_objects, 0) + coalesce(u.objects, 0)
                 UNION ALL
                 SELECT 'INBOX', i.id,
                        coalesce(d.bytes, 0),
                        coalesce(u.bytes, 0),
-                       coalesce(s.base_bytes, 0) + coalesce(u.bytes, 0)
+                       coalesce(s.base_bytes, 0) + coalesce(u.bytes, 0),
+                       coalesce(d.objects, 0),
+                       coalesce(u.objects, 0),
+                       coalesce(s.base_objects, 0) + coalesce(u.objects, 0)
                   FROM inbox i
                   LEFT JOIN derived_inbox d ON d.inbox_id = i.id
                   LEFT JOIN unfolded_inbox u ON u.inbox_id = i.id
                   LEFT JOIN inbox_storage s ON s.inbox_id = i.id
                  WHERE coalesce(d.bytes, 0) <> coalesce(s.base_bytes, 0) + coalesce(u.bytes, 0)
+                    OR coalesce(d.objects, 0) <> coalesce(s.base_objects, 0) + coalesce(u.objects, 0)
             )
             """.trimIndent()
     }

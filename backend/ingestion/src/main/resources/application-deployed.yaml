@@ -44,8 +44,9 @@ testinbox:
     # ADR-035 §14 / TI-STORAGE-006: OFF | TENANT_LIMITS | ALL. The default, and
     # the only value any committed environment may carry, is OFF
     # (scripts/check-storage-enforcement-off.sh). A non-OFF value is refused at
-    # startup unless every §18 declaration below is set and consistent, and the
-    # declared backend matches a shipped qualification record (§9a).
+    # startup unless every §18 declaration below is set and consistent (the
+    # bucket quota and churn figure are OPTIONAL since ADR-035 Amendment 2), and
+    # the declared backend matches a shipped qualification record (§9a).
     enforcement: ${TESTINBOX_STORAGE_ENFORCEMENT:OFF}
     global-limit-bytes: ${TESTINBOX_STORAGE_GLOBAL_LIMIT_BYTES:}
     declared-bucket-quota-bytes: ${TESTINBOX_STORAGE_DECLARED_BUCKET_QUOTA_BYTES:}
@@ -55,6 +56,21 @@ testinbox:
     activation:
       expected-api-nodes: ${TESTINBOX_STORAGE_EXPECTED_API_NODES:}
       expected-ingestion-nodes: ${TESTINBOX_STORAGE_EXPECTED_INGESTION_NODES:}
+    # The dedicated filesystem's declared budgets (filesystem-containment
+    # contract, TI-STORAGE-006E). Declarations, not proof: gate F verifies them.
+    filesystem:
+      block-size-bytes: ${TESTINBOX_STORAGE_FS_BLOCK_SIZE_BYTES:}
+      object-overhead-max-bytes: ${TESTINBOX_STORAGE_FS_OBJECT_OVERHEAD_MAX_BYTES:}
+      global-footprint-limit-bytes: ${TESTINBOX_STORAGE_FS_GLOBAL_FOOTPRINT_LIMIT_BYTES:}
+      deletion-debt-budget-bytes: ${TESTINBOX_STORAGE_FS_DELETION_DEBT_BUDGET_BYTES:}
+      metadata-budget-bytes: ${TESTINBOX_STORAGE_FS_METADATA_BUDGET_BYTES:}
+      operational-reserve-bytes: ${TESTINBOX_STORAGE_FS_OPERATIONAL_RESERVE_BYTES:}
+      capacity-bytes: ${TESTINBOX_STORAGE_FS_CAPACITY_BYTES:}
+      inodes: ${TESTINBOX_STORAGE_FS_INODES:}
+      observation-max-age: ${TESTINBOX_STORAGE_FS_OBSERVATION_MAX_AGE:}
+      probe-budget-bytes: ${TESTINBOX_STORAGE_FS_PROBE_BUDGET_BYTES:}
+      monitor-role: ${TESTINBOX_STORAGE_FS_MONITOR_ROLE:}
+      retention-pacing-max-delay: ${TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY:}
   deployment:
     environment: ${TESTINBOX_ENVIRONMENT}
     proxy-read-timeout: ${TESTINBOX_PROXY_READ_TIMEOUT}

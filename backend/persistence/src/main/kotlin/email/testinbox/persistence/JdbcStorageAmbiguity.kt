@@ -66,13 +66,70 @@ class JdbcStorageAmbiguity(
     override fun unresolvedTotal(): Int =
         jdbc.sql("SELECT count(*) FROM storage_ambiguity WHERE resolved_at IS NULL").query(Int::class.java).single()
 
+    override fun holdRefused(id: Long) {
+        // Retried after a pause, not at every pass: held rows never crowd out the rows behind them.
+        jdbc
+            .sql(
+                "UPDATE storage_ambiguity SET held_by_rule_p = true, verify_at = now() + make_interval(secs => :retry) " +
+                    "WHERE id = :id AND resolved_at IS NULL",
+            ).param("id", id)
+            .param("retry", HELD_RETRY.toSeconds().toDouble())
+            .update()
+    }
+
+    override fun holdsCoverage(nodeId: String): Boolean =
+        jdbc
+            .sql("SELECT EXISTS (SELECT 1 FROM storage_ambiguity WHERE node_id = :coverage AND resolved_at IS NULL AND held_by_rule_p)")
+            .param("coverage", coverageNode(nodeId))
+            .query(Boolean::class.java)
+            .single()
+
+    override fun holdLateObject(
+        key: String,
+        bytes: Long,
+    ) {
+        jdbc
+            .sql(
+                """
+                INSERT INTO storage_ambiguity (node_id, object_key, bytes, ambiguous_at, verify_at, held_by_rule_p)
+                SELECT :node, :key, :bytes, now(), now() + make_interval(secs => :retry), true
+                 WHERE NOT EXISTS (SELECT 1 FROM storage_ambiguity WHERE object_key = :key AND resolved_at IS NULL)
+                """.trimIndent(),
+            ).param("node", HELD_NODE)
+            .param("key", key)
+            .param("bytes", bytes)
+            .param("retry", HELD_RETRY.toSeconds().toDouble())
+            .update()
+    }
+
+    override fun unresolvedOrphaned(staleHeartbeat: java.time.Duration): Int =
+        jdbc
+            .sql(
+                """
+                SELECT count(*) FROM storage_ambiguity a
+                 WHERE a.resolved_at IS NULL
+                   AND (a.node_id NOT LIKE 'recovered:%' OR a.held_by_rule_p)
+                   AND NOT EXISTS (SELECT 1 FROM storage_node n
+                                    WHERE n.node_id = a.node_id AND NOT n.clean_shutdown
+                                      AND n.heartbeat_at > now() - make_interval(secs => :stale))
+                """.trimIndent(),
+            ).param("stale", staleHeartbeat.toSeconds().toDouble())
+            .query(Int::class.java)
+            .single()
+
+    override fun heldRefused(): Int =
+        jdbc
+            .sql("SELECT count(*) FROM storage_ambiguity WHERE resolved_at IS NULL AND held_by_rule_p")
+            .query(Int::class.java)
+            .single()
+
     override fun due(limit: Int): List<AmbiguityRecord> =
         jdbc
             .sql(
                 """
-                SELECT id, node_id, object_key, ambiguous_at FROM storage_ambiguity
+                SELECT id, node_id, object_key, ambiguous_at, held_by_rule_p FROM storage_ambiguity
                  WHERE resolved_at IS NULL AND verify_at <= now()
-                 ORDER BY id LIMIT :limit
+                 ORDER BY held_by_rule_p, id LIMIT :limit
                 """.trimIndent(),
             ).param("limit", limit)
             .query { rs, _ ->
@@ -81,6 +138,7 @@ class JdbcStorageAmbiguity(
                     rs.getString("node_id"),
                     rs.getString("object_key"),
                     checkNotNull(Timestamps.fromDb(rs, "ambiguous_at")),
+                    rs.getBoolean("held_by_rule_p"),
                 )
             }.list()
 
@@ -123,8 +181,8 @@ class JdbcStorageAmbiguity(
     ) {
         jdbc
             .sql(
-                "INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown) " +
-                    "VALUES (:node, :generation, :capability, now(), false)",
+                "INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown, containment) " +
+                    "VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT)",
             ).param("node", nodeId)
             .param("generation", generation)
             .param("capability", capability)
@@ -142,8 +200,8 @@ class JdbcStorageAmbiguity(
         jdbc
             .sql(
                 """
-                INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown)
-                VALUES (:node, :generation, :capability, now(), false)
+                INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown, containment)
+                VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT)
                 ON CONFLICT (node_id, generation) DO UPDATE SET heartbeat_at = now()
                 RETURNING xmax <> 0
                 """.trimIndent(),
@@ -248,5 +306,20 @@ class JdbcStorageAmbiguity(
                 .param("reason", reason.take(500))
                 .update()
         }
+    }
+
+    companion object {
+        /** A held late object is re-offered to (P) this long after each refusal. */
+        val HELD_RETRY: java.time.Duration = java.time.Duration.ofMinutes(5)
+
+        /**
+         * The containment level this artifact registers (V10): it enforces rules (G),
+         * (C) and (P). Every earlier artifact leaves the column's default, 0, and
+         * activation gate F refuses while any live node is below 1.
+         */
+        const val CONTAINMENT = 1
+
+        /** The node id of late objects the orphan sweep holds: never a live node, so they count against every slot. */
+        const val HELD_NODE = "held:orphan-sweep"
     }
 }

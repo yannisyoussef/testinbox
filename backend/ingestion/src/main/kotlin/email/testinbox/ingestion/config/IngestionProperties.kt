@@ -53,18 +53,20 @@ data class IngestionProperties(
         val enforcement: StorageEnforcement = StorageEnforcement.OFF,
         /** *G*, the global application ceiling in bytes (ADR-035 §3). Required when enforcement is not OFF. */
         val globalLimitBytes: Long? = null,
-        /** *Q*, the bucket quota Ops set, in bytes; the fuse `Q ≥ G + max(1 GiB, 10 % of G, H + churn)` (§9). */
+        /** OPTIONAL: the MinIO bucket quota, a secondary defence only (ADR-035 Amendment 2); never required, only checked to be positive. */
         val declaredBucketQuotaBytes: Long? = null,
         /** Ingestion processes that can run at once, deploy surge INCLUDED (§9: a rolling deploy that overlaps two must declare 2). */
         val declaredMaxIngestionProcesses: Int? = null,
         /** The inbox share of the workspace limit, decimal text in (0, 1] (§3). */
         val inboxShare: String? = null,
-        /** The bytes MinIO can accept during one usage-refresh lag, as Ops measured it (§9, §18 gate 8). */
+        /** OPTIONAL and informational since ADR-035 Amendment 2: the bytes MinIO accepted during one usage-refresh lag; if set, never negative. */
         val measuredQuotaLagChurnBytes: Long? = null,
         /** The declared storage combination, matched against the shipped qualification records (§9a). */
         val backendIdentity: BackendIdentityProperties = BackendIdentityProperties(),
         /** The node inventory the activation barrier expects (TI-STORAGE-006 §20). */
         val activation: ActivationProperties = ActivationProperties(),
+        /** The dedicated filesystem's declared budgets (filesystem-containment contract, TI-STORAGE-006E). */
+        val filesystem: email.testinbox.application.FilesystemProperties = email.testinbox.application.FilesystemProperties(),
     )
 
     /** The framework-free declarations `DeploymentSafety` and `EffectiveStoragePolicy` read (ADR-035 §18). */
@@ -82,6 +84,7 @@ data class IngestionProperties(
             activation = storage.activation,
             nodeId = storage.nodeId,
             nodeRole = email.testinbox.application.storage.NodeRole.INGESTION,
+            filesystem = storage.filesystem,
         )
 
     /**

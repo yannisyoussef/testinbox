@@ -352,14 +352,44 @@ class ApiWiring(
         blobs: BlobStore,
         tx: TransactionRunner,
         config: TestInboxConfig,
-    ): ExpireInboxes = ExpireInboxes(inboxes, reservations, blobs, tx, clock, config, inboxMetrics)
+        ledger: StorageLedger,
+        declarations: email.testinbox.application.storage.StorageDeclarations,
+    ): ExpireInboxes =
+        ExpireInboxes(
+            inboxes,
+            reservations,
+            blobs,
+            tx,
+            clock,
+            config,
+            inboxMetrics,
+            // TI-STORAGE-006E PR D: paced under ALL with a declared filesystem only.
+            email.testinbox.application.storage.FootprintWiring.pacedTeardown(
+                declarations,
+                ledger,
+                clock,
+                inboxes as? email.testinbox.application.port.InboxTeardown,
+            ),
+        )
 
     /** ADR-035 §10 ledger compaction. Observational only: nothing admits or refuses on it yet. */
     @Bean
     fun compactStorageLedger(
         ledger: StorageLedger,
         metrics: StorageAccountingMetrics,
-    ): CompactStorageLedger = CompactStorageLedger(ledger, metrics)
+        reconcile: ReconcileStorageAccounting,
+        declarations: email.testinbox.application.storage.StorageDeclarations,
+    ): CompactStorageLedger =
+        CompactStorageLedger(
+            ledger,
+            metrics,
+            clock = clock,
+            // TI-STORAGE-006E PR D: with a declared filesystem, a distrust event is
+            // reconciled within a minute, not at the next 6 h pass.
+            onUntrusted =
+                email.testinbox.application.storage.FootprintWiring
+                    .onUntrusted(declarations) { reconcile.reconcile() },
+        )
 
     /** ADR-035 §10 reconciliation of the ledger against the source rows. */
     @Bean
@@ -416,5 +446,6 @@ class ApiWiring(
     fun messageQueries(
         messages: MessageRepository,
         blobs: BlobStore,
-    ): MessageQueries = MessageQueries(messages, blobs)
+        inboxes: InboxRepository,
+    ): MessageQueries = MessageQueries(messages, blobs, inboxes)
 }

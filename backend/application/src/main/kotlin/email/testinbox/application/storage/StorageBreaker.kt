@@ -23,8 +23,15 @@ class StorageBreaker(
     private val initialBackoff: Duration = Duration.ofSeconds(15),
     private val maxBackoff: Duration = Duration.ofMinutes(2),
     private val nanoTime: () -> Long = System::nanoTime,
+    /**
+     * What reopens a `STORAGE_FULL` trip (filesystem-containment contract §8):
+     * a full filesystem accepts a zero-byte probe, so only Ops evidence may.
+     * The default never does: without a monitor, only a restart clears it.
+     * Its evidence is read outside the breaker's lock; a failure counts as "no".
+     */
+    private val storageFullGate: StorageFullGate = StorageFullGate.NEVER,
 ) {
-    enum class Kind { UNAVAILABLE, TIMEOUT, SERVER_ERROR, AMBIGUOUS, QUOTA, CLOCK_OFFSET }
+    enum class Kind { UNAVAILABLE, TIMEOUT, SERVER_ERROR, AMBIGUOUS, QUOTA, CLOCK_OFFSET, STORAGE_FULL }
 
     sealed interface Admission {
         /** Closed: proceed. */
@@ -44,8 +51,12 @@ class StorageBreaker(
             /** The trip generation this trial was issued for. */
             val epoch: Long = 0,
         ) : Admission {
-            /** Whether the caller's real event is part of the trial (quota). */
-            val needsRealEvent: Boolean get() = Kind.QUOTA in kinds
+            /**
+             * Whether the caller's real event is part of the trial: quota and a
+             * full filesystem both accept a zero-byte probe, so only a real
+             * allocation through the normal reservation path proves recovery.
+             */
+            val needsRealEvent: Boolean get() = Kind.QUOTA in kinds || Kind.STORAGE_FULL in kinds
         }
     }
 
@@ -57,17 +68,56 @@ class StorageBreaker(
     /** Bumped on every trip, so a trial only ever closes the trips it was issued for. */
     private var epoch = 0L
 
-    @Synchronized
     fun admit(): Admission {
-        if (kinds.isEmpty()) return Admission.Closed
-        if (trialInFlight || nanoTime() - retryAt < 0) return Admission.Blocked(kinds.toSet())
-        trialInFlight = true
-        return Admission.Trial(kinds.toSet(), epoch)
+        val evidence = evidenceIfNeeded()
+        synchronized(this) {
+            if (kinds.isEmpty()) return Admission.Closed
+            if (trialInFlight || nanoTime() - retryAt < 0) return Admission.Blocked(kinds.toSet())
+            // No trial, and no trial consumed, while a full filesystem has no evidence of
+            // recovery FOR THIS trip generation: evidence read before a later trip is void.
+            if (Kind.STORAGE_FULL in kinds && !evidence.holdsFor(epoch)) return Admission.Blocked(kinds.toSet())
+            trialInFlight = true
+            return Admission.Trial(kinds.toSet(), epoch)
+        }
     }
 
     /** Whether a caller would be refused right now. Consumes no trial. */
-    @Synchronized
-    fun isBlocked(): Boolean = kinds.isNotEmpty() && (trialInFlight || nanoTime() - retryAt < 0)
+    fun isBlocked(): Boolean {
+        val evidence = evidenceIfNeeded()
+        synchronized(this) {
+            if (kinds.isEmpty()) return false
+            if (trialInFlight || nanoTime() - retryAt < 0) return true
+            return Kind.STORAGE_FULL in kinds && !evidence.holdsFor(epoch)
+        }
+    }
+
+    /** An evidence answer, and the trip generation it was read for. */
+    private data class Evidence(
+        val epoch: Long,
+        val holds: Boolean,
+    )
+
+    private fun Evidence?.holdsFor(current: Long): Boolean = this != null && holds && epoch == current
+
+    /**
+     * The evidence check, run OUTSIDE the lock (it reads the database), and
+     * only when a STORAGE_FULL trial could be due. Null means "not checked":
+     * a STORAGE_FULL trip that lands between the two looks counts as no
+     * evidence, so the race can only keep the breaker shut.
+     */
+    private fun evidenceIfNeeded(): Evidence? {
+        val generation =
+            synchronized(this) {
+                epoch.takeIf { Kind.STORAGE_FULL in kinds && !trialInFlight && nanoTime() - retryAt >= 0 }
+            } ?: return null
+        val holds =
+            try {
+                storageFullGate.evidence()
+            } catch (e: Exception) {
+                false
+            }
+        return Evidence(generation, holds)
+    }
 
     /** A physical failure: open, or re-open after a failed trial with a doubled backoff. */
     @Synchronized
@@ -84,7 +134,13 @@ class StorageBreaker(
         epoch++
         trialInFlight = false
         retryAt = nanoTime() + backoff.toNanos()
+        // Every STORAGE_FULL trip, a failed trial's included, invalidates every earlier observation.
+        if (kind == Kind.STORAGE_FULL) storageFullGate.tripped()
     }
+
+    /** The kinds currently open, for metrics, logs and tests. */
+    @get:Synchronized
+    val openKinds: Set<Kind> get() = kinds.toSet()
 
     /** The trial ended without an answer (the event stored nothing): the next caller trials instead. */
     @Synchronized

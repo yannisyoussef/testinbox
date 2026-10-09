@@ -137,54 +137,6 @@ class StorageCapacityPolicy(
 enum class StorageScope { INBOX, WORKSPACE, GLOBAL }
 
 /**
- * The bucket-quota fuse of ADR-035 §9 and §18 prerequisite 8:
- *
- * ```
- * Q ≥ G + max(1 GiB, 10 %, H + the bytes MinIO can accept during one usage-refresh lag)
- * ```
- *
- * **Interpretation of "10 %", fixed here and documented by a test:** ten per
- * cent of *G*, computed as `floor(G / 10)`. Every term of the margin is
- * headroom above *G* (the fixed 1 GiB, the finalize budget plus the lag
- * churn), so the proportional term is read against the same base. The owner
- * decision in §0 (a 40 GiB ceiling under a 50 GiB quota) satisfies it:
- * `40 + max(1, 4, 0.23 + churn) = 44 GiB ≤ 50 GiB` for any churn under 3.77 GiB.
- *
- * *Q* is a fuse, never the bound (§9: MinIO's quota is checked against
- * lagging usage, probes Q2–Q7). A quota below this minimum does not make the
- * bound wrong; it makes the fuse useless, so a non-OFF deployment refuses to
- * start on it (§18 gate 8).
- *
- * All arithmetic is checked: an overflow is a configuration failure, never a
- * wrapped margin.
- */
-object BucketQuotaFuse {
-    const val GIB: Long = 1024L * 1024 * 1024
-
-    /** The smallest quota the fuse accepts for [globalLimitBytes], [finalizeBudgetBytes] and [lagChurnBytes]. */
-    fun minimumQuotaBytes(
-        globalLimitBytes: Long,
-        finalizeBudgetBytes: Long,
-        lagChurnBytes: Long,
-    ): Long {
-        require(globalLimitBytes > 0) { "G must be positive, was $globalLimitBytes" }
-        require(finalizeBudgetBytes >= 0) { "H must not be negative, was $finalizeBudgetBytes" }
-        require(lagChurnBytes >= 0) { "the measured usage-lag churn must not be negative, was $lagChurnBytes" }
-        val tenPercentOfG = globalLimitBytes / 10
-        val finalizeAndChurn = Math.addExact(finalizeBudgetBytes, lagChurnBytes)
-        return Math.addExact(globalLimitBytes, maxOf(GIB, tenPercentOfG, finalizeAndChurn))
-    }
-
-    /** Whether [declaredQuotaBytes] satisfies the fuse. Throws [ArithmeticException] on overflow, never wraps. */
-    fun holds(
-        declaredQuotaBytes: Long,
-        globalLimitBytes: Long,
-        finalizeBudgetBytes: Long,
-        lagChurnBytes: Long,
-    ): Boolean = declaredQuotaBytes >= minimumQuotaBytes(globalLimitBytes, finalizeBudgetBytes, lagChurnBytes)
-}
-
-/**
  * Which ceilings may refuse a copy: exactly the rollout states ADR-035 §14
  * needs.
  *
@@ -241,11 +193,34 @@ enum class StorageRefusalReason(
 data class StorageUsage(
     val committedBytes: Long,
     val reservedBytes: Long,
+    /** Objects behind [committedBytes]: every `message` row and every `attachment` row (TI-STORAGE-006E). */
+    val committedObjects: Long = 0,
+    /** Objects behind [reservedBytes]: Σ `cardinality(object_keys)` of every unreleased reservation. */
+    val reservedObjects: Long = 0,
 ) {
+    init {
+        require(committedObjects >= 0 && reservedObjects >= 0) { "object counts cannot be negative: $committedObjects / $reservedObjects" }
+    }
+
     val usedBytes: Long get() = Math.addExact(committedBytes, reservedBytes)
 
     /** What [limitBytes] still allows, never below zero. */
     fun availableBytes(limitBytes: Long): Long = maxOf(0L, Math.subtractExact(limitBytes, usedBytes))
+
+    /**
+     * The footprint bound of the committed objects under [model]
+     * (contract §3.3): what they can cost on the filesystem, never less. A
+     * negative committed figure (drift, until reconciliation) is read as zero
+     * here, since a bound cannot be negative; the payload figure is carried
+     * as it is.
+     */
+    fun committedFootprintBytes(model: FootprintModel): Long = model.bound(maxOf(0L, committedBytes), committedObjects)
+
+    /** The footprint bound of the reserved objects under [model]. */
+    fun reservedFootprintBytes(model: FootprintModel): Long = model.bound(maxOf(0L, reservedBytes), reservedObjects)
+
+    /** `F_c + F_r`: what the committed and reserved objects together can cost on the filesystem. */
+    fun usedFootprintBytes(model: FootprintModel): Long = Math.addExact(committedFootprintBytes(model), reservedFootprintBytes(model))
 
     companion object {
         val ZERO = StorageUsage(0, 0)

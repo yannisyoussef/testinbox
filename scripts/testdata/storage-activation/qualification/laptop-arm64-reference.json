@@ -43,5 +43,26 @@
     ]
   },
   "enablementEligible": true,
-  "ineligibilityReasons": []
+  "ineligibilityReasons": [],
+  "filesystem": {
+    "uuid": "0b6c3f1e-6a52-4c1e-9d0a-5f1e2b3c4d5e",
+    "type": "ext4",
+    "mountOptions": "rw,relatime",
+    "mountSource": "/var/lib/testinbox/minio-data.img",
+    "objectOverheadMaxBytes": 24576,
+    "metadataInodesMeasured": 20000,
+    "experiments": {
+      "E1": "PASS",
+      "E2": "PASS",
+      "E3": "PASS",
+      "E4": "PASS",
+      "E5": "PASS",
+      "E6": "PASS",
+      "E7": "PASS",
+      "E8": "PASS",
+      "E9": "PASS",
+      "E10": "PASS",
+      "E11": "PASS"
+    }
+  }
 }

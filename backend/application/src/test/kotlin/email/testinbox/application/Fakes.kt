@@ -249,7 +249,7 @@ class InMemoryMessageRepository : MessageRepository {
     override fun exists(id: MessageId): Boolean = messages.any { it.id == id }
 }
 
-class InMemoryBlobStore : BlobStore {
+open class InMemoryBlobStore : BlobStore {
     data class Entry(
         val bytes: ByteArray,
         val contentType: String,
@@ -293,7 +293,11 @@ class InMemoryBlobStore : BlobStore {
         blobs.remove(key)
     }
 
+    /** Prefixes whose delete fails as a partial `DeleteObjects` would (TI-STORAGE-006E): nothing under them is removed. */
+    val failingPrefixes = mutableSetOf<String>()
+
     override fun deletePrefix(prefix: String) {
+        check(prefix !in failingPrefixes) { "1 of the listed objects were not deleted: {InternalError=1}" }
         blobs.keys.removeAll { it.startsWith(prefix) }
     }
 

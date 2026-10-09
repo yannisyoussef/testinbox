@@ -94,6 +94,42 @@ data class ActivationProperties(
 }
 
 /**
+ * `testinbox.storage.filesystem.*`: the dedicated filesystem's declared
+ * budgets (filesystem-containment contract §1; TI-STORAGE-006E). Declarations
+ * only: the Ops checker verifies the filesystem (gate F).
+ */
+data class FilesystemProperties(
+    val blockSizeBytes: Long? = null,
+    val objectOverheadMaxBytes: Long? = null,
+    val globalFootprintLimitBytes: Long? = null,
+    val deletionDebtBudgetBytes: Long? = null,
+    val metadataBudgetBytes: Long? = null,
+    val operationalReserveBytes: Long? = null,
+    val capacityBytes: Long? = null,
+    val inodes: Long? = null,
+    val observationMaxAge: java.time.Duration? = null,
+    val probeBudgetBytes: Long? = null,
+    val monitorRole: String? = null,
+    val retentionPacingMaxDelay: java.time.Duration? = null,
+) {
+    fun toDeclarations(): email.testinbox.application.storage.FilesystemDeclarations =
+        email.testinbox.application.storage.FilesystemDeclarations(
+            blockSizeBytes = blockSizeBytes,
+            objectOverheadMaxBytes = objectOverheadMaxBytes,
+            globalFootprintLimitBytes = globalFootprintLimitBytes,
+            deletionDebtBudgetBytes = deletionDebtBudgetBytes,
+            metadataBudgetBytes = metadataBudgetBytes,
+            operationalReserveBytes = operationalReserveBytes,
+            capacityBytes = capacityBytes,
+            inodes = inodes,
+            observationMaxAge = observationMaxAge,
+            probeBudgetBytes = probeBudgetBytes,
+            monitorRole = monitorRole?.takeIf { it.isNotBlank() },
+            retentionPacingMaxDelay = retentionPacingMaxDelay,
+        )
+}
+
+/**
  * Builds the framework-free [StorageDeclarations] from the values both
  * deployables bind under `testinbox.storage.*`. One function, so the API and
  * the gateway cannot interpret the same keys differently.
@@ -113,6 +149,7 @@ object StorageDeclarationsFactory {
         activation: ActivationProperties = ActivationProperties(),
         nodeId: String? = null,
         nodeRole: NodeRole? = null,
+        filesystem: FilesystemProperties = FilesystemProperties(),
     ): StorageDeclarations =
         StorageDeclarations(
             enforcement = enforcement,
@@ -127,5 +164,6 @@ object StorageDeclarationsFactory {
             expectedIngestionNodes = activation.toExpectedNodes().ingestion,
             expectedApiNodes = activation.toExpectedNodes().api,
             node = if (nodeId != null && nodeRole != null) DeclaredNode(nodeId, nodeRole) else null,
+            filesystem = filesystem.toDeclarations(),
         )
 }

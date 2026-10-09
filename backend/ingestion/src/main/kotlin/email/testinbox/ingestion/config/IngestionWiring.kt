@@ -16,9 +16,13 @@ import email.testinbox.application.port.StorageInspection
 import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.storage.EffectiveStoragePolicy
+import email.testinbox.application.storage.FootprintPrecheck
+import email.testinbox.application.storage.FootprintWiring
 import email.testinbox.application.storage.GuardedStorage
+import email.testinbox.application.storage.RowFreeDebt
 import email.testinbox.application.storage.StorageBreaker
 import email.testinbox.application.storage.StorageDeclarations
+import email.testinbox.application.storage.StorageFullEvidence
 import email.testinbox.application.storage.StorageNode
 import email.testinbox.application.storage.StorageNodeLifecycle
 import email.testinbox.application.storage.WriteSlots
@@ -27,6 +31,7 @@ import email.testinbox.application.storage.activation.ActivationWatch
 import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.application.usecase.StorageAdmission
 import email.testinbox.domain.storage.StorageCapacityPolicy
+import email.testinbox.domain.storage.StorageScope
 import email.testinbox.ingestion.mime.JakartaMimeParser
 import email.testinbox.ingestion.ops.StorageNodeRuntime
 import email.testinbox.observability.BuildInfoMetric
@@ -37,7 +42,10 @@ import email.testinbox.observability.MicrometerSmtpMetrics
 import email.testinbox.observability.MicrometerStorageProtocolMetrics
 import email.testinbox.persistence.BundledMigrations
 import email.testinbox.persistence.JdbcActivationInventory
+import email.testinbox.persistence.JdbcFilesystemObservations
+import email.testinbox.persistence.JdbcFootprintGate
 import email.testinbox.persistence.JdbcRateLimiter
+import email.testinbox.persistence.JdbcRowFreeDebtStore
 import email.testinbox.persistence.JdbcSchemaHistory
 import email.testinbox.persistence.JdbcStorageAdmission
 import email.testinbox.persistence.JdbcStorageAmbiguity
@@ -161,8 +169,20 @@ class IngestionWiring(
 
     // --- ADR-035 guarded ingest protocol (TI-STORAGE-003) ------------------------------------------
 
+    /** The breaker's probe goes through rule (P) (TI-STORAGE-006E PR D). */
     @Bean
-    fun storageInspection(blobs: BlobStore): StorageInspection = (blobs as S3BlobStore).inspection()
+    fun storageInspection(
+        blobs: BlobStore,
+        rowFreeDebt: RowFreeDebt,
+    ): StorageInspection = rowFreeDebt.guard((blobs as S3BlobStore).inspection())
+
+    /** Rule (P) for the gateway's row-free writes: the breaker probe (contract §2.1). */
+    @Bean
+    fun rowFreeDebt(
+        jdbc: JdbcClient,
+        transactionManager: PlatformTransactionManager,
+        declarations: StorageDeclarations,
+    ): RowFreeDebt = FootprintWiring.rowFreeDebt(JdbcRowFreeDebtStore(jdbc, template(transactionManager)), declarations)
 
     /** Each adapter owns its transactions explicitly (READ COMMITTED is stated in the SQL). */
     private fun template(transactionManager: PlatformTransactionManager) = TransactionTemplate(transactionManager)
@@ -182,14 +202,39 @@ class IngestionWiring(
     @Bean
     fun storageNode(properties: IngestionProperties): StorageNode = StorageNode(properties.storage.nodeId, UUID.randomUUID())
 
+    /**
+     * The breaker. A `STORAGE_FULL` trip reopens only on Ops evidence: a fresh
+     * filesystem observation with the operational reserve available
+     * (filesystem-containment contract §8). Without a monitor writing
+     * observations, only a restart clears that kind.
+     */
     @Bean
-    fun storageBreaker(): StorageBreaker = StorageBreaker()
+    fun storageBreaker(
+        jdbc: JdbcClient,
+        properties: IngestionProperties,
+    ): StorageBreaker {
+        val filesystem = properties.storage.filesystem.toDeclarations()
+        return StorageBreaker(
+            storageFullGate = StorageFullEvidence.forDeclarations(JdbcFilesystemObservations(jdbc), filesystem),
+        )
+    }
 
     @Bean
     fun writeSlots(
         ambiguity: JdbcStorageAmbiguity,
         node: StorageNode,
-    ): WriteSlots = WriteSlots(ambiguous = { ambiguity.unresolvedFor(node.nodeId) })
+        declarations: StorageDeclarations,
+    ): WriteSlots =
+        WriteSlots(
+            ambiguous = { ambiguity.unresolvedFor(node.nodeId) },
+            // Contract Lemma 3: rows no live node answers for count against every node's
+            // slots, so H_F bounds the late objects whatever node ids come and go. Only while
+            // the global footprint rules enforce: OFF and TENANT_LIMITS keep per-node slots.
+            orphaned =
+                FootprintWiring.orphanedSlots(declarations) {
+                    ambiguity.unresolvedOrphaned(email.testinbox.application.storage.StorageProtocol.STALE_HEARTBEAT)
+                },
+        )
 
     /**
      * ADR-035 §18: what this deployment declares, with the qualification
@@ -261,10 +306,10 @@ class IngestionWiring(
         policy: StorageCapacityPolicy,
         declarations: StorageDeclarations,
     ): StorageAdmission =
-        StorageAdmission(
-            JdbcStorageAdmission(jdbc, template(transactionManager)),
+        FootprintWiring.admission(
+            JdbcStorageAdmission(jdbc, template(transactionManager), readsFootprint = FootprintWiring.readsFootprint(declarations)),
             policy,
-            declarations.enforcement,
+            declarations,
         )
 
     /** A @Bean method's parameters are its dependencies: one per protocol collaborator. */
@@ -282,6 +327,8 @@ class IngestionWiring(
         transactions: TransactionRunner,
         storageMetrics: StorageProtocolMetrics,
         activation: ActivationGuard,
+        declarations: StorageDeclarations,
+        jdbc: JdbcClient,
     ): GuardedStorage =
         GuardedStorage(
             admission = admission,
@@ -297,6 +344,8 @@ class IngestionWiring(
             clock = reservations,
             metrics = storageMetrics,
             activation = activation,
+            footprint =
+                FootprintWiring.precheck(declarations, JdbcFootprintGate(jdbc)),
         )
 
     /** A @Bean method's parameters are its dependencies: one per runtime collaborator. */

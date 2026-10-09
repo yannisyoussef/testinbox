@@ -4,7 +4,9 @@ import email.testinbox.api.ops.ApiStorageNodeRuntime
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.StorageInspection
 import email.testinbox.application.port.StorageProtocolMetrics
+import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.ReleaseStaleReservations
+import email.testinbox.application.storage.RowFreeDebt
 import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.application.storage.StorageNode
 import email.testinbox.application.storage.StorageNodeLifecycle
@@ -13,6 +15,7 @@ import email.testinbox.application.storage.activation.ActivationGuard
 import email.testinbox.application.storage.activation.ActivationWatch
 import email.testinbox.application.usecase.OrphanBlobSweep
 import email.testinbox.persistence.JdbcActivationInventory
+import email.testinbox.persistence.JdbcRowFreeDebtStore
 import email.testinbox.persistence.JdbcStorageAmbiguity
 import email.testinbox.persistence.JdbcStorageNodeClaims
 import email.testinbox.persistence.JdbcStorageReservations
@@ -37,8 +40,24 @@ class ApiStorageWiring(
     private val properties: TestInboxProperties,
     private val clock: Clock,
 ) {
+    /** The witness probe goes through rule (P) (TI-STORAGE-006E PR D). */
     @Bean
-    fun storageInspection(blobs: BlobStore): StorageInspection = (blobs as S3BlobStore).inspection()
+    fun storageInspection(
+        blobs: BlobStore,
+        rowFreeDebt: RowFreeDebt,
+    ): StorageInspection = rowFreeDebt.guard((blobs as S3BlobStore).inspection())
+
+    /** Rule (P) for every row-free deletion: the sweep, the verifier, the probes (contract §2.1). */
+    @Bean
+    fun rowFreeDebt(
+        jdbc: JdbcClient,
+        transactionManager: PlatformTransactionManager,
+        declarations: StorageDeclarations,
+    ): RowFreeDebt =
+        email.testinbox.application.storage.FootprintWiring.rowFreeDebt(
+            JdbcRowFreeDebtStore(jdbc, TransactionTemplate(transactionManager)),
+            declarations,
+        )
 
     /**
      * ADR-035 §18: what this deployment declares, with the qualification
@@ -97,7 +116,8 @@ class ApiStorageWiring(
         reservations: JdbcStorageReservations,
         inspection: StorageInspection,
         metrics: StorageProtocolMetrics,
-    ): VerifyAmbiguousUploads = VerifyAmbiguousUploads(ambiguity, ambiguity, reservations, inspection, metrics)
+        rowFreeDebt: RowFreeDebt,
+    ): VerifyAmbiguousUploads = VerifyAmbiguousUploads(ambiguity, ambiguity, reservations, inspection, metrics, rowFree = rowFreeDebt)
 
     /** ADR-035 §14 (a): the API is a protocol participant and appears in the positive node inventory (TI-STORAGE-006 §18). */
     @Bean
@@ -117,5 +137,25 @@ class ApiStorageWiring(
         ambiguity: JdbcStorageAmbiguity,
         inspection: StorageInspection,
         metrics: StorageProtocolMetrics,
-    ): OrphanBlobSweep = OrphanBlobSweep(blobs, reservations, ambiguity, ambiguity, inspection, clock, properties.orphanMinAge, metrics)
+        rowFreeDebt: RowFreeDebt,
+        dataSource: DataSource,
+    ): OrphanBlobSweep =
+        OrphanBlobSweep(
+            blobs,
+            reservations,
+            ambiguity,
+            ambiguity,
+            inspection,
+            clock,
+            properties.orphanMinAge,
+            metrics,
+            OrphanBlobSweep.Containment(
+                rowFreeDebt,
+                email.testinbox.persistence.JdbcSweepRuns(
+                    org.springframework.jdbc.core.simple.JdbcClient
+                        .create(dataSource),
+                    properties.storage.nodeId,
+                ),
+            ),
+        )
 }

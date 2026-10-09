@@ -115,6 +115,28 @@
   other tenants' aggregate usage near the cap. Workspaces are operator
   provisioned; quantising the admission cap or adding hysteresis are named
   follow-ups. While live enforcement is OFF, no refusal is recorded at all.
+- **Short post-resolution `451` windows of the guarded protocol**
+  (TI-STORAGE-006E PR D, filesystem-containment contract §4.5, §8). Every
+  *stable* infrastructure state that refuses mail — the latch, an open breaker,
+  a broken activation barrier, untrusted footprint counts, no or an invalid
+  observation, corrupt totals, write slots exhausted by unresolved ambiguity —
+  is answered `451` **before** recipient resolution, the same for every
+  recipient. Three races remain, each bounded to the moment a state changes and
+  sharing the noise profile of an admission `LOCK_TIMEOUT`:
+  (1) the footprint state changes between the pre-resolution check (reused
+  for up to 1 s) and T1's own snapshot; (2) a `STORAGE_FULL` breaker's
+  half-open trial fails (or its probe is refused by rule (P)) after resolution;
+  (3) an inbox stops receiving — expired by the sweep or deleted by its owner —
+  while an upload into it is in flight, and T2 fences the whole event. None is
+  a stable state an attacker can hold open: each answers "a recipient existed
+  at that instant", which address entropy already makes infeasible to aim.
+- **Envelope-order capacity refusals under `ALL`** (contract §11.6): with
+  footprint admission, copies of one event are decided against running totals
+  in envelope order, so a tenant parking global headroom at the cliff could
+  learn from its own `SERVICE_CAPACITY` record whether a foreign address
+  preceding its own in an envelope exists. One of the contract's mitigations is
+  mandatory before `ALL` carries real traffic; until then `DeploymentSafety`
+  refuses `ALL` in production.
 - **Enumeration via limit responses**: none. Rate and quota enforcement never
   changes an SMTP reply — a syntactically valid recipient always receives the
   uniform `250` of ADR-025, whether its workspace is over quota, over its

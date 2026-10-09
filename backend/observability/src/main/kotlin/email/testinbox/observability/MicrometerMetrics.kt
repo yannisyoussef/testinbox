@@ -8,6 +8,7 @@ import email.testinbox.application.port.BlobOutcome
 import email.testinbox.application.port.BlobStoreMetrics
 import email.testinbox.application.port.CompactionOutcome
 import email.testinbox.application.port.DriftDirection
+import email.testinbox.application.port.FootprintKind
 import email.testinbox.application.port.IdempotencyMetrics
 import email.testinbox.application.port.IdempotencyOutcome
 import email.testinbox.application.port.InboundMetrics
@@ -60,6 +61,17 @@ class MicrometerInboxMetrics(
 
     override fun inboxExpired(count: Int) {
         if (count > 0) registry.counter("testinbox_inbox_expired_total").increment(count.toDouble())
+    }
+
+    private val retentionBacklog =
+        java.util.concurrent.atomic.AtomicLong(0).also {
+            io.micrometer.core.instrument.Gauge
+                .builder("testinbox_storage_retention_backlog_seconds", it) { v -> v.get().toDouble() }
+                .register(registry)
+        }
+
+    override fun retentionBacklog(seconds: Long) {
+        retentionBacklog.set(maxOf(0L, seconds))
     }
 
     override fun inboxDeleted() {
@@ -347,8 +359,21 @@ class MicrometerStorageAccountingMetrics(
     private val unfoldedRows = AtomicLong(0)
     private val committedBytes = AtomicLong(0)
 
+    private val footprint = FootprintKind.entries.associateWith { AtomicLong(0) }
+    private val observationAge = AtomicLong(-1)
+    private val countsTrusted = AtomicLong(0)
+
     init {
         Gauge.builder(UNFOLDED, unfoldedRows) { it.get().toDouble() }.register(registry)
+        footprint.forEach { (kind, value) ->
+            Gauge
+                .builder(FOOTPRINT, value) { it.get().toDouble() }
+                .tags(Tags.of("kind", kind.name.lowercase()))
+                .register(registry)
+        }
+        // -1 until an observation has ever been seen: "never" must not read as "fresh".
+        Gauge.builder(OBSERVATION_AGE, observationAge) { it.get().toDouble() }.register(registry)
+        Gauge.builder(COUNTS_TRUSTED, countsTrusted) { it.get().toDouble() }.register(registry)
         Gauge
             .builder(COVERED, committedBytes) { it.get().toDouble() }
             .tags(Tags.of("kind", "committed"))
@@ -366,6 +391,21 @@ class MicrometerStorageAccountingMetrics(
         this.committedBytes.set(committedBytes)
     }
 
+    override fun footprintObserved(
+        kind: FootprintKind,
+        bytes: Long,
+    ) {
+        footprint[kind]?.set(bytes)
+    }
+
+    override fun filesystemObservationAge(seconds: Long) {
+        observationAge.set(if (seconds < 0) -1 else seconds)
+    }
+
+    override fun footprintCountsTrusted(trusted: Boolean) {
+        countsTrusted.set(if (trusted) 1 else 0)
+    }
+
     override fun driftRepaired(direction: DriftDirection) {
         registry.counter(DRIFT, "direction", direction.name.lowercase()).increment()
     }
@@ -380,6 +420,9 @@ class MicrometerStorageAccountingMetrics(
 
     private companion object {
         const val UNFOLDED = "testinbox_storage_ledger_unfolded_rows"
+        const val FOOTPRINT = "testinbox_storage_footprint_bytes"
+        const val OBSERVATION_AGE = "testinbox_storage_filesystem_observation_age_seconds"
+        const val COUNTS_TRUSTED = "testinbox_storage_footprint_counts_trusted"
         const val COVERED = "testinbox_storage_covered_bytes"
         const val DRIFT = "testinbox_storage_accounting_drift_total"
         const val RECONCILIATION = "testinbox_storage_reconciliation_total"

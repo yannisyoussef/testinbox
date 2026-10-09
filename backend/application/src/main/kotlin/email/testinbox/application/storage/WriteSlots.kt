@@ -30,6 +30,16 @@ class WriteSlots(
     private val perWorkspace: Int = StorageProtocol.MAX_EVENTS_PER_WORKSPACE,
     private val waitTimeout: Duration = StorageProtocol.SLOT_WAIT,
     /**
+     * Unresolved ambiguity rows no LIVE node answers for: a dead or replaced
+     * node's rows, and late objects rule (P) holds (TI-STORAGE-006E PR D,
+     * contract Lemma 3). Counted against EVERY node's slots, so the late
+     * objects in flight or held across all nodes stay within `procs × 16`,
+     * which is what *H_F* reserves for — whatever node ids come and go, and
+     * however long a refused late object is held. Null (OFF, TENANT_LIMITS):
+     * each node bounds only itself, as before.
+     */
+    private val orphaned: (() -> Int)? = null,
+    /**
      * Unresolved ambiguity rows of this node. Read on every attempt, never
      * cached, and never while holding the slot lock: a slow query must not
      * block slot releases or other waiters.
@@ -96,7 +106,7 @@ class WriteSlots(
         val deadline = System.nanoTime() + waitTimeout.toNanos()
         while (true) {
             val seen = lock.withLock { returns }
-            val persisted = ambiguous() // outside the lock
+            val persisted = ambiguous() + (orphaned?.invoke() ?: 0) // outside the lock
             lock.withLock {
                 if (returns == seen && fits(persisted, workspaces)) {
                     inUse++
@@ -122,6 +132,19 @@ class WriteSlots(
         persisted: Int,
         workspaces: Set<WorkspaceId>,
     ): Boolean = inUse + poisoned + persisted < maxSlots && workspaces.all { (perWorkspaceInUse[it] ?: 0) < perWorkspace }
+
+    /**
+     * Whether this node's slots are exhausted by rows no live event will return
+     * (poisoned, its own persisted ambiguity, and the orphaned rows above),
+     * while the global footprint rules enforce. Checked before recipient
+     * resolution, so it is the same `451` for every recipient; [acquire]
+     * repeats it as the race backstop.
+     */
+    fun exhaustedBeforeResolution(): Boolean {
+        val counted = orphaned ?: return false
+        val persisted = ambiguous() + counted()
+        return lock.withLock { poisoned + persisted >= maxSlots }
+    }
 
     /** Slots taken by live events, poisoned slots and persisted ambiguity (for metrics and tests). */
     fun occupied(): Int {

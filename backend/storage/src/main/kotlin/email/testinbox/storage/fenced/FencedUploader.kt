@@ -207,6 +207,8 @@ class FencedUploader(
     internal data class Response(
         val status: Int,
         val errorCode: String?,
+        /** MinIO's `<Message>`, bounded. Read only to recognise ENOSPC; never logged. */
+        val errorMessage: String? = null,
     )
 
     private fun readResponse(input: InputStream): Response {
@@ -238,8 +240,10 @@ class FencedUploader(
                     else -> input.readNBytes(MAX_ERROR_BODY)
                 }
             }.getOrDefault(ByteArray(0))
-        val code = Regex("<Code>([^<]{1,100})</Code>").find(String(body, Charsets.UTF_8))?.groupValues?.get(1)
-        return Response(status, code)
+        val text = String(body, Charsets.UTF_8)
+        val code = Regex("<Code>([^<]{1,100})</Code>").find(text)?.groupValues?.get(1)
+        val message = Regex("<Message>([^<]{1,8000})</Message>").find(text)?.groupValues?.get(1)
+        return Response(status, code, message)
     }
 
     private fun readChunked(input: InputStream): ByteArray {
@@ -308,6 +312,10 @@ class FencedUploader(
                     UploadOutcome.Refused(UploadRefusal.QUOTA)
                 }
 
+                isStorageFull(response) -> {
+                    UploadOutcome.Ambiguous(AmbiguityKind.STORAGE_FULL)
+                }
+
                 response.status in 500..599 -> {
                     UploadOutcome.Ambiguous(AmbiguityKind.SERVER_ERROR)
                 }
@@ -316,6 +324,23 @@ class FencedUploader(
                     UploadOutcome.Ambiguous(AmbiguityKind.UNEXPECTED_RESPONSE)
                 }
             }
+
+        /**
+         * The pinned MinIO's two answers for a full filesystem (containment
+         * contract §8): `507 XMinioStorageFull`, or a `500` whose message names
+         * ENOSPC. NEVER by status alone: any other `5xx` is a server error.
+         * Still ambiguous for the reservation; only the breaker kind differs.
+         */
+        internal fun isStorageFull(response: Response): Boolean =
+            // 507 Insufficient Storage is the full-storage status. With MinIO's code, or with
+            // no code at all (a lost or truncated body), it is storage-full: the conservative
+            // reading, since a SERVER_ERROR trial is a zero-byte probe a full filesystem
+            // passes. Another code under 507 is not assumed.
+            (response.status == 507 && (response.errorCode == null || response.errorCode == "XMinioStorageFull")) ||
+                (
+                    response.status == 500 &&
+                        response.errorMessage?.contains("no space left on device", ignoreCase = true) == true
+                )
 
         /** `SO_LINGER 0` then close: the kernel sends RST and discards unsent data. */
         fun abort(socket: Socket) {
