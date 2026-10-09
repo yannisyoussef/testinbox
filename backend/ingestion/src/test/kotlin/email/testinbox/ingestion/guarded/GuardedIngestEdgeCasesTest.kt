@@ -125,8 +125,10 @@ class GuardedIngestEdgeCasesTest {
         h = track(GuardedIngestHarness(hook = deleteInbox))
         val (_, a) = h.inbox(h.workspace())
 
-        // T2's insert fails on the vanished inbox: the gateway's 451.
-        shouldThrow<org.springframework.dao.DataIntegrityViolationException> { h.deliver(listOf(a)) }
+        // T2 finds the inbox gone under its FOR SHARE lock and fences the event (TI-STORAGE-006E):
+        // the gateway's 451, before any insert can fail on the vanished row.
+        shouldThrow<email.testinbox.application.storage.StorageUnavailableException> { h.deliver(listOf(a)) }.reason shouldBe
+            email.testinbox.application.storage.StorageUnavailableReason.COMMIT_FENCED
 
         h.messageCount() shouldBe 0
         // Every upload was Stored, definitively: the charge goes to RELEASING at

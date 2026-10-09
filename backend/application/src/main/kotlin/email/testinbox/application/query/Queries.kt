@@ -26,43 +26,62 @@ class InboxQueries(
     ): Inbox? = inboxes.findById(workspaceId, inboxId)
 }
 
+/**
+ * Message reads. TI-STORAGE-006E PR D (filesystem-containment contract §5.4):
+ * logical expiry is independent of physical deletion. Paced retention may
+ * keep an expired or deleted inbox's rows and blobs for a while, but they are
+ * never SERVED once its state says so: a message, its raw MIME and its
+ * attachments read as absent (`404`, as for a deleted message), and a list of
+ * its messages is empty.
+ */
 class MessageQueries(
     private val messages: MessageRepository,
     private val blobs: BlobStore,
+    private val inboxes: InboxRepository,
 ) {
     fun get(
         workspaceId: WorkspaceId,
         messageId: MessageId,
-    ): Message? = messages.findById(workspaceId, messageId)
+    ): Message? = readable(workspaceId, messages.findById(workspaceId, messageId))
 
     fun listPage(
         workspaceId: WorkspaceId,
         inboxId: InboxId,
         after: MessageCursor?,
         limit: Int,
-    ): List<Message> = messages.listPage(workspaceId, inboxId, after, limit)
+    ): List<Message> =
+        if (servable(inboxes.findById(workspaceId, inboxId))) messages.listPage(workspaceId, inboxId, after, limit) else emptyList()
 
     fun rawMime(
         workspaceId: WorkspaceId,
         messageId: MessageId,
     ): ByteArray? {
-        val message = messages.findById(workspaceId, messageId) ?: return null
+        val message = get(workspaceId, messageId) ?: return null
         return blobs.get(message.rawObjectKey)
     }
 
     fun attachments(
         workspaceId: WorkspaceId,
         messageId: MessageId,
-    ): List<Attachment>? = messages.findById(workspaceId, messageId)?.attachments
+    ): List<Attachment>? = get(workspaceId, messageId)?.attachments
 
     fun attachmentBytes(
         workspaceId: WorkspaceId,
         messageId: MessageId,
         attachmentId: AttachmentId,
     ): Pair<Attachment, ByteArray>? {
-        val message = messages.findById(workspaceId, messageId) ?: return null
+        val message = get(workspaceId, messageId) ?: return null
         val attachment = message.attachments.firstOrNull { it.id == attachmentId } ?: return null
         val bytes = blobs.get(attachment.objectKey) ?: return null
         return attachment to bytes
     }
+
+    private fun readable(
+        workspaceId: WorkspaceId,
+        message: Message?,
+    ): Message? = message?.takeIf { servable(inboxes.findById(workspaceId, it.inboxId)) }
+
+    private fun servable(inbox: Inbox?): Boolean =
+        inbox != null && inbox.state != email.testinbox.domain.inbox.InboxState.EXPIRED &&
+            inbox.state != email.testinbox.domain.inbox.InboxState.DELETED
 }

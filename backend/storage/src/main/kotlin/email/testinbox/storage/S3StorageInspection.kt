@@ -8,9 +8,12 @@ import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.AbortMultipartUploadRequest
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest
 import software.amazon.awssdk.services.s3.model.ListMultipartUploadsRequest
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException
 import software.amazon.awssdk.services.s3.model.PutObjectRequest
+import software.amazon.awssdk.services.s3.model.S3Exception
 import java.time.Duration
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -25,7 +28,29 @@ import java.time.format.DateTimeFormatter
 class S3StorageInspection(
     private val s3: S3Client,
     private val bucket: String,
+    /**
+     * The client for the witness probe's PUT, with SDK retries OFF: a probe is
+     * attempted exactly once (filesystem-containment contract §2.1, rule P), so
+     * a timed-out PUT cannot land again unannounced after its row resolved.
+     */
+    private val probeS3: S3Client = s3,
 ) : StorageInspection {
+    override fun objectSize(key: String): Long? =
+        try {
+            s3
+                .headObject(
+                    HeadObjectRequest
+                        .builder()
+                        .bucket(bucket)
+                        .key(key)
+                        .build(),
+                ).contentLength()
+        } catch (_: NoSuchKeyException) {
+            null
+        } catch (e: S3Exception) {
+            if (e.statusCode() == NOT_FOUND) null else throw e
+        }
+
     override fun objectExists(key: String): Boolean =
         s3
             .listObjectsV2(
@@ -103,7 +128,7 @@ class S3StorageInspection(
      */
     override fun witness(probeKey: String): Boolean {
         require(probeKey.startsWith(PROBE_PREFIX)) { "a witness writes only under $PROBE_PREFIX" }
-        s3.putObject(
+        probeS3.putObject(
             PutObjectRequest
                 .builder()
                 .bucket(bucket)
@@ -157,6 +182,7 @@ class S3StorageInspection(
 
     companion object {
         const val PROBE_PREFIX = "_probe/"
+        private const val NOT_FOUND = 404
 
         fun isPayload(key: String): Boolean = !key.startsWith(PROBE_PREFIX)
     }

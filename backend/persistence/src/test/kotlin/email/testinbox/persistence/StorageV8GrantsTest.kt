@@ -136,7 +136,8 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
             api,
             "GRANT SELECT ON storage_filesystem_observation, storage_debt_watermark",
             "GRANT SELECT ON storage_deletion_debt",
-            "GRANT SELECT, UPDATE ON storage_footprint_trust",
+            "GRANT SELECT, UPDATE (distrust_epoch) ON storage_footprint_trust",
+            "GRANT EXECUTE ON FUNCTION storage_confirm_footprint_trust()",
         )
         val asMonitor = db.connectAs(monitor)
         val asApi = db.connectAs(api)
@@ -171,7 +172,9 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
         )
         ledger.compactDeletionDebt() shouldBe 0
         permissionDenied { asMonitor.sql("SELECT storage_compact_deletion_debt()").query().listOfRows() }
-        // Trust can be marked, never re-validated by lowering the epoch.
+        // Trust is marked only by the verifier (V10); the epoch only rises.
+        JdbcStorageLedger(asApi, db.transactions).confirmTrust() shouldBe true
+        permissionDenied { asApi.sql("UPDATE storage_footprint_trust SET trusted_epoch = 0").update() }
         asApi.sql("UPDATE storage_footprint_trust SET distrust_epoch = distrust_epoch + 1").update() shouldBe 1
         runCatching { asApi.sql("UPDATE storage_footprint_trust SET distrust_epoch = 0").update() }.isFailure shouldBe true
     }
@@ -229,6 +232,82 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
             .sql("SELECT count(*) FROM storage_filesystem_observation")
             .query(Long::class.java)
             .single() shouldBe 0
+    }
+
+    @Test
+    fun `under OFF with no filesystem declared, T1 needs no grant on any V8 table`() {
+        // TI-STORAGE-006E PR D: T1 reads the footprint inputs only where a filesystem is declared.
+        val db = LedgerTestDatabase.create(postgres, admin)
+        val ingestion = role("ti_ingest")
+        db.createRole(ingestion)
+        db.preV8Grants(ingestion)
+        db.grant(ingestion, "GRANT SELECT ON workspace_storage_account, inbox_storage, storage_delta, storage_reservation")
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        val asIngestion = db.connectAs(ingestion)
+        val tx =
+            org.springframework.transaction.support.TransactionTemplate(
+                org.springframework.jdbc.datasource.DataSourceTransactionManager(
+                    org.springframework.jdbc.datasource.SimpleDriverDataSource(
+                        org.postgresql.Driver(),
+                        postgres.jdbcUrl.substringBeforeLast('/') + "/" + db.name,
+                        ingestion.name,
+                        ingestion.password,
+                    ),
+                ),
+            )
+        val snapshot =
+            JdbcStorageAdmission(asIngestion, tx).admit(
+                email.testinbox.application.port.StorageAdmissionScope(
+                    setOf(email.testinbox.domain.WorkspaceId(ws)),
+                    setOf(email.testinbox.domain.InboxId(inbox)),
+                ),
+            ) {
+                email.testinbox.application.port
+                    .StorageAdmissionPlan(emptyList(), it)
+            }
+        snapshot.footprint shouldBe null
+        // Reading them would have needed grants this role does not hold.
+        permissionDenied { asIngestion.sql("SELECT count(*) FROM storage_deletion_debt").query(Long::class.java).single() }
+    }
+
+    @Test
+    fun `the ingestion role runs the probe path with the probe pair only, and cannot charge or resolve another key`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+        val ingestion = role("ti_ingest")
+        db.createRole(ingestion)
+        db.grant(
+            ingestion,
+            "GRANT SELECT ON storage_deletion_debt, storage_filesystem_observation, storage_debt_watermark, storage_footprint_trust",
+            "GRANT SELECT ON workspace_storage_account, storage_delta, storage_reservation",
+            "GRANT EXECUTE ON FUNCTION storage_record_probe_debt(text), storage_resolve_probe_debt(text)",
+        )
+        val asIngestion = db.connectAs(ingestion)
+        val tx =
+            org.springframework.transaction.support.TransactionTemplate(
+                org.springframework.jdbc.datasource.DataSourceTransactionManager(
+                    org.springframework.jdbc.datasource.SimpleDriverDataSource(
+                        org.postgresql.Driver(),
+                        postgres.jdbcUrl.substringBeforeLast('/') + "/" + db.name,
+                        ingestion.name,
+                        ingestion.password,
+                    ),
+                ),
+            )
+        val store =
+            JdbcRowFreeDebtStore(
+                JdbcClient.create(
+                    tx.transactionManager.let {
+                        (it as org.springframework.jdbc.datasource.DataSourceTransactionManager).dataSource!!
+                    },
+                ),
+                tx,
+            )
+        store.admit("_probe/ingest/x", 0, 1, "witness") { true } shouldBe true
+        store.resolve("_probe/ingest/x") shouldBe true
+        permissionDenied { asIngestion.sql("SELECT storage_record_pending_debt('ws/k', 1, 1, 'x')").query().listOfRows() }
+        permissionDenied { asIngestion.sql("SELECT storage_resolve_pending_debt('ws/k')").query().listOfRows() }
+        permissionDenied { asIngestion.sql("INSERT INTO storage_deletion_debt (bytes, objects) VALUES (1, 1)").update() }
     }
 
     /** One session, so that temp tables survive between statements. */

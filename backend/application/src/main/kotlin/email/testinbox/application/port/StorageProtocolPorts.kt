@@ -22,8 +22,21 @@ interface StorageCommitFence {
     /** `FOR UPDATE`, ascending `message_id`. The rows that exist, in any state. */
     fun lockForCommit(ids: Collection<MessageId>): List<LockedReservation>
 
-    /** `FOR KEY SHARE`, ascending id: no concurrent delete can remove an inbox mid-commit. */
-    fun lockInboxes(ids: Collection<InboxId>)
+    /**
+     * `FOR SHARE`, ascending id, returning each locked inbox's state: no
+     * concurrent delete can remove it, and no concurrent state change (the
+     * retention sweep's EXPIRED) can commit, while T2 holds it. A missing
+     * inbox is absent from the map (TI-STORAGE-006E PR D: the contract's T2
+     * fence; `FOR KEY SHARE` let a state change slip past).
+     */
+    fun lockInboxes(ids: Collection<InboxId>): Map<InboxId, email.testinbox.domain.inbox.InboxState>
+
+    /**
+     * The object keys of the rows committed for [ids] in this transaction:
+     * `raw_object_key` and every attachment's `object_key` (TI-STORAGE-006E:
+     * T2 asserts they are exactly the reserved keys).
+     */
+    fun committedKeys(ids: Collection<MessageId>): Map<MessageId, Set<String>>
 
     /**
      * ADR-035 §6a: one upsert per refused inbox, ascending, `refusal_count + 1`,
@@ -166,6 +179,8 @@ data class LockedReservation(
     val messageId: MessageId,
     val bytes: Long,
     val state: String,
+    /** The exact keys T1 reserved: T2 commits a copy only for exactly these (contract §2.4, T2 row). */
+    val objectKeys: List<String> = emptyList(),
 )
 
 data class ReleasableReservation(
@@ -199,6 +214,37 @@ interface StorageAmbiguity {
     fun unresolvedFor(nodeId: String): Int
 
     fun unresolvedTotal(): Int
+
+    /**
+     * Marks the unresolved row [id] as a late object rule (P) refused to delete
+     * (TI-STORAGE-006E PR D): it stays unresolved, and V9 refuses clearing the
+     * latch while any such row is held. Default: nothing to mark.
+     */
+    fun holdRefused(id: Long) {}
+
+    /** How many late objects rule (P) holds right now. */
+    fun heldRefused(): Int = 0
+
+    /** Whether rule (P) holds a key of [nodeId]'s coverage rows (`recovered:<nodeId>`). */
+    fun holdsCoverage(nodeId: String): Boolean = false
+
+    /**
+     * A late object the orphan sweep found and rule (P) refused to delete: held
+     * as an unresolved row of its own (unless one exists for the key), so it
+     * occupies a slot and holds the latch like a verifier-held one.
+     */
+    fun holdLateObject(
+        key: String,
+        bytes: Long,
+    ) {}
+
+    /**
+     * Unresolved rows no live node answers for (contract Lemma 3): rows of a
+     * node whose heartbeat is older than [staleHeartbeat] or that shut down,
+     * and held rows; coverage rows of a dead node only when held (its keyless
+     * rows already bound its slots).
+     */
+    fun unresolvedOrphaned(staleHeartbeat: java.time.Duration): Int = 0
 
     /** Rows whose `verify_at` has passed, oldest first. */
     fun due(limit: Int): List<AmbiguityRecord>
@@ -301,6 +347,8 @@ data class AmbiguityRecord(
     val nodeId: String,
     val objectKey: String?,
     val ambiguousAt: Instant,
+    /** Already held by rule (P) (V9): latched and metered when it was first refused. */
+    val heldByRuleP: Boolean = false,
 )
 
 /**
@@ -316,6 +364,13 @@ interface StorageInspection {
     fun incompleteUploadExists(key: String): Boolean
 
     fun deleteObject(key: String)
+
+    /**
+     * The object's size (`HEAD`), or null when it is absent or cannot be
+     * sized. Rule (P) charges a row-free deletion by it (TI-STORAGE-006E PR D);
+     * an unsized object is never deleted under `ALL`.
+     */
+    fun objectSize(key: String): Long? = null
 
     /** Every incomplete multipart upload in the bucket (probe M1). */
     fun incompleteUploads(): List<IncompleteUpload>
@@ -377,3 +432,34 @@ data class ObservedFilesystem(
     /** `inodes_total − inodes_used`: MinIO answers ENOSPC on inode exhaustion too. */
     val inodesFree: Long,
 )
+
+/**
+ * The database record of each FULL orphan sweep (V10; TI-STORAGE-006E owner
+ * review b, §3). The order and both instants are issued by the database, and
+ * the covered figure is computed by it at completion, so activation gate F
+ * can prove that a complete sweep began after the counts became trusted and
+ * after the last lower-capability node, and that its listing was covered.
+ */
+interface SweepRuns {
+    /** Opens a run for this node; the database stamps its order and start. */
+    fun begin(): Long
+
+    /** Closes [run] with the payload bytes the sweep listed; the database computes the covered bytes. */
+    fun complete(
+        run: Long,
+        listedBytes: Long,
+    )
+
+    companion object {
+        /** No record (tests, and wiring without the V10 schema). */
+        val NONE: SweepRuns =
+            object : SweepRuns {
+                override fun begin(): Long = 0
+
+                override fun complete(
+                    run: Long,
+                    listedBytes: Long,
+                ) = Unit
+            }
+    }
+}

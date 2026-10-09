@@ -17,6 +17,8 @@ class MessageApiTest : ApiIntegrationTestBase() {
 
     @Autowired lateinit var blobs: BlobStore
 
+    @Autowired lateinit var jdbc: org.springframework.jdbc.core.simple.JdbcClient
+
     private fun createInbox(): JsonNode = json.readTree(post("/v1/inboxes", """{}""").body)
 
     @Test
@@ -95,6 +97,28 @@ class MessageApiTest : ApiIntegrationTestBase() {
         disposition.contains("..") shouldBe false
 
         get("/v1/messages/${message.id}/attachments/${UUID.randomUUID()}").statusCode.value() shouldBe 404
+    }
+
+    @Test
+    fun `an expired inbox's message is 404 on every read endpoint while paced retention still holds its rows and blobs`() {
+        val inbox = createInbox()
+        val inboxId = InboxId(UUID.fromString(inbox["id"].asText()))
+        val message = appendVisibleMessage(inboxId, inbox["address"].asText())
+        seed(message.rawObjectKey, "From: a@b.c\r\n\r\nraw-bytes".toByteArray())
+        get("/v1/messages/${message.id}/raw").statusCode.value() shouldBe 200
+
+        jdbc
+            .sql("UPDATE inbox SET state = 'EXPIRED' WHERE id = ?")
+            .param(inboxId.value)
+            .update() shouldBe 1
+
+        listOf("", "/raw", "/attachments", "/attachments/${UUID.randomUUID()}").forEach { suffix ->
+            get("/v1/messages/${message.id}$suffix").statusCode.value() shouldBe 404
+        }
+        val list = get("/v1/inboxes/$inboxId/messages")
+        list.statusCode.value() shouldBe 200
+        json.readTree(list.body)["items"].size() shouldBe 0
+        String(blobs.get(message.rawObjectKey)!!) shouldContain "raw-bytes" // still stored: only serving stops
     }
 
     /** Seeds an object through the only write path there is: a fenced upload (ADR-035 §5). */

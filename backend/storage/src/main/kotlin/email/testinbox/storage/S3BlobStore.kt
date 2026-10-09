@@ -49,25 +49,14 @@ class S3BlobStore internal constructor(
     private val metrics: BlobStoreMetrics,
     /** The client. Production builds it from [config]; tests can hand in a stub. */
     private val s3: S3Client,
+    /** The witness probe's client, retries off (TI-STORAGE-006E PR D). Tests default it to [s3]. */
+    private val probeS3: S3Client = s3,
 ) : BlobStore,
     AutoCloseable {
     constructor(
         config: S3BlobStoreConfig,
         metrics: BlobStoreMetrics = BlobStoreMetrics.NOOP,
-    ) : this(
-        config,
-        metrics,
-        S3Client
-            .builder()
-            .endpointOverride(URI.create(config.endpoint))
-            .region(Region.of(config.region))
-            .credentialsProvider(
-                StaticCredentialsProvider.create(
-                    AwsBasicCredentials.create(config.accessKey, config.secretKey),
-                ),
-            ).forcePathStyle(true)
-            .build(),
-    )
+    ) : this(config, metrics, client(config, retries = true), client(config, retries = false))
 
     init {
         if (config.createBucket) ensureBucket()
@@ -123,7 +112,7 @@ class S3BlobStore internal constructor(
     }
 
     /** Cleanup, verification and orphan-sweep operations on the same bucket and client. */
-    fun inspection(): StorageInspection = S3StorageInspection(s3, config.bucket)
+    fun inspection(): StorageInspection = S3StorageInspection(s3, config.bucket, probeS3)
 
     override fun get(key: String): ByteArray? =
         // A miss is reported as NOT_FOUND, not success: a raw MIME object that
@@ -221,9 +210,34 @@ class S3BlobStore internal constructor(
 
     override fun close() {
         s3.close()
+        if (probeS3 !== s3) probeS3.close()
     }
 
     companion object {
+        internal fun client(
+            config: S3BlobStoreConfig,
+            retries: Boolean,
+        ): S3Client =
+            S3Client
+                .builder()
+                .endpointOverride(URI.create(config.endpoint))
+                .region(Region.of(config.region))
+                .credentialsProvider(
+                    StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create(config.accessKey, config.secretKey),
+                    ),
+                ).forcePathStyle(true)
+                .apply {
+                    if (!retries) {
+                        overrideConfiguration {
+                            it.retryStrategy(
+                                software.amazon.awssdk.awscore.retry.AwsRetryStrategy
+                                    .doNotRetry(),
+                            )
+                        }
+                    }
+                }.build()
+
         /** Throws when [response] reports any key that was not deleted. Codes only: a key names a tenant's prefix. */
         internal fun failOnPartialDelete(response: software.amazon.awssdk.services.s3.model.DeleteObjectsResponse) {
             val errors = response.errors()

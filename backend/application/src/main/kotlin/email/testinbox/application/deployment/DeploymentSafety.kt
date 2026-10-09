@@ -548,6 +548,7 @@ object StorageEnforcementSafety {
     private const val UPLOAD = "upload-implementation-version"
     private const val FS = "testinbox.storage.filesystem"
     private val MAX_OBSERVATION_AGE: java.time.Duration = java.time.Duration.ofHours(1)
+    private val MAX_RETENTION_PACING_DELAY: java.time.Duration = java.time.Duration.ofDays(7)
 
     fun check(settings: DeploymentSettings): List<DeploymentViolation> {
         val storage = settings.storage
@@ -608,6 +609,23 @@ object StorageEnforcementSafety {
                         "testinbox.deployment.environment",
                         "is not set although $ENFORCEMENT is ${storage.enforcement}; a ceiling may refuse only in a " +
                             "declared, fully validated deployed environment (ADR-035 §14)",
+                    ),
+                )
+            }
+            // TI-STORAGE-006E (ADR-035 Amendment 2 §A2.7): ALL may not carry traffic beyond the
+            // synthetic suite until both public-boundary decisions are made and built:
+            // (A) the envelope-order recipient-existence oracle, and (B) single-sender
+            // amplification (docs/security/storage-public-boundary-decisions.md). Until then,
+            // production may not run ALL at all.
+            if (storage.enforcement == email.testinbox.domain.storage.StorageEnforcement.ALL &&
+                settings.environment == ProductionPolicy.ENVIRONMENT
+            ) {
+                add(
+                    DeploymentViolation(
+                        ENFORCEMENT,
+                        "is ALL in production, but the public-boundary mitigations of ADR-035 Amendment 2 §A2.7 " +
+                            "(A: the envelope-order oracle, B: single-sender amplification) are not built; " +
+                            "ALL stays dark-staging only",
                     ),
                 )
             }
@@ -716,6 +734,7 @@ object StorageEnforcementSafety {
                 "operational-reserve-bytes" to fs.operationalReserveBytes,
                 "capacity-bytes" to fs.capacityBytes,
                 "inodes" to fs.inodes,
+                "probe-budget-bytes" to fs.probeBudgetBytes,
             ).forEach { (key, value) ->
                 if (value != null &&
                     value <= 0
@@ -728,6 +747,23 @@ object StorageEnforcementSafety {
                 // A typo such as 1000d would let a stale observation count as evidence for ever.
                 if (it > MAX_OBSERVATION_AGE) {
                     add(DeploymentViolation("$FS.observation-max-age", "is $it; must be at most $MAX_OBSERVATION_AGE"))
+                }
+            }
+            fs.retentionPacingMaxDelay?.let {
+                // T_max bounds how long pacing may keep a tenant's deleted content on disk.
+                if (it.isNegative || it.isZero || it > MAX_RETENTION_PACING_DELAY) {
+                    add(
+                        DeploymentViolation(
+                            "$FS.retention-pacing-max-delay",
+                            "is $it; must be positive and at most $MAX_RETENTION_PACING_DELAY",
+                        ),
+                    )
+                }
+            }
+            fs.monitorRole?.let {
+                // A database role name: the trigger stamps session_user, which never has spaces or quotes.
+                if (!it.matches(Regex("[a-z_][a-z0-9_]{0,62}"))) {
+                    add(DeploymentViolation("$FS.monitor-role", "is '$it'; must be a lower-case PostgreSQL role name"))
                 }
             }
             fs.blockSizeBytes?.let {
@@ -768,6 +804,8 @@ object StorageEnforcementSafety {
                     "capacity-bytes" to fs.capacityBytes,
                     "inodes" to fs.inodes,
                     "observation-max-age" to fs.observationMaxAge,
+                    "probe-budget-bytes" to fs.probeBudgetBytes,
+                    "monitor-role" to fs.monitorRole,
                 )
             required.filter { it.second == null }.forEach { (key, _) ->
                 add(
@@ -788,17 +826,35 @@ object StorageEnforcementSafety {
                     checkNotNull(fs.deletionDebtBudgetBytes),
                     checkNotNull(fs.metadataBudgetBytes),
                     reserve,
+                    checkNotNull(fs.probeBudgetBytes),
                 )
             }.onSuccess { needed ->
                 if (needed > capacity) {
                     add(
                         DeploymentViolation(
                             "$FS.capacity-bytes",
-                            "is $capacity but G_F + D_budget + M + R_ops = $needed (filesystem-containment contract §2.1, I-C)",
+                            "is $capacity but G_F + D_budget + P_F + M + R_ops = $needed (filesystem-containment contract §2.1, I-C)",
                         ),
                     )
                 }
-            }.onFailure { add(DeploymentViolation("$FS.capacity-bytes", "G_F + D_budget + M + R_ops overflows; refused, never wrapped")) }
+            }.onFailure {
+                add(DeploymentViolation("$FS.capacity-bytes", "G_F + D_budget + P_F + M + R_ops overflows; refused, never wrapped"))
+            }
+            // P_F keeps rule (P) admissible for a held late object and the probes (contract §2.1, progress).
+            // When the payload H already overflows, that one violation names the cause.
+            val minimumProbeBudget =
+                runCatching { EffectiveStoragePolicy.finalizeBudget(storage) }
+                    .mapCatching { Math.addExact(model.bound(storage.maxObjectBytes, 1), model.bound(0, 1)) }
+                    .getOrNull()
+            if (minimumProbeBudget != null && checkNotNull(fs.probeBudgetBytes) < minimumProbeBudget) {
+                add(
+                    DeploymentViolation(
+                        "$FS.probe-budget-bytes",
+                        "is ${fs.probeBudgetBytes} but P_F must be at least F(max object, 1) + F(0, 1) = $minimumProbeBudget " +
+                            "(filesystem-containment contract §2.1)",
+                    ),
+                )
+            }
             val minimumReserve = FilesystemContainment.minimumOperationalReserveBytes(capacity)
             if (reserve < minimumReserve) {
                 add(

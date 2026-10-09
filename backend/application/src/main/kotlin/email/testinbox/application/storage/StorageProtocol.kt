@@ -32,6 +32,9 @@ object StorageProtocol {
     /** `T_verify`: when a persisted ambiguity is verified, always at least S (§9). */
     val T_VERIFY: Duration = Duration.ofMinutes(60)
 
+    /** A generation whose heartbeat is older than this, and that did not shut down cleanly, is dead (§9). */
+    val STALE_HEARTBEAT: Duration = Duration.ofMinutes(5)
+
     /** `max-concurrent-writes`: write slots per node (§5). */
     const val MAX_CONCURRENT_WRITES = 16
 
@@ -81,6 +84,13 @@ enum class StorageUnavailableReason {
 
     /** TI-STORAGE-006 §22: a non-OFF node re-checked the §14 barrier and found it broken. Infrastructure, never capacity. */
     ACTIVATION_VIOLATED,
+
+    /**
+     * TI-STORAGE-006E: under `ALL`, the global footprint rules cannot be
+     * evaluated (untrusted counts, no or an invalid observation, overflow).
+     * Infrastructure, never capacity (contract §2.1).
+     */
+    FOOTPRINT_UNAVAILABLE,
 }
 
 class StorageUnavailableException(

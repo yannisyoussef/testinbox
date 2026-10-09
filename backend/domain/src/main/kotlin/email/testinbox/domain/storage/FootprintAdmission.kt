@@ -116,6 +116,27 @@ object FootprintAdmission {
         INDETERMINATE,
     }
 
+    /**
+     * Rules (G) and (C) for ONE candidate on top of [added], the copies of the
+     * same event already admitted, with the candidate itself included in
+     * [added]. The caller keeps the running total, so that a copy refused by
+     * any ceiling, narrower ones included, adds nothing. Overflow is
+     * [Verdict.INDETERMINATE]; no observation is [Verdict.UNOBSERVED].
+     */
+    fun check(
+        model: FootprintModel,
+        limits: Limits,
+        snapshot: Snapshot,
+        added: Load,
+    ): Verdict {
+        val trash = snapshot.trashBytes ?: return Verdict.UNOBSERVED
+        return try {
+            verdict(model, limits, snapshot, trash, added)
+        } catch (_: ArithmeticException) {
+            Verdict.INDETERMINATE
+        }
+    }
+
     /** Rule (P) for a witness probe: a pending (0 B, 1 object) row. */
     fun decideProbe(
         model: FootprintModel,

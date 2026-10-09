@@ -44,7 +44,8 @@ class StorageEnforcementSafetyTest {
 
     /**
      * The staging-shaped filesystem of the containment contract: 48 GiB at 4 KiB
-     * blocks, one inode per block, G_F 20 GiB, D_budget 8 GiB, M 256 MiB, R_ops 3 GiB.
+     * blocks, one inode per block, G_F 20 GiB, D_budget 8 GiB, M 256 MiB, R_ops 3 GiB,
+     * P_F 64 MiB (at least F(15 MiB, 1) + F(0, 1)), and the monitor role.
      */
     private val filesystem =
         FilesystemDeclarations(
@@ -57,6 +58,8 @@ class StorageEnforcementSafetyTest {
             capacityBytes = 48 * gib,
             inodes = 48 * gib / 4096,
             observationMaxAge = Duration.ofMinutes(15),
+            probeBudgetBytes = 64 * mib,
+            monitorRole = "testinbox_monitor",
         )
 
     /** Every §18 declaration present and consistent, matched to an eligible (synthetic) record. */
@@ -135,20 +138,55 @@ class StorageEnforcementSafetyTest {
                 "capacity-bytes" to filesystem.copy(capacityBytes = null),
                 "inodes" to filesystem.copy(inodes = null),
                 "observation-max-age" to filesystem.copy(observationMaxAge = null),
+                "probe-budget-bytes" to filesystem.copy(probeBudgetBytes = null),
+                "monitor-role" to filesystem.copy(monitorRole = null),
             )
         keys.forEach { (key, fs) -> only(complete.copy(filesystem = fs), "testinbox.storage.filesystem.$key", "is not declared") }
     }
 
     @Test
     fun `the declared budgets must fit the declared filesystem - one byte over refuses`() {
-        // 20 + 8 GiB + 256 MiB + 3 GiB = 31.25 GiB.
-        val needed = 31 * gib + 256 * mib
+        // 20 + 8 GiB + 64 MiB + 256 MiB + 3 GiB.
+        val needed = 31 * gib + 256 * mib + 64 * mib
         violations(complete.copy(filesystem = filesystem.copy(capacityBytes = needed, operationalReserveBytes = 3 * gib)))
             .map { it.setting } shouldNotContain "testinbox.storage.filesystem.capacity-bytes"
         val found = violations(complete.copy(filesystem = filesystem.copy(capacityBytes = needed - 1, inodes = needed / 4096)))
         found.map { it.setting } shouldContain "testinbox.storage.filesystem.capacity-bytes"
         found.single { it.setting == "testinbox.storage.filesystem.capacity-bytes" }.problem shouldContain
-            "G_F + D_budget + M + R_ops = $needed"
+            "G_F + D_budget + P_F + M + R_ops = $needed"
+    }
+
+    @Test
+    fun `ALL is refused in production until the envelope-order mitigation exists, and allowed elsewhere`() {
+        // Contract §11.6 (TI-STORAGE-006E PR D): a code gate, not a procedure.
+        val all = complete.copy(enforcement = StorageEnforcement.ALL)
+        DeploymentSafety
+            .validate(deployed.copy(environment = ProductionPolicy.ENVIRONMENT, storage = all))
+            .map { it.setting } shouldContain "testinbox.storage.enforcement"
+        violations(all).map { it.setting } shouldNotContain "testinbox.storage.enforcement"
+    }
+
+    @Test
+    fun `the probe reserve must keep rule P admissible - F of the largest object plus a probe, one byte under refuses`() {
+        val model =
+            email.testinbox.domain.storage
+                .FootprintModel(4096, 24 * 1024)
+        val floor = model.bound(15 * mib, 1) + model.bound(0, 1)
+        violations(complete.copy(filesystem = filesystem.copy(probeBudgetBytes = floor))).shouldBeEmpty()
+        only(
+            complete.copy(filesystem = filesystem.copy(probeBudgetBytes = floor - 1)),
+            "testinbox.storage.filesystem.probe-budget-bytes",
+            "P_F must be at least",
+        )
+    }
+
+    @Test
+    fun `the monitor role must be a plain PostgreSQL role name - written_by is compared to it`() {
+        listOf("Ops Monitor", "monitor;drop", "\"quoted\"", "").forEach { role ->
+            settingsOf(StorageDeclarations().copy(filesystem = FilesystemDeclarations(monitorRole = role))) shouldBe
+                listOf("testinbox.storage.filesystem.monitor-role")
+        }
+        settingsOf(StorageDeclarations().copy(filesystem = FilesystemDeclarations(monitorRole = "testinbox_monitor"))).shouldBeEmpty()
     }
 
     @Test

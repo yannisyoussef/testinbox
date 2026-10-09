@@ -55,7 +55,7 @@ class ReleaseStaleReservations(
     private val metrics: StorageProtocolMetrics = StorageProtocolMetrics.NOOP,
     private val hook: CleanupSyncHook = CleanupSyncHook.NONE,
     private val batch: Int = 100,
-    private val staleHeartbeat: Duration = Duration.ofMinutes(5),
+    private val staleHeartbeat: Duration = StorageProtocol.STALE_HEARTBEAT,
     /** `C_drain`. A seam for tests only; the deployables use the ADR value. */
     private val drain: Duration = StorageProtocol.C_DRAIN,
     /** `S`. A seam for tests only; the deployables use the ADR value. */
@@ -237,6 +237,8 @@ class VerifyAmbiguousUploads(
     private val inspection: StorageInspection,
     private val metrics: StorageProtocolMetrics = StorageProtocolMetrics.NOOP,
     private val batch: Int = 100,
+    /** TI-STORAGE-006E PR D: rule (P) before deleting a late object; refused, the row stays unresolved. */
+    private val rowFree: RowFreeDebt = RowFreeDebt.NONE,
 ) {
     data class Report(
         val resolved: Int,
@@ -269,6 +271,7 @@ class VerifyAmbiguousUploads(
             }
         }
         metrics.ambiguousUploads(ambiguity.unresolvedTotal())
+        metrics.heldLateObjects(ambiguity.heldRefused())
         return Report(resolved, deferred, late)
     }
 
@@ -277,6 +280,9 @@ class VerifyAmbiguousUploads(
     private fun verify(record: AmbiguityRecord): Verified {
         val key = record.objectKey
         if (key == null) {
+            // A dead process's keyless rows bound its slots. While rule (P) holds one of
+            // the keys they cover, they stay: the slot is still occupied (contract §2.1).
+            if (ambiguity.holdsCoverage(record.nodeId)) return Verified.DEFERRED
             ambiguity.resolve(record.id)
             return Verified.RESOLVED
         }
@@ -288,11 +294,25 @@ class VerifyAmbiguousUploads(
         val incomplete = inspection.incompleteUploadExists(key)
         var result = Verified.RESOLVED
         if (!committed && (present || incomplete)) {
-            latch.latch("late object found at ambiguity verification")
-            metrics.latched(true)
-            metrics.lateObject()
-            log.error("storage_late_object an ambiguous upload landed after its reservation was released; admission LATCHED")
-            if (present) inspection.deleteObject(key)
+            // A held object was latched and metered when rule (P) first refused it; each
+            // retry must not page again.
+            if (!record.heldByRuleP) {
+                latch.latch("late object found at ambiguity verification")
+                metrics.latched(true)
+                metrics.lateObject()
+                log.error("storage_late_object an ambiguous upload landed after its reservation was released; admission LATCHED")
+            }
+            if (present) {
+                // Rule (P): the late object's pending row is an admission. Refused, the
+                // object stays, and so do its ambiguity row and write slot (contract §2.1);
+                // the row is due again at the next pass.
+                if (!rowFree.beforeDelete(key, if (rowFree.charges) inspection.objectSize(key) else null, "ambiguity-verifier")) {
+                    ambiguity.holdRefused(record.id)
+                    return Verified.DEFERRED
+                }
+                inspection.deleteObject(key)
+                if (!inspection.objectExists(key)) rowFree.afterProvenAbsent(key)
+            }
             if (incomplete) inspection.incompleteUploads().filter { it.key == key }.forEach(inspection::abortIncompleteUpload)
             result = Verified.LATE
         }

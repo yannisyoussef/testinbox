@@ -50,6 +50,7 @@ class MetricCardinalityTest {
         val inbox = MicrometerInboxMetrics(registry)
         AddressMode.entries.forEach { inbox.inboxCreated(it) }
         inbox.inboxExpired(1)
+        inbox.retentionBacklog(42)
         inbox.inboxDeleted()
 
         val inbound = MicrometerInboundMetrics(registry)
@@ -121,6 +122,9 @@ class MetricCardinalityTest {
         PhysicalFailureKind.entries.forEach { protocol.physicalFailure(it) }
         ReleasePath.entries.forEach { protocol.released(it) }
         protocol.commitFenced()
+        protocol.heldLateObjects(1)
+        email.testinbox.application.storage.FootprintUnavailability.entries
+            .forEach(protocol::footprintUnavailable)
         protocol.lateObject()
         protocol.witnessFailed()
         protocol.breakerOpen(true)
@@ -147,6 +151,7 @@ class MetricCardinalityTest {
     /** Every label key any TestInbox metric is allowed to carry. */
     private val allowedLabelKeys =
         setOf(
+            "cause",
             "mode",
             "parse_status",
             "outcome",
@@ -188,6 +193,10 @@ class MetricCardinalityTest {
                 ApiKeyOperation.entries.map { it.name }.toSet() +
                 IdempotentOperation.entries.map { it.name }.toSet(),
             "reason" to SmtpRejection.entries.map { it.name }.toSet(),
+            "cause" to
+                email.testinbox.application.storage.FootprintUnavailability.entries
+                    .map { it.name.lowercase() }
+                    .toSet(),
             "category" to RateCategory.entries.map { it.name }.toSet(),
             "quota" to QuotaDimension.entries.map { it.name }.toSet(),
             "direction" to DriftDirection.entries.map { it.name.lowercase() }.toSet(),
@@ -314,6 +323,7 @@ class MetricCardinalityTest {
             "testinbox_storage_footprint_bytes",
             "testinbox_storage_filesystem_observation_age_seconds",
             "testinbox_storage_footprint_counts_trusted",
+            "testinbox_storage_retention_backlog_seconds",
             "testinbox_storage_accounting_drift_total",
             "testinbox_storage_reconciliation_total",
             "testinbox_storage_ledger_compaction_total",
@@ -324,6 +334,8 @@ class MetricCardinalityTest {
             "testinbox_storage_slot_wait_seconds",
             "testinbox_storage_physical_failure_total",
             "testinbox_storage_commit_fenced_total",
+            "testinbox_storage_footprint_unavailable_total",
+            "testinbox_storage_held_late_objects",
             "testinbox_storage_reservation_released_total",
             "testinbox_storage_late_object_total",
             "testinbox_storage_witness_failed_total",

@@ -194,7 +194,27 @@ class SchemaUpgradeTest : PersistenceIntegrationTest() {
     fun `every bundled migration is discoverable from the artifact`() {
         // If this scan silently found nothing, the compatibility policy would
         // read "no migrations bundled" and wave every schema through.
-        BundledMigrations.versions().map { it.raw } shouldBe listOf("1", "2", "3", "4", "5", "6", "7", "8")
+        BundledMigrations.versions().map { it.raw } shouldBe listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
+    }
+
+    @Test
+    fun `V9 gives a pending debt row written before it a recorded_at, so the resolver can age it`() {
+        // TI-STORAGE-006E PR D: expand-only. A pre-V9 artifact's pending rows (none are
+        // written before PR D, but the column must not care) get the migration's time.
+        val dataSource = freshDatabase()
+        val jdbc = JdbcClient.create(dataSource)
+        flyway(dataSource, target = "8").migrate()
+        jdbc.sql("SELECT storage_record_pending_debt('k', 1, 1, 'pre-v9')").query().listOfRows()
+        flyway(dataSource).migrate()
+        jdbc
+            .sql("SELECT count(*) FROM storage_deletion_debt WHERE object_key = 'k' AND recorded_at IS NOT NULL")
+            .query(Long::class.java)
+            .single() shouldBe 1
+        jdbc.sql("SELECT storage_record_pending_debt('k2', 1, 1, 'post-v9')").query().listOfRows()
+        jdbc
+            .sql("SELECT recorded_at <= now() FROM storage_deletion_debt WHERE object_key = 'k2'")
+            .query(Boolean::class.java)
+            .single() shouldBe true
     }
 
     @Test

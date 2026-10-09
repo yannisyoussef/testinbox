@@ -31,6 +31,13 @@ interface InboxMetrics {
 
     fun inboxExpired(count: Int) {}
 
+    /**
+     * `testinbox_storage_retention_backlog_seconds` (TI-STORAGE-006E PR D): how
+     * long the oldest expired or deleted inbox has waited for teardown; 0 when
+     * none waits. Alerted above one TTL (contract §5.4).
+     */
+    fun retentionBacklog(seconds: Long) {}
+
     fun inboxDeleted() {}
 
     companion object {
@@ -417,6 +424,12 @@ interface StorageProtocolMetrics {
     fun physicalFailure(kind: PhysicalFailureKind) {}
 
     fun commitFenced() {}
+
+    /** `testinbox_storage_held_late_objects`: late objects rule (P) refused to delete, held with their slots (TI-STORAGE-006E). */
+    fun heldLateObjects(count: Int) {}
+
+    /** `testinbox_storage_footprint_unavailable_total{cause}`: closed label (TI-STORAGE-006E). */
+    fun footprintUnavailable(reason: email.testinbox.application.storage.FootprintUnavailability) {}
 
     fun released(path: ReleasePath) {}
 

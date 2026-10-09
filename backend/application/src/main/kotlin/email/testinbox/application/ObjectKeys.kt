@@ -17,6 +17,13 @@ object ObjectKeys {
         inboxId: InboxId,
     ): String = "$workspaceId/$inboxId/"
 
+    /** One message's keys: `raw.eml` and its attachments (paced retention deletes per message, TI-STORAGE-006E). */
+    fun messagePrefix(
+        workspaceId: WorkspaceId,
+        inboxId: InboxId,
+        messageId: MessageId,
+    ): String = "$workspaceId/$inboxId/$messageId/"
+
     fun raw(
         workspaceId: WorkspaceId,
         inboxId: InboxId,

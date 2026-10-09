@@ -120,6 +120,28 @@ reconciliation. Staging connects every deployable as the table owner, which
 satisfies all of this. A production that separates the roles must grant these
 first.
 
+**From V10 on (TI-STORAGE-006E, owner review b), the ledger is written only
+by the database.**
+- The V8 ledger triggers are `SECURITY DEFINER`. Compaction and repair are
+  the definer functions `storage_compact_ledger(integer)` and
+  `storage_repair_ledger()`.
+- No application role then needs `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE`
+  on `storage_delta` or `workspace_storage_account`, nor on
+  `inbox_storage`'s base columns.
+- The API role holds `SELECT` on the three tables and `EXECUTE` on the two
+  functions.
+- Both deployables keep a column grant for the refusal record:
+  - `INSERT (inbox_id, workspace_id, refusal_count, last_refusal_at, last_refusal_reason)`
+    and `UPDATE (refusal_count, last_refusal_at, last_refusal_reason)` on
+    `inbox_storage`.
+- **No definer function is executable by `PUBLIC`** (V10). A definer
+  *trigger* function left executable could be attached by any login role to
+  a temporary table of its own, and run as the owner. Keep `EXECUTE` on
+  definer functions to the grants listed here. Gate F flags any other.
+- **Revoke the earlier writes** once every running artifact is from V10 on.
+  A role that keeps them can forge the counts a trust mark vouches for, and
+  gate F's privileges row refuses `ALL` while one does.
+
 **V8 (TI-STORAGE-006E, the filesystem-containment contract) needs no new
 grant for the deletes the deployables already make.** The trigger bodies
 that write deletion debt (on every `message`, `attachment` and
@@ -133,10 +155,24 @@ otherwise searches the caller's temporary schema first, and a temp table
 could shadow the ledger inside the definer code).
 
 The API role reads `storage_deletion_debt`, `storage_filesystem_observation`
-and `storage_debt_watermark` (`SELECT`), reads and marks
-`storage_footprint_trust` (`SELECT, INSERT, UPDATE`: reconciliation's
-compare-and-set, and the re-creation of a row lost to a restore, contract
-§4.5; a trigger keeps `distrust_epoch` monotone), and holds `EXECUTE` on
+and `storage_debt_watermark` (`SELECT`).
+
+It reads `storage_footprint_trust` and may only raise its `distrust_epoch`
+(`SELECT, UPDATE (distrust_epoch)`, a column grant; a trigger keeps the epoch
+monotone). **It never marks trust itself (V10).** The trust mark is made by
+`storage_confirm_footprint_trust()`, which the API role executes. That
+function takes the ledger lock, recreates a row lost to a restore, verifies
+every workspace's bytes and object counts against the `message` and
+`attachment` rows, and marks the epoch it read compare-and-set, stamping its
+order and time. The role holds no `INSERT` and no `UPDATE` on the trusted
+columns. A guard trigger refuses any other change to them, even for a role
+that still holds an older full grant.
+
+For the orphan sweep's database record (V10), the API role holds `EXECUTE` on
+`storage_begin_sweep(text)` and `storage_complete_sweep(bigint, text, bigint)`, and
+no privilege on `storage_sweep_run`.
+
+It also holds `EXECUTE` on `storage_confirm_footprint_trust()`,
 `storage_compact_deletion_debt()`,
 `storage_record_pending_debt(text, bigint, bigint, text)` and
 `storage_resolve_pending_debt(text)`. Those are `SECURITY DEFINER` with
@@ -158,7 +194,29 @@ and `TRUNCATE` are refused, and so is a `DELETE` of the newest row or of any
 row at or above the compaction watermark. An Ops prune job (with `DELETE`
 only) removes older rows within its retention window — one row per minute is
 ≈ 50 MB a year. No role is granted anything on `storage_observation_walk`.
-`StorageV8GrantsTest` runs each path as a role with exactly these grants.
+
+**Footprint admission and rule (P) (TI-STORAGE-006E PR D)** are used only
+where the deployment declares its filesystem (`testinbox.storage.filesystem.*`,
+now including `probe-budget-bytes`, `monitor-role` and the optional
+`retention-pacing-max-delay`). An undeclared `OFF` deployment's T1 reads none of
+the V8 tables, writes no pending row, and needs no grant below. Where the
+filesystem is declared, rule (P) and the pre-resolution check read, under T1's
+admission lock, the inputs T1 reads:
+
+- **the ingestion role** (T1, the pre-resolution check, the breaker probe):
+  `SELECT` on `storage_deletion_debt`, `storage_filesystem_observation`,
+  `storage_debt_watermark` and `storage_footprint_trust`, and `EXECUTE` on
+  `storage_record_probe_debt(text)` and `storage_resolve_probe_debt(text)` —
+  `SECURITY DEFINER`, a fixed `(0 B, 1 object)` row for `_probe/` keys only. It
+  holds **no** `EXECUTE` on the general pending-debt functions: the
+  internet-facing role can neither charge nor resolve an arbitrary key;
+- **the API role** (the orphan sweep, the ambiguity verifier, the cleanup
+  witness): the same `SELECT`s, the two probe functions, and `EXECUTE` on
+  `storage_record_pending_debt(text, bigint, bigint, text)` and
+  `storage_resolve_pending_debt(text)`.
+
+`StorageV8GrantsTest` runs T1 under `OFF` and the probe path as the ingestion
+role with exactly these grants.
 
 The API's accounting jobs read three optional settings:
 
@@ -175,7 +233,8 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   `storage_admission_latch` and `storage_clock_episode` (V7), and `USAGE` on
   `storage_ambiguity_id_seq`; with V8, only the API role's reads, trust
   marking and function grants of the V8 paragraph above (the debt triggers
-  run as their owner).
+  run as their owner); with PR D and a declared filesystem, the per-role
+  grants of the footprint paragraph above.
   Staging's owner role already has them.
 - **Object storage.** Cleanup and the orphan sweep need `ListBucket`,
   `ListBucketMultipartUploads` and `AbortMultipartUpload` on the bucket,
@@ -298,6 +357,13 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   3. Clear the latch by hand: `DELETE FROM storage_admission_latch;` — from a
      session tagged `PGAPPNAME=ops:latch-runbook` when enforcement is not OFF,
      or the session itself trips the activation guard.
+  4. **If the delete fails with `check_violation`** ("cannot be cleared while a
+     late object refused by rule (P) is held"; V9, TI-STORAGE-006E PR D): a late
+     object is still on disk because deleting it would breach containment
+     (`testinbox_storage_held_late_objects` > 0). It is retried every 5 min and
+     deleted once the potential allows — after the next observation, a debt
+     compaction or a purge. Do not force it: clearing the latch while it is held
+     would let slot exhaustion answer a recipient-dependent `451`.
 
   No endpoint clears it.
 
@@ -472,6 +538,7 @@ Boot's standard binders, whose presence the rehearsal asserts:
 | storage breaker open (ADR-035) | `testinbox_storage_breaker_open` | `== 1` for > 5 min on any ingestion node: mail is being deferred (`451`) |
 | **storage admission latched** (ADR-035) | `testinbox_storage_admission_latched`; `testinbox_storage_late_object_total` | **page**: any late object, or the latch set. Every node refuses mail until an operator clears it (runbook above) |
 | **filesystem observation stale** (TI-STORAGE-006E, observational while `OFF`) | `testinbox_storage_filesystem_observation_age_seconds`; `testinbox_storage_footprint_bytes{kind}` | **alert**: age `< 0` (never observed) or above the declared maximum (proposed 15 min), since only an observation ever lowers the deletion-debt estimate; `kind="deletion_debt"` growing without the age falling means the purge is not being verified |
+| **retention backlog** (TI-STORAGE-006E PR D, paced under `ALL` only) | `testinbox_storage_retention_backlog_seconds` | **alert** above one inbox TTL: physical teardown lags logical expiry (which never waits). Escalate per runbook: raise `D_budget` within I-C, or investigate the purge. Past `testinbox.storage.filesystem.retention-pacing-max-delay` (*T_max*, default 24 h) teardown proceeds anyway and logs `storage_retention_t_max_exceeded` |
 | **storage full** (TI-STORAGE-006E) | `testinbox_storage_physical_failure_total{kind="storage_full"}`; `testinbox_storage_breaker_open` | **page**: MinIO answered `507 XMinioStorageFull` or a `500` naming ENOSPC. The node answers `451` to every `DATA` and does NOT recover on a timer or a zero-byte probe (a full filesystem accepts both): it trials one real event only once a filesystem observation that BEGAN AFTER the trip is younger than *A_obs* and shows `avail ≥ R_ops` and at least `R_ops / B` free inodes; each failed trial needs a newer observation. Without a monitor writing observations, only a restart clears it. Runbook: free space (purge `.minio.sys/tmp/.trash`, retention), then let the monitor record an observation |
 | old ambiguity / old RELEASING (ADR-035) | `testinbox_storage_ambiguous_uploads`; `testinbox_storage_reservations{state="releasing"}` | ambiguity older than `T_verify` + 5 min, or `RELEASING` rows older than 1 h: verification or cleanup is stuck (for example, the witness is failing: `testinbox_storage_witness_failed_total`) |
 | physical over-coverage (ADR-035) | `testinbox_storage_physical_listed_bytes` against committed + reserved | `physical_listed > covered + H`: objects exist that nothing accounts for |

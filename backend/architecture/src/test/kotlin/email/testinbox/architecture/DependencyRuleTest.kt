@@ -413,7 +413,7 @@ class DependencyRuleTest {
     }
 
     @Test
-    fun `T1 is constructed once, in the ingestion wiring, from the validated declarations (TI-STORAGE-006)`() {
+    fun `T1 is constructed once, in FootprintWiring, from the validated declarations (TI-STORAGE-006, 006E)`() {
         // The enforcement mode T1 runs with must be the one DeploymentSafety
         // validated. A second construction site could pass a literal.
         admissionRule().check(allClasses)
@@ -435,7 +435,9 @@ class DependencyRuleTest {
     private fun admissionRule() =
         noClasses()
             .that()
-            .doNotHaveFullyQualifiedName("email.testinbox.ingestion.config.IngestionWiring")
+            // TI-STORAGE-006E: the one construction site, called by the ingestion wiring with the
+            // declarations DeploymentSafety validated, and pinned by FootprintWiringTest.
+            .doNotHaveFullyQualifiedName("email.testinbox.application.storage.FootprintWiring")
             .and()
             // Its own default-argument bridge calls the primary constructor.
             .doNotHaveFullyQualifiedName("email.testinbox.application.usecase.StorageAdmission")
@@ -451,7 +453,7 @@ class DependencyRuleTest {
                         ),
                     ),
                 ),
-            ).because("only the ingestion wiring may build T1, with the enforcement value DeploymentSafety validated (ADR-035 §14)")
+            ).because("only FootprintWiring may build T1, from the declarations DeploymentSafety validated (ADR-035 §14)")
 
     @Test
     fun `the admission adapter is not a Spring bean, so no context can obtain it (TI-STORAGE-002)`() {

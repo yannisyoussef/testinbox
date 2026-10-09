@@ -272,6 +272,57 @@ While untrusted, footprint admission answers `451` under `ALL` (PR D), and
 lose: the older artifact neither observes the footprint nor compacts debt.
 Both only observe while enforcement is `OFF`.
 
+**Schema V9** (TI-STORAGE-006E PR D) is expand-only:
+- three columns with constant or stable defaults (`storage_deletion_debt.recorded_at`,
+  `storage_ambiguity.held_by_rule_p`, `storage_footprint_trust.distrusted_seq`;
+  no table rewrite) and a partial index on pending rows;
+- the trust-stamp and latch-hold triggers;
+- the two probe-only debt functions.
+
+A rolled-back artifact never names a new column. The upgrade stamps a distrust
+event, so footprint admission (where it enforces) waits for an observation
+taken after it. **Rolling back below PR D once footprint admission enforces is
+forbidden, not merely unsafe:** an older artifact's orphan sweep, verifier
+and probes delete without the rule-(P) pending rows, so containment no longer
+holds while it runs (contract §4.5). `deploy/rollback-floors.txt` names the
+PR D artifact as the floor before `ALL` is ever enabled; below it, the
+bucket-quota fuse remains the only physical link.
+
+**Schema V10** (TI-STORAGE-006E, owner review b) is expand-only. It adds:
+- two nullable columns on the trust row (`trusted_seq`, `trusted_at`);
+- a constant-default column `storage_node.containment` (no table rewrite);
+- the table `storage_sweep_run`;
+- the trust guard trigger, and the definer functions
+  `storage_confirm_footprint_trust()`, `storage_begin_sweep(text)` and
+  `storage_complete_sweep(bigint, text, bigint)`.
+
+The upgrade is a distrust event, so admission under `ALL` waits for the
+verifying function to mark the counts trusted again. No artifact before PR D
+writes or marks trust, so a rollback to one is unaffected.
+
+An artifact from before V10 that tried to mark trust directly would be
+refused by the guard trigger. Its reconciliation would report `failed`, and
+the counts would stay untrusted. That is fail-closed, and only PR D artifacts
+ever marked trust.
+
+V10 also makes compaction and repair the definer functions
+`storage_compact_ledger(integer)` and `storage_repair_ledger()`, so the
+ledger is written only by the database.
+- An artifact from before V10 still compacts with its own statement, which
+  needs the earlier ledger grants. Revoke them only once every running
+  artifact is from V10 on.
+- If an older artifact's compaction is refused for lack of them, its deltas
+  simply stay unfolded. That is still exact, because base + Σdelta does not
+  change.
+
+An earlier artifact's node rows carry `containment = 0`. Every write or
+deletion of such a row stamps `storage_containment_watermark`, which only
+grows, so its activity stays visible after the row is reaped.
+- Gate F refuses `ALL` while any such row is unclean (neither shut down
+  cleanly nor reaped).
+- Gate F also refuses until a complete sweep has started after the
+  watermark.
+
 ## Adding a `StorageRefusalReason` is reader-first (TI-STORAGE-004)
 
 The API reads `inbox_storage.last_refusal_reason` into the closed

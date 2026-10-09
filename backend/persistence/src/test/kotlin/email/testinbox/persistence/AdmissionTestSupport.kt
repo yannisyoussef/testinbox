@@ -38,7 +38,7 @@ class AdmissionFixture(
     val db: LedgerTestDatabase,
 ) {
     fun store(lockTimeout: Duration = JdbcStorageAdmission.DEFAULT_LOCK_TIMEOUT) =
-        JdbcStorageAdmission(db.jdbc, db.transactions, lockTimeout)
+        JdbcStorageAdmission(db.jdbc, db.transactions, lockTimeout, readsFootprint = true)
 
     fun admission(
         policy: StorageCapacityPolicy,

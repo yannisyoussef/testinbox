@@ -108,6 +108,9 @@ data class FilesystemProperties(
     val capacityBytes: Long? = null,
     val inodes: Long? = null,
     val observationMaxAge: java.time.Duration? = null,
+    val probeBudgetBytes: Long? = null,
+    val monitorRole: String? = null,
+    val retentionPacingMaxDelay: java.time.Duration? = null,
 ) {
     fun toDeclarations(): email.testinbox.application.storage.FilesystemDeclarations =
         email.testinbox.application.storage.FilesystemDeclarations(
@@ -120,6 +123,9 @@ data class FilesystemProperties(
             capacityBytes = capacityBytes,
             inodes = inodes,
             observationMaxAge = observationMaxAge,
+            probeBudgetBytes = probeBudgetBytes,
+            monitorRole = monitorRole?.takeIf { it.isNotBlank() },
+            retentionPacingMaxDelay = retentionPacingMaxDelay,
         )
 }
 

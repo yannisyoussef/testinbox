@@ -162,6 +162,8 @@ class IngestionDeploymentSafetyCheckTest {
                 "filesystem.capacity-bytes",
                 "filesystem.inodes",
                 "filesystem.observation-max-age",
+                "filesystem.probe-budget-bytes",
+                "filesystem.monitor-role",
             )) {
                 message shouldContain "testinbox.storage.$key"
             }
@@ -182,6 +184,8 @@ class IngestionDeploymentSafetyCheckTest {
                 "testinbox.storage.filesystem.capacity-bytes=51539607552",
                 "testinbox.storage.filesystem.inodes=12582912",
                 "testinbox.storage.filesystem.observation-max-age=15m",
+                "testinbox.storage.filesystem.probe-budget-bytes=67108864",
+                "testinbox.storage.filesystem.monitor-role=testinbox_monitor",
             ).run { context ->
                 assertThat(context).hasNotFailed()
                 context
@@ -198,6 +202,8 @@ class IngestionDeploymentSafetyCheckTest {
                         capacityBytes = 51539607552,
                         inodes = 12582912,
                         observationMaxAge = java.time.Duration.ofMinutes(15),
+                        probeBudgetBytes = 67108864,
+                        monitorRole = "testinbox_monitor",
                     )
             }
     }
