@@ -48,9 +48,20 @@ class MessageReadGatingTest {
         inboxes.inboxes[inbox.id] = inbox
         val key = "k-${UUID.randomUUID()}"
         blobs.put(key, byteArrayOf(1, 2), "message/rfc822")
+        val messageId = MessageId(UUID.randomUUID())
+        val attachment =
+            email.testinbox.domain.message.Attachment(
+                email.testinbox.domain.AttachmentId(UUID.randomUUID()),
+                messageId,
+                "a.pdf",
+                "application/pdf",
+                1,
+                "$key-attachment",
+            )
+        blobs.put(attachment.objectKey, byteArrayOf(9), "application/pdf")
         val message =
             Message(
-                MessageId(UUID.randomUUID()),
+                messageId,
                 ws,
                 inbox.id,
                 now,
@@ -65,7 +76,7 @@ class MessageReadGatingTest {
                 ParseStatus.OK,
                 null,
                 ParsedContent("a@x", null, null, "s", "b", null, emptyList(), emptyList()),
-                emptyList(),
+                listOf(attachment),
             )
         messages.messages += message
         return inbox to message
@@ -78,6 +89,7 @@ class MessageReadGatingTest {
             queries.get(ws, message.id) shouldBe null
             queries.rawMime(ws, message.id) shouldBe null
             queries.attachments(ws, message.id) shouldBe null
+            queries.attachmentBytes(ws, message.id, message.attachments.single().id) shouldBe null
             queries.listPage(ws, inbox.id, null, 50) shouldBe emptyList()
         }
     }
@@ -88,6 +100,7 @@ class MessageReadGatingTest {
             val (inbox, message) = inboxWithMessage(state)
             queries.get(ws, message.id) shouldBe message
             queries.rawMime(ws, message.id)?.toList() shouldBe listOf<Byte>(1, 2)
+            queries.attachmentBytes(ws, message.id, message.attachments.single().id)?.second?.toList() shouldBe listOf<Byte>(9)
             queries.listPage(ws, inbox.id, null, 50).map { it.id } shouldBe listOf(message.id)
         }
     }

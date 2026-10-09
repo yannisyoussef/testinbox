@@ -68,7 +68,7 @@ class OrphanBlobSweep(
                 // one this old outlived a failed listing. It has no row, no
                 // reservation and no debt row, so nothing else would ever free it
                 // (filesystem-containment contract §5.3, TI-STORAGE-006E).
-                if (deleteRowFree(key, "probe-residue")) removed++
+                if (deleteRowFree(key, "probe-residue") == Deletion.DELETED) removed++
                 continue
             }
             val messageId = ObjectKeys.messageIdOf(key)?.let(::parseUuid) ?: continue
@@ -79,12 +79,19 @@ class OrphanBlobSweep(
                     metrics.lateObject()
                     log.error("storage_late_object an ambiguous upload surfaced as an orphan; admission LATCHED")
                 }
-                if (deleteRowFree(key, "orphan-sweep")) {
-                    removed++
-                } else if (ambiguity.wasAmbiguous(key, AMBIGUITY_RETENTION)) {
-                    // A late object rule (P) refused: held with a row of its own, so it
-                    // occupies a slot and the latch stays set until it is gone.
-                    runCatching { ambiguity.holdLateObject(key, inspection.objectSize(key) ?: 0) }
+                when (deleteRowFree(key, "orphan-sweep")) {
+                    Deletion.DELETED -> {
+                        removed++
+                    }
+
+                    Deletion.REFUSED -> {
+                        // A late object rule (P) refused: held with a row of its own, so it
+                        // occupies a slot and the latch stays set until it is gone. A storage
+                        // error is no refusal: that key is simply retried next pass.
+                        if (ambiguity.wasAmbiguous(key, AMBIGUITY_RETENTION)) holdLateObject(key)
+                    }
+
+                    Deletion.FAILED -> {}
                 }
             }
         }
@@ -107,24 +114,36 @@ class OrphanBlobSweep(
      * delete; refused, the object stays (and a late object keeps its slot).
      * Proven absent after the delete, the row is resolved.
      */
+    private enum class Deletion { DELETED, REFUSED, FAILED }
+
     private fun deleteRowFree(
         key: String,
         source: String,
-    ): Boolean =
+    ): Deletion =
         try {
             if (!rowFree.beforeDelete(key, if (rowFree.charges) inspection.objectSize(key) else null, source)) {
-                false
+                Deletion.REFUSED
             } else {
                 blobs.delete(key)
                 if (!inspection.objectExists(key)) rowFree.afterProvenAbsent(key)
-                true
+                Deletion.DELETED
             }
         } catch (e: RuntimeException) {
             // One key's storage or lock error never stops the pass: the rest of the
             // bucket, the resolver and the multipart pass still run; this key is retried.
             log.warn("orphan_blob_sweep_key_failed the key is kept and retried next pass: {}", e.toString())
-            false
+            Deletion.FAILED
         }
+
+    private fun holdLateObject(key: String) {
+        try {
+            ambiguity.holdLateObject(key, inspection.objectSize(key) ?: 0)
+        } catch (e: RuntimeException) {
+            // Unheld, the late object's slot is not counted until the next pass holds it;
+            // the latch set above stays, so admission is closed meanwhile.
+            log.error("orphan_blob_sweep_hold_failed a refused late object is not yet held; retried next pass: {}", e.toString())
+        }
+    }
 
     private fun parseUuid(value: String): UUID? = runCatching { UUID.fromString(value) }.getOrNull()
 

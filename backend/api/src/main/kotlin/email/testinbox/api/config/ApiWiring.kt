@@ -364,16 +364,12 @@ class ApiWiring(
             config,
             inboxMetrics,
             // TI-STORAGE-006E PR D: paced under ALL with a declared filesystem only.
-            email.testinbox.application.storage.EffectiveStoragePolicy
-                .retentionPacing(declarations, ledger, clock)
-                .takeIf { it !== email.testinbox.application.storage.RetentionPacing.UNPACED }
-                ?.let { pacing ->
-                    (inboxes as? email.testinbox.application.port.InboxTeardown)
-                        ?.let {
-                            email.testinbox.application.usecase
-                                .PacedTeardown(pacing, it)
-                        }
-                },
+            email.testinbox.application.storage.FootprintWiring.pacedTeardown(
+                declarations,
+                ledger,
+                clock,
+                inboxes as? email.testinbox.application.port.InboxTeardown,
+            ),
         )
 
     /** ADR-035 §10 ledger compaction. Observational only: nothing admits or refuses on it yet. */
@@ -391,13 +387,8 @@ class ApiWiring(
             // TI-STORAGE-006E PR D: with a declared filesystem, a distrust event is
             // reconciled within a minute, not at the next 6 h pass.
             onUntrusted =
-                if (email.testinbox.application.storage.EffectiveStoragePolicy
-                        .footprint(declarations) != null
-                ) {
-                    { reconcile.reconcile() }
-                } else {
-                    null
-                },
+                email.testinbox.application.storage.FootprintWiring
+                    .onUntrusted(declarations) { reconcile.reconcile() },
         )
 
     /** ADR-035 §10 reconciliation of the ledger against the source rows. */

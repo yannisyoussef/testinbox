@@ -44,7 +44,7 @@ class T2InboxFenceTest {
         assertThrows<StorageUnavailableException> { h.deliver(listOf(address)) }.reason shouldBe
             StorageUnavailableReason.COMMIT_FENCED
         h.messageCount() shouldBe 0
-        h.reservationStates()["RESERVED"] ?: 0L shouldBe 0L
+        (h.reservationStates()["RESERVED"] ?: 0L) shouldBe 0L
         h.reservationStates()["RELEASING"] shouldBe 1L
         h.metrics.events.contains("fenced") shouldBe true
     }

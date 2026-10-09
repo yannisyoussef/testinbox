@@ -83,6 +83,30 @@ class PacedTeardownRepositoryTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `hard-deletable inboxes come longest-waiting first, whichever instant starts the wait - none is starved`() {
+        val ws = db.workspace()
+        val young = db.inbox(ws)
+        val old = db.inbox(ws)
+        val middle = db.inbox(ws)
+        db.inbox(ws) // ACTIVE: never listed
+        db.jdbc
+            .sql("UPDATE inbox SET state = 'EXPIRED', grace_until = now() - interval '1 hour' WHERE id = ?")
+            .param(young)
+            .update()
+        db.jdbc
+            .sql("UPDATE inbox SET state = 'DELETED', deleted_at = now() - interval '3 days' WHERE id = ?")
+            .param(old)
+            .update()
+        db.jdbc
+            .sql("UPDATE inbox SET state = 'EXPIRED', grace_until = NULL, expires_at = now() - interval '1 day' WHERE id = ?")
+            .param(middle)
+            .update()
+
+        inboxes.findHardDeletable(10).map { it.id.value } shouldBe listOf(old, middle, young)
+        inboxes.findHardDeletable(1).map { it.id.value } shouldBe listOf(old)
+    }
+
+    @Test
     fun `with nothing to tear down there is no backlog`() {
         db.inbox(db.workspace())
         inboxes.oldestTeardownWaitingSince() shouldBe null

@@ -94,6 +94,8 @@ class GuardedIngestHarness(
             .ActivationGuard(),
     /** TI-STORAGE-006E PR D: the global footprint rules (T1 and the pre-resolution check), or none. */
     val footprint: email.testinbox.application.storage.FootprintPolicy? = null,
+    /** Replaces the pre-resolution check's reader (to drive the T1 backstop race); null reads the database. */
+    footprintGate: email.testinbox.application.storage.FootprintGate? = null,
 ) : AutoCloseable {
     val dbName: String = shared?.dbName ?: "guarded_${UUID.randomUUID().toString().replace("-", "")}"
     val bucket: String = shared?.bucket ?: "g-${UUID.randomUUID().toString().take(12)}"
@@ -155,7 +157,19 @@ class GuardedIngestHarness(
     val clock: DatabaseClock = reservations
     val node = StorageNode(nodeId, UUID.randomUUID())
     val lifecycle = StorageNodeLifecycle(ambiguity, node, maxSlots).also { it.start() }
-    val slots = WriteSlots(maxSlots, perWorkspace, slotWait) { ambiguity.unresolvedFor(nodeId) }
+    val slots =
+        WriteSlots(
+            maxSlots,
+            perWorkspace,
+            slotWait,
+            // Lemma 3's orphaned-row count, as the gateway wires it under ALL with a footprint.
+            orphaned =
+                if (footprint != null && enforcement == StorageEnforcement.ALL) {
+                    { ambiguity.unresolvedOrphaned(email.testinbox.application.storage.StorageProtocol.STALE_HEARTBEAT) }
+                } else {
+                    null
+                },
+        ) { ambiguity.unresolvedFor(nodeId) }
 
     val guarded =
         GuardedStorage(
@@ -194,7 +208,7 @@ class GuardedIngestHarness(
                 email.testinbox.application.storage.FootprintPrecheck(
                     footprint,
                     enforcement,
-                    email.testinbox.persistence.JdbcFootprintGate(jdbc),
+                    footprintGate ?: email.testinbox.persistence.JdbcFootprintGate(jdbc),
                 ),
         )
 

@@ -54,10 +54,9 @@ class ApiStorageWiring(
         transactionManager: PlatformTransactionManager,
         declarations: StorageDeclarations,
     ): RowFreeDebt =
-        RowFreeDebt(
+        email.testinbox.application.storage.FootprintWiring.rowFreeDebt(
             JdbcRowFreeDebtStore(jdbc, TransactionTemplate(transactionManager)),
-            EffectiveStoragePolicy.footprint(declarations),
-            declarations.enforcement,
+            declarations,
         )
 
     /**

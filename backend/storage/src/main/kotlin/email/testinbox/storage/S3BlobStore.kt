@@ -214,7 +214,7 @@ class S3BlobStore internal constructor(
     }
 
     companion object {
-        private fun client(
+        internal fun client(
             config: S3BlobStoreConfig,
             retries: Boolean,
         ): S3Client =

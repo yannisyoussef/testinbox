@@ -68,6 +68,45 @@ class FootprintEnforcementTest {
         ).also { open += it }
     }
 
+    @Test
+    fun `the T1 backstop - a check that passed before resolution, then an untrusted snapshot in T1 - answers the same 451`() {
+        val probe = GuardedIngestHarness().also { open += it }
+        val role =
+            probe.jdbc
+                .sql("SELECT session_user::text")
+                .query(String::class.java)
+                .single()
+        val valid =
+            email.testinbox.application.port
+                .ObservedFootprint(0, 0, 0, 0, true, 0, Long.MAX_VALUE, 0, 4096, Long.MAX_VALUE, role)
+        val h =
+            GuardedIngestHarness(
+                enforcement = StorageEnforcement.ALL,
+                footprint = policy(Long.MAX_VALUE / 4, role),
+                footprintGate = { valid }, // the race: the precheck saw a valid state
+            ).also { open += it }
+        h.observe() // the counts stay untrusted in the database
+        val (_, a) = h.inbox(h.workspace())
+
+        assertThrows<StorageUnavailableException> { h.deliver(listOf(a)) }.reason shouldBe StorageUnavailableReason.FOOTPRINT_UNAVAILABLE
+        h.metrics.events shouldContain "footprint:${FootprintUnavailability.UNTRUSTED}"
+        h.reservations() shouldBe 0
+    }
+
+    @Test
+    fun `write slots exhausted by rows no live node answers for are a 451 before resolution - known and unknown alike`() {
+        val h = harness(StorageEnforcement.ALL)
+        h.trust()
+        h.observe()
+        repeat(16) { h.ambiguity.record("replaced-node-$it", "k$it", 1, java.time.Duration.ofHours(1)) }
+        val (_, known) = h.inbox(h.workspace())
+
+        listOf(listOf(known), listOf("nobody-${System.nanoTime()}@inbox.testinbox.email")).forEach { recipients ->
+            assertThrows<StorageUnavailableException> { h.deliver(recipients) }.reason shouldBe StorageUnavailableReason.SLOT_WAIT
+        }
+        h.reservations() shouldBe 0
+    }
+
     private fun GuardedIngestHarness.trust() {
         jdbc.sql("UPDATE storage_footprint_trust SET trusted_epoch = distrust_epoch WHERE id = 1").update() shouldBe 1
     }

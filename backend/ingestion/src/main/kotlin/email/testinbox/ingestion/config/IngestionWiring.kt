@@ -17,6 +17,7 @@ import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.FootprintPrecheck
+import email.testinbox.application.storage.FootprintWiring
 import email.testinbox.application.storage.GuardedStorage
 import email.testinbox.application.storage.RowFreeDebt
 import email.testinbox.application.storage.StorageBreaker
@@ -181,12 +182,7 @@ class IngestionWiring(
         jdbc: JdbcClient,
         transactionManager: PlatformTransactionManager,
         declarations: StorageDeclarations,
-    ): RowFreeDebt =
-        RowFreeDebt(
-            JdbcRowFreeDebtStore(jdbc, template(transactionManager)),
-            EffectiveStoragePolicy.footprint(declarations),
-            declarations.enforcement,
-        )
+    ): RowFreeDebt = FootprintWiring.rowFreeDebt(JdbcRowFreeDebtStore(jdbc, template(transactionManager)), declarations)
 
     /** Each adapter owns its transactions explicitly (READ COMMITTED is stated in the SQL). */
     private fun template(transactionManager: PlatformTransactionManager) = TransactionTemplate(transactionManager)
@@ -235,10 +231,8 @@ class IngestionWiring(
             // slots, so H_F bounds the late objects whatever node ids come and go. Only while
             // the global footprint rules enforce: OFF and TENANT_LIMITS keep per-node slots.
             orphaned =
-                if (declarations.enforcement.enforces(StorageScope.GLOBAL) && EffectiveStoragePolicy.footprint(declarations) != null) {
-                    { ambiguity.unresolvedOrphaned(email.testinbox.application.storage.StorageProtocol.STALE_HEARTBEAT) }
-                } else {
-                    null
+                FootprintWiring.orphanedSlots(declarations) {
+                    ambiguity.unresolvedOrphaned(email.testinbox.application.storage.StorageProtocol.STALE_HEARTBEAT)
                 },
         )
 
@@ -312,16 +306,10 @@ class IngestionWiring(
         policy: StorageCapacityPolicy,
         declarations: StorageDeclarations,
     ): StorageAdmission =
-        StorageAdmission(
-            JdbcStorageAdmission(
-                jdbc,
-                template(transactionManager),
-                readsFootprint = EffectiveStoragePolicy.footprint(declarations) != null,
-            ),
+        FootprintWiring.admission(
+            JdbcStorageAdmission(jdbc, template(transactionManager), readsFootprint = FootprintWiring.readsFootprint(declarations)),
             policy,
-            declarations.enforcement,
-            // TI-STORAGE-006E PR D: the global footprint rules, enforced under ALL only.
-            footprint = EffectiveStoragePolicy.footprint(declarations),
+            declarations,
         )
 
     /** A @Bean method's parameters are its dependencies: one per protocol collaborator. */
@@ -357,11 +345,7 @@ class IngestionWiring(
             metrics = storageMetrics,
             activation = activation,
             footprint =
-                FootprintPrecheck(
-                    EffectiveStoragePolicy.footprint(declarations),
-                    declarations.enforcement,
-                    JdbcFootprintGate(jdbc),
-                ),
+                FootprintWiring.precheck(declarations, JdbcFootprintGate(jdbc)),
         )
 
     /** A @Bean method's parameters are its dependencies: one per runtime collaborator. */

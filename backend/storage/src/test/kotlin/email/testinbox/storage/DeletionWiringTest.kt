@@ -164,4 +164,85 @@ class DeletionWiringTest {
         S3StorageInspection(s3, "bucket").witness("_probe/node/2") shouldBe true
         deleted shouldBe listOf("_probe/node/2")
     }
+
+    @Test
+    fun `objectSize is the HEAD content length, null for a missing key, and any other failure propagates`() {
+        val answers =
+            ArrayDeque<() -> Any>(
+                listOf(
+                    {
+                        software.amazon.awssdk.services.s3.model.HeadObjectResponse
+                            .builder()
+                            .contentLength(4096)
+                            .build()
+                    },
+                    {
+                        throw software.amazon.awssdk.services.s3.model.NoSuchKeyException
+                            .builder()
+                            .build()
+                    },
+                    {
+                        throw software.amazon.awssdk.services.s3.model.S3Exception
+                            .builder()
+                            .statusCode(404)
+                            .build()
+                    },
+                    {
+                        throw software.amazon.awssdk.services.s3.model.S3Exception
+                            .builder()
+                            .statusCode(500)
+                            .build()
+                    },
+                ),
+            )
+        val s3 =
+            stub { name, args ->
+                if (name == "headObject") {
+                    (args[0] as software.amazon.awssdk.services.s3.model.HeadObjectRequest).key() shouldBe "ws/in/m/raw.eml"
+                    answers.removeFirst()()
+                } else {
+                    null
+                }
+            }
+        val inspection = S3StorageInspection(s3, "bucket")
+
+        inspection.objectSize("ws/in/m/raw.eml") shouldBe 4096
+        inspection.objectSize("ws/in/m/raw.eml") shouldBe null
+        inspection.objectSize("ws/in/m/raw.eml") shouldBe null
+        assertThrows<software.amazon.awssdk.services.s3.model.S3Exception> { inspection.objectSize("ws/in/m/raw.eml") }
+    }
+
+    @Test
+    fun `the witness PUT goes through the probe client only, and that client never retries`() {
+        val probed = mutableListOf<String>()
+        val probe =
+            stub { name, args ->
+                if (name == "putObject") {
+                    probed += (args[0] as software.amazon.awssdk.services.s3.model.PutObjectRequest).key()
+                    PutObjectResponse.builder().build()
+                } else {
+                    null // a listing or delete on the probe client fails the test
+                }
+            }
+        val s3 =
+            stub { name, _ ->
+                when (name) {
+                    "listObjectsV2" -> ListObjectsV2Response.builder().build()
+                    "deleteObject" -> DeleteObjectResponse.builder().build()
+                    else -> null // a PUT on the retrying client fails the test
+                }
+            }
+
+        S3StorageInspection(s3, "bucket", probe).witness("_probe/node/3") shouldBe false
+        probed shouldBe listOf("_probe/node/3")
+
+        S3BlobStore.client(config, retries = false).use { client ->
+            client
+                .serviceClientConfiguration()
+                .overrideConfiguration()
+                .retryStrategy()
+                .get()
+                .maxAttempts() shouldBe 1
+        }
+    }
 }
