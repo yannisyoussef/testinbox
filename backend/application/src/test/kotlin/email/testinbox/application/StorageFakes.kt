@@ -144,9 +144,13 @@ class InMemoryStorageReservations(
     val lastRefusal = HashMap<InboxId, StorageRefusalReason>()
 
     override fun lockForCommit(ids: Collection<MessageId>) =
-        ids.sortedBy { it.value }.mapNotNull { rows[it] }.map { LockedReservation(it.messageId, it.bytes, it.state) }
+        ids.sortedBy { it.value }.mapNotNull { rows[it] }.map { LockedReservation(it.messageId, it.bytes, it.state, it.objectKeys) }
 
-    override fun lockInboxes(ids: Collection<InboxId>) = Unit
+    /** Every inbox the fake is asked about is receivable unless a test marks it otherwise. */
+    val inboxStates = HashMap<InboxId, email.testinbox.domain.inbox.InboxState>()
+
+    override fun lockInboxes(ids: Collection<InboxId>) =
+        ids.associateWith { inboxStates[it] ?: email.testinbox.domain.inbox.InboxState.ACTIVE }
 
     override fun recordRefusals(refusals: Map<InboxId, StorageRefusalReason>) {
         refusals.forEach { (inbox, reason) ->

@@ -22,8 +22,14 @@ interface StorageCommitFence {
     /** `FOR UPDATE`, ascending `message_id`. The rows that exist, in any state. */
     fun lockForCommit(ids: Collection<MessageId>): List<LockedReservation>
 
-    /** `FOR KEY SHARE`, ascending id: no concurrent delete can remove an inbox mid-commit. */
-    fun lockInboxes(ids: Collection<InboxId>)
+    /**
+     * `FOR SHARE`, ascending id, returning each locked inbox's state: no
+     * concurrent delete can remove it, and no concurrent state change (the
+     * retention sweep's EXPIRED) can commit, while T2 holds it. A missing
+     * inbox is absent from the map (TI-STORAGE-006E PR D: the contract's T2
+     * fence; `FOR KEY SHARE` let a state change slip past).
+     */
+    fun lockInboxes(ids: Collection<InboxId>): Map<InboxId, email.testinbox.domain.inbox.InboxState>
 
     /**
      * ADR-035 §6a: one upsert per refused inbox, ascending, `refusal_count + 1`,
@@ -166,6 +172,8 @@ data class LockedReservation(
     val messageId: MessageId,
     val bytes: Long,
     val state: String,
+    /** The exact keys T1 reserved: T2 commits a copy only for exactly these (contract §2.4, T2 row). */
+    val objectKeys: List<String> = emptyList(),
 )
 
 data class ReleasableReservation(

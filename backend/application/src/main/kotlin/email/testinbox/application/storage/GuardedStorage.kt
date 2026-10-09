@@ -487,7 +487,26 @@ class GuardedStorage(
                         "a reservation was no longer RESERVED at commit",
                     )
                 }
-                reservations.lockInboxes((admitted.map { it.candidate.inboxId } + refused.keys).toSet())
+                // TI-STORAGE-006E: a copy is committed only for exactly the keys T1
+                // reserved, or an extra uploaded key would be live and charged nowhere.
+                val keysById = admitted.associate { it.messageId to it.candidate.objectKeys }
+                if (locked.any { it.objectKeys.toSet() != keysById.getValue(it.messageId).toSet() }) {
+                    throw StorageUnavailableException(
+                        StorageUnavailableReason.COMMIT_FENCED,
+                        "a copy's keys differ from the keys its reservation holds",
+                    )
+                }
+                val states = reservations.lockInboxes((admitted.map { it.candidate.inboxId } + refused.keys).toSet())
+                // The contract's T2 fence: under FOR SHARE, no retention state change can
+                // commit meanwhile, and a copy whose inbox already stopped receiving
+                // (retention committed EXPIRED, then deleted its prefix while this upload
+                // was in flight) must not become a live object no row charges.
+                if (admitted.any { states[it.candidate.inboxId] !in RECEIVABLE }) {
+                    throw StorageUnavailableException(
+                        StorageUnavailableReason.COMMIT_FENCED,
+                        "an admitted copy's inbox no longer receives",
+                    )
+                }
                 reservations.recordRefusals(refused)
                 val outcomes = persist(admitted)
                 check(outcomes.keys == ids.toSet()) { "persist must report every admitted copy" }
@@ -511,6 +530,9 @@ class GuardedStorage(
 
     private companion object {
         val log = LoggerFactory.getLogger(GuardedStorage::class.java)
+
+        /** The inbox states a copy may still be committed into (contract §2.4, T2 row). */
+        val RECEIVABLE = setOf(email.testinbox.domain.inbox.InboxState.ACTIVE, email.testinbox.domain.inbox.InboxState.EXPIRING)
     }
 }
 
