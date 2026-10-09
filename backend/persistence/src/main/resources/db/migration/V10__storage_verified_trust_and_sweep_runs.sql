@@ -431,3 +431,27 @@ BEGIN
 END
 $fn$;
 REVOKE EXECUTE ON FUNCTION storage_repair_ledger() FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------
+-- No definer code is executable by PUBLIC (final security review).
+--
+-- PostgreSQL checks EXECUTE on a trigger function only when a trigger is
+-- CREATED, never when it fires. A definer trigger function left executable by
+-- PUBLIC can therefore be attached by any login role to a temporary table of
+-- its own, and run as the owner: a forged storage_delta or debt row. Revoking
+-- EXECUTE from PUBLIC on every SECURITY DEFINER function here closes that;
+-- the triggers on the real tables keep firing. The callable functions were
+-- already revoked one by one, and are granted to the roles that need them.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    fn regprocedure;
+BEGIN
+    FOR fn IN
+        SELECT p.oid::regprocedure FROM pg_proc p
+         WHERE p.pronamespace = 'public'::regnamespace AND p.prosecdef
+    LOOP
+        EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', fn);
+    END LOOP;
+END
+$$;
