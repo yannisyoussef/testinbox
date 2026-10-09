@@ -612,9 +612,10 @@ object StorageEnforcementSafety {
                     ),
                 )
             }
-            // TI-STORAGE-006E: with footprint admission, envelope-order SERVICE_CAPACITY
-            // refusals become a practical recipient-existence oracle (contract §11.6). One of
-            // its mitigations is mandatory before ALL serves real traffic; until one is built,
+            // TI-STORAGE-006E (ADR-035 Amendment 2 §A2.7): ALL may not carry traffic beyond the
+            // synthetic suite until both public-boundary decisions are made and built:
+            // (A) the envelope-order recipient-existence oracle, and (B) single-sender
+            // amplification (docs/security/storage-public-boundary-decisions.md). Until then,
             // production may not run ALL at all.
             if (storage.enforcement == email.testinbox.domain.storage.StorageEnforcement.ALL &&
                 settings.environment == ProductionPolicy.ENVIRONMENT
@@ -622,8 +623,9 @@ object StorageEnforcementSafety {
                 add(
                     DeploymentViolation(
                         ENFORCEMENT,
-                        "is ALL in production, but the envelope-order mitigation of the filesystem-containment " +
-                            "contract §11.6 is not built; ALL stays dark-staging only",
+                        "is ALL in production, but the public-boundary mitigations of ADR-035 Amendment 2 §A2.7 " +
+                            "(A: the envelope-order oracle, B: single-sender amplification) are not built; " +
+                            "ALL stays dark-staging only",
                     ),
                 )
             }
