@@ -181,8 +181,8 @@ class JdbcStorageAmbiguity(
     ) {
         jdbc
             .sql(
-                "INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown) " +
-                    "VALUES (:node, :generation, :capability, now(), false)",
+                "INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown, containment) " +
+                    "VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT)",
             ).param("node", nodeId)
             .param("generation", generation)
             .param("capability", capability)
@@ -200,8 +200,8 @@ class JdbcStorageAmbiguity(
         jdbc
             .sql(
                 """
-                INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown)
-                VALUES (:node, :generation, :capability, now(), false)
+                INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown, containment)
+                VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT)
                 ON CONFLICT (node_id, generation) DO UPDATE SET heartbeat_at = now()
                 RETURNING xmax <> 0
                 """.trimIndent(),
@@ -311,6 +311,13 @@ class JdbcStorageAmbiguity(
     companion object {
         /** A held late object is re-offered to (P) this long after each refusal. */
         val HELD_RETRY: java.time.Duration = java.time.Duration.ofMinutes(5)
+
+        /**
+         * The containment level this artifact registers (V10): it enforces rules (G),
+         * (C) and (P). Every earlier artifact leaves the column's default, 0, and
+         * activation gate F refuses while any live node is below 1.
+         */
+        const val CONTAINMENT = 1
 
         /** The node id of late objects the orphan sweep holds: never a live node, so they count against every slot. */
         const val HELD_NODE = "held:orphan-sweep"

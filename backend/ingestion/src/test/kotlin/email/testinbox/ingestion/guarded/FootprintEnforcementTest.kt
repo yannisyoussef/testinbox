@@ -108,7 +108,7 @@ class FootprintEnforcementTest {
     }
 
     private fun GuardedIngestHarness.trust() {
-        jdbc.sql("UPDATE storage_footprint_trust SET trusted_epoch = distrust_epoch WHERE id = 1").update() shouldBe 1
+        jdbc.sql("SELECT storage_confirm_footprint_trust()").query(Boolean::class.java).single() shouldBe true
     }
 
     private fun GuardedIngestHarness.observe(trash: Long = 0) {

@@ -133,10 +133,24 @@ otherwise searches the caller's temporary schema first, and a temp table
 could shadow the ledger inside the definer code).
 
 The API role reads `storage_deletion_debt`, `storage_filesystem_observation`
-and `storage_debt_watermark` (`SELECT`), reads and marks
-`storage_footprint_trust` (`SELECT, INSERT, UPDATE`: reconciliation's
-compare-and-set, and the re-creation of a row lost to a restore, contract
-§4.5; a trigger keeps `distrust_epoch` monotone), and holds `EXECUTE` on
+and `storage_debt_watermark` (`SELECT`).
+
+It reads `storage_footprint_trust` and may only raise its `distrust_epoch`
+(`SELECT, UPDATE (distrust_epoch)`, a column grant; a trigger keeps the epoch
+monotone). **It never marks trust itself (V10).** The trust mark is made by
+`storage_confirm_footprint_trust()`, which the API role executes. That
+function takes the ledger lock, recreates a row lost to a restore, verifies
+every workspace's bytes and object counts against the `message` and
+`attachment` rows, and marks the epoch it read compare-and-set, stamping its
+order and time. The role holds no `INSERT` and no `UPDATE` on the trusted
+columns. A guard trigger refuses any other change to them, even for a role
+that still holds an older full grant.
+
+For the orphan sweep's database record (V10), the API role holds `EXECUTE` on
+`storage_begin_sweep(text)` and `storage_complete_sweep(bigint, bigint)`, and
+no privilege on `storage_sweep_run`.
+
+It also holds `EXECUTE` on `storage_confirm_footprint_trust()`,
 `storage_compact_deletion_debt()`,
 `storage_record_pending_debt(text, bigint, bigint, text)` and
 `storage_resolve_pending_debt(text)`. Those are `SECURITY DEFINER` with

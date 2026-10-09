@@ -288,6 +288,27 @@ holds while it runs (contract §4.5). `deploy/rollback-floors.txt` names the
 PR D artifact as the floor before `ALL` is ever enabled; below it, the
 bucket-quota fuse remains the only physical link.
 
+**Schema V10** (TI-STORAGE-006E, owner review b) is expand-only. It adds:
+- two nullable columns on the trust row (`trusted_seq`, `trusted_at`);
+- a constant-default column `storage_node.containment` (no table rewrite);
+- the table `storage_sweep_run`;
+- the trust guard trigger, and the definer functions
+  `storage_confirm_footprint_trust()`, `storage_begin_sweep(text)` and
+  `storage_complete_sweep(bigint, bigint)`.
+
+The upgrade is a distrust event, so admission under `ALL` waits for the
+verifying function to mark the counts trusted again. No artifact before PR D
+writes or marks trust, so a rollback to one is unaffected.
+
+An artifact from before V10 that tried to mark trust directly would be
+refused by the guard trigger. Its reconciliation would report `failed`, and
+the counts would stay untrusted. That is fail-closed, and only PR D artifacts
+ever marked trust.
+
+An earlier artifact's node rows carry `containment = 0`, so gate F refuses
+`ALL` while one is live. It also refuses while the base-case sweep began
+before such a node's last heartbeat.
+
 ## Adding a `StorageRefusalReason` is reader-first (TI-STORAGE-004)
 
 The API reads `inbox_storage.last_refusal_reason` into the closed

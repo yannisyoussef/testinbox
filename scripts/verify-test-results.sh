@@ -54,11 +54,11 @@ BACKEND_MODULES=(
   "backend/architecture:38"
   "backend/domain:123"
   "backend/application:398"
-  "backend/persistence:325"
+  "backend/persistence:333"
   "backend/storage:47"
   "backend/notification:6"
   "backend/observability:35"
-  "backend/ingestion:135"
+  "backend/ingestion:141"
   "backend/api:161"
   "backend/migrator:6"
   # TI-STORAGE-006: the ADR-035 §11 benchmark harness's own unit tests (the
