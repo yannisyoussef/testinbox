@@ -132,6 +132,41 @@ class FootprintAdmissionTest {
     }
 
     @Test
+    fun `a probe during a purge stall is refused by rule P however few probe rows remain`() {
+        // Probe trash whose rows observations superseded is in W, with no row left: a cap on
+        // probe ROWS would admit forever. Rule P charges the potential, and H_F stays reserved.
+        val k = model.bound(0, 1)
+        val stalledProbeTrash = 40 * k
+        val snapshot = Snapshot(Load(1_000, 1), Load.ZERO, stalledProbeTrash)
+        val h = 2 * model.bound(15L * 1024 * 1024, 1)
+        val exact = model.bound(1_000, 2) + stalledProbeTrash + h
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = exact, h = h), snapshot) shouldBe Verdict.ADMITTED
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = exact - 1, h = h), snapshot) shouldBe Verdict.CONTAINMENT
+        // Room for the probe itself but not for H_F: refused (a rule without H_F would admit it).
+        val withoutReserve = model.bound(1_000, 2) + stalledProbeTrash
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = withoutReserve + h / 2, h = h), snapshot) shouldBe
+            Verdict.CONTAINMENT
+    }
+
+    @Test
+    fun `a late object's pending row is charged the aggregate increase, not phi - rule P at exact headroom`() {
+        // The owner's counterexample, now on the sweep path: x = 4 096 B, one object.
+        val snapshot = Snapshot(Load.ZERO, Load.ZERO, 0)
+        val x = Load(4096, 1)
+        model.bound(4096, 1) - model.bound(0, 0) shouldBe 32_800
+        FootprintAdmission.decideRowFreeDebt(model, limits(g = 0, c = 32_800), snapshot, x) shouldBe Verdict.ADMITTED
+        FootprintAdmission.decideRowFreeDebt(model, limits(g = 0, c = 32_799), snapshot, x) shouldBe Verdict.CONTAINMENT
+        // A φ charge would have admitted it at 28 688 + 1 B of headroom.
+        FootprintAdmission.decideRowFreeDebt(model, limits(g = 0, c = model.ofObject(4096) + 1), snapshot, x) shouldBe
+            Verdict.CONTAINMENT
+        // On a non-empty aggregate the charge is ΔF over the whole of L + D, rounded once.
+        val busy = Snapshot(Load(10_000_001, 7), Load(3_333, 2), 5_000)
+        val need = model.bound(10_000_001 + 3_333 + 4_096, 10) + 5_000
+        FootprintAdmission.decideRowFreeDebt(model, limits(g = 0, c = need), busy, x) shouldBe Verdict.ADMITTED
+        FootprintAdmission.decideRowFreeDebt(model, limits(g = 0, c = need - 1), busy, x) shouldBe Verdict.CONTAINMENT
+    }
+
+    @Test
     fun `a probe is admitted by rule P - the potential with its row, without the probe reserve`() {
         val snapshot = Snapshot(Load(1_000, 1), Load(500, 1), 7_000)
         val fits = model.bound(1_500, 3) + 7_000 + 11 + 13 + 17

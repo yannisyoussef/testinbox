@@ -75,7 +75,11 @@ object FootprintAdmission {
         val metadataBudgetBytes: Long,
         val operationalReserveBytes: Long,
         val capacityBytes: Long,
-        /** *P_F*: reserved for witness probes, which reach trash between admissions (contract §2.4). */
+        /**
+         * *P_F*: the reserve copies leave unused in rule (C) so that row-free debt
+         * writes (rule P) stay admissible while copies are refused. Liveness, not
+         * safety: every such write is itself admitted by [decideRowFreeDebt].
+         */
         val probeBudgetBytes: Long,
     ) {
         init {
