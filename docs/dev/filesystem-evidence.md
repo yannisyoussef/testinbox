@@ -54,7 +54,10 @@ scripts/check-storage-activation.sh --mode ALL \
   the live `storage_node` rows, privilege holders and the sequence cache. Run
   it as a role that can read the V8 tables and the catalog. It writes
   nothing. For an offline evaluation, `--footprint-state <json>` replaces it
-  with a file of the same shape (the self-test fixtures show one).
+  with a file of the same shape (the self-test fixtures show one). The live
+  database always wins. A state file is refused while
+  `TESTINBOX_ACTIVATION_DB_URL` is set, and a PASS on a file says that the
+  state was offline.
 - `--mode TENANT_LIMITS` reports gate F `NOT REQUIRED` and says why. Global
   admission is observational in that mode, so filesystem exhaustion stays
   reachable. `TENANT_LIMITS` is approved for dark staging qualification only,
@@ -100,8 +103,9 @@ file is `NOT RUN`. Every field is required. A missing or mistyped field is
 | trusted counts | `storage_footprint_trust.trusted_epoch = distrust_epoch` |
 | base case | the newest observation's `started_seq` is after `distrusted_seq` (V9) |
 | procs | the live `storage_node` ids (or `--expected-ingestion-nodes`) number no more than the declared `procs` |
-| observation source | the newest row's `written_by` is the monitor role. The monitor is also the **only** login role, other than superusers and the table owner, holding `INSERT` on `storage_filesystem_observation` and `EXECUTE` on `storage_begin_observation()`. It is not an application role. |
-| privileges | no application role holds `INSERT` on observations, `EXECUTE` on `storage_begin_observation()`, or `INSERT`/`UPDATE`/`DELETE` on `storage_deletion_debt` or `storage_debt_watermark`. None owns (directly or through membership) a `storage_*` table, sequence or function. |
+| observation validity | the newest observation began at or above the compaction watermark, and no footprint total overflows 64 bits. Otherwise T1 would refuse while the gate passed. |
+| observation source | the newest row's `written_by` is the monitor role, which is not an application role. The monitor is also the **only** login role able to insert an observation or begin a walk, other than superusers and members of the table owner. A role counts as able if it, or any role it can `SET ROLE` to (`NOINHERIT` membership included), holds `INSERT` (column grants included) on `storage_filesystem_observation` or `EXECUTE` on `storage_begin_observation()`. |
+| privileges | the roles checked are the declared application roles **and** every role a `testinbox-*` session (other than the migrator) is connected as right now, so leaving a role out of the evidence hides nothing. None of them, directly or through any role it can act as, is a superuser. None holds `INSERT` on observations, `EXECUTE` on `storage_begin_observation()`, `INSERT`/`UPDATE` (column grants included) or `DELETE` on `storage_deletion_debt` or `storage_debt_watermark`, or `SET` on `session_replication_role`. None owns, directly or through membership, a `storage_*` table, sequence or function, or any relation carrying a ledger or debt trigger (`message`, `attachment`, and others), because an owner can disable those triggers. |
 | ordering | `pg_sequences.cache_size = 1` for `storage_debt_order_seq`, and the gate's own connection is not in recovery |
 | liveness | the newest observation is no older than *A_obs*, and not in the future of the database clock |
 
@@ -134,6 +138,16 @@ staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
   full sweep completed since each API node started, and that
   `physical_listed ≤ covered + H`. A `trusted_at` column (an expand-only
   V10) would make this row machine-checked. That is proposed, not done.
+- **"Trusted counts" proves less than it sounds.** The API role may mark
+  trust: it holds `UPDATE` on `storage_footprint_trust` for the
+  reconciliation's compare-and-set. Only `distrust_epoch` is protected
+  against going backwards. The row therefore shows that a holder of the API
+  credentials marked the counts trusted. It does not independently prove
+  that they are.
+- **The observation age limit (`observationMaxAgeSeconds`, *A_obs*) comes
+  from the evidence.** It is capped at 3600 s, so a large value cannot
+  launder stale evidence. It is not cross-checked against the running
+  configuration.
 - **The declared values are copied by Ops from the deployment.** The gate
   checks them against observation, but not against the running
   configuration itself. `DeploymentSafety` checks the same values for shape
