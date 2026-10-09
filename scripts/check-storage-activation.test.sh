@@ -343,7 +343,8 @@ fe schema '.schema = "testinbox.filesystem-evidence/0"' "an unknown evidence sch
 fe no-uuid 'del(.filesystem.uuid)' "a missing filesystem UUID → NOT RUN" "malformed input: evidence.filesystem.uuid missing"
 fe neg-blocks '.statvfs.blocks = -1' "a negative block count → NOT RUN" "evidence.statvfs.blocks is not a non-negative integer"
 fe str-capacity '.declared.capacityBytes = "64G"' "a capacity given as a string → NOT RUN" "evidence.declared.capacityBytes is not a positive integer"
-fe eps '.declared.fragmentationEpsilon = 1.5' "ε outside [0, 1) → NOT RUN" "fragmentationEpsilon is not in \[0, 1\)"
+fe bad-b '.declared.blockSizeBytes = 8192' "an unsupported block size → NOT RUN" "blockSizeBytes 8192 is not a supported block size"
+fe omax-shape '.declared.objectOverheadBytes = 8191' "an O_max no deployment can declare → NOT RUN" "objectOverheadBytes 8191 is not a multiple of B covering at least 6 blocks"
 fe roles '.declared.applicationRoles = []' "no application role declared → NOT RUN" "applicationRoles is not a non-empty list of names"
 fe image-sizes 'del(.preallocation.allocatedBytes)' "a backing image without its allocated size → NOT RUN" "preallocation.allocatedBytes missing"
 fe bad-time '.collectedAt = "yesterday"' "an unreadable collection time → NOT RUN" "evidence.collectedAt is not an ISO-8601 UTC instant"
@@ -377,17 +378,17 @@ both() {
     only "F: $4" F-filesystem "$5" "$TMP/f-both-$1"
 }
 both small '.statvfs.blocks = 16777215' '.observation.capacityBytes = 68719472640' "fewer usable blocks than declared C_fs blocks" "capacity: f_blocks × f_frsize 68719472640 < declared C_fs 68719476736"
-fe frsize '.declared.blockSizeBytes = 8192 | .declared.inodes = 16777216' "f_frsize other than declared B blocks" "capacity: f_frsize 4096 ≠ declared B 8192"
+fe frsize '.declared.blockSizeBytes = 2048' "f_frsize other than declared B blocks" "capacity: f_frsize 4096 ≠ declared B 2048"
 both inodes '.statvfs.files = 1000' '.observation.inodesTotal = 1000' "fewer inodes than declared blocks" "inodes: f_files 1000 < declared I_fs 16777216"
 both inode-ratio '.declared.inodes = 1000 | .statvfs.files = 1000' '.observation.inodesTotal = 1000' "declared I_fs below C_fs / B blocks" "inodes: declared I_fs 1000 < C_fs / B 16777216"
 fe sparse '.preallocation.allocatedBytes = 4096' "a sparse backing image blocks" "preallocation: backing image allocated 4096 ≠ apparent size 68719476736 \(sparse\)"
 fe thin '.preallocation.thinPool = true' "a thin pool blocks" "preallocation: the filesystem is on a thin pool"
 fe fstrim '.preallocation.fstrimExcluded = false' "no fstrim exclusion blocks" "no fstrim exclusion is recorded"
 fe isolation '.isolation.hostFreeAtCreationBytes = 1' "a host filesystem that could not hold the image blocks" "isolation: the host filesystem had 1 free at creation"
-fs used '.observation.usedBytes = 3000000000' "used above Φ + H_F + M blocks, with the figures" "headroom: used 3000000000 > Φ 1218905661 \+ H_F 536870912 \+ M 268435456"
+fs used '.observation.usedBytes = 3000000000' "used above Φ + H_F + M blocks, with the figures" "headroom: used 3000000000 > Φ 1414816089 \+ H_F 506200576 \+ M 268435456"
 fs avail '.observation.availBytes = 1' "avail below R_ops blocks" "headroom: avail 1 < R_ops 2147483648"
 fs no-obs '.observation = null' "no monitor observation blocks" "headroom: no monitor observation exists"
-fs debt '.footprint.debtBytes = 9000000000 | .footprint.debtObjects = 1 | .observation.usedBytes = 9000000000' "D_est above D_budget blocks" "deletion debt: D_est [0-9]+ > D_budget 8589934592"
+fs debt '.footprint.debtBytes = 9000000000 | .footprint.debtObjects = 1 | .observation.usedBytes = 9000000000' "D_est above D_budget blocks" "deletion debt: D_est 9085184938 > D_budget 8589934592"
 fs untrusted '.trust.trustedEpoch = 2' "untrusted counts block" "trusted counts: trusted_epoch 2 ≠ distrust_epoch 3"
 fs distrust '.trust.distrustedSeq = 120' "an observation that began before the last distrust event blocks" "base case: the newest observation began at seq 120, not after the last distrust event \(seq 120\)"
 fe sweep '.baseCase.sweepStartedAt = "2026-10-06T21:00:00Z"' "a sweep that began before trust was confirmed blocks" "base case: the orphan sweep began 2026-10-06T21:00:00Z, not after the counts were last trusted"
@@ -399,7 +400,7 @@ st procs-all '.liveNodes = ["api-1", "ing-1", "ing-2"]'
 good | awk 'skip { skip = 0; next } $0 == "--expected-ingestion-nodes" { skip = 1; next } { print }' | sed "s#$FSS#$TMP/st-procs-all.json#" | \
     sed "s#$FSE#$TMP/ev-procs1.json#" > "$TMP/f-procs"; jq '.declared.procs = 2' "$FSE" > "$TMP/ev-procs1.json"
 run_args "$TMP/f-procs"
-printf '%s\n' "$OUT" | grep -qE '^F-filesystem[[:space:]]+BLOCKED[[:space:]].*procs: declared procs 2 < 3 live ingestion node\(s\)' \
+printf '%s\n' "$OUT" | grep -qE '^F-filesystem[[:space:]]+BLOCKED[[:space:]].*procs: declared procs 2 < 3 live node\(s\)' \
     && ok "F: without a declared ingestion list, every live node counts against procs" || bad "F: procs was not checked against the live nodes" "$OUT"
 fs writer '.observation.writtenBy = "testinbox_app"' "an observation the monitor did not write blocks" "observation source: newest observation written by testinbox_app, not the declared monitor testinbox_monitor"
 fe monitor-app '.declared.applicationRoles = ["testinbox_app", "testinbox_monitor"]' "a monitor role that is also an application role blocks" "observation source: the monitor role is an application role"
@@ -424,6 +425,21 @@ printf '%s\n' "$OUT" | grep -qE '^F-filesystem[[:space:]]+NOT RUN[[:space:]].*--
 run_args "$TMP/args-good"
 printf '%s\n' "$OUT" | grep -qE '^F-filesystem[[:space:]]+PASS[[:space:]]+database state from an OFFLINE --footprint-state file' \
     && ok "F: a PASS on an offline state file says so" || bad "F did not mark the offline source" "$OUT"
+
+# ε and H_F are derived, never read: evidence fields claiming a larger budget or a smaller ε change nothing.
+ev launder '.declared.finalizeBudgetBytes = 4000000000 | .declared.fragmentationEpsilon = 0'
+jq '.observation.usedBytes = 3000000000' "$FSS" > "$TMP/st-launder.json"
+sed "s#$FSS#$TMP/st-launder.json#" "$TMP/f-ev-launder" > "$TMP/f-launder"
+only "F: an H_F or ε written into the evidence is ignored; the derived values judge" F-filesystem "headroom: used 3000000000 > Φ 1414816089 \+ H_F 506200576" "$TMP/f-launder"
+fe mounts0 '.mount.mountsOfSource = 0' "a source mounted nowhere blocks" "dedicated mount: /proc/mounts lists 0 mounts"
+jq '.filesystem.objectOverheadMaxBytes = 28672' "$FIX/qualification/laptop-arm64-reference.json" > "$TMP/rec-omax.json"
+mkdir -p "$TMP/qual-omax"; cp "$FIX/qualification/"*.json "$FIX/qualification/index.txt" "$TMP/qual-omax/"; cp "$TMP/rec-omax.json" "$TMP/qual-omax/laptop-arm64-reference.json"
+with --qualification-dir "$TMP/qual-omax" > "$TMP/f-omax"
+only "F: a declared O_max below the record's qualified maximum blocks" F-filesystem "O_max: declared 24576 < the qualified maximum 28672" "$TMP/f-omax"
+jq 'del(.filesystem.objectOverheadMaxBytes)' "$FIX/qualification/laptop-arm64-reference.json" > "$TMP/rec-noomax.json"
+mkdir -p "$TMP/qual-noomax"; cp "$FIX/qualification/"*.json "$FIX/qualification/index.txt" "$TMP/qual-noomax/"; cp "$TMP/rec-noomax.json" "$TMP/qual-noomax/laptop-arm64-reference.json"
+with --qualification-dir "$TMP/qual-noomax" > "$TMP/f-noomax"
+only "F: a record without a qualified O_max blocks" F-filesystem "carries no qualified objectOverheadMaxBytes" "$TMP/f-noomax"
 
 # A declared value is never an observation: raising the declaration alone cannot pass.
 fe declared-only '.declared.capacityBytes = 137438953472' "declaring more capacity than statvfs observes blocks" "capacity: f_blocks × f_frsize 68719476736 < declared C_fs 137438953472"

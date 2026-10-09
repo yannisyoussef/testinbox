@@ -35,8 +35,20 @@ A **declared** value is what the deployment configures: the
 `TESTINBOX_STORAGE_FS_*` variables, which are the
 `testinbox.storage.filesystem.*` properties. The gate never accepts one as an
 observation. Every rule compares something observed (`statvfs`,
-`/proc/mounts`, the monitor's rows, the catalog) with a declaration. Raising a
-declaration therefore never makes a row pass.
+`/proc/mounts`, the monitor's rows, the catalog) with a declaration.
+
+That does **not** make every declaration harmless. Raising *C_fs* or *I_fs*
+cannot pass, because statvfs must still cover them. Raising *M* or *D_budget*, or lowering *R_ops*,
+loosens the rows that use them, so those values
+must equal the deployed configuration. That is why the evidence names each
+one's source below.
+
+Two quantities are **never** read from the evidence. ε is
+`1 / min(256, ⌊(B − 12)/12⌋ − 1)`, and H_F is `procs × 16 × F(15 MiB, 1)`.
+The gate derives both exactly as `FootprintModel` does, with the same
+rounding. *O_max* must be a value the application could load: a multiple of
+*B* covering at least 6 blocks. It must also be no less than the qualified
+maximum the record carries (`filesystem.objectOverheadMaxBytes`).
 
 ## Running the gate
 
@@ -92,7 +104,7 @@ file is `NOT RUN`. Every field is required. A missing or mistyped field is
 | `baseCase.trustConfirmedAt` | the last time `testinbox_storage_footprint_counts_trusted` turned from 0 to 1 (Prometheus history) | base case |
 | `baseCase.sweepStartedAt` | a lower bound on the start of the sweep that gate B relies on: the **previous** `testinbox_storage_orphan_sweep_completed_at_seconds` value on that node. Sweeps on one node do not overlap, so the current one began after its predecessor completed. In practice this needs two completed sweeps after trust was confirmed. | base case: the sweep began after trust was confirmed |
 | `database.allConnectionsToPrimary` | the datasource URLs of every deployable and of the monitor name the primary | ordering |
-| `declared.*` | the deployed `TESTINBOX_STORAGE_FS_*` values (`deploy/staging/.env.example` lists them): `capacityBytes` (*C_fs*), `blockSizeBytes` (*B*), `inodes` (*I_fs*), `globalFootprintLimitBytes` (*G_F*), `finalizeBudgetBytes` (*H_F*), `metadataBudgetBytes` (*M*), `operationalReserveBytes` (*R_ops*), `objectOverheadBytes` (*O_max*), `fragmentationEpsilon` (ε), `deletionDebtBudgetBytes` (*D_budget*), `observationMaxAgeSeconds` (*A_obs*), `monitorRole`, `applicationRoles` (every role a deployable connects as) and `procs` | every row |
+| `declared.*` | the deployed values, each copied from its real source. The `TESTINBOX_STORAGE_FS_*` variables (`deploy/staging/.env.example`) give `capacityBytes` (*C_fs*), `blockSizeBytes` (*B*), `inodes` (*I_fs*), `globalFootprintLimitBytes` (*G_F*), `metadataBudgetBytes` (*M*), `operationalReserveBytes` (*R_ops*), `objectOverheadBytes` (*O_max*), `deletionDebtBudgetBytes` (*D_budget*), `observationMaxAgeSeconds` (*A_obs*, at most 3600) and `monitorRole`. `procs` is the declared maximum ingestion processes (`TESTINBOX_STORAGE_DECLARED_MAX_INGESTION_PROCESSES`). `applicationRoles` is the database user of every deployable's datasource; the gate also adds every role it sees connected. ε and H_F are not inputs. | every row |
 
 ## What the gate checks against the database
 
@@ -101,7 +113,7 @@ file is `NOT RUN`. Every field is required. A missing or mistyped field is
 | physical headroom | Φ = F(L + D) + W, computed from T1's own figures and the newest observation's `trash_bytes`; `used_bytes ≤ Φ + H_F + M` and `avail_bytes ≥ R_ops` |
 | deletion debt | `D_est = Φ − F(L) ≤ D_budget` |
 | trusted counts | `storage_footprint_trust.trusted_epoch = distrust_epoch` |
-| base case | the newest observation's `started_seq` is after `distrusted_seq` (V9) |
+| base case | the newest observation's `started_seq` is after `distrusted_seq` (V9), and Ops attest that the sweep began after trust was confirmed (see the limits below) |
 | procs | the live `storage_node` ids (or `--expected-ingestion-nodes`) number no more than the declared `procs` |
 | observation validity | the newest observation began at or above the compaction watermark, and no footprint total overflows 64 bits. Otherwise T1 would refuse while the gate passed. |
 | observation source | the newest row's `written_by` is the monitor role, which is not an application role. The monitor is also the **only** login role able to insert an observation or begin a walk, other than superusers and members of the table owner. A role counts as able if it, or any role it can `SET ROLE` to (`NOINHERIT` membership included), holds `INSERT` (column grants included) on `storage_filesystem_observation` or `EXECUTE` on `storage_begin_observation()`. |
@@ -129,6 +141,13 @@ staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
    record to the enablement row in `production-ops-acceptance.md`.
 
 ## Limits stated plainly
+
+- **The base case departs from §9 in three ways.**
+  - §9 asks for a sweep that began after the counts were last trusted. That ordering is Ops-attested, below.
+  - §9 asks for `physical_listed ≤ covered`. Gate B checks the weaker `physical_listed ≤ covered + H` from ADR-035 §14 (b), and gate F does not repeat it.
+  - §9 asks for a sweep after the last heartbeat of a lower-capability node. Gate F does not check that. It relies instead on the containment floor: gate E proves that every running artifact contains it, so no lower-capability node is live when the gate passes. A node that ran below the floor before then is not excluded by any sweep ordering.
+- **MinIO metadata is checked in bytes only.** §1 budgets *M* in bytes and inodes. The monitor's observation carries no metadata-inode figure, so the inode half rests on E7.
+- **The state query copies T1's definitions.** It does not share code with `FootprintSql.kt`. The two match today; a change to one must be made to the other.
 
 - **`baseCase` is attested by Ops, not proven by the database.** The trust
   row records the order of the last *distrust* event, but not the time trust

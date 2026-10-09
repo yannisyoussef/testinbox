@@ -48,6 +48,7 @@
     "uuid": "0b6c3f1e-6a52-4c1e-9d0a-5f1e2b3c4d5e",
     "type": "ext4",
     "mountOptions": "rw,relatime",
-    "mountSource": "/var/lib/testinbox/minio-data.img"
+    "mountSource": "/var/lib/testinbox/minio-data.img",
+    "objectOverheadMaxBytes": 24576
   }
 }

@@ -854,12 +854,17 @@ gate_filesystem() {
               [["baseCase","trustConfirmedAt"], "string"], [["baseCase","sweepStartedAt"], "string"],
               [["database","allConnectionsToPrimary"], "boolean"],
               [["declared","capacityBytes"], "positive"], [["declared","blockSizeBytes"], "positive"], [["declared","inodes"], "positive"],
-              [["declared","globalFootprintLimitBytes"], "positive"], [["declared","finalizeBudgetBytes"], "count"],
+              [["declared","globalFootprintLimitBytes"], "positive"],
               [["declared","metadataBudgetBytes"], "count"], [["declared","operationalReserveBytes"], "count"],
-              [["declared","objectOverheadBytes"], "count"], [["declared","fragmentationEpsilon"], "ratio"],
+              [["declared","objectOverheadBytes"], "positive"],
               [["declared","deletionDebtBudgetBytes"], "positive"], [["declared","observationMaxAgeSeconds"], "age"],
               [["declared","monitorRole"], "string"], [["declared","applicationRoles"], "strings"], [["declared","procs"], "positive"]
             ) | need($e; "evidence"; .[0]; .[1]) ]
+          + ( if ([1024, 2048, 4096] | index($e.declared.blockSizeBytes)) == null
+                then ["evidence.declared.blockSizeBytes \($e.declared.blockSizeBytes) is not a supported block size (1024, 2048, 4096)"] else [] end )
+          + ( if ($e.declared.objectOverheadBytes | type) == "number" and ($e.declared.blockSizeBytes | type) == "number" and $e.declared.blockSizeBytes > 0
+                 and (($e.declared.objectOverheadBytes % $e.declared.blockSizeBytes) != 0 or $e.declared.objectOverheadBytes < 6 * $e.declared.blockSizeBytes)
+                then ["evidence.declared.objectOverheadBytes \($e.declared.objectOverheadBytes) is not a multiple of B covering at least 6 blocks (no deployment can declare it)"] else [] end )
           + ( if $e.preallocation.blockDevice == false then
                 [ need($e; "evidence"; ["preallocation","allocatedBytes"]; "count"), need($e; "evidence"; ["preallocation","apparentBytes"]; "count") ]
               else [] end )
@@ -951,13 +956,18 @@ gate_filesystem() {
         --argjson expectedIng "$(jq -cn --arg v "$EXPECTED_ING" '$v | split(",") | map(select(length > 0))')" \
         --argjson now "$now_s" '
         $e[0] as $e | $s[0] as $s | $r[0] as $rec | $e.declared as $d | $s.observation as $o
-        | ($d.blockSizeBytes) as $B | ($d.fragmentationEpsilon) as $eps | ($d.objectOverheadBytes) as $O
-        | def F($p; $n): ($p + $n * ($B - 1)) * (1 + $eps) + $n * ($O + 1);
+        | ($d.blockSizeBytes) as $B | ($d.objectOverheadBytes) as $O
+        # ε and H_F are DERIVED exactly as FootprintModel does, never taken from the evidence:
+        # ε = 1/min(256, ⌊(B − 12)/12⌋ − 1); x·(1 + ε) rounds up; H_F = procs × 16 × F(15 MiB, 1).
+        | ([256, ((($B - 12) / 12) | floor) - 1] | min) as $den
+        | def ceildiv($x; $y): (($x + $y - 1) / $y) | floor;
+          def F($p; $n): ($p + $n * ($B - 1)) as $base | $base + ceildiv($base; $den) + $n * ($O + 1);
           def ceilnum: if . == floor then . else floor + 1 end;
           def secs: try fromdateiso8601 catch null;
         ($s.footprint) as $fp
-        | (F($fp.liveBytes + $fp.debtBytes; $fp.liveObjects + $fp.debtObjects) + ($o.trashBytes // 0) | ceilnum) as $phi
-        | (F($fp.liveBytes; $fp.liveObjects) | ceilnum) as $fl
+        | (F($fp.liveBytes + $fp.debtBytes; $fp.liveObjects + $fp.debtObjects) + ($o.trashBytes // 0)) as $phi
+        | F($fp.liveBytes; $fp.liveObjects) as $fl
+        | ($d.procs * 16 * F(15728640; 1)) as $hf
         | [
             ( if $rec == null then "identity: qualification record \($e.qualificationRecordId) is not in the qualification index"
               elif $rec.filesystem == null then "identity: record \($e.qualificationRecordId) carries no filesystem elements (contract §9: re-issue it after E1–E8 on this filesystem)"
@@ -980,8 +990,8 @@ gate_filesystem() {
             ( if $e.isolation.dedicatedDevice == false and $e.isolation.hostFreeAtCreationBytes < $e.isolation.imageBytes
                 then "isolation: the host filesystem had \($e.isolation.hostFreeAtCreationBytes) free at creation, less than the image \($e.isolation.imageBytes)" else empty end ),
             ( if $o == null then "headroom: no monitor observation exists"
-              else ( ( if $o.usedBytes > $phi + $d.finalizeBudgetBytes + $d.metadataBudgetBytes
-                         then "headroom: used \($o.usedBytes) > Φ \($phi) + H_F \($d.finalizeBudgetBytes) + M \($d.metadataBudgetBytes)" else empty end ),
+              else ( ( if $o.usedBytes > $phi + $hf + $d.metadataBudgetBytes
+                         then "headroom: used \($o.usedBytes) > Φ \($phi) + H_F \($hf) + M \($d.metadataBudgetBytes)" else empty end ),
                      ( if $o.availBytes < $d.operationalReserveBytes
                          then "headroom: avail \($o.availBytes) < R_ops \($d.operationalReserveBytes)" else empty end ) ) end ),
             ( if $o != null and ($phi - $fl) > $d.deletionDebtBudgetBytes
@@ -997,8 +1007,14 @@ gate_filesystem() {
             ( if ($e.baseCase.sweepStartedAt | secs) <= ($e.baseCase.trustConfirmedAt | secs)
                 then "base case: the orphan sweep began \($e.baseCase.sweepStartedAt), not after the counts were last trusted \($e.baseCase.trustConfirmedAt)" else empty end ),
             ( if $floor == "" then "mixed versions: no TI-STORAGE-006E containment rollback floor is declared (it is added when PR D merges)" else empty end ),
-            ( ( if ($expectedIng | length) > 0 then $expectedIng else $s.liveNodes end ) as $nodes
-              | if ($nodes | length) > $d.procs then "procs: declared procs \($d.procs) < \($nodes | length) live ingestion node(s)" else empty end ),
+            # The larger of the declared ingestion list and the OBSERVED live nodes: a declaration can
+            # never shrink the count (an ingestion node declared as an API node still counts).
+            ( ([($expectedIng | length), ($s.liveNodes | length)] | max) as $n
+              | if $n > $d.procs then "procs: declared procs \($d.procs) < \($n) live node(s)" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.objectOverheadMaxBytes | type) != "number"
+                then "O_max: record \($e.qualificationRecordId) carries no qualified objectOverheadMaxBytes"
+              elif $rec != null and $rec.filesystem != null and $O < $rec.filesystem.objectOverheadMaxBytes
+                then "O_max: declared \($O) < the qualified maximum \($rec.filesystem.objectOverheadMaxBytes)" else empty end ),
             ( if $o != null and $o.writtenBy != $d.monitorRole
                 then "observation source: newest observation written by \($o.writtenBy), not the declared monitor \($d.monitorRole)" else empty end ),
             ( if ($d.applicationRoles | index($d.monitorRole)) != null then "observation source: the monitor role is an application role" else empty end ),

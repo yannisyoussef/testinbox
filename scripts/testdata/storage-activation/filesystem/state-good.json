@@ -21,7 +21,7 @@
     "usedBytes": 1200000000,
     "availBytes": 64424509440,
     "inodesTotal": 16777216,
-    "trashBytes": 0,
+    "trashBytes": 50000000,
     "minioSysBytes": 104857600
   },
   "liveNodes": [
