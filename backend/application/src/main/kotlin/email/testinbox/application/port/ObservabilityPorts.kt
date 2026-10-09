@@ -31,6 +31,13 @@ interface InboxMetrics {
 
     fun inboxExpired(count: Int) {}
 
+    /**
+     * `testinbox_storage_retention_backlog_seconds` (TI-STORAGE-006E PR D): how
+     * long the oldest expired or deleted inbox has waited for teardown; 0 when
+     * none waits. Alerted above one TTL (contract §5.4).
+     */
+    fun retentionBacklog(seconds: Long) {}
+
     fun inboxDeleted() {}
 
     companion object {

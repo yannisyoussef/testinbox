@@ -249,7 +249,7 @@ class InMemoryMessageRepository : MessageRepository {
     override fun exists(id: MessageId): Boolean = messages.any { it.id == id }
 }
 
-class InMemoryBlobStore : BlobStore {
+open class InMemoryBlobStore : BlobStore {
     data class Entry(
         val bytes: ByteArray,
         val contentType: String,

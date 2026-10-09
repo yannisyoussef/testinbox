@@ -74,6 +74,21 @@ object EffectiveStoragePolicy {
     }
 
     /**
+     * Retention pacing (contract §5.4): paced only under `ALL` with a declared
+     * filesystem; everywhere else teardown is what it was.
+     */
+    fun retentionPacing(
+        declarations: StorageDeclarations,
+        ledger: email.testinbox.application.port.StorageLedger,
+        clock: java.time.Clock,
+    ): RetentionPacing {
+        val footprint = footprint(declarations) ?: return RetentionPacing.UNPACED
+        val budget = declarations.filesystem.deletionDebtBudgetBytes ?: return RetentionPacing.UNPACED
+        if (!declarations.enforcement.enforces(email.testinbox.domain.storage.StorageScope.GLOBAL)) return RetentionPacing.UNPACED
+        return DebtPacing(ledger, footprint, budget, declarations.filesystem.effectiveRetentionPacingMaxDelay, clock)
+    }
+
+    /**
      * `H = declaredMaxIngestionProcesses × maxConcurrentWrites × maxObjectBytes`
      * (ADR-035 §9), checked. The reference process count (1) stands in only
      * while enforcement is OFF; `DeploymentSafety` refuses a non-OFF

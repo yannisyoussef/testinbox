@@ -35,6 +35,8 @@ data class FilesystemDeclarations(
     val probeBudgetBytes: Long? = null,
     /** The database role the Ops monitor writes observations as; any other `written_by` is invalid (§5.3). */
     val monitorRole: String? = null,
+    /** *T_max*: the longest paced retention may delay an inbox's teardown (contract §5.4). Default 24 h. */
+    val retentionPacingMaxDelay: Duration? = null,
 ) {
     val declared: Boolean
         get() =
@@ -51,6 +53,9 @@ data class FilesystemDeclarations(
                 probeBudgetBytes,
                 monitorRole,
             ).any { it != null }
+
+    /** *T_max*, or 24 hours when nothing is declared. */
+    val effectiveRetentionPacingMaxDelay: Duration get() = retentionPacingMaxDelay ?: DEFAULT_RETENTION_PACING_MAX_DELAY
 
     /** *A_obs*, or the contract's proposed 15 minutes when nothing is declared. */
     val effectiveObservationMaxAge: Duration get() = observationMaxAge ?: DEFAULT_OBSERVATION_MAX_AGE
@@ -73,6 +78,7 @@ data class FilesystemDeclarations(
 
     companion object {
         val DEFAULT_OBSERVATION_MAX_AGE: Duration = Duration.ofMinutes(15)
+        val DEFAULT_RETENTION_PACING_MAX_DELAY: Duration = Duration.ofHours(24)
         const val MINIMUM_OPERATIONAL_RESERVE_BYTES: Long = 2 * FilesystemContainment.GIB
         const val DEFAULT_BLOCK_SIZE_BYTES: Long = 4096
     }

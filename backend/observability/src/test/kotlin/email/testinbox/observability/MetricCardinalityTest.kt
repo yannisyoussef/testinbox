@@ -50,6 +50,7 @@ class MetricCardinalityTest {
         val inbox = MicrometerInboxMetrics(registry)
         AddressMode.entries.forEach { inbox.inboxCreated(it) }
         inbox.inboxExpired(1)
+        inbox.retentionBacklog(42)
         inbox.inboxDeleted()
 
         val inbound = MicrometerInboundMetrics(registry)
@@ -321,6 +322,7 @@ class MetricCardinalityTest {
             "testinbox_storage_footprint_bytes",
             "testinbox_storage_filesystem_observation_age_seconds",
             "testinbox_storage_footprint_counts_trusted",
+            "testinbox_storage_retention_backlog_seconds",
             "testinbox_storage_accounting_drift_total",
             "testinbox_storage_reconciliation_total",
             "testinbox_storage_ledger_compaction_total",

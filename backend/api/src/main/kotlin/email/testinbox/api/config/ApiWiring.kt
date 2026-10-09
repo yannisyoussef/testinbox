@@ -352,7 +352,29 @@ class ApiWiring(
         blobs: BlobStore,
         tx: TransactionRunner,
         config: TestInboxConfig,
-    ): ExpireInboxes = ExpireInboxes(inboxes, reservations, blobs, tx, clock, config, inboxMetrics)
+        ledger: StorageLedger,
+        declarations: email.testinbox.application.storage.StorageDeclarations,
+    ): ExpireInboxes =
+        ExpireInboxes(
+            inboxes,
+            reservations,
+            blobs,
+            tx,
+            clock,
+            config,
+            inboxMetrics,
+            // TI-STORAGE-006E PR D: paced under ALL with a declared filesystem only.
+            email.testinbox.application.storage.EffectiveStoragePolicy
+                .retentionPacing(declarations, ledger, clock)
+                .takeIf { it !== email.testinbox.application.storage.RetentionPacing.UNPACED }
+                ?.let { pacing ->
+                    (inboxes as? email.testinbox.application.port.InboxTeardown)
+                        ?.let {
+                            email.testinbox.application.usecase
+                                .PacedTeardown(pacing, it)
+                        }
+                },
+        )
 
     /** ADR-035 §10 ledger compaction. Observational only: nothing admits or refuses on it yet. */
     @Bean
@@ -416,5 +438,6 @@ class ApiWiring(
     fun messageQueries(
         messages: MessageRepository,
         blobs: BlobStore,
-    ): MessageQueries = MessageQueries(messages, blobs)
+        inboxes: InboxRepository,
+    ): MessageQueries = MessageQueries(messages, blobs, inboxes)
 }

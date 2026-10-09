@@ -548,6 +548,7 @@ object StorageEnforcementSafety {
     private const val UPLOAD = "upload-implementation-version"
     private const val FS = "testinbox.storage.filesystem"
     private val MAX_OBSERVATION_AGE: java.time.Duration = java.time.Duration.ofHours(1)
+    private val MAX_RETENTION_PACING_DELAY: java.time.Duration = java.time.Duration.ofDays(7)
 
     fun check(settings: DeploymentSettings): List<DeploymentViolation> {
         val storage = settings.storage
@@ -729,6 +730,17 @@ object StorageEnforcementSafety {
                 // A typo such as 1000d would let a stale observation count as evidence for ever.
                 if (it > MAX_OBSERVATION_AGE) {
                     add(DeploymentViolation("$FS.observation-max-age", "is $it; must be at most $MAX_OBSERVATION_AGE"))
+                }
+            }
+            fs.retentionPacingMaxDelay?.let {
+                // T_max bounds how long pacing may keep a tenant's deleted content on disk.
+                if (it.isNegative || it.isZero || it > MAX_RETENTION_PACING_DELAY) {
+                    add(
+                        DeploymentViolation(
+                            "$FS.retention-pacing-max-delay",
+                            "is $it; must be positive and at most $MAX_RETENTION_PACING_DELAY",
+                        ),
+                    )
                 }
             }
             fs.monitorRole?.let {

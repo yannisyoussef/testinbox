@@ -63,6 +63,17 @@ class MicrometerInboxMetrics(
         if (count > 0) registry.counter("testinbox_inbox_expired_total").increment(count.toDouble())
     }
 
+    private val retentionBacklog =
+        java.util.concurrent.atomic.AtomicLong(0).also {
+            io.micrometer.core.instrument.Gauge
+                .builder("testinbox_storage_retention_backlog_seconds", it) { v -> v.get().toDouble() }
+                .register(registry)
+        }
+
+    override fun retentionBacklog(seconds: Long) {
+        retentionBacklog.set(maxOf(0L, seconds))
+    }
+
     override fun inboxDeleted() {
         registry.counter("testinbox_inbox_deleted_total").increment()
     }

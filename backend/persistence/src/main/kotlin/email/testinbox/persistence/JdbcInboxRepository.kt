@@ -3,6 +3,7 @@ package email.testinbox.persistence
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
 import email.testinbox.domain.InboxId
+import email.testinbox.domain.MessageId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.inbox.AddressMode
@@ -17,7 +18,8 @@ import java.util.UUID
 @Repository
 class JdbcInboxRepository(
     private val jdbc: JdbcClient,
-) : InboxRepository {
+) : InboxRepository,
+    email.testinbox.application.port.InboxTeardown {
     override fun insert(inbox: Inbox): InsertInboxOutcome {
         // ON CONFLICT DO NOTHING against the partial routable-address index keeps
         // the enclosing transaction usable on the conflict path (EXACT mode runs
@@ -135,6 +137,48 @@ class JdbcInboxRepository(
     override fun hardDelete(id: InboxId) {
         jdbc.sql("DELETE FROM inbox WHERE id = :id").param("id", id.value).update()
     }
+
+    override fun messageIdsOf(
+        inboxId: InboxId,
+        limit: Int,
+    ): List<MessageId> =
+        jdbc
+            .sql("SELECT id FROM message WHERE inbox_id = :inbox ORDER BY received_at, id LIMIT :limit")
+            .param("inbox", inboxId.value)
+            .param("limit", limit)
+            .query { rs, _ -> MessageId(rs.getObject("id", UUID::class.java)) }
+            .list()
+
+    override fun deleteMessages(
+        inboxId: InboxId,
+        ids: Collection<MessageId>,
+    ): Int =
+        if (ids.isEmpty()) {
+            0
+        } else {
+            // Exact ids, and only of this inbox: a batch never reaches another inbox's rows.
+            jdbc
+                .sql("DELETE FROM message WHERE inbox_id = :inbox AND id IN (:ids)")
+                .param("inbox", inboxId.value)
+                .param("ids", ids.map { it.value })
+                .update()
+        }
+
+    override fun teardownWaitingSince(id: InboxId): Instant? =
+        jdbc
+            .sql(
+                "SELECT coalesce(deleted_at, grace_until, expires_at) AS since FROM inbox WHERE id = :id AND state IN ('EXPIRED', 'DELETED')",
+            ).param("id", id.value)
+            .query { rs, _ -> Timestamps.fromDb(rs, "since") }
+            .list()
+            .firstOrNull()
+
+    override fun oldestTeardownWaitingSince(): Instant? =
+        jdbc
+            .sql("SELECT min(coalesce(deleted_at, grace_until, expires_at)) AS since FROM inbox WHERE state IN ('EXPIRED', 'DELETED')")
+            .query { rs, _ -> Timestamps.fromDb(rs, "since") }
+            .list()
+            .firstOrNull()
 
     private fun mapInbox(rs: ResultSet): Inbox =
         Inbox(
