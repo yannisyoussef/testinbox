@@ -70,6 +70,14 @@ class TcpFaultProxy(
 
     @Volatile var earlyResetAfterMillis = 200L
 
+    /**
+     * EARLY_ANSWER: whether storage keeps draining the body after it answered.
+     * False is what Ops measured in E8: MinIO answers, stops reading, and the
+     * client's write blocks on a full window until the reset, which discards
+     * the answer if the client has not read it yet.
+     */
+    @Volatile var earlyAnswerDrains = true
+
     @Volatile var trickleEvery: java.time.Duration = java.time.Duration.ofMillis(100)
 
     @Volatile var backpressureHoldMillis = 4_000L
@@ -254,7 +262,11 @@ class TcpFaultProxy(
             val until = System.nanoTime() + earlyResetAfterMillis * 1_000_000
             val buffer = ByteArray(16 * 1024)
             client.soTimeout = 50
-            while (System.nanoTime() < until) {
+            if (!earlyAnswerDrains) {
+                // Stop reading: the client's write stalls until it gives up or we reset.
+                while (System.nanoTime() < until && !client.isClosed) Thread.sleep(20)
+            }
+            while (earlyAnswerDrains && System.nanoTime() < until) {
                 try {
                     if (input.read(buffer) == -1) break
                 } catch (_: java.net.SocketTimeoutException) {

@@ -97,7 +97,9 @@ class QualificationRecordsTest {
         laptop.identity.kernelRelease shouldContain "linuxkit"
         laptop.identity.filesystemType shouldBe "ext4"
         laptop.slowWExecuted shouldBe false
-        laptop.uploadImplementationVersion shouldBe StorageProtocol.UPLOAD_IMPLEMENTATION_VERSION
+        // Qualified with v1; the uploader is v2 since Ops E8, so the record no longer matches (re-qualify, §9a).
+        laptop.uploadImplementationVersion shouldBe "adr035-presigned-put-v1"
+        (laptop.uploadImplementationVersion == StorageProtocol.UPLOAD_IMPLEMENTATION_VERSION) shouldBe false
         val eligibility = laptop.eligibility()
         eligibility.eligible shouldBe false
         eligibility.reasons.joinToString() shouldContain "slow-W"

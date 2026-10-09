@@ -120,6 +120,15 @@ reconciliation. Staging connects every deployable as the table owner, which
 satisfies all of this. A production that separates the roles must grant these
 first.
 
+**The role model as a script.** `deploy/database/roles.reference.sql` is the
+reference grant set for the API, ingestion and monitor roles. Run it as the
+schema owner after every migration.
+- `StorageRoleModelTest` applies it to a V10 database, runs every storage
+  operation of the deployables as those roles, and runs activation gate F's
+  own privilege query, which reports no violation.
+- A blanket "DML on all tables", or an `ALTER DEFAULT PRIVILEGES` granting
+  it, is exactly what gate F refuses.
+
 **From V10 on (TI-STORAGE-006E, owner review b), the ledger is written only
 by the database.**
 - The V8 ledger triggers are `SECURITY DEFINER`. Compaction and repair are
