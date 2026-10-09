@@ -137,54 +137,6 @@ class StorageCapacityPolicy(
 enum class StorageScope { INBOX, WORKSPACE, GLOBAL }
 
 /**
- * The bucket-quota fuse of ADR-035 §9 and §18 prerequisite 8:
- *
- * ```
- * Q ≥ G + max(1 GiB, 10 %, H + the bytes MinIO can accept during one usage-refresh lag)
- * ```
- *
- * **Interpretation of "10 %", fixed here and documented by a test:** ten per
- * cent of *G*, computed as `floor(G / 10)`. Every term of the margin is
- * headroom above *G* (the fixed 1 GiB, the finalize budget plus the lag
- * churn), so the proportional term is read against the same base. The owner
- * decision in §0 (a 40 GiB ceiling under a 50 GiB quota) satisfies it:
- * `40 + max(1, 4, 0.23 + churn) = 44 GiB ≤ 50 GiB` for any churn under 3.77 GiB.
- *
- * *Q* is a fuse, never the bound (§9: MinIO's quota is checked against
- * lagging usage, probes Q2–Q7). A quota below this minimum does not make the
- * bound wrong; it makes the fuse useless, so a non-OFF deployment refuses to
- * start on it (§18 gate 8).
- *
- * All arithmetic is checked: an overflow is a configuration failure, never a
- * wrapped margin.
- */
-object BucketQuotaFuse {
-    const val GIB: Long = 1024L * 1024 * 1024
-
-    /** The smallest quota the fuse accepts for [globalLimitBytes], [finalizeBudgetBytes] and [lagChurnBytes]. */
-    fun minimumQuotaBytes(
-        globalLimitBytes: Long,
-        finalizeBudgetBytes: Long,
-        lagChurnBytes: Long,
-    ): Long {
-        require(globalLimitBytes > 0) { "G must be positive, was $globalLimitBytes" }
-        require(finalizeBudgetBytes >= 0) { "H must not be negative, was $finalizeBudgetBytes" }
-        require(lagChurnBytes >= 0) { "the measured usage-lag churn must not be negative, was $lagChurnBytes" }
-        val tenPercentOfG = globalLimitBytes / 10
-        val finalizeAndChurn = Math.addExact(finalizeBudgetBytes, lagChurnBytes)
-        return Math.addExact(globalLimitBytes, maxOf(GIB, tenPercentOfG, finalizeAndChurn))
-    }
-
-    /** Whether [declaredQuotaBytes] satisfies the fuse. Throws [ArithmeticException] on overflow, never wraps. */
-    fun holds(
-        declaredQuotaBytes: Long,
-        globalLimitBytes: Long,
-        finalizeBudgetBytes: Long,
-        lagChurnBytes: Long,
-    ): Boolean = declaredQuotaBytes >= minimumQuotaBytes(globalLimitBytes, finalizeBudgetBytes, lagChurnBytes)
-}
-
-/**
  * Which ceilings may refuse a copy: exactly the rollout states ADR-035 §14
  * needs.
  *

@@ -253,28 +253,30 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   dies and another process takes the id meanwhile, the first opens its
   storage breaker (`451`) rather than share it.
 - **Enforcement is OFF by default, and the setting exists (TI-STORAGE-006).**
-  **(TI-STORAGE-006E, pending owner acceptance of #82:** a non-OFF mode now
-  also requires the dedicated filesystem's declarations below. The bucket
-  quota fuse *Q* stays REQUIRED until footprint admission at T1 (PR D) lands:
-  MinIO's scanner-based quota overshot by ~22.75 GiB, so it is not a sound
-  bound on its own, but until T1 admits on footprint it is the only check
-  linking the payload ceiling *G* to physical bytes.)
+  **ADR-035 Amendment 2 (accepted):** the physical link is the
+  filesystem-containment contract. A non-OFF mode requires the dedicated
+  filesystem's declarations below and their static inequality, and gate F
+  proves them against the real filesystem before activation. The legacy
+  bucket-quota fuse *Q* is **no longer required or evaluated**. MinIO's
+  scanner-based quota overshot by ~22.75 GiB, so it was never a sound bound.
+  The quota may stay configured as an optional secondary defence; a declared
+  `TESTINBOX_STORAGE_DECLARED_BUCKET_QUOTA_BYTES` or
+  `TESTINBOX_STORAGE_MEASURED_QUOTA_LAG_CHURN_BYTES` is only checked for being
+  well-formed. Gate Q (the backend qualification match) is a different thing
+  and stays mandatory.
   `TESTINBOX_STORAGE_ENFORCEMENT` is `OFF` | `TENANT_LIMITS` | `ALL`, exactly
   those three states (ADR-035 §14). Every committed environment is OFF, and
   `scripts/check-storage-enforcement-off.sh` fails CI if one is not. A non-OFF
   value is refused at startup unless ALL of these are set and consistent:
   `TESTINBOX_STORAGE_GLOBAL_LIMIT_BYTES` (*G*),
-  `TESTINBOX_STORAGE_DECLARED_BUCKET_QUOTA_BYTES` (*Q*, the fuse
-  `Q ≥ G + max(1 GiB, 10 % of G, H + churn)`),
-  `TESTINBOX_STORAGE_MEASURED_QUOTA_LAG_CHURN_BYTES` (Ops measures it),
   `TESTINBOX_STORAGE_DECLARED_MAX_INGESTION_PROCESSES` (deploy surge INCLUDED:
   a rolling deploy that overlaps two gateways declares 2, so H doubles),
   `TESTINBOX_STORAGE_INBOX_SHARE`, the dedicated filesystem's declarations
   (`TESTINBOX_STORAGE_FS_*`: block size *B*, *O_max* from the qualification
   record, *G_F*, *D_budget*, *M*, *R_ops*, *C_fs*, *I_fs*, *A_obs*; they must
-  satisfy `G_F + D_budget + M + R_ops ≤ C_fs`, `R_ops ≥ max(5 % of C_fs, 2 GiB)`,
+  satisfy `G_F + D_budget + P_F + M + R_ops ≤ C_fs` (with *P_F* the probe budget, and the monitor role and *A_obs* declared too), `R_ops ≥ max(5 % of C_fs, 2 GiB)`,
   one inode per block, and `H_F < G_F`; filesystem-containment contract,
-  TI-STORAGE-006E, PROPOSED in #82), and the declared backend identity
+  ADR-035 Amendment 2), and the declared backend identity
   (`testinbox.storage.backend-identity.*`: image index digest, platform member
   digest, release, commit id, mode, drive count, timeout environment and CLI
   flags, runtime admin-config hash, kernel release, filesystem type, mount

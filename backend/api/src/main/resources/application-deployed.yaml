@@ -66,8 +66,9 @@ testinbox:
     # ADR-035 §14 / TI-STORAGE-006: OFF | TENANT_LIMITS | ALL. The default, and
     # the only value any committed environment may carry, is OFF
     # (scripts/check-storage-enforcement-off.sh). A non-OFF value is refused at
-    # startup unless every §18 declaration below is set and consistent, and the
-    # declared backend matches a shipped qualification record (§9a).
+    # startup unless every §18 declaration below is set and consistent (the
+    # bucket quota and churn figure are OPTIONAL since ADR-035 Amendment 2), and
+    # the declared backend matches a shipped qualification record (§9a).
     enforcement: ${TESTINBOX_STORAGE_ENFORCEMENT:OFF}
     global-limit-bytes: ${TESTINBOX_STORAGE_GLOBAL_LIMIT_BYTES:}
     declared-bucket-quota-bytes: ${TESTINBOX_STORAGE_DECLARED_BUCKET_QUOTA_BYTES:}

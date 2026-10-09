@@ -285,8 +285,9 @@ taken after it. **Rolling back below PR D once footprint admission enforces is
 forbidden, not merely unsafe:** an older artifact's orphan sweep, verifier
 and probes delete without the rule-(P) pending rows, so containment no longer
 holds while it runs (contract §4.5). `deploy/rollback-floors.txt` names the
-PR D artifact as the floor before `ALL` is ever enabled; below it, the
-bucket-quota fuse remains the only physical link.
+PR D artifact as the floor before `ALL` is ever enabled. Below it no
+artifact may run with enforcement on: the legacy bucket quota is at most a
+secondary defence, never a bound.
 
 **Schema V10** (TI-STORAGE-006E, owner review b) is expand-only. It adds:
 - two nullable columns on the trust row (`trusted_seq`, `trusted_at`);

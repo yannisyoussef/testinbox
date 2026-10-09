@@ -107,20 +107,50 @@ class StorageEnforcementSafetyTest {
     @Test
     fun `invalid G`() = only(complete.copy(globalLimitBytes = -1), "testinbox.storage.global-limit-bytes", "must be positive")
 
-    @Test
-    fun `missing Q`() =
-        only(complete.copy(declaredBucketQuotaBytes = null), "testinbox.storage.declared-bucket-quota-bytes", "is not declared")
+    // --- the legacy bucket-quota fuse is no longer load-bearing (Amendment 2; owner review c) ----
 
     @Test
-    fun `Q too small - one byte below the fuse`() {
-        // G = 40 GiB, H = 2 × 16 × 15 MiB = 480 MiB, churn 64 MiB: 10 % of G (4 GiB) is the margin → 44 GiB.
-        val minimum = 44 * gib
-        violations(complete.copy(declaredBucketQuotaBytes = minimum)).shouldBeEmpty()
-        only(
-            complete.copy(declaredBucketQuotaBytes = minimum - 1),
-            "testinbox.storage.declared-bucket-quota-bytes",
-            "the fuse needs at least $minimum",
-        )
+    fun `the original 40 GiB staging quota does not trip the obsolete fuse under an otherwise valid Amendment 2 contract`() {
+        // The old rule needed Q ≥ G + max(1 GiB, 10 % of G, H + churn) = 44 GiB for G = 40 GiB. The
+        // staging bucket quota is 40 GiB: below it, and it must no longer block either mode.
+        for (mode in listOf(StorageEnforcement.TENANT_LIMITS, StorageEnforcement.ALL)) {
+            violations(complete.copy(enforcement = mode, declaredBucketQuotaBytes = 40 * gib)).shouldBeEmpty()
+            violations(complete.copy(enforcement = mode, declaredBucketQuotaBytes = 40 * gib, measuredQuotaLagChurnBytes = null))
+                .shouldBeEmpty()
+        }
+    }
+
+    @Test
+    fun `no bucket quota and no churn figure are required in any non-OFF mode - the quota is an optional secondary defence`() {
+        for (mode in listOf(StorageEnforcement.TENANT_LIMITS, StorageEnforcement.ALL)) {
+            violations(complete.copy(enforcement = mode, declaredBucketQuotaBytes = null, measuredQuotaLagChurnBytes = null))
+                .shouldBeEmpty()
+        }
+    }
+
+    @Test
+    fun `a declared but malformed quota or churn figure is still refused - well-formedness, not the fuse`() {
+        only(complete.copy(declaredBucketQuotaBytes = 0), "testinbox.storage.declared-bucket-quota-bytes", "must be positive")
+        only(complete.copy(measuredQuotaLagChurnBytes = -1), "testinbox.storage.measured-quota-lag-churn-bytes", "must not be negative")
+    }
+
+    @Test
+    fun `dropping the fuse drops nothing else - the filesystem containment inequality still refuses ALL and TENANT_LIMITS`() {
+        for (mode in listOf(StorageEnforcement.TENANT_LIMITS, StorageEnforcement.ALL)) {
+            val over =
+                complete.copy(
+                    enforcement = mode,
+                    declaredBucketQuotaBytes = null,
+                    filesystem =
+                        filesystem.copy(
+                            capacityBytes =
+                                20 * gib,
+                        ),
+                )
+            settingsOf(over) shouldContain "testinbox.storage.filesystem.capacity-bytes"
+            settingsOf(complete.copy(enforcement = mode, declaredBucketQuotaBytes = 1000 * gib, backendIdentity = null)) shouldContain
+                "testinbox.storage.backend-identity" // gate Q's match stays mandatory
+        }
     }
 
     // --- the filesystem-containment declarations (TI-STORAGE-006E) ------------------------------
@@ -164,6 +194,15 @@ class StorageEnforcementSafetyTest {
             .validate(deployed.copy(environment = ProductionPolicy.ENVIRONMENT, storage = all))
             .map { it.setting } shouldContain "testinbox.storage.enforcement"
         violations(all).map { it.setting } shouldNotContain "testinbox.storage.enforcement"
+    }
+
+    @Test
+    fun `TENANT_LIMITS is refused in production - dark staging qualification only, it does not contain the filesystem`() {
+        val tenant = complete.copy(enforcement = StorageEnforcement.TENANT_LIMITS)
+        val found = DeploymentSafety.validate(deployed.copy(environment = ProductionPolicy.ENVIRONMENT, storage = tenant))
+        found.map { it.setting } shouldContain "testinbox.storage.enforcement"
+        found.first { it.setting == "testinbox.storage.enforcement" }.problem shouldContain "dark staging qualification only"
+        violations(tenant).map { it.setting } shouldNotContain "testinbox.storage.enforcement"
     }
 
     @Test
@@ -321,10 +360,6 @@ class StorageEnforcementSafetyTest {
     fun `missing share`() = only(complete.copy(inboxShare = null), "testinbox.storage.inbox-share", "is not declared")
 
     @Test
-    fun `missing measured churn`() =
-        only(complete.copy(measuredQuotaLagChurnBytes = null), "testinbox.storage.measured-quota-lag-churn-bytes", "is not declared")
-
-    @Test
     fun `missing backend identity`() = only(complete.copy(backendIdentity = null), "testinbox.storage.backend-identity", "is not declared")
 
     @Test
@@ -405,10 +440,11 @@ class StorageEnforcementSafetyTest {
     fun `every missing declaration is reported at once, not one restart at a time`() {
         val found = settingsOf(StorageDeclarations(enforcement = StorageEnforcement.ALL))
         found shouldContain "testinbox.storage.global-limit-bytes"
-        found shouldContain "testinbox.storage.declared-bucket-quota-bytes" // the fuse stays load-bearing until footprint admission (PR D)
         found shouldContain "testinbox.storage.declared-max-ingestion-processes"
         found shouldContain "testinbox.storage.inbox-share"
-        found shouldContain "testinbox.storage.measured-quota-lag-churn-bytes"
+        // The legacy fuse inputs are optional now (Amendment 2): never named as missing.
+        found shouldNotContain "testinbox.storage.declared-bucket-quota-bytes"
+        found shouldNotContain "testinbox.storage.measured-quota-lag-churn-bytes"
         found shouldContain "testinbox.storage.filesystem.capacity-bytes"
         found shouldContain "testinbox.storage.filesystem.inodes"
         found shouldContain "testinbox.storage.backend-identity"
