@@ -12,7 +12,7 @@ and production is untouched. Each step below needs the owner's go-ahead.
 | #83 | `feature/ti-storage-006e-footprint-ledger` | `develop` | Footprint model, V8 ledger (object counts, debt, observations, trust), exact-aggregate rules. |
 | #84 | `feature/ti-storage-006e-storage-full-breaker` | #83's branch | `STORAGE_FULL` breaker and the filesystem declarations. |
 | #85 | `feature/ti-storage-006e-footprint-admission` | #84's branch | PR D: T1 footprint admission, the T2 fence, rule (P), pacing, V9; and V10 (verified trust, sweep runs, containment level). |
-| #86 | `feature/ti-storage-006e-gate-f` | #85's branch | PR E: gate F with the `TENANT_LIMITS` preflight; the Ops handoff; this plan; **the containment rollback floor** (`9b26910`, PR D's head). |
+| #86 | `feature/ti-storage-006e-gate-f` | #85's branch | PR E: gate F with the `TENANT_LIMITS` preflight; the Ops handoff; this plan; **the containment rollback floor** (`9b26910`, the PR D commit that completed V10's containment code). |
 
 #82 is independent of the code chain. Every code PR is a strict descendant of
 the one before it: each was merged forward, never rebased.
@@ -82,7 +82,10 @@ the one before it: each was merged forward, never rebased.
    OpenAPI check, acceptance, the staging rehearsal with the synthetic suite,
    and the image build.
 6. **Containment rollback floor.** It is already part of #86: `9b26910`,
-   PR D's head, which is an ancestor of every later merge. If #85 changes
+   the PR D commit that completed the containment code, an ancestor of every
+   later merge. The commits after it on #85 are hardening (a refusal message,
+   the fixed containment level); re-point the floor to #85's final head if
+   a later commit is load-bearing. If #85 changes
    materially before merging, re-point the floor to its final head in #86.
    - Gate F's mixed-versions row reads the floor line, and gate E then
      proves that every running artifact contains it.

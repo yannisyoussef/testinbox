@@ -806,6 +806,10 @@ SELECT json_build_object(
         FROM reach r JOIN (VALUES ('storage_deletion_debt'), ('storage_debt_watermark')) AS p(tbl)
           ON has_table_privilege(r.goid, p.tbl, 'DELETE')
       UNION ALL
+      -- setval on the ordering sequence would rewind every order gate F compares.
+      SELECT r.app || ': UPDATE on storage_debt_order_seq' FROM reach r
+       WHERE has_sequence_privilege(r.goid, 'storage_debt_order_seq', 'UPDATE')
+      UNION ALL
       SELECT r.app || ': EXECUTE on storage_begin_observation()' FROM reach r
        WHERE has_function_privilege(r.goid, 'storage_begin_observation()', 'EXECUTE')
       UNION ALL
