@@ -138,6 +138,24 @@ class ApiStorageWiring(
         inspection: StorageInspection,
         metrics: StorageProtocolMetrics,
         rowFreeDebt: RowFreeDebt,
+        dataSource: DataSource,
     ): OrphanBlobSweep =
-        OrphanBlobSweep(blobs, reservations, ambiguity, ambiguity, inspection, clock, properties.orphanMinAge, metrics, rowFreeDebt)
+        OrphanBlobSweep(
+            blobs,
+            reservations,
+            ambiguity,
+            ambiguity,
+            inspection,
+            clock,
+            properties.orphanMinAge,
+            metrics,
+            OrphanBlobSweep.Containment(
+                rowFreeDebt,
+                email.testinbox.persistence.JdbcSweepRuns(
+                    org.springframework.jdbc.core.simple.JdbcClient
+                        .create(dataSource),
+                    properties.storage.nodeId,
+                ),
+            ),
+        )
 }

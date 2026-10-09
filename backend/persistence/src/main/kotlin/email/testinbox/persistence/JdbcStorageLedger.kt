@@ -220,29 +220,13 @@ class JdbcStorageLedger(
      */
     private fun confirmTrustInTransaction(): Boolean {
         readCommitted()
-        ledgerLock()
-        // A trust row lost to a restore (it is never backed up) is recreated
-        // untrusted, so a clean pass can still mark it.
-        jdbc
-            .sql("INSERT INTO storage_footprint_trust (id, distrust_epoch) VALUES (1, 0) ON CONFLICT (id) DO NOTHING")
-            .update()
+        // V10 (owner review b, §2): the database verifies and marks. The function
+        // takes the ledger lock, recreates a row lost to a restore, checks every
+        // workspace's bytes and objects against the rows, and marks compare-and-set.
+        // The application holds EXECUTE on it and no write on the trusted columns.
         return jdbc
-            .sql(
-                """
-                $DRIFT,
-                epoch AS (SELECT distrust_epoch FROM storage_footprint_trust WHERE id = 1),
-                marked AS (
-                    UPDATE storage_footprint_trust t
-                       SET trusted_epoch = e.distrust_epoch
-                      FROM epoch e
-                     WHERE t.id = 1
-                       AND t.distrust_epoch = e.distrust_epoch
-                       AND NOT EXISTS (SELECT 1 FROM drift WHERE scope = 'WORKSPACE')
-                    RETURNING 1
-                )
-                SELECT EXISTS (SELECT 1 FROM marked) AS trusted
-                """.trimIndent(),
-            ).query(Boolean::class.java)
+            .sql("SELECT storage_confirm_footprint_trust()")
+            .query(Boolean::class.java)
             .single()
     }
 

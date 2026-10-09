@@ -42,24 +42,50 @@ class OrphanBlobSweep(
     private val clock: Clock,
     private val minAge: Duration = Duration.ofHours(1),
     private val metrics: StorageProtocolMetrics = StorageProtocolMetrics.NOOP,
-    /** TI-STORAGE-006E PR D: rule (P) before every deletion here; none of them has a row trigger. */
-    private val rowFree: email.testinbox.application.storage.RowFreeDebt =
-        email.testinbox.application.storage.RowFreeDebt.NONE,
+    /** TI-STORAGE-006E: rule (P) before every deletion, and the database record of each pass. */
+    private val containment: Containment = Containment.NONE,
 ) {
+    /**
+     * The sweep's containment hooks (TI-STORAGE-006E).
+     * - [rowFree]: rule (P) before every deletion here, none of which has a row trigger.
+     * - [runs]: the V10 database record of each full pass, which activation gate F reads.
+     */
+    class Containment(
+        val rowFree: email.testinbox.application.storage.RowFreeDebt = email.testinbox.application.storage.RowFreeDebt.NONE,
+        val runs: email.testinbox.application.port.SweepRuns = email.testinbox.application.port.SweepRuns.NONE,
+    ) {
+        companion object {
+            val NONE = Containment()
+        }
+    }
+
+    private val rowFree = containment.rowFree
+    private val runs = containment.runs
+
     fun sweep(): Int =
         try {
-            fullSweep().also {
-                // The completion marker ADR-035 §14 (b) needs: a FULL pass over the
-                // bucket finished at this instant. A pass that threw never sets it.
-                metrics.orphanSweepCompleted(clock.instant())
-                metrics.orphanSweepFinished(ok = true)
-            }
+            // Opened BEFORE the listing: the run's database-issued order is what proves
+            // the pass began after the counts were trusted. A pass that throws stays open.
+            // The record is evidence for activation gate F, never a precondition of
+            // cleanup: if it cannot be written (a missing V10 grant), the sweep still
+            // runs, and gate F simply finds no completed run.
+            val run = runCatching { runs.begin() }.onFailure { recordFailed("begin", it) }.getOrNull()
+            fullSweep()
+                .also { (_, listed) ->
+                    if (run != null) runCatching { runs.complete(run, listed) }.onFailure { recordFailed("complete", it) }
+                }.first
+                .also {
+                    // The completion marker ADR-035 §14 (b) needs: a FULL pass over the
+                    // bucket finished at this instant. A pass that threw never sets it.
+                    metrics.orphanSweepCompleted(clock.instant())
+                    metrics.orphanSweepFinished(ok = true)
+                }
         } catch (e: RuntimeException) {
             metrics.orphanSweepFinished(ok = false)
             throw e
         }
 
-    private fun fullSweep(): Int {
+    private fun fullSweep(): Pair<Int, Long> {
         val threshold = clock.instant().minus(minAge)
         var removed = 0
         for (key in blobs.listKeysOlderThan("", threshold)) {
@@ -105,8 +131,9 @@ class OrphanBlobSweep(
             log.error("storage_incomplete_upload found in the bucket; TestInbox never starts one. Aborting it.")
             inspection.abortIncompleteUpload(upload)
         }
-        metrics.physicalListedBytes(inspection.listedPayloadBytes())
-        return removed
+        val listed = inspection.listedPayloadBytes()
+        metrics.physicalListedBytes(listed)
+        return removed to listed
     }
 
     /**
@@ -144,6 +171,15 @@ class OrphanBlobSweep(
             log.error("orphan_blob_sweep_hold_failed a refused late object is not yet held; retried next pass: {}", e.toString())
         }
     }
+
+    private fun recordFailed(
+        step: String,
+        e: Throwable,
+    ) = log.warn(
+        "orphan_blob_sweep_run_record_failed step={} the sweep continues; gate F will find no completed run: {}",
+        step,
+        e.toString(),
+    )
 
     private fun parseUuid(value: String): UUID? = runCatching { UUID.fromString(value) }.getOrNull()
 

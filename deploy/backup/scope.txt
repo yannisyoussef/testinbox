@@ -52,3 +52,7 @@
 - storage_debt_watermark
 - storage_footprint_trust
 - storage_observation_walk
+# V10 (TI-STORAGE-006E owner review b): the orphan-sweep runs gate F reads.
+# They describe the bucket at an instant; after a restore the next full sweep
+# records a new one (and the restore's distrust forces a new trust mark first).
+- storage_sweep_run

@@ -432,3 +432,34 @@ data class ObservedFilesystem(
     /** `inodes_total − inodes_used`: MinIO answers ENOSPC on inode exhaustion too. */
     val inodesFree: Long,
 )
+
+/**
+ * The database record of each FULL orphan sweep (V10; TI-STORAGE-006E owner
+ * review b, §3). The order and both instants are issued by the database, and
+ * the covered figure is computed by it at completion, so activation gate F
+ * can prove that a complete sweep began after the counts became trusted and
+ * after the last lower-capability node, and that its listing was covered.
+ */
+interface SweepRuns {
+    /** Opens a run for this node; the database stamps its order and start. */
+    fun begin(): Long
+
+    /** Closes [run] with the payload bytes the sweep listed; the database computes the covered bytes. */
+    fun complete(
+        run: Long,
+        listedBytes: Long,
+    )
+
+    companion object {
+        /** No record (tests, and wiring without the V10 schema). */
+        val NONE: SweepRuns =
+            object : SweepRuns {
+                override fun begin(): Long = 0
+
+                override fun complete(
+                    run: Long,
+                    listedBytes: Long,
+                ) = Unit
+            }
+    }
+}

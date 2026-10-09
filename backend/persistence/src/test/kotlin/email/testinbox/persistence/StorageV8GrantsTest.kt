@@ -136,7 +136,8 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
             api,
             "GRANT SELECT ON storage_filesystem_observation, storage_debt_watermark",
             "GRANT SELECT ON storage_deletion_debt",
-            "GRANT SELECT, UPDATE ON storage_footprint_trust",
+            "GRANT SELECT, UPDATE (distrust_epoch) ON storage_footprint_trust",
+            "GRANT EXECUTE ON FUNCTION storage_confirm_footprint_trust()",
         )
         val asMonitor = db.connectAs(monitor)
         val asApi = db.connectAs(api)
@@ -171,7 +172,9 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
         )
         ledger.compactDeletionDebt() shouldBe 0
         permissionDenied { asMonitor.sql("SELECT storage_compact_deletion_debt()").query().listOfRows() }
-        // Trust can be marked, never re-validated by lowering the epoch.
+        // Trust is marked only by the verifier (V10); the epoch only rises.
+        JdbcStorageLedger(asApi, db.transactions).confirmTrust() shouldBe true
+        permissionDenied { asApi.sql("UPDATE storage_footprint_trust SET trusted_epoch = 0").update() }
         asApi.sql("UPDATE storage_footprint_trust SET distrust_epoch = distrust_epoch + 1").update() shouldBe 1
         runCatching { asApi.sql("UPDATE storage_footprint_trust SET distrust_epoch = 0").update() }.isFailure shouldBe true
     }

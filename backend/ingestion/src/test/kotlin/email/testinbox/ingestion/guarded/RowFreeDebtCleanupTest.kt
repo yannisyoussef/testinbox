@@ -66,7 +66,10 @@ class RowFreeDebtCleanupTest {
     }
 
     private fun trustAndObserve() {
-        h.jdbc.sql("UPDATE storage_footprint_trust SET trusted_epoch = distrust_epoch WHERE id = 1").update()
+        h.jdbc
+            .sql("SELECT storage_confirm_footprint_trust()")
+            .query(Boolean::class.java)
+            .single() shouldBe true
         val walk =
             h.jdbc
                 .sql("SELECT storage_begin_observation()")
@@ -184,7 +187,8 @@ class RowFreeDebtCleanupTest {
             java.time.Clock.offset(java.time.Clock.systemUTC(), Duration.ofMinutes(5)),
             Duration.ZERO,
             h.metrics,
-            rowFree,
+            email.testinbox.application.usecase.OrphanBlobSweep
+                .Containment(rowFree),
         )
     }
 
