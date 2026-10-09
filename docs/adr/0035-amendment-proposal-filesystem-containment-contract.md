@@ -1254,7 +1254,7 @@ The existing gates A–E and Q, and the rollback floors, are unchanged. A
 changed filesystem (recreated at `-i 4096`, preallocated, new UUID) is a **new
 combination**: the staging record `staging-amd64-vmi2932906-2026-10-08` does
 not carry filesystem elements and must not be reused silently; the record is
-re-issued with them after E1–E8 (§10) run on the recreated filesystem.
+re-issued with them after E1–E11 (§10) run on the recreated filesystem.
 
 ---
 

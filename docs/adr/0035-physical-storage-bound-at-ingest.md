@@ -1747,18 +1747,6 @@ Everything else in ADR-035 is unchanged.
   annex §2.4 gives the table.
   - Unresolved rows that no live node answers for count against every
     node's 16 write slots (Lemma 3).
-- **Trust.** Footprint admission is refused under `ALL` unless the object
-  counts are trusted.
-  - Trust is established **only** by the database function
-    `storage_confirm_footprint_trust()` (V10).
-  - That function verifies every workspace's bytes and objects against the
-    authoritative `message` and `attachment` rows, under the ledger lock,
-    compare-and-set across distrust generations.
-  - Every distrust event stamps an order; admission waits for an
-    observation that began after it.
-  - The upgrades to V9 and V10 are distrust events.
-- **Fragmentation.** ε = 1 / min(256, ⌊(B − 12)/12⌋ − 1). No configuration
-  can make it smaller.
 
 ### A2.2 Empirically qualified storage assumptions (NOT proven; experiments E1–E11, annex §10)
 
@@ -1776,8 +1764,16 @@ Until a re-issued record carries these, the bounds are planning values.
 ### A2.3 Application-enforced guarantees (code, tests, CI)
 
 - Under `ALL`, every state that cannot be evaluated is a whole-`DATA` `451`
-  **before** recipient resolution: untrusted counts, no or stale observation,
-  wrong writer or block size, overflow, or slot exhaustion. A rule-(G)/(C)
+  **before** recipient resolution:
+  - untrusted counts;
+  - no observation, or one that began before the last distrust event or
+    below the compaction watermark;
+  - the wrong writer, block size or capacity;
+  - overflow, or slot exhaustion.
+
+  An observation's **age** is not an admission input (annex §5.5). It is
+  checked by gate F's liveness row and the Ops observation-age latch
+  (A2.4). A rule-(G)/(C)
   refusal is `SERVICE_CAPACITY` under the uniform `250`.
 - T2 commits only into an inbox that still receives, and only for exactly
   the reserved keys. This applies under `OFF` too.
@@ -1785,9 +1781,24 @@ Until a re-issued record carries these, the bounds are planning values.
 - Retention is paced in bounded batches under `ALL`. Logical expiry is
   independent: an `EXPIRED` or `DELETED` inbox serves nothing, and its
   payload stays accounted until teardown deletes it.
-- Orphan sweeps are recorded by the database (`storage_sweep_run`: order,
-  instants, and the covered figure it computes).
-- Nodes register their containment level.
+- **Trust** in the object counts is established only by the database
+  function `storage_confirm_footprint_trust()` (V10).
+  - It verifies every workspace's bytes and objects against the
+    authoritative `message` and `attachment` rows, under the ledger lock,
+    and marks compare-and-set across distrust generations.
+  - The ledger itself is written only by definer code: the triggers, plus
+    `storage_compact_ledger()` and `storage_repair_ledger()`.
+  - A guard trigger refuses any other trust mark.
+  - Every distrust event stamps an order, and admission waits for an
+    observation that began after it. The upgrades to V9 and V10 are distrust
+    events.
+- **ε** is `1 / min(256, ⌊(B − 12)/12⌋ − 1)`. No configuration can make it
+  smaller.
+- Orphan sweeps are recorded by the database (`storage_sweep_run`): its
+  order and instants, and the covered figure it computes. The listed bytes
+  are the application's own figure.
+- Nodes register their containment level. Every write or deletion of a row
+  below level 1 stamps the monotone `storage_containment_watermark`.
 - `DeploymentSafety` refuses inconsistent declarations, refuses I-C
   violations, and refuses `ALL` in production.
 
@@ -1820,7 +1831,9 @@ preflight**:
 - a live monitor observation from the monitor role;
 - Ops `qualification-check` valid;
 - the record's E8–E11 (`STORAGE_FULL` classification and trial, the
-  monitor latches, and recovery) recorded as PASS.
+  monitor latches, and recovery) recorded as PASS;
+- no node below the containment level, and the containment floor declared,
+  so the running code is the code those drills exercised.
 
 Gate Q (qualified backend identity) is required as before. A preflight PASS
 states that it is isolation only.
@@ -1828,12 +1841,14 @@ states that it is isolation only.
 ### A2.6 Additional gates before `ALL`
 
 Gates A–E and Q are unchanged, and gate F holds every row of the annex §9.
-The base case is proven from database records:
+The base case's orderings come from database records:
 - a trust mark by the verifying function;
-- a completed sweep whose database-issued order follows the mark, and which
-  began after the last heartbeat of any node below containment level 1;
-- `physical_listed ≤ covered` at its completion;
-- no live node below level 1.
+- a completed sweep whose database-issued order follows the mark and the
+  containment watermark;
+- `physical_listed ≤ covered` at its completion (the listed bytes are the
+  application's figure, bounded independently by the monitor's headroom
+  row);
+- no node below level 1 that neither shut down cleanly nor was reaped.
 
 The containment rollback floor must also be declared, and every running
 artifact must contain it (gate E). E1–E11 must be recorded as PASS.

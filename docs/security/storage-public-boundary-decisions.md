@@ -35,36 +35,68 @@ problem (B).
 
 **Requirements.**
 - The SMTP behaviour stays uniform (ADR-025).
-- No refusal information visible to an authenticated tenant may depend on
-  whether a **foreign** recipient exists, or on its capacity.
+- Within one event, no refusal information visible to an authenticated
+  tenant may depend on whether a **foreign** recipient exists, or on its
+  capacity.
 
-**Options.**
+**Two channels, not one.**
+1. *Intra-event (envelope order).* The running totals inside one event
+   depend on which earlier recipients resolved and were admitted. There
+   are two totals: the payload `globalUsed`, and the footprint increment.
+2. *Cross-event (persistence).* An admitted foreign copy is stored and
+   lowers the global headroom for every later event. An unknown recipient
+   stores nothing. An attacker parked at the cliff who sends `{foreign}` and
+   then `{own}` learns from its own refusal whether the foreign address
+   exists. T1 serializes events, so on a quiet system this is clean.
+
+**Options for the intra-event channel.**
 1. **Charge every syntactically valid recipient (recommended).** Every
-   envelope recipient adds the copy's F-increment to the event's GLOBAL
-   running total, whether it resolves to an inbox, is unknown, or is
-   refused by a tenant limit. Nothing is stored for the unknown ones: the
-   charge exists only inside the T1 decision.
-   - The prefix total before any copy then depends only on the envelope's
-     length and the message size, never on who exists.
-   - Each copy's admission is still exact for what is actually stored, so
-     rule (G) remains sound (it over-charges, never under-charges).
+   envelope recipient adds the copy's increment to **both** GLOBAL running
+   totals (payload and footprint), whether it resolves, is unknown, is
+   rate-limited, or is refused by a tenant limit. Nothing is stored for
+   those that are not admitted: the charge exists only inside the T1
+   decision.
+   - The prefix totals before any copy then depend only on the envelope's
+     length and the message size.
+   - Rule (G) stays sound, because it over-charges and never under-charges.
    - Cost: near the cliff, an envelope with unknown recipients may refuse a
-     later known copy that would otherwise have fit. This is a capacity
-     effect visible only as `SERVICE_CAPACITY` on the tenant's own inbox.
-   - Implementation: one change in `StorageAdmissionRules`' running totals,
-     plus a property test that admission outcomes for known recipients are
-     invariant under replacing any other recipient with an unknown one.
+     later known copy that would otherwise have fit.
+   - Implementation: **not** a one-line change. Today T1 receives only the
+     copies that survived recipient resolution (`StorageAdmissionRequest`),
+     so the envelope's full recipient count and positions must be threaded
+     from `ReceiveInboundDelivery` into the admission request and the
+     running totals. It also needs a property test: admission outcomes for
+     known recipients are invariant under replacing any other recipient
+     with an unknown one.
 2. **Pre-event snapshot with slack.** Check every copy against the snapshot
    taken before the event, plus a slack of `(maxRecipients − 1) ·
    F(P_copy_max, N_copy_max)`.
-   - Order-independent and simpler to explain.
+   - Order-independent.
    - But the slack is large: 99 × F(15 MiB raw plus extracted parts, up to
      501 objects). That is ≥ 1.5 GiB of global headroom permanently reserved.
-3. **Accept the residual.** Not offered: it would need an ADR-025 amendment.
 
-**Owner decision required:** adopt option 1 (recommended) or option 2, as
-its own PR with the invariance property test, before `ALL` beyond the
-synthetic suite.
+**The cross-event channel is not closed by either option.** Closing it
+means making global refusals independent of other tenants' stored data,
+which a global ceiling cannot be. The options are:
+- **(i) Accept it as a residual.** It is coarse: one bit per pair of events
+  at the cliff, observable only while the attacker holds the global
+  headroom at the cliff. Decision B's per-workspace share makes holding it
+  there impossible for a single workspace. This needs an explicit ADR-025
+  amendment.
+- **(ii) Report `SERVICE_CAPACITY` only in aggregate.** Report it
+  delayed, or not per inbox, so a tenant cannot attribute a refusal to one
+  event.
+- **(iii) Rely on decision B.** If Σ shares ≤ *G_F*, no workspace can reach
+  the cliff on its own, and the oracle needs several cooperating
+  workspaces.
+
+**Owner decisions required:**
+1. Adopt option 1 (recommended) or option 2 for the intra-event channel, as
+   its own PR with the invariance property test.
+2. Choose (i), (ii) or (iii) for the cross-event channel. Recommended: (iii),
+   with (i) recorded as an ADR-025 amendment for the multi-workspace case.
+
+Both are needed before `ALL` carries traffic beyond the synthetic suite.
 
 ---
 
