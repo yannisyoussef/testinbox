@@ -115,21 +115,25 @@ class StorageLedgerPropertyTest : PersistenceIntegrationTest() {
                         // V8 (contract §2.4): a size is written once. A resize would move
                         // L with no debt row, so it is refused, and the ledger moves nothing.
                         val delta = random.nextLong(-5, 500)
-                        val exists =
+                        // The target row itself, so that a CHECK on a negative size cannot pass for the refusal.
+                        val target =
                             db.jdbc
-                                .sql("SELECT count(*) FROM message WHERE raw_size_bytes + ? >= 0 AND ? <> 0")
-                                .params(delta, delta)
-                                .query(Long::class.java)
-                                .single() > 0
-                        val resized =
+                                .sql("SELECT id FROM message ORDER BY id DESC LIMIT 1")
+                                .query(UUID::class.java)
+                                .optional()
+                        val failure =
                             runCatching {
                                 db.jdbc
-                                    .sql(
-                                        "UPDATE message SET raw_size_bytes = raw_size_bytes + ? WHERE id = (SELECT id FROM message ORDER BY id DESC LIMIT 1)",
-                                    ).param(delta)
+                                    .sql("UPDATE message SET raw_size_bytes = raw_size_bytes + ? WHERE id = ?")
+                                    .params(delta, target.orElse(null))
                                     .update()
-                            }
-                        if (exists && delta != 0L) check(resized.isFailure) { "a resize was not refused" }
+                            }.exceptionOrNull()
+                        if (target.isPresent && delta != 0L) {
+                            val message =
+                                generateSequence(checkNotNull(failure) { "a resize was not refused" }) { it.cause }
+                                    .joinToString(" | ") { it.message.orEmpty() }
+                            check("immutable" in message) { "a resize failed for another reason: $message" }
+                        }
                     }
 
                     Op.COMPACT -> {

@@ -73,7 +73,7 @@ class StorageAccountingTest {
 
         override fun confirmTrust(): Boolean {
             trustConfirmations++
-            return drift.isEmpty()
+            return drift.none { it.scope == AccountingScope.WORKSPACE }
         }
     }
 
@@ -81,6 +81,7 @@ class StorageAccountingTest {
         var observed: Pair<Long, Long>? = null
         val footprints = mutableMapOf<FootprintKind, Long>()
         var observationAge: Long = -2
+        var trusted: Boolean? = null
         val drift = mutableListOf<DriftDirection>()
         val outcomes = mutableListOf<ReconciliationOutcome>()
         val compactions = mutableListOf<CompactionOutcome>()
@@ -98,6 +99,10 @@ class StorageAccountingTest {
 
         override fun driftRepaired(direction: DriftDirection) {
             drift += direction
+        }
+
+        override fun footprintCountsTrusted(trusted: Boolean) {
+            this.trusted = trusted
         }
 
         override fun reconciliationCompleted(outcome: ReconciliationOutcome) {
@@ -283,6 +288,29 @@ class StorageAccountingTest {
         val drifted = FakeLedger(drift = listOf(drift(derived = 10, accounted = 5)))
         ReconcileStorageAccounting(drifted).reconcile() shouldBe ReconciliationOutcome.REPAIRED
         drifted.trustConfirmations shouldBe 0
+    }
+
+    @Test
+    fun `inbox-only drift - what paced retention leaves on every batch - is repaired and still confirms trust`() {
+        // Quality review P1-1: requiring NO drift in any scope starved trust forever
+        // under paced retention, and ALL would answer 451 for good.
+        val inboxOnly = AccountingDrift(AccountingScope.INBOX, UUID.randomUUID(), 10, 20, 1, 2)
+        val ledger = FakeLedger(drift = listOf(inboxOnly))
+        ReconcileStorageAccounting(ledger).reconcile() shouldBe ReconciliationOutcome.REPAIRED
+        ledger.repairs shouldBe 1
+        ledger.trustConfirmations shouldBe 1
+    }
+
+    @Test
+    fun `the trust state is metered on every compaction tick, and an unreadable state reads untrusted`() {
+        val ledger = FakeLedger()
+        val metrics = RecordingMetrics()
+        ledger.debt = DeletionDebtState(0, 0, null, countsTrusted = true)
+        CompactStorageLedger(ledger, metrics).compact()
+        metrics.trusted shouldBe true
+        ledger.debtFailure = IllegalStateException("database gone")
+        CompactStorageLedger(ledger, metrics).compact()
+        metrics.trusted shouldBe false
     }
 
     @Test

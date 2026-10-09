@@ -103,6 +103,7 @@ class MetricCardinalityTest {
         email.testinbox.application.port.FootprintKind.entries
             .forEach { storage.footprintObserved(it, 1_000) }
         storage.filesystemObservationAge(7)
+        storage.footprintCountsTrusted(true)
         DriftDirection.entries.forEach { storage.driftRepaired(it) }
         ReconciliationOutcome.entries.forEach { storage.reconciliationCompleted(it) }
         CompactionOutcome.entries.forEach { storage.compactionCompleted(it) }
@@ -312,6 +313,7 @@ class MetricCardinalityTest {
             "testinbox_storage_covered_bytes",
             "testinbox_storage_footprint_bytes",
             "testinbox_storage_filesystem_observation_age_seconds",
+            "testinbox_storage_footprint_counts_trusted",
             "testinbox_storage_accounting_drift_total",
             "testinbox_storage_reconciliation_total",
             "testinbox_storage_ledger_compaction_total",
@@ -363,6 +365,7 @@ class MetricCardinalityTest {
             .gauge()
             .value() shouldBe 1_000.0
         registry.get("testinbox_storage_filesystem_observation_age_seconds").gauge().value() shouldBe 7.0
+        registry.get("testinbox_storage_footprint_counts_trusted").gauge().value() shouldBe 1.0
         registry
             .get("testinbox_storage_covered_bytes")
             .tag("kind", "committed")

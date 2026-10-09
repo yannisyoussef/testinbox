@@ -108,15 +108,17 @@ normalize_statements() {
   ' "$1" | tr '\n' ' ' | tr ';' '\n'
 }
 
-# The keyword not inside a word or a string literal, then optional TABLE /
-# ONLY, then the next word (group 4).
-TRUNCATE_STATEMENT="(^|[^A-Z0-9_'])TRUNCATE(( TABLE| ONLY)*) ([A-Z_\"]+)"
+# The keyword not inside a word, then optional TABLE / ONLY, then the next
+# word (group 4). A quote before it is NOT an exemption: dynamic SQL such as
+# EXECUTE 'TRUNCATE t' or format('TRUNCATE %I', t) truncates as surely.
+TRUNCATE_STATEMENT="(^|[^A-Z0-9_])TRUNCATE(( TABLE| ONLY)*) ([A-Z_%\"]+)"
 
 # Each rule is "why it breaks rollback", not just a pattern.
 check_statement() {
   local statement="$1"
   local upper
-  upper=$(printf '%s' "$statement" | tr '[:lower:]' '[:upper:]' | tr -s ' ')
+  # Tabs and carriage returns are whitespace too: `DROP<TAB>TABLE` must not pass.
+  upper=$(printf '%s' "$statement" | tr '[:lower:]' '[:upper:]' | tr '\t\r' '  ' | tr -s ' ')
 
   case "$upper" in
     *"DROP TABLE"*)
@@ -135,11 +137,18 @@ check_statement() {
   # `CREATE TRIGGER ... BEFORE TRUNCATE ON t` REFUSES truncation (the V8
   # ledger does exactly that), and `TG_OP = 'TRUNCATE'` or a message saying
   # "cannot be truncated" destroy nothing. A statement names a table after the
-  # keyword (and optional TABLE / ONLY); a trigger event is followed by ON,
-  # which cannot be a table name.
-  if [[ "$upper" =~ $TRUNCATE_STATEMENT ]] && [[ "${BASH_REMATCH[4]}" != "ON" ]]; then
-    echo "TRUNCATE — destroys rows the previous artifact expects to read"
-  fi
+  # keyword (and optional TABLE / ONLY); a trigger event is followed by ON or
+  # OR, neither of which can be a table name. Only the exact literal
+  # 'TRUNCATE' (a TG_OP comparison) is exempt, and EVERY occurrence in the
+  # statement is judged, not just the first.
+  local rest="${upper//\'TRUNCATE\'/}"
+  while [[ "$rest" =~ $TRUNCATE_STATEMENT ]]; do
+    if [[ "${BASH_REMATCH[4]}" != "ON" && "${BASH_REMATCH[4]}" != "OR" ]]; then
+      echo "TRUNCATE — destroys rows the previous artifact expects to read"
+      break
+    fi
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+  done
 
   # `COLUMN` is OPTIONAL in PostgreSQL's ALTER TABLE grammar, so matching only
   # the long form would let `ALTER TABLE t DROP c` and

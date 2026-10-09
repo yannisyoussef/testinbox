@@ -363,6 +363,14 @@ interface StorageAccountingMetrics {
      */
     fun filesystemObservationAge(seconds: Long) {}
 
+    /**
+     * `testinbox_storage_footprint_counts_trusted`: 1 while the object counts are
+     * trusted (contract §4.5), 0 while they are not or cannot be read. Footprint
+     * admission must not enforce at 0; until PR D gates T1 on it, this gauge is
+     * what an operator alerts on.
+     */
+    fun footprintCountsTrusted(trusted: Boolean) {}
+
     fun driftRepaired(direction: DriftDirection) {}
 
     fun reconciliationCompleted(outcome: ReconciliationOutcome) {}

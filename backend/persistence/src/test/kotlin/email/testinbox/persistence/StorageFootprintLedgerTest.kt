@@ -414,9 +414,34 @@ class StorageFootprintLedgerTest : PersistenceIntegrationTest() {
             .findDrift()
             .map { it.scope }
             .toSet() shouldBe setOf(AccountingScope.INBOX)
+        // Confirmable BEFORE any repair: the inbox over-count never enters the global potential.
+        db.ledger.confirmTrust() shouldBe true
         db.ledger.repairDrift()
         db.trust() shouldBe trusted
         db.ledger.confirmTrust() shouldBe true
+    }
+
+    @Test
+    fun `after a distrust event, reconciliation restores trust while paced retention keeps leaving inbox drift`() {
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        repeat(6) { db.message(ws, inbox, rawBytes = 100L + it, attachments = listOf(10)) }
+        db.jdbc
+            .sql(PRE_V8_FOLD)
+            .param("batch", 100)
+            .query()
+            .listOfRows() // a lower-capability compactor ran: distrust
+        db.ledger.deletionDebt().countsTrusted shouldBe false
+        val reconcile = ReconcileStorageAccounting(db.ledger, RecordingMetrics())
+        repeat(5) {
+            // One paced batch: a message deleted with its attachment in one statement.
+            db.jdbc
+                .sql("DELETE FROM message WHERE id = (SELECT id FROM message WHERE inbox_id = ? ORDER BY id LIMIT 1)")
+                .param(inbox)
+                .update() shouldBe 1
+            reconcile.reconcile()
+            db.ledger.deletionDebt().countsTrusted shouldBe true
+        }
     }
 
     @Test
@@ -454,7 +479,7 @@ class StorageFootprintLedgerTest : PersistenceIntegrationTest() {
                 "UPDATE storage_reservation SET object_keys = ARRAY['x'] WHERE message_id = '$reserved'",
             )
         refused.forEach { statement ->
-            withClue(statement) { runCatching { db.jdbc.sql(statement).update() }.isFailure shouldBe true }
+            withClue(statement) { db.sqlState { db.jdbc.sql(statement).update() } shouldBe CHECK_VIOLATION }
         }
         db.ledger.findDrift().shouldBeEmpty()
         // An UPDATE that leaves them alone is not refused.

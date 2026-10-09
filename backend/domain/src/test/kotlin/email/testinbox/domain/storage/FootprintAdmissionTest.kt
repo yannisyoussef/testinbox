@@ -132,6 +132,20 @@ class FootprintAdmissionTest {
     }
 
     @Test
+    fun `a probe is admitted by rule P - the potential with its row, without the probe reserve`() {
+        val snapshot = Snapshot(Load(1_000, 1), Load(500, 1), 7_000)
+        val fits = model.bound(1_500, 3) + 7_000 + 11 + 13 + 17
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = fits, h = 11, m = 13, r = 17, p = 1_000_000), snapshot) shouldBe
+            Verdict.ADMITTED
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = fits - 1, h = 11, m = 13, r = 17), snapshot) shouldBe
+            Verdict.CONTAINMENT
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = Long.MAX_VALUE), snapshot.copy(trashBytes = null)) shouldBe
+            Verdict.UNOBSERVED
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = Long.MAX_VALUE), Snapshot(Load(Long.MAX_VALUE, 1), Load.ZERO, 0)) shouldBe
+            Verdict.INDETERMINATE
+    }
+
+    @Test
     fun `the probe budget is reserved by rule C, byte for byte`() {
         val snapshot = Snapshot(Load(1_000, 1), Load(500, 1), 7_000)
         val copy = Load(4_096, 1)

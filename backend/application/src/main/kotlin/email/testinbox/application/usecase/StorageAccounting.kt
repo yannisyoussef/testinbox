@@ -1,6 +1,7 @@
 package email.testinbox.application.usecase
 
 import email.testinbox.application.port.AccountingDrift
+import email.testinbox.application.port.AccountingScope
 import email.testinbox.application.port.CompactionOutcome
 import email.testinbox.application.port.DeletionDebtState
 import email.testinbox.application.port.FootprintKind
@@ -97,14 +98,20 @@ class CompactStorageLedger(
             // Both figures computed INSIDE the guard: an observation carrying an
             // absurd value (trash_bytes near Long.MAX) must not throw out of the
             // compaction tick, and must not leave the gauges at a stale "fresh".
-            estimate(debt) to (debt.observation?.let { Duration.between(it.observedAt, clock.instant()).seconds } ?: NEVER_OBSERVED)
-        }.onSuccess { (estimate, age) ->
+            Triple(
+                estimate(debt),
+                debt.observation?.let { Duration.between(it.observedAt, clock.instant()).seconds } ?: NEVER_OBSERVED,
+                debt.countsTrusted,
+            )
+        }.onSuccess { (estimate, age, trusted) ->
             metrics.footprintObserved(FootprintKind.DELETION_DEBT, estimate)
             metrics.filesystemObservationAge(age)
+            metrics.footprintCountsTrusted(trusted)
         }.onFailure {
             log.warn("storage deletion debt could not be read or bounded; reported as unbounded and never observed", it)
             metrics.footprintObserved(FootprintKind.DELETION_DEBT, UNBOUNDED)
             metrics.filesystemObservationAge(NEVER_OBSERVED)
+            metrics.footprintCountsTrusted(false)
         }
     }
 
@@ -146,25 +153,30 @@ class ReconcileStorageAccounting(
                 // Detection first, lock-free. A clean ledger costs one read and
                 // takes no lock a writer could wait on.
                 val detected = ledger.findDrift()
-                if (detected.isEmpty()) {
-                    // Contract §4.5: a clean pass is what makes the object
-                    // counts trusted again after a folding or a repair. The
-                    // check is repeated under the ledger lock and marked
-                    // compare-and-set, so a drift that appeared since the
-                    // lock-free read leaves the counts untrusted.
-                    if (!ledger.confirmTrust()) log.warn("storage footprint counts remain untrusted; the next pass retries")
-                    ReconciliationOutcome.CLEAN
-                } else {
-                    // Logged before the repair, so a repair that then fails
-                    // still leaves the detected drift on record.
-                    log.warn("storage_accounting_drift_detected count={}; repairing under the ledger lock", detected.size)
-                    val repaired = ledger.repairDrift()
-                    repaired.forEach(::report)
-                    // Another replica's reconciliation may have repaired it
-                    // while this one waited for the ledger lock. Only a repair
-                    // this node made counts.
-                    if (repaired.isEmpty()) ReconciliationOutcome.CLEAN else ReconciliationOutcome.REPAIRED
+                val result =
+                    if (detected.isEmpty()) {
+                        ReconciliationOutcome.CLEAN
+                    } else {
+                        // Logged before the repair, so a repair that then fails
+                        // still leaves the detected drift on record.
+                        log.warn("storage_accounting_drift_detected count={}; repairing under the ledger lock", detected.size)
+                        val repaired = ledger.repairDrift()
+                        repaired.forEach(::report)
+                        // Another replica's reconciliation may have repaired it
+                        // while this one waited for the ledger lock. Only a repair
+                        // this node made counts.
+                        if (repaired.isEmpty()) ReconciliationOutcome.CLEAN else ReconciliationOutcome.REPAIRED
+                    }
+                // Contract §4.5: a pass that found no WORKSPACE-scope drift is what
+                // makes the object counts trusted again. Inbox-only drift (what
+                // paced retention leaves) never enters the global potential, so it
+                // must not starve trust. The check is repeated under the ledger
+                // lock and marked compare-and-set; a pass that repaired workspace
+                // drift has just revoked trust and leaves it to the next pass.
+                if (detected.none { it.scope == AccountingScope.WORKSPACE } && !ledger.confirmTrust()) {
+                    log.warn("storage footprint counts remain untrusted; the next pass retries")
                 }
+                result
             }.getOrElse {
                 log.warn("storage accounting reconciliation failed", it)
                 ReconciliationOutcome.FAILED

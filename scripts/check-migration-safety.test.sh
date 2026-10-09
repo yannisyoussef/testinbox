@@ -114,6 +114,21 @@ check "a BEFORE TRUNCATE trigger passes — it refuses truncation" $SAFE \
   'CREATE TRIGGER no_truncate BEFORE TRUNCATE ON storage_delta FOR EACH STATEMENT EXECUTE FUNCTION refuse();'
 check "TRUNCATE as a trigger event among others passes" $SAFE \
   'CREATE TRIGGER t BEFORE UPDATE OR TRUNCATE ON storage_delta FOR EACH STATEMENT EXECUTE FUNCTION refuse();'
+check "TRUNCATE followed by a tab is blocked" $BLOCKED "$(printf 'TRUNCATE\tmessage;')"
+check "TRUNCATE with the table on the next, tab-indented line is blocked" $BLOCKED "$(printf 'TRUNCATE\n\tmessage;')"
+check "DROP<TAB>TABLE is blocked" $BLOCKED "$(printf 'DROP\tTABLE message;')"
+check "TRUNCATE in an EXECUTE string is blocked" $BLOCKED \
+  "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS \$\$ BEGIN EXECUTE 'TRUNCATE message'; END \$\$;"
+check "lower-case truncate in an EXECUTE string is blocked" $BLOCKED \
+  "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS \$\$ BEGIN EXECUTE 'truncate message'; END \$\$;"
+check "TRUNCATE through format() is blocked" $BLOCKED \
+  "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS \$\$ BEGIN EXECUTE format('TRUNCATE %I', 'message'); END \$\$;"
+check "TRUNCATE in an escape string is blocked" $BLOCKED \
+  "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS \$\$ BEGIN EXECUTE E'TRUNCATE message'; END \$\$;"
+check "a later real TRUNCATE after a trigger event in one statement is blocked" $BLOCKED \
+  "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS \$\$ BEGIN IF TG_OP = 'TRUNCATE' THEN NULL; END IF; EXECUTE 'TRUNCATE message'; END \$\$;"
+check "BEFORE TRUNCATE OR UPDATE passes — a trigger event, not a statement" $SAFE \
+  'CREATE TRIGGER t BEFORE TRUNCATE OR UPDATE ON storage_delta FOR EACH STATEMENT EXECUTE FUNCTION refuse();'
 check "TRUNCATE inside a string literal passes" $SAFE \
   "CREATE FUNCTION refuse() RETURNS trigger LANGUAGE plpgsql AS \$\$ BEGIN IF TG_OP = 'TRUNCATE' THEN RAISE EXCEPTION 'cannot be truncated'; END IF; RETURN NULL; END \$\$;"
 check "DROP TYPE is blocked" $BLOCKED 'DROP TYPE parse_status;'
