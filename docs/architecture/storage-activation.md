@@ -242,11 +242,21 @@ answer stays `BLOCKED`.
   F it also proves that each row blocks on its own, with its figures. It
   proves that every missing, malformed, stale or contradictory input is
   `NOT RUN`. It proves that raising a declaration alone never passes a
-  capacity row, and that `TENANT_LIMITS` is `NOT REQUIRED` with the
-  non-guarantee stated. The database query behind `--footprint-state` was
-  run once by hand against PostgreSQL 16 with V1–V9 applied. Under separated
-  roles it reported no violation. With the owner as the application role, it
-  reported the 42 owner privileges and ownerships.
+  capacity row, and that the `TENANT_LIMITS` preflight passes only on
+  isolation and says so.
+
+  The database query behind `--footprint-state` was run by hand against
+  PostgreSQL 16 with V1–V10 applied, using fixture filesystem evidence:
+  - With separated roles and the documented grants, after a verified trust
+    mark, a reaped containment-0 node and a later recorded sweep, gate F
+    passed in both modes.
+  - A forged delta was refused.
+  - A sweep that began before the trust mark blocked, and so did an unclean
+    lower node.
+  - With the owner as the application role, the gate reported 103
+    privileges and ownerships.
+
+  None of this qualifies a real filesystem.
 - `scripts/check-storage-enforcement-off.test.sh` — a YAML `TENANT_LIMITS`,
   a compose `${VAR:-ALL}`, a Spring `${VAR:ALL}`, a property default changed
   to `ALL`, a missing declaration, and the clean tree.

@@ -80,7 +80,9 @@ scripts/check-storage-activation.sh --mode ALL \
     block);
   - observation source and liveness;
   - the Ops qualification-check;
-  - the record's E8–E11 drills recorded as PASS.
+  - the record's E8–E11 drills recorded as PASS;
+  - no artifact below the containment level (mixed versions), so the
+    running code has the `STORAGE_FULL` handling the drills proved.
 
   It skips every row about the global potential, because nothing enforces
   it in that mode. Its PASS says so: global admission is observational, the
@@ -125,14 +127,20 @@ file is `NOT RUN`. Every field is required. A missing or mistyped field is
 | physical headroom | Φ = F(L + D) + W, computed from T1's own figures and the newest observation's `trash_bytes`; `used_bytes ≤ Φ + H_F + M` and `avail_bytes ≥ R_ops` |
 | deletion debt | `D_est = Φ − F(L) ≤ D_budget` |
 | trusted counts | `storage_footprint_trust.trusted_epoch = distrust_epoch`, marked by `storage_confirm_footprint_trust()` (V10): no application role can write the trusted columns |
-| base case | all from records the database wrote (V10), never an asserted time. The trust row carries a `trusted_seq` from the verifying function. The newest **completed** `storage_sweep_run` began at a database-issued order after it, and after the last heartbeat of any `storage_node` below containment level 1. At its completion it listed no more than the covered bytes (`physical_listed ≤ covered`, as §9 states, not gate B's `+ H`). The newest observation also began after the last distrust event. |
-| mixed versions | no live node below containment level 1, and a declared `TI-STORAGE-006E` rollback floor (gate E proves every running artifact contains it) |
+| base case | the orderings come from records the database wrote (V10), never an asserted time:
+- The trust row carries a `trusted_seq` from the verifying function.
+- The newest **completed** `storage_sweep_run` began at a database-issued order after it, and after `storage_containment_watermark.last_lower_seq`. That order is stamped by every write or deletion of a node row below containment level 1, so it survives the row being reaped.
+- At its completion the sweep listed no more than the covered bytes (`physical_listed ≤ covered`, as §9 states, not gate B's `+ H`).
+- The newest observation began after the last distrust event.
+
+The listed bytes are the application's own figure (it does the listing), and `covered` is computed by the database at completion, so it is lenient by the bytes committed during the pass. The monitor's headroom row bounds both independently. |
+| mixed versions | no `storage_node` row below containment level 1 that neither shut down cleanly nor was reaped (such a node may still run, or ran past its last heartbeat), and a declared `TI-STORAGE-006E` rollback floor (gate E proves every running artifact contains it) |
 | inode headroom | the newest observation has at least one free inode per free block (`inodes_total − inodes_used ≥ ⌈avail / B⌉`) |
 | experiments | the record names E1–E11 PASS for `ALL`, and E8–E11 for the `TENANT_LIMITS` preflight |
 | procs | the live `storage_node` ids (or `--expected-ingestion-nodes`) number no more than the declared `procs` |
 | observation validity | the newest observation began at or above the compaction watermark, and no footprint total overflows 64 bits. Otherwise T1 would refuse while the gate passed. |
 | observation source | the newest row's `written_by` is the monitor role, which is not an application role. The monitor is also the **only** login role able to insert an observation or begin a walk, other than superusers and members of the table owner. A role counts as able if it, or any role it can `SET ROLE` to (`NOINHERIT` membership included), holds `INSERT` (column grants included) on `storage_filesystem_observation` or `EXECUTE` on `storage_begin_observation()`. |
-| privileges | the roles checked are the declared application roles **and** every role a `testinbox-*` session (other than the migrator) is connected as right now, so leaving a role out of the evidence hides nothing. None of them, directly or through any role it can act as, is a superuser. None holds `INSERT` on observations, `EXECUTE` on `storage_begin_observation()`, `INSERT`/`UPDATE` (column grants included) or `DELETE` on `storage_deletion_debt` or `storage_debt_watermark`, or `SET` on `session_replication_role`. None owns, directly or through membership, a `storage_*` table, sequence or function, or any relation carrying a ledger or debt trigger (`message`, `attachment`, and others), because an owner can disable those triggers. |
+| privileges | the roles checked are the declared application roles **and** every role a `testinbox-*` session (other than the migrator) is connected as right now, so leaving a role out of the evidence hides nothing. None of them, directly or through any role it can act as, is a superuser. None holds any write or `TRUNCATE` on `storage_delta`, `workspace_storage_account`, `storage_sweep_run` or `storage_containment_watermark`, nor `INSERT`/`UPDATE` on `inbox_storage`'s base columns, nor `TRIGGER` or `TRUNCATE` on any ledger, trust, observation, node, `message` or `attachment` table. None holds `INSERT` on observations, `EXECUTE` on `storage_begin_observation()`, `INSERT`/`UPDATE` (column grants included) or `DELETE` on `storage_deletion_debt` or `storage_debt_watermark`, or `SET` on `session_replication_role`. None owns, directly or through membership, a `storage_*` table, sequence or function, or any relation carrying a ledger or debt trigger (`message`, `attachment`, and others), because an owner can disable those triggers. |
 | ordering | `pg_sequences.cache_size = 1` for `storage_debt_order_seq`, and the gate's own connection is not in recovery |
 | liveness | the newest observation is no older than *A_obs*, and not in the future of the database clock |
 
@@ -159,10 +167,10 @@ staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
 
 ## Limits stated plainly
 
-- **The lower-capability ordering relies on node rows surviving.** It reads
-  the last heartbeat of every `storage_node` row below containment level 1.
-  If such rows were pruned, an earlier lower node cannot be seen. The
-  containment floor (gate E) still excludes any lower node that is running.
+- **Under `TENANT_LIMITS` on staging, "from the monitor role" rests on
+  `written_by` alone.** The preflight skips the observation-writer and
+  privileges rows, because staging connects as the owner, so the owner
+  could also write an observation.
 - **Metadata inodes are counted by Ops.** The monitor's observation carries
   no metadata-inode figure, so the count comes from the evidence. It is
   bounded by a budget that must cover the E7 measurement in the committed

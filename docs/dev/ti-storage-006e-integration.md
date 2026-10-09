@@ -12,7 +12,7 @@ and production is untouched. Each step below needs the owner's go-ahead.
 | #83 | `feature/ti-storage-006e-footprint-ledger` | `develop` | Footprint model, V8 ledger (object counts, debt, observations, trust), exact-aggregate rules. |
 | #84 | `feature/ti-storage-006e-storage-full-breaker` | #83's branch | `STORAGE_FULL` breaker and the filesystem declarations. |
 | #85 | `feature/ti-storage-006e-footprint-admission` | #84's branch | PR D: T1 footprint admission, the T2 fence, rule (P), pacing, V9; and V10 (verified trust, sweep runs, containment level). |
-| #86 | `feature/ti-storage-006e-gate-f` | #85's branch | PR E: gate F with the `TENANT_LIMITS` preflight; the Ops handoff; this plan. |
+| #86 | `feature/ti-storage-006e-gate-f` | #85's branch | PR E: gate F with the `TENANT_LIMITS` preflight; the Ops handoff; this plan; **the containment rollback floor** (`9b26910`, PR D's head). |
 
 #82 is independent of the code chain. Every code PR is a strict descendant of
 the one before it: each was merged forward, never rebased.
@@ -35,13 +35,18 @@ the one before it: each was merged forward, never rebased.
      `storage_sweep_run` is excluded.
    - `StorageV8GrantsTest` and `StorageVerifiedTrustTest`: the documented
      per-role grants suffice, and a forged trust mark is refused.
-   - For every environment with separated roles (production), apply the
-     grants of `docs/dev/production.md` **before** any artifact from #83 or
-     later starts.
-     - The API role needs `SELECT` on the V8 tables, `UPDATE
-       (distrust_epoch)` on the trust row, and `EXECUTE` on
-       `storage_confirm_footprint_trust()`, the debt functions and the two
-       sweep functions.
+   - For every environment with separated roles (production), the order is:
+     the migrator applies V8–V10, **then** the grants of
+     `docs/dev/production.md` are applied (the V10 functions exist only
+     after the migration), **then** the artifacts from #83 on start.
+     Revoke the earlier ledger writes (`storage_delta`,
+     `workspace_storage_account`, the base columns of `inbox_storage`) once
+     every running artifact is from V10 on.
+     - The API role needs `SELECT` on the V8 tables and the ledger, `UPDATE
+       (distrust_epoch)` on the trust row, the refusal-record column grant on
+       `inbox_storage`, and `EXECUTE` on `storage_confirm_footprint_trust()`,
+       `storage_compact_ledger(integer)`, `storage_repair_ledger()`, the debt
+       functions and the two sweep functions.
      - The ingestion role needs the `SELECT`s and the two probe functions.
      - The monitor role needs its observation grants.
    - A missing grant fails closed: trust stays unmarked, and a sweep run is
@@ -54,23 +59,36 @@ the one before it: each was merged forward, never rebased.
    3. Retarget #85 to `develop`, run fresh CI, merge.
    4. Retarget #86 to `develop`, run fresh CI, merge.
 
-   GitHub retargets automatically only if a merged head branch is deleted. Do
-   not delete it, so that #81's history and the review threads keep their
-   links; retarget explicitly instead.
+   GitHub retargets a stacked PR automatically only when the merged head
+   branch is deleted. Branch auto-delete is off in this repository, so
+   retarget explicitly.
+
+   `deploy-staging.yml` deploys every push to `develop`, so each merge
+   deploys to staging under `OFF`. The #83 and #84 artifacts deployed in
+   between predate the containment floor. That is harmless:
+   - they run `OFF`;
+   - their nodes register containment level 0, which stamps the containment
+     watermark, so gate F refuses `ALL` until a sweep starts after their
+     last activity;
+   - the floor arrives with #86 and refuses any later deploy or rollback
+     below it.
+
+   To avoid the intermediate deploys altogether, merge the chain into an
+   integration branch and merge that into `develop` once. This is the
+   owner's choice.
 5. **Fresh CI on the resulting `develop`**, on the merge commit of #86. That
    means every required context: the backend (now 1 300+ tests), static
    analysis (with detekt and the activation self-test of 170+ cases), the
    OpenAPI check, acceptance, the staging rehearsal with the synthetic suite,
    and the image build.
-6. **Containment rollback floor.** In a small follow-up PR to `develop`, add
-   to `deploy/rollback-floors.txt` the merge commit of #85, with a rationale
-   naming `TI-STORAGE-006E`. Gate F's mixed-versions row reads that line, and
-   gate E then proves that every running artifact contains it.
-   - This must land **before any deployment that could enforce footprint
-     admission**, and before the first deployment of these artifacts to any
-     environment that could later be switched to `ALL`.
-   - Below the floor, an artifact deletes without rule (P), and V10 counts it
-     as containment level 0.
+6. **Containment rollback floor.** It is already part of #86: `9b26910`,
+   PR D's head, which is an ancestor of every later merge. If #85 changes
+   materially before merging, re-point the floor to its final head in #86.
+   - Gate F's mixed-versions row reads the floor line, and gate E then
+     proves that every running artifact contains it.
+   - `check-rollback-floors.sh` (staging `deploy.sh` and the production
+     gate) refuses any deploy or rollback below it without the explicit
+     hazard acknowledgement.
 7. **`OFF`-mode release qualification.** Build the images once from the
    `develop` head that carries the floor. Hand the digest set to Ops through
    the usual staging handoff, still with `TESTINBOX_STORAGE_ENFORCEMENT=OFF`.
