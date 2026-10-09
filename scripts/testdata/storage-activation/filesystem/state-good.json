@@ -1,8 +1,17 @@
 {
   "now": "2026-10-07T00:05:00Z",
   "inRecovery": false,
-  "trust": { "distrustEpoch": 3, "trustedEpoch": 3, "distrustedSeq": 100 },
-  "footprint": { "liveBytes": 1073741824, "liveObjects": 10000, "debtBytes": 0, "debtObjects": 0 },
+  "trust": {
+    "distrustEpoch": 3,
+    "trustedEpoch": 3,
+    "distrustedSeq": 100
+  },
+  "footprint": {
+    "liveBytes": 1073741824,
+    "liveObjects": 10000,
+    "debtBytes": 0,
+    "debtObjects": 0
+  },
   "observation": {
     "startedSeq": 120,
     "writtenBy": "testinbox_monitor",
@@ -15,9 +24,20 @@
     "trashBytes": 0,
     "minioSysBytes": 104857600
   },
-  "liveNodes": ["api-1", "ing-1"],
-  "observationInserters": ["testinbox_monitor"],
-  "beginObservationExecutors": ["testinbox_monitor"],
+  "liveNodes": [
+    "api-1",
+    "ing-1"
+  ],
+  "observationInserters": [
+    "testinbox_monitor"
+  ],
+  "beginObservationExecutors": [
+    "testinbox_monitor"
+  ],
   "roleViolations": [],
-  "sequenceCacheSize": 1
+  "sequenceCacheSize": 1,
+  "watermark": 110,
+  "sessionRoles": [
+    "testinbox_app"
+  ]
 }

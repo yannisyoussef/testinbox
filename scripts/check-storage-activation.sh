@@ -41,7 +41,8 @@
 #   --footprint-state <json>           gate F: the database state, for an offline evaluation; replaces the query
 #   --json <file>                      write the evidence record
 # Env:
-#   TESTINBOX_ACTIVATION_DB_URL        psql conninfo/URL; replaces --sessions-file / --nodes-file / --footprint-state.
+#   TESTINBOX_ACTIVATION_DB_URL        psql conninfo/URL; replaces --sessions-file / --nodes-file. With it set,
+#                                      --footprint-state is refused (gate F NOT RUN): the live database wins.
 #                                      Only ever read from the environment so it never shows in `ps`.
 #   TESTINBOX_ACTIVATION_EVALUATED_AT  overrides the evaluatedAt timestamp (tests)
 # Exit: 0 ACTIVATION READY, 1 ACTIVATION BLOCKED, 2 usage
@@ -702,16 +703,33 @@ FOOTPRINT_STATE_SQL="$(cat <<'SQL'
 WITH newest AS (SELECT * FROM storage_filesystem_observation ORDER BY started_seq DESC, id DESC LIMIT 1),
      debt AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(objects), 0) AS objects FROM storage_deletion_debt
                WHERE incurred_at = 'infinity'::timestamptz OR seq >= coalesce((SELECT started_seq FROM newest), 0)),
-     owner AS (SELECT relowner FROM pg_class WHERE oid = 'storage_filesystem_observation'::regclass),
-     holders AS (SELECT r.rolname, has_table_privilege(r.oid, 'storage_filesystem_observation', 'INSERT') AS ins,
-                        has_function_privilege(r.oid, 'storage_begin_observation()', 'EXECUTE') AS exec
-                   FROM pg_roles r
-                  WHERE NOT r.rolsuper AND r.rolcanlogin AND r.oid <> (SELECT relowner FROM owner))
+     obs_owner AS (SELECT relowner FROM pg_class WHERE oid = 'storage_filesystem_observation'::regclass),
+     -- The roles the boundary is checked for: those Ops declare, AND every role a TestInbox
+     -- deployable is connected as right now, so an omission from the evidence hides nothing.
+     sessions AS (SELECT DISTINCT usename::text AS rolname FROM pg_stat_activity
+                   WHERE application_name LIKE 'testinbox-%' AND application_name NOT LIKE 'testinbox-migrator%'
+                     AND usename IS NOT NULL),
+     app AS (SELECT r.oid, r.rolname, r.rolsuper FROM pg_roles r
+              WHERE r.rolname = ANY (string_to_array(:'app_roles', ',')) OR r.rolname IN (SELECT rolname FROM sessions)),
+     -- Every role a role can act as: itself, inherited grants, and SET ROLE targets (NOINHERIT included).
+     reach AS (SELECT a.rolname AS app, g.oid AS goid FROM app a JOIN pg_roles g ON pg_has_role(a.oid, g.oid, 'MEMBER')),
+     -- Writers of observations: grants held by any role, login or not, column grants included,
+     -- expanded to every login role that can act as the holder.
+     grantees AS (SELECT r.oid, has_any_column_privilege(r.oid, 'storage_filesystem_observation', 'INSERT') AS ins,
+                         has_function_privilege(r.oid, 'storage_begin_observation()', 'EXECUTE') AS exec FROM pg_roles r),
+     holders AS (SELECT l.rolname, bool_or(g.ins) AS ins, bool_or(g.exec) AS exec
+                   FROM pg_roles l JOIN grantees g ON pg_has_role(l.oid, g.oid, 'MEMBER')
+                  WHERE l.rolcanlogin AND NOT l.rolsuper AND NOT pg_has_role(l.oid, (SELECT relowner FROM obs_owner), 'MEMBER')
+                  GROUP BY l.rolname),
+     -- Relations whose triggers write the ledger or the debt: their owner can disable them.
+     triggered AS (SELECT DISTINCT t.tgrelid AS rel FROM pg_trigger t JOIN pg_proc f ON f.oid = t.tgfoid
+                    WHERE NOT t.tgisinternal AND f.pronamespace = 'public'::regnamespace AND f.proname LIKE 'storage\_%')
 SELECT json_build_object(
   'now', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
   'inRecovery', pg_is_in_recovery(),
   'trust', (SELECT json_build_object('distrustEpoch', distrust_epoch, 'trustedEpoch', trusted_epoch, 'distrustedSeq', distrusted_seq)
               FROM storage_footprint_trust WHERE id = 1),
+  'watermark', coalesce((SELECT compacted_through_seq FROM storage_debt_watermark WHERE id = 1), 0),
   'footprint', json_build_object(
       'liveBytes', (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
                  + (SELECT coalesce(sum(bytes), 0) FROM storage_delta) + (SELECT coalesce(sum(bytes), 0) FROM storage_reservation),
@@ -726,41 +744,51 @@ SELECT json_build_object(
                     FROM newest),
   'liveNodes', (SELECT coalesce(json_agg(DISTINCT node_id), '[]') FROM storage_node
                  WHERE NOT clean_shutdown AND heartbeat_at > now() - interval '5 minutes'),
+  'sessionRoles', (SELECT coalesce(json_agg(rolname ORDER BY rolname), '[]') FROM sessions),
   'observationInserters', (SELECT coalesce(json_agg(rolname ORDER BY rolname), '[]') FROM holders WHERE ins),
   'beginObservationExecutors', (SELECT coalesce(json_agg(rolname ORDER BY rolname), '[]') FROM holders WHERE exec),
-  'roleViolations', (SELECT coalesce(json_agg(v ORDER BY v), '[]') FROM (
-      SELECT r.rolname || ': ' || p.what AS v
-        FROM pg_roles r
+  'roleViolations', (SELECT coalesce(json_agg(DISTINCT v), '[]') FROM (
+      SELECT a.rolname || ': is a superuser' AS v FROM app a WHERE a.rolsuper
+      UNION ALL
+      SELECT r.app || ': ' || p.what
+        FROM reach r
         JOIN (VALUES ('INSERT on storage_filesystem_observation', 'storage_filesystem_observation', 'INSERT'),
                      ('INSERT on storage_deletion_debt', 'storage_deletion_debt', 'INSERT'),
                      ('UPDATE on storage_deletion_debt', 'storage_deletion_debt', 'UPDATE'),
-                     ('DELETE on storage_deletion_debt', 'storage_deletion_debt', 'DELETE'),
                      ('INSERT on storage_debt_watermark', 'storage_debt_watermark', 'INSERT'),
-                     ('UPDATE on storage_debt_watermark', 'storage_debt_watermark', 'UPDATE'),
-                     ('DELETE on storage_debt_watermark', 'storage_debt_watermark', 'DELETE')) AS p(what, tbl, priv)
-          ON has_table_privilege(r.oid, p.tbl, p.priv)
-       WHERE r.rolname = ANY (string_to_array(:'app_roles', ','))
+                     ('UPDATE on storage_debt_watermark', 'storage_debt_watermark', 'UPDATE')) AS p(what, tbl, priv)
+          ON has_any_column_privilege(r.goid, p.tbl, p.priv)
       UNION ALL
-      SELECT r.rolname || ': EXECUTE on storage_begin_observation()' FROM pg_roles r
-       WHERE r.rolname = ANY (string_to_array(:'app_roles', ','))
-         AND has_function_privilege(r.oid, 'storage_begin_observation()', 'EXECUTE')
+      SELECT r.app || ': DELETE on ' || p.tbl
+        FROM reach r JOIN (VALUES ('storage_deletion_debt'), ('storage_debt_watermark')) AS p(tbl)
+          ON has_table_privilege(r.goid, p.tbl, 'DELETE')
       UNION ALL
-      SELECT r.rolname || ': owns ' || c.relname FROM pg_roles r JOIN pg_class c ON pg_has_role(r.oid, c.relowner, 'MEMBER')
-       WHERE r.rolname = ANY (string_to_array(:'app_roles', ','))
-         AND c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'S') AND c.relname LIKE 'storage\_%'
+      SELECT r.app || ': EXECUTE on storage_begin_observation()' FROM reach r
+       WHERE has_function_privilege(r.goid, 'storage_begin_observation()', 'EXECUTE')
       UNION ALL
-      SELECT r.rolname || ': owns ' || f.proname || '()' FROM pg_roles r JOIN pg_proc f ON pg_has_role(r.oid, f.proowner, 'MEMBER')
-       WHERE r.rolname = ANY (string_to_array(:'app_roles', ','))
-         AND f.pronamespace = 'public'::regnamespace AND f.proname LIKE 'storage\_%') AS violations),
+      SELECT r.app || ': SET on session_replication_role (disables the ledger triggers)' FROM reach r
+       WHERE has_parameter_privilege(r.goid, 'session_replication_role', 'SET')
+      UNION ALL
+      SELECT a.rolname || ': owns ' || c.relname FROM app a JOIN pg_class c ON pg_has_role(a.oid, c.relowner, 'MEMBER')
+       WHERE c.relnamespace = 'public'::regnamespace
+         AND ((c.relkind IN ('r', 'S') AND c.relname LIKE 'storage\_%') OR c.oid IN (SELECT rel FROM triggered))
+      UNION ALL
+      SELECT a.rolname || ': owns ' || f.proname || '()' FROM app a JOIN pg_proc f ON pg_has_role(a.oid, f.proowner, 'MEMBER')
+       WHERE f.pronamespace = 'public'::regnamespace AND f.proname LIKE 'storage\_%') AS violations),
   'sequenceCacheSize', (SELECT cache_size FROM pg_sequences WHERE schemaname = 'public' AND sequencename = 'storage_debt_order_seq'))
 SQL
 )"
 
 FS_STATE_FILE="$WORK/footprint-state.json"
+FS_OFFLINE=false
 collect_footprint_state() {
-    # Prints nothing and returns 1 when no database state is available.
-    if [ -n "$FOOTPRINT_STATE" ]; then
+    # Returns 1 when no database state is available, 3 when two sources conflict. The live
+    # database always wins: an offline file is refused while a URL is set, and is named in the verdict.
+    if [ -n "$FOOTPRINT_STATE" ] && [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
+        return 3
+    elif [ -n "$FOOTPRINT_STATE" ]; then
         cp "$FOOTPRINT_STATE" "$FS_STATE_FILE"
+        FS_OFFLINE=true
     elif [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
         local roles
         roles="$(jq -r '(.declared.applicationRoles // []) | join(",")' "$FS_EVIDENCE" 2>/dev/null)"
@@ -797,6 +825,7 @@ gate_filesystem() {
     case "$rc" in
         1) record "$gate" NOT_RUN "no database state: set TESTINBOX_ACTIVATION_DB_URL or pass --footprint-state"; return ;;
         2) record "$gate" NOT_RUN "footprint state query failed; the database could not be observed"; return ;;
+        3) record "$gate" NOT_RUN "--footprint-state and TESTINBOX_ACTIVATION_DB_URL both given; the live database is the only source when it is reachable"; return ;;
     esac
     jq -e 'type == "object"' "$FS_STATE_FILE" >/dev/null 2>&1 || { record "$gate" NOT_RUN "footprint state is not a JSON object"; return; }
 
@@ -807,6 +836,7 @@ gate_filesystem() {
             | if $v == null then "\($name).\($at | join(".")) missing"
               elif $kind == "count" and (($v | type) != "number" or $v < 0 or ($v | floor) != $v) then "\($name).\($at | join(".")) is not a non-negative integer"
               elif $kind == "positive" and (($v | type) != "number" or $v <= 0 or ($v | floor) != $v) then "\($name).\($at | join(".")) is not a positive integer"
+              elif $kind == "age" and (($v | type) != "number" or $v <= 0 or ($v | floor) != $v or $v > 3600) then "\($name).\($at | join(".")) is not a whole number of seconds in (0, 3600]"
               elif $kind == "ratio" and (($v | type) != "number" or $v < 0 or $v >= 1) then "\($name).\($at | join(".")) is not in [0, 1)"
               elif $kind == "string" and (($v | type) != "string" or $v == "") then "\($name).\($at | join(".")) is not a non-empty string"
               elif $kind == "boolean" and ($v | type) != "boolean" then "\($name).\($at | join(".")) is not a boolean"
@@ -827,7 +857,7 @@ gate_filesystem() {
               [["declared","globalFootprintLimitBytes"], "positive"], [["declared","finalizeBudgetBytes"], "count"],
               [["declared","metadataBudgetBytes"], "count"], [["declared","operationalReserveBytes"], "count"],
               [["declared","objectOverheadBytes"], "count"], [["declared","fragmentationEpsilon"], "ratio"],
-              [["declared","deletionDebtBudgetBytes"], "positive"], [["declared","observationMaxAgeSeconds"], "positive"],
+              [["declared","deletionDebtBudgetBytes"], "positive"], [["declared","observationMaxAgeSeconds"], "age"],
               [["declared","monitorRole"], "string"], [["declared","applicationRoles"], "strings"], [["declared","procs"], "positive"]
             ) | need($e; "evidence"; .[0]; .[1]) ]
           + ( if $e.preallocation.blockDevice == false then
@@ -836,13 +866,14 @@ gate_filesystem() {
           + ( if $e.isolation.dedicatedDevice == false then
                 [ need($e; "evidence"; ["isolation","hostFreeAtCreationBytes"]; "count"), need($e; "evidence"; ["isolation","imageBytes"]; "count") ]
               else [] end )
-          + [ ( [["now"], "string"], [["inRecovery"], "boolean"], [["trust","distrustEpoch"], "count"], [["trust","distrustedSeq"], "count"],
+          + [ ( [["now"], "string"], [["inRecovery"], "boolean"], [["trust","distrustEpoch"], "count"], [["trust","distrustedSeq"], "count"], [["watermark"], "count"],
                 [["footprint","liveBytes"], "count"], [["footprint","liveObjects"], "count"], [["footprint","debtBytes"], "count"],
                 [["footprint","debtObjects"], "count"], [["sequenceCacheSize"], "positive"] ) | need($s; "state"; .[0]; .[1]) ]
           + ( if ($s.liveNodes | type) != "array" then ["state.liveNodes is not a list"] else [] end )
           + ( if ($s.observationInserters | type) != "array" then ["state.observationInserters is not a list"] else [] end )
           + ( if ($s.beginObservationExecutors | type) != "array" then ["state.beginObservationExecutors is not a list"] else [] end )
           + ( if ($s.roleViolations | type) != "array" then ["state.roleViolations is not a list"] else [] end )
+          + ( if ($s.sessionRoles | type) != "array" then ["state.sessionRoles is not a list"] else [] end )
           + ( if $s.observation == null then []
               else [ ( [["startedSeq"], "count"], [["writtenBy"], "string"], [["observedAt"], "string"], [["blockSizeBytes"], "positive"],
                        [["capacityBytes"], "count"], [["usedBytes"], "count"], [["availBytes"], "count"], [["inodesTotal"], "count"],
@@ -955,6 +986,10 @@ gate_filesystem() {
                          then "headroom: avail \($o.availBytes) < R_ops \($d.operationalReserveBytes)" else empty end ) ) end ),
             ( if $o != null and ($phi - $fl) > $d.deletionDebtBudgetBytes
                 then "deletion debt: D_est \($phi - $fl) > D_budget \($d.deletionDebtBudgetBytes)" else empty end ),
+            ( if $o != null and $o.startedSeq < $s.watermark
+                then "observation validity: the newest observation began at seq \($o.startedSeq), below the compaction watermark \($s.watermark) (T1 refuses it)" else empty end ),
+            ( if ([$fp.liveBytes, $fp.liveObjects, $fp.debtBytes, $fp.debtObjects, $fp.liveBytes + $fp.debtBytes] | max) > 9223372036854775807
+                then "indeterminate: a footprint total does not fit a signed 64-bit figure (T1 refuses it)" else empty end ),
             ( if $s.trust == null or $s.trust.trustedEpoch != $s.trust.distrustEpoch
                 then "trusted counts: trusted_epoch \($s.trust.trustedEpoch // "null") ≠ distrust_epoch \($s.trust.distrustEpoch // "null")" else empty end ),
             ( if $o != null and $o.startedSeq <= $s.trust.distrustedSeq
@@ -972,7 +1007,7 @@ gate_filesystem() {
             ( if $s.beginObservationExecutors != [$d.monitorRole]
                 then "observation source: EXECUTE on storage_begin_observation() is held by [\($s.beginObservationExecutors | join(", "))], not only \($d.monitorRole)" else empty end ),
             ( if ($s.roleViolations | length) > 0
-                then "privileges: \($s.roleViolations | length) violation(s), first \($s.roleViolations[0:5] | join(", ")) (where the application connects as the owner, as staging does, gate F fails by design)" else empty end ),
+                then "privileges (roles checked: declared + connected [\($s.sessionRoles | join(", "))]): \($s.roleViolations | length) violation(s), first \($s.roleViolations[0:5] | join(", ")) (where the application connects as the owner, as staging does, gate F fails by design)" else empty end ),
             ( if $s.sequenceCacheSize != 1 then "ordering: storage_debt_order_seq has CACHE \($s.sequenceCacheSize), not 1" else empty end ),
             ( if $s.inRecovery or $e.database.allConnectionsToPrimary != true
                 then "ordering: a reader or writer is not on the primary" else empty end ),
@@ -992,7 +1027,9 @@ gate_filesystem() {
     if [ -n "$verdicts" ]; then
         record "$gate" BLOCKED "$verdicts"
     else
-        record "$gate" PASS "filesystem $(jq -r .filesystem.uuid "$FS_EVIDENCE") equals record $rid; capacity, inodes, preallocation, isolation, headroom, deletion debt, trust, base case, versions, procs, observation source, privileges, ordering, metadata and liveness hold"
+        local source="live database"
+        $FS_OFFLINE && source="an OFFLINE --footprint-state file, not observed by this run"
+        record "$gate" PASS "database state from $source; filesystem $(jq -r .filesystem.uuid "$FS_EVIDENCE") equals record $rid; capacity, inodes, preallocation, isolation, headroom, deletion debt, trust, base case, versions, procs, observation source, privileges, ordering, metadata and liveness hold"
     fi
 }
 

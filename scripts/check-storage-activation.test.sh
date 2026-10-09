@@ -405,7 +405,7 @@ fs writer '.observation.writtenBy = "testinbox_app"' "an observation the monitor
 fe monitor-app '.declared.applicationRoles = ["testinbox_app", "testinbox_monitor"]' "a monitor role that is also an application role blocks" "observation source: the monitor role is an application role"
 fs inserters '.observationInserters = ["testinbox_app", "testinbox_monitor"]' "another role holding INSERT on observations blocks" "INSERT on storage_filesystem_observation is held by \[testinbox_app, testinbox_monitor\]"
 fs executors '.beginObservationExecutors = []' "nobody holding EXECUTE on storage_begin_observation() blocks" "EXECUTE on storage_begin_observation\(\) is held by \[\]"
-fs privileges '.roleViolations = ["testinbox_app: owns storage_deletion_debt"]' "an application role owning a V8 table blocks - staging fails by design" "privileges: 1 violation\(s\), first testinbox_app: owns storage_deletion_debt .*fails by design"
+fs privileges '.roleViolations = ["testinbox_app: owns storage_deletion_debt"]' "an application role owning a V8 table blocks - staging fails by design" "privileges \(roles checked: declared \+ connected \[testinbox_app\]\): 1 violation\(s\), first testinbox_app: owns storage_deletion_debt .*fails by design"
 fs cache '.sequenceCacheSize = 20' "a cached ordering sequence blocks" "ordering: storage_debt_order_seq has CACHE 20, not 1"
 fs replica '.inRecovery = true' "a gate connected to a replica blocks" "ordering: a reader or writer is not on the primary"
 fe primary '.database.allConnectionsToPrimary = false' "a reader or writer off the primary blocks" "ordering: a reader or writer is not on the primary"
@@ -413,6 +413,18 @@ fe metadata '.minio.bucketDirectoryBytes = 200000000' "MinIO metadata above M bl
 fe qual-invalid '.qualificationValid = 0' "an Ops qualification-check reporting invalid blocks" "qualification identity: Ops qualification-check reports valid=0"
 fs obs-age '.observation.observedAt = "2026-10-06T23:40:00Z"' "an observation older than A_obs blocks" "observation liveness: the newest observation is 1500 s old, more than A_obs 900 s"
 fs obs-future '.observation.observedAt = "2026-10-07T00:10:00Z"' "an observation from the future blocks" "observation liveness: the newest observation is in the future"
+fs watermark '.watermark = 121' "an observation below the compaction watermark blocks, as T1 refuses it" "below the compaction watermark 121"
+fs overflow '.footprint.liveBytes = 9300000000000000000' "a footprint total beyond 64 bits blocks, as T1 refuses it" "indeterminate: a footprint total does not fit"
+fs no-watermark 'del(.watermark)' "a state without the watermark → NOT RUN" "state.watermark missing"
+fe age-cap '.declared.observationMaxAgeSeconds = 86400' "an A_obs above an hour → NOT RUN (a large age cannot launder stale evidence)" "observationMaxAgeSeconds is not a whole number of seconds in \(0, 3600\]"
+fe age-exp '.declared.observationMaxAgeSeconds = 1e300' "an A_obs bash cannot compare → NOT RUN, never fresh" "observationMaxAgeSeconds is not a whole number"
+TESTINBOX_ACTIVATION_DB_URL="postgresql://unused.invalid/x" run_args "$TMP/args-good"
+printf '%s\n' "$OUT" | grep -qE '^F-filesystem[[:space:]]+NOT RUN[[:space:]].*--footprint-state and TESTINBOX_ACTIVATION_DB_URL both given' \
+    && ok "F: an offline state file is refused while the live database URL is set" || bad "F let an offline file override the live database" "$OUT"
+run_args "$TMP/args-good"
+printf '%s\n' "$OUT" | grep -qE '^F-filesystem[[:space:]]+PASS[[:space:]]+database state from an OFFLINE --footprint-state file' \
+    && ok "F: a PASS on an offline state file says so" || bad "F did not mark the offline source" "$OUT"
+
 # A declared value is never an observation: raising the declaration alone cannot pass.
 fe declared-only '.declared.capacityBytes = 137438953472' "declaring more capacity than statvfs observes blocks" "capacity: f_blocks × f_frsize 68719476736 < declared C_fs 137438953472"
 
