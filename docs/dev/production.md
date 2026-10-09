@@ -194,6 +194,12 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   dies and another process takes the id meanwhile, the first opens its
   storage breaker (`451`) rather than share it.
 - **Enforcement is OFF by default, and the setting exists (TI-STORAGE-006).**
+  **(TI-STORAGE-006E, pending owner acceptance of #82:** a non-OFF mode now
+  also requires the dedicated filesystem's declarations below. The bucket
+  quota fuse *Q* stays REQUIRED until footprint admission at T1 (PR D) lands:
+  MinIO's scanner-based quota overshot by ~22.75 GiB, so it is not a sound
+  bound on its own, but until T1 admits on footprint it is the only check
+  linking the payload ceiling *G* to physical bytes.)
   `TESTINBOX_STORAGE_ENFORCEMENT` is `OFF` | `TENANT_LIMITS` | `ALL`, exactly
   those three states (ADR-035 §14). Every committed environment is OFF, and
   `scripts/check-storage-enforcement-off.sh` fails CI if one is not. A non-OFF
@@ -201,10 +207,15 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   `TESTINBOX_STORAGE_GLOBAL_LIMIT_BYTES` (*G*),
   `TESTINBOX_STORAGE_DECLARED_BUCKET_QUOTA_BYTES` (*Q*, the fuse
   `Q ≥ G + max(1 GiB, 10 % of G, H + churn)`),
+  `TESTINBOX_STORAGE_MEASURED_QUOTA_LAG_CHURN_BYTES` (Ops measures it),
   `TESTINBOX_STORAGE_DECLARED_MAX_INGESTION_PROCESSES` (deploy surge INCLUDED:
   a rolling deploy that overlaps two gateways declares 2, so H doubles),
-  `TESTINBOX_STORAGE_INBOX_SHARE`, `TESTINBOX_STORAGE_MEASURED_QUOTA_LAG_CHURN_BYTES`
-  (Ops measures it), and the declared backend identity
+  `TESTINBOX_STORAGE_INBOX_SHARE`, the dedicated filesystem's declarations
+  (`TESTINBOX_STORAGE_FS_*`: block size *B*, *O_max* from the qualification
+  record, *G_F*, *D_budget*, *M*, *R_ops*, *C_fs*, *I_fs*, *A_obs*; they must
+  satisfy `G_F + D_budget + M + R_ops ≤ C_fs`, `R_ops ≥ max(5 % of C_fs, 2 GiB)`,
+  one inode per block, and `H_F < G_F`; filesystem-containment contract,
+  TI-STORAGE-006E, PROPOSED in #82), and the declared backend identity
   (`testinbox.storage.backend-identity.*`: image index digest, platform member
   digest, release, commit id, mode, drive count, timeout environment and CLI
   flags, runtime admin-config hash, kernel release, filesystem type, mount
@@ -461,6 +472,7 @@ Boot's standard binders, whose presence the rehearsal asserts:
 | storage breaker open (ADR-035) | `testinbox_storage_breaker_open` | `== 1` for > 5 min on any ingestion node: mail is being deferred (`451`) |
 | **storage admission latched** (ADR-035) | `testinbox_storage_admission_latched`; `testinbox_storage_late_object_total` | **page**: any late object, or the latch set. Every node refuses mail until an operator clears it (runbook above) |
 | **filesystem observation stale** (TI-STORAGE-006E, observational while `OFF`) | `testinbox_storage_filesystem_observation_age_seconds`; `testinbox_storage_footprint_bytes{kind}` | **alert**: age `< 0` (never observed) or above the declared maximum (proposed 15 min), since only an observation ever lowers the deletion-debt estimate; `kind="deletion_debt"` growing without the age falling means the purge is not being verified |
+| **storage full** (TI-STORAGE-006E) | `testinbox_storage_physical_failure_total{kind="storage_full"}`; `testinbox_storage_breaker_open` | **page**: MinIO answered `507 XMinioStorageFull` or a `500` naming ENOSPC. The node answers `451` to every `DATA` and does NOT recover on a timer or a zero-byte probe (a full filesystem accepts both): it trials one real event only once a filesystem observation that BEGAN AFTER the trip is younger than *A_obs* and shows `avail ≥ R_ops` and at least `R_ops / B` free inodes; each failed trial needs a newer observation. Without a monitor writing observations, only a restart clears it. Runbook: free space (purge `.minio.sys/tmp/.trash`, retention), then let the monitor record an observation |
 | old ambiguity / old RELEASING (ADR-035) | `testinbox_storage_ambiguous_uploads`; `testinbox_storage_reservations{state="releasing"}` | ambiguity older than `T_verify` + 5 min, or `RELEASING` rows older than 1 h: verification or cleanup is stuck (for example, the witness is failing: `testinbox_storage_witness_failed_total`) |
 | physical over-coverage (ADR-035) | `testinbox_storage_physical_listed_bytes` against committed + reserved | `physical_listed > covered + H`: objects exist that nothing accounts for |
 | incomplete multipart (ADR-035) | `testinbox_storage_incomplete_uploads` | `> 0`: TestInbox never starts one; the orphan sweep aborts it and it is a defect to explain |

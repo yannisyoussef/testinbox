@@ -123,6 +123,8 @@ data class StorageDeclarations(
     val expectedApiNodes: Set<String> = emptySet(),
     /** This process's own node identity, so a non-OFF node can be checked against the declared set it must belong to. */
     val node: DeclaredNode? = null,
+    /** The dedicated filesystem's declared budgets (filesystem-containment contract, TI-STORAGE-006E). */
+    val filesystem: FilesystemDeclarations = FilesystemDeclarations(),
 ) {
     val enforced: Boolean get() = enforcement != StorageEnforcement.OFF
 

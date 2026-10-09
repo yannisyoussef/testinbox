@@ -1,6 +1,7 @@
 package email.testinbox.application.deployment
 
 import email.testinbox.application.storage.DeclaredNode
+import email.testinbox.application.storage.FilesystemDeclarations
 import email.testinbox.application.storage.NodeRole
 import email.testinbox.application.storage.QualificationFixtures
 import email.testinbox.application.storage.StorageDeclarations
@@ -41,6 +42,23 @@ class StorageEnforcementSafetyTest {
             activeProfiles = setOf("staging"),
         )
 
+    /**
+     * The staging-shaped filesystem of the containment contract: 48 GiB at 4 KiB
+     * blocks, one inode per block, G_F 20 GiB, D_budget 8 GiB, M 256 MiB, R_ops 3 GiB.
+     */
+    private val filesystem =
+        FilesystemDeclarations(
+            blockSizeBytes = 4096,
+            objectOverheadMaxBytes = 24 * 1024,
+            globalFootprintLimitBytes = 20 * gib,
+            deletionDebtBudgetBytes = 8 * gib,
+            metadataBudgetBytes = 256 * mib,
+            operationalReserveBytes = 3 * gib,
+            capacityBytes = 48 * gib,
+            inodes = 48 * gib / 4096,
+            observationMaxAge = Duration.ofMinutes(15),
+        )
+
     /** Every §18 declaration present and consistent, matched to an eligible (synthetic) record. */
     private val complete =
         StorageDeclarations(
@@ -55,6 +73,7 @@ class StorageEnforcementSafetyTest {
             expectedApiNodes = setOf("api-1"),
             expectedIngestionNodes = setOf("ingest-1", "ingest-2"),
             node = DeclaredNode("ingest-1", NodeRole.INGESTION),
+            filesystem = filesystem,
         )
 
     private fun violations(storage: StorageDeclarations) = DeploymentSafety.validate(deployed.copy(storage = storage))
@@ -99,6 +118,126 @@ class StorageEnforcementSafetyTest {
             "testinbox.storage.declared-bucket-quota-bytes",
             "the fuse needs at least $minimum",
         )
+    }
+
+    // --- the filesystem-containment declarations (TI-STORAGE-006E) ------------------------------
+
+    @Test
+    fun `each missing filesystem declaration refuses a non-OFF deployment, and is named`() {
+        val keys =
+            mapOf(
+                "block-size-bytes" to filesystem.copy(blockSizeBytes = null),
+                "object-overhead-max-bytes" to filesystem.copy(objectOverheadMaxBytes = null),
+                "global-footprint-limit-bytes" to filesystem.copy(globalFootprintLimitBytes = null),
+                "deletion-debt-budget-bytes" to filesystem.copy(deletionDebtBudgetBytes = null),
+                "metadata-budget-bytes" to filesystem.copy(metadataBudgetBytes = null),
+                "operational-reserve-bytes" to filesystem.copy(operationalReserveBytes = null),
+                "capacity-bytes" to filesystem.copy(capacityBytes = null),
+                "inodes" to filesystem.copy(inodes = null),
+                "observation-max-age" to filesystem.copy(observationMaxAge = null),
+            )
+        keys.forEach { (key, fs) -> only(complete.copy(filesystem = fs), "testinbox.storage.filesystem.$key", "is not declared") }
+    }
+
+    @Test
+    fun `the declared budgets must fit the declared filesystem - one byte over refuses`() {
+        // 20 + 8 GiB + 256 MiB + 3 GiB = 31.25 GiB.
+        val needed = 31 * gib + 256 * mib
+        violations(complete.copy(filesystem = filesystem.copy(capacityBytes = needed, operationalReserveBytes = 3 * gib)))
+            .map { it.setting } shouldNotContain "testinbox.storage.filesystem.capacity-bytes"
+        val found = violations(complete.copy(filesystem = filesystem.copy(capacityBytes = needed - 1, inodes = needed / 4096)))
+        found.map { it.setting } shouldContain "testinbox.storage.filesystem.capacity-bytes"
+        found.single { it.setting == "testinbox.storage.filesystem.capacity-bytes" }.problem shouldContain
+            "G_F + D_budget + M + R_ops = $needed"
+    }
+
+    @Test
+    fun `the operational reserve exactly at its floor passes, one byte under refuses`() {
+        val floor = 48 * gib / 20
+        violations(complete.copy(filesystem = filesystem.copy(operationalReserveBytes = floor))).shouldBeEmpty()
+        only(
+            complete.copy(filesystem = filesystem.copy(operationalReserveBytes = floor - 1)),
+            "testinbox.storage.filesystem.operational-reserve-bytes",
+            "max(5 % of C_fs, 2 GiB)",
+        )
+    }
+
+    @Test
+    fun `exactly one inode per block passes, one fewer refuses`() {
+        violations(complete.copy(filesystem = filesystem.copy(inodes = 48 * gib / 4096))).shouldBeEmpty()
+        only(
+            complete.copy(filesystem = filesystem.copy(inodes = 48 * gib / 4096 - 1)),
+            "testinbox.storage.filesystem.inodes",
+            "one inode per block",
+        )
+    }
+
+    @Test
+    fun `G_F equal to H_F leaves a zero cap and refuses, one byte above passes`() {
+        val hF =
+            email.testinbox.domain.storage
+                .FootprintModel(4096, 24 * 1024)
+                .finalizeBudgetBytes(2, 16, 15 * mib)
+        only(
+            complete.copy(filesystem = filesystem.copy(globalFootprintLimitBytes = hF)),
+            "testinbox.storage.filesystem.global-footprint-limit-bytes",
+            "G_F − H_F must be positive",
+        )
+        violations(complete.copy(filesystem = filesystem.copy(globalFootprintLimitBytes = hF + 1))).shouldBeEmpty()
+    }
+
+    @Test
+    fun `an unsupported block size alone, or an observation age above an hour, is refused in every mode`() {
+        val off = StorageDeclarations()
+        settingsOf(off.copy(filesystem = FilesystemDeclarations(blockSizeBytes = 512))) shouldBe
+            listOf("testinbox.storage.filesystem.block-size-bytes")
+        settingsOf(off.copy(filesystem = FilesystemDeclarations(observationMaxAge = Duration.ofDays(1000)))) shouldBe
+            listOf("testinbox.storage.filesystem.observation-max-age")
+        settingsOf(off.copy(filesystem = FilesystemDeclarations(observationMaxAge = Duration.ofHours(1)))).shouldBeEmpty()
+    }
+
+    @Test
+    fun `the operational reserve must be at least max(5 percent of C_fs, 2 GiB)`() {
+        // 5 % of 48 GiB = 2.4 GiB, above the 2 GiB floor.
+        only(
+            complete.copy(filesystem = filesystem.copy(operationalReserveBytes = 2 * gib)),
+            "testinbox.storage.filesystem.operational-reserve-bytes",
+            "max(5 % of C_fs, 2 GiB)",
+        )
+    }
+
+    @Test
+    fun `one inode per block - a filesystem made with the default inode ratio refuses`() {
+        // mkfs.ext4's default -i 16384 gives a quarter of the inodes needed.
+        only(
+            complete.copy(filesystem = filesystem.copy(inodes = 48 * gib / 16384)),
+            "testinbox.storage.filesystem.inodes",
+            "mkfs -i 4096",
+        )
+    }
+
+    @Test
+    fun `H_F at or above G_F leaves no footprint admission cap`() {
+        // 2 × 16 × φ(15 MiB) ≈ 483 MiB.
+        only(
+            complete.copy(filesystem = filesystem.copy(globalFootprintLimitBytes = 400 * mib)),
+            "testinbox.storage.filesystem.global-footprint-limit-bytes",
+            "G_F − H_F must be positive",
+        )
+    }
+
+    @Test
+    fun `a malformed filesystem figure is refused in every mode, OFF included`() {
+        val off = StorageDeclarations()
+        settingsOf(off.copy(filesystem = FilesystemDeclarations(capacityBytes = 0))) shouldBe
+            listOf("testinbox.storage.filesystem.capacity-bytes")
+        settingsOf(off.copy(filesystem = FilesystemDeclarations(observationMaxAge = Duration.ZERO))) shouldBe
+            listOf("testinbox.storage.filesystem.observation-max-age")
+        // O_max must cover at least six blocks, one per inode an object can take (contract §3.5).
+        settingsOf(off.copy(filesystem = FilesystemDeclarations(blockSizeBytes = 4096, objectOverheadMaxBytes = 8192))) shouldBe
+            listOf("testinbox.storage.filesystem.object-overhead-max-bytes")
+        // And OFF starts with nothing declared at all.
+        violations(off).shouldBeEmpty()
     }
 
     @Test
@@ -228,10 +367,12 @@ class StorageEnforcementSafetyTest {
     fun `every missing declaration is reported at once, not one restart at a time`() {
         val found = settingsOf(StorageDeclarations(enforcement = StorageEnforcement.ALL))
         found shouldContain "testinbox.storage.global-limit-bytes"
-        found shouldContain "testinbox.storage.declared-bucket-quota-bytes"
+        found shouldContain "testinbox.storage.declared-bucket-quota-bytes" // the fuse stays load-bearing until footprint admission (PR D)
         found shouldContain "testinbox.storage.declared-max-ingestion-processes"
         found shouldContain "testinbox.storage.inbox-share"
         found shouldContain "testinbox.storage.measured-quota-lag-churn-bytes"
+        found shouldContain "testinbox.storage.filesystem.capacity-bytes"
+        found shouldContain "testinbox.storage.filesystem.inodes"
         found shouldContain "testinbox.storage.backend-identity"
         found shouldContain "testinbox.storage.activation.expected-api-nodes"
         found shouldContain "testinbox.storage.activation.expected-ingestion-nodes"

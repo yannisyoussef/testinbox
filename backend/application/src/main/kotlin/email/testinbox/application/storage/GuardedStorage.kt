@@ -344,7 +344,11 @@ class GuardedStorage(
         if (StorageBreaker.Kind.CLOCK_OFFSET in kinds && !passes { ClockOffset.measure(inspection, clock).withinBound() }) {
             return StorageBreaker.Kind.CLOCK_OFFSET
         }
-        val witnessed = kinds.filter { it != StorageBreaker.Kind.CLOCK_OFFSET && it != StorageBreaker.Kind.QUOTA }
+        // Quota and a full filesystem both accept a zero-byte probe: their trial is the real event.
+        val witnessed =
+            kinds.filter {
+                it != StorageBreaker.Kind.CLOCK_OFFSET && it != StorageBreaker.Kind.QUOTA && it != StorageBreaker.Kind.STORAGE_FULL
+            }
         if (witnessed.isNotEmpty() && !passes { inspection.witness("_probe/${node.nodeId}/${UUID.randomUUID()}") }) {
             return witnessed.first()
         }
@@ -424,15 +428,23 @@ class GuardedStorage(
         val last = attempts.last().outcome
         val kind =
             when {
+                // ENOSPC is ambiguous for the reservation, but its own breaker kind (contract §8).
+                ambiguous.any { it.outcome == UploadOutcome.Ambiguous(AmbiguityKind.STORAGE_FULL) } -> PhysicalFailureKind.STORAGE_FULL
+
                 ambiguous.isNotEmpty() -> PhysicalFailureKind.AMBIGUOUS
+
                 last == UploadOutcome.Refused(UploadRefusal.QUOTA) -> PhysicalFailureKind.QUOTA
+
                 last == UploadOutcome.Refused(UploadRefusal.DENIED) -> PhysicalFailureKind.DEADLINE
+
                 last == UploadOutcome.NotStarted -> PhysicalFailureKind.UNAVAILABLE
+
                 else -> PhysicalFailureKind.UNAVAILABLE
             }
         metrics.physicalFailure(kind)
         when (kind) {
             PhysicalFailureKind.AMBIGUOUS -> breaker.trip(StorageBreaker.Kind.AMBIGUOUS)
+            PhysicalFailureKind.STORAGE_FULL -> breaker.trip(StorageBreaker.Kind.STORAGE_FULL)
             PhysicalFailureKind.QUOTA -> breaker.trip(StorageBreaker.Kind.QUOTA)
             PhysicalFailureKind.UNAVAILABLE -> breaker.trip(StorageBreaker.Kind.UNAVAILABLE)
             else -> Unit // a missed deadline is definitive and says nothing about storage health

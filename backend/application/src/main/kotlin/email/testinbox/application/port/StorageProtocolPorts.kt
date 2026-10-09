@@ -351,3 +351,29 @@ data class ServerTime(
 fun interface DatabaseClock {
     fun now(): Instant
 }
+
+/**
+ * The newest filesystem observation the Ops monitor wrote, as the DATABASE
+ * clock sees it (containment contract §5.3, §8). The application only ever
+ * reads it, and only to be more conservative.
+ */
+fun interface FilesystemObservations {
+    /** The database clock now, and the newest observation (latest `started_at`), in one statement. */
+    fun snapshot(): FilesystemSnapshot
+}
+
+data class FilesystemSnapshot(
+    /** `clock_timestamp()`: the clock that wrote `started_at`. */
+    val databaseNow: java.time.Instant,
+    val newest: ObservedFilesystem?,
+)
+
+data class ObservedFilesystem(
+    /** When the monitor began measuring (the contract's T_obs). */
+    val startedAt: java.time.Instant,
+    /** `clock_timestamp() − started_at`: measured from the START, the conservative end; negative only for a corrupt row. */
+    val age: java.time.Duration,
+    val availBytes: Long,
+    /** `inodes_total − inodes_used`: MinIO answers ENOSPC on inode exhaustion too. */
+    val inodesFree: Long,
+)

@@ -19,6 +19,7 @@ import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.GuardedStorage
 import email.testinbox.application.storage.StorageBreaker
 import email.testinbox.application.storage.StorageDeclarations
+import email.testinbox.application.storage.StorageFullEvidence
 import email.testinbox.application.storage.StorageNode
 import email.testinbox.application.storage.StorageNodeLifecycle
 import email.testinbox.application.storage.WriteSlots
@@ -37,6 +38,7 @@ import email.testinbox.observability.MicrometerSmtpMetrics
 import email.testinbox.observability.MicrometerStorageProtocolMetrics
 import email.testinbox.persistence.BundledMigrations
 import email.testinbox.persistence.JdbcActivationInventory
+import email.testinbox.persistence.JdbcFilesystemObservations
 import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.persistence.JdbcSchemaHistory
 import email.testinbox.persistence.JdbcStorageAdmission
@@ -182,8 +184,22 @@ class IngestionWiring(
     @Bean
     fun storageNode(properties: IngestionProperties): StorageNode = StorageNode(properties.storage.nodeId, UUID.randomUUID())
 
+    /**
+     * The breaker. A `STORAGE_FULL` trip reopens only on Ops evidence: a fresh
+     * filesystem observation with the operational reserve available
+     * (filesystem-containment contract §8). Without a monitor writing
+     * observations, only a restart clears that kind.
+     */
     @Bean
-    fun storageBreaker(): StorageBreaker = StorageBreaker()
+    fun storageBreaker(
+        jdbc: JdbcClient,
+        properties: IngestionProperties,
+    ): StorageBreaker {
+        val filesystem = properties.storage.filesystem.toDeclarations()
+        return StorageBreaker(
+            storageFullGate = StorageFullEvidence.forDeclarations(JdbcFilesystemObservations(jdbc), filesystem),
+        )
+    }
 
     @Bean
     fun writeSlots(

@@ -112,3 +112,13 @@ TI-STORAGE-004 (authenticated visibility and the raw REST wait cursor; live enfo
 | `GET /v1/workspace/storage` is `READ` by an explicit rule, needs `messages:read`, and takes no workspace id from path, query or header | API `RouteCoverageTest`, `StorageVisibilityApiTest` |
 | A `SERVICE_CAPACITY` `409` carries no `quota`, `limit` or `current` member, and no tenant response names a global, node or reservation-level figure | API `StorageDisclosureTest` |
 | A refusal row that contradicts itself fails closed instead of presenting a made-up reason | P `StorageVisibilityTest` |
+
+Filesystem containment, PR C (TI-STORAGE-006E; contract PROPOSED in #82):
+
+| Property | Where |
+|---|---|
+| `507 XMinioStorageFull`, a `507` with no body, and a `500` naming ENOSPC (however long its message) are `STORAGE_FULL`; a plain `500`, a `503` and a `507` with another code are not | S `StorageFullClassificationTest` |
+| `STORAGE_FULL` needs a real-event trial, is never reopened by a timer, and consumes no trial while there is no evidence; the evidence is read only when a trial could be due; a failing check is no evidence | A `StorageBreakerTest` |
+| Evidence = the newest observation, begun after the latest trip (a failed trial needs a newer one), younger than *A_obs* from its start, not from the future, with `avail ≥ R_ops` and `R_ops / B` free inodes; a negative answer cached 5 s; figures never below the contract's floors | A `StorageFullEvidenceTest`; P `FilesystemObservationsTest` |
+| On the real stack: ambiguous and charged, only the STORAGE_FULL kind open, the same `451` for known and unknown recipients, no trial and no witness probe without evidence, recovery through a real event; a failed trial on fresh evidence re-trips and the same observation cannot license another; `500` ENOSPC vs plain `500` | I `StorageFullBreakerTest` |
+| `DeploymentSafety`: the fuse stays required (until footprint admission, PR D); every filesystem declaration is ALSO required under non-OFF; `G_F + D_budget + M + R_ops ≤ C_fs`; `R_ops ≥ max(5 %, 2 GiB)`; one inode per block; `H_F < G_F`, each at its exact boundary; malformed figures, an unsupported block size and `A_obs` > 1 h refused in every mode; every key binds in both deployables | A `StorageEnforcementSafetyTest`; API/I `DeploymentSafetyCheckTest`, `IngestionDeploymentSafetyCheckTest` |
