@@ -1,6 +1,13 @@
 # ADR-035 amendment proposal, part 2: the filesystem-containment safety contract
 
-**Status: PROPOSED — not accepted.** Prepared by the application team for owner
+**Status: ANNEX to ADR-035 Amendment 2 — PROPOSED, accepted in principle
+2026-10-09.** This document is the normative derivation behind ADR-035
+Amendment 2 (the section of that name in
+[`0035-physical-storage-bound-at-ingest.md`](0035-physical-storage-bound-at-ingest.md)).
+It is **not a separate contract**: where the two differ, the amendment governs.
+PR #81 is superseded by it.
+
+Original status line: PROPOSED — not accepted. Prepared by the application team for owner
 review (TI-STORAGE-006E, 2026-10-08; corrected after the owner review of
 2026-10-08, which approved the direction and found that admitting on the
 copy's own φ under-charges the aggregate bound — §2.4 replaces that rule). It answers the owner's conditional

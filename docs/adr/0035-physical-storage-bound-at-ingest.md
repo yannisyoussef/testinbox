@@ -1,6 +1,6 @@
 # ADR-035: Physical Storage Bound at Ingest
 
-**Status:** Accepted (2026-09-29, owner acceptance TI-DEC-001b). This is revision 5 (2026-09-29), amended 2026-10-08 (TI-STORAGE-006b owner decisions; see the amendments section at the end).
+**Status:** Accepted (2026-09-29, owner acceptance TI-DEC-001b). This is revision 5 (2026-09-29), amended 2026-10-08 (TI-STORAGE-006b owner decisions; see the amendments section at the end). **Amendment 2 (filesystem containment, TI-STORAGE-006E) is PROPOSED**: accepted in principle on 2026-10-09, and normative only on formal acceptance.
 
 > **Acceptance authorizes implementation, not enablement.** It does not turn
 > on `testinbox.storage.enforcement`, global capacity enforcement in staging
@@ -1686,6 +1686,169 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
   claim their node id like the gateway. Ops must run either a fixed node id
   with stop-before-start, or distinct declared ids for an overlapping
   replacement, and show which before staging enablement.
+
+## Amendment 2: filesystem containment (TI-STORAGE-006E) — PROPOSED, accepted in principle 2026-10-09
+
+**Status: PROPOSED for acceptance.** The owner accepted the corrected
+containment architecture *in principle* as the implementation baseline
+(TI-STORAGE-006E owner review b, 2026-10-09). This amendment becomes
+normative only on the owner's formal acceptance. It authorizes **no**
+activation. The numerical storage bounds remain subject to real
+qualification.
+
+**One contract.** This amendment is the only authoritative statement of
+filesystem containment. Its normative derivation, with every definition,
+lemma and proof obligation, is the annex
+[`0035-amendment-proposal-filesystem-containment-contract.md`](0035-amendment-proposal-filesystem-containment-contract.md)
+(hereafter *the annex*). The annex is not a second contract: where its text
+and this amendment differ, this amendment governs.
+
+The initial proposal, PR #81, is **SUPERSEDED**. Its measured evidence (the
+quota lag, the amplification, ENOSPC bodies, and the zero-byte PUT at full)
+stands as evidence. Its capacity model has no authority.
+
+Where §2–§18 above say otherwise about the physical filesystem, this
+amendment supersedes them. It does so in exactly the places the annex §12
+lists:
+- §2: footprint beside payload;
+- §3: GLOBAL in footprint, *G_F*;
+- §4: rules (G), (C) and (P);
+- §8: `STORAGE_FULL`;
+- §9: *H_F*, the containment theorem, and the late-object rule;
+- §9a: filesystem elements;
+- §10: object counts, the debt ledger and observations;
+- §14: gate F;
+- §16: metrics;
+- §17: tests;
+- §18: filesystem prerequisites.
+
+Everything else in ADR-035 is unchanged.
+
+### A2.1 Mathematically established invariants (proved in the annex §2; machine-checked by property tests)
+
+- **The potential.** Φ = F(L + D) + W, where
+  F(P, N) = (P + N(B − 1))(1 + ε) + N(O_max + 1).
+  - *L* is the live and reserved payload and objects.
+  - *D* is the deletion debt not superseded by an observation.
+  - *W* is the trash the newest observation measured.
+  - For any set *S* of objects, F(P_S, N_S) ≥ Σ φ(p_i), so admission
+    charges the **exact increase of F on the aggregate**, never a copy's own
+    φ. The counterexample φ(4096) = 28 688 < F(4096, 1) − F(0, 0) = 32 800
+    is a regression test.
+- **Rules.**
+  - (G) F(L + A + c) + H_F ≤ G_F.
+  - (C) F(L + D + A + c) + W + H_F + P_F + M + R_ops ≤ C_fs, evaluated in
+    T1's one snapshot on running totals in envelope order.
+  - (P) admits every write that charges debt but has no row of its own
+    (probes, orphan-sweep deletions, late objects). A refused late object
+    is kept, holds its slot, and holds the latch.
+- **Transitions.** T1, T2, release, retention, compaction, observation,
+  reconciliation and rollback each preserve Φ ≤ C_fs − (M + R_ops); the
+  annex §2.4 gives the table.
+  - Unresolved rows that no live node answers for count against every
+    node's 16 write slots (Lemma 3).
+- **Trust.** Footprint admission is refused under `ALL` unless the object
+  counts are trusted.
+  - Trust is established **only** by the database function
+    `storage_confirm_footprint_trust()` (V10).
+  - That function verifies every workspace's bytes and objects against the
+    authoritative `message` and `attachment` rows, under the ledger lock,
+    compare-and-set across distrust generations.
+  - Every distrust event stamps an order; admission waits for an
+    observation that began after it.
+  - The upgrades to V9 and V10 are distrust events.
+- **Fragmentation.** ε = 1 / min(256, ⌊(B − 12)/12⌋ − 1). No configuration
+  can make it smaller.
+
+### A2.2 Empirically qualified storage assumptions (NOT proven; experiments E1–E11, annex §10)
+
+- The set premise: every object occupies at most F(p, 1) on the qualified
+  combination (E1–E3), with *O_max* measured into the qualification record.
+- ε covers the extent-tree metadata (E3), and blocks run out before inodes
+  at `-i 4096` (E4).
+- Trash is bounded by D_est plus the measured residue (E5–E6).
+- MinIO metadata stays within *M*, in **bytes and inodes** (E7).
+- The ENOSPC classifier, and the breaker under a real full disk (E8–E10).
+- Restart, deletes and recovery at full (E11).
+
+Until a re-issued record carries these, the bounds are planning values.
+
+### A2.3 Application-enforced guarantees (code, tests, CI)
+
+- Under `ALL`, every state that cannot be evaluated is a whole-`DATA` `451`
+  **before** recipient resolution: untrusted counts, no or stale observation,
+  wrong writer or block size, overflow, or slot exhaustion. A rule-(G)/(C)
+  refusal is `SERVICE_CAPACITY` under the uniform `250`.
+- T2 commits only into an inbox that still receives, and only for exactly
+  the reserved keys. This applies under `OFF` too.
+- Every row-free deletion is admitted by rule (P) first.
+- Retention is paced in bounded batches under `ALL`. Logical expiry is
+  independent: an `EXPIRED` or `DELETED` inbox serves nothing, and its
+  payload stays accounted until teardown deletes it.
+- Orphan sweeps are recorded by the database (`storage_sweep_run`: order,
+  instants, and the covered figure it computes).
+- Nodes register their containment level.
+- `DeploymentSafety` refuses inconsistent declarations, refuses I-C
+  violations, and refuses `ALL` in production.
+
+### A2.4 Ops-observed guarantees (evidence the application cannot produce)
+
+- The filesystem's identity, dedicated mount, statvfs capacity and inodes,
+  preallocation and host isolation.
+- The monitor observation, written only by the monitor role.
+- Role separation: no application role can write observations, debt,
+  watermarks, trust marks or sweep runs, or own a triggered table.
+- The qualification record with filesystem elements, the measured
+  *O_max*, the E7 metadata inode figure, and E1–E11 results.
+
+Gate F of `scripts/check-storage-activation.sh` compares each observed value
+with its declared value, and never takes a declaration as an observation.
+
+### A2.5 Limitations under `TENANT_LIMITS`
+
+`TENANT_LIMITS` does not enforce the global footprint ceiling. **The
+containment theorem does not hold in that mode**, and filesystem exhaustion
+stays reachable. The mode is approved for dark staging qualification only.
+
+Before it is activated even there, gate F runs the **physical-isolation
+preflight**:
+- identity and dedicated mount;
+- capacity and inodes;
+- preallocation or a dedicated device;
+- host isolation;
+- starting block and inode headroom;
+- a live monitor observation from the monitor role;
+- Ops `qualification-check` valid;
+- the record's E8–E11 (`STORAGE_FULL` classification and trial, the
+  monitor latches, and recovery) recorded as PASS.
+
+Gate Q (qualified backend identity) is required as before. A preflight PASS
+states that it is isolation only.
+
+### A2.6 Additional gates before `ALL`
+
+Gates A–E and Q are unchanged, and gate F holds every row of the annex §9.
+The base case is proven from database records:
+- a trust mark by the verifying function;
+- a completed sweep whose database-issued order follows the mark, and which
+  began after the last heartbeat of any node below containment level 1;
+- `physical_listed ≤ covered` at its completion;
+- no live node below level 1.
+
+The containment rollback floor must also be declared, and every running
+artifact must contain it (gate E). E1–E11 must be recorded as PASS.
+
+### A2.7 Production and public activation restrictions
+
+`ALL` is refused in production by `DeploymentSafety`. It may not carry
+traffic beyond the synthetic suite until the owner has decided and
+implemented both of the following, as separate scoped decisions
+(`docs/security/storage-public-boundary-decisions.md`):
+- **(A)** the envelope-order oracle mitigation;
+- **(B)** the single-sender amplification bound.
+
+A dedicated production MinIO, and production role separation, are also
+prerequisites.
 
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
