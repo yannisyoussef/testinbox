@@ -244,32 +244,33 @@ plain horizon. That is exactly why it sits below the safety floor and is
 refused, unless the hazard is explicitly acknowledged.
 
 **Schema V8** (TI-STORAGE-006E, the filesystem-containment contract) is
-expand-only: three `NOT NULL DEFAULT 0` columns (`storage_delta.objects`,
-`workspace_storage_account.base_objects`, `inbox_storage.base_objects`), two
-new tables (`storage_deletion_debt`, `storage_filesystem_observation`), the
-ledger trigger bodies replaced to count objects and append deletion debt, a
-trigger on `storage_reservation`, and a recompute of the counts under the V6
-lock set plus `storage_reservation` (locked last, in T2's order). No down
-migration. A rolled-back artifact at or above the TI-STORAGE-006 floor keeps
-working: its inserts, deletes and reservation releases run the new trigger
-bodies, which count for it, and it never reads a column or table V8 created.
-**Its compactor, though, does not know `storage_delta.objects`:** it folds
-the bytes into the bases and deletes the deltas, so their object counts are
-lost. After a rollback the counts are therefore UNDER (bytes stay exact) until
-the next reconciliation, which repairs them from the rows; rolling forward
-again finds them exact only after that first reconciliation or a recompute
-(`StorageFootprintLedgerTest` proves both the drift and the repair). The
-footprint gauges under-read until then, and footprint admission (when it
-exists) must not be enabled after a roll-forward before a clean
-reconciliation has run. **Precondition, not a
-consequence:** the rolled-back artifact's roles must already hold the V8
-grants (`INSERT` on `storage_deletion_debt` for the ingestion AND API roles,
-`docs/dev/production.md`), because its T2 consume and retention deletes run
-the V8 trigger bodies; promoting V8 without them is a full ingestion outage
-whatever artifact is running. What rollback DOES lose: nothing
-observes the footprint or the deletion debt while the older artifact runs,
-and the debt rows it appends are compacted only once a newer artifact runs
-the compactor again. Both are observational while enforcement is `OFF`.
+expand-only:
+- three `NOT NULL DEFAULT 0` columns (`storage_delta.objects`,
+  `workspace_storage_account.base_objects`, `inbox_storage.base_objects`);
+- the debt ledger, observation, walk, watermark and trust tables, and the
+  ordering sequence;
+- the ledger trigger bodies replaced to count objects and append deletion
+  debt (`SECURITY DEFINER`, so no role needs a new grant);
+- refusal triggers that stop nothing any artifact does;
+- a recompute under the V6 lock set, taken after the ledger advisory lock.
+
+No down migration. A rolled-back artifact at or above the TI-STORAGE-006
+floor keeps working. Its inserts, deletes and reservation releases run the
+new trigger bodies, which count for it.
+
+**Its compactor does not know `storage_delta.objects`, and V8 compensates in
+the same statement.** A statement trigger on `storage_delta` folds the object
+counts that compactor drops (`testinbox.ledger_counts` is unset in its
+transaction), so the counts stay exact. It also revokes trust in them
+(`storage_footprint_trust`). Trust comes back only through a reconciliation
+pass that finds no workspace-scope drift, under the ledger lock and by
+compare-and-set (`StorageFootprintLedgerTest` replays the verbatim pre-V8
+fold, and a rollback/roll-forward sequence).
+
+While untrusted, footprint admission answers `451` under `ALL` (PR D), and
+`testinbox_storage_footprint_counts_trusted` reads 0. What rollback DOES
+lose: the older artifact neither observes the footprint nor compacts debt.
+Both only observe while enforcement is `OFF`.
 
 ## Adding a `StorageRefusalReason` is reader-first (TI-STORAGE-004)
 
