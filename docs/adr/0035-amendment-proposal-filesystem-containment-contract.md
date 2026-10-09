@@ -1138,16 +1138,21 @@ non-`OFF` process refuses to start unless all hold:
 
 | Declaration | Check |
 |---|---|
-| `filesystem-block-size-bytes` (*B*) | ∈ {1024, 2048, 4096}, equals the qualification record's |
-| `object-overhead-max-bytes` (*O_max*) | ≥ the record's `footprint.measuredObjectOverheadMaxBytes`; a multiple of *B* |
+| `block-size-bytes` (*B*) | ∈ {1024, 2048, 4096} at startup; **gate F** checks it equals statvfs `f_frsize` |
+| `object-overhead-max-bytes` (*O_max*) | a multiple of *B* covering at least 6 blocks at startup; **gate F** checks it is ≥ the record's `filesystem.objectOverheadMaxBytes` (the startup qualification match does not carry filesystem elements) |
 | `global-footprint-limit-bytes` (*G_F*) | > `H_F`; `H_F` computed with `F(15 MiB, 1)` (§1) |
 | `deletion-debt-budget-bytes` (*D_budget*) | > 0 |
-| `minio-metadata-budget-bytes` (*M*) | > 0 |
+| `metadata-budget-bytes` (*M*) | > 0 |
 | `probe-budget-bytes` (*P_F*) | ≥ `F(15 MiB, 1)` + `F(0, 1)` × the probes all nodes may have in flight at once, so probes and a held late object stay admissible by (P) while copies are refused (liveness; until unpurged trash fills it, which the latch and the purge-stall alert cover) |
 | `operational-reserve-bytes` (*R_ops*) | ≥ max(5 % of *C_fs*, 2 GiB) |
-| `filesystem-capacity-bytes` (*C_fs*) | `G_F + D_budget + P_F + M + R_ops ≤ C_fs` (checked arithmetic, never wrapped) |
-| `filesystem-inodes` (*I_fs*) | `I_fs ≥ C_fs / B` |
-| backend identity | the existing §9a match, with the record carrying the filesystem elements of gate F |
+| `capacity-bytes` (*C_fs*) | `G_F + D_budget + P_F + M + R_ops ≤ C_fs` (checked arithmetic, never wrapped) |
+| `inodes` (*I_fs*) | `I_fs ≥ C_fs / B` |
+| `observation-max-age` (*A_obs*), `monitor-role` | declared; *A_obs* ≤ 1 h; a valid role name |
+| backend identity | the existing §9a match at startup; the filesystem elements of the record are matched by **gate F** |
+
+All keys are under `testinbox.storage.filesystem.*` (`TESTINBOX_STORAGE_FS_*`).
+`TENANT_LIMITS` and `ALL` both require the full set; both are refused in
+production (ADR-035 Amendment 2 §A2.5, §A2.7).
 
 The application cannot verify that the filesystem *has* `C_fs` bytes or
 `I_fs` inodes, is dedicated, or is preallocated: an environment variable is a
@@ -1304,7 +1309,8 @@ MinIO in Testcontainers and prove the accounting, not the filesystem.
 7. **`TENANT_LIMITS`** is for dark staging qualification only (§2.4).
 
 **Still open:**
-1. Formal acceptance of this corrected contract, and of the merge sequence.
+1. ~~Formal acceptance of this corrected contract~~ — **decided:** accepted
+   2026-10-09 (owner review c), with the controlled integration sequence.
 2. Experiments E1–E11 (§10) on the recreated filesystem; *O_max*, *M* and ε
    are assumptions until they pass.
 3. The filesystem recreation (`-i 4096`, preallocated, dedicated) and the

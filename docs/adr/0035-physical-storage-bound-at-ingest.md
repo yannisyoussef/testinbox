@@ -51,7 +51,7 @@ contract (§7, §9, §9a).
 
 | # | Decision | Where |
 |---|---|---|
-| — | Authenticated refusal visibility. No grandfathering, no eviction. `maxStoredBytes` stays at 2 GiB. A global application ceiling of 40 GiB, under a 50 GiB bucket quota. The 120 s TTL is a **write deadline, not a release**. Accounting is physical. Ceilings answer `250`; physical failure answers `451`. | throughout |
+| — | Authenticated refusal visibility. No grandfathering, no eviction. `maxStoredBytes` stays at 2 GiB. A global application ceiling of 40 GiB, under a 50 GiB bucket quota (the quota is optional since Amendment 2 §A2.8). The 120 s TTL is a **write deadline, not a release**. Accounting is physical. Ceilings answer `250`; physical failure answers `451`. | throughout |
 | **O1** | **Accepted with refinement.** A per-inbox hard ceiling, expressed as a *policy share* of the workspace limit: default 25 %, which is 512 MiB today. Authenticated clients can discover it. Refusal reason `INBOX_LIMIT`. | §3, §13b |
 | **O2** | **Accepted with an explicit protocol.** The boundary is a cursor on the wire (`afterStorageRefusalCount`), not hidden SDK state. | §13c |
 | **O3** | **Accepted.** `SERVICE_CAPACITY` discloses one bit and no global figure. | §13d |
@@ -1874,7 +1874,8 @@ artifact must contain it (gate E). E1–E11 must be recorded as PASS.
 
 ### A2.7 Production and public activation restrictions
 
-`ALL` is refused in production by `DeploymentSafety`. It may not carry
+`ALL` is refused in production by `DeploymentSafety`, and so is
+`TENANT_LIMITS` (it never contains the filesystem, §A2.5). It may not carry
 traffic beyond the synthetic suite until the owner has decided and
 implemented both of the following, as separate scoped decisions
 (`docs/security/storage-public-boundary-decisions.md`):
