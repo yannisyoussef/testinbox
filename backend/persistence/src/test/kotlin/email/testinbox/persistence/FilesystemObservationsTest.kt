@@ -28,33 +28,13 @@ class FilesystemObservationsTest : PersistenceIntegrationTest() {
         (Duration.between(snapshot.databaseNow, db.dbNow()).abs() < Duration.ofSeconds(30)) shouldBe true
     }
 
-    private fun observe(
-        availBytes: Long,
-        startedSeq: Long = db.nextOrder(),
-        startedAt: java.time.Instant = db.dbNow(),
-        observedAt: java.time.Instant = startedAt,
-        inodesUsed: Long = 0,
-    ) {
-        db.jdbc
-            .sql(
-                """
-                INSERT INTO storage_filesystem_observation
-                    (started_seq, started_at, observed_at, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes,
-                     inodes_total, inodes_used, trash_bytes, minio_sys_bytes)
-                VALUES (?, ?, ?, 'test-monitor', 4096, 0, 0, ?, 100, ?, 0, 0)
-                """.trimIndent(),
-            ).params(startedSeq, Timestamps.toDb(startedAt), Timestamps.toDb(observedAt), availBytes, inodesUsed)
-            .update()
-    }
-
     @Test
-    fun `the newest observation is the one whose order was taken last, aged by the database clock`() {
-        val first = db.nextOrder()
-        val second = db.nextOrder()
-        observe(availBytes = 9, startedSeq = second)
-        // A late-arriving measurement that took its order earlier: never the newest,
-        // whatever its clock says.
-        observe(availBytes = 1, startedSeq = first, startedAt = db.dbNow())
+    fun `the newest observation is the walk begun last, aged by the database clock`() {
+        val first = db.beginObservation()
+        val second = db.beginObservation()
+        db.observe(trashBytes = 0, startedSeq = second, availBytes = 9)
+        // A late-arriving measurement whose walk began earlier: never the newest.
+        db.observe(trashBytes = 0, startedSeq = first, availBytes = 1)
 
         val newest = checkNotNull(JdbcFilesystemObservations(db.jdbc).snapshot().newest)
         newest.availBytes shouldBe 9
@@ -63,11 +43,23 @@ class FilesystemObservationsTest : PersistenceIntegrationTest() {
     }
 
     @Test
-    fun `an observation is aged from when it BEGAN, and its free inodes are total minus used`() {
-        val startedAt = db.dbNow().minusSeconds(3_600)
-        observe(availBytes = 7, startedAt = startedAt, observedAt = startedAt.plusSeconds(3_000), inodesUsed = 40)
+    fun `an observation is aged from when its walk BEGAN, and its free inodes are total minus used`() {
+        val walk = db.beginObservation()
+        // A walk that began an hour ago (the server stamped its start; the test backdates it).
+        db.jdbc
+            .sql("UPDATE storage_observation_walk SET started_at = started_at - interval '1 hour' WHERE started_seq = ?")
+            .param(walk)
+            .update()
+        val startedAt =
+            db.jdbc
+                .sql("SELECT started_at FROM storage_observation_walk WHERE started_seq = ?")
+                .param(walk)
+                .query(java.time.OffsetDateTime::class.java)
+                .single()
+                .toInstant()
+        db.observe(trashBytes = 0, startedSeq = walk, availBytes = 7, inodesUsed = 40)
 
-        // Finished 10 minutes ago, began an hour ago: the age is the hour.
+        // Written just now, began an hour ago: the age is the hour.
         val newest = checkNotNull(JdbcFilesystemObservations(db.jdbc).snapshot().newest)
         (newest.age > Duration.ofMinutes(59)) shouldBe true
         newest.startedAt shouldBe startedAt

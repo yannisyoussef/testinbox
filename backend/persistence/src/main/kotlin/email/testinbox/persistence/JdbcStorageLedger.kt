@@ -213,13 +213,19 @@ class JdbcStorageLedger(
     /**
      * Contract §4.5: the ledger lock FIRST, so no compaction or repair moves
      * a figure between the check and the mark; then the epoch is read, the
-     * counts are proven clean against the rows, and the epoch read is marked
-     * trusted compare-and-set, so a folding or a drift that bumped the epoch
-     * meanwhile is never overwritten. Returns whether the counts are trusted.
+     * WORKSPACE counts (whose sum is the global potential) are proven clean
+     * against the rows, and the epoch read is marked trusted compare-and-set,
+     * so a folding or a drift that bumped the epoch meanwhile is never
+     * overwritten. Returns whether the counts are trusted.
      */
     private fun confirmTrustInTransaction(): Boolean {
         readCommitted()
         ledgerLock()
+        // A trust row lost to a restore (it is never backed up) is recreated
+        // untrusted, so a clean pass can still mark it.
+        jdbc
+            .sql("INSERT INTO storage_footprint_trust (id, distrust_epoch) VALUES (1, 0) ON CONFLICT (id) DO NOTHING")
+            .update()
         return jdbc
             .sql(
                 """
@@ -231,7 +237,7 @@ class JdbcStorageLedger(
                       FROM epoch e
                      WHERE t.id = 1
                        AND t.distrust_epoch = e.distrust_epoch
-                       AND NOT EXISTS (SELECT 1 FROM drift)
+                       AND NOT EXISTS (SELECT 1 FROM drift WHERE scope = 'WORKSPACE')
                     RETURNING 1
                 )
                 SELECT EXISTS (SELECT 1 FROM marked) AS trusted
@@ -282,9 +288,13 @@ class JdbcStorageLedger(
                 ),
                 -- Drift found revokes trust in the repair transaction itself
                 -- (contract §4.5): admission waits for a clean pass after it.
+                -- Only WORKSPACE-scope drift: the global potential is the sum of
+                -- workspace counts, and an inbox-level over-count (a message
+                -- deleted with its attachments in one statement leaves their
+                -- delta unattributed, V6) is accepted and never enters it.
                 distrusted AS (
                     UPDATE storage_footprint_trust SET distrust_epoch = distrust_epoch + 1
-                     WHERE id = 1 AND EXISTS (SELECT 1 FROM drift)
+                     WHERE id = 1 AND EXISTS (SELECT 1 FROM drift WHERE scope = 'WORKSPACE')
                     RETURNING 1
                 )
                 SELECT scope, id, derived, accounted, derived_objects, accounted_objects,

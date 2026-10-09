@@ -28,6 +28,10 @@
 -- ---------------------------------------------------------------------------
 SET LOCAL lock_timeout = '30s';
 SET LOCAL statement_timeout = '30s';
+-- The ledger lock FIRST, as every compactor takes it before storage_delta: a
+-- pre-V8 compactor holding it and waiting on storage_delta would otherwise
+-- deadlock with the ALTER below.
+SELECT pg_advisory_xact_lock(35, 2);
 LOCK TABLE workspace, inbox, message, attachment, storage_reservation IN SHARE ROW EXCLUSIVE MODE;
 RESET statement_timeout;
 
@@ -79,7 +83,7 @@ CREATE UNIQUE INDEX ux_storage_deletion_debt_pending ON storage_deletion_debt (o
 -- existing pending row for the key is kept: retries never add a second.
 CREATE FUNCTION storage_record_pending_debt(p_key text, p_bytes bigint, p_objects bigint, p_source text)
     RETURNS void
-    LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public AS
+    LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
     INSERT INTO storage_deletion_debt (bytes, objects, incurred_at, object_key, source)
     VALUES (p_bytes, p_objects, 'infinity', p_key, p_source)
@@ -89,7 +93,7 @@ $$;
 -- Resolves a pending row AFTER its key was proven absent: the row gets a
 -- sequence value later than the trash move. Bytes and objects are immutable.
 CREATE FUNCTION storage_resolve_pending_debt(p_key text) RETURNS integer
-    LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public AS
+    LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
     WITH resolved AS (
         UPDATE storage_deletion_debt
@@ -102,9 +106,12 @@ $$;
 
 -- ---------------------------------------------------------------------------
 -- Filesystem observations (contract §5.3, §6). Written ONLY by the Ops
--- monitor, as its own role, never by the application. `started_at` is the
--- database clock the monitor read BEFORE measuring, so a deletion whose trash
--- move landed after the measurement began has a debt row later than it.
+-- monitor, as its own role, never by the application. The monitor calls
+-- storage_begin_observation() BEFORE measuring: the SERVER issues the order
+-- and the start time, so a deletion whose trash move landed after the
+-- measurement began has a debt row later than it. The insert names only that
+-- order and the measured figures; the trigger stamps the start, the end and
+-- the writer, and refuses an order no walk of the same role began.
 -- `trash_bytes` is what `.minio.sys/tmp/.trash` occupies; `minio_sys_bytes`
 -- the rest of `.minio.sys`. Capacity, used, available, inode figures are the
 -- mount's statvfs. The application treats every row as data to be bounded
@@ -113,13 +120,15 @@ $$;
 -- ---------------------------------------------------------------------------
 CREATE TABLE storage_filesystem_observation (
     id               bigserial   PRIMARY KEY,
-    -- nextval('storage_debt_order_seq'), taken by the monitor BEFORE measuring.
-    started_seq      bigint      NOT NULL,
+    -- Issued by storage_begin_observation() BEFORE measuring; one observation per walk.
+    started_seq      bigint      NOT NULL UNIQUE,
+    -- Stamped from the walk by the trigger, never supplied.
     started_at       timestamptz NOT NULL,
     -- Stamped session_user by a trigger, never supplied: T1 and gate F require
     -- it to be the declared monitor role.
     written_by       name        NOT NULL DEFAULT session_user,
-    observed_at      timestamptz NOT NULL DEFAULT clock_timestamp(),
+    -- Stamped clock_timestamp() by the trigger, never supplied.
+    observed_at      timestamptz NOT NULL,
     source           text        NOT NULL,
     block_size_bytes bigint      NOT NULL CHECK (block_size_bytes > 0),
     capacity_bytes   bigint      NOT NULL CHECK (capacity_bytes >= 0),
@@ -133,6 +142,23 @@ CREATE TABLE storage_filesystem_observation (
 );
 CREATE INDEX ix_storage_filesystem_observation_started ON storage_filesystem_observation (started_seq DESC);
 
+-- A walk begun by the monitor: the order and start the server issued it. No
+-- role is granted anything on it; only the two SECURITY DEFINER functions
+-- below touch it.
+CREATE TABLE storage_observation_walk (
+    started_seq bigint      PRIMARY KEY,
+    started_at  timestamptz NOT NULL,
+    began_by    name        NOT NULL
+);
+
+CREATE FUNCTION storage_begin_observation() RETURNS bigint
+    LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
+$$
+    INSERT INTO public.storage_observation_walk (started_seq, started_at, began_by)
+    VALUES (nextval('public.storage_debt_order_seq'), clock_timestamp(), session_user)
+    RETURNING started_seq;
+$$;
+
 -- The compaction watermark: debt rows below it are gone, so no observation
 -- below it may ever be used, or deleted while it could be the newest.
 CREATE TABLE storage_debt_watermark (
@@ -144,7 +170,7 @@ INSERT INTO storage_debt_watermark VALUES (1, 0);
 -- Superseded debt rows are deleted, never pending ones, and the watermark
 -- rises in the same transaction.
 CREATE FUNCTION storage_compact_deletion_debt() RETURNS integer
-    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
 DECLARE
     newest bigint;
@@ -161,32 +187,29 @@ BEGIN
 END
 $$;
 
--- A start in the future would hide every deletion until the clock caught up
--- with it. The database clock is the only clock either side uses, so a
--- future start can only be a monitor reading a replica's clock or replaying
--- a stale value: refused, never bounded by.
--- SECURITY DEFINER so the monitor role needs no SELECT on the sequence;
--- session_user is the login role whatever the function runs as.
+-- The insert names a walk; everything that orders or ages the row comes from
+-- the server: the walk's issued order and start, the end read now, the
+-- session's login role (session_user, which neither SECURITY DEFINER nor SET
+-- ROLE changes). An order no walk of this role began is refused, so neither a
+-- replayed nor an invented order can become the newest observation.
 CREATE FUNCTION storage_filesystem_observation_check() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
+DECLARE
+    walk public.storage_observation_walk%ROWTYPE;
 BEGIN
     IF TG_OP = 'UPDATE' THEN
         RAISE EXCEPTION 'storage_filesystem_observation is append-only' USING ERRCODE = 'check_violation';
     END IF;
+    SELECT * INTO walk FROM public.storage_observation_walk
+     WHERE started_seq = NEW.started_seq AND began_by = session_user;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'storage_filesystem_observation.started_seq % was not issued to %', NEW.started_seq, session_user
+            USING ERRCODE = 'check_violation';
+    END IF;
+    NEW.started_at := walk.started_at;
+    NEW.observed_at := clock_timestamp();
     NEW.written_by := session_user;
-    IF NEW.started_seq > (SELECT last_value FROM storage_debt_order_seq) THEN
-        RAISE EXCEPTION 'storage_filesystem_observation.started_seq % was never issued', NEW.started_seq
-            USING ERRCODE = 'check_violation';
-    END IF;
-    IF NEW.started_at > clock_timestamp() THEN
-        RAISE EXCEPTION 'storage_filesystem_observation.started_at % is in the future', NEW.started_at
-            USING ERRCODE = 'check_violation';
-    END IF;
-    IF NEW.observed_at > clock_timestamp() THEN
-        RAISE EXCEPTION 'storage_filesystem_observation.observed_at % is in the future', NEW.observed_at
-            USING ERRCODE = 'check_violation';
-    END IF;
     RETURN NEW;
 END
 $$;
@@ -200,7 +223,7 @@ CREATE TRIGGER storage_filesystem_observation_not_future
 -- watermark could do the same later. Both are refused. TRUNCATE is refused
 -- outright.
 CREATE FUNCTION storage_filesystem_observation_retain() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
     IF TG_OP = 'TRUNCATE' THEN
@@ -235,13 +258,32 @@ CREATE TABLE storage_footprint_trust (
 );
 INSERT INTO storage_footprint_trust VALUES (1, 0, NULL);
 
+-- distrust_epoch only grows, and nothing is trusted beyond it: lowering the
+-- epoch would re-validate a trust mark a folding or a drift revoked.
+CREATE FUNCTION storage_footprint_trust_monotone() RETURNS trigger
+    LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS
+$$
+BEGIN
+    IF NEW.distrust_epoch < OLD.distrust_epoch
+       OR (NEW.trusted_epoch IS NOT NULL AND NEW.trusted_epoch > NEW.distrust_epoch) THEN
+        RAISE EXCEPTION 'storage_footprint_trust: distrust_epoch only grows, and trust never exceeds it'
+            USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER storage_footprint_trust_monotone
+    BEFORE UPDATE ON storage_footprint_trust
+    FOR EACH ROW EXECUTE FUNCTION storage_footprint_trust_monotone();
+
 -- A pre-V8 compactor folds bytes and drops the deltas' object counts. This
 -- trigger folds them, with that compactor's own EXISTS filters, in the same
 -- statement, and marks the counts distrusted. The V8 compactor and
 -- storage_account_recompute() set testinbox.ledger_counts = 'v8' and fold the
 -- objects themselves. SECURITY DEFINER: it runs whatever role deletes.
 CREATE FUNCTION storage_delta_fold_objects() RETURNS trigger
-    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
     IF current_setting('testinbox.ledger_counts', true) IS NOT DISTINCT FROM 'v8' THEN
@@ -282,7 +324,7 @@ CREATE TRIGGER storage_delta_fold_objects
 -- The ledger is append-only: an UPDATE could move bytes or objects without a
 -- base seeing it, and a TRUNCATE fires no row trigger.
 CREATE FUNCTION storage_ledger_append_only() RETURNS trigger
-    LANGUAGE plpgsql AS
+    LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
     RAISE EXCEPTION '% of % is refused: the storage ledger is append-only', TG_OP, TG_TABLE_NAME
@@ -303,7 +345,7 @@ CREATE TRIGGER storage_deletion_debt_no_truncate
 -- Shrinking a size, or re-pointing a key, would lower L with no debt row.
 -- Sizes and keys are written once.
 CREATE FUNCTION storage_sizes_immutable() RETURNS trigger
-    LANGUAGE plpgsql AS
+    LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
     -- One branch per table: plpgsql resolves NEW.<column> when it evaluates
@@ -346,7 +388,7 @@ CREATE TRIGGER storage_reservation_sizes_immutable
 -- statement, over every deleted row whatever its scope.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION storage_ledger_message() RETURNS trigger
-    LANGUAGE plpgsql AS
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
@@ -393,7 +435,7 @@ END
 $$;
 
 CREATE OR REPLACE FUNCTION storage_ledger_attachment() RETURNS trigger
-    LANGUAGE plpgsql AS
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
@@ -434,7 +476,7 @@ $$;
 -- on the old state tells the two apart inside one statement trigger.
 -- ---------------------------------------------------------------------------
 CREATE FUNCTION storage_deletion_debt_reservation() RETURNS trigger
-    LANGUAGE plpgsql AS
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
     INSERT INTO storage_deletion_debt (bytes, objects)
@@ -455,7 +497,7 @@ CREATE TRIGGER storage_reservation_release_debt
 -- same advisory lock, same DELETE (never TRUNCATE).
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION storage_account_recompute() RETURNS void
-    LANGUAGE plpgsql AS
+    LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
     LOCK TABLE workspace, inbox, message, attachment IN SHARE ROW EXCLUSIVE MODE;
@@ -493,6 +535,7 @@ $$;
 REVOKE EXECUTE ON FUNCTION storage_record_pending_debt(text, bigint, bigint, text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION storage_resolve_pending_debt(text) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION storage_compact_deletion_debt() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION storage_begin_observation() FROM PUBLIC;
 
 -- ---------------------------------------------------------------------------
 -- Backfill the counts. Under the locks above, so the counts describe exactly

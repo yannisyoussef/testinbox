@@ -175,6 +175,7 @@ class StorageV8MigrationTest : PersistenceIntegrationTest() {
                 "message_sizes_immutable",
                 "attachment_sizes_immutable",
                 "storage_reservation_sizes_immutable",
+                "storage_footprint_trust_monotone",
             ).sorted()
     }
 }

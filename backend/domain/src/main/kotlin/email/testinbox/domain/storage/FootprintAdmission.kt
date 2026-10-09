@@ -16,13 +16,16 @@ package email.testinbox.domain.storage
  * event admitted before it:
  *
  * ```
- * (G)  F(L + A + c) + H_F                     ≤ G_F
- * (C)  F(L + D + A + c) + W + H_F + M + R_ops ≤ C_fs
+ * (G)  F(L + A + c) + H_F                           ≤ G_F
+ * (C)  F(L + D + A + c) + W + H_F + P_F + M + R_ops ≤ C_fs
  * ```
  *
  * Never `F(L) + φ(c)`: the closed form rounds per object, so its increment for
  * one object can exceed φ (a 4 096 B object: φ = 28 688 B, ΔF = 32 800 B).
  * No observation means no admission: without *W* there is no bound on trash.
+ * *P_F* is the probe budget: the witness's zero-byte probes reach trash
+ * between admissions with nothing charging them, so (C) reserves for them and
+ * the witness stops probing once its unsuperseded probe debt reaches P_F.
  */
 object FootprintAdmission {
     /** Payload and object count of a set of objects. */
@@ -59,11 +62,19 @@ object FootprintAdmission {
         val metadataBudgetBytes: Long,
         val operationalReserveBytes: Long,
         val capacityBytes: Long,
+        /** *P_F*: reserved for witness probes, which reach trash between admissions (contract §2.4). */
+        val probeBudgetBytes: Long,
     ) {
         init {
             require(
-                listOf(globalFootprintLimitBytes, finalizeBudgetBytes, metadataBudgetBytes, operationalReserveBytes, capacityBytes)
-                    .all { it >= 0 },
+                listOf(
+                    globalFootprintLimitBytes,
+                    finalizeBudgetBytes,
+                    metadataBudgetBytes,
+                    operationalReserveBytes,
+                    capacityBytes,
+                    probeBudgetBytes,
+                ).all { it >= 0 },
             ) { "limits are never negative" }
         }
     }
@@ -101,8 +112,9 @@ object FootprintAdmission {
     /**
      * Decides each candidate copy in order against running totals: copy *i*
      * is checked with every earlier ADMITTED copy already added. A refused copy
-     * adds nothing. An arithmetic overflow refuses as [Verdict.INDETERMINATE]
-     * (fail closed).
+     * adds nothing. An arithmetic overflow anywhere makes the WHOLE event
+     * [Verdict.INDETERMINATE] (fail closed): totals that overflow are corrupt,
+     * an infrastructure state, never a per-copy verdict.
      */
     fun decide(
         model: FootprintModel,
@@ -111,13 +123,13 @@ object FootprintAdmission {
         copies: List<Load>,
     ): List<Verdict> {
         val trash = snapshot.trashBytes ?: return copies.map { Verdict.UNOBSERVED }
-        var admitted = Load.ZERO
-        return copies.map { copy ->
-            val verdict =
-                runCatching { verdict(model, limits, snapshot, trash, admitted + copy) }
-                    .getOrElse { if (it is ArithmeticException) Verdict.INDETERMINATE else throw it }
-            if (verdict == Verdict.ADMITTED) admitted += copy
-            verdict
+        return try {
+            var admitted = Load.ZERO
+            copies.map { copy ->
+                verdict(model, limits, snapshot, trash, admitted + copy).also { if (it == Verdict.ADMITTED) admitted += copy }
+            }
+        } catch (_: ArithmeticException) {
+            copies.map { Verdict.INDETERMINATE }
         }
     }
 
@@ -135,7 +147,7 @@ object FootprintAdmission {
         val potential = Math.addExact(model.bound(all.bytes, all.objects), trash)
         val needed =
             Math.addExact(
-                Math.addExact(potential, limits.finalizeBudgetBytes),
+                Math.addExact(Math.addExact(potential, limits.finalizeBudgetBytes), limits.probeBudgetBytes),
                 Math.addExact(limits.metadataBudgetBytes, limits.operationalReserveBytes),
             )
         return if (needed > limits.capacityBytes) Verdict.CONTAINMENT else Verdict.ADMITTED

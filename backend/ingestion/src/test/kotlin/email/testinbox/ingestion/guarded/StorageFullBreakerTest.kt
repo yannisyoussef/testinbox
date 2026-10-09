@@ -85,9 +85,9 @@ class StorageFullBreakerTest {
             .sql(
                 """
                 INSERT INTO storage_filesystem_observation
-                    (started_seq, started_at, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total,
+                    (started_seq, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total,
                      inodes_used, trash_bytes, minio_sys_bytes)
-                VALUES (nextval('storage_debt_order_seq'), clock_timestamp(), 'test-monitor', 4096, 0, 0, ?, 1000000, 0, 0, 0)
+                VALUES (storage_begin_observation(), 'test-monitor', 4096, 0, 0, ?, 1000000, 0, 0, 0)
                 """.trimIndent(),
             ).param(availBytes)
             .update()
