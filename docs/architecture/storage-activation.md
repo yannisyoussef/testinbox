@@ -87,7 +87,8 @@ itself and what only Ops can see. Neither half substitutes for the other.
 - **NTP** on the database and MinIO hosts (§18 prerequisite 9) — gate C
   measures the offset the application sees, Ops make it small;
 - the §9 Ops preconditions (versioning off, no object lock, no retrying
-  proxy, quota margin) recorded in `production-ops-acceptance.md`.
+  proxy) recorded in `production-ops-acceptance.md`. The bucket-quota margin
+  is optional since ADR-035 Amendment 2 §A2.8.
 
 ## Inputs and outputs of the script
 

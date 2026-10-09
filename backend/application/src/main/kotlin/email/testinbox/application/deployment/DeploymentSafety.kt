@@ -628,6 +628,21 @@ object StorageEnforcementSafety {
                     ),
                 )
             }
+            // ADR-035 Amendment 2 §A2.5: TENANT_LIMITS leaves the global footprint ceiling
+            // observational, so the containment theorem does not hold and filesystem
+            // exhaustion stays reachable. It is approved for dark staging qualification
+            // only: production may not run it, whatever records ship.
+            if (storage.enforcement == email.testinbox.domain.storage.StorageEnforcement.TENANT_LIMITS &&
+                settings.environment == ProductionPolicy.ENVIRONMENT
+            ) {
+                add(
+                    DeploymentViolation(
+                        ENFORCEMENT,
+                        "is TENANT_LIMITS in production, but that mode does not contain the filesystem " +
+                            "(ADR-035 Amendment 2 §A2.5); it is approved for dark staging qualification only",
+                    ),
+                )
+            }
             addAll(sanity(storage))
             addAll(declarations(storage))
             addAll(qualification(storage))

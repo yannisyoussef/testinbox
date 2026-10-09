@@ -197,6 +197,15 @@ class StorageEnforcementSafetyTest {
     }
 
     @Test
+    fun `TENANT_LIMITS is refused in production - dark staging qualification only, it does not contain the filesystem`() {
+        val tenant = complete.copy(enforcement = StorageEnforcement.TENANT_LIMITS)
+        val found = DeploymentSafety.validate(deployed.copy(environment = ProductionPolicy.ENVIRONMENT, storage = tenant))
+        found.map { it.setting } shouldContain "testinbox.storage.enforcement"
+        found.first { it.setting == "testinbox.storage.enforcement" }.problem shouldContain "dark staging qualification only"
+        violations(tenant).map { it.setting } shouldNotContain "testinbox.storage.enforcement"
+    }
+
+    @Test
     fun `the probe reserve must keep rule P admissible - F of the largest object plus a probe, one byte under refuses`() {
         val model =
             email.testinbox.domain.storage

@@ -806,6 +806,23 @@ SELECT json_build_object(
         FROM reach r JOIN (VALUES ('storage_deletion_debt'), ('storage_debt_watermark')) AS p(tbl)
           ON has_table_privilege(r.goid, p.tbl, 'DELETE')
       UNION ALL
+      -- A definer function executable outside the documented set: a definer TRIGGER
+      -- function can be attached to a temporary table and run as the owner.
+      SELECT r.app || ': EXECUTE on definer function ' || f.oid::regprocedure::text
+        FROM reach r JOIN pg_proc f ON f.pronamespace = 'public'::regnamespace AND f.prosecdef
+       WHERE has_function_privilege(r.goid, f.oid, 'EXECUTE')
+         AND f.proname NOT IN ('storage_confirm_footprint_trust', 'storage_compact_ledger', 'storage_repair_ledger',
+                               'storage_begin_sweep', 'storage_complete_sweep', 'storage_record_pending_debt',
+                               'storage_resolve_pending_debt', 'storage_compact_deletion_debt',
+                               'storage_record_probe_debt', 'storage_resolve_probe_debt', 'storage_begin_observation')
+      UNION ALL
+      -- TRUNCATE fires no row trigger: live reservation bytes would vanish without a debt row.
+      SELECT r.app || ': TRUNCATE on storage_reservation' FROM reach r
+       WHERE has_table_privilege(r.goid, 'storage_reservation', 'TRUNCATE')
+      UNION ALL
+      SELECT r.app || ': CREATE on schema public' FROM reach r
+       WHERE has_schema_privilege(r.goid, 'public', 'CREATE')
+      UNION ALL
       -- setval on the ordering sequence would rewind every order gate F compares.
       SELECT r.app || ': UPDATE on storage_debt_order_seq' FROM reach r
        WHERE has_sequence_privilege(r.goid, 'storage_debt_order_seq', 'UPDATE')

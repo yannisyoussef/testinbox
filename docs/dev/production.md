@@ -270,7 +270,7 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   `TESTINBOX_STORAGE_INBOX_SHARE`, the dedicated filesystem's declarations
   (`TESTINBOX_STORAGE_FS_*`: block size *B*, *O_max* from the qualification
   record, *G_F*, *D_budget*, *M*, *R_ops*, *C_fs*, *I_fs*, *A_obs*; they must
-  satisfy `G_F + D_budget + M + R_ops ≤ C_fs`, `R_ops ≥ max(5 % of C_fs, 2 GiB)`,
+  satisfy `G_F + D_budget + P_F + M + R_ops ≤ C_fs` (with *P_F* the probe budget, and the monitor role and *A_obs* declared too), `R_ops ≥ max(5 % of C_fs, 2 GiB)`,
   one inode per block, and `H_F < G_F`; filesystem-containment contract,
   ADR-035 Amendment 2), and the declared backend identity
   (`testinbox.storage.backend-identity.*`: image index digest, platform member
