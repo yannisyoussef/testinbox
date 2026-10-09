@@ -88,18 +88,29 @@ class ExpiryBoundaryTest {
     fun `an event in flight across deletion is fenced the same way`() = fencedThenRetried("DELETED")
 
     @Test
-    fun `a provider event recorded before expiry is a duplicate after it - never stored twice`() {
+    fun `a provider event is a duplicate while the inbox receives, and discarded once it expired - never stored twice`() {
         h = GuardedIngestHarness()
         val (inbox, address) = h.inbox(h.workspace())
         h.deliver(listOf(address), providerMessageId = "evt-1").accepted.size shouldBe 1
         val bytes = h.committedBytes()
-        setState(inbox, "EXPIRED")
 
-        val again = h.deliver(listOf(address), providerMessageId = "evt-1")
-        again.accepted.size shouldBe 0
+        // Before expiry: the dedup key answers at T2 (ADR-026, the unique index). The
+        // copy's reservation is released to cleanup, still charged until it is gone.
+        val duplicate = h.deliver(listOf(address), providerMessageId = "evt-1")
+        duplicate.duplicateRecipients shouldBe 1
+        duplicate.accepted.size shouldBe 0
+        (h.reservationStates()["RESERVED"] ?: 0L) shouldBe 0L
+        val releasing = h.reservedBytes()
+
+        // After expiry the address no longer resolves, so the redelivery is discarded
+        // before dedup is consulted. Either way the event is stored exactly once.
+        setState(inbox, "EXPIRED")
+        val late = h.deliver(listOf(address), providerMessageId = "evt-1")
+        late.accepted.size shouldBe 0
+        late.discardedRecipients shouldBe 1
         h.messageCount() shouldBe 1
         h.committedBytes() shouldBe bytes
-        h.reservedBytes() shouldBe 0
+        h.reservedBytes() shouldBe releasing // the discarded copy reserved nothing
     }
 
     @Test

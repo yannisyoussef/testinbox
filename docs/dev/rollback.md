@@ -305,9 +305,23 @@ refused by the guard trigger. Its reconciliation would report `failed`, and
 the counts would stay untrusted. That is fail-closed, and only PR D artifacts
 ever marked trust.
 
-An earlier artifact's node rows carry `containment = 0`, so gate F refuses
-`ALL` while one is live. It also refuses while the base-case sweep began
-before such a node's last heartbeat.
+V10 also makes compaction and repair the definer functions
+`storage_compact_ledger(integer)` and `storage_repair_ledger()`, so the
+ledger is written only by the database.
+- An artifact from before V10 still compacts with its own statement, which
+  needs the earlier ledger grants. Revoke them only once every running
+  artifact is from V10 on.
+- If an older artifact's compaction is refused for lack of them, its deltas
+  simply stay unfolded. That is still exact, because base + Σdelta does not
+  change.
+
+An earlier artifact's node rows carry `containment = 0`. Every write or
+deletion of such a row stamps `storage_containment_watermark`, which only
+grows, so its activity stays visible after the row is reaped.
+- Gate F refuses `ALL` while any such row is unclean (neither shut down
+  cleanly nor reaped).
+- Gate F also refuses until a complete sweep has started after the
+  watermark.
 
 ## Adding a `StorageRefusalReason` is reader-first (TI-STORAGE-004)
 

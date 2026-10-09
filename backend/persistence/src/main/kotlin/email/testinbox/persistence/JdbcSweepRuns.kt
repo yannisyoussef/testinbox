@@ -25,8 +25,9 @@ class JdbcSweepRuns(
         listedBytes: Long,
     ) {
         jdbc
-            .sql("SELECT storage_complete_sweep(:run, :listed)")
+            .sql("SELECT storage_complete_sweep(:run, :node, :listed)")
             .param("run", run)
+            .param("node", nodeId)
             .param("listed", listedBytes)
             .query()
             .listOfRows()
