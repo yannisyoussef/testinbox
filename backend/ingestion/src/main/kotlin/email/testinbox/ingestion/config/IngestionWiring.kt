@@ -231,15 +231,14 @@ class IngestionWiring(
     ): WriteSlots =
         WriteSlots(
             ambiguous = { ambiguity.unresolvedFor(node.nodeId) },
-            // Contract Lemma 3: a GLOBAL cap of procs × 16 unresolved ambiguities, so H_F
-            // bounds the late objects whatever node ids come and go. Only while the global
-            // footprint rules enforce: OFF and TENANT_LIMITS keep the per-node slots alone.
-            globalAmbiguous = { ambiguity.unresolvedTotal() },
-            globalCap =
+            // Contract Lemma 3: rows no live node answers for count against every node's
+            // slots, so H_F bounds the late objects whatever node ids come and go. Only while
+            // the global footprint rules enforce: OFF and TENANT_LIMITS keep per-node slots.
+            orphaned =
                 if (declarations.enforcement.enforces(StorageScope.GLOBAL) && EffectiveStoragePolicy.footprint(declarations) != null) {
-                    (declarations.declaredMaxIngestionProcesses ?: 1) * declarations.maxConcurrentWrites
+                    { ambiguity.unresolvedOrphaned(email.testinbox.application.storage.StorageProtocol.STALE_HEARTBEAT) }
                 } else {
-                    Int.MAX_VALUE
+                    null
                 },
         )
 
@@ -314,7 +313,11 @@ class IngestionWiring(
         declarations: StorageDeclarations,
     ): StorageAdmission =
         StorageAdmission(
-            JdbcStorageAdmission(jdbc, template(transactionManager)),
+            JdbcStorageAdmission(
+                jdbc,
+                template(transactionManager),
+                readsFootprint = EffectiveStoragePolicy.footprint(declarations) != null,
+            ),
             policy,
             declarations.enforcement,
             // TI-STORAGE-006E PR D: the global footprint rules, enforced under ALL only.

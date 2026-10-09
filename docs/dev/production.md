@@ -159,19 +159,28 @@ row at or above the compaction watermark. An Ops prune job (with `DELETE`
 only) removes older rows within its retention window — one row per minute is
 ≈ 50 MB a year. No role is granted anything on `storage_observation_walk`.
 
-**Footprint admission and rule (P) (TI-STORAGE-006E PR D)** read, under T1's
-admission lock, the same footprint inputs T1 reads: every role that runs T1,
-the pre-resolution footprint check, a probe or a row-free deletion — the
-ingestion role (T1, the breaker probe) and the API role (the orphan sweep,
-the ambiguity verifier, the cleanup witness) — needs `SELECT` on
-`storage_deletion_debt`, `storage_filesystem_observation`,
-`storage_debt_watermark` and `storage_footprint_trust`, and `EXECUTE` on
-`storage_record_pending_debt(text, bigint, bigint, text)` and
-`storage_resolve_pending_debt(text)`. They are used only where the deployment
-declares its filesystem (`testinbox.storage.filesystem.*`, now including
-`probe-budget-bytes` and `monitor-role`); an undeclared `OFF` deployment
-writes no pending row and reads none of it.
-`StorageV8GrantsTest` runs each path as a role with exactly these grants.
+**Footprint admission and rule (P) (TI-STORAGE-006E PR D)** are used only
+where the deployment declares its filesystem (`testinbox.storage.filesystem.*`,
+now including `probe-budget-bytes`, `monitor-role` and the optional
+`retention-pacing-max-delay`). An undeclared `OFF` deployment's T1 reads none of
+the V8 tables, writes no pending row, and needs no grant below. Where the
+filesystem is declared, rule (P) and the pre-resolution check read, under T1's
+admission lock, the inputs T1 reads:
+
+- **the ingestion role** (T1, the pre-resolution check, the breaker probe):
+  `SELECT` on `storage_deletion_debt`, `storage_filesystem_observation`,
+  `storage_debt_watermark` and `storage_footprint_trust`, and `EXECUTE` on
+  `storage_record_probe_debt(text)` and `storage_resolve_probe_debt(text)` —
+  `SECURITY DEFINER`, a fixed `(0 B, 1 object)` row for `_probe/` keys only. It
+  holds **no** `EXECUTE` on the general pending-debt functions: the
+  internet-facing role can neither charge nor resolve an arbitrary key;
+- **the API role** (the orphan sweep, the ambiguity verifier, the cleanup
+  witness): the same `SELECT`s, the two probe functions, and `EXECUTE` on
+  `storage_record_pending_debt(text, bigint, bigint, text)` and
+  `storage_resolve_pending_debt(text)`.
+
+`StorageV8GrantsTest` runs T1 under `OFF` and the probe path as the ingestion
+role with exactly these grants.
 
 The API's accounting jobs read three optional settings:
 
@@ -188,7 +197,8 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   `storage_admission_latch` and `storage_clock_episode` (V7), and `USAGE` on
   `storage_ambiguity_id_seq`; with V8, only the API role's reads, trust
   marking and function grants of the V8 paragraph above (the debt triggers
-  run as their owner).
+  run as their owner); with PR D and a declared filesystem, the per-role
+  grants of the footprint paragraph above.
   Staging's owner role already has them.
 - **Object storage.** Cleanup and the orphan sweep need `ListBucket`,
   `ListBucketMultipartUploads` and `AbortMultipartUpload` on the bucket,
@@ -311,6 +321,13 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   3. Clear the latch by hand: `DELETE FROM storage_admission_latch;` — from a
      session tagged `PGAPPNAME=ops:latch-runbook` when enforcement is not OFF,
      or the session itself trips the activation guard.
+  4. **If the delete fails with `check_violation`** ("cannot be cleared while a
+     late object refused by rule (P) is held"; V9, TI-STORAGE-006E PR D): a late
+     object is still on disk because deleting it would breach containment
+     (`testinbox_storage_held_late_objects` > 0). It is retried every 5 min and
+     deleted once the potential allows — after the next observation, a debt
+     compaction or a purge. Do not force it: clearing the latch while it is held
+     would let slot exhaustion answer a recipient-dependent `451`.
 
   No endpoint clears it.
 

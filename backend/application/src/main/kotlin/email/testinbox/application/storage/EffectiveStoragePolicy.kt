@@ -27,6 +27,13 @@ import email.testinbox.domain.storage.StorageCapacityPolicy
  * `DeploymentSafety` before any node starts.
  */
 object EffectiveStoragePolicy {
+    private const val MAX_RECIPIENTS =
+        email.testinbox.application.usecase.StorageAdmissionRequest.MAX_CANDIDATES
+            .toLong()
+    private const val MAX_OBJECTS_PER_COPY =
+        email.testinbox.application.usecase.StorageAdmissionCandidate.MAX_KEYS
+            .toLong()
+
     fun of(
         limits: LimitsConfig,
         declarations: StorageDeclarations = StorageDeclarations.OFF,
@@ -70,6 +77,16 @@ object EffectiveStoragePolicy {
                     probeBudgetBytes = fs.probeBudgetBytes ?: return null,
                 ),
             monitorRole = fs.monitorRole ?: return null,
+            worstCaseEvent =
+                runCatching {
+                    // A copy is at most its raw object plus every decoded part, each bounded by
+                    // the largest object; 50 recipients of 501 objects each.
+                    val copyBytes = Math.multiplyExact(declarations.maxObjectBytes, 2L)
+                    FootprintAdmission.Load(
+                        Math.multiplyExact(copyBytes, MAX_RECIPIENTS),
+                        Math.multiplyExact(MAX_OBJECTS_PER_COPY, MAX_RECIPIENTS),
+                    )
+                }.getOrDefault(FootprintAdmission.Load(Long.MAX_VALUE / 2, Long.MAX_VALUE / 2)),
         )
     }
 

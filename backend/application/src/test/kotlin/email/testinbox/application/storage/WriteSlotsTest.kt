@@ -25,19 +25,22 @@ class WriteSlotsTest {
     ) = WriteSlots(max, perWorkspace, wait, ambiguous = ambiguous)
 
     @Test
-    fun `the global ambiguity cap holds every node's slots once procs x 16 rows are unresolved anywhere`() {
-        // Contract Lemma 3 (TI-STORAGE-006E): a node id that changed across a deploy still holds
-        // its unresolved rows; per-node counting alone would let them exceed what H_F reserves.
-        val global = AtomicInteger(0)
-        val capped =
-            WriteSlots(4, 2, Duration.ofMillis(100), globalAmbiguous = { global.get() }, globalCap = 3) { 0 }
-        global.set(2)
-        capped.acquire(setOf(a)).close()
-        global.set(3)
-        shouldThrow<StorageUnavailableException> { capped.acquire(setOf(a)) }.reason shouldBe
-            StorageUnavailableReason.SLOT_WAIT
-        // Without a cap (OFF, TENANT_LIMITS) the global count is never even read.
-        WriteSlots(4, 2, Duration.ofMillis(100), globalAmbiguous = { error("not read") }) { 0 }.acquire(setOf(a)).close()
+    fun `rows no live node answers for count against every node's slots, and exhaust them before resolution`() {
+        // Contract Lemma 3 (TI-STORAGE-006E): 2 live nodes with 16 slots each and 10 rows left by a
+        // replaced node id may hold at most 2 x 16 late objects in all, not 2 x 16 + 10.
+        val orphaned = AtomicInteger(0)
+        val node = WriteSlots(4, 4, Duration.ofMillis(100), orphaned = { orphaned.get() }) { 1 }
+        orphaned.set(2)
+        val held = node.acquire(setOf(a)) // 1 own + 2 orphaned + 1 in use = 4
+        shouldThrow<StorageUnavailableException> { node.acquire(setOf(b)) }.reason shouldBe StorageUnavailableReason.SLOT_WAIT
+        held.close()
+        node.exhaustedBeforeResolution() shouldBe false
+        orphaned.set(3)
+        node.exhaustedBeforeResolution() shouldBe true // 1 own + 3 orphaned: no slot left for anyone
+        // Without the rule (OFF, TENANT_LIMITS) nothing is counted and nothing is checked early.
+        val off = WriteSlots(4, 4, Duration.ofMillis(100)) { 1 }
+        off.exhaustedBeforeResolution() shouldBe false
+        off.acquire(setOf(a)).close()
     }
 
     @Test

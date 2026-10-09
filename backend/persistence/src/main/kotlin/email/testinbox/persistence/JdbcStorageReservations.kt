@@ -66,6 +66,22 @@ class JdbcStorageReservations(
             }.list()
     }
 
+    override fun committedKeys(ids: Collection<MessageId>): Map<MessageId, Set<String>> {
+        if (ids.isEmpty()) return emptyMap()
+        return jdbc
+            .sql(
+                """
+                SELECT id AS message_id, raw_object_key AS object_key FROM message WHERE id IN (:ids)
+                UNION ALL
+                SELECT message_id, object_key FROM attachment WHERE message_id IN (:ids)
+                """.trimIndent(),
+            ).param("ids", ids.map { it.value })
+            .query { rs, _ -> MessageId(rs.getObject("message_id", UUID::class.java)) to rs.getString("object_key") }
+            .list()
+            .groupBy({ it.first }, { it.second })
+            .mapValues { it.value.toSet() }
+    }
+
     override fun lockInboxes(ids: Collection<InboxId>): Map<InboxId, InboxState> {
         if (ids.isEmpty()) return emptyMap()
         return jdbc

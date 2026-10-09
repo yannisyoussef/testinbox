@@ -79,7 +79,13 @@ class OrphanBlobSweep(
                     metrics.lateObject()
                     log.error("storage_late_object an ambiguous upload surfaced as an orphan; admission LATCHED")
                 }
-                if (deleteRowFree(key, "orphan-sweep")) removed++
+                if (deleteRowFree(key, "orphan-sweep")) {
+                    removed++
+                } else if (ambiguity.wasAmbiguous(key, AMBIGUITY_RETENTION)) {
+                    // A late object rule (P) refused: held with a row of its own, so it
+                    // occupies a slot and the latch stays set until it is gone.
+                    runCatching { ambiguity.holdLateObject(key, inspection.objectSize(key) ?: 0) }
+                }
             }
         }
         if (removed > 0) log.info("orphan_blob_sweep removed={}", removed)
@@ -104,12 +110,21 @@ class OrphanBlobSweep(
     private fun deleteRowFree(
         key: String,
         source: String,
-    ): Boolean {
-        if (!rowFree.beforeDelete(key, inspection.objectSize(key), source)) return false
-        blobs.delete(key)
-        if (!inspection.objectExists(key)) rowFree.afterProvenAbsent(key)
-        return true
-    }
+    ): Boolean =
+        try {
+            if (!rowFree.beforeDelete(key, if (rowFree.charges) inspection.objectSize(key) else null, source)) {
+                false
+            } else {
+                blobs.delete(key)
+                if (!inspection.objectExists(key)) rowFree.afterProvenAbsent(key)
+                true
+            }
+        } catch (e: RuntimeException) {
+            // One key's storage or lock error never stops the pass: the rest of the
+            // bucket, the resolver and the multipart pass still run; this key is retried.
+            log.warn("orphan_blob_sweep_key_failed the key is kept and retried next pass: {}", e.toString())
+            false
+        }
 
     private fun parseUuid(value: String): UUID? = runCatching { UUID.fromString(value) }.getOrNull()
 

@@ -159,7 +159,13 @@ class GuardedIngestHarness(
 
     val guarded =
         GuardedStorage(
-            admission = StorageAdmission(JdbcStorageAdmission(jdbc, template), policy, enforcement, footprint = footprint),
+            admission =
+                StorageAdmission(
+                    JdbcStorageAdmission(jdbc, template, readsFootprint = footprint != null),
+                    policy,
+                    enforcement,
+                    footprint = footprint,
+                ),
             reservations = reservations,
             ambiguity =
                 object : email.testinbox.application.port.StorageAmbiguity by ambiguity {

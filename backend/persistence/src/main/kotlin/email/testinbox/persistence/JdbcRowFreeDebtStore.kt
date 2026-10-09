@@ -28,9 +28,26 @@ class JdbcRowFreeDebtStore(
         decide: (ObservedFootprint?) -> Boolean,
     ): Boolean =
         try {
+            // Its own transaction, never a caller's: the pending row must commit before the
+            // delete or PUT it charges.
+            check(
+                !org.springframework.transaction.support.TransactionSynchronizationManager
+                    .isActualTransactionActive(),
+            ) {
+                "rule (P) runs in its own transaction"
+            }
             checkNotNull(
                 transactions.execute {
+                    // T1's hygiene: READ COMMITTED (the snapshot is taken AFTER the lock), and a
+                    // stalled holder of (35, 1) is cut off rather than blocking every T1.
+                    jdbc.sql("SET TRANSACTION ISOLATION LEVEL READ COMMITTED").update()
                     jdbc.sql("SET LOCAL lock_timeout = '${lockTimeout.toMillis()}ms'").update()
+                    jdbc
+                        .sql(
+                            "SET LOCAL statement_timeout = '${lockTimeout.plusSeconds(5).toMillis()}ms'; " +
+                                "SET LOCAL idle_in_transaction_session_timeout = " +
+                                "'${JdbcStorageAdmission.IDLE_IN_TRANSACTION.toMillis()}ms'",
+                        ).update()
                     jdbc
                         .sql("SELECT pg_advisory_xact_lock(:class, :admission)")
                         .param("class", JdbcStorageAdmission.STORAGE_LOCK_CLASS)
@@ -50,7 +67,16 @@ class JdbcRowFreeDebtStore(
                                     FootprintSql.read(rs)
                                 }.single()
                         decide(observed).also { admitted ->
-                            if (admitted) {
+                            if (admitted && isProbe(key)) {
+                                // The probe's own definer function: (0 B, 1 object), probe keys only.
+                                // It is all the ingestion role may call (production.md).
+                                check(bytes == 0L && objects == 1L) { "a probe is one empty object" }
+                                jdbc
+                                    .sql("SELECT storage_record_probe_debt(:key)")
+                                    .param("key", key)
+                                    .query()
+                                    .listOfRows()
+                            } else if (admitted) {
                                 jdbc
                                     .sql("SELECT storage_record_pending_debt(:key, :bytes, :objects, :source)")
                                     .param("key", key)
@@ -71,7 +97,7 @@ class JdbcRowFreeDebtStore(
 
     override fun resolve(key: String): Boolean =
         jdbc
-            .sql("SELECT storage_resolve_pending_debt(:key)")
+            .sql(if (isProbe(key)) "SELECT storage_resolve_probe_debt(:key)" else "SELECT storage_resolve_pending_debt(:key)")
             .param("key", key)
             .query(Int::class.java)
             .single() > 0
@@ -101,10 +127,13 @@ class JdbcRowFreeDebtStore(
             .query(Boolean::class.java)
             .single()
 
+    private fun isProbe(key: String) = key.startsWith(PROBE_PREFIX)
+
     private fun isTimeout(e: Throwable): Boolean =
         generateSequence(e) { it.cause }.filterIsInstance<SQLException>().any { it.sqlState in TIMEOUT_STATES }
 
     private companion object {
         val TIMEOUT_STATES = setOf("55P03", "57014", "25P03")
+        const val PROBE_PREFIX = "_probe/"
     }
 }

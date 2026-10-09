@@ -20,7 +20,26 @@ data class FootprintPolicy(
     val monitorRole: String,
     /** *C_fs* as declared: an observation of a smaller filesystem is invalid. */
     val capacityBytes: Long = limits.capacityBytes,
+    /**
+     * The largest event T1 can see (every recipient, every object, the largest
+     * copy): the check before resolution evaluates the rules with it, so a total
+     * that would overflow in T1 answers INDETERMINATE before resolution (§2.1).
+     */
+    val worstCaseEvent: FootprintAdmission.Load = FootprintAdmission.Load.ZERO,
 ) {
+    private fun corrupt(observed: ObservedFootprint): Boolean =
+        listOf(observed.liveBytes, observed.liveObjects, observed.debtBytes, observed.debtObjects).any { it < 0 } ||
+            FootprintAdmission.check(
+                model,
+                limits,
+                FootprintAdmission.Snapshot(
+                    FootprintAdmission.Load(observed.liveBytes, observed.liveObjects),
+                    FootprintAdmission.Load(observed.debtBytes, observed.debtObjects),
+                    observed.trashBytes,
+                ),
+                worstCaseEvent,
+            ) == FootprintAdmission.Verdict.INDETERMINATE
+
     /**
      * Why the footprint rules cannot be evaluated on [observed], or null when
      * they can. Every reason is an infrastructure state (`451` before
@@ -29,13 +48,25 @@ data class FootprintPolicy(
     fun unavailability(observed: ObservedFootprint?): FootprintUnavailability? =
         when {
             observed == null -> FootprintUnavailability.UNREADABLE
+
             !observed.countsTrusted -> FootprintUnavailability.UNTRUSTED
+
             observed.trashBytes == null || observed.startedSeq == null -> FootprintUnavailability.UNOBSERVED
+
+            // Negative or overflowing totals are corrupt: T1 would answer INDETERMINATE after
+            // resolution, so the check before resolution must answer it first.
+            corrupt(observed) -> FootprintUnavailability.INDETERMINATE
+
             observed.startedSeq < observed.compactedThroughSeq -> FootprintUnavailability.OBSERVATION_BELOW_WATERMARK
+
             observed.startedSeq <= observed.distrustedSeq -> FootprintUnavailability.OBSERVATION_BEFORE_DISTRUST
+
             observed.blockSizeBytes != model.blockSizeBytes -> FootprintUnavailability.OBSERVATION_BLOCK_SIZE
+
             (observed.capacityBytes ?: -1) < capacityBytes -> FootprintUnavailability.OBSERVATION_CAPACITY
+
             observed.writtenBy != monitorRole -> FootprintUnavailability.OBSERVATION_WRITER
+
             else -> null
         }
 }
@@ -95,15 +126,27 @@ class FootprintPrecheck(
     private val policy: FootprintPolicy?,
     private val enforcement: email.testinbox.domain.storage.StorageEnforcement,
     private val gate: FootprintGate,
+    /**
+     * How long one answer is reused: the aggregate runs at most once per window
+     * per node, whatever the DATA rate, outsiders' unknown-recipient mail
+     * included. A state that changes inside it is the T1 backstop's documented
+     * race (contract §4.5).
+     */
+    private val cacheFor: java.time.Duration = java.time.Duration.ofSeconds(1),
+    private val nanoTime: () -> Long = System::nanoTime,
 ) {
+    @Volatile private var cached: Pair<Long, FootprintUnavailability?>? = null
+
     fun unavailable(): FootprintUnavailability? {
         if (policy == null || !enforcement.enforces(email.testinbox.domain.storage.StorageScope.GLOBAL)) return null
+        val now = nanoTime()
+        cached?.let { (at, answer) -> if (now - at < cacheFor.toNanos()) return answer }
         val observed = runCatching { gate.observe() }.getOrNull()
-        return policy.unavailability(observed)
+        return policy.unavailability(observed).also { cached = now to it }
     }
 
     companion object {
         /** No footprint enforcement: nothing to check. */
-        val NONE = FootprintPrecheck(null, email.testinbox.domain.storage.StorageEnforcement.OFF) { null }
+        val NONE = FootprintPrecheck(null, email.testinbox.domain.storage.StorageEnforcement.OFF, FootprintGate { null })
     }
 }

@@ -612,6 +612,21 @@ object StorageEnforcementSafety {
                     ),
                 )
             }
+            // TI-STORAGE-006E: with footprint admission, envelope-order SERVICE_CAPACITY
+            // refusals become a practical recipient-existence oracle (contract §11.6). One of
+            // its mitigations is mandatory before ALL serves real traffic; until one is built,
+            // production may not run ALL at all.
+            if (storage.enforcement == email.testinbox.domain.storage.StorageEnforcement.ALL &&
+                settings.environment == ProductionPolicy.ENVIRONMENT
+            ) {
+                add(
+                    DeploymentViolation(
+                        ENFORCEMENT,
+                        "is ALL in production, but the envelope-order mitigation of the filesystem-containment " +
+                            "contract §11.6 is not built; ALL stays dark-staging only",
+                    ),
+                )
+            }
             addAll(sanity(storage))
             addAll(declarations(storage))
             addAll(qualification(storage))

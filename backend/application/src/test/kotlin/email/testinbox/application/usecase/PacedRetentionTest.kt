@@ -128,15 +128,16 @@ class PacedRetentionTest {
     ).sweep()
 
     @Test
-    fun `an inbox is torn down in batches of exact message ids - each batch's blobs before its rows, the inbox row last`() {
+    fun `teardown is batches of exact ids - blobs before rows, the inbox row last, no prefix delete`() {
         val inboxes = Inboxes()
         val inbox = inboxes.expired(WorkspaceId(UUID.randomUUID()), count = 5)
 
         sweep(inboxes, pacing = { true }).hardDeleted shouldBe 1
 
-        // Per-message prefixes have 4 slashes (ws/inbox/message/), the inbox prefix 2.
+        // Per-message prefixes have 3 slashes (ws/inbox/message/). No inbox prefix delete: rowless residue
+        // is the orphan sweep's, which charges it by rule (P).
         events shouldBe
-            listOf("blobs:3", "blobs:3", "rows:2", "blobs:3", "blobs:3", "rows:2", "blobs:3", "rows:1", "blobs:2", "inbox:${inbox.id}")
+            listOf("blobs:3", "blobs:3", "rows:2", "blobs:3", "blobs:3", "rows:2", "blobs:3", "rows:1", "inbox:${inbox.id}")
     }
 
     @Test
@@ -244,6 +245,22 @@ class PacedRetentionTest {
         val dEst = 5_000 + model.bound(100_000, 7)
         DebtPacing(ledger(5_000, 100_000L to 7L), footprint, dEst, Duration.ofHours(24), clock).mayTearDown(clock.now) shouldBe true
         DebtPacing(ledger(5_000, 100_000L to 7L), footprint, dEst - 1, Duration.ofHours(24), clock).mayTearDown(clock.now) shouldBe false
+    }
+
+    @Test
+    fun `without an observation trash is unbounded, so nothing is paced through until T_max`() {
+        DebtPacing(ledger(null, 0L to 0L), footprint, Long.MAX_VALUE / 4, Duration.ofHours(24), clock).mayTearDown(clock.now) shouldBe false
+    }
+
+    @Test
+    fun `a refused inbox does not stop the sweep - the one behind it, past T_max, is still torn down`() {
+        val inboxes = Inboxes()
+        val first = inboxes.expired(WorkspaceId(UUID.randomUUID()), 0)
+        inboxes.expired(WorkspaceId(UUID.randomUUID()), 0)
+        var asked = 0
+        // The pacing refuses the first inbox and admits the second (as T_max would).
+        sweep(inboxes, pacing = { asked++ > 0 }).hardDeleted shouldBe 1
+        inboxes.findHardDeletable(10).map { it.id } shouldBe listOf(first.id)
     }
 
     @Test

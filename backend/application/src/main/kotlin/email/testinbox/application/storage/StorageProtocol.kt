@@ -32,6 +32,9 @@ object StorageProtocol {
     /** `T_verify`: when a persisted ambiguity is verified, always at least S (§9). */
     val T_VERIFY: Duration = Duration.ofMinutes(60)
 
+    /** A generation whose heartbeat is older than this, and that did not shut down cleanly, is dead (§9). */
+    val STALE_HEARTBEAT: Duration = Duration.ofMinutes(5)
+
     /** `max-concurrent-writes`: write slots per node (§5). */
     const val MAX_CONCURRENT_WRITES = 16
 

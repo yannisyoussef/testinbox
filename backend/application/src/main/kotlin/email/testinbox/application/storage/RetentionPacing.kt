@@ -50,10 +50,9 @@ class DebtPacing(
         val estimate =
             runCatching {
                 val debt = ledger.deletionDebt()
-                Math.addExact(
-                    debt.observation?.trashBytes ?: 0,
-                    footprint.model.bound(debt.unsupersededBytes, debt.unsupersededObjects),
-                )
+                // No observation: trash is unbounded (§5.5), so nothing is paced through.
+                val trash = debt.observation?.trashBytes ?: return false
+                Math.addExact(trash, footprint.model.bound(debt.unsupersededBytes, debt.unsupersededObjects))
             }.getOrElse {
                 log.warn("storage_retention_paused the deletion debt could not be read; teardown waits for the next sweep")
                 return false

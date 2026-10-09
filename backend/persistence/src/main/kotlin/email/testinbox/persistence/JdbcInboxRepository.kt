@@ -129,8 +129,11 @@ class JdbcInboxRepository(
 
     override fun findHardDeletable(limit: Int): List<Inbox> =
         jdbc
-            .sql("SELECT * FROM inbox WHERE state IN ('EXPIRED', 'DELETED') LIMIT :limit")
-            .param("limit", limit)
+            // Longest-waiting first: an inbox past T_max is never starved behind younger ones.
+            .sql(
+                "SELECT * FROM inbox WHERE state IN ('EXPIRED', 'DELETED') " +
+                    "ORDER BY coalesce(deleted_at, grace_until, expires_at), id LIMIT :limit",
+            ).param("limit", limit)
             .query { rs, _ -> mapInbox(rs) }
             .list()
 

@@ -30,6 +30,9 @@ class RowFreeDebt(
     private val footprint: FootprintPolicy?,
     private val enforcement: StorageEnforcement,
 ) {
+    /** Whether this deployment charges row-free deletions at all (a declared filesystem): only then are objects sized. */
+    val charges: Boolean get() = footprint != null
+
     /**
      * Whether [key] (of [bytes], or unknown when null) may be deleted now. An
      * unsized object cannot be charged: refused under `ALL`, deleted without a

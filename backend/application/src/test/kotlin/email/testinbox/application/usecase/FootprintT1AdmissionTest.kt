@@ -214,13 +214,36 @@ class FootprintT1AdmissionTest {
     @Test
     fun `the pre-resolution check runs only under ALL, and a gate that fails reads as UNREADABLE`() {
         val fp = policy(limits())
-        FootprintPrecheck(fp, StorageEnforcement.ALL) { observed(trusted = false) }.unavailable() shouldBe
+        FootprintPrecheck(fp, StorageEnforcement.ALL, FootprintGate { observed(trusted = false) }).unavailable() shouldBe
             FootprintUnavailability.UNTRUSTED
-        FootprintPrecheck(fp, StorageEnforcement.ALL) { observed() }.unavailable() shouldBe null
+        FootprintPrecheck(fp, StorageEnforcement.ALL, FootprintGate { observed() }).unavailable() shouldBe null
         FootprintPrecheck(fp, StorageEnforcement.ALL, FootprintGate { error("database gone") }).unavailable() shouldBe
             FootprintUnavailability.UNREADABLE
-        FootprintPrecheck(fp, StorageEnforcement.TENANT_LIMITS) { observed(trusted = false) }.unavailable() shouldBe null
-        FootprintPrecheck(null, StorageEnforcement.ALL) { observed(trusted = false) }.unavailable() shouldBe null
+        FootprintPrecheck(fp, StorageEnforcement.TENANT_LIMITS, FootprintGate { observed(trusted = false) }).unavailable() shouldBe null
+        FootprintPrecheck(null, StorageEnforcement.ALL, FootprintGate { observed(trusted = false) }).unavailable() shouldBe null
+    }
+
+    @Test
+    fun `the pre-resolution check answers corrupt totals and a worst-case overflow, as T1 would - and reuses its answer for 1 s`() {
+        FootprintPrecheck(policy(limits()), StorageEnforcement.ALL, FootprintGate { observed(live = -1L to 0L) }).unavailable() shouldBe
+            FootprintUnavailability.INDETERMINATE
+        val worst = policy(limits()).copy(worstCaseEvent = FootprintAdmission.Load(Long.MAX_VALUE / 2, 1))
+        FootprintPrecheck(worst, StorageEnforcement.ALL, FootprintGate { observed(live = Long.MAX_VALUE / 2 to 1L) }).unavailable() shouldBe
+            FootprintUnavailability.INDETERMINATE
+        var reads = 0
+        var nanos = 0L
+        val cached =
+            FootprintPrecheck(
+                policy(limits()),
+                StorageEnforcement.ALL,
+                FootprintGate { observed().also { reads++ } },
+                java.time.Duration.ofSeconds(1),
+            ) { nanos }
+        repeat(3) { cached.unavailable() }
+        reads shouldBe 1
+        nanos += 1_000_000_000
+        cached.unavailable()
+        reads shouldBe 2
     }
 
     @Test

@@ -133,13 +133,16 @@ class ExpireInboxes(
                 while (true) {
                     if (batches >= config.sweepBatchSize) return deleted to deferred // a sweep's work stays bounded
                     if (!paced.pacing.mayTearDown(paced.teardown.teardownWaitingSince(inbox.id))) {
-                        log.info("inbox_teardown_paced D_est is at D_budget; teardown resumes at a later sweep")
-                        return deleted to deferred
+                        // Not this inbox now, but the next may be past T_max: keep going.
+                        log.info("inbox_teardown_paced D_est is at D_budget; this inbox resumes at a later sweep")
+                        break
                     }
                     batches++
                     val ids = paced.teardown.messageIdsOf(inbox.id, paced.batch)
                     if (ids.isEmpty()) {
-                        blobs.deletePrefix(ObjectKeys.inboxPrefix(inbox.workspaceId, inbox.id))
+                        // No prefix delete here: whatever is left under the prefix has no row
+                        // (a late or held object), so its deletion is row-free and belongs to
+                        // the orphan sweep, which charges it by rule (P) (contract §2.1).
                         inboxes.hardDelete(inbox.id)
                         deleted++
                         break

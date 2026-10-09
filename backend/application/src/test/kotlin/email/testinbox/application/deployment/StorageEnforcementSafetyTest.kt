@@ -157,6 +157,16 @@ class StorageEnforcementSafetyTest {
     }
 
     @Test
+    fun `ALL is refused in production until the envelope-order mitigation exists, and allowed elsewhere`() {
+        // Contract §11.6 (TI-STORAGE-006E PR D): a code gate, not a procedure.
+        val all = complete.copy(enforcement = StorageEnforcement.ALL)
+        DeploymentSafety
+            .validate(deployed.copy(environment = ProductionPolicy.ENVIRONMENT, storage = all))
+            .map { it.setting } shouldContain "testinbox.storage.enforcement"
+        violations(all).map { it.setting } shouldNotContain "testinbox.storage.enforcement"
+    }
+
+    @Test
     fun `the probe reserve must keep rule P admissible - F of the largest object plus a probe, one byte under refuses`() {
         val model =
             email.testinbox.domain.storage

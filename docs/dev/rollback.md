@@ -272,10 +272,16 @@ While untrusted, footprint admission answers `451` under `ALL` (PR D), and
 lose: the older artifact neither observes the footprint nor compacts debt.
 Both only observe while enforcement is `OFF`.
 
-**Schema V9** (TI-STORAGE-006E PR D) is expand-only: one column with a
-stable default (`storage_deletion_debt.recorded_at DEFAULT now()`, no table
-rewrite) and a partial index on pending rows. A rolled-back artifact never
-names it. **Rolling back below PR D once footprint admission enforces is
+**Schema V9** (TI-STORAGE-006E PR D) is expand-only:
+- three columns with constant or stable defaults (`storage_deletion_debt.recorded_at`,
+  `storage_ambiguity.held_by_rule_p`, `storage_footprint_trust.distrusted_seq`;
+  no table rewrite) and a partial index on pending rows;
+- the trust-stamp and latch-hold triggers;
+- the two probe-only debt functions.
+
+A rolled-back artifact never names a new column. The upgrade stamps a distrust
+event, so footprint admission (where it enforces) waits for an observation
+taken after it. **Rolling back below PR D once footprint admission enforces is
 forbidden, not merely unsafe:** an older artifact's orphan sweep, verifier
 and probes delete without the rule-(P) pending rows, so containment no longer
 holds while it runs (contract §4.5). `deploy/rollback-floors.txt` names the

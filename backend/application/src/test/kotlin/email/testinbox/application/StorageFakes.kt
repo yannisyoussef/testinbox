@@ -146,6 +146,11 @@ class InMemoryStorageReservations(
     override fun lockForCommit(ids: Collection<MessageId>) =
         ids.sortedBy { it.value }.mapNotNull { rows[it] }.map { LockedReservation(it.messageId, it.bytes, it.state, it.objectKeys) }
 
+    override fun committedKeys(ids: Collection<MessageId>): Map<MessageId, Set<String>> =
+        messages.messages
+            .filter { it.id in ids }
+            .associate { m -> m.id to (setOf(m.rawObjectKey) + m.attachments.map { it.objectKey }) }
+
     /** Every inbox the fake is asked about is receivable unless a test marks it otherwise. */
     val inboxStates = HashMap<InboxId, email.testinbox.domain.inbox.InboxState>()
 

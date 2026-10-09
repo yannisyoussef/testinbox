@@ -36,10 +36,14 @@ class DistrustAndLatchHoldTest : PersistenceIntegrationTest() {
     fun `a distrust event stamps its order, and an observation that began before it reads as before the distrust`() {
         val ws = db.workspace()
         val inbox = db.inbox(ws)
+        // The V9 upgrade itself is the first distrust event.
+        val baseline = distrustedSeq()
+        (baseline > 0) shouldBe true
         db.ledger.confirmTrust() shouldBe true
         val before = db.beginObservation()
+        (before > baseline) shouldBe true
         db.observe(trashBytes = 0, startedSeq = before)
-        distrustedSeq() shouldBe 0
+        distrustedSeq() shouldBe baseline
 
         db.jdbc.sql("UPDATE storage_footprint_trust SET distrust_epoch = distrust_epoch + 1").update()
         val stamp = distrustedSeq()
@@ -80,5 +84,80 @@ class DistrustAndLatchHoldTest : PersistenceIntegrationTest() {
         ambiguity.latch("x")
         ambiguity.record("node-a", "k", 1, Duration.ZERO)
         db.jdbc.sql("DELETE FROM storage_admission_latch").update() shouldBe 1
+    }
+
+    @Test
+    fun `a re-created trust row is itself a distrust event`() {
+        val baseline = distrustedSeq()
+        db.jdbc.sql("DELETE FROM storage_footprint_trust").update()
+        db.ledger.confirmTrust()
+        (distrustedSeq() > baseline) shouldBe true
+    }
+
+    @Test
+    fun `the probe pair charges and resolves probe keys only, as one empty object`() {
+        db.jdbc
+            .sql("SELECT storage_record_probe_debt('_probe/n/x')")
+            .query()
+            .listOfRows()
+        db.debtRows().map { it.first to it.second } shouldBe listOf(0L to 1L)
+        db.sqlState {
+            db.jdbc
+                .sql("SELECT storage_record_probe_debt('ws/in/m/raw.eml')")
+                .query()
+                .listOfRows()
+        } shouldBe CHECK_VIOLATION
+        db.sqlState {
+            db.jdbc
+                .sql("SELECT storage_resolve_probe_debt('ws/in/m/raw.eml')")
+                .query()
+                .listOfRows()
+        } shouldBe CHECK_VIOLATION
+        db.jdbc
+            .sql("SELECT storage_resolve_probe_debt('_probe/n/x')")
+            .query(Int::class.java)
+            .single() shouldBe 1
+    }
+
+    private fun node(
+        id: String,
+        heartbeatAgo: String,
+        clean: Boolean = false,
+    ) {
+        db.jdbc
+            .sql(
+                "INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown) " +
+                    "VALUES (?, gen_random_uuid(), 'storage-v1', now() - CAST(? AS interval), ?)",
+            ).params(id, heartbeatAgo, clean)
+            .update()
+    }
+
+    @Test
+    fun `rows no live node answers for are orphaned - dead or clean nodes, held rows - live nodes and plain coverage rows are not`() {
+        node("live", "1 minute")
+        node("dead", "1 hour")
+        node("gone", "1 minute", clean = true)
+        ambiguity.record("live", "k1", 1, Duration.ZERO)
+        ambiguity.record("dead", "k2", 1, Duration.ZERO)
+        ambiguity.record("gone", null, 0, Duration.ZERO)
+        ambiguity.record("vanished-id", "k3", 1, Duration.ZERO)
+        ambiguity.record("recovered:dead", "k4", 1, Duration.ZERO)
+        ambiguity.unresolvedOrphaned(Duration.ofMinutes(5)) shouldBe 3 // dead, gone, vanished-id
+
+        val coverage = ambiguity.due(10).single { it.objectKey == "k4" }
+        ambiguity.holdsCoverage("dead") shouldBe false
+        ambiguity.holdRefused(coverage.id)
+        ambiguity.holdsCoverage("dead") shouldBe true
+        ambiguity.unresolvedOrphaned(Duration.ofMinutes(5)) shouldBe 4 // a held coverage row counts
+        // Held rows are retried after a pause, and never ahead of the rows behind them.
+        ambiguity.due(10).none { it.objectKey == "k4" } shouldBe true
+    }
+
+    @Test
+    fun `a late object the orphan sweep holds gets one unresolved held row of its own`() {
+        ambiguity.holdLateObject("ws/in/m/raw.eml", 4096)
+        ambiguity.holdLateObject("ws/in/m/raw.eml", 4096)
+        ambiguity.heldRefused() shouldBe 1
+        ambiguity.unresolvedOrphaned(Duration.ofMinutes(5)) shouldBe 1
     }
 }

@@ -53,6 +53,13 @@ open class JdbcStorageAdmission(
      * quickly. The production value is the default, and nothing overrides it.
      */
     private val lockTimeout: Duration = DEFAULT_LOCK_TIMEOUT,
+    /**
+     * TI-STORAGE-006E PR D: read the footprint inputs (debt, observations,
+     * watermark, trust) in the same statement. Only where the deployment
+     * declares its filesystem: an undeclared OFF deployment's roles may hold no
+     * privilege on those tables, and T1 must never need one.
+     */
+    private val readsFootprint: Boolean = false,
 ) : StorageAdmissionStore {
     init {
         // Whole milliseconds: '0ms' would mean NO timeout, an unbounded wait.
@@ -138,6 +145,9 @@ open class JdbcStorageAdmission(
      * as 0, and its deltas and reservations still count. Every reservation
      * counts, whatever its state or age (I5).
      */
+    private val footprintCtes = if (readsFootprint) ",\n${FootprintSql.CTES}" else ""
+    private val footprintColumns = if (readsFootprint) FootprintSql.COLUMNS else FootprintSql.NONE
+
     protected open fun readSnapshot(scope: StorageAdmissionScope): StorageUsageSnapshot {
         val rows =
             jdbc
@@ -157,8 +167,7 @@ open class JdbcStorageAdmission(
                                        WHERE d.inbox_id IN (SELECT id FROM ib) GROUP BY d.inbox_id),
                          ib_reserved AS (SELECT r.inbox_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
                                            FROM storage_reservation r
-                                          WHERE r.inbox_id IN (SELECT id FROM ib) GROUP BY r.inbox_id),
-                         ${FootprintSql.CTES}
+                                          WHERE r.inbox_id IN (SELECT id FROM ib) GROUP BY r.inbox_id)$footprintCtes
                     -- Objects beside bytes (TI-STORAGE-006E): the footprint bound is
                     -- applied by the caller, from the same snapshot.
                     SELECT 'GLOBAL' AS scope, NULL::uuid AS id, NULL::uuid AS owner, now() AS t0,
@@ -168,7 +177,7 @@ open class JdbcStorageAdmission(
                            (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)
                          + (SELECT coalesce(sum(objects), 0) FROM storage_delta) AS committed_objects,
                            (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation) AS reserved_objects,
-                           ${FootprintSql.COLUMNS}
+                           $footprintColumns
                     UNION ALL
                     SELECT 'WORKSPACE', ws.id, ws.id, now(),
                            coalesce(a.base_bytes, 0) + coalesce(d.bytes, 0),
@@ -197,7 +206,7 @@ open class JdbcStorageAdmission(
                 .param("inboxes", scope.inboxIds.map { it.value })
                 .query { rs, _ ->
                     SnapshotRow(
-                        footprint = if (rs.getString("scope") == "GLOBAL") FootprintSql.read(rs) else null,
+                        footprint = if (readsFootprint && rs.getString("scope") == "GLOBAL") FootprintSql.read(rs) else null,
                         scope = rs.getString("scope"),
                         id = rs.getObject("id", UUID::class.java),
                         owner = rs.getObject("owner", UUID::class.java),

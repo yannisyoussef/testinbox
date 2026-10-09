@@ -32,6 +32,13 @@ interface StorageCommitFence {
     fun lockInboxes(ids: Collection<InboxId>): Map<InboxId, email.testinbox.domain.inbox.InboxState>
 
     /**
+     * The object keys of the rows committed for [ids] in this transaction:
+     * `raw_object_key` and every attachment's `object_key` (TI-STORAGE-006E:
+     * T2 asserts they are exactly the reserved keys).
+     */
+    fun committedKeys(ids: Collection<MessageId>): Map<MessageId, Set<String>>
+
+    /**
      * ADR-035 §6a: one upsert per refused inbox, ascending, `refusal_count + 1`,
      * plus one `pg_notify`. An inbox that vanished is skipped, not an error.
      */
@@ -218,6 +225,27 @@ interface StorageAmbiguity {
     /** How many late objects rule (P) holds right now. */
     fun heldRefused(): Int = 0
 
+    /** Whether rule (P) holds a key of [nodeId]'s coverage rows (`recovered:<nodeId>`). */
+    fun holdsCoverage(nodeId: String): Boolean = false
+
+    /**
+     * A late object the orphan sweep found and rule (P) refused to delete: held
+     * as an unresolved row of its own (unless one exists for the key), so it
+     * occupies a slot and holds the latch like a verifier-held one.
+     */
+    fun holdLateObject(
+        key: String,
+        bytes: Long,
+    ) {}
+
+    /**
+     * Unresolved rows no live node answers for (contract Lemma 3): rows of a
+     * node whose heartbeat is older than [staleHeartbeat] or that shut down,
+     * and held rows; coverage rows of a dead node only when held (its keyless
+     * rows already bound its slots).
+     */
+    fun unresolvedOrphaned(staleHeartbeat: java.time.Duration): Int = 0
+
     /** Rows whose `verify_at` has passed, oldest first. */
     fun due(limit: Int): List<AmbiguityRecord>
 
@@ -319,6 +347,8 @@ data class AmbiguityRecord(
     val nodeId: String,
     val objectKey: String?,
     val ambiguousAt: Instant,
+    /** Already held by rule (P) (V9): latched and metered when it was first refused. */
+    val heldByRuleP: Boolean = false,
 )
 
 /**

@@ -158,6 +158,8 @@ class GuardedStorage(
             StorageUnavailableException(StorageUnavailableReason.ACTIVATION_VIOLATED, "storage activation invariant broken: $detail")
         } ?: if (breaker.isBlocked()) {
             StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open")
+        } else if (slots.exhaustedBeforeResolution()) {
+            StorageUnavailableException(StorageUnavailableReason.SLOT_WAIT, "every write slot is held by unresolved ambiguity")
         } else {
             footprint.unavailable()?.let { reason ->
                 metrics.footprintUnavailable(reason)
@@ -510,6 +512,16 @@ class GuardedStorage(
                 reservations.recordRefusals(refused)
                 val outcomes = persist(admitted)
                 check(outcomes.keys == ids.toSet()) { "persist must report every admitted copy" }
+                // The contract's T2 assertion: the rows just inserted name exactly the reserved
+                // keys. A key uploaded but not committed would be a live object no row charges.
+                val reserved = locked.associate { it.messageId to it.objectKeys.toSet() }
+                val committed = reservations.committedKeys(outcomes.filterValues { it }.keys)
+                if (outcomes.filterValues { it }.keys.any { committed[it].orEmpty() != reserved.getValue(it) }) {
+                    throw StorageUnavailableException(
+                        StorageUnavailableReason.COMMIT_FENCED,
+                        "the committed rows do not name exactly the reserved keys",
+                    )
+                }
                 reservations.consume(outcomes.filterValues { it }.keys)
                 reservations.releaseDuplicates(outcomes.filterValues { !it }.keys)
                 outcomes
