@@ -12,7 +12,7 @@ and production is untouched. Each step below needs the owner's go-ahead.
 | #83 | `feature/ti-storage-006e-footprint-ledger` | `develop` | Footprint model, V8 ledger (object counts, debt, observations, trust), exact-aggregate rules. |
 | #84 | `feature/ti-storage-006e-storage-full-breaker` | #83's branch | `STORAGE_FULL` breaker and the filesystem declarations. |
 | #85 | `feature/ti-storage-006e-footprint-admission` | #84's branch | PR D: T1 footprint admission, the T2 fence, rule (P), pacing, V9; and V10 (verified trust, sweep runs, containment level). |
-| #86 | `feature/ti-storage-006e-gate-f` | #85's branch | PR E: gate F with the `TENANT_LIMITS` preflight; the Ops handoff; this plan; **the containment rollback floor** (`9b26910`, the PR D commit that completed V10's containment code). |
+| #86 | `feature/ti-storage-006e-gate-f` | #85's branch | PR E: gate F with the `TENANT_LIMITS` preflight; the Ops handoff; this plan; **the containment rollback floor** (`edabf29`, PR D's final head). |
 
 #82 is independent of the code chain. Every code PR is a strict descendant of
 the one before it: each was merged forward, never rebased.
@@ -81,12 +81,11 @@ the one before it: each was merged forward, never rebased.
    analysis (with detekt and the activation self-test of 170+ cases), the
    OpenAPI check, acceptance, the staging rehearsal with the synthetic suite,
    and the image build.
-6. **Containment rollback floor.** It is already part of #86: `9b26910`,
-   the PR D commit that completed the containment code, an ancestor of every
-   later merge. The commits after it on #85 are hardening (a refusal message,
-   the fixed containment level); re-point the floor to #85's final head if
-   a later commit is load-bearing. If #85 changes
-   materially before merging, re-point the floor to its final head in #86.
+6. **Containment rollback floor.** It is already part of #86: `edabf29`,
+   PR D's final head, which carries the final V10 (an earlier PR D commit
+   carries a different V10 checksum, so it must never be the floor). It must
+   stay an ancestor of `develop`, so #83–#86 are integrated with merge
+   commits, never squashed.
    - Gate F's mixed-versions row reads the floor line, and gate E then
      proves that every running artifact contains it.
    - `check-rollback-floors.sh` (staging `deploy.sh` and the production
@@ -103,9 +102,39 @@ the one before it: each was merged forward, never rebased.
      reconciliation;
    - `storage_sweep_run` gains completed rows;
    - nodes register `containment = 1`;
-   - under `OFF`, no SMTP or API behaviour changes. The only intended
-     difference is the T2 inbox-state fence, which owner review b keeps
-     (§6).
+   - the behaviour changes under `OFF`, every one intended (final
+     data-integrity review):
+     1. **T2 inbox-state fence.** An event whose inbox stops receiving
+        between T1 and T2, or whose committed keys differ from the reserved
+        keys, answers `451`. The reservation goes to cleanup. Owner review b
+        keeps it.
+     2. **Read gating.** An `EXPIRED` or `DELETED` inbox serves nothing
+        before its hard delete: message, raw and attachments return `404`,
+        and the list is empty. On `develop` they were served until the
+        sweep. The synthetic suite does not read after expiry.
+     3. **`STORAGE_FULL` needs observed recovery.** A real storage-full
+        response (a `507 XMinioStorageFull`, a codeless `507`, or a `500`
+        naming ENOSPC) opens the `STORAGE_FULL` breaker. Only an observation
+        showing `avail ≥ R_ops` lets a trial reopen it (owner review §6: a
+        probe never clears it).
+        - Staging has no monitor role, so after freeing space **Ops restarts
+          the ingestion process** to clear it.
+        - On `develop` the same response recovered by probe after backoff.
+     4. **Retention.** It fails an inbox on a partial `DeleteObjects` and
+        keeps its rows, and hard-deletes oldest first.
+     5. **New bookkeeping:**
+        - the orphan sweep records a run per pass (about 48 rows a day per
+          API node, never pruned);
+        - every delete or release writes a deletion-debt row, never
+          compacted without a monitor observation;
+        - compaction, repair and the 6-hourly trust confirmation run as
+          definer functions;
+        - new gauges: counts-trusted, observation age `-1`, and D_est.
+     6. **The V8 migration** briefly takes the ledger lock and SHARE ROW
+        EXCLUSIVE on `workspace`, `inbox`, `message`, `attachment` and
+        `storage_reservation` while it recomputes. That measured 80 ms for
+        300 000 rows. A blocked `ALTER` aborts the migration cleanly after
+        its lock timeout, and the deploy then fails.
 8. **Ops handoff.** The handoff names the exact application artifact
    identity: the source SHA and the four image digests with their
    provenance attestations. That is what `testinbox_build{git_sha}` reports

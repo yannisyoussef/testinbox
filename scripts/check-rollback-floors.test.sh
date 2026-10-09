@@ -89,7 +89,7 @@ ENFORCEMENT_FLOOR=006c468d64bbbab11d15f93d05d888676461c826 # TI-STORAGE-006 enfo
 real "D: the TI-STORAGE-003 safety floor is refused once TI-STORAGE-006 is a floor: it lacks the enforcement controls" 1 "$SAFETY_FLOOR" "$ENFORCEMENT_FLOOR"
 # TI-STORAGE-006E added a fourth (filesystem containment): the TI-STORAGE-006 floor
 # is now below it, refused naming it, and the containment floor itself is allowed.
-CONTAINMENT_FLOOR=9b2691055fe302875312baa6967d2713fe5327a8 # TI-STORAGE-006E containment (floor 4)
+CONTAINMENT_FLOOR=edabf29db600cf13cf84371153a6d9908d95760a # TI-STORAGE-006E containment (floor 4)
 real "D2: the TI-STORAGE-006 floor is refused once TI-STORAGE-006E is a floor: it lacks containment" 1 "$ENFORCEMENT_FLOOR" "$CONTAINMENT_FLOOR"
 real "D3: the TI-STORAGE-006E containment floor itself is allowed" 0 "$CONTAINMENT_FLOOR"
 real "E: this checkout's head is allowed" 0 "$(git -C "$REPO" rev-parse HEAD)"
