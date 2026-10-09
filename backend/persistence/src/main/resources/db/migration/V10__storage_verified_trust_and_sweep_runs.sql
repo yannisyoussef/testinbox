@@ -75,6 +75,10 @@ BEGIN
     PERFORM pg_advisory_xact_lock(35, 2);
     -- A trust row lost to a restore (it is never backed up) comes back untrusted.
     INSERT INTO public.storage_footprint_trust (id, distrust_epoch) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
+    -- A containment watermark lost the same way comes back at the current order:
+    -- conservatively, every activity before now may have been a lower node's.
+    INSERT INTO public.storage_containment_watermark (id, last_lower_seq)
+    VALUES (1, nextval('public.storage_debt_order_seq')) ON CONFLICT (id) DO NOTHING;
     PERFORM set_config('testinbox.trust_verifier', 'v10', true);
     WITH derived AS (
         SELECT workspace_id, sum(bytes) AS bytes, count(*) AS objects
@@ -135,6 +139,53 @@ REVOKE EXECUTE ON FUNCTION storage_confirm_footprint_trust() FROM PUBLIC;
 -- ---------------------------------------------------------------------------
 ALTER TABLE storage_node ADD COLUMN containment smallint NOT NULL DEFAULT 0;
 
+-- The durable record of lower-capability activity. Node rows are reaped (a
+-- restarting node deletes its earlier generations; cleanup deletes stale
+-- ones), so "the last heartbeat of a node below level 1" cannot be read from
+-- storage_node itself. Every write of a row below level 1 (a registration, a
+-- heartbeat, a clean shutdown) and every deletion of one stamps an order from
+-- storage_debt_order_seq here. The order only grows. Gate F requires the
+-- base-case sweep to have STARTED after it, so a sweep that overlapped any
+-- lower node's activity, or its reaping, never counts.
+CREATE TABLE storage_containment_watermark (
+    id            smallint PRIMARY KEY CHECK (id = 1),
+    last_lower_seq bigint  NOT NULL
+);
+-- Every node registered before this migration ran an earlier artifact.
+INSERT INTO storage_containment_watermark VALUES (1, nextval('storage_debt_order_seq'));
+
+CREATE FUNCTION storage_node_lower_stamp() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
+$$
+BEGIN
+    IF (TG_OP IN ('INSERT', 'UPDATE') AND NEW.containment < 1) OR (TG_OP IN ('UPDATE', 'DELETE') AND OLD.containment < 1) THEN
+        INSERT INTO public.storage_containment_watermark (id, last_lower_seq) VALUES (1, nextval('public.storage_debt_order_seq'))
+        ON CONFLICT (id) DO UPDATE SET last_lower_seq = greatest(public.storage_containment_watermark.last_lower_seq, EXCLUDED.last_lower_seq);
+    END IF;
+    RETURN NULL;
+END
+$$;
+
+CREATE TRIGGER storage_node_lower_stamp
+    AFTER INSERT OR UPDATE OR DELETE ON storage_node
+    FOR EACH ROW EXECUTE FUNCTION storage_node_lower_stamp();
+
+-- The watermark only grows, and nobody but the trigger writes it.
+CREATE FUNCTION storage_containment_watermark_monotone() RETURNS trigger
+    LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS
+$$
+BEGIN
+    IF TG_OP = 'DELETE' OR NEW.last_lower_seq < OLD.last_lower_seq THEN
+        RAISE EXCEPTION 'storage_containment_watermark only grows' USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER storage_containment_watermark_monotone
+    BEFORE UPDATE OR DELETE ON storage_containment_watermark
+    FOR EACH ROW EXECUTE FUNCTION storage_containment_watermark_monotone();
+
 -- One row per full orphan sweep. The order and both instants are issued by
 -- the database; the covered figure is computed by it from the ledger at
 -- completion. The application supplies only its node id and the payload bytes
@@ -179,7 +230,7 @@ $$
 $$;
 REVOKE EXECUTE ON FUNCTION storage_begin_sweep(text) FROM PUBLIC;
 
-CREATE FUNCTION storage_complete_sweep(p_run bigint, p_listed_bytes bigint) RETURNS void
+CREATE FUNCTION storage_complete_sweep(p_run bigint, p_node text, p_listed_bytes bigint) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
@@ -190,10 +241,175 @@ BEGIN
            covered_bytes = (SELECT coalesce(sum(base_bytes), 0) FROM public.workspace_storage_account)
                          + (SELECT coalesce(sum(bytes), 0) FROM public.storage_delta)
                          + (SELECT coalesce(sum(bytes), 0) FROM public.storage_reservation)
-     WHERE id = p_run AND completed_at IS NULL;
+     WHERE id = p_run AND node_id = p_node AND completed_at IS NULL;
     IF NOT FOUND THEN
-        RAISE EXCEPTION 'storage_complete_sweep: run % is unknown or already completed', p_run USING ERRCODE = 'check_violation';
+        RAISE EXCEPTION 'storage_complete_sweep: run % is unknown, another node''s, or already completed', p_run USING ERRCODE = 'check_violation';
     END IF;
 END
 $$;
-REVOKE EXECUTE ON FUNCTION storage_complete_sweep(bigint, bigint) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION storage_complete_sweep(bigint, text, bigint) FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------
+-- §2, continued (security review of V10): the counts the trust mark vouches for
+-- are written only by the database. Compaction and repair become SECURITY
+-- DEFINER functions with exactly the statements JdbcStorageLedger ran, so no
+-- application role needs, or should hold, INSERT, UPDATE or DELETE on
+-- storage_delta or workspace_storage_account, nor on inbox_storage's base
+-- columns (the refusal record keeps a column grant). The V8 ledger triggers
+-- were already definer. Without those grants, an application role cannot
+-- under-count the footprint after a trust mark.
+-- ---------------------------------------------------------------------------
+CREATE FUNCTION storage_compact_ledger(p_batch integer) RETURNS integer
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
+$fn$
+DECLARE
+    folded_rows integer;
+BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'storage_compact_ledger() runs under READ COMMITTED only' USING ERRCODE = 'invalid_transaction_state';
+    END IF;
+    IF p_batch IS NULL OR p_batch <= 0 THEN
+        RAISE EXCEPTION 'storage_compact_ledger(): batch must be positive' USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+    -- The compactor's try-lock: -1 means another holder has the ledger.
+    IF NOT pg_try_advisory_xact_lock(35, 2) THEN
+        RETURN -1;
+    END IF;
+    -- This compactor folds the objects itself: V8's folding trigger must not.
+    PERFORM set_config('testinbox.ledger_counts', 'v8', true);
+    WITH folded AS (
+        DELETE FROM storage_delta
+         WHERE id IN (SELECT id FROM storage_delta ORDER BY id LIMIT p_batch)
+        RETURNING workspace_id, inbox_id, bytes, objects
+    ),
+    workspaces AS (
+        INSERT INTO workspace_storage_account (workspace_id, base_bytes, base_objects)
+        SELECT f.workspace_id, sum(f.bytes), sum(f.objects)
+          FROM folded f
+         WHERE EXISTS (SELECT 1 FROM workspace w WHERE w.id = f.workspace_id)
+         GROUP BY f.workspace_id
+         ORDER BY f.workspace_id
+        ON CONFLICT (workspace_id)
+            DO UPDATE SET base_bytes = workspace_storage_account.base_bytes + EXCLUDED.base_bytes,
+                          base_objects = workspace_storage_account.base_objects + EXCLUDED.base_objects
+        RETURNING 1
+    ),
+    inboxes AS (
+        INSERT INTO inbox_storage (inbox_id, workspace_id, base_bytes, base_objects)
+        SELECT f.inbox_id, (array_agg(f.workspace_id))[1], sum(f.bytes), sum(f.objects)
+          FROM folded f
+         WHERE f.inbox_id IS NOT NULL
+           AND EXISTS (SELECT 1 FROM inbox i WHERE i.id = f.inbox_id)
+         GROUP BY f.inbox_id
+         ORDER BY f.inbox_id
+        ON CONFLICT (inbox_id)
+            DO UPDATE SET base_bytes = inbox_storage.base_bytes + EXCLUDED.base_bytes,
+                          base_objects = inbox_storage.base_objects + EXCLUDED.base_objects
+        RETURNING 1
+    )
+    SELECT (SELECT count(*) FROM folded)::integer
+           + 0 * ((SELECT count(*) FROM workspaces) + (SELECT count(*) FROM inboxes))::integer
+      INTO folded_rows;
+    PERFORM set_config('testinbox.ledger_counts', '', true);
+    RETURN folded_rows;
+END
+$fn$;
+REVOKE EXECUTE ON FUNCTION storage_compact_ledger(integer) FROM PUBLIC;
+
+CREATE FUNCTION storage_repair_ledger()
+    RETURNS TABLE (scope text, id uuid, derived numeric, accounted numeric, derived_objects numeric, accounted_objects numeric)
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
+$fn$
+#variable_conflict use_column
+BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'storage_repair_ledger() runs under READ COMMITTED only' USING ERRCODE = 'invalid_transaction_state';
+    END IF;
+    -- Blocking: a repair is rare, and must not interleave with a compaction.
+    PERFORM pg_advisory_xact_lock(35, 2);
+    RETURN QUERY
+    WITH derived_workspace AS (
+        SELECT workspace_id, sum(bytes) AS bytes, count(*) AS objects
+          FROM (SELECT workspace_id, raw_size_bytes AS bytes FROM message
+                UNION ALL
+                SELECT workspace_id, size_bytes FROM attachment) s
+         GROUP BY workspace_id
+    ),
+    unfolded_workspace AS (
+        SELECT workspace_id, sum(bytes) AS bytes, sum(objects) AS objects FROM storage_delta GROUP BY workspace_id
+    ),
+    derived_inbox AS (
+        SELECT inbox_id, sum(bytes) AS bytes, count(*) AS objects
+          FROM (SELECT inbox_id, raw_size_bytes AS bytes FROM message
+                UNION ALL
+                SELECT m.inbox_id, a.size_bytes FROM attachment a JOIN message m ON m.id = a.message_id) s
+         GROUP BY inbox_id
+    ),
+    unfolded_inbox AS (
+        SELECT inbox_id, sum(bytes) AS bytes, sum(objects) AS objects
+          FROM storage_delta WHERE inbox_id IS NOT NULL GROUP BY inbox_id
+    ),
+    drift AS (
+        SELECT 'WORKSPACE' AS scope, w.id,
+               coalesce(d.bytes, 0) AS derived,
+               coalesce(u.bytes, 0) AS unfolded,
+               coalesce(a.base_bytes, 0) + coalesce(u.bytes, 0) AS accounted,
+               coalesce(d.objects, 0) AS derived_objects,
+               coalesce(u.objects, 0) AS unfolded_objects,
+               coalesce(a.base_objects, 0) + coalesce(u.objects, 0) AS accounted_objects
+          FROM workspace w
+          LEFT JOIN derived_workspace d ON d.workspace_id = w.id
+          LEFT JOIN unfolded_workspace u ON u.workspace_id = w.id
+          LEFT JOIN workspace_storage_account a ON a.workspace_id = w.id
+         WHERE coalesce(d.bytes, 0) <> coalesce(a.base_bytes, 0) + coalesce(u.bytes, 0)
+            OR coalesce(d.objects, 0) <> coalesce(a.base_objects, 0) + coalesce(u.objects, 0)
+        UNION ALL
+        SELECT 'INBOX', i.id,
+               coalesce(d.bytes, 0),
+               coalesce(u.bytes, 0),
+               coalesce(s.base_bytes, 0) + coalesce(u.bytes, 0),
+               coalesce(d.objects, 0),
+               coalesce(u.objects, 0),
+               coalesce(s.base_objects, 0) + coalesce(u.objects, 0)
+          FROM inbox i
+          LEFT JOIN derived_inbox d ON d.inbox_id = i.id
+          LEFT JOIN unfolded_inbox u ON u.inbox_id = i.id
+          LEFT JOIN inbox_storage s ON s.inbox_id = i.id
+         WHERE coalesce(d.bytes, 0) <> coalesce(s.base_bytes, 0) + coalesce(u.bytes, 0)
+            OR coalesce(d.objects, 0) <> coalesce(s.base_objects, 0) + coalesce(u.objects, 0)
+    ),
+    workspace_fix AS (
+        INSERT INTO workspace_storage_account (workspace_id, base_bytes, base_objects, reconciled_at)
+        SELECT id, derived - unfolded, derived_objects - unfolded_objects, now() FROM drift WHERE scope = 'WORKSPACE' ORDER BY id
+        ON CONFLICT (workspace_id)
+            DO UPDATE SET base_bytes = EXCLUDED.base_bytes, base_objects = EXCLUDED.base_objects,
+                          reconciled_at = EXCLUDED.reconciled_at
+        RETURNING 1
+    ),
+    inbox_fix AS (
+        INSERT INTO inbox_storage (inbox_id, workspace_id, base_bytes, base_objects)
+        SELECT d.id, i.workspace_id, d.derived - d.unfolded, d.derived_objects - d.unfolded_objects
+          FROM drift d JOIN inbox i ON i.id = d.id
+         WHERE d.scope = 'INBOX'
+         ORDER BY d.id
+        ON CONFLICT (inbox_id) DO UPDATE SET base_bytes = EXCLUDED.base_bytes, base_objects = EXCLUDED.base_objects
+        RETURNING 1
+    ),
+    -- Drift found revokes trust in the repair transaction itself
+    -- (contract §4.5): admission waits for a clean pass after it.
+    -- Only WORKSPACE-scope drift: the global potential is the sum of
+    -- workspace counts, and an inbox-level over-count (a message
+    -- deleted with its attachments in one statement leaves their
+    -- delta unattributed, V6) is accepted and never enters it.
+    distrusted AS (
+        UPDATE storage_footprint_trust SET distrust_epoch = distrust_epoch + 1
+         WHERE id = 1 AND EXISTS (SELECT 1 FROM drift WHERE scope = 'WORKSPACE')
+        RETURNING 1
+    )
+    -- Every data-modifying CTE above runs whether or not it is referenced.
+    SELECT drift.scope::text, drift.id, drift.derived::numeric, drift.accounted::numeric,
+           drift.derived_objects::numeric, drift.accounted_objects::numeric
+      FROM drift;
+END
+$fn$;
+REVOKE EXECUTE ON FUNCTION storage_repair_ledger() FROM PUBLIC;

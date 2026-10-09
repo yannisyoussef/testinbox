@@ -171,6 +171,74 @@ class StorageVerifiedTrustTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `with the documented grants the application compacts, repairs and confirms, and can no longer forge the counts it vouches for`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+        val ws = db.workspace()
+        db.message(ws, db.inbox(ws), rawBytes = 1_000, attachments = listOf(10))
+        val api = role("ti_api")
+        val asApi = db.connectAs(api)
+        db.grant(
+            api,
+            "GRANT SELECT ON storage_delta, workspace_storage_account, inbox_storage, workspace, inbox, message, attachment",
+            "GRANT INSERT (inbox_id, workspace_id, refusal_count, last_refusal_at, last_refusal_reason) ON inbox_storage",
+            "GRANT UPDATE (refusal_count, last_refusal_at, last_refusal_reason) ON inbox_storage",
+            "GRANT SELECT, UPDATE (distrust_epoch) ON storage_footprint_trust",
+            "GRANT EXECUTE ON FUNCTION storage_compact_ledger(integer), storage_repair_ledger(), storage_confirm_footprint_trust()",
+        )
+        val ledger = JdbcStorageLedger(asApi, db.transactions)
+        ledger.compact(100).foldedRows shouldBe 2
+        ledger.repairDrift() shouldBe emptyList()
+        ledger.confirmTrust() shouldBe true
+
+        // The forgery the security review demonstrated: a negative delta after the mark.
+        failure {
+            asApi.sql("INSERT INTO storage_delta (workspace_id, bytes, objects) VALUES (?, -1000000, -5)").param(ws).update()
+        } shouldContain "permission denied"
+        failure { asApi.sql("UPDATE workspace_storage_account SET base_objects = 0").update() } shouldContain "permission denied"
+        failure { asApi.sql("DELETE FROM storage_delta").update() } shouldContain "permission denied"
+        failure { asApi.sql("UPDATE inbox_storage SET base_bytes = 0").update() } shouldContain "permission denied"
+        // The refusal record still works through its column grant.
+        asApi.sql("UPDATE inbox_storage SET refusal_count = refusal_count WHERE workspace_id = ?").param(ws).update()
+        db.countsTrusted() shouldBe true
+    }
+
+    @Test
+    fun `node rows below containment level 1 leave a durable order behind, even once they are reaped`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+
+        fun watermark() =
+            db.jdbc
+                .sql("SELECT last_lower_seq FROM storage_containment_watermark")
+                .query(Long::class.java)
+                .single()
+        val atUpgrade = watermark()
+        val generation = UUID.randomUUID()
+        db.jdbc
+            .sql("INSERT INTO storage_node (node_id, generation, capability, heartbeat_at) VALUES ('old', ?, 'storage-v1', now())")
+            .param(generation)
+            .update()
+        val registered = watermark()
+        (registered > atUpgrade) shouldBe true
+        db.jdbc.sql("UPDATE storage_node SET heartbeat_at = now() WHERE node_id = 'old'").update()
+        val heartbeat = watermark()
+        (heartbeat > registered) shouldBe true
+        db.jdbc.sql("DELETE FROM storage_node WHERE node_id = 'old'").update() // reaped
+        (watermark() > heartbeat) shouldBe true
+
+        // A level-1 node leaves it alone; nobody can lower it.
+        val before = watermark()
+        JdbcStorageAmbiguity(db.jdbc, db.transactions).registerGeneration("new", UUID.randomUUID(), "storage-v1")
+        watermark() shouldBe before
+        failure { db.jdbc.sql("UPDATE storage_containment_watermark SET last_lower_seq = 0").update() } shouldContain "only grows"
+        failure { db.jdbc.sql("DELETE FROM storage_containment_watermark").update() } shouldContain "only grows"
+
+        // Lost to a restore (it is not backed up): the next verification recreates it at the current order.
+        db.jdbc.sql("TRUNCATE storage_containment_watermark").update()
+        db.confirm() shouldBe true
+        (watermark() > before) shouldBe true
+    }
+
+    @Test
     fun `a trust row lost to a restore comes back untrusted through the verifier, never through the application`() {
         val db = LedgerTestDatabase.create(postgres, admin)
         db.jdbc.sql("DELETE FROM storage_footprint_trust").update()
@@ -198,11 +266,13 @@ class StorageVerifiedTrustTest : PersistenceIntegrationTest() {
         db.message(ws, db.inbox(ws), rawBytes = 1_000, attachments = listOf(10))
         val api = role("ti_api")
         val asApi = db.connectAs(api)
-        db.grant(api, "GRANT EXECUTE ON FUNCTION storage_begin_sweep(text), storage_complete_sweep(bigint, bigint)")
+        db.grant(api, "GRANT EXECUTE ON FUNCTION storage_begin_sweep(text), storage_complete_sweep(bigint, text, bigint)")
 
         val runs = JdbcSweepRuns(asApi, "api-1")
         val run = runs.begin()
         runs.complete(run, listedBytes = 900)
+        // Another node cannot complete this node's run.
+        failure { JdbcSweepRuns(asApi, "api-2").complete(run, 0) } shouldContain "another node"
         val row =
             db.jdbc
                 .sql("SELECT * FROM storage_sweep_run WHERE id = ?")
@@ -214,7 +284,7 @@ class StorageVerifiedTrustTest : PersistenceIntegrationTest() {
         row["covered_bytes"] shouldBe 1_010L
         (row["started_seq"] as Long) shouldNotBe 0L
 
-        failure { runs.complete(run, 1) } shouldContain "unknown or already completed"
+        failure { runs.complete(run, 1) } shouldContain "already completed"
         failure {
             db.jdbc
                 .sql("UPDATE storage_sweep_run SET physical_listed_bytes = 0 WHERE id = ?")

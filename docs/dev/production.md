@@ -120,6 +120,24 @@ reconciliation. Staging connects every deployable as the table owner, which
 satisfies all of this. A production that separates the roles must grant these
 first.
 
+**From V10 on (TI-STORAGE-006E, owner review b), the ledger is written only
+by the database.**
+- The V8 ledger triggers are `SECURITY DEFINER`. Compaction and repair are
+  the definer functions `storage_compact_ledger(integer)` and
+  `storage_repair_ledger()`.
+- No application role then needs `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE`
+  on `storage_delta` or `workspace_storage_account`, nor on
+  `inbox_storage`'s base columns.
+- The API role holds `SELECT` on the three tables and `EXECUTE` on the two
+  functions.
+- Both deployables keep a column grant for the refusal record:
+  - `INSERT (inbox_id, workspace_id, refusal_count, last_refusal_at, last_refusal_reason)`
+    and `UPDATE (refusal_count, last_refusal_at, last_refusal_reason)` on
+    `inbox_storage`.
+- **Revoke the earlier writes** once every running artifact is from V10 on.
+  A role that keeps them can forge the counts a trust mark vouches for, and
+  gate F's privileges row refuses `ALL` while one does.
+
 **V8 (TI-STORAGE-006E, the filesystem-containment contract) needs no new
 grant for the deletes the deployables already make.** The trigger bodies
 that write deletion debt (on every `message`, `attachment` and
