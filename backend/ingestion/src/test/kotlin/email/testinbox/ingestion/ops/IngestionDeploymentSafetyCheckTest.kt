@@ -148,10 +148,8 @@ class IngestionDeploymentSafetyCheckTest {
             val message = context.startupFailure!!.stackTraceToString()
             for (key in listOf(
                 "global-limit-bytes",
-                "declared-bucket-quota-bytes",
                 "declared-max-ingestion-processes",
                 "inbox-share",
-                "measured-quota-lag-churn-bytes",
                 "backend-identity",
                 "filesystem.block-size-bytes",
                 "filesystem.object-overhead-max-bytes",
@@ -167,6 +165,9 @@ class IngestionDeploymentSafetyCheckTest {
             )) {
                 message shouldContain "testinbox.storage.$key"
             }
+            // The legacy bucket-quota fuse is optional under Amendment 2: never reported as missing.
+            message.contains("declared-bucket-quota-bytes") shouldBe false
+            message.contains("measured-quota-lag-churn-bytes") shouldBe false
         }
     }
 

@@ -104,7 +104,7 @@ data class StorageDeclarations(
     val declaredMaxIngestionProcesses: Int? = null,
     /** Decimal text, e.g. `0.25`; parsed as `InboxShare`. */
     val inboxShare: String? = null,
-    /** The bytes MinIO can accept during one usage-refresh lag, as Ops measured it (§9, §18 gate 8). */
+    /** OPTIONAL and informational since ADR-035 Amendment 2: the bytes MinIO accepted during one usage-refresh lag; if set, never negative. */
     val measuredQuotaLagChurnBytes: Long? = null,
     val maxConcurrentWrites: Int = StorageProtocol.MAX_CONCURRENT_WRITES,
     val maxObjectBytes: Long = DEFAULT_MAX_OBJECT_BYTES,

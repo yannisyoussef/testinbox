@@ -4,7 +4,6 @@ import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.NodeRole
 import email.testinbox.application.storage.QualificationMatch
 import email.testinbox.application.storage.StorageDeclarations
-import email.testinbox.domain.storage.BucketQuotaFuse
 import email.testinbox.domain.storage.FilesystemContainment
 import email.testinbox.domain.storage.FootprintModel
 import email.testinbox.domain.storage.InboxShare
@@ -528,7 +527,7 @@ object DeploymentSafety {
  * change rule): it must keep starting with nothing declared, with a stale or
  * absent qualification, and with a changed backend. So OFF checks only the
  * SANITY of whatever is declared (a negative *G* is a mistake in any mode),
- * never its completeness, the fuse or the qualification match.
+ * never its completeness, the filesystem containment or the qualification match.
  *
  * A non-OFF mode refuses on every one of the §18 prerequisites separately,
  * and reports all of them at once, so an operator sees the whole gap rather
@@ -634,6 +633,20 @@ object StorageEnforcementSafety {
             addAll(qualification(storage))
         }
 
+    /**
+     * The non-OFF declarations (ADR-035 §18, as amended by Amendment 2).
+     *
+     * The physical link is the filesystem-containment contract: its declarations
+     * and the static inequality I-C are required in every non-OFF mode
+     * ([filesystemContainment]), and gate F proves them against the real
+     * filesystem before activation. The legacy bucket-quota fuse
+     * `Q ≥ G + max(1 GiB, 10 % of G, H + churn)` is **no longer required or
+     * evaluated** (Amendment 2 §A2.3; owner review c): the MinIO bucket quota may
+     * stay configured as an optional secondary defence, and a declared Q or churn
+     * figure is only checked for being well-formed ([sanity]). Gate Q — the
+     * backend qualification match — is a different thing and stays mandatory
+     * ([qualification]).
+     */
     private fun declarations(storage: StorageDeclarations): List<DeploymentViolation> =
         buildList {
             val g = storage.globalLimitBytes
@@ -641,12 +654,6 @@ object StorageEnforcementSafety {
                 null
             ) {
                 add(DeploymentViolation(GLOBAL, "is not declared; a non-OFF deployment must state G (ADR-035 §18 prerequisite 10)"))
-            }
-            val q = storage.declaredBucketQuotaBytes
-            if (q ==
-                null
-            ) {
-                add(DeploymentViolation(QUOTA, "is not declared; the bucket quota fuse Q cannot be checked (ADR-035 §9, §18 gate 8)"))
             }
             val processes = storage.declaredMaxIngestionProcesses
             if (processes == null) {
@@ -663,62 +670,19 @@ object StorageEnforcementSafety {
                 add(DeploymentViolation(SHARE, "is not declared; a non-OFF deployment must state the inbox share (ADR-035 §3)"))
             }
             addAll(nodeDeclarations(storage, processes))
-            // Independent of G: every filesystem gap is reported with the others. The
-            // bucket-quota fuse below stays REQUIRED: T1 still admits on payload G only,
-            // and until footprint admission (I-G) is wired (TI-STORAGE-006E PR D, after
-            // #82 is accepted) the fuse is what links G to physical bytes.
+            // Independent of G: every filesystem gap is reported with the others.
             addAll(filesystemContainment(storage, processes))
-            val churn = storage.measuredQuotaLagChurnBytes
-            if (churn ==
-                null
-            ) {
-                add(
-                    DeploymentViolation(
-                        CHURN,
-                        "is not declared; Ops measures the bytes MinIO accepts during one usage-refresh lag (ADR-035 §9)",
-                    ),
-                )
-            }
-            // The arithmetic below only runs on well-formed inputs; the sanity pass reported the others.
-            val usable =
-                listOf(
-                    g != null && g > 0,
-                    processes == null || processes > 0,
-                    churn == null || churn >= 0,
-                    q == null || q > 0,
-                ).all { it }
-            if (!usable) return@buildList
-            checkNotNull(g)
-            val h =
-                runCatching { EffectiveStoragePolicy.finalizeBudget(storage).bytes }
-                    .getOrElse {
-                        add(
-                            DeploymentViolation(
-                                PROCESSES,
-                                "makes H = processes × ${storage.maxConcurrentWrites} × ${storage.maxObjectBytes} overflow; refused, never wrapped",
-                            ),
-                        )
-                        return@buildList
-                    }
-            if (q != null && churn != null) {
-                runCatching { BucketQuotaFuse.minimumQuotaBytes(g, h, churn) }
-                    .onSuccess { minimum ->
-                        if (q < minimum) {
-                            add(
-                                DeploymentViolation(
-                                    QUOTA,
-                                    "is $q but the fuse needs at least $minimum = G + max(1 GiB, 10 % of G, H + churn) with G=$g H=$h churn=$churn (ADR-035 §9)",
-                                ),
-                            )
-                        }
-                    }.onFailure {
-                        add(
-                            DeploymentViolation(
-                                QUOTA,
-                                "the fuse minimum G + max(1 GiB, 10 % of G, H + churn) overflows; refused, never wrapped",
-                            ),
-                        )
-                    }
+            // The payload finalize budget H must be computable; its overflow is a refusal, never a wrap.
+            val computable = g != null && g > 0
+            if (computable && (processes ?: 1) > 0) {
+                runCatching { EffectiveStoragePolicy.finalizeBudget(storage).bytes }.onFailure {
+                    add(
+                        DeploymentViolation(
+                            PROCESSES,
+                            "makes H = processes × ${storage.maxConcurrentWrites} × ${storage.maxObjectBytes} overflow; refused, never wrapped",
+                        ),
+                    )
+                }
             }
         }
 
