@@ -102,6 +102,10 @@ class MicrometerStorageProtocolMetrics(
         registry.counter(COMMIT_FENCED).increment()
     }
 
+    override fun footprintUnavailable(reason: email.testinbox.application.storage.FootprintUnavailability) {
+        registry.counter(FOOTPRINT_UNAVAILABLE, "cause", reason.name.lowercase()).increment()
+    }
+
     override fun released(path: ReleasePath) {
         registry.counter(RELEASED, "path", path.name.lowercase()).increment()
     }
@@ -158,6 +162,7 @@ class MicrometerStorageProtocolMetrics(
         const val SLOT_WAIT = "testinbox_storage_slot_wait_seconds"
         const val PHYSICAL_FAILURE = "testinbox_storage_physical_failure_total"
         const val COMMIT_FENCED = "testinbox_storage_commit_fenced_total"
+        const val FOOTPRINT_UNAVAILABLE = "testinbox_storage_footprint_unavailable_total"
         const val RELEASED = "testinbox_storage_reservation_released_total"
         const val LATE_OBJECT = "testinbox_storage_late_object_total"
         const val WITNESS_FAILED = "testinbox_storage_witness_failed_total"

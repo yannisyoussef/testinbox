@@ -92,6 +92,8 @@ class GuardedIngestHarness(
     val activation: email.testinbox.application.storage.activation.ActivationGuard =
         email.testinbox.application.storage.activation
             .ActivationGuard(),
+    /** TI-STORAGE-006E PR D: the global footprint rules (T1 and the pre-resolution check), or none. */
+    val footprint: email.testinbox.application.storage.FootprintPolicy? = null,
 ) : AutoCloseable {
     val dbName: String = shared?.dbName ?: "guarded_${UUID.randomUUID().toString().replace("-", "")}"
     val bucket: String = shared?.bucket ?: "g-${UUID.randomUUID().toString().take(12)}"
@@ -157,7 +159,7 @@ class GuardedIngestHarness(
 
     val guarded =
         GuardedStorage(
-            admission = StorageAdmission(JdbcStorageAdmission(jdbc, template), policy, enforcement),
+            admission = StorageAdmission(JdbcStorageAdmission(jdbc, template), policy, enforcement, footprint = footprint),
             reservations = reservations,
             ambiguity =
                 object : email.testinbox.application.port.StorageAmbiguity by ambiguity {
@@ -182,6 +184,12 @@ class GuardedIngestHarness(
             metrics = metrics,
             hook = hook,
             activation = activation,
+            footprint =
+                email.testinbox.application.storage.FootprintPrecheck(
+                    footprint,
+                    enforcement,
+                    email.testinbox.persistence.JdbcFootprintGate(jdbc),
+                ),
         )
 
     val messages = JdbcMessageRepository(jdbc)
@@ -439,6 +447,10 @@ class RecordingProtocolMetrics : StorageProtocolMetrics {
 
     override fun commitFenced() {
         events += "fenced"
+    }
+
+    override fun footprintUnavailable(reason: email.testinbox.application.storage.FootprintUnavailability) {
+        events += "footprint:$reason"
     }
 
     override fun released(path: email.testinbox.application.port.ReleasePath) {

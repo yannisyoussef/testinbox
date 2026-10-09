@@ -181,19 +181,21 @@ data class FootprintModel(
 object FilesystemContainment {
     const val GIB: Long = 1024L * 1024 * 1024
 
-    /** The least the filesystem must offer for the declared budgets. */
+    /** The least the filesystem must offer for the declared budgets: I-C, `G_F + D_budget + P_F + M + R_ops`. */
     fun requiredCapacityBytes(
         globalFootprintLimitBytes: Long,
         deletionDebtBudgetBytes: Long,
         metadataBudgetBytes: Long,
         operationalReserveBytes: Long,
+        probeBudgetBytes: Long = 0,
     ): Long {
+        require(probeBudgetBytes >= 0) { "P_F must not be negative, was $probeBudgetBytes" }
         require(globalFootprintLimitBytes > 0) { "G_F must be positive, was $globalFootprintLimitBytes" }
         require(deletionDebtBudgetBytes > 0) { "D_budget must be positive, was $deletionDebtBudgetBytes" }
         require(metadataBudgetBytes > 0) { "M must be positive, was $metadataBudgetBytes" }
         require(operationalReserveBytes > 0) { "R_ops must be positive, was $operationalReserveBytes" }
         return Math.addExact(
-            Math.addExact(globalFootprintLimitBytes, deletionDebtBudgetBytes),
+            Math.addExact(Math.addExact(globalFootprintLimitBytes, deletionDebtBudgetBytes), probeBudgetBytes),
             Math.addExact(metadataBudgetBytes, operationalReserveBytes),
         )
     }

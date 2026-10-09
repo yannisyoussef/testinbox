@@ -53,6 +53,33 @@ data class StorageUsageSnapshot(
     val global: StorageUsage,
     val workspaces: Map<WorkspaceId, StorageUsage>,
     val inboxes: Map<InboxId, InboxStorageUsage>,
+    /**
+     * The footprint inputs read in the SAME statement (contract §2.4 "one
+     * snapshot"): deletion debt, the newest observation, the watermark and
+     * the trust marker. Null when the store does not read them.
+     */
+    val footprint: ObservedFootprint? = null,
+)
+
+/**
+ * The contract §5.3 debt sums and the newest observation as T1 reads them.
+ * [debtBytes]/[debtObjects]: every pending row plus every row ordered at or
+ * after the newest observation's start (all rows when there is none).
+ */
+data class ObservedFootprint(
+    /** *L*: committed plus reserved, bytes and objects, UNCLAMPED — a negative figure is corruption (INDETERMINATE). */
+    val liveBytes: Long,
+    val liveObjects: Long,
+    val debtBytes: Long,
+    val debtObjects: Long,
+    val countsTrusted: Boolean,
+    val compactedThroughSeq: Long,
+    /** The newest observation (by `started_seq`), or nulls when none exists. */
+    val startedSeq: Long?,
+    val trashBytes: Long?,
+    val blockSizeBytes: Long?,
+    val capacityBytes: Long?,
+    val writtenBy: String?,
 )
 
 /**

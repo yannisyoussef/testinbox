@@ -67,6 +67,8 @@ testinbox:
       capacity-bytes: ${TESTINBOX_STORAGE_FS_CAPACITY_BYTES:}
       inodes: ${TESTINBOX_STORAGE_FS_INODES:}
       observation-max-age: ${TESTINBOX_STORAGE_FS_OBSERVATION_MAX_AGE:}
+      probe-budget-bytes: ${TESTINBOX_STORAGE_FS_PROBE_BUDGET_BYTES:}
+      monitor-role: ${TESTINBOX_STORAGE_FS_MONITOR_ROLE:}
   deployment:
     environment: ${TESTINBOX_ENVIRONMENT}
     proxy-read-timeout: ${TESTINBOX_PROXY_READ_TIMEOUT}

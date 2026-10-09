@@ -89,6 +89,8 @@ testinbox:
       capacity-bytes: ${TESTINBOX_STORAGE_FS_CAPACITY_BYTES:}
       inodes: ${TESTINBOX_STORAGE_FS_INODES:}
       observation-max-age: ${TESTINBOX_STORAGE_FS_OBSERVATION_MAX_AGE:}
+      probe-budget-bytes: ${TESTINBOX_STORAGE_FS_PROBE_BUDGET_BYTES:}
+      monitor-role: ${TESTINBOX_STORAGE_FS_MONITOR_ROLE:}
   bootstrap:
     # The dedicated synthetic-test credential (docs/dev/staging.md). Injected
     # from the environment's secret store; only its SHA-256 is ever persisted.

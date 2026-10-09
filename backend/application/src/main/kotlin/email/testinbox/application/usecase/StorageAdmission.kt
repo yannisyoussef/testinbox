@@ -8,9 +8,13 @@ import email.testinbox.application.port.StorageAdmissionScope
 import email.testinbox.application.port.StorageAdmissionStore
 import email.testinbox.application.port.StorageReservationDraft
 import email.testinbox.application.port.StorageUsageSnapshot
+import email.testinbox.application.storage.FootprintPolicy
+import email.testinbox.application.storage.FootprintUnavailability
+import email.testinbox.application.storage.StorageFootprintUnavailableException
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.storage.FootprintAdmission
 import email.testinbox.domain.storage.StorageCapacityPolicy
 import email.testinbox.domain.storage.StorageEnforcement
 import email.testinbox.domain.storage.StorageRefusalReason
@@ -171,8 +175,36 @@ object StorageAdmissionRules {
         bytesPerCopy: Long,
         placements: List<Placement>,
         snapshot: StorageUsageSnapshot,
-    ): List<Verdict> =
-        checked {
+    ): List<Verdict> = decide(policy, enforcement, bytesPerCopy, 0, placements, snapshot, null)
+
+    /**
+     * The payload ceilings, and with a [footprint] policy the global footprint
+     * rules (G) and (C) of the filesystem-containment contract (§2.1), in ONE
+     * envelope-order pass: a copy is checked against the exact
+     * post-admission aggregate `F(L + D + A + c)`, where *A* is the copies of
+     * this event admitted before it, so a copy refused by ANY ceiling adds
+     * nothing. A footprint refusal is `SERVICE_CAPACITY`.
+     *
+     * Under `ALL`, footprint rules that cannot be evaluated — untrusted
+     * counts, no or an invalid observation, negative or overflowing totals —
+     * throw [StorageFootprintUnavailableException]: an infrastructure state
+     * (`451`), never a capacity verdict. Under `OFF` and `TENANT_LIMITS` the
+     * footprint is observational, like the payload global ceiling.
+     */
+    @Suppress("LongParameterList", "CyclomaticComplexMethod") // the rule's inputs, and one branch per footprint verdict
+    fun decide(
+        policy: StorageCapacityPolicy,
+        enforcement: StorageEnforcement,
+        bytesPerCopy: Long,
+        objectsPerCopy: Long,
+        placements: List<Placement>,
+        snapshot: StorageUsageSnapshot,
+        footprint: FootprintPolicy?,
+    ): List<Verdict> {
+        val enforcesGlobal = enforcement.enforces(StorageScope.GLOBAL)
+        val footprintInputs = footprint?.let { fp -> footprintInputs(fp, snapshot, enforcesGlobal) }
+        return checked {
+            var footprintAdded = FootprintAdmission.Load.ZERO
             val inboxUsed = snapshot.inboxes.mapValuesTo(HashMap()) { it.value.usage.usedBytes }
             val workspaceUsed = snapshot.workspaces.mapValuesTo(HashMap()) { it.value.usedBytes }
             var globalUsed = snapshot.global.usedBytes
@@ -188,8 +220,44 @@ object StorageAdmissionRules {
                 // which figure the database happened to return first. Only an
                 // enforced scope refuses, so a disabled narrower scope never
                 // masks an enforced wider one.
+                val copy = FootprintAdmission.Load(bytesPerCopy, objectsPerCopy)
+                val footprintExceeded =
+                    footprintInputs?.let { (fp, inputs) ->
+                        when (FootprintAdmission.check(fp.model, fp.limits, inputs, footprintAdded + copy)) {
+                            FootprintAdmission.Verdict.ADMITTED -> {
+                                false
+                            }
+
+                            FootprintAdmission.Verdict.GLOBAL_FOOTPRINT, FootprintAdmission.Verdict.CONTAINMENT -> {
+                                true
+                            }
+
+                            FootprintAdmission.Verdict.UNOBSERVED -> {
+                                if (enforcesGlobal) {
+                                    throw StorageFootprintUnavailableException(
+                                        FootprintUnavailability.UNOBSERVED,
+                                    )
+                                } else {
+                                    false
+                                }
+                            }
+
+                            FootprintAdmission.Verdict.INDETERMINATE -> {
+                                if (enforcesGlobal) {
+                                    throw StorageFootprintUnavailableException(
+                                        FootprintUnavailability.INDETERMINATE,
+                                    )
+                                } else {
+                                    false
+                                }
+                            }
+                        }
+                    } ?: false
                 val exceeded =
-                    StorageScope.entries.filter { scope -> Math.addExact(used.getValue(scope), bytesPerCopy) > policy.limitOf(scope) }
+                    StorageScope.entries.filter { scope ->
+                        Math.addExact(used.getValue(scope), bytesPerCopy) > policy.limitOf(scope) ||
+                            (scope == StorageScope.GLOBAL && footprintExceeded)
+                    }
                 val refusing = exceeded.firstOrNull(enforcement::enforces)
                 val admitted = refusing == null
                 val ceiling = (refusing ?: exceeded.firstOrNull())?.let(StorageRefusalReason::of)
@@ -197,10 +265,42 @@ object StorageAdmissionRules {
                     inboxUsed[placement.inboxId] = Math.addExact(used.getValue(StorageScope.INBOX), bytesPerCopy)
                     workspaceUsed[placement.workspaceId] = Math.addExact(used.getValue(StorageScope.WORKSPACE), bytesPerCopy)
                     globalUsed = Math.addExact(globalUsed, bytesPerCopy)
+                    footprintAdded += copy
                 }
                 Verdict(admitted, ceiling)
             }
         }
+    }
+
+    /**
+     * The footprint snapshot `(L, D, W)` from T1's one statement, or null when
+     * the footprint is observational and not evaluable. Under `ALL`, not
+     * evaluable throws.
+     */
+    private fun footprintInputs(
+        footprint: FootprintPolicy,
+        snapshot: StorageUsageSnapshot,
+        enforcesGlobal: Boolean,
+    ): Pair<FootprintPolicy, FootprintAdmission.Snapshot>? {
+        val unavailable =
+            footprint.unavailability(snapshot.footprint)
+                ?: runCatching { footprintSnapshot(snapshot) }.exceptionOrNull()?.let { FootprintUnavailability.INDETERMINATE }
+        if (unavailable != null) {
+            if (enforcesGlobal) throw StorageFootprintUnavailableException(unavailable)
+            return null
+        }
+        return footprint to footprintSnapshot(snapshot)
+    }
+
+    /** Negative or overflowing totals are corrupt: they throw, and the caller treats that as INDETERMINATE. */
+    private fun footprintSnapshot(snapshot: StorageUsageSnapshot): FootprintAdmission.Snapshot {
+        val observed = checkNotNull(snapshot.footprint)
+        return FootprintAdmission.Snapshot(
+            live = FootprintAdmission.Load(observed.liveBytes, observed.liveObjects),
+            debt = FootprintAdmission.Load(observed.debtBytes, observed.debtObjects),
+            trashBytes = observed.trashBytes,
+        )
+    }
 
     private fun <T> checked(block: () -> T): T =
         try {
@@ -234,6 +334,11 @@ class StorageAdmission(
         List<StorageAdmissionRules.Placement>,
         StorageUsageSnapshot,
     ) -> List<StorageAdmissionRules.Verdict> = StorageAdmissionRules::decide,
+    /**
+     * The global footprint rules (TI-STORAGE-006E PR D), or null where the
+     * deployment declares no filesystem. Enforced under `ALL` only.
+     */
+    private val footprint: FootprintPolicy? = null,
 ) {
     fun admit(request: StorageAdmissionRequest): StorageAdmissionResult {
         if (request.candidates.isEmpty()) return StorageAdmissionResult.NOTHING_TO_ADMIT
@@ -245,14 +350,24 @@ class StorageAdmission(
             )
         return store.admit(scope) { snapshot ->
             verifyOwnership(request, snapshot)
+            val placements = request.candidates.map { StorageAdmissionRules.Placement(it.workspaceId, it.inboxId) }
             val verdicts =
-                rules(
-                    policy,
-                    enforcement,
-                    request.bytesPerCopy,
-                    request.candidates.map { StorageAdmissionRules.Placement(it.workspaceId, it.inboxId) },
-                    snapshot,
-                )
+                if (footprint == null) {
+                    rules(policy, enforcement, request.bytesPerCopy, placements, snapshot)
+                } else {
+                    StorageAdmissionRules.decide(
+                        policy,
+                        enforcement,
+                        request.bytesPerCopy,
+                        request.candidates
+                            .first()
+                            .objectKeys.size
+                            .toLong(),
+                        placements,
+                        snapshot,
+                        footprint,
+                    )
+                }
             check(verdicts.size == request.candidates.size) { "one verdict per candidate" }
             val deadline = snapshot.t0.plus(WRITE_WINDOW)
             val decisions =

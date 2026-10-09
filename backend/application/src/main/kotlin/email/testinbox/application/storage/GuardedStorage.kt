@@ -98,6 +98,8 @@ class GuardedStorage(
     private val activation: email.testinbox.application.storage.activation.ActivationGuard =
         email.testinbox.application.storage.activation
             .ActivationGuard(),
+    /** TI-STORAGE-006E PR D: under `ALL`, untrusted counts or an invalid observation fail closed here. */
+    private val footprint: FootprintPrecheck = FootprintPrecheck.NONE,
 ) {
     private class Attempt(
         val messageId: MessageId,
@@ -157,7 +159,10 @@ class GuardedStorage(
         } ?: if (breaker.isBlocked()) {
             StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open")
         } else {
-            null
+            footprint.unavailable()?.let { reason ->
+                metrics.footprintUnavailable(reason)
+                StorageUnavailableException(StorageUnavailableReason.FOOTPRINT_UNAVAILABLE, "global footprint rules not evaluable: $reason")
+            }
         }
 
     /**
@@ -398,6 +403,11 @@ class GuardedStorage(
     } catch (e: StorageAdmissionUnavailableException) {
         metrics.physicalFailure(PhysicalFailureKind.LOCK_TIMEOUT)
         throw StorageUnavailableException(StorageUnavailableReason.LOCK_TIMEOUT, "T1 could not take the admission lock", e)
+    } catch (e: StorageFootprintUnavailableException) {
+        // The pre-resolution check passed and T1's own snapshot disagrees: the
+        // documented race, answered with the same whole-event 451.
+        metrics.footprintUnavailable(e.reason)
+        throw StorageUnavailableException(StorageUnavailableReason.FOOTPRINT_UNAVAILABLE, "T1 found the footprint rules not evaluable", e)
     }
 
     /**

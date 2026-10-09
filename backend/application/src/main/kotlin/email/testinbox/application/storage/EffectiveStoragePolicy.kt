@@ -2,6 +2,8 @@ package email.testinbox.application.storage
 
 import email.testinbox.application.LimitsConfig
 import email.testinbox.domain.storage.FinalizeBudget
+import email.testinbox.domain.storage.FootprintAdmission
+import email.testinbox.domain.storage.FootprintModel
 import email.testinbox.domain.storage.InboxShare
 import email.testinbox.domain.storage.StorageCapacityPolicy
 
@@ -37,6 +39,38 @@ object EffectiveStoragePolicy {
         // ever a test setting) observes against the whole workspace.
         val share = if (declaredShare.floorOf(workspace) > 0) declaredShare else InboxShare.of("1")
         return StorageCapacityPolicy(workspace, share, globalLimit, finalizeBudget(declarations).bytes)
+    }
+
+    /**
+     * The global footprint rules of the filesystem-containment contract, or
+     * null while the filesystem is not fully declared (an `OFF` deployment;
+     * `DeploymentSafety` refuses a non-`OFF` one that is not). *H_F* is
+     * `procs × 16 × F(maxObject, 1)`, in footprint (contract §1).
+     */
+    fun footprint(declarations: StorageDeclarations): FootprintPolicy? {
+        val fs = declarations.filesystem
+        val block = fs.blockSizeBytes ?: return null
+        val overhead = fs.objectOverheadMaxBytes ?: return null
+        val model = FootprintModel(block, overhead)
+        val budget = finalizeBudget(declarations)
+        return FootprintPolicy(
+            model = model,
+            limits =
+                FootprintAdmission.Limits(
+                    globalFootprintLimitBytes = fs.globalFootprintLimitBytes ?: return null,
+                    finalizeBudgetBytes =
+                        model.finalizeBudgetBytes(
+                            budget.declaredMaxIngestionProcesses,
+                            budget.maxConcurrentWrites,
+                            budget.maxObjectBytes,
+                        ),
+                    metadataBudgetBytes = fs.metadataBudgetBytes ?: return null,
+                    operationalReserveBytes = fs.operationalReserveBytes ?: return null,
+                    capacityBytes = fs.capacityBytes ?: return null,
+                    probeBudgetBytes = fs.probeBudgetBytes ?: return null,
+                ),
+            monitorRole = fs.monitorRole ?: return null,
+        )
     }
 
     /**

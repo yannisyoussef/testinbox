@@ -31,6 +31,10 @@ data class FilesystemDeclarations(
     val inodes: Long? = null,
     /** *A_obs*, the oldest an Ops observation may be and still count as evidence. */
     val observationMaxAge: Duration? = null,
+    /** *P_F*, the reserve copies leave so that rule (P) writes stay admissible (contract §2.1). */
+    val probeBudgetBytes: Long? = null,
+    /** The database role the Ops monitor writes observations as; any other `written_by` is invalid (§5.3). */
+    val monitorRole: String? = null,
 ) {
     val declared: Boolean
         get() =
@@ -44,6 +48,8 @@ data class FilesystemDeclarations(
                 capacityBytes,
                 inodes,
                 observationMaxAge,
+                probeBudgetBytes,
+                monitorRole,
             ).any { it != null }
 
     /** *A_obs*, or the contract's proposed 15 minutes when nothing is declared. */

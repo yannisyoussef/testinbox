@@ -418,6 +418,9 @@ interface StorageProtocolMetrics {
 
     fun commitFenced() {}
 
+    /** `testinbox_storage_footprint_unavailable_total{cause}`: closed label (TI-STORAGE-006E). */
+    fun footprintUnavailable(reason: email.testinbox.application.storage.FootprintUnavailability) {}
+
     fun released(path: ReleasePath) {}
 
     fun lateObject() {}

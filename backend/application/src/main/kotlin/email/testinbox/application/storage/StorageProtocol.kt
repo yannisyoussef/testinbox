@@ -81,6 +81,13 @@ enum class StorageUnavailableReason {
 
     /** TI-STORAGE-006 §22: a non-OFF node re-checked the §14 barrier and found it broken. Infrastructure, never capacity. */
     ACTIVATION_VIOLATED,
+
+    /**
+     * TI-STORAGE-006E: under `ALL`, the global footprint rules cannot be
+     * evaluated (untrusted counts, no or an invalid observation, overflow).
+     * Infrastructure, never capacity (contract §2.1).
+     */
+    FOOTPRINT_UNAVAILABLE,
 }
 
 class StorageUnavailableException(

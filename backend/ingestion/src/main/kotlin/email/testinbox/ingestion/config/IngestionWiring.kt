@@ -16,6 +16,7 @@ import email.testinbox.application.port.StorageInspection
 import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.storage.EffectiveStoragePolicy
+import email.testinbox.application.storage.FootprintPrecheck
 import email.testinbox.application.storage.GuardedStorage
 import email.testinbox.application.storage.StorageBreaker
 import email.testinbox.application.storage.StorageDeclarations
@@ -39,6 +40,7 @@ import email.testinbox.observability.MicrometerStorageProtocolMetrics
 import email.testinbox.persistence.BundledMigrations
 import email.testinbox.persistence.JdbcActivationInventory
 import email.testinbox.persistence.JdbcFilesystemObservations
+import email.testinbox.persistence.JdbcFootprintGate
 import email.testinbox.persistence.JdbcRateLimiter
 import email.testinbox.persistence.JdbcSchemaHistory
 import email.testinbox.persistence.JdbcStorageAdmission
@@ -281,6 +283,8 @@ class IngestionWiring(
             JdbcStorageAdmission(jdbc, template(transactionManager)),
             policy,
             declarations.enforcement,
+            // TI-STORAGE-006E PR D: the global footprint rules, enforced under ALL only.
+            footprint = EffectiveStoragePolicy.footprint(declarations),
         )
 
     /** A @Bean method's parameters are its dependencies: one per protocol collaborator. */
@@ -298,6 +302,8 @@ class IngestionWiring(
         transactions: TransactionRunner,
         storageMetrics: StorageProtocolMetrics,
         activation: ActivationGuard,
+        declarations: StorageDeclarations,
+        jdbc: JdbcClient,
     ): GuardedStorage =
         GuardedStorage(
             admission = admission,
@@ -313,6 +319,12 @@ class IngestionWiring(
             clock = reservations,
             metrics = storageMetrics,
             activation = activation,
+            footprint =
+                FootprintPrecheck(
+                    EffectiveStoragePolicy.footprint(declarations),
+                    declarations.enforcement,
+                    JdbcFootprintGate(jdbc),
+                ),
         )
 
     /** A @Bean method's parameters are its dependencies: one per runtime collaborator. */
