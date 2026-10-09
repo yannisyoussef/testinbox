@@ -41,6 +41,7 @@ is `ACTIVATION READY` or `ACTIVATION BLOCKED`; an unevaluated gate is
 | **E-floor-staging** | §14 (e), §18 gate 5 | The running API and ingestion artifacts (`git_sha` from `testinbox_build`) each **contain** every ADR-035 floor (`git merge-base --is-ancestor floor sha`). | metrics + `--repo` |
 | **E-floor-production** | §14 (e) | Every ADR-035 floor is an ancestor of `origin/master` **and** is listed in `origin/master:deploy/rollback-floors.txt` — because `production-handoff.yml` reads the floors from `master`, a floor that is only on `develop` protects nothing in production. | `--repo` (`--fetch` to refresh) |
 | **Q-qualification** | §9a, §18 gate 7a | The Ops-declared backend identity (`--backend-identity`) equals a record listed in `adr035-qualification/index.txt` on every element — image index digest, platform member digest, release, commit id, mode, drive count, timeout environment, timeout CLI flags, runtime-config hash (**non-null** and equal), kernel release, filesystem type, mount options, storage-class / inline defaults, direct path, proxy, upload implementation version — **and** that record is enablement-eligible on its own content (`enablementEligible: true`, `slowWExecuted: true` with a `slow-*` scenario listed, a non-null runtime-config hash, a platform class that is not `laptop`), **and** when Ops supply `--qualification-valid-metric` from their `qualification-check`, it is `1`. Blocked with the mismatched elements or the ineligibility reasons. | `--qualification-dir`, `--backend-identity`, `--qualification-valid-metric` |
+| **F-filesystem** | containment contract §9 (TI-STORAGE-006E) | `--mode TENANT_LIMITS`: **NOT REQUIRED**, and the detail says why: global footprint admission is observational there, so the containment theorem does not hold, and filesystem exhaustion stays reachable. That mode is approved for dark staging qualification only, never for public traffic. `--mode ALL`: each row of the contract's §9 table holds, comparing an **observed** figure with a **declared** one, never a declaration alone. The rows are filesystem identity equal to the record the evidence names; a dedicated mount; `f_blocks × f_frsize ≥ C_fs` with `f_frsize = B`; `f_files ≥ I_fs ≥ C_fs / B`; a preallocated, non-thin backing with an fstrim exclusion; host isolation; `used ≤ Φ + H_F + M` and `avail ≥ R_ops` on the newest observation; `D_est ≤ D_budget`; trusted counts; the base case; a declared `TI-STORAGE-006E` containment floor; `procs` covering the live ingestion nodes; the observation written by the monitor role, which alone may write one; no application-role privilege on the V8 boundary; `storage_debt_order_seq` `CACHE 1` on the primary; MinIO metadata `≤ M`; Ops `qualification-check` valid; and an observation younger than *A_obs*. A missing, malformed, stale (older than *A_obs* on the database clock) or contradictory input (statvfs disagreeing with the monitor's own figures) is **NOT RUN**. A failing row is **BLOCKED**, and every failing row is named. | `--filesystem-evidence` (`docs/dev/filesystem-evidence.md`), plus the database through `TESTINBOX_ACTIVATION_DB_URL` or `--footprint-state` |
 
 The ADR-035 floors are **parsed** from `deploy/rollback-floors.txt` (the lines
 whose rationale names `ADR-035` or `TI-STORAGE`), never hardcoded; a floors
@@ -98,6 +99,7 @@ scripts/check-storage-activation.sh --mode TENANT_LIMITS|ALL
     [--qualification-dir <dir>] [--backend-identity <json>] [--qualification-valid-metric 0|1]
     [--benchmark-evidence <json>]
     [--repo <dir>] [--floors-file <file>] [--fetch]
+    [--filesystem-evidence <json>] [--footprint-state <json>]
     [--max-clock-offset-seconds <n>] [--json <out.json>]
 ```
 
@@ -130,7 +132,8 @@ The evidence record (`--json`):
     { "gate": "D-benchmark",         "verdict": "NOT_REQUIRED", "detail": "NOT REQUIRED FOR TENANT_LIMITS: …" },
     { "gate": "E-floor-staging",     "verdict": "PASS",         "detail": "2 running artifact(s) contain every ADR-035 floor" },
     { "gate": "E-floor-production",  "verdict": "BLOCKED",      "detail": "floor c84ddd74f798 is not an ancestor of origin/master (master predates it); …" },
-    { "gate": "Q-qualification",     "verdict": "NOT_RUN",      "detail": "no --backend-identity supplied" }
+    { "gate": "Q-qualification",     "verdict": "NOT_RUN",      "detail": "no --backend-identity supplied" },
+    { "gate": "F-filesystem",        "verdict": "NOT_REQUIRED", "detail": "TENANT_LIMITS: global footprint admission is observational, …" }
   ],
   "verdict": "BLOCKED"
 }
@@ -160,6 +163,15 @@ Running the script against this repository with no runtime inputs gives
   runtime admin configuration never hashed (§18 gate 7a requires the
   deployed host's own combination). The production host must be
   re-qualified on its own combination before any record can be eligible.
+- **F-filesystem is NOT RUN** for `ALL` (no filesystem evidence), and it
+  would stay **BLOCKED** with evidence. No `TI-STORAGE-006E` containment
+  floor is declared until PR D merges. No shipped qualification record
+  carries filesystem elements yet: the staging record must be re-issued after
+  experiments E1–E8 run on the recreated filesystem. On staging, the
+  application connects as the schema owner, so the privileges row fails **by
+  design**: every V8 privilege boundary is void there. Gate F is `NOT
+  REQUIRED` for `TENANT_LIMITS`, which never makes filesystem exhaustion
+  unreachable.
 - **D-benchmark is NOT RUN** for `ALL` (the harness exists —
   `docs/dev/storage-benchmark.md` — but no staging-host-class result has been
   recorded; a laptop run is `INCOMPLETE` by construction) and `NOT REQUIRED`
@@ -223,7 +235,15 @@ answer stays `BLOCKED`.
   failed or absent benchmark, that the benchmark recomputation catches a
   recorded `PASS` whose numbers violate a criterion, a missing REFERENCE run
   and an `INCOMPLETE` verdict, and — on a throwaway git
-  history — that floors are judged by ancestry on `origin/master`.
+  history — that floors are judged by ancestry on `origin/master`. For gate
+  F it also proves that each row blocks on its own, with its figures. It
+  proves that every missing, malformed, stale or contradictory input is
+  `NOT RUN`. It proves that raising a declaration alone never passes a
+  capacity row, and that `TENANT_LIMITS` is `NOT REQUIRED` with the
+  non-guarantee stated. The database query behind `--footprint-state` was
+  run once by hand against PostgreSQL 16 with V1–V9 applied. Under separated
+  roles it reported no violation. With the owner as the application role, it
+  reported the 42 owner privileges and ownerships.
 - `scripts/check-storage-enforcement-off.test.sh` — a YAML `TENANT_LIMITS`,
   a compose `${VAR:-ALL}`, a Spring `${VAR:ALL}`, a property default changed
   to `ALL`, a missing declaration, and the clean tree.

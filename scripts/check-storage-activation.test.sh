@@ -25,11 +25,13 @@ git -C "$TMP" init -q repo
 commit() { git -C "$TMP/repo" -c user.name=t -c user.email=t@t add -A >/dev/null 2>&1; git -C "$TMP/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1"; git -C "$TMP/repo" rev-parse HEAD; }
 BASE="$(commit base)"
 FLOOR="$(commit "ADR-035 guarded ingest protocol (fixture floor)")"
+CONTAINMENT="$(commit "TI-STORAGE-006E containment (fixture floor)")"
 mkdir -p "$TMP/repo/deploy"
 {
     printf '# fixture floors\n'
     printf '%s V4 managed credentials (fixture, not an ADR-035 floor)\n' "$BASE"
     printf '%s ADR-035 guarded ingest protocol (TI-STORAGE fixture): an earlier artifact writes outside the fence\n' "$FLOOR"
+    printf '%s TI-STORAGE-006E filesystem containment (fixture): an earlier artifact admits without rule C and deletes without debt\n' "$CONTAINMENT"
 } > "$TMP/repo/deploy/rollback-floors.txt"
 HEAD_SHA="$(commit "floors file")"
 cp -R "$TMP/repo" "$TMP/repo-behind"
@@ -71,7 +73,8 @@ good() {
         --expected-api-nodes api-1 --expected-ingestion-nodes ing-1 \
         --sessions-file "$FIX/sessions/healthy.tsv" --nodes-file "$FIX/nodes/healthy.tsv" \
         --qualification-dir "$FIX/qualification" --backend-identity "$FIX/identity/match.json" \
-        --benchmark-evidence "$TMP/bench-pass.json"
+        --benchmark-evidence "$TMP/bench-pass.json" \
+        --filesystem-evidence "$FIX/filesystem/evidence-good.json" --footprint-state "$FIX/filesystem/state-good.json"
 }
 # with <flag> <value>: the good inputs with one flag's value replaced (removed when
 # value is ""), or the flag appended when the good inputs do not carry it.
@@ -123,8 +126,8 @@ only() {
 good > "$TMP/args-good"
 case_ "all gates satisfied → ACTIVATION READY" 0 '^ACTIVATION READY$' "$TMP/args-good" --json "$TMP/evidence.json"
 if [ -f "$TMP/evidence.json" ] && jq -e '.mode == "ALL" and .evaluatedAt == "2026-10-07T00:00:00Z" and .verdict == "READY"
-        and (.gates | length) == 8 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)' "$TMP/evidence.json" >/dev/null 2>&1; then
-    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict} with 8 gates"
+        and (.gates | length) == 9 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)' "$TMP/evidence.json" >/dev/null 2>&1; then
+    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict} with 9 gates"
 else
     bad "the evidence JSON shape is wrong" "$(cat "$TMP/evidence.json" 2>/dev/null)"
 fi
@@ -299,13 +302,119 @@ qcase mount "mount options" "host.mountOptions"
 qcase proxy "network path / proxy" "network.directPath, network.proxy"
 qcase upload "upload implementation version" "uploadImplementationVersion"
 with --backend-identity "$FIX/identity/ineligible-match.json" > "$TMP/q-inel"
-only "Q: a matching but ineligible record blocks with its reasons" Q-qualification "record production-amd64-candidate.json matches but is not enablement-eligible: slow-W scenario not executed" "$TMP/q-inel"
+case_ "Q: a matching but ineligible record blocks with its reasons" 1 '^Q-qualification[[:space:]]+BLOCKED[[:space:]].*record production-amd64-candidate.json matches but is not enablement-eligible: slow-W scenario not executed' "$TMP/q-inel"
+# Gate F re-checks the record by the id the filesystem evidence names: a disagreement blocks it too.
+printf '%s\n' "$OUT" | grep -qE '^F-filesystem[[:space:]]+BLOCKED[[:space:]].*gate Q matched production-amd64-candidate.json, the evidence names laptop-arm64-reference.json' \
+    && ok "F: a filesystem evidence naming another record than gate Q matched blocks" || bad "F did not notice the record disagreement" "$OUT"
 case_ "Q: Ops qualification-check valid=0 blocks even with a matching eligible record" 1 '^Q-qualification[[:space:]]+BLOCKED[[:space:]].*qualification_valid=0' "$TMP/args-good" --qualification-valid-metric 0
 case_ "Q: Ops qualification-check valid=1 with a matching eligible record passes" 0 '^Q-qualification[[:space:]]+PASS[[:space:]].*valid=1' "$TMP/args-good" --qualification-valid-metric 1
 case_ "Q: without the Ops value the detail says the real backend is unobserved" 0 '^Q-qualification[[:space:]]+PASS[[:space:]].*real backend is unobserved' "$TMP/args-good"
 mkdir -p "$TMP/qual-empty"; : > "$TMP/qual-empty/index.txt"
 with --qualification-dir "$TMP/qual-empty" > "$TMP/q-empty"
-only "Q: an empty qualification index blocks (nothing is qualified)" Q-qualification "no qualification record matches" "$TMP/q-empty"
+case_ "Q: an empty qualification index blocks (nothing is qualified)" 1 '^Q-qualification[[:space:]]+BLOCKED[[:space:]].*no qualification record matches' "$TMP/q-empty"
+printf '%s\n' "$OUT" | grep -qE '^F-filesystem[[:space:]]+BLOCKED[[:space:]].*not in the qualification index' \
+    && ok "F: a record absent from the index blocks gate F too" || bad "F accepted a record absent from the index" "$OUT"
+
+# ---------------------------------------------------------------------------
+# Gate F (filesystem-containment contract §9): each row fails on its own, and
+# every missing, malformed, stale or contradictory input is NOT RUN.
+# ---------------------------------------------------------------------------
+FSE="$FIX/filesystem/evidence-good.json"
+FSS="$FIX/filesystem/state-good.json"
+ev() { jq "$2" "$FSE" > "$TMP/ev-$1.json"; with --filesystem-evidence "$TMP/ev-$1.json" > "$TMP/f-ev-$1"; }
+st() { jq "$2" "$FSS" > "$TMP/st-$1.json"; with --footprint-state "$TMP/st-$1.json" > "$TMP/f-st-$1"; }
+fe() { ev "$1" "$2"; only "F: $3" F-filesystem "$4" "$TMP/f-ev-$1"; }
+fs() { st "$1" "$2"; only "F: $3" F-filesystem "$4" "$TMP/f-st-$1"; }
+
+with --filesystem-evidence "" > "$TMP/f0"
+only "F: no filesystem evidence → NOT RUN" F-filesystem "no --filesystem-evidence supplied" "$TMP/f0"
+with --footprint-state "" > "$TMP/f00"
+only "F: no database state and no DB URL → NOT RUN" F-filesystem "no database state" "$TMP/f00"
+good | sed 's/^ALL$/TENANT_LIMITS/' > "$TMP/f-tl"
+case_ "F: TENANT_LIMITS → NOT REQUIRED, and the detail says containment does not hold" 0 \
+    '^F-filesystem[[:space:]]+NOT REQUIRED[[:space:]].*containment theorem does not hold.*dark staging qualification only' "$TMP/f-tl"
+
+# Malformed and missing.
+printf 'not json' > "$TMP/ev-garbage.json"; with --filesystem-evidence "$TMP/ev-garbage.json" > "$TMP/f-g"
+only "F: evidence that is not JSON → NOT RUN" F-filesystem "filesystem evidence is not a JSON object" "$TMP/f-g"
+printf '[]' > "$TMP/st-garbage.json"; with --footprint-state "$TMP/st-garbage.json" > "$TMP/f-sg"
+only "F: state that is not a JSON object → NOT RUN" F-filesystem "footprint state is not a JSON object" "$TMP/f-sg"
+fe schema '.schema = "testinbox.filesystem-evidence/0"' "an unknown evidence schema → NOT RUN" "not testinbox.filesystem-evidence/1"
+fe no-uuid 'del(.filesystem.uuid)' "a missing filesystem UUID → NOT RUN" "malformed input: evidence.filesystem.uuid missing"
+fe neg-blocks '.statvfs.blocks = -1' "a negative block count → NOT RUN" "evidence.statvfs.blocks is not a non-negative integer"
+fe str-capacity '.declared.capacityBytes = "64G"' "a capacity given as a string → NOT RUN" "evidence.declared.capacityBytes is not a positive integer"
+fe eps '.declared.fragmentationEpsilon = 1.5' "ε outside [0, 1) → NOT RUN" "fragmentationEpsilon is not in \[0, 1\)"
+fe roles '.declared.applicationRoles = []' "no application role declared → NOT RUN" "applicationRoles is not a non-empty list of names"
+fe image-sizes 'del(.preallocation.allocatedBytes)' "a backing image without its allocated size → NOT RUN" "preallocation.allocatedBytes missing"
+fe bad-time '.collectedAt = "yesterday"' "an unreadable collection time → NOT RUN" "evidence.collectedAt is not an ISO-8601 UTC instant"
+fs no-trust 'del(.trust.distrustEpoch)' "a state without the trust row → NOT RUN" "state.trust.distrustEpoch missing"
+fs nodes '.liveNodes = "api-1"' "a state whose node list is not a list → NOT RUN" "state.liveNodes is not a list"
+fs obs-shape 'del(.observation.usedBytes)' "an observation without used bytes → NOT RUN" "state.observation.usedBytes missing"
+
+# Stale and contradictory.
+fe stale '.collectedAt = "2026-10-06T23:40:00Z"' "evidence older than A_obs → NOT RUN" "stale input: the evidence was collected 1500 s ago, more than A_obs = 900 s"
+fe future '.collectedAt = "2026-10-07T01:00:00Z"' "evidence from the future of the database clock → NOT RUN" "stale input: evidence.collectedAt is in the future"
+fe frsize-vs-obs '.statvfs.frsize = 1024 | .declared.blockSizeBytes = 1024 | .statvfs.blocks = 67108864 | .declared.inodes = 67108864 | .statvfs.files = 67108864' \
+    "statvfs disagreeing with the monitor's block size → NOT RUN" "contradictory input: the newest observation block size 4096 differs from statvfs f_frsize 1024"
+fs cap-vs-obs '.observation.capacityBytes = 1' "a monitor capacity disagreeing with statvfs → NOT RUN" "contradictory input: the newest observation capacity 1 differs"
+fs inodes-vs-obs '.observation.inodesTotal = 5' "a monitor inode total disagreeing with statvfs → NOT RUN" "contradictory input: the newest observation inode total 5 differs"
+fe dev-vs-image '.preallocation.blockDevice = true' "a block device that isolation calls an image → NOT RUN" "contradictory input: preallocation says block device"
+
+# Every rule, alone.
+fe identity '.filesystem.uuid = "11111111-2222-3333-4444-555555555555"' "a filesystem UUID other than the record's blocks" "identity: filesystem uuid differ from record fixture-laptop-arm64-reference"
+fe identity-src '.filesystem.mountSource = "/dev/sdb"' "a mount source other than the record's blocks" "identity: filesystem mountSource differ"
+jq 'del(.filesystem)' "$FIX/qualification/laptop-arm64-reference.json" > "$TMP/rec-nofs.json"
+mkdir -p "$TMP/qual-nofs"; cp "$FIX/qualification/"*.json "$FIX/qualification/index.txt" "$TMP/qual-nofs/"; cp "$TMP/rec-nofs.json" "$TMP/qual-nofs/laptop-arm64-reference.json"
+with --qualification-dir "$TMP/qual-nofs" > "$TMP/f-nofs"
+only "F: a record without filesystem elements is never reused silently" F-filesystem "carries no filesystem elements" "$TMP/f-nofs"
+fe mounts '.mount.mountsOfSource = 2' "a source mounted twice blocks" "dedicated mount: /proc/mounts lists 2 mounts"
+fe other-data '.mount.otherDataOnMount = true' "other data on the mount blocks" "something other than MinIO data is on the mount"
+fe datadir '.mount.minioDataDirOnMount = false' "MinIO's data directory off the mount blocks" "MinIO data directory is not on the mount"
+# both() changes the evidence and the monitor's observation together, so the input stays consistent.
+both() {
+    jq "$2" "$FSE" > "$TMP/ev-$1.json"; jq "$3" "$FSS" > "$TMP/st-$1.json"
+    with --filesystem-evidence "$TMP/ev-$1.json" | sed "s#$FSS#$TMP/st-$1.json#" > "$TMP/f-both-$1"
+    only "F: $4" F-filesystem "$5" "$TMP/f-both-$1"
+}
+both small '.statvfs.blocks = 16777215' '.observation.capacityBytes = 68719472640' "fewer usable blocks than declared C_fs blocks" "capacity: f_blocks × f_frsize 68719472640 < declared C_fs 68719476736"
+fe frsize '.declared.blockSizeBytes = 8192 | .declared.inodes = 16777216' "f_frsize other than declared B blocks" "capacity: f_frsize 4096 ≠ declared B 8192"
+both inodes '.statvfs.files = 1000' '.observation.inodesTotal = 1000' "fewer inodes than declared blocks" "inodes: f_files 1000 < declared I_fs 16777216"
+both inode-ratio '.declared.inodes = 1000 | .statvfs.files = 1000' '.observation.inodesTotal = 1000' "declared I_fs below C_fs / B blocks" "inodes: declared I_fs 1000 < C_fs / B 16777216"
+fe sparse '.preallocation.allocatedBytes = 4096' "a sparse backing image blocks" "preallocation: backing image allocated 4096 ≠ apparent size 68719476736 \(sparse\)"
+fe thin '.preallocation.thinPool = true' "a thin pool blocks" "preallocation: the filesystem is on a thin pool"
+fe fstrim '.preallocation.fstrimExcluded = false' "no fstrim exclusion blocks" "no fstrim exclusion is recorded"
+fe isolation '.isolation.hostFreeAtCreationBytes = 1' "a host filesystem that could not hold the image blocks" "isolation: the host filesystem had 1 free at creation"
+fs used '.observation.usedBytes = 3000000000' "used above Φ + H_F + M blocks, with the figures" "headroom: used 3000000000 > Φ 1218905661 \+ H_F 536870912 \+ M 268435456"
+fs avail '.observation.availBytes = 1' "avail below R_ops blocks" "headroom: avail 1 < R_ops 2147483648"
+fs no-obs '.observation = null' "no monitor observation blocks" "headroom: no monitor observation exists"
+fs debt '.footprint.debtBytes = 9000000000 | .footprint.debtObjects = 1 | .observation.usedBytes = 9000000000' "D_est above D_budget blocks" "deletion debt: D_est [0-9]+ > D_budget 8589934592"
+fs untrusted '.trust.trustedEpoch = 2' "untrusted counts block" "trusted counts: trusted_epoch 2 ≠ distrust_epoch 3"
+fs distrust '.trust.distrustedSeq = 120' "an observation that began before the last distrust event blocks" "base case: the newest observation began at seq 120, not after the last distrust event \(seq 120\)"
+fe sweep '.baseCase.sweepStartedAt = "2026-10-06T21:00:00Z"' "a sweep that began before trust was confirmed blocks" "base case: the orphan sweep began 2026-10-06T21:00:00Z, not after the counts were last trusted"
+grep -v 'TI-STORAGE-006E' "$REPO_OK/deploy/rollback-floors.txt" > "$TMP/floors-nocontain.txt"
+with --floors-file "$TMP/floors-nocontain.txt" > "$TMP/f-nofloor"
+only "F: no TI-STORAGE-006E containment floor declared blocks (mixed versions)" F-filesystem "no TI-STORAGE-006E containment rollback floor is declared" "$TMP/f-nofloor"
+fe procs '.declared.procs = 0' "procs below the live ingestion nodes → NOT RUN (procs must be positive)" "declared.procs is not a positive integer"
+st procs-all '.liveNodes = ["api-1", "ing-1", "ing-2"]'
+good | awk 'skip { skip = 0; next } $0 == "--expected-ingestion-nodes" { skip = 1; next } { print }' | sed "s#$FSS#$TMP/st-procs-all.json#" | \
+    sed "s#$FSE#$TMP/ev-procs1.json#" > "$TMP/f-procs"; jq '.declared.procs = 2' "$FSE" > "$TMP/ev-procs1.json"
+run_args "$TMP/f-procs"
+printf '%s\n' "$OUT" | grep -qE '^F-filesystem[[:space:]]+BLOCKED[[:space:]].*procs: declared procs 2 < 3 live ingestion node\(s\)' \
+    && ok "F: without a declared ingestion list, every live node counts against procs" || bad "F: procs was not checked against the live nodes" "$OUT"
+fs writer '.observation.writtenBy = "testinbox_app"' "an observation the monitor did not write blocks" "observation source: newest observation written by testinbox_app, not the declared monitor testinbox_monitor"
+fe monitor-app '.declared.applicationRoles = ["testinbox_app", "testinbox_monitor"]' "a monitor role that is also an application role blocks" "observation source: the monitor role is an application role"
+fs inserters '.observationInserters = ["testinbox_app", "testinbox_monitor"]' "another role holding INSERT on observations blocks" "INSERT on storage_filesystem_observation is held by \[testinbox_app, testinbox_monitor\]"
+fs executors '.beginObservationExecutors = []' "nobody holding EXECUTE on storage_begin_observation() blocks" "EXECUTE on storage_begin_observation\(\) is held by \[\]"
+fs privileges '.roleViolations = ["testinbox_app: owns storage_deletion_debt"]' "an application role owning a V8 table blocks - staging fails by design" "privileges: 1 violation\(s\), first testinbox_app: owns storage_deletion_debt .*fails by design"
+fs cache '.sequenceCacheSize = 20' "a cached ordering sequence blocks" "ordering: storage_debt_order_seq has CACHE 20, not 1"
+fs replica '.inRecovery = true' "a gate connected to a replica blocks" "ordering: a reader or writer is not on the primary"
+fe primary '.database.allConnectionsToPrimary = false' "a reader or writer off the primary blocks" "ordering: a reader or writer is not on the primary"
+fe metadata '.minio.bucketDirectoryBytes = 200000000' "MinIO metadata above M blocks" "MinIO metadata: .minio.sys 104857600 \+ bucket directories 200000000 > M 268435456"
+fe qual-invalid '.qualificationValid = 0' "an Ops qualification-check reporting invalid blocks" "qualification identity: Ops qualification-check reports valid=0"
+fs obs-age '.observation.observedAt = "2026-10-06T23:40:00Z"' "an observation older than A_obs blocks" "observation liveness: the newest observation is 1500 s old, more than A_obs 900 s"
+fs obs-future '.observation.observedAt = "2026-10-07T00:10:00Z"' "an observation from the future blocks" "observation liveness: the newest observation is in the future"
+# A declared value is never an observation: raising the declaration alone cannot pass.
+fe declared-only '.declared.capacityBytes = 137438953472' "declaring more capacity than statvfs observes blocks" "capacity: f_blocks × f_frsize 68719476736 < declared C_fs 137438953472"
 
 # ---------------------------------------------------------------------------
 # Usage.

@@ -1,0 +1,23 @@
+{
+  "now": "2026-10-07T00:05:00Z",
+  "inRecovery": false,
+  "trust": { "distrustEpoch": 3, "trustedEpoch": 3, "distrustedSeq": 100 },
+  "footprint": { "liveBytes": 1073741824, "liveObjects": 10000, "debtBytes": 0, "debtObjects": 0 },
+  "observation": {
+    "startedSeq": 120,
+    "writtenBy": "testinbox_monitor",
+    "observedAt": "2026-10-07T00:03:00Z",
+    "blockSizeBytes": 4096,
+    "capacityBytes": 68719476736,
+    "usedBytes": 1200000000,
+    "availBytes": 64424509440,
+    "inodesTotal": 16777216,
+    "trashBytes": 0,
+    "minioSysBytes": 104857600
+  },
+  "liveNodes": ["api-1", "ing-1"],
+  "observationInserters": ["testinbox_monitor"],
+  "beginObservationExecutors": ["testinbox_monitor"],
+  "roleViolations": [],
+  "sequenceCacheSize": 1
+}

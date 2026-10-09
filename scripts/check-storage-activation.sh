@@ -37,9 +37,11 @@
 #   --floors-file <file>               default <repo>/deploy/rollback-floors.txt
 #   --fetch                            `git fetch origin master` before evaluating gate E
 #   --max-clock-offset-seconds <n>     ε_max, default 30
+#   --filesystem-evidence <json>       gate F: the Ops filesystem evidence (docs/dev/filesystem-evidence.md)
+#   --footprint-state <json>           gate F: the database state, for an offline evaluation; replaces the query
 #   --json <file>                      write the evidence record
 # Env:
-#   TESTINBOX_ACTIVATION_DB_URL        psql conninfo/URL; replaces --sessions-file / --nodes-file.
+#   TESTINBOX_ACTIVATION_DB_URL        psql conninfo/URL; replaces --sessions-file / --nodes-file / --footprint-state.
 #                                      Only ever read from the environment so it never shows in `ps`.
 #   TESTINBOX_ACTIVATION_EVALUATED_AT  overrides the evaluatedAt timestamp (tests)
 # Exit: 0 ACTIVATION READY, 1 ACTIVATION BLOCKED, 2 usage
@@ -66,6 +68,8 @@ BENCH=""
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 FLOORS_FILE=""
 FETCH=false
+FS_EVIDENCE=""
+FOOTPRINT_STATE=""
 JSON_OUT=""
 MAX_OFFSET=30
 HEARTBEAT_MAX_AGE=300
@@ -111,6 +115,8 @@ while [ $# -gt 0 ]; do
         --floors-file) need_value "$@"; FLOORS_FILE="$2"; shift 2 ;;
         --fetch) FETCH=true; shift ;;
         --max-clock-offset-seconds) need_value "$@"; MAX_OFFSET="$2"; shift 2 ;;
+        --filesystem-evidence) need_value "$@"; FS_EVIDENCE="$2"; shift 2 ;;
+        --footprint-state) need_value "$@"; FOOTPRINT_STATE="$2"; shift 2 ;;
         --json) need_value "$@"; JSON_OUT="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) echo "error: unknown argument '$1'" >&2; usage ;;
@@ -124,7 +130,7 @@ case "$MODE" in
 esac
 case "$QUAL_METRIC" in ""|0|1) ;; *) echo "error: --qualification-valid-metric must be 0 or 1" >&2; usage ;; esac
 case "$MAX_OFFSET" in ''|*[!0-9.]*) echo "error: --max-clock-offset-seconds must be a number" >&2; usage ;; esac
-for f in "$SESSIONS_FILE" "$NODES_FILE" "$IDENTITY" "$BENCH" "$FLOORS_FILE"; do
+for f in "$SESSIONS_FILE" "$NODES_FILE" "$IDENTITY" "$BENCH" "$FLOORS_FILE" "$FS_EVIDENCE" "$FOOTPRINT_STATE"; do
     [ -z "$f" ] || [ -f "$f" ] || { echo "error: input file not found: $f" >&2; usage; }
 done
 [ -d "$REPO" ] || { echo "error: --repo $REPO is not a directory" >&2; usage; }
@@ -603,6 +609,7 @@ EOF
 # record, that record is enablement-eligible, and (when Ops supply it) their
 # qualification-check reports valid on the REAL backend.
 # ---------------------------------------------------------------------------
+QUAL_MATCH=""
 gate_qualification() {
     local gate="Q-qualification" index file rec mismatches match="" best="" best_count=-1 count eligible reasons
     reset_problems
@@ -633,6 +640,7 @@ gate_qualification() {
             | join(", ")' "$rec" 2>/dev/null)" || { problem "record $file is not valid JSON"; continue; }
         if [ -z "$mismatches" ]; then
             match="$file"
+            QUAL_MATCH="$file"
             break
         fi
         count="$(printf '%s' "$mismatches" | tr ',' '\n' | grep -c .)"
@@ -674,6 +682,320 @@ gate_qualification() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Gate F (filesystem-containment contract §9, TI-STORAGE-006E PR E): the real
+# filesystem, observed, against the declared storage combination. Inputs:
+#   - the Ops evidence file (--filesystem-evidence): what Ops OBSERVED on the
+#     host (statvfs, /proc/mounts, the backing image) and the values the
+#     deployment DECLARES (the `testinbox.storage.footprint.*` settings);
+#   - the database state (TESTINBOX_ACTIVATION_DB_URL, or --footprint-state
+#     for an offline evaluation): T1's own footprint figures, the newest
+#     monitor observation, the trust row, the privileges and the sequence.
+# A declared value is never taken as an observation: every rule compares an
+# observed figure with a declared one. A missing, malformed, stale or
+# internally inconsistent input is NOT RUN; a rule that fails is BLOCKED.
+# Under TENANT_LIMITS the global footprint rules are observational, so the
+# containment theorem does not hold and gate F cannot make it hold: the mode
+# is dark staging qualification only, and the gate says so.
+# ---------------------------------------------------------------------------
+FOOTPRINT_STATE_SQL="$(cat <<'SQL'
+WITH newest AS (SELECT * FROM storage_filesystem_observation ORDER BY started_seq DESC, id DESC LIMIT 1),
+     debt AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(objects), 0) AS objects FROM storage_deletion_debt
+               WHERE incurred_at = 'infinity'::timestamptz OR seq >= coalesce((SELECT started_seq FROM newest), 0)),
+     owner AS (SELECT relowner FROM pg_class WHERE oid = 'storage_filesystem_observation'::regclass),
+     holders AS (SELECT r.rolname, has_table_privilege(r.oid, 'storage_filesystem_observation', 'INSERT') AS ins,
+                        has_function_privilege(r.oid, 'storage_begin_observation()', 'EXECUTE') AS exec
+                   FROM pg_roles r
+                  WHERE NOT r.rolsuper AND r.rolcanlogin AND r.oid <> (SELECT relowner FROM owner))
+SELECT json_build_object(
+  'now', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+  'inRecovery', pg_is_in_recovery(),
+  'trust', (SELECT json_build_object('distrustEpoch', distrust_epoch, 'trustedEpoch', trusted_epoch, 'distrustedSeq', distrusted_seq)
+              FROM storage_footprint_trust WHERE id = 1),
+  'footprint', json_build_object(
+      'liveBytes', (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
+                 + (SELECT coalesce(sum(bytes), 0) FROM storage_delta) + (SELECT coalesce(sum(bytes), 0) FROM storage_reservation),
+      'liveObjects', (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)
+                 + (SELECT coalesce(sum(objects), 0) FROM storage_delta)
+                 + (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation),
+      'debtBytes', (SELECT bytes FROM debt), 'debtObjects', (SELECT objects FROM debt)),
+  'observation', (SELECT json_build_object('startedSeq', started_seq, 'writtenBy', written_by::text,
+                     'observedAt', to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+                     'blockSizeBytes', block_size_bytes, 'capacityBytes', capacity_bytes, 'usedBytes', used_bytes,
+                     'availBytes', avail_bytes, 'inodesTotal', inodes_total, 'trashBytes', trash_bytes, 'minioSysBytes', minio_sys_bytes)
+                    FROM newest),
+  'liveNodes', (SELECT coalesce(json_agg(DISTINCT node_id), '[]') FROM storage_node
+                 WHERE NOT clean_shutdown AND heartbeat_at > now() - interval '5 minutes'),
+  'observationInserters', (SELECT coalesce(json_agg(rolname ORDER BY rolname), '[]') FROM holders WHERE ins),
+  'beginObservationExecutors', (SELECT coalesce(json_agg(rolname ORDER BY rolname), '[]') FROM holders WHERE exec),
+  'roleViolations', (SELECT coalesce(json_agg(v ORDER BY v), '[]') FROM (
+      SELECT r.rolname || ': ' || p.what AS v
+        FROM pg_roles r
+        JOIN (VALUES ('INSERT on storage_filesystem_observation', 'storage_filesystem_observation', 'INSERT'),
+                     ('INSERT on storage_deletion_debt', 'storage_deletion_debt', 'INSERT'),
+                     ('UPDATE on storage_deletion_debt', 'storage_deletion_debt', 'UPDATE'),
+                     ('DELETE on storage_deletion_debt', 'storage_deletion_debt', 'DELETE'),
+                     ('INSERT on storage_debt_watermark', 'storage_debt_watermark', 'INSERT'),
+                     ('UPDATE on storage_debt_watermark', 'storage_debt_watermark', 'UPDATE'),
+                     ('DELETE on storage_debt_watermark', 'storage_debt_watermark', 'DELETE')) AS p(what, tbl, priv)
+          ON has_table_privilege(r.oid, p.tbl, p.priv)
+       WHERE r.rolname = ANY (string_to_array(:'app_roles', ','))
+      UNION ALL
+      SELECT r.rolname || ': EXECUTE on storage_begin_observation()' FROM pg_roles r
+       WHERE r.rolname = ANY (string_to_array(:'app_roles', ','))
+         AND has_function_privilege(r.oid, 'storage_begin_observation()', 'EXECUTE')
+      UNION ALL
+      SELECT r.rolname || ': owns ' || c.relname FROM pg_roles r JOIN pg_class c ON pg_has_role(r.oid, c.relowner, 'MEMBER')
+       WHERE r.rolname = ANY (string_to_array(:'app_roles', ','))
+         AND c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'S') AND c.relname LIKE 'storage\_%'
+      UNION ALL
+      SELECT r.rolname || ': owns ' || f.proname || '()' FROM pg_roles r JOIN pg_proc f ON pg_has_role(r.oid, f.proowner, 'MEMBER')
+       WHERE r.rolname = ANY (string_to_array(:'app_roles', ','))
+         AND f.pronamespace = 'public'::regnamespace AND f.proname LIKE 'storage\_%') AS violations),
+  'sequenceCacheSize', (SELECT cache_size FROM pg_sequences WHERE schemaname = 'public' AND sequencename = 'storage_debt_order_seq'))
+SQL
+)"
+
+FS_STATE_FILE="$WORK/footprint-state.json"
+collect_footprint_state() {
+    # Prints nothing and returns 1 when no database state is available.
+    if [ -n "$FOOTPRINT_STATE" ]; then
+        cp "$FOOTPRINT_STATE" "$FS_STATE_FILE"
+    elif [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
+        local roles
+        roles="$(jq -r '(.declared.applicationRoles // []) | join(",")' "$FS_EVIDENCE" 2>/dev/null)"
+        # Through stdin, not -c: psql interpolates :'app_roles' (quoted, so a role name cannot inject) only there.
+        printf '%s\n' "$FOOTPRINT_STATE_SQL;" | PGAPPNAME="ops:storage-activation-check" psql "$TESTINBOX_ACTIVATION_DB_URL" \
+            -X -At -v ON_ERROR_STOP=1 -v app_roles="$roles" -f - >"$FS_STATE_FILE" 2>"$WORK/psql-f.err" || return 2
+    else
+        return 1
+    fi
+}
+
+# epoch seconds of an ISO-8601 UTC instant (…Z), or empty.
+# The containment floor: the rollback floor whose rationale names TI-STORAGE-006E. Gate F
+# requires it DECLARED; gate E-floor-staging already proves every running artifact contains
+# every TI-STORAGE floor, this one included, so a pre-PR-D node (one that admits without
+# rule C, or deletes without debt) cannot be live while both pass.
+containment_floor() { adr035_floors | awk -F'\t' 'index($2, "TI-STORAGE-006E") { print $1; exit }'; }
+
+iso_seconds() { jq -rn --arg t "$1" '$t | try fromdateiso8601 catch empty' 2>/dev/null; }
+
+gate_filesystem() {
+    local gate="F-filesystem" record_file="" malformed missing stale now_s collected_s observed_s a_obs verdicts rc
+    reset_problems
+    if [ "$MODE" = TENANT_LIMITS ]; then
+        record "$gate" NOT_REQUIRED "TENANT_LIMITS: global footprint admission is observational, so the containment theorem does not hold and filesystem exhaustion stays reachable; this mode is approved for dark staging qualification only, never public traffic"
+        return
+    fi
+    if [ -z "$FS_EVIDENCE" ]; then
+        record "$gate" NOT_RUN "no --filesystem-evidence supplied"
+        return
+    fi
+    jq -e 'type == "object"' "$FS_EVIDENCE" >/dev/null 2>&1 || { record "$gate" NOT_RUN "filesystem evidence is not a JSON object"; return; }
+    collect_footprint_state; rc=$?
+    case "$rc" in
+        1) record "$gate" NOT_RUN "no database state: set TESTINBOX_ACTIVATION_DB_URL or pass --footprint-state"; return ;;
+        2) record "$gate" NOT_RUN "footprint state query failed; the database could not be observed"; return ;;
+    esac
+    jq -e 'type == "object"' "$FS_STATE_FILE" >/dev/null 2>&1 || { record "$gate" NOT_RUN "footprint state is not a JSON object"; return; }
+
+    # Shape: every field the rules read, with its type. Missing or mistyped is NOT RUN.
+    malformed="$(jq -r -n --slurpfile e "$FS_EVIDENCE" --slurpfile s "$FS_STATE_FILE" '
+        def need($doc; $name; $at; $kind):
+            ($doc | getpath($at)) as $v
+            | if $v == null then "\($name).\($at | join(".")) missing"
+              elif $kind == "count" and (($v | type) != "number" or $v < 0 or ($v | floor) != $v) then "\($name).\($at | join(".")) is not a non-negative integer"
+              elif $kind == "positive" and (($v | type) != "number" or $v <= 0 or ($v | floor) != $v) then "\($name).\($at | join(".")) is not a positive integer"
+              elif $kind == "ratio" and (($v | type) != "number" or $v < 0 or $v >= 1) then "\($name).\($at | join(".")) is not in [0, 1)"
+              elif $kind == "string" and (($v | type) != "string" or $v == "") then "\($name).\($at | join(".")) is not a non-empty string"
+              elif $kind == "boolean" and ($v | type) != "boolean" then "\($name).\($at | join(".")) is not a boolean"
+              elif $kind == "strings" and (($v | type) != "array" or ($v | length) == 0 or any($v[]; type != "string" or . == "")) then "\($name).\($at | join(".")) is not a non-empty list of names"
+              else empty end;
+        $e[0] as $e | $s[0] as $s
+        | [ ( [["schema"], "string"], [["collectedAt"], "string"], [["qualificationRecordId"], "string"], [["qualificationValid"], "count"],
+              [["filesystem","uuid"], "string"], [["filesystem","type"], "string"], [["filesystem","mountOptions"], "string"],
+              [["filesystem","mountSource"], "string"],
+              [["mount","mountsOfSource"], "count"], [["mount","minioDataDirOnMount"], "boolean"], [["mount","otherDataOnMount"], "boolean"],
+              [["statvfs","frsize"], "positive"], [["statvfs","blocks"], "count"], [["statvfs","files"], "count"],
+              [["preallocation","blockDevice"], "boolean"], [["preallocation","thinPool"], "boolean"], [["preallocation","fstrimExcluded"], "boolean"],
+              [["isolation","dedicatedDevice"], "boolean"],
+              [["minio","bucketDirectoryBytes"], "count"],
+              [["baseCase","trustConfirmedAt"], "string"], [["baseCase","sweepStartedAt"], "string"],
+              [["database","allConnectionsToPrimary"], "boolean"],
+              [["declared","capacityBytes"], "positive"], [["declared","blockSizeBytes"], "positive"], [["declared","inodes"], "positive"],
+              [["declared","globalFootprintLimitBytes"], "positive"], [["declared","finalizeBudgetBytes"], "count"],
+              [["declared","metadataBudgetBytes"], "count"], [["declared","operationalReserveBytes"], "count"],
+              [["declared","objectOverheadBytes"], "count"], [["declared","fragmentationEpsilon"], "ratio"],
+              [["declared","deletionDebtBudgetBytes"], "positive"], [["declared","observationMaxAgeSeconds"], "positive"],
+              [["declared","monitorRole"], "string"], [["declared","applicationRoles"], "strings"], [["declared","procs"], "positive"]
+            ) | need($e; "evidence"; .[0]; .[1]) ]
+          + ( if $e.preallocation.blockDevice == false then
+                [ need($e; "evidence"; ["preallocation","allocatedBytes"]; "count"), need($e; "evidence"; ["preallocation","apparentBytes"]; "count") ]
+              else [] end )
+          + ( if $e.isolation.dedicatedDevice == false then
+                [ need($e; "evidence"; ["isolation","hostFreeAtCreationBytes"]; "count"), need($e; "evidence"; ["isolation","imageBytes"]; "count") ]
+              else [] end )
+          + [ ( [["now"], "string"], [["inRecovery"], "boolean"], [["trust","distrustEpoch"], "count"], [["trust","distrustedSeq"], "count"],
+                [["footprint","liveBytes"], "count"], [["footprint","liveObjects"], "count"], [["footprint","debtBytes"], "count"],
+                [["footprint","debtObjects"], "count"], [["sequenceCacheSize"], "positive"] ) | need($s; "state"; .[0]; .[1]) ]
+          + ( if ($s.liveNodes | type) != "array" then ["state.liveNodes is not a list"] else [] end )
+          + ( if ($s.observationInserters | type) != "array" then ["state.observationInserters is not a list"] else [] end )
+          + ( if ($s.beginObservationExecutors | type) != "array" then ["state.beginObservationExecutors is not a list"] else [] end )
+          + ( if ($s.roleViolations | type) != "array" then ["state.roleViolations is not a list"] else [] end )
+          + ( if $s.observation == null then []
+              else [ ( [["startedSeq"], "count"], [["writtenBy"], "string"], [["observedAt"], "string"], [["blockSizeBytes"], "positive"],
+                       [["capacityBytes"], "count"], [["usedBytes"], "count"], [["availBytes"], "count"], [["inodesTotal"], "count"],
+                       [["trashBytes"], "count"], [["minioSysBytes"], "count"] ) | need($s.observation; "state.observation"; .[0]; .[1]) ]
+              end )
+        | map(select(. != null)) | join("; ")' 2>"$WORK/shape.err")" ||
+        malformed="evidence or state could not be evaluated ($(head -c 200 "$WORK/shape.err" | tr '\n' ' '))"
+    if [ -n "$malformed" ]; then
+        record "$gate" NOT_RUN "malformed input: $malformed"
+        return
+    fi
+    if [ "$(jq -r .schema "$FS_EVIDENCE")" != "testinbox.filesystem-evidence/1" ]; then
+        record "$gate" NOT_RUN "evidence schema is '$(jq -r .schema "$FS_EVIDENCE")', not testinbox.filesystem-evidence/1"
+        return
+    fi
+
+    # Freshness, on the DATABASE clock (the observation is stamped by it too).
+    now_s="$(iso_seconds "$(jq -r .now "$FS_STATE_FILE")")"
+    collected_s="$(iso_seconds "$(jq -r .collectedAt "$FS_EVIDENCE")")"
+    a_obs="$(jq -r .declared.observationMaxAgeSeconds "$FS_EVIDENCE")"
+    for pair in "now_s:state.now" "collected_s:evidence.collectedAt"; do
+        eval "v=\"\$${pair%%:*}\""
+        [ -n "$v" ] || { record "$gate" NOT_RUN "malformed input: ${pair#*:} is not an ISO-8601 UTC instant (…Z)"; return; }
+    done
+    for at in baseCase.trustConfirmedAt baseCase.sweepStartedAt; do
+        [ -n "$(iso_seconds "$(jq -r ".$at" "$FS_EVIDENCE")")" ] ||
+            { record "$gate" NOT_RUN "malformed input: evidence.$at is not an ISO-8601 UTC instant (…Z)"; return; }
+    done
+    if [ "$collected_s" -gt "$((now_s + 60))" ]; then
+        record "$gate" NOT_RUN "stale input: evidence.collectedAt is in the future of the database clock"
+        return
+    fi
+    if [ "$((now_s - collected_s))" -gt "$a_obs" ]; then
+        record "$gate" NOT_RUN "stale input: the evidence was collected $((now_s - collected_s)) s ago, more than A_obs = $a_obs s"
+        return
+    fi
+
+    # Internal consistency: what Ops saw on the host and what the monitor wrote agree.
+    stale="$(jq -r -n --slurpfile e "$FS_EVIDENCE" --slurpfile s "$FS_STATE_FILE" '
+        $e[0] as $e | $s[0].observation as $o
+        | [ ( if $o != null and $o.blockSizeBytes != $e.statvfs.frsize
+                then "the newest observation block size \($o.blockSizeBytes) differs from statvfs f_frsize \($e.statvfs.frsize)" else empty end ),
+            ( if $o != null and $o.capacityBytes != ($e.statvfs.frsize * $e.statvfs.blocks)
+                then "the newest observation capacity \($o.capacityBytes) differs from statvfs f_blocks × f_frsize \($e.statvfs.frsize * $e.statvfs.blocks)" else empty end ),
+            ( if $o != null and $o.inodesTotal != $e.statvfs.files
+                then "the newest observation inode total \($o.inodesTotal) differs from statvfs f_files \($e.statvfs.files)" else empty end ),
+            ( if $e.preallocation.blockDevice == true and $e.isolation.dedicatedDevice == false
+                then "preallocation says block device, isolation says backing image" else empty end ) ]
+        | join("; ")')"
+    if [ -n "$stale" ]; then
+        record "$gate" NOT_RUN "contradictory input: $stale"
+        return
+    fi
+
+    # The qualification record the evidence names: listed, and carrying filesystem elements.
+    local rid
+    rid="$(jq -r .qualificationRecordId "$FS_EVIDENCE")"
+    if [ -f "$QUAL_DIR/index.txt" ]; then
+        while IFS= read -r file; do
+            file="${file%%#*}"; file="${file// /}"
+            [ -n "$file" ] || continue
+            if [ -f "$QUAL_DIR/$file" ] && [ "$(jq -r '.recordId // .id // empty' "$QUAL_DIR/$file" 2>/dev/null)" = "$rid" ]; then
+                record_file="$QUAL_DIR/$file"
+                break
+            fi
+        done < "$QUAL_DIR/index.txt"
+    fi
+
+    # Every rule, on observed figures against declared ones. φ arithmetic in jq's
+    # doubles: exact below 2^53 bytes (8 PiB), far above any declared capacity.
+    verdicts="$(jq -r -n --slurpfile e "$FS_EVIDENCE" --slurpfile s "$FS_STATE_FILE" \
+        --slurpfile r <(if [ -n "$record_file" ]; then cat "$record_file"; else echo null; fi) \
+        --arg qmatch "${QUAL_MATCH:-}" --arg qfile "$(basename "${record_file:-}")" \
+        --arg floor "$(containment_floor)" \
+        --argjson expectedIng "$(jq -cn --arg v "$EXPECTED_ING" '$v | split(",") | map(select(length > 0))')" \
+        --argjson now "$now_s" '
+        $e[0] as $e | $s[0] as $s | $r[0] as $rec | $e.declared as $d | $s.observation as $o
+        | ($d.blockSizeBytes) as $B | ($d.fragmentationEpsilon) as $eps | ($d.objectOverheadBytes) as $O
+        | def F($p; $n): ($p + $n * ($B - 1)) * (1 + $eps) + $n * ($O + 1);
+          def ceilnum: if . == floor then . else floor + 1 end;
+          def secs: try fromdateiso8601 catch null;
+        ($s.footprint) as $fp
+        | (F($fp.liveBytes + $fp.debtBytes; $fp.liveObjects + $fp.debtObjects) + ($o.trashBytes // 0) | ceilnum) as $phi
+        | (F($fp.liveBytes; $fp.liveObjects) | ceilnum) as $fl
+        | [
+            ( if $rec == null then "identity: qualification record \($e.qualificationRecordId) is not in the qualification index"
+              elif $rec.filesystem == null then "identity: record \($e.qualificationRecordId) carries no filesystem elements (contract §9: re-issue it after E1–E8 on this filesystem)"
+              else ( [ "uuid", "type", "mountOptions", "mountSource" ]
+                     | map(select($rec.filesystem[.] != $e.filesystem[.]))
+                     | if length > 0 then "identity: filesystem \(join(", ")) differ from record \($e.qualificationRecordId)" else empty end )
+              end ),
+            ( if $e.mount.mountsOfSource != 1 then "dedicated mount: /proc/mounts lists \($e.mount.mountsOfSource) mounts of the source, not exactly 1" else empty end ),
+            ( if $e.mount.minioDataDirOnMount != true then "dedicated mount: MinIO data directory is not on the mount" else empty end ),
+            ( if $e.mount.otherDataOnMount != false then "dedicated mount: something other than MinIO data is on the mount" else empty end ),
+            ( if $e.statvfs.frsize != $B then "capacity: f_frsize \($e.statvfs.frsize) ≠ declared B \($B)" else empty end ),
+            ( if $e.statvfs.blocks * $e.statvfs.frsize < $d.capacityBytes
+                then "capacity: f_blocks × f_frsize \($e.statvfs.blocks * $e.statvfs.frsize) < declared C_fs \($d.capacityBytes)" else empty end ),
+            ( if $e.statvfs.files < $d.inodes then "inodes: f_files \($e.statvfs.files) < declared I_fs \($d.inodes)" else empty end ),
+            ( if $d.inodes < ($d.capacityBytes / $B | ceilnum) then "inodes: declared I_fs \($d.inodes) < C_fs / B \($d.capacityBytes / $B | ceilnum)" else empty end ),
+            ( if $e.preallocation.blockDevice == false and $e.preallocation.allocatedBytes != $e.preallocation.apparentBytes
+                then "preallocation: backing image allocated \($e.preallocation.allocatedBytes) ≠ apparent size \($e.preallocation.apparentBytes) (sparse)" else empty end ),
+            ( if $e.preallocation.thinPool then "preallocation: the filesystem is on a thin pool" else empty end ),
+            ( if $e.preallocation.fstrimExcluded != true then "preallocation: no fstrim exclusion is recorded" else empty end ),
+            ( if $e.isolation.dedicatedDevice == false and $e.isolation.hostFreeAtCreationBytes < $e.isolation.imageBytes
+                then "isolation: the host filesystem had \($e.isolation.hostFreeAtCreationBytes) free at creation, less than the image \($e.isolation.imageBytes)" else empty end ),
+            ( if $o == null then "headroom: no monitor observation exists"
+              else ( ( if $o.usedBytes > $phi + $d.finalizeBudgetBytes + $d.metadataBudgetBytes
+                         then "headroom: used \($o.usedBytes) > Φ \($phi) + H_F \($d.finalizeBudgetBytes) + M \($d.metadataBudgetBytes)" else empty end ),
+                     ( if $o.availBytes < $d.operationalReserveBytes
+                         then "headroom: avail \($o.availBytes) < R_ops \($d.operationalReserveBytes)" else empty end ) ) end ),
+            ( if $o != null and ($phi - $fl) > $d.deletionDebtBudgetBytes
+                then "deletion debt: D_est \($phi - $fl) > D_budget \($d.deletionDebtBudgetBytes)" else empty end ),
+            ( if $s.trust == null or $s.trust.trustedEpoch != $s.trust.distrustEpoch
+                then "trusted counts: trusted_epoch \($s.trust.trustedEpoch // "null") ≠ distrust_epoch \($s.trust.distrustEpoch // "null")" else empty end ),
+            ( if $o != null and $o.startedSeq <= $s.trust.distrustedSeq
+                then "base case: the newest observation began at seq \($o.startedSeq), not after the last distrust event (seq \($s.trust.distrustedSeq))" else empty end ),
+            ( if ($e.baseCase.sweepStartedAt | secs) <= ($e.baseCase.trustConfirmedAt | secs)
+                then "base case: the orphan sweep began \($e.baseCase.sweepStartedAt), not after the counts were last trusted \($e.baseCase.trustConfirmedAt)" else empty end ),
+            ( if $floor == "" then "mixed versions: no TI-STORAGE-006E containment rollback floor is declared (it is added when PR D merges)" else empty end ),
+            ( ( if ($expectedIng | length) > 0 then $expectedIng else $s.liveNodes end ) as $nodes
+              | if ($nodes | length) > $d.procs then "procs: declared procs \($d.procs) < \($nodes | length) live ingestion node(s)" else empty end ),
+            ( if $o != null and $o.writtenBy != $d.monitorRole
+                then "observation source: newest observation written by \($o.writtenBy), not the declared monitor \($d.monitorRole)" else empty end ),
+            ( if ($d.applicationRoles | index($d.monitorRole)) != null then "observation source: the monitor role is an application role" else empty end ),
+            ( if $s.observationInserters != [$d.monitorRole]
+                then "observation source: INSERT on storage_filesystem_observation is held by [\($s.observationInserters | join(", "))], not only \($d.monitorRole)" else empty end ),
+            ( if $s.beginObservationExecutors != [$d.monitorRole]
+                then "observation source: EXECUTE on storage_begin_observation() is held by [\($s.beginObservationExecutors | join(", "))], not only \($d.monitorRole)" else empty end ),
+            ( if ($s.roleViolations | length) > 0
+                then "privileges: \($s.roleViolations | length) violation(s), first \($s.roleViolations[0:5] | join(", ")) (where the application connects as the owner, as staging does, gate F fails by design)" else empty end ),
+            ( if $s.sequenceCacheSize != 1 then "ordering: storage_debt_order_seq has CACHE \($s.sequenceCacheSize), not 1" else empty end ),
+            ( if $s.inRecovery or $e.database.allConnectionsToPrimary != true
+                then "ordering: a reader or writer is not on the primary" else empty end ),
+            ( if $o != null and ($o.minioSysBytes + $e.minio.bucketDirectoryBytes) > $d.metadataBudgetBytes
+                then "MinIO metadata: .minio.sys \($o.minioSysBytes) + bucket directories \($e.minio.bucketDirectoryBytes) > M \($d.metadataBudgetBytes)" else empty end ),
+            ( if $e.qualificationValid != 1 then "qualification identity: Ops qualification-check reports valid=\($e.qualificationValid)" else empty end ),
+            ( if $qmatch != "" and $qfile != "" and $qmatch != $qfile
+                then "qualification identity: gate Q matched \($qmatch), the evidence names \($qfile)" else empty end ),
+            ( if $o == null then empty
+              else ( ($o.observedAt | secs) as $at
+                     | if $at == null then "observation liveness: observedAt is unreadable"
+                       elif $at > $now then "observation liveness: the newest observation is in the future of the database clock"
+                       elif ($now - $at) > $d.observationMaxAgeSeconds
+                         then "observation liveness: the newest observation is \($now - $at) s old, more than A_obs \($d.observationMaxAgeSeconds) s"
+                       else empty end ) end )
+          ] | join("; ")' 2>"$WORK/gate-f.err")" || { record "$gate" NOT_RUN "the evidence could not be evaluated: $(head -c 300 "$WORK/gate-f.err")"; return; }
+    if [ -n "$verdicts" ]; then
+        record "$gate" BLOCKED "$verdicts"
+    else
+        record "$gate" PASS "filesystem $(jq -r .filesystem.uuid "$FS_EVIDENCE") equals record $rid; capacity, inodes, preallocation, isolation, headroom, deletion debt, trust, base case, versions, procs, observation source, privileges, ordering, metadata and liveness hold"
+    fi
+}
+
 gate_sessions
 gate_inventory
 gate_physical
@@ -682,6 +1004,7 @@ gate_benchmark
 gate_floors_staging
 gate_floors_production
 gate_qualification
+gate_filesystem
 
 # ---------------------------------------------------------------------------
 # Verdict and output.
