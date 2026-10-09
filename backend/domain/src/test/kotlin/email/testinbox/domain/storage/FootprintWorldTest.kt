@@ -19,9 +19,11 @@ import java.util.Random
  * a release deletes keys before its row goes; retention moves blobs to trash
  * before its rows go (one debt row); the orphan sweep writes a pending row,
  * deletes, and later resolves under a new order; an observation takes its
- * order, walks, and only then writes its row. The world is adversarial: every
- * object physically costs exactly φ of its payload (the qualified maximum),
- * often materializes at once, an observation sees only the trash present when
+ * order, walks, and only then writes its row; a witness probe records its
+ * pending row, writes, deletes and resolves. The world is adversarial: every
+ * object physically costs [cost] — the most the contract's premise allows
+ * (§2.4: any set S occupies at most F(P_S, N_S), and Σ cost ≤ F for every
+ * set), which is MORE than φ for most payloads — copies often materialize at once, an observation sees only the trash present when
  * it began and still present when it ended, purges are rare, and late objects
  * surface whenever the ADR-035 §9 slots allow.
  *
@@ -31,8 +33,9 @@ import java.util.Random
  *   snapshot counts, or the newest observation's measured set — except late
  *   objects whose §9 write slot is still held (at most `slots`, each at most
  *   the largest object size), which is what H_F reserves for;
- * - **theorem**: TestInbox's physical bytes ≤ C_fs − R_ops − M;
- * - **Lemma 1**: physical ≤ Φ + φ(uncovered), Φ = F(L + D) + W;
+ * - **theorem**: TestInbox's physical bytes ≤ C_fs − R_ops − M, and the
+ *   bytes that are not late objects ≤ C_fs − R_ops − M − H_F;
+ * - **Lemma 1**: physical ≤ Φ + Σ F(p, 1) over the uncovered, Φ = F(L + D) + W;
  * - **admission** (main run only): right after an admission, (G) and (C) hold
  *   on the exact post-admission aggregate.
  *
@@ -55,8 +58,20 @@ class FootprintWorldTest {
     private val m = 64 * kib
     private val r = 128 * kib
     private val capacity = gF + gF / 8 + h + m + r
+    private val probeBudget = 8 * model.bound(0, 1)
     private val ceiling = capacity - r - m
-    private val limits = FootprintAdmission.Limits(gF, h, m, r, capacity)
+    private val limits = FootprintAdmission.Limits(gF, h, m, r, capacity, probeBudget)
+
+    /**
+     * The physical cost of one object under the set premise: with a = p + B − 1,
+     * `a + ⌊a·ε⌋ + O_max + 1`. Summed over any set it stays within F of the set
+     * (Σ⌊a_i/d⌋ ≤ ⌈Σa_i/d⌉), so it is admissible, and it exceeds φ for most
+     * payloads — φ(4 096) = 28 688 but cost(4 096) = 32 799.
+     */
+    private fun cost(payload: Long): Long {
+        val a = payload + model.blockSizeBytes - 1
+        return a + a / model.fragmentationDenominator + model.objectOverheadMaxBytes + 1
+    }
 
     /** One obligation of the proof each, broken on purpose. */
     enum class Mutant {
@@ -86,6 +101,9 @@ class FootprintWorldTest {
 
         /** T1 reads the latest-ARRIVED observation, compaction the latest-started (§5.3). */
         NEWEST_BY_ARRIVAL,
+
+        /** Probes are neither capped nor reserved for by rule (C). */
+        PROBE_WITHOUT_BUDGET,
     }
 
     private class Coverage {
@@ -97,10 +115,12 @@ class FootprintWorldTest {
         var interleavedObservations = 0L
         var debtRowsCompacted = 0L
         var nearBoundary = 0L
+        var probesResolved = 0L
 
         override fun toString() =
             "admitted=$admitted refusedG=$refusedGlobal refusedC=$refusedContainment late=$lateSurfaced " +
-                "resolved=$sweepsResolved interleaved=$interleavedObservations compacted=$debtRowsCompacted nearBoundary=$nearBoundary"
+                "resolved=$sweepsResolved interleaved=$interleavedObservations compacted=$debtRowsCompacted nearBoundary=$nearBoundary " +
+                "probes=$probesResolved"
     }
 
     @Suppress("TooManyFunctions")
@@ -124,6 +144,7 @@ class FootprintWorldTest {
             val ids: Set<Long>,
             var seq: Long,
             var pending: Boolean,
+            val probe: Boolean = false,
         )
 
         private inner class Observation(
@@ -156,13 +177,14 @@ class FootprintWorldTest {
         private val pendingLate = mutableListOf<Long>()
         private val surfaced = mutableListOf<Long>()
         private val sweeps = mutableListOf<Sweep>()
+        private val probes = mutableListOf<Sweep>()
         private val debts = mutableListOf<Debt>()
         private val observations = mutableListOf<Observation>()
         private val walks = mutableListOf<Walk>()
         private var trashMoves = 0L
         private val trace = ArrayDeque<Int>()
 
-        private fun phi(id: Long) = model.ofObject(payload.getValue(id))
+        private fun physicalCost(id: Long) = cost(payload.getValue(id))
 
         private fun load(ids: Collection<Long>) = Load(ids.sumOf { payload.getValue(it) }, ids.size.toLong())
 
@@ -202,12 +224,12 @@ class FootprintWorldTest {
             return Snapshot(live, debt, newest()?.trashBytes)
         }
 
-        /** TestInbox's bytes on the filesystem: every object at φ, plus the trash. */
-        fun physical(): Long = materialized.sumOf(::phi) + trash.values.sum()
+        /** TestInbox's bytes on the filesystem: every object at [cost], plus the trash. */
+        fun physical(): Long = materialized.sumOf(::physicalCost) + trash.values.sum()
 
         private fun moveToTrash(id: Long) {
             if (materialized.remove(id)) {
-                trash[id] = phi(id)
+                trash[id] = physicalCost(id)
                 trashMoves++
             }
         }
@@ -235,6 +257,10 @@ class FootprintWorldTest {
                     FootprintAdmission.decide(model, limits, snapshot.copy(trashBytes = snapshot.trashBytes?.let { 0L }), copies)
                 }
 
+                Mutant.PROBE_WITHOUT_BUDGET -> {
+                    FootprintAdmission.decide(model, limits.copy(probeBudgetBytes = 0), snapshot, copies)
+                }
+
                 else -> {
                     FootprintAdmission.decide(model, limits, snapshot, copies)
                 }
@@ -253,7 +279,7 @@ class FootprintWorldTest {
             val all = snapshot.live + snapshot.debt
             val potential = model.bound(all.bytes, all.objects) + w
             return copies.map {
-                if (live + charged + perCopy + h <= gF && potential + charged + perCopy + h + m + r <= capacity) {
+                if (live + charged + perCopy + h <= gF && potential + charged + perCopy + h + probeBudget + m + r <= capacity) {
                     charged += perCopy
                     Verdict.ADMITTED
                 } else {
@@ -270,7 +296,7 @@ class FootprintWorldTest {
             val all = s.live + s.debt
             withClue("admission (G): ${context()}") { (model.bound(s.live.bytes, s.live.objects) + h <= gF) shouldBe true }
             withClue("admission (C): ${context()}") {
-                (model.bound(all.bytes, all.objects) + w + h + m + r <= capacity) shouldBe true
+                (model.bound(all.bytes, all.objects) + w + h + probeBudget + m + r <= capacity) shouldBe true
             }
         }
 
@@ -414,6 +440,37 @@ class FootprintWorldTest {
                     }
                 }
 
+                // The witness probe: a pending (0 B, 1 object) row committed first, the
+                // write, the delete, then the resolution under a new order. Skipped while
+                // the unsuperseded probe debt would pass P_F (contract §2.4).
+                18 -> {
+                    val probe = probes.randomOrNull()
+                    when {
+                        probe == null -> {
+                            val inFlight = countedDebts().count { it.probe } * model.bound(0, 1)
+                            if (mutant == Mutant.PROBE_WITHOUT_BUDGET || inFlight + model.bound(0, 1) <= probeBudget) {
+                                val id = nextId++.also { payload[it] = 0L }
+                                val row = Debt(setOf(id), ++seq, pending = true, probe = true)
+                                debts += row
+                                materialized += id
+                                probes += Sweep(id, row)
+                            }
+                        }
+
+                        !probe.deleted -> {
+                            moveToTrash(probe.id)
+                            probe.deleted = true
+                        }
+
+                        else -> {
+                            probe.row.pending = false
+                            probe.row.seq = ++seq
+                            probes.remove(probe)
+                            coverage.probesResolved++
+                        }
+                    }
+                }
+
                 // MinIO purges one trash object.
                 14 -> {
                     trash.keys.randomOrNull()?.let { trash.remove(it) }
@@ -465,8 +522,12 @@ class FootprintWorldTest {
                 (surfaced.size <= slots && uncovered.all { it in surfaced && payload.getValue(it) <= maxObject }) shouldBe true
             }
             withClue("theorem: ${context()}") { (physical <= ceiling) shouldBe true }
+            // Sharper: what is not a slot-held late object fits beneath the finalize budget too.
+            val late = surfaced.filter { it in materialized }.sumOf(::physicalCost)
+            withClue("theorem: non-late ${physical - late} ${context()}") { (physical - late <= ceiling - h) shouldBe true }
             val potential = FootprintAdmission.potential(model, snapshot()) ?: return
-            withClue("Lemma 1: ${context()}") { (physical <= potential + uncovered.sumOf(::phi)) shouldBe true }
+            val lateBound = uncovered.sumOf { model.bound(payload.getValue(it), 1) }
+            withClue("Lemma 1: ${context()}") { (physical <= potential + lateBound) shouldBe true }
         }
 
         fun describe(): String =
@@ -505,13 +566,14 @@ class FootprintWorldTest {
         // about half of what the pinned worlds reach, so a change that starves one fails here.
         withClue("coverage: $coverage") {
             coverage.admitted shouldBeGreaterThan 10_000
-            coverage.refusedGlobal shouldBeGreaterThan 200 // (C) binds first in these worlds: debt room is G_F / 8
+            coverage.refusedGlobal shouldBeGreaterThan 100 // (C) binds first in these worlds: debt room is G_F / 8
             coverage.refusedContainment shouldBeGreaterThan 1_000
             coverage.lateSurfaced shouldBeGreaterThan 1_000
             coverage.sweepsResolved shouldBeGreaterThan 1_000
             coverage.interleavedObservations shouldBeGreaterThan 1_000
             coverage.debtRowsCompacted shouldBeGreaterThan 1_000
             coverage.nearBoundary shouldBeGreaterThan 1_000
+            coverage.probesResolved shouldBeGreaterThan 1_000
         }
     }
 
@@ -526,10 +588,30 @@ class FootprintWorldTest {
             .toSet()
 
     @Test
-    fun `the owner's counterexample is caught by the admission invariant it breaks`() {
-        // Under the per-object premise (each object costs at most φ) the φ rule is not
-        // physically unsafe on its own — Σφ(L) + φ(c) ≤ F(L) + φ(c) — but it breaks the
-        // invariant every other argument of the proof is built on.
+    fun `the cost the worlds charge is admissible - it never exceeds F of any set`() {
+        val random = Random(2026)
+        repeat(20_000) {
+            val set =
+                List(1 + random.nextInt(40)) {
+                    if (random.nextBoolean()) random.nextLong(maxObject + 1) else 4096L * random.nextInt(64) + 1
+                }
+            (set.sumOf(::cost) <= model.bound(set.sum(), set.size.toLong())) shouldBe true
+        }
+        cost(4096) shouldBe 32_799
+        (cost(4096) > model.ofObject(4096)) shouldBe true
+    }
+
+    @Test
+    fun `the owner's counterexample breaches containment physically under the phi rule, and the aggregate rule refuses it`() {
+        // B = 4 096, O_max = 24 KiB, ε = 1/256, an empty system with 30 000 B of headroom.
+        val headroom = 30_000L
+        val exact = FootprintAdmission.Limits(Long.MAX_VALUE, 0, 0, 0, headroom, 0)
+        val empty = Snapshot(Load.ZERO, Load.ZERO, 0)
+        FootprintAdmission.decide(model, exact, empty, listOf(Load(4096, 1))) shouldBe listOf(Verdict.CONTAINMENT)
+        // The φ rule admits it (28 688 ≤ 30 000), and the object may occupy cost(4 096) = 32 799 B.
+        (model.bound(0, 0) + model.ofObject(4096) <= headroom) shouldBe true
+        (cost(4096) > headroom) shouldBe true
+        // In the random worlds the same mutant breaks the admission invariant.
         ("admission" in caughtBy(Mutant.PHI_CHARGE, checkAdmission = true)) shouldBe true
     }
 
@@ -553,36 +635,22 @@ class FootprintWorldTest {
          * that their interleavings occur in the pinned worlds.
          */
         val OPS: IntArray =
-            intArrayOf(
-                0,
-                0,
-                0,
-                0, // T1
-                4,
-                4, // upload
-                6,
-                6, // T2
-                7,
-                8, // definitive release
-                9,
-                9,
-                10,
-                10, // ambiguous release; late surface or verified
-                11,
-                11,
-                12,
-                12, // retention
-                13,
-                13,
-                13,
-                13, // sweep steps
-                14, // purge
-                15,
-                15,
-                16,
-                16, // observation walks
-                17,
-                17, // debt compaction
-            )
+            listOf(
+                0 to 4, // T1
+                4 to 2, // upload
+                6 to 2, // T2
+                7 to 1, // definitive release, keys
+                8 to 1, // definitive release, row
+                9 to 2, // ambiguous release
+                10 to 2, // late surface or verified
+                11 to 2, // retention, blobs
+                12 to 2, // retention, rows
+                13 to 4, // sweep steps
+                14 to 1, // purge
+                15 to 2, // observation begins
+                16 to 2, // observation written
+                17 to 2, // debt compaction
+                18 to 2, // witness probes
+            ).flatMap { (op, weight) -> List(weight) { op } }.toIntArray()
     }
 }

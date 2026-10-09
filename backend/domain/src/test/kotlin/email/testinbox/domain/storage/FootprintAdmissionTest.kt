@@ -27,7 +27,8 @@ class FootprintAdmissionTest {
         h: Long = 0,
         m: Long = 0,
         r: Long = 0,
-    ) = FootprintAdmission.Limits(g, h, m, r, c)
+        p: Long = 0,
+    ) = FootprintAdmission.Limits(g, h, m, r, c, p)
 
     @Test
     fun `the owner's counterexample - a phi charge admits what the aggregate refuses`() {
@@ -121,13 +122,25 @@ class FootprintAdmissionTest {
         val huge = Snapshot(Load(Long.MAX_VALUE / 2, 1), Load.ZERO, 0)
         FootprintAdmission.decide(model, limits(g = Long.MAX_VALUE, c = Long.MAX_VALUE), huge, listOf(Load(Long.MAX_VALUE / 2, 1))) shouldBe
             listOf(Verdict.INDETERMINATE)
-        // An overflowing copy adds nothing: the next, small copy is still decided on the real totals.
+        // Totals that overflow are corrupt: the whole event is refused, never a mix of verdicts.
         FootprintAdmission.decide(
             model,
             limits(g = Long.MAX_VALUE, c = Long.MAX_VALUE),
             huge,
-            listOf(Load(Long.MAX_VALUE / 2, 1), Load(10, 1)),
-        ) shouldBe listOf(Verdict.INDETERMINATE, Verdict.ADMITTED)
+            listOf(Load(10, 1), Load(Long.MAX_VALUE / 2, 1), Load(10, 1)),
+        ) shouldBe List(3) { Verdict.INDETERMINATE }
+    }
+
+    @Test
+    fun `the probe budget is reserved by rule C, byte for byte`() {
+        val snapshot = Snapshot(Load(1_000, 1), Load(500, 1), 7_000)
+        val copy = Load(4_096, 1)
+        val probe = model.bound(0, 1) * 4
+        val needed = model.bound(1_000 + 500 + 4_096, 3) + 7_000 + probe
+        FootprintAdmission.decide(model, limits(g = Long.MAX_VALUE, c = needed, p = probe), snapshot, listOf(copy)) shouldBe
+            listOf(Verdict.ADMITTED)
+        FootprintAdmission.decide(model, limits(g = Long.MAX_VALUE, c = needed - 1, p = probe), snapshot, listOf(copy)) shouldBe
+            listOf(Verdict.CONTAINMENT)
     }
 
     @Test

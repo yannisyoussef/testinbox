@@ -200,24 +200,25 @@ class LedgerTestDatabase private constructor(
             .single()
             .toInstant()
 
-    /** `nextval('storage_debt_order_seq')`: what the monitor takes BEFORE measuring (contract §5.3). */
-    fun nextOrder(): Long = jdbc.sql("SELECT nextval('storage_debt_order_seq')").query(Long::class.java).single()
+    /** What the monitor calls BEFORE measuring: the server issues the order and the start (contract §5.3). */
+    fun beginObservation(): Long = jdbc.sql("SELECT storage_begin_observation()").query(Long::class.java).single()
 
-    /** What the Ops monitor writes: the order and started_at read from the primary first, then the measurement. */
+    /** What the Ops monitor writes after measuring: its walk's order and the figures; the server stamps the rest. */
     fun observe(
         trashBytes: Long,
-        startedSeq: Long = nextOrder(),
-        startedAt: java.time.Instant = dbNow(),
+        startedSeq: Long = beginObservation(),
+        availBytes: Long = 0,
+        inodesUsed: Long = 0,
     ) {
         jdbc
             .sql(
                 """
                 INSERT INTO storage_filesystem_observation
-                    (started_seq, started_at, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total,
+                    (started_seq, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes, inodes_total,
                      inodes_used, trash_bytes, minio_sys_bytes)
-                VALUES (?, ?, 'test-monitor', 4096, 0, 0, 0, 0, 0, ?, 0)
+                VALUES (?, 'test-monitor', 4096, 0, 0, ?, 100, ?, ?, 0)
                 """.trimIndent(),
-            ).params(startedSeq, Timestamps.toDb(startedAt), trashBytes)
+            ).params(startedSeq, availBytes, inodesUsed, trashBytes)
             .update()
     }
 

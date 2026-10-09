@@ -365,18 +365,19 @@ class StorageFootprintLedgerTest : PersistenceIntegrationTest() {
     }
 
     @Test
-    fun `trust is checked after the ledger lock - a fold and a drift committed while it waited are seen, never trusted over`() {
+    fun `trust is checked after the ledger lock - a drift committed while it waited is seen, never trusted over`() {
+        // The holder corrupts a count WITHOUT touching the trust row, so only the
+        // lock-first order can make confirmTrust see it: a check that read before
+        // the lock would find the rows clean and mark the stale epoch trusted.
         val ws = db.workspace()
         val inbox = db.inbox(ws)
         db.message(ws, inbox, rawBytes = 100, attachments = listOf(0))
+        db.ledger.compact(100)
         val (epoch, _) = db.trust()
 
         db.openTransaction().use { holder ->
             holder.createStatement().use { st ->
                 st.execute("SELECT pg_advisory_xact_lock(35, 2)")
-                // What a lower-capability compactor does under the lock: its fold
-                // bumps the epoch (the trigger), and here a count is also wrong.
-                st.execute(PRE_V8_FOLD.replace(":batch", "100"))
                 st.execute("UPDATE workspace_storage_account SET base_objects = base_objects - 1 WHERE workspace_id = '$ws'")
             }
             val confirming =
@@ -386,11 +387,44 @@ class StorageFootprintLedgerTest : PersistenceIntegrationTest() {
             holder.commit()
             confirming.get(30, java.util.concurrent.TimeUnit.SECONDS) shouldBe false
         }
-        db.trust() shouldBe ((epoch + 1) to null)
+        db.trust() shouldBe (epoch to null)
 
         db.ledger.repairDrift()
         db.ledger.confirmTrust() shouldBe true
-        db.trust() shouldBe ((epoch + 2) to (epoch + 2))
+        db.trust() shouldBe ((epoch + 1) to (epoch + 1))
+    }
+
+    @Test
+    fun `an inbox-only over-count - what paced retention leaves - neither revokes nor withholds trust`() {
+        // Deleting a message with its attachments in one statement leaves their delta
+        // unattributed to the inbox (V6, accepted). The global potential is the sum of
+        // WORKSPACE counts, so trust must not flap on it.
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        db.message(ws, inbox, rawBytes = 100, attachments = listOf(10))
+        db.message(ws, inbox, rawBytes = 200, attachments = listOf(20))
+        db.ledger.confirmTrust() shouldBe true
+        val trusted = db.trust()
+        db.jdbc
+            .sql("DELETE FROM message WHERE id IN (SELECT id FROM message WHERE inbox_id = ? ORDER BY raw_size_bytes LIMIT 1)")
+            .param(inbox)
+            .update() shouldBe 1
+
+        db.ledger
+            .findDrift()
+            .map { it.scope }
+            .toSet() shouldBe setOf(AccountingScope.INBOX)
+        db.ledger.repairDrift()
+        db.trust() shouldBe trusted
+        db.ledger.confirmTrust() shouldBe true
+    }
+
+    @Test
+    fun `a trust row lost to a restore is recreated untrusted and marked by a clean pass`() {
+        db.jdbc.sql("DELETE FROM storage_footprint_trust").update()
+        db.ledger.deletionDebt().countsTrusted shouldBe false
+        db.ledger.confirmTrust() shouldBe true
+        db.trust() shouldBe (0L to 0L)
     }
 
     @Test
@@ -399,7 +433,6 @@ class StorageFootprintLedgerTest : PersistenceIntegrationTest() {
         db.ledger.deletionDebt().countsTrusted shouldBe false
         db.jdbc.sql("DELETE FROM storage_footprint_trust").update()
         db.ledger.deletionDebt().countsTrusted shouldBe false
-        db.ledger.confirmTrust() shouldBe false
     }
 
     @Test
@@ -457,195 +490,6 @@ class StorageFootprintLedgerTest : PersistenceIntegrationTest() {
             .param(released)
             .update() shouldBe 1
         db.debtRows().map { it.first to it.second } shouldBe listOf(1_000L to 2L)
-    }
-
-    @Test
-    fun `with no observation every debt row counts and nothing is compacted`() {
-        val ws = db.workspace()
-        val inbox = db.inbox(ws)
-        db.message(ws, inbox, rawBytes = 1_000, attachments = listOf(100))
-        db.hardDeleteInbox(inbox)
-
-        val debt = db.ledger.deletionDebt()
-        debt.observation shouldBe null
-        debt.unsupersededBytes shouldBe 1_100
-        debt.unsupersededObjects shouldBe 2
-        db.ledger.compactDeletionDebt() shouldBe 0
-        db.debtRows() shouldHaveSize 2
-    }
-
-    @Test
-    fun `an observation supersedes the debt ordered before it began and not the debt ordered after`() {
-        val ws = db.workspace()
-        val a = db.inbox(ws)
-        val b = db.inbox(ws)
-        db.message(ws, a, rawBytes = 1_000)
-        db.message(ws, b, rawBytes = 5_000)
-        db.hardDeleteInbox(a) // in the trash when the monitor measures
-
-        val started = db.nextOrder()
-        db.observe(trashBytes = 30_000, startedSeq = started)
-        db.hardDeleteInbox(b) // moved after the measurement began: must be in the sum
-
-        val debt = db.ledger.deletionDebt()
-        checkNotNull(debt.observation).trashBytes shouldBe 30_000
-        debt.observation?.startedSeq shouldBe started
-        debt.unsupersededBytes shouldBe 5_000
-        debt.unsupersededObjects shouldBe 1
-
-        // Compaction removes only the superseded row; the later one stays for the next observation.
-        db.ledger.compactDeletionDebt() shouldBe 1
-        db.debtRows().map { it.first } shouldBe listOf(5_000L)
-        db.ledger.deletionDebt().unsupersededBytes shouldBe 5_000
-        db.ledger.deletionDebt().compactedThroughSeq shouldBe started
-    }
-
-    @Test
-    fun `ordering is the sequence, not the clock - a debt row stamped in the past but ordered after the start counts`() {
-        // A failover or an NTP step can move a clock backwards; the sequence never does.
-        val started = db.nextOrder()
-        db.observe(trashBytes = 1, startedSeq = started)
-        db.jdbc
-            .sql("INSERT INTO storage_deletion_debt (bytes, objects, incurred_at) VALUES (777, 1, now() - interval '1 day')")
-            .update()
-
-        db.ledger.deletionDebt().unsupersededBytes shouldBe 777
-        db.ledger.compactDeletionDebt() shouldBe 0
-        db.debtRows().map { it.first } shouldBe listOf(777L)
-    }
-
-    @Test
-    fun `the newest observation is the one whose order was taken last, not the latest row or the latest clock`() {
-        val early = db.nextOrder()
-        val late = db.nextOrder()
-        db.observe(trashBytes = 2, startedSeq = late)
-        // A late-arriving measurement that began earlier, with a later wall clock.
-        db.observe(trashBytes = 3, startedSeq = early, startedAt = db.dbNow())
-
-        checkNotNull(db.ledger.deletionDebt().observation).trashBytes shouldBe 2
-    }
-
-    @Test
-    fun `an observation cannot claim an order that was never issued`() {
-        val failure = runCatching { db.observe(trashBytes = 1, startedSeq = db.nextOrder() + 1_000) }
-        failure.isFailure shouldBe true
-        db.ledger.deletionDebt().observation shouldBe null
-    }
-
-    @Test
-    fun `an observation cannot claim to have started in the future - a replica's clock or a replayed value is refused`() {
-        val failure = runCatching { db.observe(trashBytes = 1, startedAt = db.dbNow().plusSeconds(60)) }
-        failure.isFailure shouldBe true
-        db.ledger.deletionDebt().observation shouldBe null
-    }
-
-    @Test
-    fun `an observation cannot claim to have finished before it started`() {
-        val started = db.dbNow()
-        val failure =
-            runCatching {
-                db.jdbc
-                    .sql(
-                        """
-                        INSERT INTO storage_filesystem_observation
-                            (started_seq, started_at, observed_at, source, block_size_bytes, capacity_bytes, used_bytes,
-                             avail_bytes, inodes_total, inodes_used, trash_bytes, minio_sys_bytes)
-                        VALUES (nextval('storage_debt_order_seq'), ?, ?, 'x', 4096, 0, 0, 0, 0, 0, 0, 0)
-                        """.trimIndent(),
-                    ).params(Timestamps.toDb(started), Timestamps.toDb(started.minusSeconds(1)))
-                    .update()
-            }
-        failure.isFailure shouldBe true
-    }
-
-    @Test
-    fun `observations are append-only - no update, no truncate, and neither the newest nor one at the watermark is deleted`() {
-        db.observe(trashBytes = 1)
-        db.jdbc.sql("INSERT INTO storage_deletion_debt (bytes, objects) VALUES (5, 1)").update()
-        db.observe(trashBytes = 2)
-        db.ledger.compactDeletionDebt() shouldBe 1 // ordered before the second observation began: superseded
-        val watermark = db.ledger.deletionDebt().compactedThroughSeq
-
-        listOf(
-            "UPDATE storage_filesystem_observation SET trash_bytes = 0",
-            "TRUNCATE storage_filesystem_observation",
-            "DELETE FROM storage_filesystem_observation WHERE started_seq >= $watermark",
-            "DELETE FROM storage_filesystem_observation",
-        ).forEach { statement ->
-            withClue(statement) { runCatching { db.jdbc.sql(statement).update() }.isFailure shouldBe true }
-        }
-        // Pruning below the watermark is what the monitor's retention does.
-        db.jdbc
-            .sql("DELETE FROM storage_filesystem_observation WHERE started_seq < ?")
-            .param(watermark)
-            .update() shouldBe 1
-        checkNotNull(db.ledger.deletionDebt().observation).trashBytes shouldBe 2
-    }
-
-    @Test
-    fun `written_by is stamped from the session, never supplied`() {
-        db.jdbc
-            .sql(
-                """
-                INSERT INTO storage_filesystem_observation
-                    (started_seq, started_at, written_by, source, block_size_bytes, capacity_bytes, used_bytes, avail_bytes,
-                     inodes_total, inodes_used, trash_bytes, minio_sys_bytes)
-                VALUES (nextval('storage_debt_order_seq'), clock_timestamp(), 'ops_monitor', 'x', 4096, 0, 0, 0, 0, 0, 0, 0)
-                """.trimIndent(),
-            ).update()
-        val sessionUser =
-            db.jdbc
-                .sql("SELECT session_user::text")
-                .query(String::class.java)
-                .single()
-        checkNotNull(db.ledger.deletionDebt().observation).writtenBy shouldBe sessionUser
-    }
-
-    @Test
-    fun `a pending row counts under every observation, survives every compaction, and is resolved once`() {
-        db.jdbc
-            .sql("SELECT storage_record_pending_debt('ws/in/m/raw.eml', 4_096, 1, 'orphan-sweep')")
-            .query()
-            .listOfRows()
-        // A retry before the S3 delete never adds a second row.
-        db.jdbc
-            .sql("SELECT storage_record_pending_debt('ws/in/m/raw.eml', 4_096, 1, 'orphan-sweep')")
-            .query()
-            .listOfRows()
-        db.observe(trashBytes = 0)
-        db.observe(trashBytes = 0)
-        db.ledger.compactDeletionDebt() shouldBe 0
-        db.ledger.deletionDebt().let {
-            it.unsupersededBytes shouldBe 4_096
-            it.pendingBytes shouldBe 4_096
-        }
-        // A pending row cannot be deleted by any compactor's predicate.
-        db.jdbc.sql("DELETE FROM storage_deletion_debt WHERE seq < 9223372036854775807 AND incurred_at <> 'infinity'").update() shouldBe 0
-
-        // Proven absent: resolved, now ordered after both observations, so it still counts.
-        db.jdbc
-            .sql("SELECT storage_resolve_pending_debt('ws/in/m/raw.eml')")
-            .query(Int::class.java)
-            .single() shouldBe 1
-        db.jdbc
-            .sql("SELECT storage_resolve_pending_debt('ws/in/m/raw.eml')")
-            .query(Int::class.java)
-            .single() shouldBe 0
-        db.ledger.deletionDebt().let {
-            it.unsupersededBytes shouldBe 4_096
-            it.pendingBytes shouldBe 0
-        }
-        // Superseded only by an observation that began after the resolution.
-        db.observe(trashBytes = 4_096)
-        db.ledger.compactDeletionDebt() shouldBe 1
-        db.ledger.deletionDebt().unsupersededBytes shouldBe 0
-    }
-
-    @Test
-    fun `a pending row must name its key`() {
-        runCatching {
-            db.jdbc.sql("INSERT INTO storage_deletion_debt (bytes, objects, incurred_at) VALUES (1, 1, 'infinity')").update()
-        }.isFailure shouldBe true
     }
 
     // --- the admission snapshot ------------------------------------------------------------
