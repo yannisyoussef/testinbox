@@ -290,12 +290,15 @@ verified, an event stops at its first non-`Stored` upload (one ambiguous key
 per slot), and keyless crash rows cap at the slots, so `|Λ_k| ≤ procs × 16`
 — **provided** the slots are bounded globally. Today they are counted per
 `node_id`, so node ids that change across deploys while their rows are
-unresolved could hold `distinct ids × 16`. Slot acquisition must check a
-**global** unresolved-ambiguity cap ≤ `procs × 16` (PR D, **mandatory**):
-since a (P)-refused late object now holds its row beyond `T_verify`, node-id
-churn during a long refusal episode would accumulate held slots without
-bound, so bounding the distinct node ids live within `T_verify` (gate F) is
-no longer an alternative. Until the cap holds, *H_F* is not a bound. *X_k* ⊆ Λ_k at every instant, and *X_k*
+unresolved could hold `distinct ids × 16`. Slot acquisition must therefore count the
+unresolved rows **no live node answers for** — rows of dead, replaced or
+cleanly stopped node ids, and held rows — against **every** live node's 16
+slots (PR D, **mandatory**): each node then holds at most `16 − orphaned`, so
+the late objects in flight or held stay within `procs × 16` whatever node ids
+come and go, even while a (P)-refused late object holds its row beyond
+`T_verify`. (A global cap on persisted rows alone does not suffice: it ignores
+the slots in flight on live nodes.) Bounding the distinct node ids live
+within `T_verify` (gate F) is no longer an alternative. *X_k* ⊆ Λ_k at every instant, and *X_k*
 can **grow** after any instant (a member of Λ_k surfaces) as well as shrink.
 A member leaves *X_k* into *D_k* only when the orphan sweep or the verifier
 records its pending debt row, and that write is **admitted by rule (P)**:
@@ -352,14 +355,14 @@ until every row is.
 | trust epoch, folding trigger for a pre-V8 compactor, `distrust_epoch` monotone, trust scoped to WORKSPACE drift, missing trust row recreated | V8 + adapter (PR #83) | built, tested (incl. a rollback / roll-forward sequence and a lock race) |
 | size and object-key immutability; `storage_delta` `UPDATE`/`TRUNCATE` refused | V8 (PR #83) | built, tested |
 | every definer function and V8 trigger function with `search_path = pg_catalog, public, pg_temp`; debt-writing triggers `SECURITY DEFINER` | V8 (PR #83) | built; the temp-schema shadowing attack is replayed by `StorageV8GrantsTest` |
-| T2: inbox `FOR SHARE` and an `ACTIVE`/`EXPIRING` fence; key count equals rows inserted (asserted) | PR D | **not built** — today T2 takes `FOR KEY SHARE`, checks no state, and checks bytes only |
-| pending debt rows written by the orphan sweep, the ambiguity verifier and the witness / breaker probes, **each admitted by rule (P)** (refused: probe skipped, late object kept with its slot), with a sized listing (`HEAD` fallback); fail closed when unsized | PR D | **not built** — the record/resolve functions and `FootprintAdmission.decideRowFreeDebt` exist with no production caller |
+| T2: inbox `FOR SHARE` and an `ACTIVE`/`EXPIRING` fence; the keys of the rows inserted equal the reserved keys (asserted) | PR D (#85) | built, tested (`T2InboxLockTest`, `T2InboxFenceTest`, `T2CommittedKeysTest`) |
+| pending debt rows written by the orphan sweep, the ambiguity verifier and the witness / breaker probes, **each admitted by rule (P)** under T1's lock with T1's preconditions (refused: probe skipped, late object kept and held with its slot and the latch); objects sized by `HEAD`, unsized never deleted under `ALL`; single-attempt probe PUTs; a resolver for stale pending rows (V9 `recorded_at`); the ingestion role limited to the probe-only pair | PR D (#85) | built, tested (`RowFreeDebtTest`, `JdbcRowFreeDebtStoreTest`, `RowFreeDebtCleanupTest`, `StorageV8GrantsTest`) |
 | reconciliation marks trust after any pass that found no WORKSPACE-scope drift (inbox-only drift, which paced retention leaves on every batch, never starves trust); `testinbox_storage_footprint_counts_trusted` gauge | adapter + use case (PR #83) | built, tested (incl. a real-PostgreSQL distrust-then-paced-deletes sequence) — the gauge is what an operator alerts on until T1 consumes the flag (PR D) |
-| `deletePrefix` fails on any per-key `DeleteObjects` error; retention deletes exact proven message ids per batch, state change first, reads gated on inbox state; pacing with `T_max` | PR D | **not built** |
-| T1 reads *L*, *D*, *W*, watermark, trust and observation validity in **one statement**; `451` before resolution for untrusted / unobserved / invalid / worst-case overflow; negative totals `INDETERMINATE` | PR D | **not built** — today *L* and *D* are two adapter calls |
-| global unresolved-ambiguity cap ≤ `procs × 16` in slot acquisition (Lemma 3) | PR D | **not built** |
-| ArchUnit rule: only the four deleting use cases call the deleting ports (§4.6) | PR D | **not built** |
-| prompt reconciliation on a distrust event (otherwise `ALL` answers `451` until the 6 h pass) | PR D | **not built** |
+| `deletePrefix` fails on any per-key `DeleteObjects` error; under `ALL`, retention deletes exact proven message ids per batch, longest-waiting inboxes first, state change first, no row-free prefix delete; reads gated on inbox state; pacing with `T_max` | PR D (#85) | built, tested (`PacedRetentionTest`, `PacedTeardownRepositoryTest`, `MessageReadGatingTest`) |
+| T1 reads *L*, *D*, *W*, watermark, trust, the last distrust stamp and observation validity in **one statement** (only where a filesystem is declared); `451` before resolution for untrusted / unobserved / invalid / observed-before-distrust / negative or worst-case-overflowing totals, with T1 as the race backstop | PR D (#85) | built, tested (`FootprintT1AdmissionTest`, `StorageFootprintSnapshotTest`, `FootprintEnforcementTest`) |
+| Lemma 3's slot bound: unresolved rows no live node answers for (dead or replaced node ids, held rows) count against **every** node's 16 slots, so `|Λ| ≤ procs × 16` whatever node ids come and go; exhaustion answered before resolution | PR D (#85) | built, tested (`WriteSlotsTest`, `DistrustAndLatchHoldTest`) |
+| ArchUnit rule: only the four deleting use cases call the deleting ports (§4.6) | earlier (`DependencyRuleTest.deletingPortRule`) | built, tested (`RogueDeleterFixture`) |
+| prompt reconciliation on a distrust event; admission waits for an observation begun after the last distrust event (V9 stamp, the upgrade included); the latch cannot be cleared while a refused late object is held (V9 trigger) | PR D (#85) | built, tested (`StorageAccountingTest`, `DistrustAndLatchHoldTest`) |
 | gate F rows (§9), including privileges, sequence `CACHE 1`, bucket directory blocks in *M*, procs / node ids | PR E | **not built** |
 
 **Theorem.** At every instant, `U_TI ≤ C_fs − R_ops − M`. *Proof (by
@@ -1232,7 +1235,7 @@ a missing, stale (older than *A_obs*) or internally inconsistent input is
 | trusted counts | `storage_footprint_trust.trusted_epoch = distrust_epoch` (§4.5) |
 | base case | a full orphan sweep that **began after** the counts were last trusted and after the last lower-capability node's last heartbeat has completed, and `physical_listed ≤ covered`; and the newest observation's `started_seq` is after the last distrust event |
 | mixed versions | no `storage_node` with a capability below the containment floor is live — the capability that carries **every** debt-writing obligation, not merely rules (G) and (C) (an older node admits without rule C, or deletes without debt) |
-| procs | slot acquisition enforces the global unresolved-ambiguity cap ≤ `procs × 16` (Lemma 3; mandatory — a node-id bound is no longer sufficient) |
+| procs | the declared *procs* covers every live ingestion node, and slot acquisition counts orphaned rows against every node (Lemma 3, PR D) |
 | observation source | the newest observation's `written_by` is the declared monitor role, and the monitor role is the only one holding `EXECUTE` on `storage_begin_observation()` and `INSERT` on `storage_filesystem_observation` (`has_function_privilege`, `has_table_privilege`) |
 | privileges | the application roles hold no `INSERT` on observations, no `EXECUTE` on `storage_begin_observation()`, no `INSERT`/`UPDATE`/`DELETE` on `storage_deletion_debt` or `storage_debt_watermark`, and own none of the V8 tables, sequences or functions. Staging, where the application connects as the owner, therefore **fails gate F by design**: every V8 privilege boundary is void there |
 | ordering sequence | `storage_debt_order_seq` has `CACHE 1` (`pg_sequences.cache_size = 1`) and every reader and writer uses the primary |
