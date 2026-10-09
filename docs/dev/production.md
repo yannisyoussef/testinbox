@@ -134,6 +134,10 @@ by the database.**
   - `INSERT (inbox_id, workspace_id, refusal_count, last_refusal_at, last_refusal_reason)`
     and `UPDATE (refusal_count, last_refusal_at, last_refusal_reason)` on
     `inbox_storage`.
+- **No definer function is executable by `PUBLIC`** (V10). A definer
+  *trigger* function left executable could be attached by any login role to
+  a temporary table of its own, and run as the owner. Keep `EXECUTE` on
+  definer functions to the grants listed here. Gate F flags any other.
 - **Revoke the earlier writes** once every running artifact is from V10 on.
   A role that keeps them can forge the counts a trust mark vouches for, and
   gate F's privileges row refuses `ALL` while one does.

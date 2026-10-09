@@ -203,6 +203,54 @@ class StorageVerifiedTrustTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `no definer trigger function can be attached to a temporary table - the ledger and debt cannot be forged as the owner`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+        val app = role("ti_app")
+        val asApp = db.connectAs(app)
+        db.jdbc.sql("GRANT TEMP ON DATABASE ${db.name} TO ${app.name}").update()
+        val definerTriggers =
+            db.jdbc
+                .sql(
+                    "SELECT p.proname FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.prosecdef " +
+                        "AND p.prorettype = 'trigger'::regtype ORDER BY 1",
+                ).query(String::class.java)
+                .list()
+        (definerTriggers.size >= 9) shouldBe true
+        asApp.sql("SELECT 1").query().listOfRows() // the role exists and can connect
+        // One session: a temporary table lives only in the connection that made it.
+        java.sql.DriverManager
+            .getConnection(postgres.jdbcUrl.substringBeforeLast('/') + "/" + db.name, app.name, app.password)
+            .use { session ->
+                session.createStatement().use {
+                    it.execute(
+                        "CREATE TEMP TABLE m (workspace_id uuid, inbox_id uuid, raw_size_bytes bigint)",
+                    )
+                }
+                for (fn in definerTriggers) {
+                    failure {
+                        session.createStatement().use {
+                            it.execute(
+                                "CREATE TRIGGER t_$fn AFTER INSERT ON m REFERENCING NEW TABLE AS storage_new_rows " +
+                                    "FOR EACH STATEMENT EXECUTE FUNCTION public.$fn()",
+                            )
+                        }
+                    } shouldContain "permission denied for function"
+                }
+            }
+        // No definer function at all is executable by PUBLIC.
+        db.jdbc
+            .sql(
+                "SELECT count(*) FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND p.prosecdef " +
+                    "AND has_function_privilege('public', p.oid, 'EXECUTE')",
+            ).query(Long::class.java)
+            .single() shouldBe 0L
+        // The real triggers still fire for the roles that write the tables.
+        val ws = db.workspace()
+        db.message(ws, db.inbox(ws), rawBytes = 10)
+        db.deltaRows() shouldBe 1L
+    }
+
+    @Test
     fun `node rows below containment level 1 leave a durable order behind, even once they are reaped`() {
         val db = LedgerTestDatabase.create(postgres, admin)
 
