@@ -112,7 +112,37 @@ once an observation supersedes their row, no row charges any more; a cap on
 *rows* therefore bounds nothing under a purge stall, and only admitting each
 write against the potential does (found by `FootprintWorldTest`: a row-count
 probe cap, and a sweep that freed the slot without (P), both breached
-containment). The static sizing condition is
+containment).
+
+**(P) is an admission in every respect.** It is evaluated and its pending
+row inserted in **one transaction under the global admission lock**, reading
+T1's one-statement snapshot — otherwise a (P) write and a T1 copy, or two
+(P) writes, could each pass against the same snapshot and together overshoot
+by up to `F(15 MiB, 1)` per racing write. It has **T1's preconditions**:
+trusted counts and a valid newest observation (watermark, *B*, *C_fs*,
+`written_by`); otherwise it refuses, like T1. A retry for a key that already
+has a pending row adds nothing to *D* (the upsert does nothing) and needs no
+new admission. A **probe PUT** is a single attempt (no SDK retries); if its
+outcome is ambiguous, its pending row stays pending until
+`ambiguous_at + T_verify`, so a PUT landing late is still covered. The
+**ambiguity verifier** behaves as the sweep: a refused late object is kept,
+its ambiguity row stays unresolved (keyless crash rows too, while any key
+they cover is held) and is retried after `verify_at`. All of this is PR D.
+
+**Progress.** (P) is weaker than (C) by exactly *P_F*, so it starves only
+when a copy of the same size would. Φ falls without admissions (observations
+supersede debt rows, compaction, purges), and once copies are not being
+admitted — the §9.3 latch is set by the first late object detected — a held
+late object *x* is admitted as soon as
+`F(D_pending) + F(p_x, 1) ≤ D_budget + P_F`. While copies are admitted and
+(C) binds, small copies could hold the headroom at *P_F*; so either *P_F* ≥
+`F(15 MiB, 1)` plus the probe allowance, or the latch stays set while any
+(P)-refused late object is held. The latch **cannot be cleared** while one
+is held: otherwise slot exhaustion would answer the post-resolution `W_slot`
+`451` for as long as Φ stays high — exactly the stable post-resolution `451`
+§5.4 rejects as a recipient-existence oracle. Held refused late objects are
+metered (PR D). Under a permanent purge stall nothing progresses; that is
+the intended fail-closed behaviour. The static sizing condition is
 
 ```
 G_F + D_budget + P_F + M + R_ops ≤ C_fs                            (I-C)
@@ -260,11 +290,12 @@ verified, an event stops at its first non-`Stored` upload (one ambiguous key
 per slot), and keyless crash rows cap at the slots, so `|Λ_k| ≤ procs × 16`
 — **provided** the slots are bounded globally. Today they are counted per
 `node_id`, so node ids that change across deploys while their rows are
-unresolved within `T_verify` could hold `distinct ids × 16`. Either slot
-acquisition checks a **global** unresolved-ambiguity cap ≤ `procs × 16`
-(PR D), or *procs* is defined as the most distinct node ids live within
-`T_verify` and gate F verifies it (PR E); until one holds, *H_F* is not a
-bound. *X_k* ⊆ Λ_k at every instant, and *X_k*
+unresolved could hold `distinct ids × 16`. Slot acquisition must check a
+**global** unresolved-ambiguity cap ≤ `procs × 16` (PR D, **mandatory**):
+since a (P)-refused late object now holds its row beyond `T_verify`, node-id
+churn during a long refusal episode would accumulate held slots without
+bound, so bounding the distinct node ids live within `T_verify` (gate F) is
+no longer an alternative. Until the cap holds, *H_F* is not a bound. *X_k* ⊆ Λ_k at every instant, and *X_k*
 can **grow** after any instant (a member of Λ_k surfaces) as well as shrink.
 A member leaves *X_k* into *D_k* only when the orphan sweep or the verifier
 records its pending debt row, and that write is **admitted by rule (P)**:
@@ -304,7 +335,7 @@ the status table after this one, and **activation is gated on every row**:
 | ledger compaction | deltas → bases | = | bytes **and objects** folded in one statement; a pre-V8 compactor's fold is completed by a trigger that folds the objects it drops (§4.5) |
 | debt compaction | rows with `seq < started_seq_newest`, never pending, deleted; the watermark rises to `started_seq_newest` in the same transaction | = for Φ_newest | they are superseded by `W_newest`, not lost; observations at or above the watermark cannot be deleted (§5.3) |
 | new observation | *k\** may change | — | Lemma 1 holds for every *k*; admissions use the newest |
-| purge, probe objects, metadata | physical only | = | *M* (class e) |
+| purge, metadata | physical only | = | *M* (class e); probe objects are not here — each is admitted by (P) into *D* |
 | reconciliation repair, recompute | counts corrected to the rows | corrects | the true potential never changed; WORKSPACE-scope drift found revokes trust in the repair transaction, so admission waits for a clean pass (§4.5) |
 | rollback below the containment floor | its T1 does not apply (C), or its deletions write no debt | — | forbidden by the rollback floor: the **first artifact that carries every debt-writing obligation** — rules (G) and (C), pending rows for the sweep, verifier and probes, `deletePrefix` failing on per-key errors — not merely the two rules (`deploy/rollback-floors.txt` names it once they enforce); a rollback above it is covered by the folding trigger, and a roll-forward waits for a clean reconciliation **and** an observation begun after the last distrust event (§4.5) |
 
@@ -408,7 +439,12 @@ Each committed mutant must be caught in the same worlds:
 **Not modeled** (each is a code obligation of the status table, with its own
 test in the PR that builds it): a two-statement snapshot read, T2 inserting
 fewer rows than its reservation has keys, retention after a failed per-key
-delete, more late objects than the slots allow.
+delete, more late objects than the slots allow, concurrent (P) and T1
+admissions (serialized by the admission lock, PR D), ambiguous probe PUTs,
+node-id churn, the §9.3 latch. The rule-(P) holes that the random worlds
+catch in only one or two seeds are pinned by deterministic exact-headroom
+tests in `FootprintAdmissionTest` (a probe during a purge stall with no
+probe rows left, and a late object's pending row charged ΔF, not φ).
 
 **One snapshot.** T1 reads *L*, *D*, *W*, the watermark, the trust marker and
 the observation's validity in **one statement**. Today *L*
@@ -880,7 +916,8 @@ Its exact form is `trash(t) ≤ F(D) + W + R(t)`, where *R(t)* is the trashed
 footprint that still has a live row or a live reservation (a retention
 transaction whose prefix delete succeeded and whose row delete rolled back:
 the objects are in trash **and** still in *F_c*, so Φ counts them, and the
-theorem is unaffected) plus the probe residue of §2.2 (e), which is in *M*.
+theorem is unaffected). Probe objects are admitted by (P) into *D* like
+any other row-free deletion.
 
 **Lemma (ordering).** Ordering uses one database **sequence**,
 `storage_debt_order_seq`, never a wall clock (a failover or an NTP step can
@@ -1061,7 +1098,7 @@ host:
 |---|---|
 | `f_blocks × f_frsize < declared C_fs` or `f_files < declared I_fs` or mount source ≠ qualified | **latch** (`filesystem-identity`) |
 | image `allocated < size` (preallocation lost: sparse again) | **latch** (`preallocation`) |
-| `used_bytes > Φ + H_F + P_F + M` (the application exposes Φ's parts as `testinbox_storage_footprint_bytes{kind}`) | alert; **latch** above `+ R_ops / 2` (`model-violation`) |
+| `used_bytes > Φ + H_F + M` (the application exposes Φ's parts as `testinbox_storage_footprint_bytes{kind}`; *P_F* is a liveness reserve, not a physical class) | alert; **latch** above `+ R_ops / 2` (`model-violation`) |
 | `minio_sys_bytes` + bucket directory blocks `> M`, or their inodes > *M*'s inode budget | alert; latch at `2·M` |
 | `avail_bytes < R_ops` | **latch** (`headroom`) — this should be unreachable; reaching it is a model failure |
 | observation write fails | page (the application's age metric rises) |
@@ -1094,7 +1131,7 @@ process refuses to start unless all hold:
 | `global-footprint-limit-bytes` (*G_F*) | > `H_F`; `H_F` computed with `F(15 MiB, 1)` (§1) |
 | `deletion-debt-budget-bytes` (*D_budget*) | > 0 |
 | `minio-metadata-budget-bytes` (*M*) | > 0 |
-| `probe-budget-bytes` (*P_F*) | ≥ `F(0, 1)` × the probes all nodes may have in flight at once, so probes stay admissible by (P) while copies are refused (liveness) |
+| `probe-budget-bytes` (*P_F*) | ≥ `F(15 MiB, 1)` + `F(0, 1)` × the probes all nodes may have in flight at once, so probes and a held late object stay admissible by (P) while copies are refused (liveness; until unpurged trash fills it, which the latch and the purge-stall alert cover) |
 | `operational-reserve-bytes` (*R_ops*) | ≥ max(5 % of *C_fs*, 2 GiB) |
 | `filesystem-capacity-bytes` (*C_fs*) | `G_F + D_budget + P_F + M + R_ops ≤ C_fs` (checked arithmetic, never wrapped) |
 | `filesystem-inodes` (*I_fs*) | `I_fs ≥ C_fs / B` |
@@ -1164,8 +1201,9 @@ Changes:
   issued only if the epoch is still that one when the lock is taken again. A
   trip landing during the read invalidates the answer, whatever it was.
   Concurrency tests drive the interleavings with latches. A full filesystem is an incident,
-  and each failed real-event trial would otherwise hold a write slot for
-  `T_verify`; sixteen of them would wedge the node for an hour.
+  and each failed real-event trial would otherwise hold a write slot for at
+  least `T_verify` (longer if (P) refuses its late object); sixteen of them
+  would wedge the node for an hour or more.
 - The whole-event `451`, the ambiguity row, the held slot and *H_F* are
   unchanged: nothing about ENOSPC is treated as definitive until E3 (§10)
   proves it so across runs, and even then the reservation rule need not
@@ -1194,7 +1232,7 @@ a missing, stale (older than *A_obs*) or internally inconsistent input is
 | trusted counts | `storage_footprint_trust.trusted_epoch = distrust_epoch` (§4.5) |
 | base case | a full orphan sweep that **began after** the counts were last trusted and after the last lower-capability node's last heartbeat has completed, and `physical_listed ≤ covered`; and the newest observation's `started_seq` is after the last distrust event |
 | mixed versions | no `storage_node` with a capability below the containment floor is live — the capability that carries **every** debt-writing obligation, not merely rules (G) and (C) (an older node admits without rule C, or deletes without debt) |
-| procs | the most distinct `node_id`s live within `T_verify` ≤ the declared *procs*, unless slot acquisition enforces a global unresolved-ambiguity cap (Lemma 3) |
+| procs | slot acquisition enforces the global unresolved-ambiguity cap ≤ `procs × 16` (Lemma 3; mandatory — a node-id bound is no longer sufficient) |
 | observation source | the newest observation's `written_by` is the declared monitor role, and the monitor role is the only one holding `EXECUTE` on `storage_begin_observation()` and `INSERT` on `storage_filesystem_observation` (`has_function_privilege`, `has_table_privilege`) |
 | privileges | the application roles hold no `INSERT` on observations, no `EXECUTE` on `storage_begin_observation()`, no `INSERT`/`UPDATE`/`DELETE` on `storage_deletion_debt` or `storage_debt_watermark`, and own none of the V8 tables, sequences or functions. Staging, where the application connects as the owner, therefore **fails gate F by design**: every V8 privilege boundary is void there |
 | ordering sequence | `storage_debt_order_seq` has `CACHE 1` (`pg_sequences.cache_size = 1`) and every reader and writer uses the primary |
@@ -1301,7 +1339,12 @@ MinIO in Testcontainers and prove the accounting, not the filesystem.
 
 §2 (footprint beside payload; *N*), §3 (GLOBAL in footprint, *G_F*), §4 (the
 rule), §8 (the `STORAGE_FULL` kind and the evidence-gated trial), §9 (*H_F*;
-the quota paragraph becomes the containment theorem; *Q* optional), §9a (the
+the quota paragraph becomes the containment theorem; *Q* optional; "a late
+object found then is deleted" becomes "deleted only if rule (P) admits its
+pending row, otherwise kept with its slot and ambiguity row held beyond
+`T_verify`, the latch set and not clearable while it is held"; the verifier
+and the orphan sweep retry a refused object after `verify_at`; slots are
+capped globally), §9a (the
 filesystem elements join the qualified combination; invalidation extends to
 them), §10 (object counts; the debt ledger; the observation table; compaction
 of superseded debt; and a new sentence beside the ADR-024 carve-out: the
