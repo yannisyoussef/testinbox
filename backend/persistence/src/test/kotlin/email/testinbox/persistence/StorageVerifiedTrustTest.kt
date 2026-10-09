@@ -230,6 +230,9 @@ class StorageVerifiedTrustTest : PersistenceIntegrationTest() {
         JdbcStorageAmbiguity(db.jdbc, db.transactions).registerGeneration("new", UUID.randomUUID(), "storage-v1")
         watermark() shouldBe before
         failure { db.jdbc.sql("UPDATE storage_containment_watermark SET last_lower_seq = 0").update() } shouldContain "only grows"
+        // A running lower node cannot be disguised as level 1.
+        failure { db.jdbc.sql("UPDATE storage_node SET containment = 0 WHERE node_id = 'new'").update() } shouldContain
+            "fixed at registration"
         failure { db.jdbc.sql("DELETE FROM storage_containment_watermark").update() } shouldContain "only grows"
 
         // Lost to a restore (it is not backed up): the next verification recreates it at the current order.
