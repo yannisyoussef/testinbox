@@ -41,7 +41,7 @@ is `ACTIVATION READY` or `ACTIVATION BLOCKED`; an unevaluated gate is
 | **E-floor-staging** | §14 (e), §18 gate 5 | The running API and ingestion artifacts (`git_sha` from `testinbox_build`) each **contain** every ADR-035 floor (`git merge-base --is-ancestor floor sha`). | metrics + `--repo` |
 | **E-floor-production** | §14 (e) | Every ADR-035 floor is an ancestor of `origin/master` **and** is listed in `origin/master:deploy/rollback-floors.txt` — because `production-handoff.yml` reads the floors from `master`, a floor that is only on `develop` protects nothing in production. | `--repo` (`--fetch` to refresh) |
 | **Q-qualification** | §9a, §18 gate 7a | The Ops-declared backend identity (`--backend-identity`) equals a record listed in `adr035-qualification/index.txt` on every element — image index digest, platform member digest, release, commit id, mode, drive count, timeout environment, timeout CLI flags, runtime-config hash (**non-null** and equal), kernel release, filesystem type, mount options, storage-class / inline defaults, direct path, proxy, upload implementation version — **and** that record is enablement-eligible on its own content (`enablementEligible: true`, `slowWExecuted: true` with a `slow-*` scenario listed, a non-null runtime-config hash, a platform class that is not `laptop`), **and** when Ops supply `--qualification-valid-metric` from their `qualification-check`, it is `1`. Blocked with the mismatched elements or the ineligibility reasons. | `--qualification-dir`, `--backend-identity`, `--qualification-valid-metric` |
-| **F-filesystem** | containment contract §9 (TI-STORAGE-006E) | `--mode TENANT_LIMITS`: **NOT REQUIRED**, and the detail says why: global footprint admission is observational there, so the containment theorem does not hold, and filesystem exhaustion stays reachable. That mode is approved for dark staging qualification only, never for public traffic. `--mode ALL`: each row of the contract's §9 table holds, comparing an **observed** figure with a **declared** one, never a declaration alone. The rows are filesystem identity equal to the record the evidence names; a dedicated mount; `f_blocks × f_frsize ≥ C_fs` with `f_frsize = B`; `f_files ≥ I_fs ≥ C_fs / B`; a preallocated, non-thin backing with an fstrim exclusion; host isolation; `used ≤ Φ + H_F + M` and `avail ≥ R_ops` on the newest observation; `D_est ≤ D_budget`; trusted counts; the base case; a declared `TI-STORAGE-006E` containment floor; `procs` covering the live ingestion nodes; the observation written by the monitor role, which alone may write one; no application-role privilege on the V8 boundary; `storage_debt_order_seq` `CACHE 1` on the primary; MinIO metadata `≤ M`; Ops `qualification-check` valid; and an observation younger than *A_obs*. A missing, malformed, stale (older than *A_obs* on the database clock) or contradictory input (statvfs disagreeing with the monitor's own figures) is **NOT RUN**. A failing row is **BLOCKED**, and every failing row is named. | `--filesystem-evidence` (`docs/dev/filesystem-evidence.md`), plus the database through `TESTINBOX_ACTIVATION_DB_URL` or `--footprint-state` |
+| **F-filesystem** | containment contract §9 (TI-STORAGE-006E); ADR-035 Amendment 2 | `--mode TENANT_LIMITS`: the **physical-isolation preflight** (identity, dedicated mount, capacity, inodes, preallocation, isolation, starting block and inode headroom, observation source and liveness, qualification, the record's E8–E11). Its PASS states that it proves isolation only: global footprint admission is observational there, the containment theorem does not hold, and filesystem exhaustion stays reachable. The mode is approved for dark staging qualification only, never for public traffic. `--mode ALL`: each row of the contract's §9 table holds, comparing an **observed** figure with a **declared** one, never a declaration alone. The rows are filesystem identity equal to the record the evidence names; a dedicated mount; `f_blocks × f_frsize ≥ C_fs` with `f_frsize = B`; `f_files ≥ I_fs ≥ C_fs / B`; a preallocated, non-thin backing with an fstrim exclusion; host isolation; `used ≤ Φ + H_F + M` and `avail ≥ R_ops` on the newest observation; `D_est ≤ D_budget`; trusted counts (marked only by V10's verifying function); the base case from database records (a trust mark, then a completed `storage_sweep_run` ordered after it and after any lower-containment node, listing no more than it covered); E1–E11 recorded PASS; metadata inodes within budget; a declared `TI-STORAGE-006E` containment floor; `procs` covering the live ingestion nodes; the observation written by the monitor role, which alone may write one; no application-role privilege on the V8 boundary; `storage_debt_order_seq` `CACHE 1` on the primary; MinIO metadata `≤ M`; Ops `qualification-check` valid; and an observation younger than *A_obs*. A missing, malformed, stale (older than *A_obs* on the database clock) or contradictory input (statvfs disagreeing with the monitor's own figures) is **NOT RUN**. A failing row is **BLOCKED**, and every failing row is named. | `--filesystem-evidence` (`docs/dev/filesystem-evidence.md`), plus the database through `TESTINBOX_ACTIVATION_DB_URL` or `--footprint-state` |
 
 The ADR-035 floors are **parsed** from `deploy/rollback-floors.txt` (the lines
 whose rationale names `ADR-035` or `TI-STORAGE`), never hardcoded; a floors
@@ -133,7 +133,7 @@ The evidence record (`--json`):
     { "gate": "E-floor-staging",     "verdict": "PASS",         "detail": "2 running artifact(s) contain every ADR-035 floor" },
     { "gate": "E-floor-production",  "verdict": "BLOCKED",      "detail": "floor c84ddd74f798 is not an ancestor of origin/master (master predates it); …" },
     { "gate": "Q-qualification",     "verdict": "NOT_RUN",      "detail": "no --backend-identity supplied" },
-    { "gate": "F-filesystem",        "verdict": "NOT_REQUIRED", "detail": "TENANT_LIMITS: global footprint admission is observational, …" }
+    { "gate": "F-filesystem",        "verdict": "NOT_RUN",      "detail": "no --filesystem-evidence supplied" }
   ],
   "verdict": "BLOCKED"
 }
@@ -163,15 +163,18 @@ Running the script against this repository with no runtime inputs gives
   runtime admin configuration never hashed (§18 gate 7a requires the
   deployed host's own combination). The production host must be
   re-qualified on its own combination before any record can be eligible.
-- **F-filesystem is NOT RUN** for `ALL` (no filesystem evidence), and it
-  would stay **BLOCKED** with evidence. No `TI-STORAGE-006E` containment
-  floor is declared until PR D merges. No shipped qualification record
-  carries filesystem elements yet: the staging record must be re-issued after
-  experiments E1–E8 run on the recreated filesystem. On staging, the
-  application connects as the schema owner, so the privileges row fails **by
-  design**: every V8 privilege boundary is void there. Gate F is `NOT
-  REQUIRED` for `TENANT_LIMITS`, which never makes filesystem exhaustion
-  unreachable.
+- **F-filesystem is NOT RUN** in both modes (no filesystem evidence).
+  - **With evidence, `ALL` would stay BLOCKED:**
+    - No `TI-STORAGE-006E` containment floor is declared until PR D merges.
+    - No shipped qualification record carries filesystem elements, the
+      measured *O_max*, the E7 metadata inodes, or E1–E11 results. The staging
+      record must be re-issued after the experiments run on the recreated
+      filesystem.
+    - On staging, the application connects as the schema owner, so the
+      privileges row fails **by design**: every V8 and V10 privilege boundary
+      is void there.
+  - **The `TENANT_LIMITS` preflight would also block** until the re-issued
+    record exists. Its PASS would prove isolation only, never containment.
 - **D-benchmark is NOT RUN** for `ALL` (the harness exists —
   `docs/dev/storage-benchmark.md` — but no staging-host-class result has been
   recorded; a laptop run is `INCOMPLETE` by construction) and `NOT REQUIRED`

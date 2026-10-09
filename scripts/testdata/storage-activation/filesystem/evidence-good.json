@@ -32,11 +32,8 @@
     "imageBytes": 68719476736
   },
   "minio": {
-    "bucketDirectoryBytes": 10485760
-  },
-  "baseCase": {
-    "trustConfirmedAt": "2026-10-06T22:00:00Z",
-    "sweepStartedAt": "2026-10-06T23:00:00Z"
+    "bucketDirectoryBytes": 10485760,
+    "metadataInodes": 20000
   },
   "database": {
     "allConnectionsToPrimary": true
@@ -55,6 +52,7 @@
     "applicationRoles": [
       "testinbox_app"
     ],
-    "procs": 2
+    "procs": 2,
+    "metadataBudgetInodes": 65536
   }
 }

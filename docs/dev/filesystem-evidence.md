@@ -70,10 +70,23 @@ scripts/check-storage-activation.sh --mode ALL \
   database always wins. A state file is refused while
   `TESTINBOX_ACTIVATION_DB_URL` is set, and a PASS on a file says that the
   state was offline.
-- `--mode TENANT_LIMITS` reports gate F `NOT REQUIRED` and says why. Global
-  admission is observational in that mode, so filesystem exhaustion stays
-  reachable. `TENANT_LIMITS` is approved for dark staging qualification only,
-  and never for public traffic.
+- `--mode TENANT_LIMITS` runs the **physical-isolation preflight** (ADR-035
+  Amendment 2, §A2.5). It applies the rows that prove the storage is
+  isolated and starts with headroom:
+  - identity and dedicated mount;
+  - capacity and inodes;
+  - preallocation and isolation;
+  - starting headroom (`avail ≥ R_ops`, and at least one free inode per free
+    block);
+  - observation source and liveness;
+  - the Ops qualification-check;
+  - the record's E8–E11 drills recorded as PASS.
+
+  It skips every row about the global potential, because nothing enforces
+  it in that mode. Its PASS says so: global admission is observational, the
+  containment theorem does not hold, filesystem exhaustion stays reachable,
+  and the mode is approved for dark staging qualification only, never public
+  traffic. Without evidence, it is NOT RUN, which blocks.
 
 ## The evidence file (`testinbox.filesystem-evidence/1`)
 
@@ -101,10 +114,9 @@ file is `NOT RUN`. Every field is required. A missing or mistyped field is
 | `isolation.dedicatedDevice` | `true` when the filesystem has its own device | isolation |
 | `isolation.hostFreeAtCreationBytes`, `.imageBytes` | recorded when the image was created (`df -B1 --output=avail` of its host filesystem, and its size) | isolation: free ≥ image |
 | `minio.bucketDirectoryBytes` | `du -sB1 --apparent-size=false <data dir>/<bucket>` minus the objects' own blocks, as the monitor computes it | MinIO metadata: with `minio_sys_bytes` ≤ *M* |
-| `baseCase.trustConfirmedAt` | the last time `testinbox_storage_footprint_counts_trusted` turned from 0 to 1 (Prometheus history) | base case |
-| `baseCase.sweepStartedAt` | a lower bound on the start of the sweep that gate B relies on: the **previous** `testinbox_storage_orphan_sweep_completed_at_seconds` value on that node. Sweeps on one node do not overlap, so the current one began after its predecessor completed. In practice this needs two completed sweeps after trust was confirmed. | base case: the sweep began after trust was confirmed |
+| `minio.metadataInodes` | inodes under `.minio.sys` plus the bucket's directories (`find <data dir>/.minio.sys <data dir>/<bucket> -type d \| wc -l` plus `find <data dir>/.minio.sys -type f \| wc -l`) | MinIO metadata: ≤ `declared.metadataBudgetInodes` |
 | `database.allConnectionsToPrimary` | the datasource URLs of every deployable and of the monitor name the primary | ordering |
-| `declared.*` | the deployed values, each copied from its real source. The `TESTINBOX_STORAGE_FS_*` variables (`deploy/staging/.env.example`) give `capacityBytes` (*C_fs*), `blockSizeBytes` (*B*), `inodes` (*I_fs*), `globalFootprintLimitBytes` (*G_F*), `metadataBudgetBytes` (*M*), `operationalReserveBytes` (*R_ops*), `objectOverheadBytes` (*O_max*), `deletionDebtBudgetBytes` (*D_budget*), `observationMaxAgeSeconds` (*A_obs*, at most 3600) and `monitorRole`. `procs` is the declared maximum ingestion processes (`TESTINBOX_STORAGE_DECLARED_MAX_INGESTION_PROCESSES`). `applicationRoles` is the database user of every deployable's datasource; the gate also adds every role it sees connected. ε and H_F are not inputs. | every row |
+| `declared.*` | the deployed values, each copied from its real source. The `TESTINBOX_STORAGE_FS_*` variables (`deploy/staging/.env.example`) give `capacityBytes` (*C_fs*), `blockSizeBytes` (*B*), `inodes` (*I_fs*), `globalFootprintLimitBytes` (*G_F*), `metadataBudgetBytes` (*M*), `operationalReserveBytes` (*R_ops*), `objectOverheadBytes` (*O_max*), `deletionDebtBudgetBytes` (*D_budget*), `metadataBudgetInodes` (the inode half of *M*; at least the record's E7 measurement), `observationMaxAgeSeconds` (*A_obs*, at most 3600) and `monitorRole`. `procs` is the declared maximum ingestion processes (`TESTINBOX_STORAGE_DECLARED_MAX_INGESTION_PROCESSES`). `applicationRoles` is the database user of every deployable's datasource; the gate also adds every role it sees connected. ε and H_F are not inputs. | every row |
 
 ## What the gate checks against the database
 
@@ -112,8 +124,11 @@ file is `NOT RUN`. Every field is required. A missing or mistyped field is
 |---|---|
 | physical headroom | Φ = F(L + D) + W, computed from T1's own figures and the newest observation's `trash_bytes`; `used_bytes ≤ Φ + H_F + M` and `avail_bytes ≥ R_ops` |
 | deletion debt | `D_est = Φ − F(L) ≤ D_budget` |
-| trusted counts | `storage_footprint_trust.trusted_epoch = distrust_epoch` |
-| base case | the newest observation's `started_seq` is after `distrusted_seq` (V9), and Ops attest that the sweep began after trust was confirmed (see the limits below) |
+| trusted counts | `storage_footprint_trust.trusted_epoch = distrust_epoch`, marked by `storage_confirm_footprint_trust()` (V10): no application role can write the trusted columns |
+| base case | all from records the database wrote (V10), never an asserted time. The trust row carries a `trusted_seq` from the verifying function. The newest **completed** `storage_sweep_run` began at a database-issued order after it, and after the last heartbeat of any `storage_node` below containment level 1. At its completion it listed no more than the covered bytes (`physical_listed ≤ covered`, as §9 states, not gate B's `+ H`). The newest observation also began after the last distrust event. |
+| mixed versions | no live node below containment level 1, and a declared `TI-STORAGE-006E` rollback floor (gate E proves every running artifact contains it) |
+| inode headroom | the newest observation has at least one free inode per free block (`inodes_total − inodes_used ≥ ⌈avail / B⌉`) |
+| experiments | the record names E1–E11 PASS for `ALL`, and E8–E11 for the `TENANT_LIMITS` preflight |
 | procs | the live `storage_node` ids (or `--expected-ingestion-nodes`) number no more than the declared `procs` |
 | observation validity | the newest observation began at or above the compaction watermark, and no footprint total overflows 64 bits. Otherwise T1 would refuse while the gate passed. |
 | observation source | the newest row's `written_by` is the monitor role, which is not an application role. The monitor is also the **only** login role able to insert an observation or begin a walk, other than superusers and members of the table owner. A role counts as able if it, or any role it can `SET ROLE` to (`NOINHERIT` membership included), holds `INSERT` (column grants included) on `storage_filesystem_observation` or `EXECUTE` on `storage_begin_observation()`. |
@@ -132,8 +147,10 @@ staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
    proves that every running artifact contains it.
 2. The filesystem is recreated as the contract requires: preallocated,
    `-i 4096`, dedicated, isolated.
-3. E1–E8 run on it. The qualification record is re-issued with a
-   `filesystem` object (`uuid`, `type`, `mountOptions`, `mountSource`). A
+3. E1–E11 run on it. The qualification record is re-issued with a
+   `filesystem` object. That object carries `uuid`, `type`, `mountOptions`,
+   `mountSource`, the measured `objectOverheadMaxBytes` and
+   `metadataInodesMeasured` (E7), and `experiments` (`{"E1": "PASS", …}`). A
    record without one is never reused silently.
 4. Roles are separated as `docs/dev/production.md` lists. The monitor role
    is deployed and writing.
@@ -142,27 +159,22 @@ staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
 
 ## Limits stated plainly
 
-- **The base case departs from §9 in three ways.**
-  - §9 asks for a sweep that began after the counts were last trusted. That ordering is Ops-attested, below.
-  - §9 asks for `physical_listed ≤ covered`. Gate B checks the weaker `physical_listed ≤ covered + H` from ADR-035 §14 (b), and gate F does not repeat it.
-  - §9 asks for a sweep after the last heartbeat of a lower-capability node. Gate F does not check that. It relies instead on the containment floor: gate E proves that every running artifact contains it, so no lower-capability node is live when the gate passes. A node that ran below the floor before then is not excluded by any sweep ordering.
-- **MinIO metadata is checked in bytes only.** §1 budgets *M* in bytes and inodes. The monitor's observation carries no metadata-inode figure, so the inode half rests on E7.
+- **The lower-capability ordering relies on node rows surviving.** It reads
+  the last heartbeat of every `storage_node` row below containment level 1.
+  If such rows were pruned, an earlier lower node cannot be seen. The
+  containment floor (gate E) still excludes any lower node that is running.
+- **Metadata inodes are counted by Ops.** The monitor's observation carries
+  no metadata-inode figure, so the count comes from the evidence. It is
+  bounded by a budget that must cover the E7 measurement in the committed
+  record.
 - **The state query copies T1's definitions.** It does not share code with `FootprintSql.kt`. The two match today; a change to one must be made to the other.
 
-- **`baseCase` is attested by Ops, not proven by the database.** The trust
-  row records the order of the last *distrust* event, but not the time trust
-  was last confirmed. "The sweep began after the counts were last trusted"
-  therefore rests on Prometheus history: the gauge transition, and the
-  previous sweep's completion as a lower bound on the current sweep's start. Gate B independently proves that a
-  full sweep completed since each API node started, and that
-  `physical_listed ≤ covered + H`. A `trusted_at` column (an expand-only
-  V10) would make this row machine-checked. That is proposed, not done.
-- **"Trusted counts" proves less than it sounds.** The API role may mark
-  trust: it holds `UPDATE` on `storage_footprint_trust` for the
-  reconciliation's compare-and-set. Only `distrust_epoch` is protected
-  against going backwards. The row therefore shows that a holder of the API
-  credentials marked the counts trusted. It does not independently prove
-  that they are.
+- **Trust is only as strong as the role separation.** Since V10 the trust
+  mark is made only by the verifying function, and the guard trigger refuses
+  any other change to the trusted columns. A session connected **as the
+  table owner** can still forge both the marker and the owner identity.
+  Gate F's privileges row refuses `ALL` for any such deployment (staging
+  included).
 - **The observation age limit (`observationMaxAgeSeconds`, *A_obs*) comes
   from the evidence.** It is capped at 3600 s, so a large value cannot
   launder stale evidence. It is not cross-checked against the running

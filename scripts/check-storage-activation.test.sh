@@ -331,8 +331,8 @@ only "F: no filesystem evidence → NOT RUN" F-filesystem "no --filesystem-evide
 with --footprint-state "" > "$TMP/f00"
 only "F: no database state and no DB URL → NOT RUN" F-filesystem "no database state" "$TMP/f00"
 good | sed 's/^ALL$/TENANT_LIMITS/' > "$TMP/f-tl"
-case_ "F: TENANT_LIMITS → NOT REQUIRED, and the detail says containment does not hold" 0 \
-    '^F-filesystem[[:space:]]+NOT REQUIRED[[:space:]].*containment theorem does not hold.*dark staging qualification only' "$TMP/f-tl"
+case_ "F: TENANT_LIMITS runs the isolation preflight, and its PASS says containment does NOT hold" 0 \
+    '^F-filesystem[[:space:]]+PASS[[:space:]]+TENANT_LIMITS isolation preflight held.*physical isolation ONLY.*containment theorem does NOT hold.*never public traffic' "$TMP/f-tl"
 
 # Malformed and missing.
 printf 'not json' > "$TMP/ev-garbage.json"; with --filesystem-evidence "$TMP/ev-garbage.json" > "$TMP/f-g"
@@ -391,7 +391,42 @@ fs no-obs '.observation = null' "no monitor observation blocks" "headroom: no mo
 fs debt '.footprint.debtBytes = 9000000000 | .footprint.debtObjects = 1 | .observation.usedBytes = 9000000000' "D_est above D_budget blocks" "deletion debt: D_est 9085184938 > D_budget 8589934592"
 fs untrusted '.trust.trustedEpoch = 2' "untrusted counts block" "trusted counts: trusted_epoch 2 ≠ distrust_epoch 3"
 fs distrust '.trust.distrustedSeq = 120' "an observation that began before the last distrust event blocks" "base case: the newest observation began at seq 120, not after the last distrust event \(seq 120\)"
-fe sweep '.baseCase.sweepStartedAt = "2026-10-06T21:00:00Z"' "a sweep that began before trust was confirmed blocks" "base case: the orphan sweep began 2026-10-06T21:00:00Z, not after the counts were last trusted"
+# The base case comes from what the database recorded (V10), never from an asserted time.
+fs no-mark '.trust.trustedSeq = null' "counts never marked by the verifying function block" "base case: the counts carry no verified trust mark"
+fs no-sweep '.sweep = null' "no completed sweep blocks" "base case: no full orphan sweep has completed"
+fs sweep-before-trust '.sweep.startedSeq = 105' "a sweep that began at or before the trust mark's order blocks" "base case: the newest complete sweep began at seq 105, not after trust was marked \(seq 105\)"
+fs sweep-before-lower '.lastLowerHeartbeat = "2026-10-07T00:01:00Z"' "a sweep that began at a lower-capability node's last heartbeat blocks" "not after the last heartbeat of a node below containment level 1 \(2026-10-07T00:01:00Z\)"
+fs listed-over '.sweep.physicalListedBytes = 1073741825' "a sweep listing more than it covered blocks - covered, not covered + H" "base case: the newest complete sweep listed 1073741825 bytes, more than the 1073741824 covered"
+fs lower-live '.lowerLiveNodes = ["ing-old"]' "a live node below containment level 1 blocks" "mixed versions: live node\(s\) below containment level 1: ing-old"
+fs sweep-shape '.sweep.startedAt = "yesterday"' "an unreadable sweep start → NOT RUN" "state.sweep.startedAt is not an ISO-8601 UTC instant"
+fs inode-headroom '.observation.inodesUsed = 16000000' "fewer free inodes than free blocks blocks" "starting headroom: 777216 free inodes < avail / B = 15728640"
+fe meta-inodes '.minio.metadataInodes = 70000' "metadata inodes over their budget block" "MinIO metadata: 70000 metadata inodes > the inode budget 65536"
+fe meta-budget '.declared.metadataBudgetInodes = 10000 | .minio.metadataInodes = 5000' "an inode budget below the E7 measurement blocks" "MinIO metadata: the inode budget 10000 is below the E7 measurement 20000"
+fe no-meta-inodes 'del(.minio.metadataInodes)' "evidence without the metadata inode count → NOT RUN" "evidence.minio.metadataInodes missing"
+qrec() { jq "$2" "$FIX/qualification/laptop-arm64-reference.json" > "$TMP/rec-$1.json"; mkdir -p "$TMP/qual-$1"
+    cp "$FIX/qualification/"*.json "$FIX/qualification/index.txt" "$TMP/qual-$1/"; cp "$TMP/rec-$1.json" "$TMP/qual-$1/laptop-arm64-reference.json"; }
+qrec no-e7 'del(.filesystem.metadataInodesMeasured)'
+with --qualification-dir "$TMP/qual-no-e7" > "$TMP/f-no-e7"
+only "F: a record without the E7 metadata inode measurement blocks" F-filesystem "carries no E7 metadata inode measurement" "$TMP/f-no-e7"
+qrec no-e3 'del(.filesystem.experiments.E3)'
+with --qualification-dir "$TMP/qual-no-e3" > "$TMP/f-no-e3"
+only "F: ALL needs every experiment E1–E11 recorded PASS" F-filesystem "experiments: record fixture-laptop-arm64-reference does not record PASS for E3" "$TMP/f-no-e3"
+
+# TENANT_LIMITS preflight: isolation rows only, and its own experiment set.
+good | sed 's/^ALL$/TENANT_LIMITS/' | awk 'skip { skip = 0; next } $0 == "--benchmark-evidence" { skip = 1; next } { print }' > "$TMP/tl-base"
+sed "s#$FIX/qualification\$#$TMP/qual-no-e3#" "$TMP/tl-base" > "$TMP/tl-e3"
+case_ "F: TENANT_LIMITS does not need E1–E7 (an E3 gap passes the preflight)" 0 '^F-filesystem[[:space:]]+PASS[[:space:]]+TENANT_LIMITS isolation preflight held' "$TMP/tl-e3"
+qrec no-e9 '.filesystem.experiments.E9 = "FAIL"'
+sed "s#$FIX/qualification\$#$TMP/qual-no-e9#" "$TMP/tl-base" > "$TMP/tl-e9"
+case_ "F: TENANT_LIMITS needs the STORAGE_FULL drill (E9) recorded PASS" 1 '^F-filesystem[[:space:]]+BLOCKED[[:space:]]+TENANT_LIMITS isolation preflight: experiments: .* E9 .*containment theorem does NOT hold' "$TMP/tl-e9"
+jq '.preallocation.allocatedBytes = 4096' "$FSE" > "$TMP/ev-tl-sparse.json"; sed "s#$FSE#$TMP/ev-tl-sparse.json#" "$TMP/tl-base" > "$TMP/tl-sparse"
+case_ "F: TENANT_LIMITS refuses a sparse backing image" 1 '^F-filesystem[[:space:]]+BLOCKED[[:space:]]+TENANT_LIMITS isolation preflight: preallocation: backing image allocated 4096' "$TMP/tl-sparse"
+jq '.roleViolations = ["testinbox_app: owns message"] | .trust.trustedEpoch = 1 | .sweep = null' "$FSS" > "$TMP/st-tl-staging.json"; sed "s#$FSS#$TMP/st-tl-staging.json#" "$TMP/tl-base" > "$TMP/tl-staging"
+case_ "F: TENANT_LIMITS ignores the containment-only rows (staging's owner connection, untrusted counts, no sweep)" 0 '^F-filesystem[[:space:]]+PASS[[:space:]]+TENANT_LIMITS isolation preflight held' "$TMP/tl-staging"
+jq '.observation = null' "$FSS" > "$TMP/st-tl-noobs.json"; sed "s#$FSS#$TMP/st-tl-noobs.json#" "$TMP/tl-base" > "$TMP/tl-noobs"
+case_ "F: TENANT_LIMITS needs a monitor observation for its starting headroom" 1 '^F-filesystem[[:space:]]+BLOCKED[[:space:]]+TENANT_LIMITS isolation preflight: starting headroom: no monitor observation exists' "$TMP/tl-noobs"
+with --filesystem-evidence "" | sed 's/^ALL$/TENANT_LIMITS/' > "$TMP/tl-none"
+case_ "F: TENANT_LIMITS without filesystem evidence is NOT RUN, and NOT RUN blocks" 1 '^F-filesystem[[:space:]]+NOT RUN[[:space:]]+no --filesystem-evidence' "$TMP/tl-none"
 grep -v 'TI-STORAGE-006E' "$REPO_OK/deploy/rollback-floors.txt" > "$TMP/floors-nocontain.txt"
 with --floors-file "$TMP/floors-nocontain.txt" > "$TMP/f-nofloor"
 only "F: no TI-STORAGE-006E containment floor declared blocks (mixed versions)" F-filesystem "no TI-STORAGE-006E containment rollback floor is declared" "$TMP/f-nofloor"
@@ -403,7 +438,7 @@ run_args "$TMP/f-procs"
 printf '%s\n' "$OUT" | grep -qE '^F-filesystem[[:space:]]+BLOCKED[[:space:]].*procs: declared procs 2 < 3 live node\(s\)' \
     && ok "F: without a declared ingestion list, every live node counts against procs" || bad "F: procs was not checked against the live nodes" "$OUT"
 fs writer '.observation.writtenBy = "testinbox_app"' "an observation the monitor did not write blocks" "observation source: newest observation written by testinbox_app, not the declared monitor testinbox_monitor"
-fe monitor-app '.declared.applicationRoles = ["testinbox_app", "testinbox_monitor"]' "a monitor role that is also an application role blocks" "observation source: the monitor role is an application role"
+fe monitor-app '.declared.applicationRoles = ["testinbox_app", "testinbox_monitor"]' "a monitor role that is also an application role blocks" "observation writers: the monitor role is an application role"
 fs inserters '.observationInserters = ["testinbox_app", "testinbox_monitor"]' "another role holding INSERT on observations blocks" "INSERT on storage_filesystem_observation is held by \[testinbox_app, testinbox_monitor\]"
 fs executors '.beginObservationExecutors = []' "nobody holding EXECUTE on storage_begin_observation() blocks" "EXECUTE on storage_begin_observation\(\) is held by \[\]"
 fs privileges '.roleViolations = ["testinbox_app: owns storage_deletion_debt"]' "an application role owning a V8 table blocks - staging fails by design" "privileges \(roles checked: declared \+ connected \[testinbox_app\]\): 1 violation\(s\), first testinbox_app: owns storage_deletion_debt .*fails by design"

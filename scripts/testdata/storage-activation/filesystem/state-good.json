@@ -4,7 +4,8 @@
   "trust": {
     "distrustEpoch": 3,
     "trustedEpoch": 3,
-    "distrustedSeq": 100
+    "distrustedSeq": 100,
+    "trustedSeq": 105
   },
   "footprint": {
     "liveBytes": 1073741824,
@@ -22,7 +23,8 @@
     "availBytes": 64424509440,
     "inodesTotal": 16777216,
     "trashBytes": 50000000,
-    "minioSysBytes": 104857600
+    "minioSysBytes": 104857600,
+    "inodesUsed": 30000
   },
   "liveNodes": [
     "api-1",
@@ -39,5 +41,14 @@
   "watermark": 110,
   "sessionRoles": [
     "testinbox_app"
-  ]
+  ],
+  "sweep": {
+    "startedSeq": 115,
+    "startedAt": "2026-10-07T00:01:00Z",
+    "completedAt": "2026-10-07T00:02:00Z",
+    "physicalListedBytes": 1000000000,
+    "coveredBytes": 1073741824
+  },
+  "lowerLiveNodes": [],
+  "lastLowerHeartbeat": "2026-10-06T00:00:00Z"
 }
