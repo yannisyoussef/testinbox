@@ -285,6 +285,51 @@ class FencedUploadTest {
             UploadOutcome.Refused(UploadRefusal.ALREADY_EXISTS)
     }
 
+    private fun storageFullCanned(): String {
+        val body =
+            "<?xml version=\"1.0\"?><Error><Code>XMinioStorageFull</Code>" +
+                "<Message>Storage backend has reached its minimum free drive threshold.</Message></Error>"
+        return "HTTP/1.1 507 Insufficient Storage\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
+    }
+
+    @Test
+    fun `a storage-full answer sent before the body is read is kept - STORAGE_FULL, not CONNECTION_LOST (Ops E8)`() {
+        proxy.mode = TcpFaultProxy.Mode.EARLY_ANSWER
+        proxy.earlyResetAfterMillis = 200
+        proxy.canned = storageFullCanned()
+
+        uploader(viaProxy(), tPut = Duration.ofSeconds(10)).put(upload(key(), ByteArray(64 * 1024 * 1024))) shouldBe
+            UploadOutcome.Ambiguous(email.testinbox.application.port.AmbiguityKind.STORAGE_FULL)
+    }
+
+    @Test
+    fun `storage that answers storage-full and stops reading ends the attempt at once, not at T_put, and keeps the answer`() {
+        // What E8 measured: MinIO answers 507 from the headers and stops reading the
+        // 15 MiB body. A writer that reads only after the body would block until the
+        // reset (which discards the answer) or T_put. The concurrent reader takes it.
+        proxy.mode = TcpFaultProxy.Mode.EARLY_ANSWER
+        proxy.earlyAnswerDrains = false
+        proxy.earlyResetAfterMillis = 12_000
+        proxy.canned = storageFullCanned()
+
+        val started = System.nanoTime()
+        uploader(viaProxy(), tPut = Duration.ofSeconds(20)).put(upload(key(), ByteArray(64 * 1024 * 1024))) shouldBe
+            UploadOutcome.Ambiguous(email.testinbox.application.port.AmbiguityKind.STORAGE_FULL)
+        (System.nanoTime() - started < Duration.ofSeconds(10).toNanos()) shouldBe true
+    }
+
+    @Test
+    fun `a definitive answer before the body is read also ends the attempt at once when storage stops reading`() {
+        proxy.mode = TcpFaultProxy.Mode.EARLY_ANSWER
+        proxy.earlyAnswerDrains = false
+        proxy.earlyResetAfterMillis = 12_000
+        val body = "<?xml version=\"1.0\"?><Error><Code>PreconditionFailed</Code></Error>"
+        proxy.canned = "HTTP/1.1 412 Precondition Failed\r\nContent-Length: ${body.length}\r\nConnection: close\r\n\r\n$body"
+
+        uploader(viaProxy(), tPut = Duration.ofSeconds(20)).put(upload(key(), ByteArray(64 * 1024 * 1024))) shouldBe
+            UploadOutcome.Refused(UploadRefusal.ALREADY_EXISTS)
+    }
+
     @Test
     fun `a large replay and a large late upload are refused definitively by MinIO itself`() {
         val key = key()

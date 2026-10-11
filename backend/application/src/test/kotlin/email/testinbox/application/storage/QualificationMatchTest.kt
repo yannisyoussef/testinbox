@@ -51,7 +51,7 @@ class QualificationMatchTest {
     @Test
     fun `the upload implementation version compared is the running binary's`() {
         QualificationMatch
-            .compare(identity, "adr035-presigned-put-v2", record)
+            .compare(identity, "adr035-presigned-put-v0-other", record)
             .mismatchedElements shouldContainExactly listOf(QualificationMatch.UPLOAD_IMPLEMENTATION)
     }
 

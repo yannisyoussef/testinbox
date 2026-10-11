@@ -708,7 +708,7 @@ WITH newest AS (SELECT * FROM storage_filesystem_observation ORDER BY started_se
      -- deployable is connected as right now, so an omission from the evidence hides nothing.
      sessions AS (SELECT DISTINCT usename::text AS rolname FROM pg_stat_activity
                    WHERE application_name LIKE 'testinbox-%' AND application_name NOT LIKE 'testinbox-migrator%'
-                     AND usename IS NOT NULL),
+                     AND usename IS NOT NULL AND datname = current_database()),
      app AS (SELECT r.oid, r.rolname, r.rolsuper FROM pg_roles r
               WHERE r.rolname = ANY (string_to_array(:'app_roles', ',')) OR r.rolname IN (SELECT rolname FROM sessions)),
      -- Every role a role can act as: itself, inherited grants, and SET ROLE targets (NOINHERIT included).
@@ -815,6 +815,11 @@ SELECT json_build_object(
                                'storage_begin_sweep', 'storage_complete_sweep', 'storage_record_pending_debt',
                                'storage_resolve_pending_debt', 'storage_compact_deletion_debt',
                                'storage_record_probe_debt', 'storage_resolve_probe_debt', 'storage_begin_observation')
+      UNION ALL
+      -- Clearing the fail-closed latch is an operator action, never a deployable one.
+      SELECT r.app || ': ' || p.priv || ' on storage_admission_latch'
+        FROM reach r JOIN (VALUES ('UPDATE'), ('DELETE'), ('TRUNCATE')) AS p(priv)
+          ON has_table_privilege(r.goid, 'storage_admission_latch', p.priv)
       UNION ALL
       -- TRUNCATE fires no row trigger: live reservation bytes would vanish without a debt row.
       SELECT r.app || ': TRUNCATE on storage_reservation' FROM reach r

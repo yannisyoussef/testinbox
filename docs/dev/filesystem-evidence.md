@@ -90,6 +90,27 @@ scripts/check-storage-activation.sh --mode ALL \
   and the mode is approved for dark staging qualification only, never public
   traffic. Without evidence, it is NOT RUN, which blocks.
 
+## The monitor starts observe-only (Ops finding, 2026-10-09)
+
+The admission latch stops mail in **every** mode, `OFF` included: ingestion
+answers `451` until an operator clears it. That is the documented fail-closed
+behaviour, and Ops rehearsed the latch runbook in the lab.
+
+The application itself latches only on a late object. It never latches from a
+monitor observation, and under `OFF` with no declared filesystem it does not
+read observations at all. So a monitor that **only writes observations**
+cannot stop mail.
+
+Until the filesystem is rebuilt and qualified, the monitor on live staging
+runs **observe-only**:
+- it writes observations as the monitor role;
+- it never sets `storage_admission_latch`;
+- it pages instead of latching on an identity, preallocation or
+  model-violation finding.
+
+Its latching policy (contract §6, E10) is switched on only with the
+qualified filesystem, before `TENANT_LIMITS` or `ALL`.
+
 ## The evidence file (`testinbox.filesystem-evidence/1`)
 
 Collect it on the MinIO host within *A_obs* of running the gate. An older
@@ -155,7 +176,17 @@ staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
    proves that every running artifact contains it.
 2. The filesystem is recreated as the contract requires: preallocated,
    `-i 4096`, dedicated, isolated.
-3. E1–E11 run on it. The qualification record is re-issued with a
+3. E1–E11 run on it, **with an artifact whose uploader is
+   `adr035-presigned-put-v2`** (Ops E8 finding, 2026-10-09). The v2 uploader
+   reads storage's answer while it writes the body. A 507 that MinIO sends
+   before resetting a 15 MiB upload is therefore kept as `STORAGE_FULL`,
+   instead of being lost to the reset as `CONNECTION_LOST`. Records qualified
+   with v1 no longer match.
+
+   E8's pass criterion stays as written. If a reset still arrives with no
+   readable answer, that failure is ambiguous (`CONNECTION_LOST`): safe, but
+   not `STORAGE_FULL`. Whether E8 should then count "STORAGE_FULL or
+   ambiguous" as a pass is an owner decision, not a threshold change. The qualification record is re-issued with a
    `filesystem` object. That object carries `uuid`, `type`, `mountOptions`,
    `mountSource`, the measured `objectOverheadMaxBytes` and
    `metadataInodesMeasured` (E7), and `experiments` (`{"E1": "PASS", …}`). A

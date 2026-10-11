@@ -60,8 +60,12 @@ object StorageProtocol {
      * It is deliberately not derived from a build timestamp or a Git SHA,
      * which change without the protocol changing. `FencedUploaderVersionTest`
      * pins the behaviour this string names.
+     *
+     * v2 (Ops E8, 2026-10-09): the response is read concurrently with the body,
+     * and a non-2xx answer before the body is complete ends the attempt by RST.
+     * Records qualified with v1 no longer match, by design (re-qualify, §9a).
      */
-    const val UPLOAD_IMPLEMENTATION_VERSION = "adr035-presigned-put-v1"
+    const val UPLOAD_IMPLEMENTATION_VERSION = "adr035-presigned-put-v2"
 
     init {
         check(T_VERIFY >= SETTLE) { "T_verify must be at least S" }

@@ -112,8 +112,8 @@ class FencedUploader(
             }, tPut.toNanos(), TimeUnit.NANOSECONDS)
         var requestStarted = false
         var completed = false
-        var stream: Socket? = null
         var definitive = false
+        var reader: java.util.concurrent.Future<Response>? = null
         try {
             val socket =
                 try {
@@ -128,31 +128,27 @@ class FencedUploader(
             socket.soTimeout = tPut.toMillis().toInt().coerceAtLeast(1) // a backstop only; the watchdog is the bound
             socket.tcpNoDelay = true
             val connection = if (url.scheme == "https") tls(socket, url.host, port) else socket
-            stream = connection
+            // The response is read WHILE the body is written. Storage may answer from the
+            // headers alone (a missed deadline, a replay, the quota, a full disk) and stop
+            // reading; the write then blocks until storage resets the connection, and the
+            // reset discards an answer still unread in our buffer (Ops E8: most out-of-space
+            // failures arrived that way). Read concurrently, the answer is taken as it
+            // arrives, and an answer before the body is complete ends the attempt by RST:
+            // storage has decided, and no tail of ours may still be delivered.
+            val bodyWritten = AtomicBoolean(false)
+            reader = startReader(connection, bodyWritten, plainRef)
             val out = connection.getOutputStream()
             requestStarted = true
             out.write(head(url, body.size.toLong()))
             out.write(body)
             out.flush()
+            bodyWritten.set(true)
             // Nothing else is ever written on this connection: no pipelining.
-            val response = readResponse(BufferedInputStream(connection.getInputStream()))
+            val response = awaitResponse(reader, tPut)
             completed = true
             return classify(response).also { definitive = it.definitive }
         } catch (e: IOException) {
-            if (!requestStarted) {
-                log.warn("fenced_upload not_started target={} cause={}", Redaction.describe(url), Redaction.scrub(e.toString()))
-                return UploadOutcome.NotStarted
-            }
-            if (!aborted.get() && e !is SocketTimeoutException) {
-                // Storage may have answered from the headers alone (a missed
-                // deadline, a replay, the quota) and closed before reading the
-                // body, which fails our write. Its answer can still be waiting:
-                // a definitive one is used, anything else stays ambiguous.
-                stream?.let { earlyAnswer(it) }?.let { return it }
-            }
-            val kind = if (aborted.get() || e is SocketTimeoutException) AmbiguityKind.TIMEOUT else AmbiguityKind.CONNECTION_LOST
-            log.warn("fenced_upload ambiguous kind={} target={} cause={}", kind, Redaction.describe(url), Redaction.scrub(e.toString()))
-            return UploadOutcome.Ambiguous(kind)
+            return failed(url, e, requestStarted, aborted.get(), reader)
         } finally {
             watchdog.cancel(false)
             // A normal close only after a definitive answer. Anything else, a
@@ -162,12 +158,71 @@ class FencedUploader(
         }
     }
 
-    private fun earlyAnswer(stream: Socket): UploadOutcome? =
+    /**
+     * Reads the response on its own thread while the body is written. A non-2xx answer
+     * before the body is complete is storage's decision: the socket is reset at once, so
+     * the blocked writer is freed and no tail of ours is delivered. A 2xx only follows
+     * the whole body, so it never resets.
+     */
+    private fun startReader(
+        connection: Socket,
+        bodyWritten: AtomicBoolean,
+        plainRef: AtomicReference<Socket?>,
+    ): java.util.concurrent.Future<Response> =
+        RESPONSE_READERS.submit(
+            java.util.concurrent.Callable {
+                readResponse(BufferedInputStream(connection.getInputStream())).also {
+                    if (!bodyWritten.get() && it.status !in 200..299) plainRef.get()?.let(::abort)
+                }
+            },
+        )
+
+    /** The outcome of an attempt whose request failed after the connection was made. */
+    private fun failed(
+        url: URI,
+        e: IOException,
+        requestStarted: Boolean,
+        aborted: Boolean,
+        reader: java.util.concurrent.Future<Response>?,
+    ): UploadOutcome {
+        if (!requestStarted) {
+            log.warn("fenced_upload not_started target={} cause={}", Redaction.describe(url), Redaction.scrub(e.toString()))
+            return UploadOutcome.NotStarted
+        }
+        if (!aborted && e !is SocketTimeoutException) {
+            // Storage may have answered from the headers alone and stopped
+            // reading, which fails our write. The concurrent reader may hold its
+            // answer, classified as it is: a definitive one is used as such, and an
+            // ambiguous one keeps its kind (STORAGE_FULL trips its own breaker,
+            // a 5xx stays SERVER_ERROR). With no answer it is CONNECTION_LOST.
+            reader?.let { earlyAnswer(it) }?.let { return it }
+        }
+        val kind = if (aborted || e is SocketTimeoutException) AmbiguityKind.TIMEOUT else AmbiguityKind.CONNECTION_LOST
+        log.warn("fenced_upload ambiguous kind={} target={} cause={}", kind, Redaction.describe(url), Redaction.scrub(e.toString()))
+        return UploadOutcome.Ambiguous(kind)
+    }
+
+    private fun earlyAnswer(reader: java.util.concurrent.Future<Response>): UploadOutcome? =
         try {
-            stream.soTimeout = EARLY_ANSWER_WAIT.toMillis().toInt()
-            classify(readResponse(BufferedInputStream(stream.getInputStream()))).takeIf { it.definitive }
+            classify(awaitResponse(reader, EARLY_ANSWER_WAIT))
         } catch (_: IOException) {
             null
+        }
+
+    /** The concurrent reader's response within [limit]; its failure, or no answer in time, is an [IOException]. */
+    private fun awaitResponse(
+        reader: java.util.concurrent.Future<Response>,
+        limit: Duration,
+    ): Response =
+        try {
+            reader.get(limit.toNanos(), TimeUnit.NANOSECONDS)
+        } catch (e: java.util.concurrent.ExecutionException) {
+            throw (e.cause as? IOException) ?: IOException("response reader failed", e.cause)
+        } catch (_: java.util.concurrent.TimeoutException) {
+            throw SocketTimeoutException("no response within $limit")
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IOException("interrupted while awaiting the response", e)
         }
 
     internal fun head(
@@ -280,6 +335,10 @@ class FencedUploader(
         /** ADR-035 §5: the total wall-clock bound of one upload. */
         val DEFAULT_T_PUT: Duration = Duration.ofSeconds(30)
         val DEFAULT_CONNECT_TIMEOUT: Duration = Duration.ofSeconds(5)
+
+        /** Reads each attempt's response concurrently with its body write. Daemon threads: never block shutdown. */
+        private val RESPONSE_READERS: java.util.concurrent.ExecutorService =
+            Executors.newCachedThreadPool { r -> Thread(r, "fenced-upload-response").apply { isDaemon = true } }
 
         /** How long an early answer is waited for after a failed write. Well inside `T_put`; the watchdog still bounds it. */
         private val EARLY_ANSWER_WAIT: Duration = Duration.ofSeconds(1)

@@ -401,7 +401,7 @@ class StorageEnforcementSafetyTest {
     @Test
     fun `upload implementation version mismatch`() =
         only(
-            complete.copy(uploadImplementationVersion = "adr035-presigned-put-v2"),
+            complete.copy(uploadImplementationVersion = "adr035-presigned-put-v0-other"),
             "testinbox.storage.backend-identity.upload-implementation-version",
             "differing in uploadImplementationVersion",
         )

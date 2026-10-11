@@ -27,11 +27,11 @@ class FencedUploaderVersionTest {
     @Test
     fun `the uploader declares the protocol version the qualification records are matched against`() {
         FencedUploader.IMPLEMENTATION_VERSION shouldBe StorageProtocol.UPLOAD_IMPLEMENTATION_VERSION
-        StorageProtocol.UPLOAD_IMPLEMENTATION_VERSION shouldBe "adr035-presigned-put-v1"
+        StorageProtocol.UPLOAD_IMPLEMENTATION_VERSION shouldBe "adr035-presigned-put-v2"
     }
 
     @Test
-    fun `the protocol shape fingerprint matches the one adr035-presigned-put-v1 was qualified with`() {
+    fun `the protocol shape fingerprint matches the one adr035-presigned-put-v2 is pinned to`() {
         val presigner = SigV4Presigner("fixture-access-key", "fixture-secret-key", "us-east-1")
         val signed =
             presigner.presignPut(
@@ -58,6 +58,9 @@ class FencedUploaderVersionTest {
                 "attempts=1",
                 // The default connector is the plain-socket one (a lambda class has no stable name, so the fact is stated).
                 "connector=direct",
+                // v2: the response is read while the body is written; a non-2xx before the body completes ends it by RST.
+                "response=concurrent-with-body",
+                "early-rst=non-2xx-before-body-complete",
             ).joinToString("\n")
         val fingerprint = MessageDigest.getInstance("SHA-256").digest(shape.toByteArray()).joinToString("") { "%02x".format(it) }
         // Pinned with the version. A different value here means the protocol changed: bump the
@@ -70,6 +73,6 @@ class FencedUploaderVersionTest {
     }
 
     private companion object {
-        const val QUALIFIED_SHAPE_FINGERPRINT = "6d824985e902b02532736dd7a609e742052d0106c170c4083fc980671d2f3445"
+        const val QUALIFIED_SHAPE_FINGERPRINT = "9471c29ece5085fd160ee1a6457d9d63f0990f7860c00ab65eb15d8aa9ac962d"
     }
 }
