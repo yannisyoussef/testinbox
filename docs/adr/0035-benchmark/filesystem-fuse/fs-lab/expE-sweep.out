@@ -1,0 +1,5 @@
+{"sweep_minutes_after_fill": 17.8, "failed_keys": 16, "present_via_s3": 0, "absent": 16, "check_errors": 0, "present_on_disk": 0}
+1
+144K	/srv/fuselab/data/.minio.sys/tmp
+
+[exited with code 0]
