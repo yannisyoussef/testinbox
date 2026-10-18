@@ -10,13 +10,13 @@
     "test": "playwright test"
   },
   "dependencies": {
-    "dompurify": "^3.4.16",
-    "next": "^16.3.8",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "dompurify": "^3.4.17",
+    "next": "^16.4.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "^1.64.1",
     "@types/node": "^22.15.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
