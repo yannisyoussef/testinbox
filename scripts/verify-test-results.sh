@@ -58,7 +58,7 @@ BACKEND_MODULES=(
   "backend/storage:54"
   "backend/notification:6"
   "backend/observability:35"
-  "backend/ingestion:144"
+  "backend/ingestion:145"
   "backend/api:161"
   "backend/migrator:6"
   # TI-STORAGE-006: the ADR-035 §11 benchmark harness's own unit tests (the
@@ -66,7 +66,7 @@ BACKEND_MODULES=(
   "backend/benchmark:57"
 )
 E2E_MODULES=(
-  "backend/e2e:27"
+  "backend/e2e:28"
 )
 
 case "$SCOPE" in
