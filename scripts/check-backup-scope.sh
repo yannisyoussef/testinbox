@@ -174,25 +174,42 @@ read_sql_dump() {
     # name is the object of the statement and the "(" opens its column list
     # (CREATE TABLE public.t (...), INSERT INTO public.t (...), ... ON
     # public.t (...), REFERENCES public.t (...), PARTITION OF public.t (...)).
-    function user_call(ls,   rest, pre, w) {
+    # allow_on: "ON public.t (" introduces the object only in CREATE INDEX,
+    # COMMENT ON and GRANT/REVOKE; elsewhere (a join predicate) it is a call.
+    function user_call(ls, allow_on,   rest, pre, w) {
       rest = ls
       while (match(rest, /[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*[ ]*\(/)) {
         pre = substr(rest, 1, RSTART - 1); sub(/ +$/, "", pre)
         w = pre; sub(/^.* /, "", w)
         # ... or a function signature: GRANT/REVOKE ON FUNCTION f(args),
         # ALTER FUNCTION f(args), COMMENT ON FUNCTION f(args).
-        if (w !~ /^(table|into|on|references|of|only|exists|copy|function|procedure|routine|aggregate)$/) return 1
+        if (w == "on" && allow_on) { rest = substr(rest, RSTART + RLENGTH); continue }
+        if (w !~ /^(table|into|references|of|only|exists|copy|function|procedure|routine|aggregate)$/) return 1
         rest = substr(rest, RSTART + RLENGTH)
       }
       return 0
     }
-    function finish_statement(   s, ls) {
+    # pg_dump empties search_path in its prologue (and again after \connect);
+    # until that statement has been read, no DDL or data is accounted for,
+    # because an unqualified user function would otherwise resolve at restore.
+    function needs_prologue(s) {
+      if (sp_empty) return 0
+      ambiguous("DDL or data before the search_path was emptied (pg_dump prologue): " substr(s, 1, 80)); return 1
+    }
+    function finish_statement(   s, ls, q) {
       s = stmt; stmt = ""
+      if (overflow) { overflow = 0; ambiguous("a statement longer than the reader accounts for (" cap " bytes): " substr(s, 1, 80)); return }
       gsub(/[ \t\r]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s)
       if (s == "") return
       ls = tolower(s)
       gsub(/\(/, " ( ", ls); gsub(/\)/, " ) ", ls); gsub(/  +/, " ", ls); sub(/ $/, "", ls)
+      # Quoted identifiers: only the alphabet a name in this schema can have,
+      # then read without their quotes so a quoted name is not a different name.
+      q = ls; gsub(/"[a-z0-9_]+"/, "", q)
+      if (index(q, "\"")) { ambiguous("a quoted identifier outside the schema alphabet: " substr(s, 1, 80)); return }
+      gsub(/"/, "", ls)
       if (ls ~ /^copy /) {
+        if (needs_prologue(s)) return
         if (ls !~ / from stdin( |$)/) { ambiguous("a COPY that does not read from stdin (a file or a program the reader never sees): " substr(s, 1, 80)); return }
         if (triggers_seen) { ambiguous("table data after a trigger definition — not pg_dump order, and the trigger would run on restore: " substr(s, 1, 80)); return }
         data_statement("COPY", substr(s, 6))
@@ -200,12 +217,19 @@ read_sql_dump() {
         return
       }
       if (ls ~ /^insert into /) {
+        if (needs_prologue(s)) return
         if (triggers_seen) { ambiguous("table data after a trigger definition — not pg_dump order, and the trigger would run on restore: " substr(s, 1, 80)); return }
-        if (user_call(ls)) { ambiguous("a row that calls a function at restore: " substr(s, 1, 80)); return }
+        # pg_dump --inserts emits only INSERT INTO t [(cols)] [OVERRIDING ... VALUE] VALUES (...) [, (...)] / DEFAULT VALUES.
+        if (ls !~ /^insert into [a-z0-9_.]+( \( [a-z0-9_, ]+ \))?( overriding (system|user) value)?( values \( | default values$)/) { ambiguous("an INSERT that is not the VALUES form pg_dump emits (a query could run a function): " substr(s, 1, 80)); return }
+        if (user_call(ls, 0)) { ambiguous("a row that calls a function at restore: " substr(s, 1, 80)); return }
         sub(/^[Ii][Nn][Ss][Ee][Rr][Tt][ \t]+[Ii][Nn][Tt][Oo][ \t]+/, "", s)
         data_statement("INSERT INTO", s)
         return
       }
+      if (ls ~ /^(create|alter|comment|grant|revoke|drop|security label) / && needs_prologue(s)) return
+      # With search_path empty an unqualified name resolves only in pg_catalog,
+      # so nothing may be created or moved there.
+      if (ls ~ /^create (or replace )?(function|procedure) pg_catalog\./ || ls ~ / set schema pg_catalog( |$)/) { ambiguous("a function created or moved into pg_catalog, where an unqualified call would find it: " substr(s, 1, 80)); return }
       if (ls ~ /^create (or replace )?(function|procedure) /) return
       if (ls ~ /^create (constraint )?trigger /) { triggers_seen = 1; return }
       if (ls ~ /^create ((global |local )?(temp|temporary) |unlogged )?table /) {
@@ -213,39 +237,42 @@ read_sql_dump() {
         # ("GENERATED ALWAYS AS ( expr ) STORED") is the one other AS in DDL.
         gsub(/generated always as \( /, "generated always ( ", ls)
         if (ls ~ / as (select|values|table|with|execute|\( )/) { ambiguous("a CREATE TABLE ... AS that materialises rows: " substr(s, 1, 80)); return }
-        if (user_call(ls)) { ambiguous("DDL that calls a user function at restore: " substr(s, 1, 80)); return }
+        if (user_call(ls, 0)) { ambiguous("DDL that calls a user function at restore: " substr(s, 1, 80)); return }
         return
       }
       if (ls ~ /^create (unique )?index /) {
-        if (user_call(ls)) { ambiguous("an index expression that calls a user function at restore: " substr(s, 1, 80)); return }
+        if (user_call(ls, 1)) { ambiguous("an index expression that calls a user function at restore: " substr(s, 1, 80)); return }
         return
       }
-      if (ls ~ /^create (sequence|schema|extension|database) /) { if (user_call(ls)) { ambiguous("DDL that calls a user function at restore: " substr(s, 1, 80)); return } return }
+      if (ls ~ /^create (sequence|schema|extension|database) /) { if (user_call(ls, 0)) { ambiguous("DDL that calls a user function at restore: " substr(s, 1, 80)); return } return }
       if (ls ~ /^create type [a-z0-9_".]+ as (enum )?\( /) return
       if (ls ~ /^create /) { ambiguous("a CREATE outside the kinds a plain dump of this schema contains (table, function, trigger, index, sequence, enum/composite type, schema, extension, database): " substr(s, 1, 80)); return }
       if (ls ~ /^select /) {
         # The only SELECTs a plain dump contains set the session or a sequence,
         # with literal arguments (the lexer keeps a literal as 'S' or '').
-        if (ls ~ ("^select (pg_catalog\\.)?set_config \\( " S ", " E ", (true|false) \\)$")) return
+        if (ls ~ ("^select (pg_catalog\\.)?set_config \\( " S ", " E ", (true|false) \\)$")) { sp_empty = 1; return }
         if (ls ~ ("^select (pg_catalog\\.)?setval \\( " S ", -?[0-9]+(, (true|false))? \\)$")) return
         ambiguous("a SELECT that is not pg_dump literal set_config/setval (it may create rows, or run a function that does): " substr(s, 1, 80))
         return
       }
-      if (ls ~ /^set search_path/ && ls !~ ("^set search_path (=|to) " E "$")) { ambiguous("a search_path that would let an unqualified user function resolve at restore: " substr(s, 1, 80)); return }
+      if (ls ~ /^set search_path/) {
+        if (ls !~ ("^set search_path (=|to) " E "$")) { ambiguous("a search_path that would let an unqualified user function resolve at restore: " substr(s, 1, 80)); return }
+        sp_empty = 1; return
+      }
       if (ls ~ /^(set|reset) /) return
       if (ls ~ /^alter /) {
         if (ls ~ / enable (always |replica )?(trigger|rule) /) { ambiguous("an ALTER that enables a trigger or rule for the rest of the restore: " substr(s, 1, 80)); return }
         if (ls ~ / set search_path/) { ambiguous("an ALTER that sets a search_path: " substr(s, 1, 80)); return }
-        if (user_call(ls)) { ambiguous("an ALTER that calls a user function at restore (a default, a constraint): " substr(s, 1, 80)); return }
+        if (user_call(ls, 0)) { ambiguous("an ALTER that calls a user function at restore (a default, a constraint): " substr(s, 1, 80)); return }
         return
       }
       if (ls ~ /^(comment|grant|revoke|drop|begin|start|commit|end|lock|security label) /) {
-        if (user_call(ls)) { ambiguous("a statement that calls a user function at restore: " substr(s, 1, 80)); return }
+        if (user_call(ls, 1)) { ambiguous("a statement that calls a user function at restore: " substr(s, 1, 80)); return }
         return
       }
       ambiguous("a statement outside the documented plain-dump forms: " substr(s, 1, 80))
     }
-    function append(c) { if (length(stmt) < 512) stmt = stmt c }
+    function append(c) { if (length(stmt) < cap) stmt = stmt c; else overflow = 1 }
     function prev_is_ident_char(   p) {
       p = substr(stmt, length(stmt), 1)
       return (p ~ /[A-Za-z0-9_]/)
@@ -259,6 +286,7 @@ read_sql_dump() {
       q = substr(stmt, n - 1, 1); return (q !~ /[A-Za-z0-9_]/)
     }
     BEGIN { mode = "top"; stmt = ""; tag = ""; estring = 0; ident_len = 0; triggers_seen = 0; sq_nonempty = 0
+            cap = 65536; overflow = 0; sp_empty = 0
             S = "\047s\047"; E = "\047\047" }   # a non-empty and an empty literal as the lexer keeps them, lower-cased
     {
       line = $0; sub(/\r$/, "", line)
@@ -281,11 +309,14 @@ read_sql_dump() {
           sub(/^\\[Cc][Oo][Pp][Yy][ \t]+/, "", ml)
           if (tolower(ml) !~ /[ \t]from[ \t]+stdin([ \t]|$)/) { ambiguous("a \\copy that does not read from stdin: " substr(ml, 1, 80)); next }
           if (triggers_seen) { ambiguous("table data after a trigger definition — not pg_dump order: " substr(ml, 1, 80)); next }
+          if (needs_prologue(ml)) next
           data_statement("\\copy", ml)
           mode = "copydata"
           next
         }
-        if (tolower(ml) ~ /^\\(restrict|unrestrict|connect|c)([ \t]|$)/) next
+        if (tolower(ml) ~ /^\\(restrict|unrestrict)([ \t]|$)/) next
+        if (tolower(ml) ~ /^\\(connect|c)[ \t]+"?[a-z0-9_]+"?[ \t]*$/) { sp_empty = 0; next }
+        if (tolower(ml) ~ /^\\(connect|c)([ \t]|$)/) { ambiguous("a \\connect with more than a bare database name (a conninfo string resets the session): " substr(ml, 1, 80)); next }
         ambiguous("a psql meta-command outside the documented plain-dump forms: " substr(ml, 1, 80))
         next
       }
@@ -339,7 +370,7 @@ read_sql_dump() {
       else if (mode == "bcomment") ambiguous("an unterminated comment at end of input")
       else if (mode == "copydata") ambiguous("a COPY data block without its \\. terminator")
       s = stmt; gsub(/[ \t\r]+/, "", s)
-      if (s != "") ambiguous("a trailing statement without its terminator: " substr(stmt, 1, 80))
+      if (s != "" || overflow) ambiguous("a trailing statement without its terminator: " substr(stmt, 1, 80))
     }
   ' "$input"
 }

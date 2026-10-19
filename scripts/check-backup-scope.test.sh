@@ -71,6 +71,7 @@ check "an empty migrations directory fails rather than passing vacuously" 1 --cl
 # --- plain-SQL dumps ----------------------------------------------------------
 control_plane_dump() {
   cat <<'SQL'
+SELECT pg_catalog.set_config('search_path', '', false);
 CREATE TABLE public.workspace (id uuid);
 COPY public.workspace (id, name) FROM stdin;
 \.
@@ -174,6 +175,7 @@ SQL
 check "INSERT/COPY text inside -- and /* */ comments is opaque" 0 "$WORK/comments.sql"
 
 cat > "$WORK/data-rows.sql" <<'SQL'
+SELECT pg_catalog.set_config('search_path', '', false);
 COPY public.workspace (id, name) FROM stdin;
 1	INSERT INTO public.message VALUES (1);
 2	COPY public.inbox FROM stdin;
@@ -227,9 +229,9 @@ check_says "an unterminated block comment is refused as ambiguous" 1 "AMBIGUOUS 
 { control_plane_dump; printf 'INSERT INTO public.message VALUES (1)\n'; } > "$WORK/truncated.sql"
 check_says "a truncated final statement is refused as ambiguous, not ignored" 1 "AMBIGUOUS INPUT: a trailing statement" "$WORK/truncated.sql"
 { control_plane_dump; printf 'INSERT INTO (SELECT 1) VALUES (1);\n'; } > "$WORK/unnameable.sql"
-check_says "a data statement whose table cannot be named is refused as ambiguous" 1 "AMBIGUOUS INPUT: INSERT INTO statement whose table cannot be named" "$WORK/unnameable.sql"
+check_says "a data statement whose table cannot be named is refused as ambiguous" 1 "AMBIGUOUS INPUT" "$WORK/unnameable.sql"
 { control_plane_dump; printf 'COPY "my table" (id) FROM stdin;\n\\.\n'; } > "$WORK/odd-identifier.sql"
-check_says "a quoted identifier outside the schema's alphabet is refused as ambiguous" 1 "AMBIGUOUS INPUT: COPY statement whose table cannot be named" "$WORK/odd-identifier.sql"
+check_says "a quoted identifier outside the schema's alphabet is refused as ambiguous" 1 "AMBIGUOUS INPUT: a quoted identifier outside the schema alphabet" "$WORK/odd-identifier.sql"
 # Statements pg_dump never emits but which would create or carry rows at
 # restore time are refused as unaccounted for, never assumed row-free.
 for stmt in 'CREATE TABLE public.message AS SELECT * FROM (VALUES (1), (2)) t(id);' \
@@ -273,9 +275,9 @@ for stmt in 'CREATE TABLE public.message AS(SELECT 1 AS id);' \
 done
 # A trigger defined before the data would fire on every restored row; pg_dump
 # puts triggers after the data, so data after a trigger is refused.
-{ printf 'CREATE FUNCTION public.evil_tg() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO public.message VALUES (new.id); RETURN NEW; END $$;\nCREATE TRIGGER t BEFORE INSERT ON public.workspace FOR EACH ROW EXECUTE FUNCTION public.evil_tg();\n'; control_plane_dump; } > "$WORK/trigger-first.sql"
+{ printf 'SELECT pg_catalog.set_config(%s, %s, false);\nCREATE FUNCTION public.evil_tg() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO public.message VALUES (new.id); RETURN NEW; END $$;\nCREATE TRIGGER t BEFORE INSERT ON public.workspace FOR EACH ROW EXECUTE FUNCTION public.evil_tg();\n' "'search_path'" "''"; control_plane_dump; } > "$WORK/trigger-first.sql"
 check_says "table data after a trigger definition is refused (not pg_dump's order)" 1 "AMBIGUOUS INPUT: table data after a trigger definition" "$WORK/trigger-first.sql"
-{ printf 'CREATE TRIGGER t BEFORE INSERT ON public.workspace FOR EACH ROW EXECUTE FUNCTION public.f();\nINSERT INTO public.workspace (id) VALUES (7);\n'; control_plane_dump; } > "$WORK/trigger-then-insert.sql"
+{ printf 'SELECT pg_catalog.set_config(%s, %s, false);\nCREATE TRIGGER t BEFORE INSERT ON public.workspace FOR EACH ROW EXECUTE FUNCTION public.f();\nINSERT INTO public.workspace (id) VALUES (7);\n' "'search_path'" "''"; control_plane_dump; } > "$WORK/trigger-then-insert.sql"
 check_says "an INSERT after a trigger definition is refused" 1 "AMBIGUOUS INPUT: table data after a trigger definition" "$WORK/trigger-then-insert.sql"
 { control_plane_dump; printf 'CREATE TRIGGER t BEFORE INSERT ON public.workspace FOR EACH ROW EXECUTE FUNCTION public.f();\n\\copy public.workspace from stdin\n7\n\\.\n'; } > "$WORK/trigger-then-copy.sql"
 check_says "a \\copy after a trigger definition is refused" 1 "AMBIGUOUS INPUT: table data after a trigger definition" "$WORK/trigger-then-copy.sql"
@@ -286,11 +288,53 @@ check "a trigger defined after the data, as pg_dump orders it, is accounted for"
 check_says "a psql \\set is refused: variable interpolation rewrites statements after they were read" 1 "AMBIGUOUS INPUT: a psql meta-command" "$WORK/psql-var.sql"
 { control_plane_dump; printf '\\copy public.workspace from program %s\n' "'cmd'"; } > "$WORK/copy-program.sql"
 check_says "a \\copy from program is refused" 1 "AMBIGUOUS INPUT: a \\copy that does not read from stdin" "$WORK/copy-program.sql"
+# Round three: the buffer, quoted identifiers, the search_path premise, \connect, JOIN ... ON.
+cols=$(seq -f 'col_%04g' 0 69 | paste -sd, -); vals=$(seq 0 69 | paste -sd, -)
+{ control_plane_dump; printf 'CREATE TABLE public.message (%s) AS SELECT %s;\n' "$cols" "$vals"; } > "$WORK/long-ctas.sql"
+check_says "a CREATE TABLE ... AS whose column list is longer than a line reader buffer is refused" 1 "AMBIGUOUS INPUT" "$WORK/long-ctas.sql"
+pads=$(seq -f 'ADD COLUMN pad_%04g int' 0 200 | paste -sd, -)
+{ control_plane_dump; printf 'CREATE FUNCTION public.evil() RETURNS bigint LANGUAGE sql AS $$ INSERT INTO public.message VALUES (9) RETURNING id $$;\nALTER TABLE public.workspace %s, ADD COLUMN x bigint DEFAULT public.evil();\n' "$pads"; } > "$WORK/long-alter.sql"
+check_says "a user-function call pushed deep into a long ALTER is still refused" 1 "AMBIGUOUS INPUT" "$WORK/long-alter.sql"
+big=$(head -c 70000 /dev/zero | tr '\0' 'x')
+{ control_plane_dump; printf 'COMMENT ON TABLE public.workspace IS %s;\n' "'$big'"; } > "$WORK/huge-literal.sql"
+check "a very long string literal does not overflow the reader (literals are not buffered)" 0 "$WORK/huge-literal.sql"
+{ control_plane_dump; printf 'ALTER TABLE public.workspace %s;\n' "$(seq -f 'ADD COLUMN pad_%05g int' 0 4000 | paste -sd, -)"; } > "$WORK/overflow.sql"
+check_says "a statement longer than the reader accounts for is refused, not read in part" 1 "AMBIGUOUS INPUT: a statement longer than the reader accounts for" "$WORK/overflow.sql"
+for stmt in 'ALTER TABLE public.workspace ADD COLUMN x bigint DEFAULT "public".evil();' \
+            'ALTER TABLE public.workspace ADD COLUMN x bigint DEFAULT public."evil"();' \
+            'ALTER TABLE public.workspace ADD COLUMN x bigint DEFAULT "public"."evil"();' \
+            'ALTER TABLE public.workspace ADD COLUMN x bigint DEFAULT "my schema".evil();' \
+            'INSERT INTO public.workspace SELECT 1 FROM public.workspace a JOIN public.workspace b ON public.evil() > 0;' \
+            'INSERT INTO public.workspace (id) SELECT public.evil();' \
+            'CREATE FUNCTION pg_catalog.evil() RETURNS bigint LANGUAGE sql AS $$ SELECT 1 $$;' \
+            'ALTER FUNCTION public.evil() SET SCHEMA pg_catalog;'; do
+  { control_plane_dump; printf '%s\n' "$stmt"; } > "$WORK/exec3.sql"
+  check_says "[$stmt] is refused" 1 "AMBIGUOUS INPUT" "$WORK/exec3.sql"
+done
+# With the prologue read, an unqualified name resolves only in pg_catalog
+# (which nothing in the dump may create in), so these two are inert: PostgreSQL
+# refuses them at restore. They are accounted for, not assumed.
+{ control_plane_dump; printf 'ALTER TABLE ONLY public.workspace ALTER COLUMN created_at SET DEFAULT now();\nINSERT INTO public.workspace VALUES (1, NULL);\n'; } > "$WORK/builtin-default.sql"
+check "a built-in default and a literal row after the prologue are accounted for" 0 "$WORK/builtin-default.sql"
+{ control_plane_dump | grep -v set_config; } > "$WORK/no-prologue.sql"
+check_says "a dump that never empties search_path is refused before any DDL or data" 1 "AMBIGUOUS INPUT: DDL or data before the search_path was emptied" "$WORK/no-prologue.sql"
+{ printf 'CREATE FUNCTION evil(bigint) RETURNS boolean LANGUAGE sql AS $$ INSERT INTO public.message VALUES ($1) RETURNING true $$;\nCREATE TABLE public.workspace (id bigint CHECK (evil(id)));\n'; control_plane_dump; } > "$WORK/unqualified-check.sql"
+check_says "a table with an unqualified CHECK function defined before the prologue is refused" 1 "AMBIGUOUS INPUT: DDL or data before the search_path was emptied" "$WORK/unqualified-check.sql"
+{ control_plane_dump; printf '\\connect "dbname=postgres user=postgres options=-csearch_path=public"\nALTER TABLE public.workspace ADD COLUMN x bigint DEFAULT evil();\n'; } > "$WORK/connect-conninfo.sql"
+check_says "a \\connect with a conninfo string is refused" 1 "AMBIGUOUS INPUT: a \\connect with more than a bare database name" "$WORK/connect-conninfo.sql"
+{ control_plane_dump; printf '\\connect testinbox\nALTER TABLE public.workspace ADD COLUMN x bigint DEFAULT evil();\n'; } > "$WORK/connect-reset.sql"
+check_says "after a bare \\connect the prologue is required again" 1 "AMBIGUOUS INPUT: DDL or data before the search_path was emptied" "$WORK/connect-reset.sql"
+{ control_plane_dump; printf '\\connect testinbox\nSELECT pg_catalog.set_config(%s, %s, false);\nALTER TABLE ONLY public.workspace ADD CONSTRAINT ws_pkey PRIMARY KEY (id);\n' "'search_path'" "''"; } > "$WORK/connect-ok.sql"
+check "a bare \\connect followed by the prologue again (pg_dump --create) is accounted for" 0 "$WORK/connect-ok.sql"
+{ control_plane_dump; printf 'INSERT INTO public.workspace (id, name) OVERRIDING SYSTEM VALUE VALUES (1, %s), (2, NULL);\nINSERT INTO public.workspace DEFAULT VALUES;\n' "'a'"; } > "$WORK/insert-forms.sql"
+check "the INSERT forms pg_dump --inserts emits are accounted for" 0 "$WORK/insert-forms.sql"
+{ control_plane_dump; printf 'COMMENT ON FUNCTION public.storage_begin_sweep(p_node text) IS %s;\nGRANT EXECUTE ON FUNCTION public.f(bigint) TO app;\nCREATE INDEX ix ON public.workspace USING btree (id);\n' "'x'"; } > "$WORK/on-forms.sql"
+check "ON before an object name in COMMENT, GRANT and CREATE INDEX is not a call" 0 "$WORK/on-forms.sql"
 { control_plane_dump; printf '\\i /var/backups/content.sql\n'; } > "$WORK/include.sql"
 check_says "a psql \\i include is refused: it pulls in text the reader never sees" 1 "AMBIGUOUS INPUT: a psql meta-command" "$WORK/include.sql"
 { control_plane_dump; printf '\\! cat /etc/passwd\n'; } > "$WORK/shell.sql"
 check_says "a psql shell escape is refused" 1 "AMBIGUOUS INPUT: a psql meta-command" "$WORK/shell.sql"
-{ printf '\357\273\277INSERT INTO public.message VALUES (1);\n'; control_plane_dump; } > "$WORK/bom.sql"
+{ printf '\357\273\277SELECT pg_catalog.set_config(%s, %s, false);\nINSERT INTO public.message VALUES (1);\n' "'search_path'" "''"; control_plane_dump; } > "$WORK/bom.sql"
 check_says "a UTF-8 byte-order mark does not hide the first statement" 1 "RETAINS CONTENT: message" "$WORK/bom.sql"
 { printf '\357\273\277'; control_plane_dump; } > "$WORK/bom-ok.sql"
 check "a byte-order mark before a clean dump is tolerated" 0 "$WORK/bom-ok.sql"
