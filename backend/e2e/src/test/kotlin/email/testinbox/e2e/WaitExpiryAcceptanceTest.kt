@@ -27,16 +27,18 @@ class WaitExpiryAcceptanceTest {
     private fun rawWait(
         inboxId: String,
         timeoutSeconds: Int,
-    ): HttpResponse<String> =
-        http.send(
+    ): HttpResponse<String> {
+        val body = """{"timeoutSeconds":$timeoutSeconds,"matcher":{"subjectContains":"never-sent"}}"""
+        return http.send(
             HttpRequest
                 .newBuilder(URI.create("${E2eStack.apiBaseUrl}/v1/inboxes/$inboxId/messages/wait"))
                 .header("Authorization", "Bearer ${E2eStack.API_KEY}")
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString("""{"timeoutSeconds":$timeoutSeconds,"matcher":{"subjectContains":"never-sent"}}"""))
+                .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build(),
             HttpResponse.BodyHandlers.ofString(),
         )
+    }
 
     @Test
     fun `a parked SDK wait ends with the typed Gone error the moment its inbox is deleted`() {
