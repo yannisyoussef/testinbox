@@ -19,6 +19,7 @@ import email.testinbox.persistence.JdbcRowFreeDebtStore
 import email.testinbox.persistence.JdbcStorageAmbiguity
 import email.testinbox.persistence.JdbcStorageNodeClaims
 import email.testinbox.persistence.JdbcStorageReservations
+import email.testinbox.storage.LabQualificationRecord
 import email.testinbox.storage.QualificationRecords
 import email.testinbox.storage.S3BlobStore
 import org.springframework.context.annotation.Bean
@@ -66,7 +67,8 @@ class ApiStorageWiring(
      * this bean exists.
      */
     @Bean
-    fun storageDeclarations(): StorageDeclarations = properties.storageDeclarations(QualificationRecords.load())
+    fun storageDeclarations(): StorageDeclarations =
+        properties.storageDeclarations(QualificationRecords.load() + LabQualificationRecord.load(properties.storage.qualification))
 
     /**
      * ADR-035 §14 Phase 4: every node re-runs the allowlist and inventory

@@ -196,6 +196,40 @@ staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
 5. Gates A–E, Q and F all pass on one run, and Ops attach the `--json`
    record to the enablement row in `production-ops-acceptance.md`.
 
+## Running an enforcing mode in the isolated lab (issue #102)
+
+A record qualified on `adr035-presigned-put-v1` cannot gate an artifact whose
+uploader is `v2`, and E5, E6, E9, E10 and E11 need the application under an
+enforcing mode on the implementation the new record will name. The
+application breaks that circle with one switch, usable in the lab and nowhere
+else:
+
+```
+TESTINBOX_ENVIRONMENT=lab
+TESTINBOX_STORAGE_QUALIFICATION_LAB_RECORD_PATH=/etc/testinbox/lab-record.json
+```
+
+- The file has the shipped record's shape (`schemaVersion` 1), with the
+  **lab's own identity** (kernel `6.8.0-147-generic`, the filesystem
+  elements, the MinIO member and runtime-config hash, `network`), the
+  running `uploadImplementationVersion` (`adr035-presigned-put-v2` on
+  `develop` today), `platformClass: "lab"` and `enablementEligible: false`.
+  Any other `platformClass` or `enablementEligible: true` makes it fail to
+  load; the process then refuses to start rather than running unqualified.
+- `DeploymentSafety` accepts it **only when `TESTINBOX_ENVIRONMENT` is
+  exactly `lab`**, in which case `TENANT_LIMITS` and `ALL` start against it
+  as they would against a shipped, eligible record (identity and upload
+  version must still match element by element). In `staging` or
+  `production` the path is refused in every mode, `OFF` included, and `lab`
+  cannot run with the `production` profile. Both deployables log
+  `LAB QUALIFICATION RECORD IN USE` at WARN on every start.
+- It is a **startup gate, never evidence**: the experiments are the evidence,
+  and the record they produce is shipped in the artifact in the usual way.
+  Gate Q of `check-storage-activation.sh` still compares against the shipped
+  index only.
+- The artifact is the ordinary build of the merged commit: name its digest in
+  the evidence as for any run.
+
 ## Limits stated plainly
 
 - **Under `TENANT_LIMITS` on staging, "from the monitor role" rests on

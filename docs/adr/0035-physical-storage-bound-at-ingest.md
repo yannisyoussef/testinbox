@@ -1693,6 +1693,56 @@ Each touched module ratchets its minimum in `verify-test-results.sh`.
   with stop-before-start, or distinct declared ids for an overlapping
   replacement, and show which before staging enablement.
 
+## Amendments to this ADR (effective 2026-10-19, issue #102 — recorded with the fix; the owner's merge review accepts them)
+
+- **§8 half-open trial, and Amendment 2 §A2.3: an ambiguous upload is a
+  possibly full filesystem.** Ops lab E9 case C (2026-10-19): with every
+  non-2xx answer withheld and the connection reset, ENOSPC is `AMBIGUOUS`
+  like any other lost answer, and a breaker that recovered through the
+  zero-byte witness sent a real upload to the full store on every backoff.
+  Now `GuardedStorage` trips `AMBIGUOUS` for **every non-definitive upload
+  outcome** — a `T_put` timeout, a lost connection, any readable 5xx that is
+  not ENOSPC, an unexpected status — and that kind:
+  - needs a **real event** as its trial, never the witness alone;
+  - under `TENANT_LIMITS` and `ALL` reopens only on the `STORAGE_FULL`
+    evidence (an observation that began after the trip and shows the
+    operational reserve available), from its first trip, then the witness
+    and the real event; the monitor is an activation prerequisite there
+    (gate F), so this costs nothing in a conforming deployment;
+  - under `OFF` gets one trial without evidence (the witness and one real
+    event); if that real event — and only it, never a failed witness or a
+    concurrent event — is ambiguous again, the breaker **escalates** and
+    needs the evidence too: without a monitor, a restart. The escalation is
+    logged at ERROR and exported as `testinbox_storage_breaker_escalated`.
+
+  So at a full store there is no repeated recovery, and under an enforcing
+  mode no real-upload trial at all without evidence. §8's "zero-byte probe
+  for any other non-quota kind" now applies to a connection never
+  established (`UNAVAILABLE`) and to a clock offset only. The upload
+  implementation (`adr035-presigned-put-v2`) is unchanged: the breaker is
+  not wire behaviour, and E8 need not be rerun.
+- **§9a "shipped in the artifact", and Amendment 2 §A2.7: the isolated
+  lab's startup gate.** A record qualified on one upload implementation
+  cannot gate the artifact that carries the next one, and E5, E6, E9, E10
+  and E11 need the application under an enforcing mode on exactly the
+  implementation the new record will name. The application therefore
+  accepts ONE record from a file, `testinbox.storage.qualification.lab-record-path`,
+  when and only when the declared environment is exactly `lab`:
+  - the file must declare `platformClass: "lab"` and `enablementEligible:
+    false`, or it does not load and the process does not start;
+  - it must match the declared identity and the running upload
+    implementation element by element, like any record; its content
+    eligibility is never consulted, and it is never evidence (gate Q
+    compares against the shipped index only);
+  - the path is refused in every mode in any other environment, `lab`
+    cannot wear the `production` profile, and a `lab` process may not name
+    the production tenant domain or a host named for staging, the rehearsal
+    or production;
+  - a shipped record with `platformClass: "lab"` is never eligible, in the
+    application and in the activation checker alike.
+
+  Nothing changes for staging or production, which never set the path.
+
 ## Amendment 2: filesystem containment (TI-STORAGE-006E) — ACCEPTED 2026-10-09
 
 **Status: ACCEPTED** by the owner as the implementation architecture
@@ -1820,6 +1870,8 @@ Until a re-issued record carries these, the bounds are planning values.
   below level 1 stamps the monotone `storage_containment_watermark`.
 - `DeploymentSafety` refuses inconsistent declarations, refuses I-C
   violations, and refuses `ALL` in production.
+- The half-open rule for an ambiguous upload is amended on 2026-10-19
+  (issue #102): see "Amendments to this ADR (effective 2026-10-19)".
 
 ### A2.4 Ops-observed guarantees (evidence the application cannot produce)
 
@@ -1884,6 +1936,9 @@ implemented both of the following, as separate scoped decisions
 
 A dedicated production MinIO, and production role separation, are also
 prerequisites.
+
+The isolated lab's startup gate (issue #102, 2026-10-19) is recorded under
+"Amendments to this ADR (effective 2026-10-19)".
 
 ### A2.8 Text and invariants this amendment supersedes or carries over
 

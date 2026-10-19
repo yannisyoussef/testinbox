@@ -206,18 +206,20 @@ class IngestionWiring(
      * The breaker. A `STORAGE_FULL` trip reopens only on Ops evidence: a fresh
      * filesystem observation with the operational reserve available
      * (filesystem-containment contract §8). Without a monitor writing
-     * observations, only a restart clears that kind.
+     * observations, only a restart clears that kind. Under an enforcing mode
+     * an `AMBIGUOUS` trip needs the same evidence from its first trip (issue
+     * #102, E9): a withheld ENOSPC is indistinguishable from any other
+     * ambiguity, and the monitor is an activation prerequisite there anyway.
      */
     @Bean
     fun storageBreaker(
         jdbc: JdbcClient,
-        properties: IngestionProperties,
-    ): StorageBreaker {
-        val filesystem = properties.storage.filesystem.toDeclarations()
-        return StorageBreaker(
-            storageFullGate = StorageFullEvidence.forDeclarations(JdbcFilesystemObservations(jdbc), filesystem),
+        declarations: StorageDeclarations,
+    ): StorageBreaker =
+        StorageBreaker(
+            storageFullGate = StorageFullEvidence.forDeclarations(JdbcFilesystemObservations(jdbc), declarations.filesystem),
+            ambiguityNeedsEvidence = declarations.enforced,
         )
-    }
 
     @Bean
     fun writeSlots(
@@ -244,7 +246,11 @@ class IngestionWiring(
      */
     @Bean
     fun storageDeclarations(properties: IngestionProperties): StorageDeclarations =
-        properties.storageDeclarations(QualificationRecords.load())
+        properties.storageDeclarations(
+            QualificationRecords.load() +
+                email.testinbox.storage.LabQualificationRecord
+                    .load(properties.storage.qualification),
+        )
 
     /** The ONE effective policy (ADR-035 §3), the same factory the API uses for `limitBytes`. */
     @Bean

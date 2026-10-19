@@ -128,6 +128,7 @@ class MetricCardinalityTest {
         protocol.lateObject()
         protocol.witnessFailed()
         protocol.breakerOpen(true)
+        protocol.breakerEscalated(true)
         protocol.latched(true)
         protocol.clockOffset(java.time.Duration.ofSeconds(2))
         protocol.ambiguousUploads(3)
@@ -340,6 +341,7 @@ class MetricCardinalityTest {
             "testinbox_storage_late_object_total",
             "testinbox_storage_witness_failed_total",
             "testinbox_storage_breaker_open",
+            "testinbox_storage_breaker_escalated",
             "testinbox_storage_admission_latched",
             "testinbox_storage_clock_offset_seconds",
             "testinbox_storage_ambiguous_uploads",

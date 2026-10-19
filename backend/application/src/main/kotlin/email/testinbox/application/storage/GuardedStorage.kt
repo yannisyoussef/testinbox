@@ -126,13 +126,14 @@ class GuardedStorage(
         val trial = admitThroughBreaker()
         var trialEnded = trial == null
         try {
-            val report = ingestHoldingSlot(bytesPerCopy, copies, persist)
+            val report = ingestHoldingSlot(bytesPerCopy, copies, persist, trialEvent = trial != null)
             if (trial != null) {
                 if (report.appended.isEmpty() && report.duplicates.isEmpty()) {
                     breaker.abandonTrial()
                 } else {
                     breaker.close(trial)
                     metrics.breakerOpen(breaker.isOpen)
+                    metrics.breakerEscalated(breaker.isEscalated)
                 }
                 trialEnded = true
             }
@@ -198,6 +199,8 @@ class GuardedStorage(
         bytesPerCopy: Long,
         copies: List<CopyPlan>,
         persist: (List<CopyPlan>) -> Map<MessageId, Boolean>,
+        /** This event is the breaker's half-open real-event trial. */
+        trialEvent: Boolean,
     ): GuardedIngestReport {
         val guard = SlotGuard(acquireSlot(copies))
         try {
@@ -217,7 +220,7 @@ class GuardedStorage(
                 }
                 return GuardedIngestReport(emptyList(), emptyList(), refused)
             }
-            uploadAll(admitted, checkNotNull(result.t0), guard)
+            uploadAll(admitted, checkNotNull(result.t0), guard, trialEvent)
             hook.afterUploads()
             hook.beforeCommit()
             val outcomes = commit(bytesPerCopy, admitted, refused, persist)
@@ -236,6 +239,7 @@ class GuardedStorage(
         admitted: List<CopyPlan>,
         t0: java.time.Instant,
         guard: SlotGuard,
+        trialEvent: Boolean,
     ) {
         val attempts = mutableListOf<Attempt>()
         for (copy in admitted) {
@@ -258,7 +262,7 @@ class GuardedStorage(
                 }
                 guard.poisoned =
                     try {
-                        abandon(attempts, admitted, guard.slot)
+                        abandon(attempts, admitted, guard.slot, trialEvent)
                     } catch (t: Throwable) {
                         // The upload's own Error stays the primary one.
                         fatal?.let {
@@ -307,7 +311,7 @@ class GuardedStorage(
         }
     }
 
-    /** The breaker's real-event (quota) trial this event is, or null. */
+    /** The breaker's real-event trial (quota, storage-full or ambiguous) this event is, or null. */
     private fun admitThroughBreaker(): StorageBreaker.Admission.Trial? =
         when (val admission = breaker.admit()) {
             StorageBreaker.Admission.Closed -> {
@@ -332,6 +336,7 @@ class GuardedStorage(
                 } else {
                     breaker.close(admission)
                     metrics.breakerOpen(breaker.isOpen)
+                    metrics.breakerEscalated(breaker.isEscalated)
                     null
                 }
             }
@@ -420,6 +425,7 @@ class GuardedStorage(
         attempts: List<Attempt>,
         admitted: List<CopyPlan>,
         slot: WriteSlots.Slot,
+        trialEvent: Boolean,
     ): Boolean {
         val ambiguous = attempts.filter { !it.outcome.definitive }
         // Ambiguous: the reservation stays RESERVED and charged until cleanup
@@ -454,20 +460,38 @@ class GuardedStorage(
                 else -> PhysicalFailureKind.UNAVAILABLE
             }
         metrics.physicalFailure(kind)
+        val escalatedBefore = breaker.isEscalated
         when (kind) {
-            PhysicalFailureKind.AMBIGUOUS -> breaker.trip(StorageBreaker.Kind.AMBIGUOUS)
+            // Only the trial's own real event may escalate an ambiguity (issue #102).
+            PhysicalFailureKind.AMBIGUOUS -> breaker.trip(StorageBreaker.Kind.AMBIGUOUS, fromTrialEvent = trialEvent)
+
             PhysicalFailureKind.STORAGE_FULL -> breaker.trip(StorageBreaker.Kind.STORAGE_FULL)
+
             PhysicalFailureKind.QUOTA -> breaker.trip(StorageBreaker.Kind.QUOTA)
+
             PhysicalFailureKind.UNAVAILABLE -> breaker.trip(StorageBreaker.Kind.UNAVAILABLE)
+
             else -> Unit // a missed deadline is definitive and says nothing about storage health
         }
         if (breaker.isOpen) metrics.breakerOpen(true)
+        noteEscalation(escalatedBefore)
         // Every upload that started ended definitively: nothing can still
         // appear, so the capacity can go back now (§4).
         if (ambiguous.isEmpty()) releaseAbandoned(admitted)
         // The slot is already poisoned; a fatal Error is not swallowed.
         recordError?.let { throw it }
         return poisoned
+    }
+
+    /** Issue #102: an escalation is a stable `451` that only evidence or a restart clears, so it is said once, loudly. */
+    private fun noteEscalation(escalatedBefore: Boolean) {
+        metrics.breakerEscalated(breaker.isEscalated)
+        if (breaker.isEscalated && !escalatedBefore) {
+            log.error(
+                "storage_breaker_escalated the real-event trial of an ambiguous trip was ambiguous again; this node treats " +
+                    "storage as possibly full and reopens only on a filesystem observation showing the reserve (or a restart)",
+            )
+        }
     }
 
     private fun commit(

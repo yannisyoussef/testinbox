@@ -108,6 +108,18 @@ variant other-key
 printf 'testinbox:\n  storage:\n    enforcement-mode-label: ALL\n    enforcement: OFF\n' > "$TMP/other-key/backend/api/src/main/resources/application-deployed.yaml"
 check "a different key that merely starts with 'enforcement' is not this setting" 0 "$TMP/other-key"
 
+# Issue #102: the lab environment and the lab record path are never committed values.
+variant env-lab
+mkdir -p "$TMP/env-lab/deploy/staging"
+printf 'TESTINBOX_STORAGE_ENFORCEMENT=OFF\nTESTINBOX_ENVIRONMENT=lab\n' >> "$TMP/env-lab/deploy/staging/.env.example"
+check "a committed TESTINBOX_ENVIRONMENT=lab fails" 1 "$TMP/env-lab" '\.env\.example:[0-9]+: the environment is set to lab'
+variant lab-path-default
+printf 'testinbox:\n  storage:\n    enforcement: OFF\n    qualification:\n      lab-record-path: ${TESTINBOX_STORAGE_QUALIFICATION_LAB_RECORD_PATH:/etc/testinbox/lab.json}\n' > "$TMP/lab-path-default/backend/api/src/main/resources/application-deployed.yaml"
+check "a lab record path with a committed default fails" 1 "$TMP/lab-path-default" 'application-deployed.yaml:5: the lab qualification record path has a committed value'
+variant lab-path-empty
+printf 'testinbox:\n  storage:\n    enforcement: OFF\n    qualification:\n      lab-record-path: ${TESTINBOX_STORAGE_QUALIFICATION_LAB_RECORD_PATH:}\n' > "$TMP/lab-path-empty/backend/api/src/main/resources/application-deployed.yaml"
+check "an empty-default lab record path is fine" 0 "$TMP/lab-path-empty"
+
 # The real repository: what CI gates. Reported, and asserted, because the gate
 # step in ci.yml runs it against this tree.
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"

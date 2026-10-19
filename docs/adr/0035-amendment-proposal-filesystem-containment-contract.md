@@ -1225,6 +1225,21 @@ Changes:
   unchanged: nothing about ENOSPC is treated as definitive until E3 (§10)
   proves it so across runs, and even then the reservation rule need not
   change.
+- **Every ambiguous upload gets the same discipline** (issue #102, E9 case
+  C; ADR amendment of 2026-10-19). `GuardedStorage` trips `AMBIGUOUS` for
+  every non-definitive outcome — a `T_put` timeout, a lost connection, any
+  readable 5xx that is not ENOSPC, an unexpected status — because at a full
+  store none of them can be told from a withheld ENOSPC, and a witness-only
+  recovery re-sent a real upload to the full store on every backoff. Under
+  `TENANT_LIMITS`/`ALL` an `AMBIGUOUS` trip needs the evidence above from its
+  first trip, then the witness and a real event; under `OFF` the first trial
+  is the witness and one real event, and only that real event being
+  ambiguous again (never a failed witness or a concurrent event) escalates to
+  the evidence rule (a restart without a monitor; logged, and exported as
+  `testinbox_storage_breaker_escalated`). Witness-only recovery remains for a
+  connection never established and for a clock offset. A
+  `STORAGE_FULL`-style `tripped()` is sent to the gate for every
+  evidence-gated ambiguous trip, so only a later observation counts.
 
 ---
 
@@ -1277,7 +1292,7 @@ re-issued with them after E1–E11 (§10) run on the recreated filesystem.
 | E6 | debt release: observations every 60 s during purge; admission resumes only after an observation | §5.4–5.5 | no release without an observation; monotone estimate between observations |
 | E7 | `.minio.sys` growth: 24 h on the E2 population (listing metacache and the usage cache scale with the number of prefixes) with full-bucket listings every 30 min, the scanner, 10 000 aborted uploads and the witness every 30 s | *M* | `minio_sys_bytes + probe residue ≤ M`; inodes ≤ budget; or *M* is raised in the record |
 | E8 | ENOSPC corpus: 20 runs to full; capture every failure body; sweep absence at `C_max + 2 min` | §8 classifier; the "measured, not proven" caveat | both response shapes captured; classifier matches all; absence 20/20 (still not treated as definitive) |
-| E9 | zero-byte PUT at full and `STORAGE_FULL` trial gating | §8 | breaker stays open without an observation; trials only after `avail ≥ R_ops` |
+| E9 | zero-byte PUT at full and `STORAGE_FULL` trial gating; (C) the same with every answer withheld and the connection reset, so each failure is `AMBIGUOUS` | §8 | breaker stays open without an observation; trials only after `avail ≥ R_ops`; in (C) under an enforcing mode no real upload reaches storage after the trip, and under `OFF` at most one |
 | E10 | monitor and latch: identity, preallocation and model-violation latches fire on injected faults | §6 | each latch fires; `451` on every node; tenant sees nothing |
 | E11 | restart at full, deletes at full, recovery runbook end to end | PR #81 §5 | as PR #81 §7 rows 5, 6, 11 |
 

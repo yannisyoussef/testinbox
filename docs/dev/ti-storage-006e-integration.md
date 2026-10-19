@@ -120,6 +120,19 @@ the one before it: each was merged forward, never rebased.
         - Staging has no monitor role, so after freeing space **Ops restarts
           the ingestion process** to clear it.
         - On `develop` the same response recovered by probe after backoff.
+        - **Since issue #102 (2026-10-19), every ambiguous upload follows the
+          same rule once escalated.** "Ambiguous" is every non-definitive
+          outcome: a `T_put` timeout, a lost connection, a readable 5xx that
+          is not ENOSPC, an unexpected status. Under `OFF` the first recovery
+          is the witness plus one real event; if that real event is
+          ambiguous again (a withheld ENOSPC, a resetting proxy, two slow
+          writes) the breaker escalates — `testinbox_storage_breaker_escalated`
+          reads 1, an ERROR line says so — and needs an observation showing
+          the reserve, or **a restart of the ingestion process** on staging.
+          The one permitted trial costs a second ambiguity row and a second
+          write slot held for `T_verify`. A failed witness never escalates:
+          a MinIO restart still recovers by itself. Under an enforcing mode
+          the observation is needed from the first ambiguous trip.
      4. **Retention.** It fails an inbox on a partial `DeleteObjects` and
         keeps its rows, and hard-deletes oldest first.
      5. **New bookkeeping:**

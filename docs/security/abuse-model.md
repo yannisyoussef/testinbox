@@ -121,7 +121,13 @@
   a broken activation barrier, untrusted footprint counts, no or an invalid
   observation, corrupt totals, write slots exhausted by unresolved ambiguity —
   is answered `451` **before** recipient resolution, the same for every
-  recipient. Three races remain, each bounded to the moment a state changes and
+  recipient. Since issue #102 the open breaker has a stable sub-state, an
+  *escalated* ambiguity (the real-event trial of an ambiguous trip was
+  ambiguous again): it clears only on a filesystem observation showing the
+  reserve, or a restart where no monitor runs. It is reachable only through
+  storage-path behaviour (a lost answer, a timeout under load), never through
+  message content, and it is exported as `testinbox_storage_breaker_escalated`.
+  Three races remain, each bounded to the moment a state changes and
   sharing the noise profile of an admission `LOCK_TIMEOUT`:
   (1) the footprint state changes between the pre-resolution check (reused
   for up to 1 s) and T1's own snapshot; (2) a `STORAGE_FULL` breaker's

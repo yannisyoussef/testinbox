@@ -437,6 +437,14 @@ interface StorageProtocolMetrics {
 
     fun breakerOpen(open: Boolean) {}
 
+    /**
+     * `testinbox_storage_breaker_escalated`: 1 while an ambiguous trip has
+     * escalated to needing Ops evidence (issue #102) — on a node without a
+     * monitor, a `451` that only a restart clears. Distinct from an open
+     * breaker that is merely backing off.
+     */
+    fun breakerEscalated(escalated: Boolean) {}
+
     fun latched(latched: Boolean) {}
 
     fun clockOffset(offset: java.time.Duration) {}

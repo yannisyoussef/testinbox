@@ -314,6 +314,12 @@ with --qualification-dir "$TMP/qual-empty" > "$TMP/q-empty"
 case_ "Q: an empty qualification index blocks (nothing is qualified)" 1 '^Q-qualification[[:space:]]+BLOCKED[[:space:]].*no qualification record matches' "$TMP/q-empty"
 printf '%s\n' "$OUT" | grep -qE '^F-filesystem[[:space:]]+BLOCKED[[:space:]].*not in the qualification index' \
     && ok "F: a record absent from the index blocks gate F too" || bad "F accepted a record absent from the index" "$OUT"
+# Issue #102: a shipped record claiming platformClass "lab" is never eligible, in the checker as in the application.
+mkdir -p "$TMP/qual-lab"
+jq '.qualification.platformClass = "lab"' "$FIX/qualification/production-amd64-candidate.json" > "$TMP/qual-lab/production-amd64-candidate.json"
+printf 'production-amd64-candidate.json\n' > "$TMP/qual-lab/index.txt" # the only record: the identity can match nothing else
+with --qualification-dir "$TMP/qual-lab" | sed "s#identity/match.json#identity/ineligible-match.json#" > "$TMP/q-lab"
+case_ "Q: a shipped record with platformClass lab is not enablement-eligible" 1 '^Q-qualification[[:space:]]+BLOCKED[[:space:]].*platformClass is lab' "$TMP/q-lab"
 
 # ---------------------------------------------------------------------------
 # Gate F (filesystem-containment contract §9): each row fails on its own, and

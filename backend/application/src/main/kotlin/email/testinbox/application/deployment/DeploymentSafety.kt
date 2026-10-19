@@ -1,8 +1,10 @@
 package email.testinbox.application.deployment
 
 import email.testinbox.application.storage.EffectiveStoragePolicy
+import email.testinbox.application.storage.LAB_PLATFORM_CLASS
 import email.testinbox.application.storage.NodeRole
 import email.testinbox.application.storage.QualificationMatch
+import email.testinbox.application.storage.QualificationRecordSource
 import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.domain.storage.FilesystemContainment
 import email.testinbox.domain.storage.FootprintModel
@@ -535,6 +537,7 @@ object DeploymentSafety {
  */
 object StorageEnforcementSafety {
     private const val ENFORCEMENT = "testinbox.storage.enforcement"
+    private const val ENVIRONMENT_KEY = "testinbox.deployment.environment"
     private const val GLOBAL = "testinbox.storage.global-limit-bytes"
     private const val QUOTA = "testinbox.storage.declared-bucket-quota-bytes"
     private const val PROCESSES = "testinbox.storage.declared-max-ingestion-processes"
@@ -551,8 +554,67 @@ object StorageEnforcementSafety {
 
     fun check(settings: DeploymentSettings): List<DeploymentViolation> {
         val storage = settings.storage
-        return if (storage.enforced) enforced(settings, storage) else sanity(storage)
+        return labRecord(settings, storage) + if (storage.enforced) enforced(settings, storage) else sanity(storage)
     }
+
+    /** The environment a lab-only qualification record is accepted in, and the only one (issue #102). */
+    const val LAB_ENVIRONMENT = "lab"
+    private const val LAB_RECORD = "testinbox.storage.qualification.lab-record-path"
+
+    /**
+     * Issue #102: a lab-only record is refused, in EVERY mode, anywhere but the
+     * `lab` environment. OFF included: a staging or production process that has
+     * the path configured at all is misconfigured, and says so before it serves.
+     * (`lab` with the production profile is already refused by the production
+     * identity check: that profile demands environment `production`.)
+     */
+    private fun labRecord(
+        settings: DeploymentSettings,
+        storage: StorageDeclarations,
+    ): List<DeploymentViolation> =
+        buildList {
+            val lab = storage.qualificationRecords.filter { it.source == QualificationRecordSource.LAB }
+            if (lab.isNotEmpty() && settings.environment != LAB_ENVIRONMENT) {
+                add(
+                    DeploymentViolation(
+                        LAB_RECORD,
+                        "is set (record '${lab.first().recordId}') but $ENVIRONMENT_KEY is '${settings.environment}'; a lab-only " +
+                            "qualification record is accepted in environment '$LAB_ENVIRONMENT' and nowhere else (issue #102)",
+                    ),
+                )
+            }
+            lab.filterNot { it.isLab }.forEach {
+                add(DeploymentViolation(LAB_RECORD, "record '${it.recordId}' is not platformClass '$LAB_PLATFORM_CLASS'"))
+            }
+            // "lab" is a label a host declares about itself. What the application CAN
+            // check is that the label does not point at a shared environment's data:
+            // the production tenant domain, or a host named for staging or the
+            // rehearsal, is not a lab, whatever the variable says (security review P2-a).
+            if (settings.environment == LAB_ENVIRONMENT) {
+                if (settings.mailDomain.equals(ProductionPolicy.MAIL_DOMAIN, ignoreCase = true) ||
+                    settings.mailDomain.contains("staging", ignoreCase = true)
+                ) {
+                    add(
+                        DeploymentViolation(
+                            "testinbox.mail-domain",
+                            "is '${settings.mailDomain}' in environment '$LAB_ENVIRONMENT'; a lab serves no shared environment's domain",
+                        ),
+                    )
+                }
+                listOf(
+                    "spring.datasource.url" to settings.databaseUrl,
+                    "testinbox.storage.endpoint" to settings.storageEndpoint,
+                    "testinbox.public-base-url" to settings.publicBaseUrl.orEmpty(),
+                ).forEach { (key, value) ->
+                    SHARED_ENVIRONMENT_FRAGMENTS.firstOrNull { value.contains(it, ignoreCase = true) }?.let { fragment ->
+                        add(DeploymentViolation(key, "names a shared environment's host ('$fragment') in environment '$LAB_ENVIRONMENT'"))
+                    }
+                }
+            }
+        }
+
+    /** Host name fragments a lab must not point at: another environment's data services. */
+    private val SHARED_ENVIRONMENT_FRAGMENTS = listOf("staging", "rehearsal", "production", "prod.")
 
     /** OFF: declared values must still be well-formed; absence is fine. */
     private fun sanity(storage: StorageDeclarations): List<DeploymentViolation> =
@@ -645,7 +707,7 @@ object StorageEnforcementSafety {
             }
             addAll(sanity(storage))
             addAll(declarations(storage))
-            addAll(qualification(storage))
+            addAll(qualification(storage, settings.environment == LAB_ENVIRONMENT))
         }
 
     /**
@@ -919,7 +981,17 @@ object StorageEnforcementSafety {
             }
         }
 
-    private fun qualification(storage: StorageDeclarations): List<DeploymentViolation> =
+    /**
+     * The §9a match. [inLab] admits lab-sourced records as a startup gate: they
+     * must match the declared identity and the running upload implementation
+     * exactly, like any record, but their content eligibility is not consulted
+     * — a lab record is never evidence, and it never leaves the lab (issue
+     * #102). Outside the lab, lab-sourced records are not even candidates.
+     */
+    private fun qualification(
+        storage: StorageDeclarations,
+        inLab: Boolean,
+    ): List<DeploymentViolation> =
         buildList {
             if (storage.uploadImplementationVersion.isBlank()) {
                 add(DeploymentViolation("$IDENTITY.$UPLOAD", "the running binary carries no upload implementation version"))
@@ -935,12 +1007,13 @@ object StorageEnforcementSafety {
                 )
                 return@buildList
             }
-            if (storage.qualificationRecords.isEmpty()) {
+            val candidates = storage.qualificationRecords.filter { inLab || it.source != QualificationRecordSource.LAB }
+            if (candidates.isEmpty()) {
                 add(DeploymentViolation(IDENTITY, "cannot be matched: this artifact ships no qualification record (ADR-035 §9a)"))
                 return@buildList
             }
-            val comparisons = QualificationMatch.compareAll(identity, storage.uploadImplementationVersion, storage.qualificationRecords)
-            val matching = storage.qualificationRecords.filterIndexed { i, _ -> comparisons[i].matches }
+            val comparisons = QualificationMatch.compareAll(identity, storage.uploadImplementationVersion, candidates)
+            val matching = candidates.filterIndexed { i, _ -> comparisons[i].matches }
             if (matching.isEmpty()) {
                 val closest = comparisons.minByOrNull { it.mismatchedElements.size }
                 val uploadOnly = closest != null && closest.mismatchedElements == listOf(QualificationMatch.UPLOAD_IMPLEMENTATION)
@@ -953,7 +1026,7 @@ object StorageEnforcementSafety {
                 )
                 return@buildList
             }
-            val eligible = matching.filter { it.eligibility().eligible }
+            val eligible = matching.filter { it.eligibility().eligible || (inLab && it.source == QualificationRecordSource.LAB) }
             if (eligible.isEmpty()) {
                 val record = matching.first()
                 add(

@@ -65,12 +65,13 @@ class StorageBreakerTest {
 
     @Test
     fun `a later kind never hides an earlier one, so the trial must clear both`() {
-        breaker.trip(Kind.AMBIGUOUS)
+        breaker.trip(Kind.UNAVAILABLE)
         breaker.trip(Kind.CLOCK_OFFSET) // e.g. a spurious offset reading
         advance(breaker.currentBackoff)
 
         val trial = breaker.admit()
-        trial shouldBe Admission.Trial(setOf(Kind.AMBIGUOUS, Kind.CLOCK_OFFSET), 2)
+        trial shouldBe Admission.Trial(setOf(Kind.UNAVAILABLE, Kind.CLOCK_OFFSET), 2)
+        // Neither kind lets a zero-byte probe lie (an ambiguous upload does: issue #102).
         (trial as Admission.Trial).needsRealEvent shouldBe false
     }
 
@@ -208,6 +209,139 @@ class StorageBreakerTest {
         plain.trip(Kind.STORAGE_FULL)
         advance(Duration.ofHours(1))
         plain.admit() shouldBe Admission.Blocked(setOf(Kind.STORAGE_FULL))
+    }
+
+    // --- an ambiguous upload is a possibly full filesystem (issue #102, E9) ------------------------
+
+    @Test
+    fun `an ambiguous trip needs a real event as its trial, never the witness alone`() {
+        val plain = StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now })
+        plain.trip(Kind.AMBIGUOUS)
+        advance(Duration.ofSeconds(15))
+        val trial = plain.admit()
+        trial.shouldBeInstanceOf<Admission.Trial>()
+        trial.needsRealEvent shouldBe true
+        plain.isEscalated shouldBe false
+    }
+
+    @Test
+    fun `under an enforcing mode an ambiguous trip waits for evidence from its first trip, consuming no trial`() {
+        var checks = 0
+        var evidence = false
+        val enforcing =
+            StorageBreaker(
+                Duration.ofSeconds(15),
+                Duration.ofMinutes(2),
+                nanoTime = { now },
+                storageFullGate =
+                    StorageFullGate.of {
+                        checks++
+                        evidence
+                    },
+                ambiguityNeedsEvidence = true,
+            )
+        enforcing.trip(Kind.AMBIGUOUS)
+        advance(Duration.ofHours(1)) // no timer reopens it
+        repeat(3) { enforcing.admit() shouldBe Admission.Blocked(setOf(Kind.AMBIGUOUS)) }
+        enforcing.isBlocked() shouldBe true
+        checks shouldBe 4
+
+        evidence = true // a fresh observation shows R_ops available
+        val trial = enforcing.admit()
+        trial.shouldBeInstanceOf<Admission.Trial>()
+        trial.needsRealEvent shouldBe true
+        enforcing.close(trial)
+        enforcing.isOpen shouldBe false
+    }
+
+    @Test
+    fun `under an enforcing mode every ambiguous trip tells the gate, so only a later observation counts`() {
+        var trips = 0
+        val enforcing =
+            StorageBreaker(
+                Duration.ofSeconds(15),
+                Duration.ofMinutes(2),
+                nanoTime = { now },
+                storageFullGate =
+                    object : StorageFullGate {
+                        override fun tripped() {
+                            trips++
+                        }
+
+                        override fun evidence() = true
+                    },
+                ambiguityNeedsEvidence = true,
+            )
+        enforcing.trip(Kind.AMBIGUOUS)
+        trips shouldBe 1
+        advance(Duration.ofMinutes(1))
+        enforcing.admit().shouldBeInstanceOf<Admission.Trial>()
+        enforcing.trip(Kind.AMBIGUOUS, fromTrialEvent = true) // the trial's real event was ambiguous again
+        trips shouldBe 2
+    }
+
+    @Test
+    fun `under OFF the first ambiguous trial is witness plus a real event, and a second ambiguity escalates to evidence`() {
+        var evidence = false
+        val lenient =
+            StorageBreaker(
+                Duration.ofSeconds(15),
+                Duration.ofMinutes(2),
+                nanoTime = { now },
+                storageFullGate = StorageFullGate.of { evidence },
+            )
+        lenient.trip(Kind.AMBIGUOUS)
+        advance(Duration.ofSeconds(15))
+        val first = lenient.admit()
+        first.shouldBeInstanceOf<Admission.Trial>() // one real-event trial without evidence
+        lenient.trip(Kind.AMBIGUOUS, fromTrialEvent = true) // ...and it came back ambiguous: a store that swallows large writes
+        lenient.isEscalated shouldBe true
+
+        advance(Duration.ofHours(1))
+        lenient.admit() shouldBe Admission.Blocked(setOf(Kind.AMBIGUOUS)) // no second recovery without evidence
+        lenient.isBlocked() shouldBe true
+
+        evidence = true
+        val second = lenient.admit()
+        second.shouldBeInstanceOf<Admission.Trial>()
+        lenient.close(second)
+        lenient.isEscalated shouldBe false // a close resets the escalation
+        lenient.isOpen shouldBe false
+    }
+
+    @Test
+    fun `without a monitor an escalated ambiguity clears only with a restart, like a full filesystem`() {
+        val plain = StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now })
+        plain.trip(Kind.AMBIGUOUS)
+        advance(Duration.ofSeconds(15))
+        plain.admit().shouldBeInstanceOf<Admission.Trial>()
+        plain.trip(Kind.AMBIGUOUS, fromTrialEvent = true)
+        advance(Duration.ofDays(1))
+        plain.admit() shouldBe Admission.Blocked(setOf(Kind.AMBIGUOUS))
+    }
+
+    @Test
+    fun `a failed witness or a concurrent event ending ambiguous during the trial never escalates`() {
+        val plain = StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now })
+        plain.trip(Kind.AMBIGUOUS)
+        advance(Duration.ofSeconds(15))
+        plain.admit().shouldBeInstanceOf<Admission.Trial>()
+        plain.trip(Kind.AMBIGUOUS) // the witness failed (storage restarting), or a concurrent older event ended ambiguous
+        plain.isEscalated shouldBe false
+        advance(Duration.ofMinutes(1))
+        plain.admit().shouldBeInstanceOf<Admission.Trial>() // recovers by witness and a real event at the next backoff
+    }
+
+    @Test
+    fun `a non-ambiguous trip during an ambiguous trial does not escalate`() {
+        val plain = StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now })
+        plain.trip(Kind.AMBIGUOUS)
+        advance(Duration.ofSeconds(15))
+        plain.admit().shouldBeInstanceOf<Admission.Trial>()
+        plain.trip(Kind.UNAVAILABLE) // storage went away mid-trial: a witness can prove it back
+        plain.isEscalated shouldBe false
+        advance(Duration.ofMinutes(1))
+        plain.admit().shouldBeInstanceOf<Admission.Trial>()
     }
 
     // --- trip generations under concurrency (owner review §6) --------------------------------------

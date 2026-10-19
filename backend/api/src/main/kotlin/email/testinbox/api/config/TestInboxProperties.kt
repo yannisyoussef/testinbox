@@ -68,6 +68,8 @@ data class TestInboxProperties(
         val activation: ActivationProperties = ActivationProperties(),
         /** The dedicated filesystem's declared budgets (filesystem-containment contract, TI-STORAGE-006E). */
         val filesystem: email.testinbox.application.FilesystemProperties = email.testinbox.application.FilesystemProperties(),
+        /** The lab-only qualification record (issue #102); refused at startup anywhere but environment `lab`. */
+        val qualification: email.testinbox.application.QualificationProperties = email.testinbox.application.QualificationProperties(),
     )
 
     /** The framework-free declarations `DeploymentSafety` and `EffectiveStoragePolicy` read (ADR-035 §18). */

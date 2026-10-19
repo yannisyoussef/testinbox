@@ -33,6 +33,7 @@ class MicrometerStorageProtocolMetrics(
     enforcement: StorageEnforcement = StorageEnforcement.OFF,
 ) : StorageProtocolMetrics {
     private val breakerOpen = AtomicLong(0)
+    private val breakerEscalated = AtomicLong(0)
     private val latched = AtomicLong(0)
     private val clockOffsetMillis = AtomicLong(0)
     private val ambiguous = AtomicLong(0)
@@ -51,6 +52,7 @@ class MicrometerStorageProtocolMetrics(
 
     init {
         gauge(BREAKER_OPEN, breakerOpen)
+        gauge(BREAKER_ESCALATED, breakerEscalated)
         gauge(LATCHED, latched)
         Gauge.builder(CLOCK_OFFSET, clockOffsetMillis) { it.get() / 1000.0 }.register(registry)
         gauge(AMBIGUOUS, ambiguous)
@@ -127,6 +129,8 @@ class MicrometerStorageProtocolMetrics(
 
     override fun breakerOpen(open: Boolean) = breakerOpen.set(if (open) 1 else 0)
 
+    override fun breakerEscalated(escalated: Boolean) = breakerEscalated.set(if (escalated) 1 else 0)
+
     override fun latched(latched: Boolean) = this.latched.set(if (latched) 1 else 0)
 
     override fun clockOffset(offset: Duration) = clockOffsetMillis.set(offset.toMillis())
@@ -179,6 +183,7 @@ class MicrometerStorageProtocolMetrics(
         const val LATE_OBJECT = "testinbox_storage_late_object_total"
         const val WITNESS_FAILED = "testinbox_storage_witness_failed_total"
         const val BREAKER_OPEN = "testinbox_storage_breaker_open"
+        const val BREAKER_ESCALATED = "testinbox_storage_breaker_escalated"
         const val LATCHED = "testinbox_storage_admission_latched"
         const val CLOCK_OFFSET = "testinbox_storage_clock_offset_seconds"
         const val AMBIGUOUS = "testinbox_storage_ambiguous_uploads"

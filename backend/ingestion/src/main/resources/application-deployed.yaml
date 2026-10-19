@@ -71,6 +71,13 @@ testinbox:
       probe-budget-bytes: ${TESTINBOX_STORAGE_FS_PROBE_BUDGET_BYTES:}
       monitor-role: ${TESTINBOX_STORAGE_FS_MONITOR_ROLE:}
       retention-pacing-max-delay: ${TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY:}
+    # Issue #102: a qualification record read from a FILE, for the isolated
+    # lab only. Refused at startup unless TESTINBOX_ENVIRONMENT is exactly
+    # "lab" (staging and production never set it), and never enablement
+    # evidence: it lets the lab run the current upload implementation under
+    # an enforcing mode before a record qualified on it exists.
+    qualification:
+      lab-record-path: ${TESTINBOX_STORAGE_QUALIFICATION_LAB_RECORD_PATH:}
   deployment:
     environment: ${TESTINBOX_ENVIRONMENT}
     proxy-read-timeout: ${TESTINBOX_PROXY_READ_TIMEOUT}

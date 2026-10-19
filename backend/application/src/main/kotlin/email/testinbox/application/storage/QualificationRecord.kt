@@ -21,7 +21,12 @@ data class QualificationRecord(
     /** As the record states it. [eligibility] re-derives it from the record's own content and never widens it. */
     val enablementEligible: Boolean,
     val ineligibilityReasons: List<String>,
+    /** Where the record came from: shipped in the artifact, or the lab-only file (issue #102). */
+    val source: QualificationRecordSource = QualificationRecordSource.SHIPPED,
 ) {
+    /** The platform class a lab-only record must declare; a shipped record with it is never eligible. */
+    val isLab: Boolean get() = platformClass.equals(LAB_PLATFORM_CLASS, ignoreCase = true)
+
     /**
      * Whether this record may back an enforcing deployment. The record's own
      * flag is necessary, not sufficient: a record that claims eligibility
@@ -41,6 +46,10 @@ data class QualificationRecord(
         if (platformClass.equals("laptop", ignoreCase = true)) {
             reasons += "platformClass is laptop: ADR-035 §18 gate 7a requires the deployed host's own combination"
         }
+        if (isLab) {
+            reasons +=
+                "platformClass is lab: a lab record is a startup gate for the isolated lab only, never enablement evidence (issue #102)"
+        }
         if (identity.runtimeConfigHash.isNullOrBlank()) reasons += "the runtime admin-configuration hash is absent"
         identity
             .elements()
@@ -52,6 +61,21 @@ data class QualificationRecord(
         return QualificationEligibility(enablementEligible && reasons.isEmpty(), reasons.distinct())
     }
 }
+
+/** Where a [QualificationRecord] was loaded from. */
+enum class QualificationRecordSource {
+    /** Bundled in the artifact, listed in `adr035-qualification/index.txt`. */
+    SHIPPED,
+
+    /**
+     * Read from `testinbox.storage.qualification.lab-record-path` (issue
+     * #102): accepted ONLY when the declared environment is `lab`, and only
+     * as a startup gate — it proves nothing and is never enablement evidence.
+     */
+    LAB,
+}
+
+const val LAB_PLATFORM_CLASS = "lab"
 
 data class QualificationEligibility(
     val eligible: Boolean,
