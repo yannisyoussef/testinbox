@@ -14,6 +14,7 @@ import org.subethamail.smtp.MessageHandler
 import org.subethamail.smtp.RejectException
 import org.subethamail.smtp.server.SMTPServer
 import java.io.InputStream
+import java.io.OutputStream
 
 const val LOCAL_SMTP_PROVIDER = "local-smtp"
 
@@ -134,6 +135,11 @@ class SmtpGateway(
         private fun readBounded(data: InputStream): ByteArray {
             val bytes = data.readNBytes(config.maxRawSizeBytes.toInt() + 1)
             if (bytes.size > config.maxRawSizeBytes) {
+                // Read the rest of the DATA stream (through the terminating dot) to the
+                // void before refusing: SubEthaSMTP drains only on success, so an
+                // unread tail would be parsed as commands and desynchronise every
+                // later transaction on a reused connection. Nothing is buffered.
+                data.transferTo(OutputStream.nullOutputStream())
                 metrics.rejected(SmtpRejection.MESSAGE_TOO_LARGE)
                 throw RejectException(552, "Requested mail action aborted: exceeded storage allocation")
             }

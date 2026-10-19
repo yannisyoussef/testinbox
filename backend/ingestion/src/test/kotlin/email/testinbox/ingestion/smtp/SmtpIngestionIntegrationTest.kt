@@ -339,11 +339,20 @@ class SmtpIngestionIntegrationTest {
         while (header.size + body.length <= cap) body.append(line)
         val raw = header + body.toString().toByteArray()
         raw.size shouldBeGreaterThan cap
+        val ghost = "ghost-${UUID.randomUUID().toString().take(8)}@testinbox.local"
         val refusedBefore = smtpMetrics.rejections.count { it == SmtpRejection.MESSAGE_TOO_LARGE }
         client().use { smtp ->
             smtp.send("big@example.com", listOf(inbox.address), raw).code shouldBe 552
+            // A reused connection stays usable: the gateway drained the refused body,
+            // so RSET is answered by the server, not by a stray reply to a body line
+            // misread as a command.
+            smtp.command("RSET").code shouldBe 250
+            // The refusal depends on the byte count alone, never on the recipient: an
+            // unknown address gets the identical reply, so the cap is no membership
+            // oracle (ADR-025; CLAUDE.md invariant 8).
+            smtp.send("big@example.com", listOf(ghost), raw).code shouldBe 552
         }
-        smtpMetrics.rejections.count { it == SmtpRejection.MESSAGE_TOO_LARGE } shouldBe refusedBefore + 1
+        smtpMetrics.rejections.count { it == SmtpRejection.MESSAGE_TOO_LARGE } shouldBe refusedBefore + 2
         messages.listVisible(inbox.id).shouldBeEmpty()
         val dbHits =
             jdbc
