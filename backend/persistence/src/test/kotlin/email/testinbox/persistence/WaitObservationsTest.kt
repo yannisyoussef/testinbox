@@ -151,6 +151,39 @@ class WaitObservationsTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `the inbox's state is read from the same snapshot as its messages, and a gone row reads as none (issue 87)`() {
+        val ws = fx.db.workspace()
+        val inbox = fx.db.inbox(ws)
+        fx.db.message(ws, inbox, rawBytes = 10)
+        var between: () -> Unit = {}
+        val observations = observations(between = { between() })
+
+        fun seen(workspace: UUID = ws) =
+            observations.observe(WorkspaceId(workspace), InboxId(inbox)) { (it.inboxState?.name ?: "none") to it.messages.size }
+
+        seen() shouldBe ("ACTIVE" to 1)
+
+        // Expired between the state read and the message read: this evaluation still sees ACTIVE
+        // with its message (one snapshot), the next one sees EXPIRED.
+        between = {
+            commitElsewhere { c ->
+                c.prepareStatement("UPDATE inbox SET state = 'EXPIRED' WHERE id = ?").use {
+                    it.setObject(1, inbox)
+                    it.executeUpdate()
+                }
+            }
+        }
+        seen() shouldBe ("ACTIVE" to 1)
+        between = {}
+        seen() shouldBe ("EXPIRED" to 1)
+
+        // Another workspace's view of the same id, and a hard-deleted row, read as no inbox at all.
+        seen(workspace = UUID.randomUUID()) shouldBe ("none" to 0)
+        fx.db.hardDeleteInbox(inbox)
+        seen() shouldBe ("none" to 0)
+    }
+
+    @Test
     fun `messages and their attachments come from the same snapshot, and are complete`() {
         val db = fx.db
         val ws = db.workspace()

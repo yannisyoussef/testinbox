@@ -58,10 +58,22 @@ open class JdbcWaitObservations(
                 // Ownership was proven by the use case; filtering again here means
                 // a future caller that skips that step still cannot match another
                 // tenant's messages.
+                // The state first, then the messages, then the refusals: all three
+                // from the snapshot the first statement opened (issue #87).
+                val state =
+                    jdbc
+                        .sql("SELECT state FROM inbox WHERE id = :id AND workspace_id = :workspaceId")
+                        .param("id", inboxId.value)
+                        .param("workspaceId", workspaceId.value)
+                        .query { rs, _ ->
+                            email.testinbox.domain.inbox.InboxState
+                                .valueOf(rs.getString("state"))
+                        }.optional()
+                        .orElse(null)
                 val visible = messages.listVisible(inboxId).filter { it.workspaceId == workspaceId }
                 betweenReads()
                 val refusals = visibility.refusalsOf(workspaceId, inboxId)
-                val observation = Observation(workspaceId, inboxId, visible, refusals)
+                val observation = Observation(workspaceId, inboxId, state, visible, refusals)
                 try {
                     evaluate(observation)
                 } finally {
@@ -80,6 +92,7 @@ open class JdbcWaitObservations(
     private inner class Observation(
         private val workspaceId: WorkspaceId,
         private val inboxId: InboxId,
+        override val inboxState: email.testinbox.domain.inbox.InboxState?,
         override val messages: List<Message>,
         override val refusals: StorageRefusalSnapshot,
     ) : InboxObservation {

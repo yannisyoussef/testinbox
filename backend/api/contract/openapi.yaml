@@ -745,7 +745,10 @@ paths:
         "410":
           description: >
             Inbox is no longer ACTIVE
-            (`type: https://testinbox.email/problems/inbox-gone`).
+            (`type: https://testinbox.email/problems/inbox-gone`). Also the
+            outcome of a wait that was parked when its inbox became EXPIRED or
+            DELETED: the wait ends promptly, and never returns a message after
+            that transition, even one that arrived before it.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }

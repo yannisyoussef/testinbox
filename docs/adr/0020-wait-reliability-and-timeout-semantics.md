@@ -129,3 +129,15 @@ The two timeout layers are distinct and must not be conflated:
   test proving parked waiters still resolve.
 - SDK long-poll chaining keys off the `status` field, not HTTP status
   classes, simplifying retry/error taxonomies.
+
+## Clarification (2026-10-19, issue #87)
+
+A wait parked on an `ACTIVE` inbox re-evaluates on every wake. The
+evaluation reads the inbox's state in the same snapshot as its messages; an
+inbox that is `EXPIRED`, `DELETED` or gone in that snapshot ends the wait
+with `410 Gone` before any match is considered, so a message that arrived
+before the transition is never returned after it — the same visibility the
+read endpoints give. The `EXPIRED` and `DELETED` transitions `pg_notify` the
+inbox's channel inside their own transaction, so the waiter learns promptly
+rather than at its window's end. `EXPIRING` keeps serving, and a wait started
+while `ACTIVE` continues through the grace period as before.

@@ -46,7 +46,14 @@ documentation must not describe behavior beyond what is specified here.
    clients/proxies auto-retry it), `204` is rejected (cannot carry the
    diagnostics). The unmatched/parse-failed counts are the primary
    "why did my test time out" diagnostic. A wait issued against an inbox
-   that is no longer `Active` returns `410 Gone` (RFC 7807). See
+   that is no longer `Active` returns `410 Gone` (RFC 7807), and so does a
+   wait already parked when its inbox becomes `EXPIRED` or `DELETED`: the
+   transition notifies the inbox's channel in its own transaction, the waiter
+   re-evaluates, and the evaluation reads the inbox's state from the same
+   snapshot as the messages, so a message that matched before the transition
+   is never returned after it — exactly what the read endpoints answer
+   (issue #87). `EXPIRING` keeps serving: a wait started while `ACTIVE`
+   continues through the grace period. See
    [ADR-020](../adr/0020-wait-reliability-and-timeout-semantics.md).
    The server wait window expiring (`status: TIMEOUT`, SDK may chain) is
    distinct from the SDK caller's overall timeout expiring (surfaced as a
