@@ -7,6 +7,10 @@ dependencies {
     implementation("org.slf4j:slf4j-api:2.0.19")
 
     testImplementation(platform(libs.spring.boot.dependencies))
+
+    testImplementation(platform(libs.jackson3.bom))
+
+    testImplementation(platform(libs.jackson2.bom))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation(libs.kotest.assertions)

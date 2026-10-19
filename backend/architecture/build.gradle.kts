@@ -16,6 +16,8 @@ dependencies {
     // scanned so its one exemption is named in the rules, not silent.
     testImplementation(project(":benchmark"))
     testImplementation(platform(libs.spring.boot.dependencies))
+    testImplementation(platform(libs.jackson3.bom))
+    testImplementation(platform(libs.jackson2.bom))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation(libs.archunit.junit5)

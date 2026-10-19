@@ -6,7 +6,11 @@ plugins {
 
 dependencies {
     implementation(platform(libs.spring.boot.dependencies))
+    implementation(platform(libs.jackson3.bom))
+    implementation(platform(libs.jackson2.bom))
     testImplementation(platform(libs.spring.boot.dependencies))
+    testImplementation(platform(libs.jackson3.bom))
+    testImplementation(platform(libs.jackson2.bom))
     implementation("org.springframework.boot:spring-boot-starter")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-flyway")

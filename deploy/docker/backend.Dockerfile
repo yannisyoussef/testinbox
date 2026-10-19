@@ -51,6 +51,12 @@ LABEL org.opencontainers.image.source="https://github.com/yannisyoussef/testinbo
       org.opencontainers.image.version="${BUILD_VERSION}" \
       org.opencontainers.image.licenses="UNLICENSED"
 
+# Alpine security updates (libexpat CVE-2026-77214, HIGH, fixed in 2.9.0-r0 while
+# the temurin tag still ships 2.8.x). The image is built once per source SHA
+# (ADR-028) and scanned under ENFORCE=true before promotion, so a fixable
+# finding in the base layer blocks the release unless it is taken here.
+RUN apk upgrade --no-cache
+
 # Non-root, no login shell, nothing writable in the image.
 RUN addgroup -S -g 10001 testinbox \
  && adduser -S -u 10001 -G testinbox -H -s /sbin/nologin testinbox

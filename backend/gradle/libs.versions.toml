@@ -5,6 +5,12 @@ springBoot = "4.1.1"
 # fixed in 11.0.25). Pinned above the BOM until a Boot patch manages the fix;
 # the promotion vulnerability policy blocks a release on it (ADR-031).
 tomcatEmbed = "11.0.25"
+# The Boot 4.1.1 BOM manages Jackson 3.1.5 / Jackson 2.21.5 (CVE-2026-89407,
+# CVE-2026-89425, CVE-2026-91776/91777, CVE-2026-68497 — HIGH, fixed). Both
+# BOMs are imported next to the Boot one in every module; a higher platform
+# constraint wins. Remove once the Boot BOM itself manages these or newer.
+jackson3 = "3.1.7"
+jackson2 = "2.21.7"
 coroutines = "1.11.0"
 testcontainers = "1.21.4"
 archunit = "1.5.0"
@@ -21,6 +27,8 @@ awaitility = "4.3.0"
 
 [libraries]
 spring-boot-dependencies = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "springBoot" }
+jackson3-bom = { module = "tools.jackson:jackson-bom", version.ref = "jackson3" }
+jackson2-bom = { module = "com.fasterxml.jackson:jackson-bom", version.ref = "jackson2" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
 subethasmtp = { module = "com.github.davidmoten:subethasmtp", version.ref = "subethasmtp" }

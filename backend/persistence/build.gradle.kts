@@ -6,6 +6,8 @@ plugins {
 dependencies {
     api(project(":application"))
     implementation(platform(libs.spring.boot.dependencies))
+    implementation(platform(libs.jackson3.bom))
+    implementation(platform(libs.jackson2.bom))
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
     implementation("org.springframework.boot:spring-boot-starter-flyway")
     implementation("org.springframework:spring-context")
@@ -19,6 +21,10 @@ dependencies {
     runtimeOnly("org.postgresql:postgresql")
 
     testImplementation(platform(libs.spring.boot.dependencies))
+
+    testImplementation(platform(libs.jackson3.bom))
+
+    testImplementation(platform(libs.jackson2.bom))
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.boot:spring-boot-testcontainers")
     testImplementation("org.postgresql:postgresql")
