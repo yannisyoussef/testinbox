@@ -203,6 +203,9 @@ read_sql_dump() {
       if (s == "") return
       ls = tolower(s)
       gsub(/\(/, " ( ", ls); gsub(/\)/, " ) ", ls); gsub(/  +/, " ", ls); sub(/ $/, "", ls)
+      # "schema . name" is "schema.name" to PostgreSQL; read it that way.
+      while (sub(/ \./, ".", ls)) {}
+      while (sub(/\. /, ".", ls)) {}
       # Quoted identifiers: only the alphabet a name in this schema can have,
       # then read without their quotes so a quoted name is not a different name.
       q = ls; gsub(/"[a-z0-9_]+"/, "", q)
@@ -250,8 +253,9 @@ read_sql_dump() {
       if (ls ~ /^select /) {
         # The only SELECTs a plain dump contains set the session or a sequence,
         # with literal arguments (the lexer keeps a literal as 'S' or '').
-        if (ls ~ ("^select (pg_catalog\\.)?set_config \\( " S ", " E ", false \\)$")) { sp_empty = 1; return }
-        if (ls ~ ("^select (pg_catalog\\.)?set_config \\( " S ", " E ", true \\)$")) return
+        if (ls ~ ("^select (pg_catalog\\.)?set_config \\( " P ", " E ", false \\)$")) { sp_empty = 1; return }
+        if (ls ~ ("^select (pg_catalog\\.)?set_config \\( " P ", " E ", true \\)$")) return
+        if (ls ~ ("^select (pg_catalog\\.)?set_config \\( " S ", (" S "|" E "), (true|false) \\)$")) return
         if (ls ~ ("^select (pg_catalog\\.)?setval \\( " S ", -?[0-9]+(, (true|false))? \\)$")) return
         ambiguous("a SELECT that is not pg_dump literal set_config/setval (it may create rows, or run a function that does): " substr(s, 1, 80))
         return
@@ -261,7 +265,8 @@ read_sql_dump() {
         sp_empty = 1; return
       }
       if (ls ~ /^reset (search_path|all)( |$)/) { sp_empty = 0; return }
-      if (ls ~ /^set (local )?search_path/) { if (ls ~ /^set local /) { ambiguous("a transaction-local search_path: " substr(s, 1, 80)); return } }
+      if (ls ~ /^set local /) { ambiguous("a transaction-local setting: " substr(s, 1, 80)); return }
+      if (ls ~ /^set session search_path/) { ambiguous("a SET SESSION search_path: " substr(s, 1, 80)); return }
       if (ls ~ /^(set|reset) /) return
       if (ls ~ /^alter /) {
         if (ls ~ / enable (always |replica )?(trigger|rule) /) { ambiguous("an ALTER that enables a trigger or rule for the rest of the restore: " substr(s, 1, 80)); return }
@@ -269,7 +274,8 @@ read_sql_dump() {
         if (user_call(ls, 0)) { ambiguous("an ALTER that calls a user function at restore (a default, a constraint): " substr(s, 1, 80)); return }
         return
       }
-      if (ls ~ /^(comment|grant|revoke|drop|begin|start|commit|end|lock|security label) /) {
+      if (ls ~ /^(begin|start transaction|commit|end|rollback|savepoint|release)( |$)/) { ambiguous("a transaction statement — pg_dump emits none, and a rolled-back prologue would be read as kept: " substr(s, 1, 80)); return }
+      if (ls ~ /^(comment|grant|revoke|drop|lock|security label) /) {
         if (user_call(ls, 1)) { ambiguous("a statement that calls a user function at restore: " substr(s, 1, 80)); return }
         return
       }
@@ -289,7 +295,8 @@ read_sql_dump() {
       q = substr(stmt, n - 1, 1); return (q !~ /[A-Za-z0-9_]/)
     }
     BEGIN { mode = "top"; stmt = ""; tag = ""; estring = 0; ident_len = 0; triggers_seen = 0; sq_nonempty = 0
-            cap = 65536; overflow = 0; sp_empty = 0
+            cap = 65536; overflow = 0; sp_empty = 0; sq_text = ""
+            P = "\047search_path\047"
             S = "\047s\047"; E = "\047\047" }   # a non-empty and an empty literal as the lexer keeps them, lower-cased
     {
       line = $0; sub(/\r$/, "", line)
@@ -336,14 +343,16 @@ read_sql_dump() {
           i += k + 1; mode = "top"; append(" "); continue
         }
         if (mode == "squote") {
-          if (c == "\\" && estring) { sq_nonempty = 1; i += 2; continue }
+          if (c == "\\" && estring) { sq_nonempty = 1; sq_text = sq_text "\\"; i += 2; continue }
           if (c == "\047") {
-            if (substr(line, i + 1, 1) == "\047") { sq_nonempty = 1; i += 2; continue }
+            if (substr(line, i + 1, 1) == "\047") { sq_nonempty = 1; sq_text = sq_text "\047"; i += 2; continue }
             # A literal is kept only as '' or 'S': enough to recognise the
             # session statements pg_dump emits, never a place for keywords.
-            append(sq_nonempty ? "\047S\047" : "\047\047"); mode = "top"; i++; continue
+            if (tolower(sq_text) == "search_path") append("\047search_path\047")
+            else append(sq_nonempty ? "\047S\047" : "\047\047")
+            mode = "top"; i++; continue
           }
-          sq_nonempty = 1; i++; continue
+          sq_nonempty = 1; if (length(sq_text) < 16) sq_text = sq_text c; i++; continue
         }
         if (mode == "dquote") {
           if (c == "\"") {
@@ -355,7 +364,7 @@ read_sql_dump() {
         # mode == top
         if (c == "-" && substr(line, i + 1, 1) == "-") break
         if (c == "/" && substr(line, i + 1, 1) == "*") { mode = "bcomment"; i += 2; continue }
-        if (c == "\047") { estring = escape_string_prefix(); sq_nonempty = 0; mode = "squote"; i++; continue }
+        if (c == "\047") { estring = escape_string_prefix(); sq_nonempty = 0; sq_text = ""; mode = "squote"; i++; continue }
         if (c == "\"") { mode = "dquote"; append("\""); i++; continue }
         if (c == "$" && !prev_is_ident_char() && match(substr(line, i), /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/)) {
           tag = substr(line, i, RLENGTH); mode = "dollar"; i += RLENGTH; continue
@@ -364,7 +373,7 @@ read_sql_dump() {
         append(c); i++
       }
       if (mode == "top") append(" ")
-      else if (mode == "squote") sq_nonempty = 1
+      else if (mode == "squote") { sq_nonempty = 1; sq_text = sq_text "\n" }
     }
     END {
       if (mode == "squote") ambiguous("an unterminated string literal at end of input")

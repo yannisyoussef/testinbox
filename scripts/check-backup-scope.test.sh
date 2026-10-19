@@ -316,6 +316,22 @@ done
 # refuses them at restore. They are accounted for, not assumed.
 { control_plane_dump; printf 'ALTER TABLE ONLY public.workspace ALTER COLUMN created_at SET DEFAULT now();\nINSERT INTO public.workspace VALUES (1, NULL);\n'; } > "$WORK/builtin-default.sql"
 check "a built-in default and a literal row after the prologue are accounted for" 0 "$WORK/builtin-default.sql"
+for stmt in "SELECT pg_catalog.set_config('application_name', '', false);" \
+            "SET SESSION search_path = public;" \
+            "SET search_path TO public;" \
+            "BEGIN;" \
+            "COMMIT;"; do
+  { printf '%s\n' "$stmt"; control_plane_dump | grep -v set_config; } > "$WORK/prologue-forgery.sql"
+  check_says "[$stmt] does not stand in for the prologue" 1 "AMBIGUOUS INPUT" "$WORK/prologue-forgery.sql"
+done
+{ printf 'SELECT pg_catalog.set_config(%s, %s, false);\n' "'SEARCH_PATH'" "''"; control_plane_dump | grep -v set_config; } > "$WORK/prologue-upper.sql"
+check "the prologue with the setting name in upper case is the same setting" 0 "$WORK/prologue-upper.sql"
+for stmt in 'ALTER TABLE public.workspace ADD COLUMN x bigint DEFAULT public . evil();' \
+            'CREATE FUNCTION pg_catalog . evil() RETURNS bigint LANGUAGE sql AS $$ SELECT 1 $$;' \
+            'ALTER TABLE public.workspace ADD COLUMN x bigint DEFAULT "public" . "evil"();'; do
+  { control_plane_dump; printf '%s\n' "$stmt"; } > "$WORK/dot-space.sql"
+  check_says "[$stmt] is refused (whitespace around the dot)" 1 "AMBIGUOUS INPUT" "$WORK/dot-space.sql"
+done
 { control_plane_dump | grep -v set_config; } > "$WORK/no-prologue.sql"
 { printf 'SELECT pg_catalog.set_config(%s, %s, true);\n' "'search_path'" "''"; control_plane_dump | grep -v set_config; } > "$WORK/local-prologue.sql"
 check_says "a transaction-local (is_local = true) search_path does not count as the prologue" 1 "AMBIGUOUS INPUT: DDL or data before the search_path was emptied" "$WORK/local-prologue.sql"
@@ -324,7 +340,7 @@ check_says "RESET search_path restores the default, so the prologue is required 
 { control_plane_dump; printf 'RESET ALL;\nCOPY public.workspace (id) FROM stdin;\n\\.\n'; } > "$WORK/reset-all.sql"
 check_says "RESET ALL likewise" 1 "AMBIGUOUS INPUT: DDL or data before the search_path was emptied" "$WORK/reset-all.sql"
 { control_plane_dump; printf 'SET LOCAL search_path = %s;\n' "''"; } > "$WORK/set-local.sql"
-check_says "SET LOCAL search_path is refused" 1 "AMBIGUOUS INPUT: a transaction-local search_path" "$WORK/set-local.sql"
+check_says "SET LOCAL search_path is refused" 1 "AMBIGUOUS INPUT: a transaction-local setting" "$WORK/set-local.sql"
 check_says "a dump that never empties search_path is refused before any DDL or data" 1 "AMBIGUOUS INPUT: DDL or data before the search_path was emptied" "$WORK/no-prologue.sql"
 { printf 'CREATE FUNCTION evil(bigint) RETURNS boolean LANGUAGE sql AS $$ INSERT INTO public.message VALUES ($1) RETURNING true $$;\nCREATE TABLE public.workspace (id bigint CHECK (evil(id)));\n'; control_plane_dump; } > "$WORK/unqualified-check.sql"
 check_says "a table with an unqualified CHECK function defined before the prologue is refused" 1 "AMBIGUOUS INPUT: DDL or data before the search_path was emptied" "$WORK/unqualified-check.sql"
