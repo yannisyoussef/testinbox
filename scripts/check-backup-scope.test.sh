@@ -245,6 +245,47 @@ for stmt in 'CREATE TABLE public.message AS SELECT * FROM (VALUES (1), (2)) t(id
   { control_plane_dump; printf '%s\n' "$stmt"; } > "$WORK/unaccounted.sql"
   check_says "[$stmt] is refused as unaccounted for" 1 "AMBIGUOUS INPUT" "$WORK/unaccounted.sql"
 done
+# Restore-time execution the adversarial review found: statements pg_dump
+# never emits that would create rows when the dump is restored. Each must be
+# refused as unaccounted for; none may be assumed row-free.
+for stmt in 'CREATE TABLE public.message AS(SELECT 1 AS id);' \
+            'CREATE TABLE public.message AS/**/SELECT 1 AS id;' \
+            'CREATE GLOBAL TEMPORARY TABLE public.scratch AS SELECT 1 AS id;' \
+            "CREATE MATERIALIZED VIEW public.leak AS SELECT 'body' AS t WITH DATA;" \
+            'REFRESH MATERIALIZED VIEW public.leak;' \
+            "CREATE SUBSCRIPTION s CONNECTION 'host=elsewhere dbname=x' PUBLICATION p;" \
+            'CREATE RULE r AS ON INSERT TO public.workspace DO ALSO INSERT INTO public.message VALUES (new.id);' \
+            "SELECT pg_catalog.setval('public.s', public.evil());" \
+            "SELECT pg_catalog.set_config('search_path', public.evil()::text, false);" \
+            "SELECT pg_catalog.set_config('search_path', 'public', false);" \
+            'SET search_path = public, pg_catalog;' \
+            'ALTER TABLE public.workspace ADD COLUMN x bigint DEFAULT public.evil();' \
+            'ALTER TABLE ONLY public.workspace ADD CONSTRAINT c CHECK (public.evil() > 0);' \
+            'ALTER TABLE public.workspace ENABLE TRIGGER ALL;' \
+            'ALTER DATABASE testinbox SET search_path = public;' \
+            'INSERT INTO public.workspace (id) VALUES (public.evil());' \
+            "COPY public.workspace (id) FROM PROGRAM 'cmd';" \
+            "COPY public.workspace (id) FROM '/var/lib/postgresql/rows.csv';" \
+            'CREATE AGGREGATE public.agg (int) (sfunc = public.evil, stype = int);' \
+            'CREATE INDEX ix ON public.workspace USING btree (public.evil(id));'; do
+  { control_plane_dump; printf '%s\n' "$stmt"; } > "$WORK/exec.sql"
+  check_says "[$stmt] is refused as unaccounted for" 1 "AMBIGUOUS INPUT" "$WORK/exec.sql"
+done
+# A trigger defined before the data would fire on every restored row; pg_dump
+# puts triggers after the data, so data after a trigger is refused.
+{ printf 'CREATE FUNCTION public.evil_tg() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO public.message VALUES (new.id); RETURN NEW; END $$;\nCREATE TRIGGER t BEFORE INSERT ON public.workspace FOR EACH ROW EXECUTE FUNCTION public.evil_tg();\n'; control_plane_dump; } > "$WORK/trigger-first.sql"
+check_says "table data after a trigger definition is refused (not pg_dump's order)" 1 "AMBIGUOUS INPUT: table data after a trigger definition" "$WORK/trigger-first.sql"
+{ printf 'CREATE TRIGGER t BEFORE INSERT ON public.workspace FOR EACH ROW EXECUTE FUNCTION public.f();\nINSERT INTO public.workspace (id) VALUES (7);\n'; control_plane_dump; } > "$WORK/trigger-then-insert.sql"
+check_says "an INSERT after a trigger definition is refused" 1 "AMBIGUOUS INPUT: table data after a trigger definition" "$WORK/trigger-then-insert.sql"
+{ control_plane_dump; printf 'CREATE TRIGGER t BEFORE INSERT ON public.workspace FOR EACH ROW EXECUTE FUNCTION public.f();\n\\copy public.workspace from stdin\n7\n\\.\n'; } > "$WORK/trigger-then-copy.sql"
+check_says "a \\copy after a trigger definition is refused" 1 "AMBIGUOUS INPUT: table data after a trigger definition" "$WORK/trigger-then-copy.sql"
+{ control_plane_dump; printf 'CREATE TRIGGER t AFTER INSERT ON public.workspace FOR EACH ROW EXECUTE FUNCTION public.storage_footprint_trust_guard();\n'; } > "$WORK/trigger-last.sql"
+check "a trigger defined after the data, as pg_dump orders it, is accounted for" 0 "$WORK/trigger-last.sql"
+# psql variables would rewrite a statement after the reader classified it.
+{ control_plane_dump; printf "\\set q 'TABLE public.message AS SELECT 1 AS id'\nCREATE :q;\n"; } > "$WORK/psql-var.sql"
+check_says "a psql \\set is refused: variable interpolation rewrites statements after they were read" 1 "AMBIGUOUS INPUT: a psql meta-command" "$WORK/psql-var.sql"
+{ control_plane_dump; printf '\\copy public.workspace from program %s\n' "'cmd'"; } > "$WORK/copy-program.sql"
+check_says "a \\copy from program is refused" 1 "AMBIGUOUS INPUT: a \\copy that does not read from stdin" "$WORK/copy-program.sql"
 { control_plane_dump; printf '\\i /var/backups/content.sql\n'; } > "$WORK/include.sql"
 check_says "a psql \\i include is refused: it pulls in text the reader never sees" 1 "AMBIGUOUS INPUT: a psql meta-command" "$WORK/include.sql"
 { control_plane_dump; printf '\\! cat /etc/passwd\n'; } > "$WORK/shell.sql"
@@ -258,7 +299,13 @@ CREATE TABLE public.audit (id uuid, total bigint GENERATED ALWAYS AS (id_len * 2
 SELECT pg_catalog.setval('public.storage_debt_order_seq', 7, true);
 SELECT pg_catalog.set_config('search_path', '', false);
 ALTER TABLE ONLY public.workspace ADD CONSTRAINT workspace_pkey PRIMARY KEY (id);
-REFRESH MATERIALIZED VIEW public.whatever;
+ALTER TABLE ONLY public.message ADD CONSTRAINT message_inbox_fk FOREIGN KEY (inbox_id) REFERENCES public.inbox(id) ON DELETE CASCADE;
+REVOKE ALL ON FUNCTION public.storage_repair_ledger() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.storage_begin_sweep(p_node text) TO testinbox_app;
+ALTER FUNCTION public.storage_compact_ledger(p_batch integer) OWNER TO testinbox;
+COMMENT ON FUNCTION public.storage_begin_sweep(p_node text) IS 'gate F';
+CREATE INDEX ix_inbox_address ON public.inbox USING btree (lower(address));
+ALTER TABLE ONLY public.flyway_schema_history ALTER COLUMN installed_on SET DEFAULT now();
 SQL
 } > "$WORK/ddl-forms.sql"
 check "generated columns, CAST defaults, setval/set_config and the usual DDL are accounted for" 0 "$WORK/ddl-forms.sql"

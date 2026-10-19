@@ -481,6 +481,20 @@ truncated statement — is refused rather than ignored. The suite proves both
 on a genuine `pg_dump` of a database migrated with the real `V1..V10` files,
 in every documented dump form, so it needs Docker and fails without it.
 
+What the gate is, and is not. It reads exactly the statements a plain
+`pg_dump` contains and refuses everything else: a statement that would create
+or fetch rows at restore (`CREATE TABLE ... AS`, `SELECT ... INTO`, `MERGE`, a
+data-modifying CTE, `DO`, a materialized view, a subscription, a rule), one
+that would evaluate a user function at restore (a schema-qualified call
+outside a function or trigger definition, a non-empty `search_path`), table
+data placed after a trigger definition, a `COPY` not from `stdin`, psql
+variables and includes. That catches a misconfigured or hand-edited dump and
+refuses what it cannot read. It is not a sandbox against a hostile dump
+author: a restore executes SQL, and no lexer can prove a trigger-bearing
+schema plus control-plane rows free of side effects. The restore drill of
+row B is where that evidence lives — after the drill, `message`, `inbox` and
+`attachment` are counted and must be empty.
+
 **Only logical, table-scoped backups satisfy this contract.** Physical
 backups and WAL archiving (`pg_basebackup`, continuous archiving) copy every
 row of every table by construction, have no table filter, and leave nothing

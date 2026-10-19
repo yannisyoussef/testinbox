@@ -160,41 +160,89 @@ read_sql_dump() {
       print "DATA\t" t
     }
     # A statement is accounted for only if it is one a plain dump contains:
-    # the two data forms, or DDL/session statements that retain no rows.
-    # Anything else that can carry or create rows at restore time — a
-    # CREATE TABLE ... AS, a SELECT ... INTO, a MERGE, a data-modifying CTE,
-    # a DO block, a function call, an UPDATE — or a statement this reader
-    # does not know, is refused: it never emits from pg_dump, and it is not
-    # for the gate to guess what it retains.
+    # the two data forms, or DDL/session statements that retain no rows and
+    # run nothing at restore time. Anything else — a statement that
+    # materialises, fetches or creates rows (CREATE TABLE ... AS, SELECT ...
+    # INTO, MERGE, a data-modifying CTE, a DO block, a function call, UPDATE,
+    # a materialized view, a subscription, a rule), one that evaluates a
+    # user function at restore (a schema-qualified call outside a function
+    # or trigger definition; search_path is kept empty so an unqualified one
+    # cannot resolve), data placed after a trigger definition (never
+    # pg_dump order), or a statement this reader does not know — is
+    # refused: it is not for the gate to guess what it retains.
+    # A schema-qualified name followed by "(" is a function call, unless the
+    # name is the object of the statement and the "(" opens its column list
+    # (CREATE TABLE public.t (...), INSERT INTO public.t (...), ... ON
+    # public.t (...), REFERENCES public.t (...), PARTITION OF public.t (...)).
+    function user_call(ls,   rest, pre, w) {
+      rest = ls
+      while (match(rest, /[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*[ ]*\(/)) {
+        pre = substr(rest, 1, RSTART - 1); sub(/ +$/, "", pre)
+        w = pre; sub(/^.* /, "", w)
+        # ... or a function signature: GRANT/REVOKE ON FUNCTION f(args),
+        # ALTER FUNCTION f(args), COMMENT ON FUNCTION f(args).
+        if (w !~ /^(table|into|on|references|of|only|exists|copy|function|procedure|routine|aggregate)$/) return 1
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+      return 0
+    }
     function finish_statement(   s, ls) {
       s = stmt; stmt = ""
       gsub(/[ \t\r]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s)
       if (s == "") return
       ls = tolower(s)
+      gsub(/\(/, " ( ", ls); gsub(/\)/, " ) ", ls); gsub(/  +/, " ", ls); sub(/ $/, "", ls)
       if (ls ~ /^copy /) {
+        if (ls !~ / from stdin( |$)/) { ambiguous("a COPY that does not read from stdin (a file or a program the reader never sees): " substr(s, 1, 80)); return }
+        if (triggers_seen) { ambiguous("table data after a trigger definition — not pg_dump order, and the trigger would run on restore: " substr(s, 1, 80)); return }
         data_statement("COPY", substr(s, 6))
-        if (ls ~ /[ \t]from[ \t]+stdin/) mode = "copydata"
+        mode = "copydata"
         return
       }
-      if (ls ~ /^insert[ \t]+into[ \t]/) {
+      if (ls ~ /^insert into /) {
+        if (triggers_seen) { ambiguous("table data after a trigger definition — not pg_dump order, and the trigger would run on restore: " substr(s, 1, 80)); return }
+        if (user_call(ls)) { ambiguous("a row that calls a function at restore: " substr(s, 1, 80)); return }
         sub(/^[Ii][Nn][Ss][Ee][Rr][Tt][ \t]+[Ii][Nn][Tt][Oo][ \t]+/, "", s)
         data_statement("INSERT INTO", s)
         return
       }
-      if (ls ~ /^create (unlogged |temp |temporary )?table /) {
+      if (ls ~ /^create (or replace )?(function|procedure) /) return
+      if (ls ~ /^create (constraint )?trigger /) { triggers_seen = 1; return }
+      if (ls ~ /^create ((global |local )?(temp|temporary) |unlogged )?table /) {
         # CREATE TABLE ... AS <query> materialises rows; a generated column
-        # ("GENERATED ALWAYS AS (expr) STORED") is the one other AS in DDL.
-        gsub(/generated always as \(/, "generated always ( ", ls)
-        if (ls ~ / as (select|values|table|with|execute|\()/) { ambiguous("a CREATE TABLE ... AS that materialises rows: " substr(s, 1, 80)); return }
+        # ("GENERATED ALWAYS AS ( expr ) STORED") is the one other AS in DDL.
+        gsub(/generated always as \( /, "generated always ( ", ls)
+        if (ls ~ / as (select|values|table|with|execute|\( )/) { ambiguous("a CREATE TABLE ... AS that materialises rows: " substr(s, 1, 80)); return }
+        if (user_call(ls)) { ambiguous("DDL that calls a user function at restore: " substr(s, 1, 80)); return }
         return
       }
+      if (ls ~ /^create (unique )?index /) {
+        if (user_call(ls)) { ambiguous("an index expression that calls a user function at restore: " substr(s, 1, 80)); return }
+        return
+      }
+      if (ls ~ /^create (sequence|schema|extension|database) /) { if (user_call(ls)) { ambiguous("DDL that calls a user function at restore: " substr(s, 1, 80)); return } return }
+      if (ls ~ /^create type [a-z0-9_".]+ as (enum )?\( /) return
+      if (ls ~ /^create /) { ambiguous("a CREATE outside the kinds a plain dump of this schema contains (table, function, trigger, index, sequence, enum/composite type, schema, extension, database): " substr(s, 1, 80)); return }
       if (ls ~ /^select /) {
-        # The only SELECTs a plain dump contains set the session or a sequence.
-        if (ls ~ /^select (pg_catalog\.)?(set_config|setval)\(/) return
-        ambiguous("a SELECT that is not pg_dump'\''s set_config/setval (it may create rows, or run a function that does): " substr(s, 1, 80))
+        # The only SELECTs a plain dump contains set the session or a sequence,
+        # with literal arguments (the lexer keeps a literal as 'S' or '').
+        if (ls ~ ("^select (pg_catalog\\.)?set_config \\( " S ", " E ", (true|false) \\)$")) return
+        if (ls ~ ("^select (pg_catalog\\.)?setval \\( " S ", -?[0-9]+(, (true|false))? \\)$")) return
+        ambiguous("a SELECT that is not pg_dump literal set_config/setval (it may create rows, or run a function that does): " substr(s, 1, 80))
         return
       }
-      if (ls ~ /^(set|reset|create|alter|comment|grant|revoke|drop|begin|start|commit|end|lock|security label|refresh materialized view) /) return
+      if (ls ~ /^set search_path/ && ls !~ ("^set search_path (=|to) " E "$")) { ambiguous("a search_path that would let an unqualified user function resolve at restore: " substr(s, 1, 80)); return }
+      if (ls ~ /^(set|reset) /) return
+      if (ls ~ /^alter /) {
+        if (ls ~ / enable (always |replica )?(trigger|rule) /) { ambiguous("an ALTER that enables a trigger or rule for the rest of the restore: " substr(s, 1, 80)); return }
+        if (ls ~ / set search_path/) { ambiguous("an ALTER that sets a search_path: " substr(s, 1, 80)); return }
+        if (user_call(ls)) { ambiguous("an ALTER that calls a user function at restore (a default, a constraint): " substr(s, 1, 80)); return }
+        return
+      }
+      if (ls ~ /^(comment|grant|revoke|drop|begin|start|commit|end|lock|security label) /) {
+        if (user_call(ls)) { ambiguous("a statement that calls a user function at restore: " substr(s, 1, 80)); return }
+        return
+      }
       ambiguous("a statement outside the documented plain-dump forms: " substr(s, 1, 80))
     }
     function append(c) { if (length(stmt) < 512) stmt = stmt c }
@@ -210,7 +258,8 @@ read_sql_dump() {
       if (n == 1) return 1
       q = substr(stmt, n - 1, 1); return (q !~ /[A-Za-z0-9_]/)
     }
-    BEGIN { mode = "top"; stmt = ""; tag = ""; estring = 0; ident_len = 0 }
+    BEGIN { mode = "top"; stmt = ""; tag = ""; estring = 0; ident_len = 0; triggers_seen = 0; sq_nonempty = 0
+            S = "\047s\047"; E = "\047\047" }   # a non-empty and an empty literal as the lexer keeps them, lower-cased
     {
       line = $0; sub(/\r$/, "", line)
       if (NR == 1) sub(/^\357\273\277/, "", line)   # a UTF-8 byte-order mark
@@ -220,19 +269,23 @@ read_sql_dump() {
       }
       n = length(line); i = 1
       # A psql meta-command occupies a whole line and has no terminator.
-      # Those a dump may carry are accounted for; one that pulls in text the
-      # reader never sees (\i, \ir, \include) or runs anything (\!, \g*, \o)
-      # is refused like any unknown statement.
+      # Those pg_dump emits are accounted for (\restrict, \unrestrict, and
+      # \connect with --create); one that pulls in text the reader never
+      # sees (\i), rewrites statements after they were read (\set and psql
+      # variable interpolation) or runs anything (\!, \g*, \o) is refused
+      # like any unknown statement.
       if (mode == "top" && stmt ~ /^[ \t]*$/ && line ~ /^[ \t]*\\/) {
         ml = line; sub(/^[ \t]+/, "", ml)
         if (ml == "\\.") { ambiguous("a COPY terminator outside any COPY data block"); next }
         if (tolower(ml) ~ /^\\copy[ \t]/) {
           sub(/^\\[Cc][Oo][Pp][Yy][ \t]+/, "", ml)
+          if (tolower(ml) !~ /[ \t]from[ \t]+stdin([ \t]|$)/) { ambiguous("a \\copy that does not read from stdin: " substr(ml, 1, 80)); next }
+          if (triggers_seen) { ambiguous("table data after a trigger definition — not pg_dump order: " substr(ml, 1, 80)); next }
           data_statement("\\copy", ml)
-          if (tolower(ml) ~ /[ \t]from[ \t]+stdin/) mode = "copydata"
+          mode = "copydata"
           next
         }
-        if (tolower(ml) ~ /^\\(restrict|unrestrict|connect|c|set|unset|echo|qecho)([ \t]|$)/) next
+        if (tolower(ml) ~ /^\\(restrict|unrestrict|connect|c)([ \t]|$)/) next
         ambiguous("a psql meta-command outside the documented plain-dump forms: " substr(ml, 1, 80))
         next
       }
@@ -246,15 +299,17 @@ read_sql_dump() {
         if (mode == "bcomment") {
           k = index(substr(line, i), "*/")
           if (k == 0) break
-          i += k + 1; mode = "top"; continue
+          i += k + 1; mode = "top"; append(" "); continue
         }
         if (mode == "squote") {
-          if (c == "\\" && estring) { i += 2; continue }
+          if (c == "\\" && estring) { sq_nonempty = 1; i += 2; continue }
           if (c == "\047") {
-            if (substr(line, i + 1, 1) == "\047") { i += 2; continue }
-            mode = "top"; append(" "); i++; continue
+            if (substr(line, i + 1, 1) == "\047") { sq_nonempty = 1; i += 2; continue }
+            # A literal is kept only as '' or 'S': enough to recognise the
+            # session statements pg_dump emits, never a place for keywords.
+            append(sq_nonempty ? "\047S\047" : "\047\047"); mode = "top"; i++; continue
           }
-          i++; continue
+          sq_nonempty = 1; i++; continue
         }
         if (mode == "dquote") {
           if (c == "\"") {
@@ -266,7 +321,7 @@ read_sql_dump() {
         # mode == top
         if (c == "-" && substr(line, i + 1, 1) == "-") break
         if (c == "/" && substr(line, i + 1, 1) == "*") { mode = "bcomment"; i += 2; continue }
-        if (c == "\047") { estring = escape_string_prefix(); mode = "squote"; i++; continue }
+        if (c == "\047") { estring = escape_string_prefix(); sq_nonempty = 0; mode = "squote"; i++; continue }
         if (c == "\"") { mode = "dquote"; append("\""); i++; continue }
         if (c == "$" && !prev_is_ident_char() && match(substr(line, i), /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/)) {
           tag = substr(line, i, RLENGTH); mode = "dollar"; i += RLENGTH; continue
@@ -275,6 +330,7 @@ read_sql_dump() {
         append(c); i++
       }
       if (mode == "top") append(" ")
+      else if (mode == "squote") sq_nonempty = 1
     }
     END {
       if (mode == "squote") ambiguous("an unterminated string literal at end of input")
