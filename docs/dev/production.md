@@ -473,7 +473,13 @@ checks a real dump (or a `pg_restore -l` table list, produced with
 `pg_restore -l dump | awk '/ TABLE DATA / {print $7}'`) against it, and
 `check-backup-scope.test.sh` proves it refuses content rows — however they
 are spelled — a missing control-plane table, an unclassified table, and a
-backup that examines nothing.
+backup that examines nothing. A plain dump is read statement by statement:
+the `INSERT INTO` lines inside the ADR-035 trigger-function bodies (which a
+full-schema dump carries) retain nothing, while anything the reader cannot
+account for — an unterminated function body, string or `COPY` block, a
+truncated statement — is refused rather than ignored. The suite proves both
+on a genuine `pg_dump` of a database migrated with the real `V1..V10` files,
+in every documented dump form, so it needs Docker and fails without it.
 
 **Only logical, table-scoped backups satisfy this contract.** Physical
 backups and WAL archiving (`pg_basebackup`, continuous archiving) copy every

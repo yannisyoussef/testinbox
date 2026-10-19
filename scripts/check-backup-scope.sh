@@ -16,6 +16,15 @@
 # (`pg_restore -l` lines read `3117; 0 16391 TABLE DATA public workspace owner`:
 # field 6 is the schema, field 7 the table.)
 #
+# A plain-SQL dump is read statement by statement, not line by line: a
+# `COPY`/`INSERT INTO` counts only where it begins a top-level statement.
+# Text inside string literals, dollar-quoted function bodies, comments and
+# COPY data blocks is opaque — the ADR-035 trigger functions carry
+# `INSERT INTO` lines in their bodies and retain nothing. Anything the reader
+# cannot account for (an unterminated quote, body or COPY block, a data
+# statement whose table cannot be named, a stray `\.`, a truncated statement)
+# is refused rather than ignored: ambiguity never passes.
+#
 # Usage:
 #   check-backup-scope.sh <dump.sql | tables.txt>        validate a backup
 #   check-backup-scope.sh --classification <migrations>  the scope file names
@@ -94,26 +103,187 @@ fi
 # --- a backup honours the classification ------------------------------------
 input="${1:-}"; [[ -f "$input" ]] || usage
 
-# Tables whose DATA is present. For a plain-SQL dump that is COPY or INSERT
-# INTO; a CREATE TABLE alone is schema only and retains nothing.
-declare -a WITH_DATA=()
-if grep -qiE '^[[:space:]]*(COPY|INSERT[[:space:]]+INTO|CREATE[[:space:]]+(UNLOGGED[[:space:]]+)?TABLE)[[:space:]]' "$input"; then
-  # Per line, case-folded, with one continuation form handled: a bare
-  # `INSERT INTO` line is joined with its successor. A leading tab or spaces
-  # before COPY/INSERT are still a data statement; a `\.` terminator, a data
-  # row, or a CREATE TABLE are not.
-  while IFS= read -r t; do [[ -n "$t" ]] && WITH_DATA+=("$t"); done < <(
-    tr 'A-Z' 'a-z' < "$input" | awk '
-      { if (pending) { $0 = "insert into " $0; pending = 0 } }
-      /^[ \t]*insert[ \t]+into[ \t]*$/ { pending = 1; next }
-      /^[ \t]*(copy|insert[ \t]+into)[ \t]+/ { print }
-    ' | sed -E 's/^[[:space:]]*(copy|insert[[:space:]]+into)[[:space:]]+(only[[:space:]]+)?("?[a-z0-9_]+"?\.)?"?([a-z0-9_]+)"?.*/\4/' \
-      | sort -u)
-else
+# A custom/tar archive is binary; its table list is what the documented
+# `pg_restore -l` recipe produces. Refuse the archive itself rather than
+# reading its bytes as names.
+if head -c 5 "$input" | grep -q '^PGDMP'; then
+  fail "$input is a pg_dump archive, not plain SQL — list its TABLE DATA entries with: pg_restore -l dump | awk '/ TABLE DATA / {print \$7}'"
+fi
+
+# A raw `pg_restore -l` listing is neither documented input; name it and the
+# recipe rather than reading its lines as SQL.
+if grep -qE '^[0-9]+; [0-9]+ [0-9]+ ' "$input"; then
+  fail "$input looks like a raw 'pg_restore -l' listing — apply the recipe: pg_restore -l dump | awk '/ TABLE DATA / {print \$7}'"
+fi
+
+# Which of the two documented inputs is this? A table list is nothing but
+# names: one `[schema.]table` per line, optionally quoted, `#` comments.
+# Anything else is read as SQL.
+is_table_list() {
+  ! grep -vqE '^[[:space:]]*(#.*)?$|^[[:space:]]*"?[A-Za-z0-9_]+"?(\."?[A-Za-z0-9_]+"?)?[[:space:]]*(#.*)?$' "$input"
+}
+
+# The SQL reader. One statement at a time, with the lexical states a plain
+# dump can be in: a single-quoted string (standard or E'' escaping), a quoted
+# identifier, a dollar-quoted body ($$ or $tag$), a `--` or `/* */` comment,
+# the data block that follows `COPY ... FROM stdin;` up to its `\.`, and a
+# psql meta-command line (`\restrict`, `\connect`, `\copy`). Only a top-level
+# statement beginning `COPY <table>` / `INSERT INTO <table>` (or a `\copy`
+# line) names a table that carries data. Output: `DATA <table>` per data
+# statement, or `AMBIGUOUS <reason>` for input the reader cannot account for.
+read_sql_dump() {
+  awk '
+    function ambiguous(why) { print "AMBIGUOUS\t" why }
+    # One identifier at the start of s: bare, or "quoted" with only the
+    # characters a table name in this schema can have. Sets ident_len.
+    function identifier(s) {
+      if (match(s, /^"[A-Za-z0-9_]+"/)) { ident_len = RLENGTH; return substr(s, 2, RLENGTH - 2) }
+      if (match(s, /^[A-Za-z_][A-Za-z0-9_]*/)) { ident_len = RLENGTH; return substr(s, 1, RLENGTH) }
+      ident_len = 0; return ""
+    }
+    # The table a data statement names, from the text after its keyword(s).
+    function table_of(rest,   name) {
+      sub(/^[ \t]+/, "", rest)
+      if (match(rest, /^[Oo][Nn][Ll][Yy][ \t]+/)) rest = substr(rest, RLENGTH + 1)
+      name = identifier(rest)
+      if (name == "") return ""
+      rest = substr(rest, ident_len + 1)
+      if (substr(rest, 1, 1) == ".") {
+        name = identifier(substr(rest, 2))
+        if (name == "") return ""
+      }
+      return tolower(name)
+    }
+    function data_statement(kind, rest,   t) {
+      t = table_of(rest)
+      if (t == "") { ambiguous(kind " statement whose table cannot be named: " substr(kind " " rest, 1, 80)); return }
+      print "DATA\t" t
+    }
+    function finish_statement(   s, ls) {
+      s = stmt; stmt = ""
+      gsub(/[ \t\r]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s)
+      if (s == "") return
+      ls = tolower(s)
+      if (ls ~ /^copy /) {
+        data_statement("COPY", substr(s, 6))
+        if (ls ~ /[ \t]from[ \t]+stdin/) mode = "copydata"
+      } else if (ls ~ /^insert[ \t]+into[ \t]/) {
+        sub(/^[Ii][Nn][Ss][Ee][Rr][Tt][ \t]+[Ii][Nn][Tt][Oo][ \t]+/, "", s)
+        data_statement("INSERT INTO", s)
+      }
+      # Every other statement (DDL, SET, SELECT setval, COMMENT, ALTER,
+      # CREATE FUNCTION ...) retains no rows.
+    }
+    function append(c) { if (length(stmt) < 512) stmt = stmt c }
+    function prev_is_ident_char(   p) {
+      p = substr(stmt, length(stmt), 1)
+      return (p ~ /[A-Za-z0-9_]/)
+    }
+    # E before the opening quote (and not part of a longer word) means
+    # backslash escapes inside the string.
+    function escape_string_prefix(   n, p, q) {
+      n = length(stmt); if (n == 0) return 0
+      p = substr(stmt, n, 1); if (p != "e" && p != "E") return 0
+      if (n == 1) return 1
+      q = substr(stmt, n - 1, 1); return (q !~ /[A-Za-z0-9_]/)
+    }
+    BEGIN { mode = "top"; stmt = ""; tag = ""; estring = 0; ident_len = 0 }
+    {
+      line = $0; sub(/\r$/, "", line)
+      if (mode == "copydata") {
+        if (line == "\\.") mode = "top"
+        next
+      }
+      n = length(line); i = 1
+      # A psql meta-command occupies a whole line and has no terminator.
+      if (mode == "top" && stmt ~ /^[ \t]*$/ && line ~ /^[ \t]*\\/) {
+        ml = line; sub(/^[ \t]+/, "", ml)
+        if (ml == "\\.") { ambiguous("a COPY terminator outside any COPY data block"); next }
+        if (tolower(ml) ~ /^\\copy[ \t]/) {
+          sub(/^\\[Cc][Oo][Pp][Yy][ \t]+/, "", ml)
+          data_statement("\\copy", ml)
+          if (tolower(ml) ~ /[ \t]from[ \t]+stdin/) mode = "copydata"
+        }
+        next
+      }
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (mode == "dollar") {
+          k = index(substr(line, i), tag)
+          if (k == 0) break
+          i += k - 1 + length(tag); mode = "top"; append(" "); continue
+        }
+        if (mode == "bcomment") {
+          k = index(substr(line, i), "*/")
+          if (k == 0) break
+          i += k + 1; mode = "top"; continue
+        }
+        if (mode == "squote") {
+          if (c == "\\" && estring) { i += 2; continue }
+          if (c == "\047") {
+            if (substr(line, i + 1, 1) == "\047") { i += 2; continue }
+            mode = "top"; append(" "); i++; continue
+          }
+          i++; continue
+        }
+        if (mode == "dquote") {
+          if (c == "\"") {
+            if (substr(line, i + 1, 1) == "\"") { append("\"\""); i += 2; continue }
+            mode = "top"; append("\""); i++; continue
+          }
+          append(c); i++; continue
+        }
+        # mode == top
+        if (c == "-" && substr(line, i + 1, 1) == "-") break
+        if (c == "/" && substr(line, i + 1, 1) == "*") { mode = "bcomment"; i += 2; continue }
+        if (c == "\047") { estring = escape_string_prefix(); mode = "squote"; i++; continue }
+        if (c == "\"") { mode = "dquote"; append("\""); i++; continue }
+        if (c == "$" && !prev_is_ident_char() && match(substr(line, i), /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/)) {
+          tag = substr(line, i, RLENGTH); mode = "dollar"; i += RLENGTH; continue
+        }
+        if (c == ";") { finish_statement(); i++; continue }
+        append(c); i++
+      }
+      if (mode == "top") append(" ")
+    }
+    END {
+      if (mode == "squote") ambiguous("an unterminated string literal at end of input")
+      else if (mode == "dquote") ambiguous("an unterminated quoted identifier at end of input")
+      else if (mode == "dollar") ambiguous("an unterminated dollar-quoted body (" tag ") at end of input")
+      else if (mode == "bcomment") ambiguous("an unterminated comment at end of input")
+      else if (mode == "copydata") ambiguous("a COPY data block without its \\. terminator")
+      s = stmt; gsub(/[ \t\r]+/, "", s)
+      if (s != "") ambiguous("a trailing statement without its terminator: " substr(stmt, 1, 80))
+    }
+  ' "$input"
+}
+
+# Tables whose DATA is present. For a plain-SQL dump that is a top-level COPY
+# or INSERT INTO; a CREATE TABLE alone is schema only and retains nothing.
+declare -a WITH_DATA=() AMBIGUITIES=()
+if is_table_list; then
   while IFS= read -r t; do
     t="${t%%#*}"; t="${t// /}"; t="${t##*.}"; t="${t//\"/}"
     [[ -n "$t" ]] && WITH_DATA+=("$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]')")
   done < "$input"
+else
+  while IFS=$'\t' read -r kind value; do
+    case "$kind" in
+      DATA) WITH_DATA+=("$value") ;;
+      AMBIGUOUS) AMBIGUITIES+=("$value") ;;
+      *) AMBIGUITIES+=("unreadable reader output: $kind") ;;
+    esac
+  done < <(read_sql_dump)
+  if (( ${#AMBIGUITIES[@]} > 0 )); then
+    for why in "${AMBIGUITIES[@]}"; do echo "AMBIGUOUS INPUT: $why" >&2; done
+    fail "the dump contains input the reader cannot account for; it is not accepted"
+  fi
+fi
+# De-duplicate: pg_dump --inserts names a table once per row.
+if (( ${#WITH_DATA[@]} > 0 )); then
+  declare -a WITH_DATA_UNIQUE=()
+  while IFS= read -r t; do WITH_DATA_UNIQUE+=("$t"); done < <(printf '%s\n' "${WITH_DATA[@]}" | sort -u)
+  WITH_DATA=("${WITH_DATA_UNIQUE[@]}")
 fi
 
 # A backup that examines nothing is the positive-control failure: an empty
