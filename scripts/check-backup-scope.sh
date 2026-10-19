@@ -250,7 +250,8 @@ read_sql_dump() {
       if (ls ~ /^select /) {
         # The only SELECTs a plain dump contains set the session or a sequence,
         # with literal arguments (the lexer keeps a literal as 'S' or '').
-        if (ls ~ ("^select (pg_catalog\\.)?set_config \\( " S ", " E ", (true|false) \\)$")) { sp_empty = 1; return }
+        if (ls ~ ("^select (pg_catalog\\.)?set_config \\( " S ", " E ", false \\)$")) { sp_empty = 1; return }
+        if (ls ~ ("^select (pg_catalog\\.)?set_config \\( " S ", " E ", true \\)$")) return
         if (ls ~ ("^select (pg_catalog\\.)?setval \\( " S ", -?[0-9]+(, (true|false))? \\)$")) return
         ambiguous("a SELECT that is not pg_dump literal set_config/setval (it may create rows, or run a function that does): " substr(s, 1, 80))
         return
@@ -259,6 +260,8 @@ read_sql_dump() {
         if (ls !~ ("^set search_path (=|to) " E "$")) { ambiguous("a search_path that would let an unqualified user function resolve at restore: " substr(s, 1, 80)); return }
         sp_empty = 1; return
       }
+      if (ls ~ /^reset (search_path|all)( |$)/) { sp_empty = 0; return }
+      if (ls ~ /^set (local )?search_path/) { if (ls ~ /^set local /) { ambiguous("a transaction-local search_path: " substr(s, 1, 80)); return } }
       if (ls ~ /^(set|reset) /) return
       if (ls ~ /^alter /) {
         if (ls ~ / enable (always |replica )?(trigger|rule) /) { ambiguous("an ALTER that enables a trigger or rule for the rest of the restore: " substr(s, 1, 80)); return }
