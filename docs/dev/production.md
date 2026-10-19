@@ -273,6 +273,10 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   `TESTINBOX_STORAGE_MEASURED_QUOTA_LAG_CHURN_BYTES` is only checked for being
   well-formed. Gate Q (the backend qualification match) is a different thing
   and stays mandatory.
+  `TESTINBOX_STORAGE_QUALIFICATION_LAB_RECORD_PATH` (issue #102) must be
+  unset: a lab-only qualification record is refused, in every mode, unless
+  `TESTINBOX_ENVIRONMENT` is exactly `lab`, and `lab` cannot wear the
+  `production` profile.
   `TESTINBOX_STORAGE_ENFORCEMENT` is `OFF` | `TENANT_LIMITS` | `ALL`, exactly
   those three states (ADR-035 §14). Every committed environment is OFF, and
   `scripts/check-storage-enforcement-off.sh` fails CI if one is not. A non-OFF

@@ -1,9 +1,13 @@
 package email.testinbox.storage
 
+import email.testinbox.application.storage.LAB_PLATFORM_CLASS
 import email.testinbox.application.storage.QualificationRecord
+import email.testinbox.application.storage.QualificationRecordSource
 import email.testinbox.application.storage.StorageBackendIdentity
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
+import java.nio.file.Files
+import java.nio.file.Path
 
 /**
  * Reads the ADR-035 §9a qualification records shipped INSIDE this artifact:
@@ -36,6 +40,35 @@ object QualificationRecords {
                         ?: throw QualificationRecordException("qualification index names '$name', which is not in the artifact")
                 parse(resource.readText(), name)
             }.toList()
+    }
+
+    /**
+     * The lab-only record (issue #102): a file OUTSIDE the artifact, read at
+     * startup so the isolated lab can run the current upload implementation
+     * under an enforcing mode before a record qualified on it exists. Strict:
+     * it must parse like a shipped record, declare `platformClass: "lab"` and
+     * `enablementEligible: false`, or it does not load at all — a lab file can
+     * never read as a qualified, eligible record. `DeploymentSafety` then
+     * accepts it only when the declared environment is `lab`.
+     */
+    fun loadLab(path: Path): QualificationRecord {
+        // A regular file only: a FIFO or a device would hang the start instead of refusing it.
+        if (!Files.isRegularFile(path)) throw QualificationRecordException("lab record '$path' cannot be read: not a regular file")
+        val json =
+            runCatching { Files.readString(path) }
+                .getOrElse { throw QualificationRecordException("lab record '$path' cannot be read: ${it.message}") }
+        val record = parse(json, path.toString())
+        if (!record.isLab) {
+            throw QualificationRecordException(
+                "lab record '$path' must declare platformClass '$LAB_PLATFORM_CLASS', was '${record.platformClass}'",
+            )
+        }
+        if (record.enablementEligible) {
+            throw QualificationRecordException(
+                "lab record '$path' must declare enablementEligible: false; it is a startup gate, never evidence",
+            )
+        }
+        return record.copy(source = QualificationRecordSource.LAB)
     }
 
     fun parse(

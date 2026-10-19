@@ -99,6 +99,51 @@ findings="$(
 )"
 [ -z "$findings" ] || { printf '%s\n' "$findings" >&2; status=1; }
 
+# Issue #102: the lab-only qualification record and the `lab` environment are
+# never a committed value either. A consumer that sets TESTINBOX_ENVIRONMENT to
+# lab, or gives the lab record path a non-empty default, would make a committed
+# environment able to start an enforcing mode without a shipped record.
+LAB_KEY_RE='(TESTINBOX_ENVIRONMENT|testinbox\.deployment\.environment|(^|[^A-Za-z0-9_.-])environment)[[:space:]]*[:=]'
+LAB_PATH_RE='(TESTINBOX_STORAGE_QUALIFICATION_LAB_RECORD_PATH|lab-record-path|labRecordPath)[[:space:]]*[:=]'
+
+# The literal a value carries: its `${VAR:-default}` / `${VAR:default}` default,
+# nothing for a bare `${VAR}`, else the value itself; quotes stripped.
+placeholder_literal() {
+    local v="$1" literal
+    v="$(printf '%s' "$v" | sed -e "s/^[[:space:]]*//" -e "s/^[\"']//" -e "s/[\"'][[:space:],]*$//")"
+    case "$v" in
+        \$\{*:-*\}) literal="${v#*:-}"; literal="${literal%\}}" ;;
+        \$\{*:*\}) literal="${v#*:}"; literal="${literal%\}}" ;;
+        \$\{*\}) literal="" ;;
+        *) literal="$v" ;;
+    esac
+    printf '%s' "$literal" | sed -e "s/^[\"']//" -e "s/[\"']$//"
+}
+
+scan_values() {
+    # scan_values <file> <key regex> → "lineno<TAB>value" per hit
+    local file="$1" key="$2"
+    strip_comments < "$file" | grep -nE "$key" 2>/dev/null | while IFS= read -r hit; do
+        printf '%s\t%s\n' "${hit%%:*}" "$(printf '%s' "${hit#*:}" | grep -oE "$key[[:space:]]*$VALUE_RE" | head -1 | sed -E 's/^[^:=]*[:=][[:space:]]*//')"
+    done
+}
+
+lab_findings="$(
+    consumers | while IFS= read -r file; do
+        [ -n "$file" ] || continue
+        rel="${file#"$SCAN_ROOT"/}"
+        scan_values "$file" "$LAB_KEY_RE" | while IFS="$(printf '\t')" read -r lineno value; do
+            [ "$(placeholder_literal "$value" | tr '[:upper:]' '[:lower:]')" = "lab" ] &&
+                printf '%s:%s: the environment is set to %s. The lab environment is never a committed value (issue #102).\n' "$rel" "$lineno" "$value"
+        done
+        scan_values "$file" "$LAB_PATH_RE" | while IFS="$(printf '\t')" read -r lineno value; do
+            [ -n "$(placeholder_literal "$value")" ] &&
+                printf '%s:%s: the lab qualification record path has a committed value (%s). It is set by Ops in the isolated lab only (issue #102).\n' "$rel" "$lineno" "$value"
+        done
+    done
+)"
+[ -z "$lab_findings" ] || { printf '%s\n' "$lab_findings" >&2; status=1; }
+
 # The code default: `enforcement: StorageEnforcement = StorageEnforcement.OFF`
 # in both deployables' property classes. Absent is a finding — a binary with no
 # declared default has no proven default.

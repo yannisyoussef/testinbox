@@ -668,7 +668,9 @@ gate_qualification() {
              then "slow-W is claimed executed but no slow-* scenario is listed" else empty end),
           (if .minio.runtimeConfig.hash == null then "the runtime admin-configuration hash is absent" else empty end),
           (if ((.qualification.platformClass // "") | ascii_downcase) == "laptop"
-             then "platformClass is laptop: ADR-035 §18 gate 7a requires the deployed host'"'"'s own combination" else empty end)
+             then "platformClass is laptop: ADR-035 §18 gate 7a requires the deployed host'"'"'s own combination" else empty end),
+          (if ((.qualification.platformClass // "") | ascii_downcase) == "lab"
+             then "platformClass is lab: a lab record is a startup gate for the isolated lab only, never enablement evidence (issue #102)" else empty end)
         ] | map(select(length > 0)) | join("; ")' "$QUAL_DIR/$match")"
     if [ -n "$reasons" ]; then
         problem "record $match matches but is not enablement-eligible: $reasons"

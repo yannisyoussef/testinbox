@@ -130,6 +130,19 @@ data class FilesystemProperties(
 }
 
 /**
+ * `testinbox.storage.qualification.*` (issue #102): where a lab-only
+ * qualification record may be read from. Plain data; the loading and the
+ * environment rule live elsewhere (`QualificationRecords.loadLab`,
+ * `DeploymentSafety`).
+ */
+data class QualificationProperties(
+    /** A file path, or null/blank for none. Never set outside the isolated lab. */
+    val labRecordPath: String? = null,
+) {
+    val labRecord: String? get() = labRecordPath?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+/**
  * Builds the framework-free [StorageDeclarations] from the values both
  * deployables bind under `testinbox.storage.*`. One function, so the API and
  * the gateway cannot interpret the same keys differently.

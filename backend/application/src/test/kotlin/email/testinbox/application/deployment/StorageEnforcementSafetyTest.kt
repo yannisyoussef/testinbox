@@ -362,6 +362,154 @@ class StorageEnforcementSafetyTest {
     @Test
     fun `missing backend identity`() = only(complete.copy(backendIdentity = null), "testinbox.storage.backend-identity", "is not declared")
 
+    // --- the lab-only record (issue #102) --------------------------------------------------------
+
+    /** What Ops write for the isolated lab: the lab's own identity, platformClass lab, never eligible. */
+    private val labRecord =
+        QualificationFixtures.eligible.copy(
+            recordId = "lab-ti-applab-2026-10-19",
+            platformClass = "lab",
+            enablementEligible = false,
+            ineligibilityReasons = listOf("lab-only"),
+            slowWExecuted = false,
+            scenarios = listOf("E1", "E2", "E3", "E4", "E7", "E8"),
+            source = email.testinbox.application.storage.QualificationRecordSource.LAB,
+        )
+
+    private val inLab =
+        deployed.copy(
+            environment = "lab",
+            mailDomain = "lab.testinbox.local",
+            databaseUrl = "jdbc:postgresql://db.lab.internal:5432/testinbox",
+            storageEndpoint = "https://objects.lab.internal",
+            publicBaseUrl = "https://api.lab.internal",
+        )
+
+    @Test
+    fun `in the lab environment a lab record matching the identity lets TENANT_LIMITS and ALL start`() {
+        for (mode in listOf(StorageEnforcement.TENANT_LIMITS, StorageEnforcement.ALL)) {
+            val storage = complete.copy(enforcement = mode, qualificationRecords = listOf(QualificationFixtures.laptopLike, labRecord))
+            DeploymentSafety.validate(inLab.copy(storage = storage)).shouldBeEmpty()
+        }
+    }
+
+    @Test
+    fun `a lab record is refused in staging in every mode, naming the environment`() {
+        for (mode in StorageEnforcement.entries) {
+            val storage = complete.copy(enforcement = mode, qualificationRecords = listOf(QualificationFixtures.eligible, labRecord))
+            val found = violations(storage)
+            found.map { it.setting } shouldBe listOf("testinbox.storage.qualification.lab-record-path")
+            found.single().problem shouldContain "environment 'lab' and nowhere else"
+        }
+    }
+
+    @Test
+    fun `a lab record is refused in production, on top of everything production refuses`() {
+        val production =
+            deployed.copy(
+                environment = "production",
+                mailDomain = ProductionPolicy.MAIL_DOMAIN,
+                databaseUrl = "jdbc:postgresql://db.internal:5432/testinbox",
+                storageEndpoint = "https://objects.internal",
+                publicBaseUrl = "https://api.testinbox.email",
+                edgeRequestCeiling = Duration.ofSeconds(100),
+                proxyReadTimeout = Duration.ofSeconds(95),
+                activeProfiles = setOf("production"),
+            )
+        val storage = complete.copy(enforcement = StorageEnforcement.OFF, qualificationRecords = listOf(labRecord))
+        DeploymentSafety.validate(production.copy(storage = storage)).map { it.setting } shouldContain
+            "testinbox.storage.qualification.lab-record-path"
+    }
+
+    @Test
+    fun `the lab environment cannot wear the production profile`() {
+        val found = DeploymentSafety.validate(inLab.copy(activeProfiles = setOf("production"), storage = complete))
+        found.single { it.setting == "testinbox.deployment.environment" }.problem shouldContain "while the 'production' profile is active"
+    }
+
+    @Test
+    fun `the lab label cannot point at a shared environment's domain or hosts`() {
+        val pointing =
+            inLab.copy(
+                mailDomain = "staging.testinbox.email",
+                databaseUrl = "jdbc:postgresql://db.staging.internal:5432/testinbox",
+                storageEndpoint = "https://objects.staging.internal",
+                publicBaseUrl = "https://api.staging.testinbox.email",
+                storage = complete.copy(qualificationRecords = listOf(labRecord)),
+            )
+        val settings = DeploymentSafety.validate(pointing).map { it.setting }
+        settings shouldContain "testinbox.mail-domain"
+        settings shouldContain "spring.datasource.url"
+        settings shouldContain "testinbox.storage.endpoint"
+        settings shouldContain "testinbox.public-base-url"
+        val productionDomain = pointing.copy(mailDomain = ProductionPolicy.MAIL_DOMAIN)
+        DeploymentSafety.validate(productionDomain).map { it.setting } shouldContain "testinbox.mail-domain"
+        // The lab's own hosts pass.
+        val lab =
+            pointing.copy(
+                mailDomain = "lab.testinbox.local",
+                databaseUrl = "jdbc:postgresql://db.lab.internal:5432/testinbox",
+                storageEndpoint = "https://objects.lab.internal",
+                publicBaseUrl = "https://api.lab.internal",
+            )
+        DeploymentSafety.validate(lab).shouldBeEmpty()
+    }
+
+    @Test
+    fun `in the lab a record and a declaration that both lack the runtime-config hash do not match`() {
+        val noHash = labRecord.copy(identity = QualificationFixtures.identity.copy(runtimeConfigHash = null))
+        val storage =
+            complete.copy(
+                backendIdentity = QualificationFixtures.identity.copy(runtimeConfigHash = null),
+                qualificationRecords = listOf(noHash),
+            )
+        val found = DeploymentSafety.validate(inLab.copy(storage = storage))
+        found.map { it.setting } shouldBe listOf("testinbox.storage.backend-identity")
+        found.single().problem shouldContain "minio.runtimeConfig.hash"
+    }
+
+    @Test
+    fun `outside the lab a lab record is not even a candidate - the shipped records alone decide`() {
+        // Identity matches the lab record only: in staging that is "no shipped record matches".
+        val storage =
+            complete.copy(
+                backendIdentity = QualificationFixtures.identity.copy(kernelRelease = "6.8.0-147-generic"),
+                qualificationRecords =
+                    listOf(
+                        QualificationFixtures.eligible,
+                        labRecord.copy(identity = QualificationFixtures.identity.copy(kernelRelease = "6.8.0-147-generic")),
+                    ),
+            )
+        val settings = settingsOf(storage)
+        settings shouldContain "testinbox.storage.qualification.lab-record-path"
+        settings shouldContain "testinbox.storage.backend-identity"
+    }
+
+    @Test
+    fun `in the lab a lab record is no free pass - the identity and the upload implementation must still match`() {
+        val mismatched = labRecord.copy(identity = QualificationFixtures.identity.copy(kernelRelease = "6.8.0-142-generic"))
+        val found = DeploymentSafety.validate(inLab.copy(storage = complete.copy(qualificationRecords = listOf(mismatched))))
+        found.map { it.setting } shouldBe listOf("testinbox.storage.backend-identity")
+        found.single().problem shouldContain "host.kernelRelease"
+        val wrongVersion = complete.copy(qualificationRecords = listOf(labRecord), uploadImplementationVersion = "adr035-presigned-put-v0")
+        DeploymentSafety.validate(inLab.copy(storage = wrongVersion)).map { it.setting } shouldBe
+            listOf("testinbox.storage.backend-identity.upload-implementation-version")
+    }
+
+    @Test
+    fun `a SHIPPED record claiming platformClass lab is never enablement-eligible`() {
+        val smuggled =
+            labRecord.copy(
+                source = email.testinbox.application.storage.QualificationRecordSource.SHIPPED,
+                enablementEligible = true,
+                ineligibilityReasons = emptyList(),
+            )
+        smuggled.eligibility().eligible shouldBe false
+        smuggled.eligibility().reasons.any { it.contains("platformClass is lab") } shouldBe true
+        val found = DeploymentSafety.validate(inLab.copy(storage = complete.copy(qualificationRecords = listOf(smuggled))))
+        found.single().problem shouldContain "not enablement-eligible"
+    }
+
     @Test
     fun `an artifact that ships no qualification record cannot enforce`() =
         only(complete.copy(qualificationRecords = emptyList()), "testinbox.storage.backend-identity", "ships no qualification record")
