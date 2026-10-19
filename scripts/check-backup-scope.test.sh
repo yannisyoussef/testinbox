@@ -202,7 +202,7 @@ check_says "a mixed-case INSERT of content is refused" 1 "RETAINS CONTENT: messa
 check_says "an INSERT of content on the same line after a function body is refused" 1 "RETAINS CONTENT: message" "$WORK/after-body.sql"
 { control_plane_dump; printf "INSERT INTO public.workspace VALUES ('it''s; INSERT INTO nothing');\nINSERT INTO public.inbox VALUES ('x');\n"; } > "$WORK/after-string.sql"
 check_says "an INSERT of content after a string literal with an escaped quote is refused" 1 "RETAINS CONTENT: inbox" "$WORK/after-string.sql"
-{ control_plane_dump; printf "SELECT '\$\$';\nINSERT INTO public.message VALUES (1);\n"; } > "$WORK/dollar-in-string.sql"
+{ control_plane_dump; printf "COMMENT ON TABLE public.workspace IS '\$\$';\nINSERT INTO public.message VALUES (1);\n"; } > "$WORK/dollar-in-string.sql"
 check_says "\$\$ inside a string does not open a body that would hide content" 1 "RETAINS CONTENT: message" "$WORK/dollar-in-string.sql"
 { control_plane_dump; printf 'COPY ONLY public.message (id) FROM stdin;\n1\n\\.\n'; } > "$WORK/copy-only.sql"
 check_says "COPY ONLY of content is refused" 1 "RETAINS CONTENT: message" "$WORK/copy-only.sql"
@@ -230,6 +230,38 @@ check_says "a truncated final statement is refused as ambiguous, not ignored" 1 
 check_says "a data statement whose table cannot be named is refused as ambiguous" 1 "AMBIGUOUS INPUT: INSERT INTO statement whose table cannot be named" "$WORK/unnameable.sql"
 { control_plane_dump; printf 'COPY "my table" (id) FROM stdin;\n\\.\n'; } > "$WORK/odd-identifier.sql"
 check_says "a quoted identifier outside the schema's alphabet is refused as ambiguous" 1 "AMBIGUOUS INPUT: COPY statement whose table cannot be named" "$WORK/odd-identifier.sql"
+# Statements pg_dump never emits but which would create or carry rows at
+# restore time are refused as unaccounted for, never assumed row-free.
+for stmt in 'CREATE TABLE public.message AS SELECT * FROM (VALUES (1), (2)) t(id);' \
+            'SELECT * INTO public.message FROM (VALUES (1)) t(id);' \
+            'MERGE INTO public.message m USING (VALUES (1)) s(id) ON false WHEN NOT MATCHED THEN INSERT VALUES (s.id);' \
+            'WITH t AS (SELECT 1 AS id) INSERT INTO public.message SELECT id FROM t;' \
+            'DO $$ BEGIN INSERT INTO public.message (id) VALUES (1); END $$;' \
+            "SELECT public.storage_begin_sweep('node');" \
+            "UPDATE public.workspace SET name = 'x';" \
+            'FROBNICATE public.message;' \
+            'CREATE UNLOGGED TABLE public.inbox AS TABLE public.message;' \
+            'create table public.attachment (id uuid) as (select 1);'; do
+  { control_plane_dump; printf '%s\n' "$stmt"; } > "$WORK/unaccounted.sql"
+  check_says "[$stmt] is refused as unaccounted for" 1 "AMBIGUOUS INPUT" "$WORK/unaccounted.sql"
+done
+{ control_plane_dump; printf '\\i /var/backups/content.sql\n'; } > "$WORK/include.sql"
+check_says "a psql \\i include is refused: it pulls in text the reader never sees" 1 "AMBIGUOUS INPUT: a psql meta-command" "$WORK/include.sql"
+{ control_plane_dump; printf '\\! cat /etc/passwd\n'; } > "$WORK/shell.sql"
+check_says "a psql shell escape is refused" 1 "AMBIGUOUS INPUT: a psql meta-command" "$WORK/shell.sql"
+{ printf '\357\273\277INSERT INTO public.message VALUES (1);\n'; control_plane_dump; } > "$WORK/bom.sql"
+check_says "a UTF-8 byte-order mark does not hide the first statement" 1 "RETAINS CONTENT: message" "$WORK/bom.sql"
+{ printf '\357\273\277'; control_plane_dump; } > "$WORK/bom-ok.sql"
+check "a byte-order mark before a clean dump is tolerated" 0 "$WORK/bom-ok.sql"
+{ control_plane_dump; cat <<'SQL'
+CREATE TABLE public.audit (id uuid, total bigint GENERATED ALWAYS AS (id_len * 2) STORED, n integer DEFAULT CAST(1 AS integer));
+SELECT pg_catalog.setval('public.storage_debt_order_seq', 7, true);
+SELECT pg_catalog.set_config('search_path', '', false);
+ALTER TABLE ONLY public.workspace ADD CONSTRAINT workspace_pkey PRIMARY KEY (id);
+REFRESH MATERIALIZED VIEW public.whatever;
+SQL
+} > "$WORK/ddl-forms.sql"
+check "generated columns, CAST defaults, setval/set_config and the usual DDL are accounted for" 0 "$WORK/ddl-forms.sql"
 printf 'PGDMP\x01\x0e\x00\x04\x08binary archive bytes' > "$WORK/archive.dump"
 check_says "a custom-format archive is refused with the pg_restore -l recipe" 1 "is a pg_dump archive, not plain SQL" "$WORK/archive.dump"
 

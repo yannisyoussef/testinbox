@@ -159,6 +159,13 @@ read_sql_dump() {
       if (t == "") { ambiguous(kind " statement whose table cannot be named: " substr(kind " " rest, 1, 80)); return }
       print "DATA\t" t
     }
+    # A statement is accounted for only if it is one a plain dump contains:
+    # the two data forms, or DDL/session statements that retain no rows.
+    # Anything else that can carry or create rows at restore time — a
+    # CREATE TABLE ... AS, a SELECT ... INTO, a MERGE, a data-modifying CTE,
+    # a DO block, a function call, an UPDATE — or a statement this reader
+    # does not know, is refused: it never emits from pg_dump, and it is not
+    # for the gate to guess what it retains.
     function finish_statement(   s, ls) {
       s = stmt; stmt = ""
       gsub(/[ \t\r]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s)
@@ -167,12 +174,28 @@ read_sql_dump() {
       if (ls ~ /^copy /) {
         data_statement("COPY", substr(s, 6))
         if (ls ~ /[ \t]from[ \t]+stdin/) mode = "copydata"
-      } else if (ls ~ /^insert[ \t]+into[ \t]/) {
+        return
+      }
+      if (ls ~ /^insert[ \t]+into[ \t]/) {
         sub(/^[Ii][Nn][Ss][Ee][Rr][Tt][ \t]+[Ii][Nn][Tt][Oo][ \t]+/, "", s)
         data_statement("INSERT INTO", s)
+        return
       }
-      # Every other statement (DDL, SET, SELECT setval, COMMENT, ALTER,
-      # CREATE FUNCTION ...) retains no rows.
+      if (ls ~ /^create (unlogged |temp |temporary )?table /) {
+        # CREATE TABLE ... AS <query> materialises rows; a generated column
+        # ("GENERATED ALWAYS AS (expr) STORED") is the one other AS in DDL.
+        gsub(/generated always as \(/, "generated always ( ", ls)
+        if (ls ~ / as (select|values|table|with|execute|\()/) { ambiguous("a CREATE TABLE ... AS that materialises rows: " substr(s, 1, 80)); return }
+        return
+      }
+      if (ls ~ /^select /) {
+        # The only SELECTs a plain dump contains set the session or a sequence.
+        if (ls ~ /^select (pg_catalog\.)?(set_config|setval)\(/) return
+        ambiguous("a SELECT that is not pg_dump'\''s set_config/setval (it may create rows, or run a function that does): " substr(s, 1, 80))
+        return
+      }
+      if (ls ~ /^(set|reset|create|alter|comment|grant|revoke|drop|begin|start|commit|end|lock|security label|refresh materialized view) /) return
+      ambiguous("a statement outside the documented plain-dump forms: " substr(s, 1, 80))
     }
     function append(c) { if (length(stmt) < 512) stmt = stmt c }
     function prev_is_ident_char(   p) {
@@ -190,12 +213,16 @@ read_sql_dump() {
     BEGIN { mode = "top"; stmt = ""; tag = ""; estring = 0; ident_len = 0 }
     {
       line = $0; sub(/\r$/, "", line)
+      if (NR == 1) sub(/^\357\273\277/, "", line)   # a UTF-8 byte-order mark
       if (mode == "copydata") {
         if (line == "\\.") mode = "top"
         next
       }
       n = length(line); i = 1
       # A psql meta-command occupies a whole line and has no terminator.
+      # Those a dump may carry are accounted for; one that pulls in text the
+      # reader never sees (\i, \ir, \include) or runs anything (\!, \g*, \o)
+      # is refused like any unknown statement.
       if (mode == "top" && stmt ~ /^[ \t]*$/ && line ~ /^[ \t]*\\/) {
         ml = line; sub(/^[ \t]+/, "", ml)
         if (ml == "\\.") { ambiguous("a COPY terminator outside any COPY data block"); next }
@@ -203,7 +230,10 @@ read_sql_dump() {
           sub(/^\\[Cc][Oo][Pp][Yy][ \t]+/, "", ml)
           data_statement("\\copy", ml)
           if (tolower(ml) ~ /[ \t]from[ \t]+stdin/) mode = "copydata"
+          next
         }
+        if (tolower(ml) ~ /^\\(restrict|unrestrict|connect|c|set|unset|echo|qecho)([ \t]|$)/) next
+        ambiguous("a psql meta-command outside the documented plain-dump forms: " substr(ml, 1, 80))
         next
       }
       while (i <= n) {
