@@ -592,6 +592,11 @@ the origin — that remains Ops's to show.
 
 ## Synthetics for a dark deployment
 
+The first production deployment is verified against
+[production-smoke-test.md](production-smoke-test.md): seventeen checks, each
+mapped to an existing synthetic target or a named manual step, and the
+deployment report that names the source commit and the four digests.
+
 Run by Ops after the production reconcile, from the paths that can reach
 each target. No public Postfix edge is required or exercised.
 
