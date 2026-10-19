@@ -12,6 +12,7 @@ import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.inbox.InboxState
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.stereotype.Repository
+import org.springframework.transaction.annotation.Transactional
 import java.sql.ResultSet
 import java.time.Instant
 import java.util.UUID
@@ -68,6 +69,7 @@ class JdbcInboxRepository(
             .optional()
             .orElse(null)
 
+    @Transactional
     override fun markDeleted(
         workspaceId: WorkspaceId,
         id: InboxId,
@@ -95,6 +97,9 @@ class JdbcInboxRepository(
      * nothing any more. The same channel and payload a message commit uses,
      * in the same transaction as the transition (ADR-020: never
      * notify-after-commit), so the waiter's re-evaluation sees the new state.
+     * The callers own the transaction (`DeleteInbox`, `ExpireInboxes`); the
+     * `@Transactional` on both transitions is the same belt-and-braces as
+     * `JdbcMessageRepository.appendVisible`.
      */
     private fun notifyWaiters(id: InboxId) {
         jdbc
@@ -138,6 +143,7 @@ class JdbcInboxRepository(
             .query { rs, _ -> mapInbox(rs) }
             .list()
 
+    @Transactional
     override fun transitionToExpired(id: InboxId): Boolean {
         val moved =
             jdbc

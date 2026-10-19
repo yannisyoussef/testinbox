@@ -140,4 +140,6 @@ before the transition is never returned after it — the same visibility the
 read endpoints give. The `EXPIRED` and `DELETED` transitions `pg_notify` the
 inbox's channel inside their own transaction, so the waiter learns promptly
 rather than at its window's end. `EXPIRING` keeps serving, and a wait started
-while `ACTIVE` continues through the grace period as before.
+while `ACTIVE` continues through the grace period as before: ADR-009 makes
+`Expiring` reject *new* waiters, not existing ones. This note adds no new
+decision; it records how §3's `410` is reached for a wait already parked.

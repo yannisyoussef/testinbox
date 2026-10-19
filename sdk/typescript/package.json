@@ -1,7 +1,7 @@
 {
   "name": "@testinbox/client",
   "version": "0.1.0",
-  "description": "Official TestInbox SDK for TypeScript/JavaScript \u2014 ephemeral email inboxes and deterministic wait-for-message for automated tests.",
+  "description": "Official TestInbox SDK for TypeScript/JavaScript — ephemeral email inboxes and deterministic wait-for-message for automated tests.",
   "private": false,
   "type": "module",
   "engines": {

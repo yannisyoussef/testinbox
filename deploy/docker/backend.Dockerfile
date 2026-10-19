@@ -55,7 +55,7 @@ LABEL org.opencontainers.image.source="https://github.com/yannisyoussef/testinbo
 # the temurin tag still ships 2.8.x). The image is built once per source SHA
 # (ADR-028) and scanned under ENFORCE=true before promotion, so a fixable
 # finding in the base layer blocks the release unless it is taken here.
-RUN apk upgrade --no-cache
+RUN apk upgrade --no-cache && apk add --no-cache 'libexpat>=2.9.0-r0'
 
 # Non-root, no login shell, nothing writable in the image.
 RUN addgroup -S -g 10001 testinbox \

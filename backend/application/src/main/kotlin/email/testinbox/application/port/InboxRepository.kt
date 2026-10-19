@@ -27,7 +27,13 @@ interface InboxRepository {
      */
     fun findReceivableByAddress(address: String): Inbox?
 
-    /** Marks the inbox DELETED; returns the prior state's inbox, or null when absent in this workspace. */
+    /**
+     * Marks the inbox DELETED; returns the prior state's inbox, or null when absent in this workspace.
+     *
+     * The adapter must wake the inbox's parked waiters in the SAME transaction as the
+     * transition (ADR-020: never notify-after-commit; issue #87), so a waiter's
+     * re-evaluation sees the new state and ends `410` instead of sleeping to its window.
+     */
     fun markDeleted(
         workspaceId: WorkspaceId,
         id: InboxId,
@@ -50,6 +56,10 @@ interface InboxRepository {
         limit: Int,
     ): List<Inbox>
 
+    /**
+     * EXPIRING -> EXPIRED. Like [markDeleted], a successful transition wakes the inbox's
+     * parked waiters in the same transaction (ADR-020, issue #87).
+     */
     fun transitionToExpired(id: InboxId): Boolean
 
     fun findHardDeletable(limit: Int): List<Inbox>
