@@ -40,8 +40,10 @@ or `EXACT` address mode (ADR-021), inbound SMTP ingestion with real MIME
 parsing, attachments and raw MIME retrieval (ADR-005), the deterministic
 `wait` primitive over PostgreSQL LISTEN/NOTIFY (ADR-020), idempotent creates
 (ADR-033), per-workspace rate limits and quotas (ADR-027), storage visibility
-figures (ADR-035 §13), RFC 7807 errors, and the same capability through the
-JVM SDK (Java 17 baseline) and the TypeScript SDK (Node ≥ 22). The web app is
+figures (ADR-035 §13), RFC 7807 errors, and the developer loop through the
+JVM SDK (Java 17 baseline) and the TypeScript SDK (Node ≥ 22): inboxes,
+waits, messages, raw MIME, attachment metadata, API keys and storage figures
+(attachment bytes are REST-only for now). The web app is
 an inspection tool with a sandboxed HTML preview (ADR-011), not a dashboard.
 
 **Deployment status.** Deployed dark on staging behind Cloudflare → Traefik
