@@ -1057,8 +1057,11 @@ paths:
         position it has seen). Resuming from any `id` line seen is safe; the
         `end` event's `id` is the newest position. A message committed within
         90 s of its receipt is never missed. A backlog is sent a page at a
-        time, at once. A client that goes away is noticed on the server's
-        next write — within one keep-alive — and its slot is freed then.
+        time, at once, each page after the first charged against `READ`
+        like a message list page, so a long backlog paces itself under the
+        workspace's rate policy. A client that goes away is noticed on the
+        server's next write — within one keep-alive — and its slot is freed
+        then.
 
         Inbox events come from a periodic re-read of the workspace's rows,
         carry no `id` line, are not resumable, and are best-effort across the

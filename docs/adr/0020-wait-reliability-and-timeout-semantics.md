@@ -1,6 +1,6 @@
 # ADR-020: Wait Reliability and Timeout Semantics
 
-**Status:** Accepted (§3 amended by [ADR-035](0035-physical-storage-bound-at-ingest.md): one opt-in, authenticated-only wait outcome; amends [ADR-007](0007-event-coordination-strategy.md)
+**Status:** Accepted (§1 clarified and amended 2026-10-20, workspace event stream — see the clarification below; §3 amended by [ADR-035](0035-physical-storage-bound-at-ingest.md): one opt-in, authenticated-only wait outcome; amends [ADR-007](0007-event-coordination-strategy.md)
 and [ADR-012](0012-wait-for-message-semantics.md); the normative wait
 contract in `docs/architecture/wait-semantics.md` is updated accordingly)
 
@@ -50,7 +50,9 @@ Corollaries:
   collapse into the commit itself.
 - The notification payload is a **wake-up hint only** (inbox ID; nothing
   more). Matching correctness derives exclusively from the re-query;
-  payload loss or truncation can never cause incorrect results.
+  payload loss or truncation can never cause incorrect results. *Since
+  2026-10-20 the hint names the workspace as well — see the clarification
+  at the end of this document.*
 
 ### 2. Recovery from LISTEN connection loss
 

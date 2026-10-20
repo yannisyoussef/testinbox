@@ -6,6 +6,7 @@ import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.MessageCursor
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
+import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.WaitHandle
 import email.testinbox.application.port.WaitMetrics
 import email.testinbox.application.port.WaitSlot
@@ -16,6 +17,7 @@ import email.testinbox.domain.MessageId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.inbox.InboxState
+import email.testinbox.domain.limits.RateCategory
 import email.testinbox.domain.message.Message
 import java.time.Clock
 import java.time.Duration
@@ -79,7 +81,10 @@ sealed interface WorkspaceEvent {
  * per call** and the stream simply does not park while a page was full, so
  * no call ever holds more than a page of rows: a client cannot make the
  * server load a workspace's whole history into memory by resuming from the
- * epoch.
+ * epoch — and each continuation page spends a `READ` token (ADR-027), so
+ * the walk is paced by the same budget as `GET /v1/messages`; when the
+ * bucket is empty the stream parks and reads its next page on the next wake
+ * or scan tick instead.
  *
  * Inbox lifecycle is a periodic diff of **all** the workspace's rows
  * (EXPIRING is not notified; EXPIRED and DELETED are, since issue #87).
@@ -97,6 +102,8 @@ class StreamWorkspaceEvents(
     private val maxConcurrentWaits: Long,
     private val clock: Clock,
     private val config: TestInboxConfig,
+    /** Charges a backlog's continuation pages as `READ`s, so a resume from far back paces itself like the list would. */
+    private val rateLimiter: RateLimiter,
     private val metrics: WaitMetrics = WaitMetrics.NOOP,
     /** How often the inbox lifecycle is re-read when nothing wakes the stream. */
     private val inboxScanInterval: Duration = Duration.ofSeconds(2),
@@ -190,7 +197,7 @@ class StreamWorkspaceEvents(
          */
         fun next(until: Instant): List<WorkspaceEvent> {
             var woken = false
-            if (first || walk != null) {
+            if (first || continuationAllowed()) {
                 first = false
             } else {
                 // The park is capped at the next lifecycle scan as well as the
@@ -216,6 +223,9 @@ class StreamWorkspaceEvents(
             }
             return events
         }
+
+        /** A pending page walk continues without parking only while the READ budget admits another page. */
+        private fun continuationAllowed(): Boolean = walk != null && rateLimiter.tryConsume(workspaceId, RateCategory.READ).allowed
 
         private fun newMessages(): List<WorkspaceEvent> {
             val fresh = drainPage().filter { it.id !in seen }

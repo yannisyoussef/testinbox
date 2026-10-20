@@ -1,6 +1,7 @@
 package email.testinbox.application.usecase
 
 import email.testinbox.application.FakeNotifier
+import email.testinbox.application.FakeRateLimiter
 import email.testinbox.application.FakeWaitSlots
 import email.testinbox.application.InMemoryInboxRepository
 import email.testinbox.application.InMemoryMessageRepository
@@ -15,6 +16,7 @@ import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.inbox.AddressMode
 import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.inbox.InboxState
+import email.testinbox.domain.limits.RateCategory
 import email.testinbox.domain.message.Message
 import email.testinbox.domain.message.ParseStatus
 import email.testinbox.domain.message.ParsedContent
@@ -42,6 +44,7 @@ class StreamWorkspaceEventsTest {
     private val messages = InMemoryMessageRepository()
     private val notifier = FakeNotifier()
     private val slots = FakeWaitSlots()
+    private val rateLimiter = FakeRateLimiter()
     private val metrics = RecordingWaitMetrics()
     private val clock = MutableClock(Instant.parse("2026-10-20T10:00:00Z"))
     private val config = TestInboxConfig(mailDomain = "testinbox.local", waitWindowCap = Duration.ofSeconds(60))
@@ -55,6 +58,7 @@ class StreamWorkspaceEventsTest {
             maxConcurrentWaits,
             clock,
             config,
+            rateLimiter,
             metrics,
             inboxScanInterval = Duration.ofSeconds(2),
             visibilityLag = Duration.ofSeconds(60),
@@ -218,10 +222,29 @@ class StreamWorkspaceEventsTest {
         received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly backlog.take(200).map { it.id }
         received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly backlog.drop(200).take(200).map { it.id }
         received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly backlog.drop(400).map { it.id }
-        // One park (the wake that started it); the two continuation calls parked nowhere.
+        // One park (the wake that started it); the two continuation calls parked nowhere,
+        // each spending one READ token.
         handle.awaitCount shouldBe awaitsBefore + 1
+        rateLimiter.calls.count { it.first == RateCategory.READ } shouldBe 2
         received(stream.next(clock.now.plusSeconds(1))).shouldBeEmpty()
         handle.awaitCount shouldBe awaitsBefore + 2
+    }
+
+    @Test
+    fun `a backlog walk with no READ budget left parks between pages instead of looping`() {
+        val inbox = inbox()
+        (1..450).map { message(inbox, receivedAt = clock.now.minusSeconds(500L - it)) }
+        rateLimiter.exhausted += RateCategory.READ
+        val stream = open(after = MessageCursor(clock.now.minusSeconds(1_000), MessageId(UUID(0L, 0L))))
+        val handle = notifier.handles.single()
+        received(stream.next(clock.now.plusSeconds(1))).size shouldBe 200
+        handle.awaitCount shouldBe 0
+        // The next page waits for a wake or the scan tick: the walk is paced, not abandoned.
+        notifier.onAwait = { WakeOutcome.DEADLINE }
+        received(stream.next(clock.now.plusSeconds(1))).size shouldBe 200
+        handle.awaitCount shouldBe 1
+        received(stream.next(clock.now.plusSeconds(1))).size shouldBe 50
+        handle.awaitCount shouldBe 2
     }
 
     @Test

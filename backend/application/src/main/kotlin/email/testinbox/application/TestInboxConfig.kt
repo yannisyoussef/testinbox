@@ -25,7 +25,8 @@ data class TestInboxConfig(
      * on every wake (ADR-020 clarification of 2026-10-20). A deployment
      * invariant: must exceed ingestion's receipt-to-commit latency plus clock
      * skew — at least the storage protocol's `T_PUT + EPSILON_MAX` — and the
-     * API contract states it, so changing it is a contract change.
+     * API contract states it, so `DeploymentSafety` holds a deployment to the
+     * contract's figure: changing it is a contract change.
      */
     val eventsVisibilityLag: Duration = Duration.ofSeconds(90),
 )

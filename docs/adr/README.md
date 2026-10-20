@@ -21,7 +21,7 @@
 | [0017](0017-maven-npm-distribution.md) | Maven/npm distribution | Proposed |
 | [0018](0018-framework-integration-strategy.md) | Framework integration strategy | Proposed |
 | [0019](0019-inbound-deduplication-semantics.md) | Inbound deduplication semantics | Accepted (amended by 0026) |
-| [0020](0020-wait-reliability-and-timeout-semantics.md) | Wait reliability and timeout semantics | Accepted (§3 amended by 0035) |
+| [0020](0020-wait-reliability-and-timeout-semantics.md) | Wait reliability and timeout semantics | Accepted (§1 clarified and amended 2026-10-20; §3 amended by 0035) |
 | [0021](0021-exact-address-reservation.md) | Inbox addressing — generated and exact modes | Accepted (amended by 0033) |
 | [0022](0022-openapi-contract-first.md) | Contract-first OpenAPI | Accepted |
 | [0023](0023-sdk-runtime-baselines.md) | Public SDK runtime baselines | Accepted |

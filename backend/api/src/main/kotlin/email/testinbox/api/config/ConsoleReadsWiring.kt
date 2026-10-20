@@ -45,6 +45,7 @@ class ConsoleReadsWiring {
         limits: LimitsConfig,
         config: TestInboxConfig,
         clock: Clock,
+        rateLimiter: RateLimiter,
         metrics: WaitMetrics,
     ): StreamWorkspaceEvents =
         StreamWorkspaceEvents(
@@ -55,7 +56,7 @@ class ConsoleReadsWiring {
             limits.quotas.maxConcurrentWaits,
             clock,
             config,
+            rateLimiter,
             metrics,
-            visibilityLag = config.eventsVisibilityLag,
         )
 }

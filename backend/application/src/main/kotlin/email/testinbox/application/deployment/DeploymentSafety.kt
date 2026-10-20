@@ -169,6 +169,9 @@ object DeploymentSafety {
      */
     val PROXY_TIMEOUT_MARGIN: Duration = Duration.ofSeconds(30)
 
+    /** The visibility horizon `GET /v1/workspace/events` promises in the contract; the deployment must match it. */
+    val CONTRACT_VISIBILITY_HORIZON: Duration = Duration.ofSeconds(90)
+
     /**
      * Split into one function per concern rather than one long sequence: the
      * checks are independent, and a single method accumulating all of them is
@@ -338,15 +341,30 @@ object DeploymentSafety {
     private fun checkVisibilityHorizon(settings: DeploymentSettings): List<DeploymentViolation> {
         val horizon = settings.eventsVisibilityLag ?: return emptyList()
         val floor = StorageProtocol.T_PUT.plus(StorageProtocol.EPSILON_MAX)
-        if (horizon >= floor) return emptyList()
-        return listOf(
-            DeploymentViolation(
-                "testinbox.events.visibility-lag",
-                "is ${horizon.toSeconds()}s but the storage protocol allows one upload ${StorageProtocol.T_PUT.toSeconds()}s " +
-                    "plus ${StorageProtocol.EPSILON_MAX.toSeconds()}s of clock tolerance; a stream would skip a message that " +
-                    "committed within the protocol's own bound. Needs at least ${floor.toSeconds()}s",
-            ),
-        )
+        if (horizon < floor) {
+            return listOf(
+                DeploymentViolation(
+                    "testinbox.events.visibility-lag",
+                    "is ${horizon.toSeconds()}s but the storage protocol allows one upload ${StorageProtocol.T_PUT.toSeconds()}s " +
+                        "plus ${StorageProtocol.EPSILON_MAX.toSeconds()}s of clock tolerance; a stream would skip a message that " +
+                        "committed within the protocol's own bound. Needs at least ${floor.toSeconds()}s",
+                ),
+            )
+        }
+        // The contract states the horizon, and clients prune their deduplication
+        // on it: a deployment that silently widened it would make a late
+        // delivery droppable by a contract-following client. Changing it is a
+        // contract change, made here and in openapi.yaml together.
+        if (horizon != CONTRACT_VISIBILITY_HORIZON) {
+            return listOf(
+                DeploymentViolation(
+                    "testinbox.events.visibility-lag",
+                    "is ${horizon.toSeconds()}s but the API contract promises ${CONTRACT_VISIBILITY_HORIZON.toSeconds()}s " +
+                        "(streamWorkspaceEvents); the two change together or clients deduplicate on a false bound",
+                ),
+            )
+        }
+        return emptyList()
     }
 
     /**

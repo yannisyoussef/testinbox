@@ -34,6 +34,8 @@ testinbox:
   expiry-grace: 30s
   exact-cooldown: 24h
   wait-window-cap: 60s
+  events:
+    visibility-lag: 90s
   sweep-interval: 5s
   orphan-sweep-interval: 30m
   orphan-min-age: 1h
