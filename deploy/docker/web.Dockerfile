@@ -35,6 +35,10 @@ LABEL org.opencontainers.image.source="https://github.com/yannisyoussef/testinbo
       org.opencontainers.image.version="${BUILD_VERSION}" \
       org.opencontainers.image.licenses="UNLICENSED"
 
+# Alpine security updates, as in backend.Dockerfile: the promotion scan refuses
+# a fixable finding in the base layer of any of the four images.
+RUN apk upgrade --no-cache
+
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \

@@ -602,6 +602,8 @@ class InMemoryWaitObservations(
     private val messages: InMemoryMessageRepository,
     private val refusals: InMemoryRefusals,
     var figures: (InboxId) -> TenantStorageFigures = { TenantStorageFigures(StorageUsage.ZERO, StorageUsage.ZERO) },
+    /** The inbox rows the state is read from (issue #87); without one every inbox reads as ACTIVE. */
+    private val inboxes: InMemoryInboxRepository? = null,
 ) : WaitObservations {
     /** How many evaluations ran: a wait that re-reads after deciding would show up here. */
     val evaluations =
@@ -619,13 +621,15 @@ class InMemoryWaitObservations(
         evaluations.incrementAndGet()
         val observation =
             synchronized(this) {
-                Observation(inboxId, messages.listVisible(inboxId), refusals.of(inboxId))
+                val state = if (inboxes == null) InboxState.ACTIVE else inboxes.inboxes[inboxId]?.state
+                Observation(inboxId, state, messages.listVisible(inboxId), refusals.of(inboxId))
             }
         return evaluate(observation)
     }
 
     private inner class Observation(
         private val inboxId: InboxId,
+        override val inboxState: InboxState?,
         override val messages: List<Message>,
         override val refusals: StorageRefusalSnapshot,
     ) : InboxObservation {

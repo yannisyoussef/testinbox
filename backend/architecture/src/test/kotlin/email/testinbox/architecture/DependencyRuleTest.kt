@@ -86,6 +86,7 @@ class DependencyRuleTest {
                         "jakarta.mail",
                         "org.flywaydb",
                         "com.fasterxml.jackson",
+                        "tools.jackson",
                     ).any { target.packageName.startsWith(it) }
                 },
             ).check(allClasses)

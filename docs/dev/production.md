@@ -473,7 +473,27 @@ checks a real dump (or a `pg_restore -l` table list, produced with
 `pg_restore -l dump | awk '/ TABLE DATA / {print $7}'`) against it, and
 `check-backup-scope.test.sh` proves it refuses content rows — however they
 are spelled — a missing control-plane table, an unclassified table, and a
-backup that examines nothing.
+backup that examines nothing. A plain dump is read statement by statement:
+the `INSERT INTO` lines inside the ADR-035 trigger-function bodies (which a
+full-schema dump carries) retain nothing, while anything the reader cannot
+account for — an unterminated function body, string or `COPY` block, a
+truncated statement — is refused rather than ignored. The suite proves both
+on a genuine `pg_dump` of a database migrated with the real `V1..V10` files,
+in every documented dump form, so it needs Docker and fails without it.
+
+What the gate is, and is not. It reads exactly the statements a plain
+`pg_dump` contains and refuses everything else: a statement that would create
+or fetch rows at restore (`CREATE TABLE ... AS`, `SELECT ... INTO`, `MERGE`, a
+data-modifying CTE, `DO`, a materialized view, a subscription, a rule), one
+that would evaluate a user function at restore (a schema-qualified call
+outside a function or trigger definition, a non-empty `search_path`), table
+data placed after a trigger definition, a `COPY` not from `stdin`, psql
+variables and includes. That catches a misconfigured or hand-edited dump and
+refuses what it cannot read. It is not a sandbox against a hostile dump
+author: a restore executes SQL, and no lexer can prove a trigger-bearing
+schema plus control-plane rows free of side effects. The restore drill of
+row B is where that evidence lives — after the drill, `message`, `inbox` and
+`attachment` are counted and must be empty.
 
 **Only logical, table-scoped backups satisfy this contract.** Physical
 backups and WAL archiving (`pg_basebackup`, continuous archiving) copy every
@@ -591,6 +611,11 @@ non-empty is not, and no test from outside can prove the probed address *is*
 the origin — that remains Ops's to show.
 
 ## Synthetics for a dark deployment
+
+The first production deployment is verified against
+[production-smoke-test.md](production-smoke-test.md): seventeen checks, each
+mapped to an existing synthetic target or a named manual step, and the
+deployment report that names the source commit and the four digests.
 
 Run by Ops after the production reconcile, from the paths that can reach
 each target. No public Postfix edge is required or exercised.

@@ -2,6 +2,7 @@ package email.testinbox.persistence
 
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
+import email.testinbox.application.port.NOTIFICATION_CHANNEL
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.ProjectId
@@ -11,6 +12,7 @@ import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.inbox.InboxState
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.stereotype.Repository
+import org.springframework.transaction.annotation.Transactional
 import java.sql.ResultSet
 import java.time.Instant
 import java.util.UUID
@@ -67,6 +69,7 @@ class JdbcInboxRepository(
             .optional()
             .orElse(null)
 
+    @Transactional
     override fun markDeleted(
         workspaceId: WorkspaceId,
         id: InboxId,
@@ -85,7 +88,26 @@ class JdbcInboxRepository(
             .param("now", Timestamps.toDb(now))
             .param("id", id.value)
             .update()
+        notifyWaiters(id)
         return existing
+    }
+
+    /**
+     * Issue #87: a wait parked on this inbox must learn promptly that it serves
+     * nothing any more. The same channel and payload a message commit uses,
+     * in the same transaction as the transition (ADR-020: never
+     * notify-after-commit), so the waiter's re-evaluation sees the new state.
+     * The callers own the transaction (`DeleteInbox`, `ExpireInboxes`); the
+     * `@Transactional` on both transitions is the same belt-and-braces as
+     * `JdbcMessageRepository.appendVisible`.
+     */
+    private fun notifyWaiters(id: InboxId) {
+        jdbc
+            .sql("SELECT pg_notify(:channel, :payload)")
+            .param("channel", NOTIFICATION_CHANNEL)
+            .param("payload", id.value.toString())
+            .query()
+            .listOfRows()
     }
 
     override fun findExpiredActive(
@@ -121,11 +143,16 @@ class JdbcInboxRepository(
             .query { rs, _ -> mapInbox(rs) }
             .list()
 
-    override fun transitionToExpired(id: InboxId): Boolean =
-        jdbc
-            .sql("UPDATE inbox SET state = 'EXPIRED' WHERE id = :id AND state = 'EXPIRING'")
-            .param("id", id.value)
-            .update() == 1
+    @Transactional
+    override fun transitionToExpired(id: InboxId): Boolean {
+        val moved =
+            jdbc
+                .sql("UPDATE inbox SET state = 'EXPIRED' WHERE id = :id AND state = 'EXPIRING'")
+                .param("id", id.value)
+                .update() == 1
+        if (moved) notifyWaiters(id)
+        return moved
+    }
 
     override fun findHardDeletable(limit: Int): List<Inbox> =
         jdbc

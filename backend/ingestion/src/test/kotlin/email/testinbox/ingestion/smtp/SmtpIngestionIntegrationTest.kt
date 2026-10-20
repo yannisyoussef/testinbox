@@ -326,6 +326,48 @@ class SmtpIngestionIntegrationTest {
     }
 
     @Test
+    fun `a message above the ingestion cap is refused with 552 and never reaches Postgres or MinIO`() {
+        // Behind the Postfix edge this cap is defence in depth; in a deployment
+        // without the edge (the dark first release) it is the only one, so the
+        // reply, the counter and the negative proof are asserted on the real socket.
+        val inbox = provisionInbox()
+        val marker = "OVERSIZED-${UUID.randomUUID()}"
+        val header = "From: big@example.com\r\nSubject: $marker\r\n\r\n".toByteArray()
+        val cap = 64 * 1024
+        val line = "x".repeat(76) + "\r\n"
+        val body = StringBuilder()
+        while (header.size + body.length <= cap) body.append(line)
+        val raw = header + body.toString().toByteArray()
+        raw.size shouldBeGreaterThan cap
+        val ghost = "ghost-${UUID.randomUUID().toString().take(8)}@testinbox.local"
+        val refusedBefore = smtpMetrics.rejections.count { it == SmtpRejection.MESSAGE_TOO_LARGE }
+        client().use { smtp ->
+            smtp.send("big@example.com", listOf(inbox.address), raw).code shouldBe 552
+            // A reused connection stays usable: the gateway drained the refused body,
+            // so RSET is answered by the server, not by a stray reply to a body line
+            // misread as a command.
+            smtp.command("RSET").code shouldBe 250
+            // The refusal depends on the byte count alone, never on the recipient: an
+            // unknown address gets the identical reply, so the cap is no membership
+            // oracle (ADR-025; CLAUDE.md invariant 8).
+            smtp.send("big@example.com", listOf(ghost), raw).code shouldBe 552
+        }
+        smtpMetrics.rejections.count { it == SmtpRejection.MESSAGE_TOO_LARGE } shouldBe refusedBefore + 2
+        messages.listVisible(inbox.id).shouldBeEmpty()
+        val dbHits =
+            jdbc
+                .sql("SELECT count(*) AS c FROM message WHERE subject LIKE :m")
+                .param("m", "%$marker%")
+                .query { rs, _ -> rs.getLong("c") }
+                .single()
+        dbHits shouldBe 0L
+        blobs
+            .listKeysOlderThan("", Instant.now().plusSeconds(60))
+            .filter { it.contains(inbox.id.value.toString()) }
+            .shouldBeEmpty()
+    }
+
+    @Test
     fun `attachment email over SMTP stores attachment bytes under per-message keys`() {
         val inbox = provisionInbox()
         client().use { smtp ->

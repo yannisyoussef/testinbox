@@ -6,7 +6,11 @@ plugins {
 
 dependencies {
     implementation(platform(libs.spring.boot.dependencies))
+    implementation(platform(libs.jackson3.bom))
+    implementation(platform(libs.jackson2.bom))
     testImplementation(platform(libs.spring.boot.dependencies))
+    testImplementation(platform(libs.jackson3.bom))
+    testImplementation(platform(libs.jackson2.bom))
     implementation(project(":application"))
     implementation(project(":persistence"))
     implementation(project(":storage"))

@@ -91,6 +91,15 @@ interface StorageVisibility {
  * that snapshot too; it is called only when a `409` body needs them.
  */
 interface InboxObservation {
+    /**
+     * The inbox's state in the SAME snapshot as [messages] (issue #87): null
+     * when the row is gone. A wait parked on an ACTIVE inbox re-evaluates on
+     * every wake, and an inbox that has become EXPIRED or DELETED serves
+     * nothing, so the evaluation must see the state the messages were read
+     * under, never a later or an earlier one.
+     */
+    val inboxState: email.testinbox.domain.inbox.InboxState?
+
     /** Visible messages of the inbox, earliest first, attachments materialized. */
     val messages: List<Message>
 

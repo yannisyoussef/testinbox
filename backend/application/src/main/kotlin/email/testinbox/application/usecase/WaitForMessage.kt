@@ -212,6 +212,11 @@ class WaitForMessage(
         class Pending(
             override val snapshot: Snapshot,
         ) : Evaluation
+
+        /** The inbox is EXPIRED, DELETED or gone in this snapshot: it serves nothing, a match included (issue #87). */
+        class Gone(
+            override val snapshot: Snapshot,
+        ) : Evaluation
     }
 
     /** One call's state: its effective boundary, fixed at the first evaluation. */
@@ -236,6 +241,15 @@ class WaitForMessage(
                 val match = observed.messages.firstOrNull { command.matcher.matches(it) }
                 val observedBoundary = boundary
                 when {
+                    // Decided on the state the messages were read under: a message that
+                    // matched before the inbox expired is still not served after it,
+                    // exactly as the read endpoints answer (PR D read gating). EXPIRING
+                    // keeps serving, so a wait started while ACTIVE continues through
+                    // the grace period as it always has.
+                    !observed.serves() -> {
+                        Evaluation.Gone(snapshot)
+                    }
+
                     match != null -> {
                         Evaluation.Match(match, snapshot)
                     }
@@ -336,8 +350,13 @@ class WaitForMessage(
         when (this) {
             is Evaluation.Match -> Result.Matched(message, elapsedMs(start), snapshot.refusals)
             is Evaluation.Refused -> result
+            is Evaluation.Gone -> Result.InboxGone
             is Evaluation.Pending -> null
         }
+
+    /** Whether this snapshot's inbox still serves reads: ACTIVE or EXPIRING, and present. */
+    private fun InboxObservation.serves(): Boolean =
+        inboxState == email.testinbox.domain.inbox.InboxState.ACTIVE || inboxState == email.testinbox.domain.inbox.InboxState.EXPIRING
 
     private sealed interface Parked {
         class Decided(
