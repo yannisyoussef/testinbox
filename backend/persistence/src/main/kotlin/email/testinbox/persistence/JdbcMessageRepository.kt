@@ -198,6 +198,37 @@ class JdbcMessageRepository(
             .listOfRows()
             .isNotEmpty()
 
+    override fun listWorkspacePage(
+        workspaceId: WorkspaceId,
+        cursor: MessageCursor?,
+        limit: Int,
+        descending: Boolean,
+    ): List<Message> {
+        // The join is the servability rule (PR D): a message of an EXPIRED or
+        // DELETED inbox is never listed, however long paced retention keeps
+        // its row. Keyset paging on (received_at, id) in either direction
+        // (ix_message_workspace_order).
+        val comparison = if (descending) "<" else ">"
+        val direction = if (descending) "DESC" else "ASC"
+        val cursorFilter = if (cursor == null) "" else " AND (m.received_at, m.id) $comparison (:cursorReceivedAt, :cursorId)"
+        var query =
+            jdbc
+                .sql(
+                    """
+                    SELECT m.* FROM message m
+                      JOIN inbox i ON i.id = m.inbox_id AND i.workspace_id = m.workspace_id
+                     WHERE m.workspace_id = :workspaceId
+                       AND i.state IN ('ACTIVE', 'EXPIRING')$cursorFilter
+                     ORDER BY m.received_at $direction, m.id $direction LIMIT :limit
+                    """.trimIndent(),
+                ).param("workspaceId", workspaceId.value)
+                .param("limit", limit)
+        if (cursor != null) {
+            query = query.param("cursorReceivedAt", Timestamps.toDb(cursor.receivedAt)).param("cursorId", cursor.id.value)
+        }
+        return withAttachments(query.query { rs, _ -> mapMessage(rs) }.list())
+    }
+
     private fun withAttachments(messages: List<Message>): List<Message> {
         if (messages.isEmpty()) return messages
         val byMessage =

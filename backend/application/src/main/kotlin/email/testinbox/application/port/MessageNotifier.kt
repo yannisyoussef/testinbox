@@ -38,5 +38,13 @@ data class NotifierHealth(
 interface MessageNotifier {
     fun subscribe(inboxId: InboxId): WaitHandle
 
+    /**
+     * Woken by ANY notification (every inbox, every workspace), plus the same
+     * reconnect and degraded wakes as [subscribe]. The payload is only a hint
+     * (ADR-020 §1): a holder re-queries its own workspace and nothing else, so
+     * the most a foreign notification can cause is one extra scoped read.
+     */
+    fun subscribeAll(): WaitHandle
+
     fun health(): NotifierHealth
 }

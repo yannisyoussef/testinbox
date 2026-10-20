@@ -86,6 +86,8 @@ class JdbcWaitSlots(
             .update()
     }
 
+    override fun held(workspaceId: WorkspaceId): Long = heldSlots(workspaceId)
+
     private fun heldSlots(workspaceId: WorkspaceId): Long =
         jdbc
             .sql("SELECT count(*) AS c FROM wait_lease WHERE workspace_id = :workspaceId")

@@ -53,13 +53,13 @@ ROOT="${VERIFY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 BACKEND_MODULES=(
   "backend/architecture:38"
   "backend/domain:115"
-  "backend/application:424"
-  "backend/persistence:342"
+  "backend/application:432"
+  "backend/persistence:347"
   "backend/storage:54"
   "backend/notification:6"
   "backend/observability:35"
   "backend/ingestion:145"
-  "backend/api:161"
+  "backend/api:169"
   "backend/migrator:6"
   # TI-STORAGE-006: the ADR-035 §11 benchmark harness's own unit tests (the
   # gate evaluator, the open-loop scheduler, the safety preflight).

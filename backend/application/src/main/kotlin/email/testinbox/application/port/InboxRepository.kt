@@ -13,8 +13,34 @@ sealed interface InsertInboxOutcome {
     data object AddressTaken : InsertInboxOutcome
 }
 
+/** Position in a newest-first inbox listing: `(createdAt, id)` strictly before it. */
+data class InboxCursor(
+    val createdAt: Instant,
+    val id: InboxId,
+)
+
+/*
+ * `TooManyFunctions` is suppressed rather than the port split: this is the
+ * one persistence port of the inbox aggregate, and every function is one row
+ * operation a use case needs (ADR-024: invariant-bearing writes go through
+ * exactly one use case, which needs exactly this port). Splitting it by
+ * counter would scatter one aggregate's persistence across two interfaces.
+ */
+@Suppress("TooManyFunctions")
 interface InboxRepository {
     fun insert(inbox: Inbox): InsertInboxOutcome
+
+    /**
+     * One page of the workspace's inboxes, newest first, every state that
+     * still has a row (hard-deleted ones are gone). [states] narrows it;
+     * empty means every state. Workspace-scoped by construction.
+     */
+    fun listPage(
+        workspaceId: WorkspaceId,
+        states: Set<email.testinbox.domain.inbox.InboxState>,
+        before: InboxCursor?,
+        limit: Int,
+    ): List<Inbox>
 
     fun findById(
         workspaceId: WorkspaceId,

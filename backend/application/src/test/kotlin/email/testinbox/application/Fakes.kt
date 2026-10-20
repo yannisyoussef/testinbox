@@ -3,6 +3,7 @@ package email.testinbox.application
 import email.testinbox.application.port.AppendOutcome
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.ExactAddressReservations
+import email.testinbox.application.port.InboxCursor
 import email.testinbox.application.port.InboxObservation
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
@@ -103,6 +104,20 @@ class InMemoryInboxRepository : InboxRepository {
         workspaceId: WorkspaceId,
         id: InboxId,
     ): Inbox? = inboxes[id]?.takeIf { it.workspaceId == workspaceId }
+
+    override fun listPage(
+        workspaceId: WorkspaceId,
+        states: Set<InboxState>,
+        before: InboxCursor?,
+        limit: Int,
+    ): List<Inbox> =
+        inboxes.values
+            .filter { it.workspaceId == workspaceId && (states.isEmpty() || it.state in states) }
+            .sortedWith(compareByDescending<Inbox> { it.createdAt }.thenByDescending { it.id.value })
+            .filter {
+                before == null || it.createdAt.isBefore(before.createdAt) ||
+                    (it.createdAt == before.createdAt && it.id.value < before.id.value)
+            }.take(limit)
 
     override fun findReceivableByAddress(address: String): Inbox? =
         inboxes.values.firstOrNull {
@@ -246,6 +261,29 @@ class InMemoryMessageRepository : MessageRepository {
         id: MessageId,
     ): Message? = messages.firstOrNull { it.id == id && it.workspaceId == workspaceId }
 
+    /** Every message of the workspace: this fake has no inbox states, so servability is the SQL adapter's proof. */
+    override fun listWorkspacePage(
+        workspaceId: WorkspaceId,
+        cursor: MessageCursor?,
+        limit: Int,
+        descending: Boolean,
+    ): List<Message> {
+        val ordered =
+            messages
+                .filter { it.workspaceId == workspaceId }
+                .sortedWith(compareBy<Message> { it.receivedAt }.thenBy { it.id.value })
+        val walked = if (descending) ordered.reversed() else ordered
+        return walked
+            .filter { m ->
+                cursor == null ||
+                    if (descending) {
+                        m.receivedAt.isBefore(cursor.receivedAt) || (m.receivedAt == cursor.receivedAt && m.id.value < cursor.id.value)
+                    } else {
+                        m.receivedAt.isAfter(cursor.receivedAt) || (m.receivedAt == cursor.receivedAt && m.id.value > cursor.id.value)
+                    }
+            }.take(limit)
+    }
+
     override fun exists(id: MessageId): Boolean = messages.any { it.id == id }
 }
 
@@ -313,7 +351,8 @@ class FakeNotifier : MessageNotifier {
     var onAwait: (FakeHandle) -> WakeOutcome = { WakeOutcome.DEADLINE }
 
     inner class FakeHandle(
-        val inboxId: InboxId,
+        /** Null for a [subscribeAll] handle. */
+        val inboxId: InboxId?,
     ) : WaitHandle {
         var closed = false
         var awaitCount = 0
@@ -329,6 +368,8 @@ class FakeNotifier : MessageNotifier {
     }
 
     override fun subscribe(inboxId: InboxId): WaitHandle = FakeHandle(inboxId).also { handles += it }
+
+    override fun subscribeAll(): WaitHandle = FakeHandle(null).also { handles += it }
 
     override fun health(): NotifierHealth = NotifierHealth(listening = true, epoch = 1, reconnectCount = 0)
 }
@@ -401,6 +442,8 @@ class FakeWaitSlots : WaitSlots {
     }
 
     override fun reapExpired(): Int = 0
+
+    override fun held(workspaceId: WorkspaceId): Long = held.toLong()
 }
 
 /**

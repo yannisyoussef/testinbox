@@ -43,6 +43,19 @@ interface MessageRepository {
         limit: Int,
     ): List<Message>
 
+    /**
+     * One page across every inbox of the workspace that still serves reads
+     * (not EXPIRED or DELETED: TI-STORAGE-006E PR D). Ascending by
+     * `(receivedAt, id)` strictly after [cursor], or descending strictly
+     * before it, so the same cursor shape walks either way.
+     */
+    fun listWorkspacePage(
+        workspaceId: WorkspaceId,
+        cursor: MessageCursor?,
+        limit: Int,
+        descending: Boolean,
+    ): List<Message>
+
     fun findById(
         workspaceId: WorkspaceId,
         id: MessageId,

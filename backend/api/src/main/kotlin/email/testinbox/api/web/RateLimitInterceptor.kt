@@ -27,6 +27,9 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
  */
 object RateCategories {
     private val WAIT = Regex("^/v1/inboxes/[^/]+/messages/wait$")
+
+    /** A parked connection for a whole window: charged and slotted like a wait (ADR-027 §3). */
+    private val EVENTS = Regex("^/v1/workspace/events$")
     private val DOWNLOAD = Regex("^/v1/messages/[^/]+/(raw|attachments/[^/]+)$")
     private val INBOX_CREATE = Regex("^/v1/inboxes$")
     private val KEY_ADMIN = Regex("^/v1/api-keys(/[^/]+)?$")
@@ -36,6 +39,11 @@ object RateCategories {
 
     private val READ =
         listOf(
+            // The list reads of the console API: metadata, paged, charged as such.
+            Regex("^/v1/inboxes$"),
+            Regex("^/v1/messages$"),
+            Regex("^/v1/workspace$"),
+            Regex("^/v1/workspace/usage$"),
             Regex("^/v1/inboxes/[^/]+$"),
             Regex("^/v1/inboxes/[^/]+/messages$"),
             Regex("^/v1/messages/[^/]+$"),
@@ -57,7 +65,7 @@ object RateCategories {
     ): RateCategory =
         when {
             KEY_ADMIN.matches(path) -> RateCategory.KEY_ADMIN
-            WAIT.matches(path) -> RateCategory.WAIT
+            WAIT.matches(path) || EVENTS.matches(path) -> RateCategory.WAIT
             DOWNLOAD.matches(path) -> RateCategory.DOWNLOAD
             INBOX_CREATE.matches(path) && method.equals("POST", ignoreCase = true) -> RateCategory.INBOX_CREATE
             READ.any { it.matches(path) } -> RateCategory.READ

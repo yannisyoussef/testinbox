@@ -1,6 +1,7 @@
 package email.testinbox.api.web
 
 import email.testinbox.application.port.ApiKeyCursor
+import email.testinbox.application.port.InboxCursor
 import email.testinbox.application.port.MessageCursor
 import email.testinbox.application.port.StorageRefusalSnapshot
 import email.testinbox.application.query.InboxStorageView
@@ -171,6 +172,98 @@ data class MessagePageDto(
     val nextCursor: String?,
 )
 
+data class InboxPageDto(
+    val items: List<InboxDto>,
+    val nextCursor: String?,
+)
+
+data class ProjectDto(
+    val id: UUID,
+    val name: String,
+    val createdAt: Instant,
+)
+
+/** The authenticated key's own workspace (ADR-027): never another's, never a global figure. */
+data class WorkspaceDto(
+    val id: UUID,
+    val name: String,
+    val createdAt: Instant,
+    val mailDomain: String,
+    val project: ProjectDto?,
+) {
+    companion object {
+        fun from(view: email.testinbox.application.query.WorkspaceView): WorkspaceDto =
+            WorkspaceDto(
+                id = view.workspace.id.value,
+                name = view.workspace.name,
+                createdAt = view.workspace.createdAt,
+                mailDomain = view.mailDomain,
+                project = view.project?.let { ProjectDto(it.id.value, it.name, it.createdAt) },
+            )
+    }
+}
+
+data class QuotaDto(
+    val dimension: String,
+    val limit: Long,
+    val current: Long,
+)
+
+data class RateDto(
+    val category: String,
+    val limit: Long,
+    val refillPerSecond: Double,
+    val remaining: Long?,
+)
+
+data class WorkspaceUsageDto(
+    val enforced: Boolean,
+    val quotas: List<QuotaDto>,
+    val rates: List<RateDto>,
+) {
+    companion object {
+        fun from(view: email.testinbox.application.query.WorkspaceUsageView): WorkspaceUsageDto =
+            WorkspaceUsageDto(
+                enforced = view.enforced,
+                quotas = view.quotas.map { QuotaDto(it.dimension.name, it.limit, it.current) },
+                rates = view.rates.map { RateDto(it.category.name, it.limit, it.refillPerSecond, it.remaining) },
+            )
+    }
+}
+
+/** One stream event's `data` for a message: the summary, never the bodies (fetch the message for those). */
+data class MessageEventDto(
+    val id: UUID,
+    val inboxId: UUID,
+    val receivedAt: Instant,
+    val subject: String?,
+    val from: String?,
+    val parseStatus: String,
+) {
+    companion object {
+        fun from(message: Message): MessageEventDto =
+            MessageEventDto(
+                message.id.value,
+                message.inboxId.value,
+                message.receivedAt,
+                message.parsed?.subject,
+                message.parsed?.fromAddress,
+                message.parseStatus.name,
+            )
+    }
+}
+
+data class InboxEventDto(
+    val id: UUID,
+    val address: String,
+    val state: String,
+    val expiresAt: Instant,
+) {
+    companion object {
+        fun from(inbox: Inbox): InboxEventDto = InboxEventDto(inbox.id.value, inbox.address, inbox.state.name, inbox.expiresAt)
+    }
+}
+
 data class HeaderMatcherDto(
     val name: String? = null,
     val value: String? = null,
@@ -260,6 +353,9 @@ object Cursors {
 
     fun decodeApiKey(cursor: String): ApiKeyCursor? =
         decodePosition(cursor)?.let { (at, id) -> ApiKeyCursor(createdAt = at, id = ApiKeyId(id)) }
+
+    fun decodeInbox(cursor: String): InboxCursor? =
+        decodePosition(cursor)?.let { (at, id) -> InboxCursor(createdAt = at, id = email.testinbox.domain.InboxId(id)) }
 }
 
 data class CreateApiKeyRequest(

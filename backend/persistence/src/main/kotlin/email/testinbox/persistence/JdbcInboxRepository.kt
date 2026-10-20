@@ -1,5 +1,6 @@
 package email.testinbox.persistence
 
+import email.testinbox.application.port.InboxCursor
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
 import email.testinbox.application.port.NOTIFICATION_CHANNEL
@@ -60,6 +61,30 @@ class JdbcInboxRepository(
             .query { rs, _ -> mapInbox(rs) }
             .optional()
             .orElse(null)
+
+    override fun listPage(
+        workspaceId: WorkspaceId,
+        states: Set<InboxState>,
+        before: InboxCursor?,
+        limit: Int,
+    ): List<Inbox> {
+        // Keyset paging on (created_at, id), newest first: no OFFSET, so a
+        // page costs the same wherever it sits (ix_inbox_workspace_created).
+        val stateFilter = if (states.isEmpty()) "" else " AND state IN (:states)"
+        val cursorFilter = if (before == null) "" else " AND (created_at, id) < (:beforeCreatedAt, :beforeId)"
+        var query =
+            jdbc
+                .sql(
+                    "SELECT * FROM inbox WHERE workspace_id = :workspaceId$stateFilter$cursorFilter" +
+                        " ORDER BY created_at DESC, id DESC LIMIT :limit",
+                ).param("workspaceId", workspaceId.value)
+                .param("limit", limit)
+        if (states.isNotEmpty()) query = query.param("states", states.map { it.name })
+        if (before != null) {
+            query = query.param("beforeCreatedAt", Timestamps.toDb(before.createdAt)).param("beforeId", before.id.value)
+        }
+        return query.query { rs, _ -> mapInbox(rs) }.list()
+    }
 
     override fun findReceivableByAddress(address: String): Inbox? =
         jdbc

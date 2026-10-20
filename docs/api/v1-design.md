@@ -12,14 +12,20 @@
 | `GET /v1/messages/{id}/raw` | Yes | Streams raw MIME from object storage; useful for debugging parse failures. |
 | `GET /v1/messages/{id}/attachments` | Yes | Metadata list only. |
 | `GET /v1/messages/{id}/attachments/{attachmentId}` | Yes | Streams attachment bytes with the original `Content-Type`, served with `Content-Disposition: attachment` and a restrictive `Content-Security-Policy`/`X-Content-Type-Options: nosniff` to prevent it being rendered as HTML if fetched directly in a browser. |
+| `GET /v1/inboxes` | Yes | The workspace's inboxes, newest first, every state still present unless `state` narrows it; keyset-paged on `(createdAt, id)`; each item carries its live `storage` read for the page in one set-based read (ADR-035 §13b). Charged `READ`. |
+| `GET /v1/messages` | Yes | The workspace-wide feed across every *serving* inbox (never `EXPIRED`/`DELETED` ones, PR D); newest first, `order=asc` walks forward from a cursor; the same opaque `(receivedAt, id)` cursor as the per-inbox list and the event stream. Charged `READ`. |
+| `GET /v1/workspace` | Yes | The key's own workspace, its `mailDomain` and the key's project. No id accepted from anywhere. Charged `READ`. |
+| `GET /v1/workspace/usage` | Yes | ADR-027 in one read: every quota dimension with its limit and row-derived consumption, every rate category with its policy and the tokens left (read without spending), and whether limits are enforced. Charged `READ`. |
+| `GET /v1/workspace/events` | Yes | Server-sent events (`message.received`, `inbox.created/expiring/expired/deleted/gone`) for the workspace, one `wait-window-cap` window at a time, resumable with `Last-Event-ID`; a parked wait over the whole workspace, so it is charged `WAIT` and holds a concurrent-wait slot (ADR-027 §3). |
 | `POST /v1/test-runs` | **No** | Deferred — see `TestRun` under Human Decisions Required in `VISION.md`. Not built until a concrete use case is confirmed. |
 | `GET /v1/test-runs/{id}` | **No** | Same as above. |
 | `DELETE /v1/test-runs/{id}` | **No** | Same as above. |
 
 ## Cross-cutting decisions
 
-- **Cursor pagination** everywhere lists exist (`messages`, future
-  `inboxes` listing, `attachments` if it grows).
+- **Cursor pagination** everywhere lists exist (`messages`, `inboxes`,
+  `api-keys`; `attachments` if it grows). One opaque shape — base64url of
+  `<epochMicros>:<uuid>` — so a position from a list resumes an event stream.
 - **Scopes**: `inboxes:write` required for create/delete, `messages:read`
   for message/attachment retrieval and wait, separable so a CI job can hold
   a read-only key for reporting while a different key creates inboxes.

@@ -78,8 +78,11 @@ class PgListenNotifier(
             }
     }
 
-    override fun subscribe(inboxId: InboxId): WaitHandle {
-        val waiter = Waiter(inboxId.value.toString())
+    override fun subscribe(inboxId: InboxId): WaitHandle = register(Waiter(inboxId.value.toString()))
+
+    override fun subscribeAll(): WaitHandle = register(Waiter(ALL_KEY))
+
+    private fun register(waiter: Waiter): WaitHandle {
         waiters.computeIfAbsent(waiter.inboxKey) { ConcurrentHashMap.newKeySet() }.add(waiter)
         return waiter
     }
@@ -145,6 +148,7 @@ class PgListenNotifier(
     private fun wake(inboxKey: String?) {
         if (inboxKey == null) return
         waiters[inboxKey]?.forEach(Waiter::wake)
+        waiters[ALL_KEY]?.forEach(Waiter::wake)
     }
 
     private fun wakeAll() {
@@ -193,6 +197,9 @@ class PgListenNotifier(
 
     private companion object {
         const val POLL_MILLIS = 500
+
+        /** The subscription key of [subscribeAll] holders; not a UUID, so no inbox can collide with it. */
+        const val ALL_KEY = "*"
         val log = LoggerFactory.getLogger(PgListenNotifier::class.java)
     }
 }

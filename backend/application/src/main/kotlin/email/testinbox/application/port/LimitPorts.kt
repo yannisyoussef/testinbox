@@ -41,6 +41,16 @@ interface RateLimiter {
         category: RateCategory,
         inboxId: InboxId? = null,
     ): RateDecision
+
+    /**
+     * Whole tokens the workspace holds in [category] right now, without
+     * spending one. Null when the implementation cannot say (a fake, or a
+     * bucket never seen — which is full). A usage read, never a decision.
+     */
+    fun peek(
+        workspaceId: WorkspaceId,
+        category: RateCategory,
+    ): Long? = null
 }
 
 /**
@@ -93,6 +103,9 @@ interface WaitSlots {
 
     /** Reclaims slots whose holder died; returns how many were freed. */
     fun reapExpired(): Int
+
+    /** Slots the workspace holds right now (live leases). A usage read. */
+    fun held(workspaceId: WorkspaceId): Long = 0
 }
 
 /**
