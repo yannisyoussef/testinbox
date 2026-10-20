@@ -7,6 +7,7 @@ import email.testinbox.application.port.AppendOutcome
 import email.testinbox.application.port.MessageCursor
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.NOTIFICATION_CHANNEL
+import email.testinbox.application.port.NotificationPayload
 import email.testinbox.domain.AttachmentId
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
@@ -104,7 +105,7 @@ class JdbcMessageRepository(
         jdbc
             .sql("SELECT pg_notify(:channel, :payload)")
             .param("channel", NOTIFICATION_CHANNEL)
-            .param("payload", message.inboxId.value.toString())
+            .param("payload", NotificationPayload.encode(message.workspaceId, message.inboxId))
             .query()
             .listOfRows()
         return AppendOutcome.Appended

@@ -2,11 +2,13 @@ package email.testinbox.notification
 
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.NOTIFICATION_CHANNEL
+import email.testinbox.application.port.NotificationPayload
 import email.testinbox.application.port.NotifierHealth
 import email.testinbox.application.port.NotifierMetrics
 import email.testinbox.application.port.WaitHandle
 import email.testinbox.application.port.WakeOutcome
 import email.testinbox.domain.InboxId
+import email.testinbox.domain.WorkspaceId
 import org.postgresql.PGConnection
 import org.slf4j.LoggerFactory
 import java.sql.Connection
@@ -80,7 +82,7 @@ class PgListenNotifier(
 
     override fun subscribe(inboxId: InboxId): WaitHandle = register(Waiter(inboxId.value.toString()))
 
-    override fun subscribeAll(): WaitHandle = register(Waiter(ALL_KEY))
+    override fun subscribeWorkspace(workspaceId: WorkspaceId): WaitHandle = register(Waiter(WORKSPACE_PREFIX + workspaceId.value))
 
     private fun register(waiter: Waiter): WaitHandle {
         waiters.computeIfAbsent(waiter.inboxKey) { ConcurrentHashMap.newKeySet() }.add(waiter)
@@ -145,10 +147,11 @@ class PgListenNotifier(
         return DriverManager.getConnection(config.jdbcUrl, props)
     }
 
-    private fun wake(inboxKey: String?) {
-        if (inboxKey == null) return
-        waiters[inboxKey]?.forEach(Waiter::wake)
-        waiters[ALL_KEY]?.forEach(Waiter::wake)
+    private fun wake(payload: String?) {
+        val decoded = NotificationPayload.decode(payload) ?: return
+        waiters[decoded.inboxId.value.toString()]?.forEach(Waiter::wake)
+        // A legacy (bare inbox id) payload names no workspace and wakes no stream.
+        decoded.workspaceId?.let { waiters[WORKSPACE_PREFIX + it.value]?.forEach(Waiter::wake) }
     }
 
     private fun wakeAll() {
@@ -198,8 +201,8 @@ class PgListenNotifier(
     private companion object {
         const val POLL_MILLIS = 500
 
-        /** The subscription key of [subscribeAll] holders; not a UUID, so no inbox can collide with it. */
-        const val ALL_KEY = "*"
+        /** Key prefix of [subscribeWorkspace] holders; a prefixed key can never equal an inbox id. */
+        const val WORKSPACE_PREFIX = "ws:"
         val log = LoggerFactory.getLogger(PgListenNotifier::class.java)
     }
 }

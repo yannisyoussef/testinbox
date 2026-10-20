@@ -1,5 +1,6 @@
 package email.testinbox.api.web
 
+import com.fasterxml.jackson.annotation.JsonInclude
 import email.testinbox.application.port.ApiKeyCursor
 import email.testinbox.application.port.InboxCursor
 import email.testinbox.application.port.MessageCursor
@@ -169,11 +170,13 @@ data class MessageDto(
 
 data class MessagePageDto(
     val items: List<MessageDto>,
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
     val nextCursor: String?,
 )
 
 data class InboxPageDto(
     val items: List<InboxDto>,
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
     val nextCursor: String?,
 )
 
@@ -340,12 +343,18 @@ object Cursors {
         return Base64.getUrlEncoder().withoutPadding().encodeToString("$micros:$id".toByteArray())
     }
 
+    /** A day of clock skew is tolerated; anything before the epoch or further ahead is not a position this API ever issued. */
+    private val FURTHEST_FUTURE: java.time.Duration = java.time.Duration.ofDays(1)
+
     private fun decodePosition(cursor: String): Pair<Instant, UUID>? =
         runCatching {
             val decoded = String(Base64.getUrlDecoder().decode(cursor))
             val (micros, id) = decoded.split(':', limit = 2)
             val microsLong = micros.toLong()
-            Instant.ofEpochSecond(microsLong / 1_000_000, (microsLong % 1_000_000) * 1_000) to UUID.fromString(id)
+            if (microsLong < 0) return null
+            val at = Instant.ofEpochSecond(microsLong / 1_000_000, (microsLong % 1_000_000) * 1_000)
+            if (at.isAfter(Instant.now().plus(FURTHEST_FUTURE))) return null
+            at to UUID.fromString(id)
         }.getOrNull()
 
     fun decode(cursor: String): MessageCursor? =
@@ -411,5 +420,6 @@ data class CreatedApiKeyDto(
 
 data class ApiKeyPageDto(
     val items: List<ApiKeyDto>,
+    @field:JsonInclude(JsonInclude.Include.NON_NULL)
     val nextCursor: String?,
 )

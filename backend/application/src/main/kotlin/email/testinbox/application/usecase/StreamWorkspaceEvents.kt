@@ -1,11 +1,13 @@
 package email.testinbox.application.usecase
 
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.port.InboxCursor
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.MessageCursor
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.WaitHandle
+import email.testinbox.application.port.WaitMetrics
 import email.testinbox.application.port.WaitSlot
 import email.testinbox.application.port.WaitSlots
 import email.testinbox.application.port.WakeOutcome
@@ -46,19 +48,36 @@ sealed interface WorkspaceEvent {
 /**
  * A bounded window of workspace events (console feed, SDK observers).
  *
- * Built on the same mechanics as a wait (ADR-012/020): the stream parks on
- * the notifier and **re-queries its own workspace on every wake** — the
- * notification payload is only a hint, never the event itself, so a foreign
- * workspace's notification costs this stream one scoped read and leaks
- * nothing. Messages are read strictly after a `(receivedAt, id)` cursor, so
- * a client that reconnects with the last id it saw misses nothing and sees
- * nothing twice. Inbox lifecycle is a periodic diff of the workspace's rows
+ * Built on the same mechanics as a wait (ADR-012/020): the stream parks on a
+ * workspace-scoped subscription and **re-queries its own workspace on every
+ * wake** — the notification payload is only a hint, never the event itself.
+ * The wake is scoped too: another workspace's activity never wakes this
+ * stream, so it cannot be observed as timing (ADR-025 would otherwise be
+ * reopened through the API).
+ *
+ * **Why the read is an overlap, not a strict cursor.** `receivedAt` is stamped
+ * by the ingestion node when `DATA` completes, *before* the raw upload and
+ * the commit (ADR-005 raw-first), so a message can become visible with a
+ * `receivedAt` older than one already delivered — by the whole pipeline
+ * latency plus clock skew. A read strictly after the last delivered position
+ * would skip it forever. Instead every wake re-reads everything received
+ * within [visibilityLag] of the newest position and emits what it has not
+ * emitted yet, deduplicated by message id. A message is therefore never
+ * missed if it commits within [visibilityLag] of its receipt; [visibilityLag]
+ * must exceed the ingestion pipeline's receipt-to-commit bound (the raw
+ * upload alone is capped at 30 s). A **resumed** window re-reads the same
+ * horizon behind the client's position, so it may repeat events the client
+ * already saw: delivery is at-least-once across windows and exactly-once
+ * within one; clients deduplicate on `id`.
+ *
+ * Inbox lifecycle is a periodic diff of **all** the workspace's rows
  * (EXPIRING is not notified; EXPIRED and DELETED are, since issue #87).
  *
- * A stream holds a concurrent-wait slot for its whole window (ADR-027 §3):
- * it is a parked connection, charged like one. The window is capped at
- * `waitWindowCap`, like a single wait call; the client reconnects.
+ * A stream holds a concurrent-wait slot for its whole window (ADR-027 §7):
+ * it is a parked connection, charged and metered like one. The window is
+ * capped at `waitWindowCap`, like a single wait call; the client reconnects.
  */
+@Suppress("LongParameterList") // one collaborator per step of the wait protocol, plus the two horizons; see the class comment
 class StreamWorkspaceEvents(
     private val inboxes: InboxRepository,
     private val messages: MessageRepository,
@@ -67,8 +86,11 @@ class StreamWorkspaceEvents(
     private val maxConcurrentWaits: Long,
     private val clock: Clock,
     private val config: TestInboxConfig,
-    /** How often the inbox lifecycle is re-read; wakes do not shorten it, only messages are read on a wake. */
+    private val metrics: WaitMetrics = WaitMetrics.NOOP,
+    /** How often the inbox lifecycle is re-read when nothing wakes the stream. */
     private val inboxScanInterval: Duration = Duration.ofSeconds(2),
+    /** How far behind the newest position a wake re-reads; must exceed receipt-to-commit latency. */
+    private val visibilityLag: Duration = DEFAULT_VISIBILITY_LAG,
 ) {
     sealed interface Open {
         data class Opened(
@@ -81,7 +103,7 @@ class StreamWorkspaceEvents(
     }
 
     /**
-     * Opens a window. [after] resumes a message cursor the client already
+     * Opens a window. [after] resumes from a position the client already
      * saw (its last event id); null starts from now. Close the stream to
      * release its slot — always, including on a client disconnect.
      */
@@ -92,42 +114,69 @@ class StreamWorkspaceEvents(
         val now = clock.instant()
         val slot =
             waitSlots.acquire(workspaceId, maxConcurrentWaits, leaseFor = config.waitWindowCap.multipliedBy(2))
-                ?: return Open.ConcurrentWaitLimitExceeded(maxConcurrentWaits)
-        // Subscribe BEFORE the first read (check → subscribe → recheck): a
-        // message committed between the two is caught by the recheck, never lost.
-        val handle = notifier.subscribeAll()
-        val cursor = after ?: MessageCursor(receivedAt = now, id = MessageId(UUID(0L, 0L)))
-        return Open.Opened(Stream(workspaceId, slot, handle, cursor, now))
+                ?: run {
+                    metrics.slotRejected()
+                    return Open.ConcurrentWaitLimitExceeded(maxConcurrentWaits)
+                }
+        metrics.slotsChanged(1)
+        return try {
+            // Subscribe BEFORE the first read (check → subscribe → recheck): a
+            // message committed between the two is caught by the recheck, never lost.
+            val handle = notifier.subscribeWorkspace(workspaceId)
+            Open.Opened(Stream(workspaceId, slot, handle, after, now))
+        } catch (e: RuntimeException) {
+            release(slot)
+            throw e
+        }
+    }
+
+    private fun release(slot: WaitSlot) {
+        slot.close()
+        metrics.slotsChanged(-1)
     }
 
     inner class Stream internal constructor(
         private val workspaceId: WorkspaceId,
         private val slot: WaitSlot,
         private val handle: WaitHandle,
-        private var cursor: MessageCursor,
+        after: MessageCursor?,
         opened: Instant,
     ) : AutoCloseable {
         /** The window's end; the holder ends the stream here and the client reconnects. */
         val deadline: Instant = opened.plus(config.waitWindowCap)
 
-        /** Position of the last message event delivered; what a client resumes from. */
-        val position: MessageCursor get() = cursor
+        /** The newest position delivered or started from; what a client resumes from after this window. */
+        var position: MessageCursor = after ?: MessageCursor(receivedAt = opened, id = MessageId(UUID(0L, 0L)))
+            private set
 
+        /** Messages already emitted — or visible before the window opened — whose `receivedAt` is still inside the horizon. */
+        private val seen = HashMap<MessageId, Instant>()
         private var known: Map<InboxId, Inbox> = snapshotInboxes()
         private var nextInboxScan: Instant = opened.plus(inboxScanInterval)
         private var first = true
 
+        init {
+            // A fresh window starts "from now": what is visible already is not
+            // replayed, so it is marked seen without being emitted. A resumed
+            // window seeds nothing — the client's horizon is re-delivered.
+            if (after == null) drainMessages().forEach { seen[it.id] = it.receivedAt }
+        }
+
         /**
          * Everything that happened since the last call, blocking until a wake
          * or [until] (whichever first) when nothing is pending. The first call
-         * never blocks: a resumed cursor's backlog is delivered at once.
+         * never blocks: a resumed position's backlog is delivered at once.
          */
         fun next(until: Instant): List<WorkspaceEvent> {
             var woken = false
             if (first) {
                 first = false
             } else {
-                woken = handle.awaitWake(minOf(until, deadline)) == WakeOutcome.WOKEN
+                // The park is capped at the next lifecycle scan as well as the
+                // caller's deadline: creation and EXPIRING wake nothing, so a
+                // park that only ended on a wake would report them at the
+                // window's end — which foreign wakes used to hide.
+                woken = handle.awaitWake(minOf(until, deadline, nextInboxScan)) == WakeOutcome.WOKEN
             }
             val events = mutableListOf<WorkspaceEvent>()
             events += newMessages()
@@ -143,12 +192,29 @@ class StreamWorkspaceEvents(
         }
 
         private fun newMessages(): List<WorkspaceEvent> {
-            val page = messages.listWorkspacePage(workspaceId, cursor, MESSAGE_PAGE, descending = false)
-            if (page.isNotEmpty()) {
-                val last = page.last()
-                cursor = MessageCursor(last.receivedAt, last.id)
+            val fresh = drainMessages().filter { it.id !in seen }
+            fresh.forEach { seen[it.id] = it.receivedAt }
+            return fresh.map { WorkspaceEvent.MessageReceived(it) }
+        }
+
+        /** Every message received within the horizon, oldest first, whole backlog — then the horizon moves. */
+        private fun drainMessages(): List<Message> {
+            val from = MessageCursor(position.receivedAt.minus(visibilityLag), MessageId(UUID(0L, 0L)))
+            val rows = mutableListOf<Message>()
+            var walk = from
+            while (true) {
+                val page = messages.listWorkspacePage(workspaceId, walk, MESSAGE_PAGE, descending = false)
+                rows += page
+                if (page.size < MESSAGE_PAGE) break
+                walk = MessageCursor(page.last().receivedAt, page.last().id)
             }
-            return page.map { WorkspaceEvent.MessageReceived(it) }
+            rows.lastOrNull()?.let { newest ->
+                val candidate = MessageCursor(newest.receivedAt, newest.id)
+                if (candidate.receivedAt.isAfter(position.receivedAt)) position = candidate
+            }
+            val floor = position.receivedAt.minus(visibilityLag)
+            seen.values.removeIf { it.isBefore(floor) }
+            return rows
         }
 
         private fun inboxChanges(): List<WorkspaceEvent> {
@@ -158,9 +224,7 @@ class StreamWorkspaceEvents(
                 val before = known[id]
                 when {
                     before == null -> {
-                        if (inbox.state ==
-                            InboxState.ACTIVE
-                        ) {
+                        if (inbox.state == InboxState.ACTIVE) {
                             events += WorkspaceEvent.InboxChanged(inbox, WorkspaceEvent.InboxChange.CREATED)
                         }
                     }
@@ -185,19 +249,30 @@ class StreamWorkspaceEvents(
                 InboxState.ACTIVE -> null
             }
 
-        private fun snapshotInboxes(): Map<InboxId, Inbox> =
-            inboxes.listPage(workspaceId, emptySet(), before = null, limit = INBOX_SNAPSHOT).associateBy { it.id }
+        /** Every row of the workspace, however many: a bounded snapshot would report its own edge as `gone`/`created`. */
+        private fun snapshotInboxes(): Map<InboxId, Inbox> {
+            val rows = LinkedHashMap<InboxId, Inbox>()
+            var before: InboxCursor? = null
+            while (true) {
+                val page = inboxes.listPage(workspaceId, emptySet(), before, INBOX_PAGE)
+                page.forEach { rows[it.id] = it }
+                if (page.size < INBOX_PAGE) break
+                before = InboxCursor(page.last().createdAt, page.last().id)
+            }
+            return rows
+        }
 
         override fun close() {
             handle.close()
-            slot.close()
+            release(slot)
         }
     }
 
-    private companion object {
-        const val MESSAGE_PAGE = 200
+    companion object {
+        private const val MESSAGE_PAGE = 200
+        private const val INBOX_PAGE = 500
 
-        /** Newest inboxes watched for lifecycle changes; a workspace beyond this still gets every message event. */
-        const val INBOX_SNAPSHOT = 500
+        /** Twice the raw upload's own cap (30 s), the longest leg between receipt and commit. */
+        val DEFAULT_VISIBILITY_LAG: Duration = Duration.ofSeconds(60)
     }
 }

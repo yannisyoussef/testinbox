@@ -351,8 +351,9 @@ class FakeNotifier : MessageNotifier {
     var onAwait: (FakeHandle) -> WakeOutcome = { WakeOutcome.DEADLINE }
 
     inner class FakeHandle(
-        /** Null for a [subscribeAll] handle. */
+        /** Null for a [subscribeWorkspace] handle. */
         val inboxId: InboxId?,
+        val workspaceId: WorkspaceId? = null,
     ) : WaitHandle {
         var closed = false
         var awaitCount = 0
@@ -369,7 +370,13 @@ class FakeNotifier : MessageNotifier {
 
     override fun subscribe(inboxId: InboxId): WaitHandle = FakeHandle(inboxId).also { handles += it }
 
-    override fun subscribeAll(): WaitHandle = FakeHandle(null).also { handles += it }
+    /** Thrown by the next [subscribeWorkspace] when set, as a LISTEN adapter that cannot register would. */
+    var subscribeFailure: RuntimeException? = null
+
+    override fun subscribeWorkspace(workspaceId: WorkspaceId): WaitHandle {
+        subscribeFailure?.let { throw it }
+        return FakeHandle(null, workspaceId).also { handles += it }
+    }
 
     override fun health(): NotifierHealth = NotifierHealth(listening = true, epoch = 1, reconnectCount = 0)
 }

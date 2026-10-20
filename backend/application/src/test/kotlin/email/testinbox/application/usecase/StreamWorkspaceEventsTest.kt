@@ -18,9 +18,11 @@ import email.testinbox.domain.inbox.InboxState
 import email.testinbox.domain.message.Message
 import email.testinbox.domain.message.ParseStatus
 import email.testinbox.domain.message.ParsedContent
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -40,6 +42,7 @@ class StreamWorkspaceEventsTest {
     private val messages = InMemoryMessageRepository()
     private val notifier = FakeNotifier()
     private val slots = FakeWaitSlots()
+    private val metrics = RecordingWaitMetrics()
     private val clock = MutableClock(Instant.parse("2026-10-20T10:00:00Z"))
     private val config = TestInboxConfig(mailDomain = "testinbox.local", waitWindowCap = Duration.ofSeconds(60))
 
@@ -52,7 +55,9 @@ class StreamWorkspaceEventsTest {
             maxConcurrentWaits,
             clock,
             config,
+            metrics,
             inboxScanInterval = Duration.ofSeconds(2),
+            visibilityLag = Duration.ofSeconds(60),
         )
 
     private fun inbox(
@@ -102,13 +107,24 @@ class StreamWorkspaceEventsTest {
     private fun received(events: List<WorkspaceEvent>) = events.filterIsInstance<WorkspaceEvent.MessageReceived>().map { it.message.id }
 
     @Test
-    fun `a stream subscribes to every inbox before its first read and holds one wait slot until closed`() {
+    fun `a stream subscribes to its own workspace before its first read and holds one metered wait slot until closed`() {
         val stream = open()
         notifier.handles.single().inboxId shouldBe null
+        notifier.handles.single().workspaceId shouldBe workspaceId
         slots.held shouldBe 1
+        metrics.slotDelta.get() shouldBe 1
         stream.close()
         slots.held shouldBe 0
+        metrics.slotDelta.get() shouldBe 0
         notifier.handles.single().closed shouldBe true
+    }
+
+    @Test
+    fun `a subscription that fails releases the slot it had just taken`() {
+        notifier.subscribeFailure = IllegalStateException("LISTEN down")
+        shouldThrow<IllegalStateException> { useCase().open(workspaceId, null) }
+        slots.held shouldBe 0
+        metrics.slotDelta.get() shouldBe 0
     }
 
     @Test
@@ -116,6 +132,7 @@ class StreamWorkspaceEventsTest {
         val useCase = useCase(maxConcurrentWaits = 1)
         val first = useCase.open(workspaceId, null).shouldBeInstanceOf<StreamWorkspaceEvents.Open.Opened>()
         useCase.open(workspaceId, null).shouldBeInstanceOf<StreamWorkspaceEvents.Open.ConcurrentWaitLimitExceeded>().limit shouldBe 1
+        metrics.slotRejections.get() shouldBe 1
         first.stream.close()
         useCase
             .open(workspaceId, null)
@@ -142,14 +159,74 @@ class StreamWorkspaceEventsTest {
     }
 
     @Test
-    fun `a resumed cursor delivers the backlog on the first call without parking`() {
+    fun `a resumed position delivers the backlog on the first call without parking, re-reading the horizon behind it`() {
         val inbox = inbox()
+        val outside = message(inbox, receivedAt = clock.now.minusSeconds(70))
         val seen = message(inbox, receivedAt = clock.now.minusSeconds(3))
         val missed1 = message(inbox, receivedAt = clock.now.minusSeconds(2))
         val missed2 = message(inbox, receivedAt = clock.now.minusSeconds(1))
         val stream = open(after = MessageCursor(seen.receivedAt, seen.id))
-        received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly listOf(missed1.id, missed2.id)
+        // At-least-once across windows: `seen` sits inside the horizon behind the
+        // position and is repeated; `outside` is beyond it and is not.
+        received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly listOf(seen.id, missed1.id, missed2.id)
         notifier.handles.single().awaitCount shouldBe 0
+        received(stream.next(clock.now.plusSeconds(1))).shouldBeEmpty()
+        outside.id shouldNotBe seen.id
+    }
+
+    @Test
+    fun `a message that commits with an older receipt time than one already delivered is still delivered, once`() {
+        // receivedAt is stamped at DATA, before the raw upload and the commit
+        // (ADR-005): a slow upload makes a message visible "in the past".
+        val inbox = inbox()
+        val stream = open()
+        stream.next(clock.now.plusSeconds(1)).shouldBeEmpty()
+        clock.advanceSeconds(5)
+        val quick = message(inbox, receivedAt = clock.now)
+        notifier.onAwait = { WakeOutcome.WOKEN }
+        received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly listOf(quick.id)
+        val slow = message(inbox, receivedAt = clock.now.minusSeconds(4))
+        received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly listOf(slow.id)
+        received(stream.next(clock.now.plusSeconds(1))).shouldBeEmpty()
+        // The resume position is the newest receipt, not the last delivery.
+        stream.position shouldBe MessageCursor(quick.receivedAt, quick.id)
+    }
+
+    @Test
+    fun `a message received beyond the horizon before the newest position is outside the guarantee`() {
+        val inbox = inbox()
+        val stream = open()
+        stream.next(clock.now.plusSeconds(1)).shouldBeEmpty()
+        clock.advanceSeconds(1)
+        val newest = message(inbox, receivedAt = clock.now)
+        notifier.onAwait = { WakeOutcome.WOKEN }
+        received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly listOf(newest.id)
+        message(inbox, receivedAt = clock.now.minusSeconds(61))
+        received(stream.next(clock.now.plusSeconds(1))).shouldBeEmpty()
+    }
+
+    @Test
+    fun `a backlog larger than one page is drained in one call, in order`() {
+        val inbox = inbox()
+        val stream = open()
+        stream.next(clock.now.plusSeconds(1)).shouldBeEmpty()
+        clock.advanceSeconds(1)
+        val backlog = (1..450).map { message(inbox, receivedAt = clock.now.plusMillis(it.toLong())) }
+        notifier.onAwait = { WakeOutcome.WOKEN }
+        received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly backlog.map { it.id }
+        received(stream.next(clock.now.plusSeconds(1))).shouldBeEmpty()
+    }
+
+    @Test
+    fun `the lifecycle diff walks every row, so a workspace past one page reports no spurious gone or created`() {
+        repeat(1_201) { inbox(createdAt = clock.now.minusSeconds(it.toLong())) }
+        val stream = open()
+        stream.next(clock.now.plusSeconds(1)).shouldBeEmpty()
+        clock.advanceSeconds(2)
+        // A new inbox pushes the oldest out of any bounded window; nothing is reported but it.
+        val created = inbox(createdAt = clock.now)
+        stream.next(clock.now).filterIsInstance<WorkspaceEvent.InboxChanged>().map { it.inbox.id to it.change } shouldContainExactly
+            listOf(created.id to WorkspaceEvent.InboxChange.CREATED)
     }
 
     @Test

@@ -4,6 +4,7 @@ import email.testinbox.application.port.InboxCursor
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
 import email.testinbox.application.port.NOTIFICATION_CHANNEL
+import email.testinbox.application.port.NotificationPayload
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.ProjectId
@@ -113,7 +114,7 @@ class JdbcInboxRepository(
             .param("now", Timestamps.toDb(now))
             .param("id", id.value)
             .update()
-        notifyWaiters(id)
+        notifyWaiters(workspaceId, id)
         return existing
     }
 
@@ -126,11 +127,14 @@ class JdbcInboxRepository(
      * `@Transactional` on both transitions is the same belt-and-braces as
      * `JdbcMessageRepository.appendVisible`.
      */
-    private fun notifyWaiters(id: InboxId) {
+    private fun notifyWaiters(
+        workspaceId: WorkspaceId,
+        id: InboxId,
+    ) {
         jdbc
             .sql("SELECT pg_notify(:channel, :payload)")
             .param("channel", NOTIFICATION_CHANNEL)
-            .param("payload", id.value.toString())
+            .param("payload", NotificationPayload.encode(workspaceId, id))
             .query()
             .listOfRows()
     }
@@ -170,13 +174,17 @@ class JdbcInboxRepository(
 
     @Transactional
     override fun transitionToExpired(id: InboxId): Boolean {
-        val moved =
+        // RETURNING the workspace: the notification names it, and the sweep
+        // only has the id.
+        val workspaceId =
             jdbc
-                .sql("UPDATE inbox SET state = 'EXPIRED' WHERE id = :id AND state = 'EXPIRING'")
+                .sql("UPDATE inbox SET state = 'EXPIRED' WHERE id = :id AND state = 'EXPIRING' RETURNING workspace_id")
                 .param("id", id.value)
-                .update() == 1
-        if (moved) notifyWaiters(id)
-        return moved
+                .query { rs, _ -> WorkspaceId(rs.getObject("workspace_id", UUID::class.java)) }
+                .optional()
+                .orElse(null) ?: return false
+        notifyWaiters(workspaceId, id)
+        return true
     }
 
     override fun findHardDeletable(limit: Int): List<Inbox> =

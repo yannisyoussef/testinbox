@@ -86,7 +86,13 @@ class JdbcWaitSlots(
             .update()
     }
 
-    override fun held(workspaceId: WorkspaceId): Long = heldSlots(workspaceId)
+    /** Live leases only: a crashed holder's lease is dead the moment it expires, reaped or not. */
+    override fun held(workspaceId: WorkspaceId): Long =
+        jdbc
+            .sql("SELECT count(*) AS c FROM wait_lease WHERE workspace_id = :workspaceId AND expires_at > now()")
+            .param("workspaceId", workspaceId.value)
+            .query { rs, _ -> rs.getLong("c") }
+            .single()
 
     private fun heldSlots(workspaceId: WorkspaceId): Long =
         jdbc

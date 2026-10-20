@@ -3,6 +3,7 @@ package email.testinbox.persistence
 import email.testinbox.application.port.DatabaseClock
 import email.testinbox.application.port.LockedReservation
 import email.testinbox.application.port.NOTIFICATION_CHANNEL
+import email.testinbox.application.port.NotificationPayload
 import email.testinbox.application.port.ReleasableReservation
 import email.testinbox.application.port.StorageCommitFence
 import email.testinbox.application.port.StorageReservations
@@ -108,16 +109,19 @@ class JdbcStorageReservations(
                            SET refusal_count = inbox_storage.refusal_count + 1,
                                last_refusal_at = EXCLUDED.last_refusal_at,
                                last_refusal_reason = EXCLUDED.last_refusal_reason
+                        RETURNING workspace_id
                         """.trimIndent(),
                     ).param("inbox", inbox.value)
                     .param("reason", reason.name)
-                    .update()
+                    .query { rs, _ -> WorkspaceId(rs.getObject("workspace_id", java.util.UUID::class.java)) }
+                    .optional()
+                    .orElse(null)
             // A vanished inbox is skipped, not an error (§6a); it has no waiter to wake.
-            if (recorded == 1) {
+            if (recorded != null) {
                 jdbc
                     .sql("SELECT pg_notify(:channel, :payload)")
                     .param("channel", NOTIFICATION_CHANNEL)
-                    .param("payload", inbox.value.toString())
+                    .param("payload", NotificationPayload.encode(recorded, inbox))
                     .query()
                     .listOfRows()
             }

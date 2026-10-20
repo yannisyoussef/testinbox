@@ -24,7 +24,9 @@ data class InboxCursor(
  * one persistence port of the inbox aggregate, and every function is one row
  * operation a use case needs (ADR-024: invariant-bearing writes go through
  * exactly one use case, which needs exactly this port). Splitting it by
- * counter would scatter one aggregate's persistence across two interfaces.
+ * counter would scatter one aggregate's persistence across two interfaces;
+ * a read/write split (as `TenantReader` is) is the honest alternative, and
+ * the one to take if this port grows again.
  */
 @Suppress("TooManyFunctions")
 interface InboxRepository {

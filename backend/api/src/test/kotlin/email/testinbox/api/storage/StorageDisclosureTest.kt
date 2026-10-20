@@ -87,6 +87,10 @@ class StorageDisclosureTest : ApiIntegrationTestBase() {
         responses["create"] = created
         responses["get"] = json.readTree(get("/v1/inboxes/${inbox.value}", tenant.apiKey).body)
         responses["workspace"] = json.readTree(get("/v1/workspace/storage", tenant.apiKey).body)
+        responses["workspace-read"] = json.readTree(get("/v1/workspace", tenant.apiKey).body)
+        responses["usage"] = json.readTree(get("/v1/workspace/usage", tenant.apiKey).body)
+        responses["inbox-list"] = json.readTree(get("/v1/inboxes", tenant.apiKey).body)
+        responses["message-list"] = json.readTree(get("/v1/messages", tenant.apiKey).body)
         responses["matched"] =
             json.readTree(
                 post(

@@ -104,8 +104,8 @@ interface WaitSlots {
     /** Reclaims slots whose holder died; returns how many were freed. */
     fun reapExpired(): Int
 
-    /** Slots the workspace holds right now (live leases). A usage read. */
-    fun held(workspaceId: WorkspaceId): Long = 0
+    /** Slots the workspace holds right now: live leases only, a dead holder's lease counts for nothing. A usage read. */
+    fun held(workspaceId: WorkspaceId): Long
 }
 
 /**

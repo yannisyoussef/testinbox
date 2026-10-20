@@ -7,6 +7,7 @@ import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.TenantReader
+import email.testinbox.application.port.WaitMetrics
 import email.testinbox.application.port.WaitSlots
 import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.application.query.WorkspaceQueries
@@ -35,6 +36,7 @@ class ConsoleReadsWiring {
 
     /** The workspace event stream: a parked wait over the whole workspace, one slot per stream (ADR-027 §3). */
     @Bean
+    @Suppress("LongParameterList") // a @Bean method's parameters are its dependencies: one per stream collaborator
     fun streamWorkspaceEvents(
         inboxes: InboxRepository,
         messages: MessageRepository,
@@ -43,6 +45,7 @@ class ConsoleReadsWiring {
         limits: LimitsConfig,
         config: TestInboxConfig,
         clock: Clock,
+        metrics: WaitMetrics,
     ): StreamWorkspaceEvents =
-        StreamWorkspaceEvents(inboxes, messages, notifier, waitSlots, limits.quotas.maxConcurrentWaits, clock, config)
+        StreamWorkspaceEvents(inboxes, messages, notifier, waitSlots, limits.quotas.maxConcurrentWaits, clock, config, metrics)
 }

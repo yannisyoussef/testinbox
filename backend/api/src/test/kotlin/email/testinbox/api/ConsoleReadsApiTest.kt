@@ -56,7 +56,8 @@ class ConsoleReadsApiTest : ApiIntegrationTestBase() {
         val cursor = page["nextCursor"].asText()
         val rest = body(get("/v1/inboxes?limit=2&cursor=$cursor", tenant.apiKey))
         rest["items"].toList().map { it["id"].asText() } shouldContainExactly listOf(ids[0])
-        rest["nextCursor"]?.isNull ?: true shouldBe true
+        // Absent, as the contract has promised since v1 — not null.
+        rest.has("nextCursor") shouldBe false
 
         // The state filter, and a deleted inbox still listed until the sweep (as DELETED).
         delete("/v1/inboxes/${ids[0]}", tenant.apiKey).statusCode shouldBe HttpStatus.NO_CONTENT
@@ -65,6 +66,29 @@ class ConsoleReadsApiTest : ApiIntegrationTestBase() {
         body(get("/v1/inboxes?state=ACTIVE", tenant.apiKey))["items"].size() shouldBe 2
         get("/v1/inboxes?state=WHATEVER", tenant.apiKey).statusCode shouldBe HttpStatus.BAD_REQUEST
         get("/v1/inboxes?cursor=garbage", tenant.apiKey).statusCode shouldBe HttpStatus.BAD_REQUEST
+        // A malformed query parameter is the caller's mistake, not a missing collection.
+        val malformed = get("/v1/inboxes?limit=abc", tenant.apiKey)
+        malformed.statusCode shouldBe HttpStatus.BAD_REQUEST
+        body(malformed)["type"].asText() shouldBe "https://testinbox.email/problems/invalid-request"
+        get("/v1/messages?limit=abc", tenant.apiKey).statusCode shouldBe HttpStatus.BAD_REQUEST
+    }
+
+    @Test
+    fun `a cursor is decoded within bounds, so a crafted one is a 400 and never a server fault`() {
+        val tenant = provisionIsolatedWorkspace("cursor-bounds")
+        val negative =
+            java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                "-9223372036854775808:${UUID.randomUUID()}".toByteArray(),
+            )
+        val farFuture =
+            java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                "9223372036854775807:${UUID.randomUUID()}".toByteArray(),
+            )
+        for (cursor in listOf(negative, farFuture)) {
+            get("/v1/messages?cursor=$cursor", tenant.apiKey).statusCode shouldBe HttpStatus.BAD_REQUEST
+            get("/v1/inboxes?cursor=$cursor", tenant.apiKey).statusCode shouldBe HttpStatus.BAD_REQUEST
+            Stream(port, tenant.apiKey, lastEventId = cursor).status shouldBe 400
+        }
     }
 
     @Test
@@ -223,34 +247,75 @@ class ConsoleReadsApiTest : ApiIntegrationTestBase() {
         stream.lines.any { it == "event: message.received" } shouldBe true
         val id = stream.lines.first { it.startsWith("id: ") }.removePrefix("id: ")
 
-        // The window (wait-window-cap = 5s in this suite) ends with a resumable position.
+        // A message whose receipt predates one already delivered (a slow raw
+        // upload, ADR-005) is still delivered: the read is a horizon, not a cursor.
+        val lagged =
+            appendVisibleMessage(
+                inboxId,
+                inbox["address"].asText(),
+                subject = "lagged",
+                receivedAt = after.receivedAt.minusSeconds(2),
+                workspaceId = tenant.workspaceId,
+            )
+        stream.awaitLine({ it.startsWith("data:") && it.contains(lagged.id.value.toString()) })
+
+        // The window (wait-window-cap = 5s in this suite) ends with a resumable
+        // position, carried as the `end` event's id as well as its data.
         stream.awaitEnd() shouldBe true
         val end = stream.lines.first { it.startsWith("data:") && it.contains("\"reason\":\"window\"") }
-        json.readTree(end.removePrefix("data: "))["resume"].asText() shouldBe id
+        val resume = json.readTree(end.removePrefix("data: "))["resume"].asText()
+        resume shouldBe id
+        stream.lines.last { it.startsWith("id: ") } shouldBe "id: $resume"
+        // Within one window nothing is delivered twice.
+        stream.lines.count { it.startsWith("data:") && it.contains(after.id.value.toString()) } shouldBe 1
 
-        // Resume from it: a message that arrived in between is delivered first, the old one is not.
+        // Resume from it: what arrived in between is delivered at once. The
+        // horizon behind the position is re-read, so `after` and `before` may
+        // repeat (at-least-once across windows); `missed` must not be missed.
         val missed = appendVisibleMessage(inboxId, inbox["address"].asText(), subject = "missed", workspaceId = tenant.workspaceId)
-        val resumed = Stream(port, tenant.apiKey, lastEventId = id)
+        val resumed = Stream(port, tenant.apiKey, lastEventId = resume)
         resumed.awaitLine({ it.startsWith("data:") && it.contains(missed.id.value.toString()) })
-        resumed.lines.none { it.contains(after.id.value.toString()) } shouldBe true
-        resumed.lines.none { it.contains(before.id.value.toString()) } shouldBe true
+        resumed.lines.count { it.startsWith("data:") && it.contains(missed.id.value.toString()) } shouldBe 1
         Stream(port, tenant.apiKey, lastEventId = "garbage").status shouldBe 400
     }
 
     @Test
-    fun `the event stream reports the inbox lifecycle and never another workspace's messages`() {
+    fun `a window that delivered nothing still ends with an id to resume from`() {
+        val tenant = provisionIsolatedWorkspace("events-idle")
+        val stream = Stream(port, tenant.apiKey)
+        stream.awaitLine({ it.startsWith("retry:") })
+        stream.awaitEnd() shouldBe true
+        val id = stream.lines.single { it.startsWith("id: ") }.removePrefix("id: ")
+        val end = stream.lines.single { it.startsWith("data:") && it.contains("\"reason\":\"window\"") }
+        json.readTree(end.removePrefix("data: "))["resume"].asText() shouldBe id
+        // Nothing but the retry line, the end frame and (if the window outlived it) a keep-alive comment.
+        stream.lines.filter { it.isNotBlank() }.all {
+            it.startsWith("retry:") || it.startsWith("id:") || it.startsWith("event: end") ||
+                it.startsWith("data:") ||
+                it.startsWith(":")
+        } shouldBe
+            true
+    }
+
+    @Test
+    fun `the event stream reports the inbox lifecycle and another workspace's delivery produces not one byte`() {
         val tenant = provisionIsolatedWorkspace("events-scope")
         val other = provisionIsolatedWorkspace("events-other")
         val stream = Stream(port, tenant.apiKey)
         stream.awaitLine({ it.startsWith("retry:") })
-        val mine = createInbox(tenant.apiKey)
         val theirs = createInbox(other.apiKey)
+        val quiet = stream.lines.size
         appendVisibleMessage(
             InboxId(UUID.fromString(theirs["id"].asText())),
             theirs["address"].asText(),
             subject = "foreign",
             workspaceId = other.workspaceId,
         )
+        // Not an event, not a keep-alive, not a blank line: a foreign delivery
+        // that produced any bytes would be observable as timing (ADR-025).
+        Thread.sleep(700)
+        stream.lines.size shouldBe quiet
+        val mine = createInbox(tenant.apiKey)
         stream.awaitLine({ it.startsWith("data:") && it.contains(mine["id"].asText()) })
         stream.lines.any { it == "event: inbox.created" } shouldBe true
         delete("/v1/inboxes/${mine["id"].asText()}", tenant.apiKey).statusCode shouldBe HttpStatus.NO_CONTENT

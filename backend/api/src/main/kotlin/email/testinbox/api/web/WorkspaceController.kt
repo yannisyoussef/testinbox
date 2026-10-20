@@ -43,11 +43,10 @@ class WorkspaceController(
     fun get(request: HttpServletRequest): ResponseEntity<*> {
         val key = AuthAttributes.principal(request)
         key.requireScope(ApiScope.MESSAGES_READ)
+        // An authenticated key references its workspace row (NOT NULL, no
+        // cascade), so a miss is a server fault, not a client outcome.
         val view =
-            workspaceQueries.workspace(key.workspaceId, key.projectId)
-                ?: return Problems.respond(
-                    Problems.of(HttpStatus.NOT_FOUND, "workspace-not-found", "Workspace not found", null, request),
-                )
+            checkNotNull(workspaceQueries.workspace(key.workspaceId, key.projectId)) { "workspace of an authenticated key is missing" }
         return ResponseEntity.ok(WorkspaceDto.from(view))
     }
 
@@ -72,10 +71,12 @@ class WorkspaceController(
      * The handler writes the response itself and holds the request thread
      * for the window, exactly as the wait endpoint does: the stream is a
      * parked wait over the whole workspace and occupies one of the
-     * workspace's concurrent-wait slots (ADR-027 §3). The window is capped
+     * workspace's concurrent-wait slots (ADR-027 §7). The window is capped
      * at `wait-window-cap`, under every edge's request ceiling, after which
-     * an `end` event is sent and the client reconnects with the last message
-     * event id it saw (`Last-Event-ID`) to resume without a gap.
+     * an `end` event is sent and the client reconnects with the last event id
+     * it saw (`Last-Event-ID`); the next window re-reads the visibility
+     * horizon behind it, so nothing committed is missed and a few events may
+     * repeat (at-least-once across windows; clients deduplicate on `id`).
      */
     @GetMapping("/events", produces = ["text/event-stream"])
     fun events(
@@ -119,21 +120,36 @@ class WorkspaceController(
         // Proxies that buffer responses (nginx) would hold every event until the
         // window ends; this header is the conventional opt-out.
         response.setHeader("X-Accel-Buffering", "no")
+        response.setHeader("X-Content-Type-Options", "nosniff")
         val out = response.writer
         stream.use {
             out.write("retry: 1000\n\n")
             out.flush()
+            var lastWrite = clock.instant()
             while (true) {
                 val now = clock.instant()
                 if (!now.isBefore(stream.deadline)) break
-                val events = stream.next(until = minOf(now.plus(KEEP_ALIVE), stream.deadline))
-                if (events.isEmpty()) out.write(": keep-alive\n\n") else events.forEach { write(out, it) }
+                val events = stream.next(until = minOf(lastWrite.plus(KEEP_ALIVE), stream.deadline))
+                // Bytes go out only for this workspace's events, or on the
+                // keep-alive clock anchored to the last write — never because
+                // the stream woke: a wake with nothing to say writes nothing.
+                val afterWake = clock.instant()
+                if (events.isNotEmpty()) {
+                    events.forEach { write(out, it) }
+                } else if (!afterWake.isBefore(lastWrite.plus(KEEP_ALIVE))) {
+                    out.write(": keep-alive\n\n")
+                } else {
+                    continue
+                }
+                lastWrite = afterWake
                 out.flush()
                 // A client that went away would otherwise hold the slot to the deadline.
                 if (out.checkError()) break
             }
+            // `id:` as well as `data.resume`: an EventSource reconnects with the
+            // last id it saw, and a window that delivered no message has none.
             val resume = Cursors.encode(stream.position.receivedAt, stream.position.id.value)
-            out.write("event: end\ndata: {\"reason\":\"window\",\"resume\":\"$resume\"}\n\n")
+            out.write("id: $resume\nevent: end\ndata: {\"reason\":\"window\",\"resume\":\"$resume\"}\n\n")
             out.flush()
         }
         return null
