@@ -450,16 +450,29 @@ else
   if ! docker run -d --name "$PG_CONTAINER" -e POSTGRES_PASSWORD=t -e POSTGRES_DB=testinbox "$PG_IMAGE" >/dev/null 2>&1; then
     echo "FAIL — could not start $PG_IMAGE"; fail=$((fail + 1))
   else
-    for _ in $(seq 1 60); do
-      docker exec "$PG_CONTAINER" pg_isready -U postgres -d testinbox >/dev/null 2>&1 && break
+    # Over TCP, never the socket: the image's entrypoint runs a TEMPORARY
+    # socket-only server while it initialises (before POSTGRES_DB exists), and
+    # pg_isready/psql on the socket reach it and answer early — CI run
+    # 39356010884 failed exactly so. Only the final server listens on
+    # 127.0.0.1, and readiness is a real query against the named database,
+    # not a handshake.
+    PG_HOST=(-h 127.0.0.1 -U postgres -d testinbox)
+    psql() { docker exec -i -e PGPASSWORD=t "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -q "${PG_HOST[@]}" "$@"; }
+    migrate() { psql --single-transaction "$@"; }  # one transaction per migration, as Flyway runs them
+    pg_dump() { docker exec -e PGPASSWORD=t "$PG_CONTAINER" pg_dump "${PG_HOST[@]}" "$@"; }
+    ready=0
+    for _ in $(seq 1 90); do
+      if docker exec -e PGPASSWORD=t "$PG_CONTAINER" pg_isready -h 127.0.0.1 -U postgres -d testinbox >/dev/null 2>&1 &&
+        psql -tAc "SELECT 1" </dev/null 2>/dev/null | grep -qx 1; then
+        ready=1
+        break
+      fi
       sleep 1
     done
-    psql() { docker exec -i "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -q -U postgres -d testinbox "$@"; }
-    migrate() { psql --single-transaction "$@"; }  # one transaction per migration, as Flyway runs them
-    pg_dump() { docker exec "$PG_CONTAINER" pg_dump -U postgres -d testinbox "$@"; }
-    migrated=1
+    (( ready )) || { echo "FAIL — $PG_IMAGE did not become ready over TCP within 90s"; fail=$((fail + 1)); }
+    migrated=$ready
     # Flyway's history table (its DDL), then every migration in version order.
-    psql <<'SQL' >/dev/null || migrated=0
+    (( ready )) && { psql <<'SQL' >/dev/null || migrated=0; }
 CREATE TABLE "public"."flyway_schema_history" (
     "installed_rank" INT NOT NULL, "version" VARCHAR(50), "description" VARCHAR(200) NOT NULL,
     "type" VARCHAR(20) NOT NULL, "script" VARCHAR(1000) NOT NULL, "checksum" INTEGER,
