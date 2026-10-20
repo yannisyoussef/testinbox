@@ -20,4 +20,12 @@ data class TestInboxConfig(
     val waitWindowCap: Duration = Duration.ofSeconds(60),
     val maxRawSizeBytes: Long = 15L * 1024 * 1024,
     val sweepBatchSize: Int = 100,
+    /**
+     * How far behind its newest position the workspace event stream re-reads
+     * on every wake (ADR-020 clarification of 2026-10-20). A deployment
+     * invariant: must exceed ingestion's receipt-to-commit latency plus clock
+     * skew — at least the storage protocol's `T_PUT + EPSILON_MAX` — and the
+     * API contract states it, so changing it is a contract change.
+     */
+    val eventsVisibilityLag: Duration = Duration.ofSeconds(90),
 )

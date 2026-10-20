@@ -130,6 +130,26 @@ The two timeout layers are distinct and must not be conflated:
 - SDK long-poll chaining keys off the `status` field, not HTTP status
   classes, simplifying retry/error taxonomies.
 
+## Clarification (2026-10-20, workspace event stream)
+
+The payload is still a wake-up hint only, but it now names the workspace as
+well as the inbox — `<workspaceId>/<inboxId>` — so that a listener parked on
+behalf of a whole workspace (`GET /v1/workspace/events`) is woken by its own
+workspace's notifications and by no other tenant's: a wake caused by foreign
+activity would be observable as timing, the recipient-existence oracle
+ADR-025 closes at SMTP. A bare inbox id (the shape before this clarification)
+is still decoded and wakes that inbox's waiters, so a mixed-version rollout
+loses no wake. Correctness still derives exclusively from the re-query; the
+payload decides who re-queries, never what they find.
+
+A workspace-wide stream cannot re-evaluate "the whole inbox" the way a wait
+does, and `receivedAt` is stamped before the raw upload and the commit
+(ADR-005), so it reads a bounded **visibility horizon** behind the newest
+position it has seen on every wake and deduplicates by message id. The
+horizon's width (`testinbox.events.visibility-lag`) is a deployment invariant
+that must exceed the receipt-to-commit latency of ingestion plus clock skew;
+the API contract states it, and delivery across windows is at-least-once.
+
 ## Clarification (2026-10-19, issue #87)
 
 A wait parked on an `ACTIVE` inbox re-evaluates on every wake. The

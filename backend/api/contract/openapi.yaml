@@ -36,6 +36,12 @@ info:
 
     None of these is a `5xx`. A `500` from this API means a server fault, which
     is what makes it worth alerting on.
+
+    A `text/event-stream` operation types its body as text and lists the
+    events it emits in an `x-sse-events` extension on the media type: a map
+    from event name to the schema of that event's `data`. The map is the
+    closed list for this version of the contract, and clients must still
+    ignore event names they do not know, so the next version can add one.
 servers:
   - url: /v1
 security:
@@ -534,7 +540,8 @@ components:
       properties:
         reason:
           type: string
-          description: "`window`: the window reached its cap. Clients must tolerate unknown future values."
+          description: "Why the window closed. Clients must tolerate unknown future values."
+          enum: [window]
         resume:
           type: string
           description: The position to send as `Last-Event-ID` on the next connection.
@@ -875,6 +882,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MessagePage" }
+        "400":
+          description: "`type: https://testinbox.email/problems/invalid-request` — a malformed `cursor` or a non-integer `limit`."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
   /inboxes/{id}/messages/wait:
@@ -1031,14 +1043,22 @@ paths:
         position as its `id` line. A message's `receivedAt` is stamped at
         receipt, before its raw bytes are stored and the row commits, so a
         message can become visible with a position older than one already
-        delivered; the server therefore re-reads a visibility horizon behind
-        the newest position on every wake and deduplicates what it has
-        already sent. Within one window every message is delivered exactly
-        once and in receipt order. Across windows delivery is
+        delivered; the server therefore re-reads a **visibility horizon of
+        90 s** behind the newest position on every wake and deduplicates
+        what it has already sent. Within one window every message is
+        delivered exactly once, in *visibility* order: a later event may
+        carry an older `receivedAt` and `id` line than one already
+        delivered, so `id` lines are not monotonic and a client must never
+        stop on "older than the last one". Across windows delivery is
         **at-least-once**: the next window re-reads the same horizon behind
-        `Last-Event-ID`, so events the client already saw may repeat —
-        deduplicate on `id`. A message committed within the horizon of its
-        receipt is never missed.
+        `Last-Event-ID`, so events the client already saw may repeat.
+        Deduplicate on the message's `id` in `data` (a client may drop
+        entries whose `receivedAt` is more than 90 s behind the newest
+        position it has seen). Resuming from any `id` line seen is safe; the
+        `end` event's `id` is the newest position. A message committed within
+        90 s of its receipt is never missed. A backlog is sent a page at a
+        time, at once. A client that goes away is noticed on the server's
+        next write — within one keep-alive — and its slot is freed then.
 
         Inbox events come from a periodic re-read of the workspace's rows,
         carry no `id` line, are not resumable, and are best-effort across the

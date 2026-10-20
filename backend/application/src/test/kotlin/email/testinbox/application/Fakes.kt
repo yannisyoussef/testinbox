@@ -261,6 +261,8 @@ class InMemoryMessageRepository : MessageRepository {
         id: MessageId,
     ): Message? = messages.firstOrNull { it.id == id && it.workspaceId == workspaceId }
 
+    var maxPageServed = 0 // the largest page ever served by listWorkspacePage: what a caller held in memory at once
+
     /** Every message of the workspace: this fake has no inbox states, so servability is the SQL adapter's proof. */
     override fun listWorkspacePage(
         workspaceId: WorkspaceId,
@@ -282,6 +284,7 @@ class InMemoryMessageRepository : MessageRepository {
                         m.receivedAt.isAfter(cursor.receivedAt) || (m.receivedAt == cursor.receivedAt && m.id.value > cursor.id.value)
                     }
             }.take(limit)
+            .also { maxPageServed = maxOf(maxPageServed, it.size) }
     }
 
     override fun exists(id: MessageId): Boolean = messages.any { it.id == id }

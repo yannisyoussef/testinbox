@@ -34,7 +34,7 @@ class ConsoleReadsWiring {
         waitSlots: WaitSlots,
     ): WorkspaceQueries = WorkspaceQueries(tenants, config.mailDomain, limits, quotas, rateLimiter, waitSlots)
 
-    /** The workspace event stream: a parked wait over the whole workspace, one slot per stream (ADR-027 §3). */
+    /** The workspace event stream: a parked wait over the whole workspace, one slot per stream (ADR-027 §7). */
     @Bean
     @Suppress("LongParameterList") // a @Bean method's parameters are its dependencies: one per stream collaborator
     fun streamWorkspaceEvents(
@@ -47,5 +47,15 @@ class ConsoleReadsWiring {
         clock: Clock,
         metrics: WaitMetrics,
     ): StreamWorkspaceEvents =
-        StreamWorkspaceEvents(inboxes, messages, notifier, waitSlots, limits.quotas.maxConcurrentWaits, clock, config, metrics)
+        StreamWorkspaceEvents(
+            inboxes,
+            messages,
+            notifier,
+            waitSlots,
+            limits.quotas.maxConcurrentWaits,
+            clock,
+            config,
+            metrics,
+            visibilityLag = config.eventsVisibilityLag,
+        )
 }

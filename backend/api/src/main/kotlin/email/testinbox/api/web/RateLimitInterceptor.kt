@@ -28,7 +28,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer
 object RateCategories {
     private val WAIT = Regex("^/v1/inboxes/[^/]+/messages/wait$")
 
-    /** A parked connection for a whole window: charged and slotted like a wait (ADR-027 §3). */
+    /** A parked connection for a whole window: charged and slotted like a wait (ADR-027 §7). */
     private val EVENTS = Regex("^/v1/workspace/events$")
     private val DOWNLOAD = Regex("^/v1/messages/[^/]+/(raw|attachments/[^/]+)$")
     private val INBOX_CREATE = Regex("^/v1/inboxes$")

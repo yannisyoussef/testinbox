@@ -65,10 +65,21 @@ sealed interface WorkspaceEvent {
  * emitted yet, deduplicated by message id. A message is therefore never
  * missed if it commits within [visibilityLag] of its receipt; [visibilityLag]
  * must exceed the ingestion pipeline's receipt-to-commit bound (the raw
- * upload alone is capped at 30 s). A **resumed** window re-reads the same
+ * upload alone is capped at 30 s and a copy's objects upload one after
+ * another, so the typical bound, not a derived worst case; the deployment
+ * declares it and `DeploymentSafety` refuses one below the protocol's
+ * `T_PUT + EPSILON_MAX`). Events are therefore in *visibility*
+ * order: a later event may carry an older `receivedAt` than one already
+ * delivered, and the position only ever advances. A **resumed** window re-reads the same
  * horizon behind the client's position, so it may repeat events the client
  * already saw: delivery is at-least-once across windows and exactly-once
- * within one; clients deduplicate on `id`.
+ * within one; clients deduplicate on the message id.
+ *
+ * A backlog — a resumed position far behind, or a burst — is read **one page
+ * per call** and the stream simply does not park while a page was full, so
+ * no call ever holds more than a page of rows: a client cannot make the
+ * server load a workspace's whole history into memory by resuming from the
+ * epoch.
  *
  * Inbox lifecycle is a periodic diff of **all** the workspace's rows
  * (EXPIRING is not notified; EXPIRED and DELETED are, since issue #87).
@@ -89,8 +100,8 @@ class StreamWorkspaceEvents(
     private val metrics: WaitMetrics = WaitMetrics.NOOP,
     /** How often the inbox lifecycle is re-read when nothing wakes the stream. */
     private val inboxScanInterval: Duration = Duration.ofSeconds(2),
-    /** How far behind the newest position a wake re-reads; must exceed receipt-to-commit latency. */
-    private val visibilityLag: Duration = DEFAULT_VISIBILITY_LAG,
+    /** How far behind the newest position a wake re-reads: `TestInboxConfig.eventsVisibilityLag`, a deployment invariant. */
+    private val visibilityLag: Duration = config.eventsVisibilityLag,
 ) {
     sealed interface Open {
         data class Opened(
@@ -155,21 +166,31 @@ class StreamWorkspaceEvents(
         private var nextInboxScan: Instant = opened.plus(inboxScanInterval)
         private var first = true
 
+        /** Where an unfinished page walk continues; null when the last page read was short. */
+        private var walk: MessageCursor? = null
+
         init {
             // A fresh window starts "from now": what is visible already is not
-            // replayed, so it is marked seen without being emitted. A resumed
-            // window seeds nothing — the client's horizon is re-delivered.
-            if (after == null) drainMessages().forEach { seen[it.id] = it.receivedAt }
+            // replayed, so it is marked seen without being emitted — ids only,
+            // a page at a time. A resumed window seeds nothing: the client's
+            // horizon is re-delivered.
+            if (after == null) {
+                do {
+                    drainPage().forEach { seen[it.id] = it.receivedAt }
+                } while (walk != null)
+            }
         }
 
         /**
          * Everything that happened since the last call, blocking until a wake
          * or [until] (whichever first) when nothing is pending. The first call
-         * never blocks: a resumed position's backlog is delivered at once.
+         * never blocks, and neither does a call while a backlog page is still
+         * pending: a resumed position's backlog streams out at once, a page a
+         * call.
          */
         fun next(until: Instant): List<WorkspaceEvent> {
             var woken = false
-            if (first) {
+            if (first || walk != null) {
                 first = false
             } else {
                 // The park is capped at the next lifecycle scan as well as the
@@ -179,6 +200,11 @@ class StreamWorkspaceEvents(
                 woken = handle.awaitWake(minOf(until, deadline, nextInboxScan)) == WakeOutcome.WOKEN
             }
             val events = mutableListOf<WorkspaceEvent>()
+            // Read on every call, woken or not: during a mixed-version rollout
+            // an older node's bare-id payload wakes no stream, and the scan
+            // tick is then what delivers its messages. Narrowing this to
+            // wakes only is a change to make together with retiring the
+            // legacy payload.
             events += newMessages()
             val now = clock.instant()
             // A wake may be a transition (EXPIRED and DELETED notify, issue #87),
@@ -192,29 +218,28 @@ class StreamWorkspaceEvents(
         }
 
         private fun newMessages(): List<WorkspaceEvent> {
-            val fresh = drainMessages().filter { it.id !in seen }
+            val fresh = drainPage().filter { it.id !in seen }
             fresh.forEach { seen[it.id] = it.receivedAt }
             return fresh.map { WorkspaceEvent.MessageReceived(it) }
         }
 
-        /** Every message received within the horizon, oldest first, whole backlog — then the horizon moves. */
-        private fun drainMessages(): List<Message> {
-            val from = MessageCursor(position.receivedAt.minus(visibilityLag), MessageId(UUID(0L, 0L)))
-            val rows = mutableListOf<Message>()
-            var walk = from
-            while (true) {
-                val page = messages.listWorkspacePage(workspaceId, walk, MESSAGE_PAGE, descending = false)
-                rows += page
-                if (page.size < MESSAGE_PAGE) break
-                walk = MessageCursor(page.last().receivedAt, page.last().id)
-            }
-            rows.lastOrNull()?.let { newest ->
+        /**
+         * One page of the messages received within the horizon, oldest first,
+         * continuing an unfinished walk; a full page leaves [walk] set so the
+         * next call reads on without parking. The horizon moves with the
+         * newest row seen, and `seen` is pruned to it.
+         */
+        private fun drainPage(): List<Message> {
+            val from = walk ?: MessageCursor(position.receivedAt.minus(visibilityLag), MessageId(UUID(0L, 0L)))
+            val page = messages.listWorkspacePage(workspaceId, from, MESSAGE_PAGE, descending = false)
+            walk = if (page.size < MESSAGE_PAGE) null else MessageCursor(page.last().receivedAt, page.last().id)
+            page.lastOrNull()?.let { newest ->
                 val candidate = MessageCursor(newest.receivedAt, newest.id)
                 if (candidate.receivedAt.isAfter(position.receivedAt)) position = candidate
             }
             val floor = position.receivedAt.minus(visibilityLag)
             seen.values.removeIf { it.isBefore(floor) }
-            return rows
+            return page
         }
 
         private fun inboxChanges(): List<WorkspaceEvent> {
@@ -268,11 +293,8 @@ class StreamWorkspaceEvents(
         }
     }
 
-    companion object {
-        private const val MESSAGE_PAGE = 200
-        private const val INBOX_PAGE = 500
-
-        /** Twice the raw upload's own cap (30 s), the longest leg between receipt and commit. */
-        val DEFAULT_VISIBILITY_LAG: Duration = Duration.ofSeconds(60)
+    private companion object {
+        const val MESSAGE_PAGE = 200
+        const val INBOX_PAGE = 500
     }
 }

@@ -69,7 +69,7 @@ class RouteCoverageTest : ApiIntegrationTestBase() {
         RateCategories.of("GET", "/v1/messages") shouldBe RateCategory.READ
         RateCategories.of("GET", "/v1/workspace") shouldBe RateCategory.READ
         RateCategories.of("GET", "/v1/workspace/usage") shouldBe RateCategory.READ
-        // A parked connection over the whole workspace is a wait (ADR-027 §3).
+        // A parked connection over the whole workspace is a wait (ADR-027 §7).
         RateCategories.of("GET", "/v1/workspace/events") shouldBe RateCategory.WAIT
     }
 

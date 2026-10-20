@@ -16,7 +16,10 @@ import org.junit.jupiter.api.Test
  * in `application.query` may read a limiter (`peek`, `held`) for a usage
  * report; the members that spend, claim or refuse are not its to call.
  * Without this rule the KDoc "a usage read, never a decision" is the only
- * guard.
+ * guard. Deliberately scoped to `application.query`: the api adapter's
+ * `RateLimitInterceptor` calls `tryConsume` by design (it maps a route to a
+ * category and charges it), so widening this rule to `api..` is not a
+ * one-line change.
  */
 class LimitDecisionRuleTest {
     private val allClasses =

@@ -84,7 +84,7 @@ interface WaitSlot : AutoCloseable {
 }
 
 /**
- * Concurrent long-poll admission (ADR-027 §3). Slots are claimed by database
+ * Concurrent long-poll admission (ADR-027 §7). Slots are claimed by database
  * constraint rather than by a lock — the same pattern ADR-021 uses for exact
  * addresses — so wait admission never contends with the inbound write path.
  */

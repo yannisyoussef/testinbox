@@ -128,7 +128,7 @@ class StreamWorkspaceEventsTest {
     }
 
     @Test
-    fun `a workspace holding every slot is refused, like a wait (ADR-027 §3)`() {
+    fun `a workspace holding every slot is refused, like a wait (ADR-027 §7)`() {
         val useCase = useCase(maxConcurrentWaits = 1)
         val first = useCase.open(workspaceId, null).shouldBeInstanceOf<StreamWorkspaceEvents.Open.Opened>()
         useCase.open(workspaceId, null).shouldBeInstanceOf<StreamWorkspaceEvents.Open.ConcurrentWaitLimitExceeded>().limit shouldBe 1
@@ -206,15 +206,37 @@ class StreamWorkspaceEventsTest {
     }
 
     @Test
-    fun `a backlog larger than one page is drained in one call, in order`() {
+    fun `a backlog larger than one page streams out a page per call, in order, without parking in between`() {
         val inbox = inbox()
         val stream = open()
         stream.next(clock.now.plusSeconds(1)).shouldBeEmpty()
         clock.advanceSeconds(1)
         val backlog = (1..450).map { message(inbox, receivedAt = clock.now.plusMillis(it.toLong())) }
         notifier.onAwait = { WakeOutcome.WOKEN }
-        received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly backlog.map { it.id }
+        val handle = notifier.handles.single()
+        val awaitsBefore = handle.awaitCount
+        received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly backlog.take(200).map { it.id }
+        received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly backlog.drop(200).take(200).map { it.id }
+        received(stream.next(clock.now.plusSeconds(1))) shouldContainExactly backlog.drop(400).map { it.id }
+        // One park (the wake that started it); the two continuation calls parked nowhere.
+        handle.awaitCount shouldBe awaitsBefore + 1
         received(stream.next(clock.now.plusSeconds(1))).shouldBeEmpty()
+        handle.awaitCount shouldBe awaitsBefore + 2
+    }
+
+    @Test
+    fun `a resume from the epoch never holds more than a page of rows per call`() {
+        // A key holder can pass any position; the cost of an ancient one is
+        // one page per call, never the workspace's whole history in memory.
+        val inbox = inbox()
+        val history = (1..1_000).map { message(inbox, receivedAt = clock.now.minusSeconds(100_000L - it)) }
+        val stream = open(after = MessageCursor(Instant.EPOCH, MessageId(UUID(0L, 0L))))
+        messages.maxPageServed shouldBe 0
+        val pages = generateSequence { received(stream.next(clock.now.plusSeconds(1))).takeIf { it.isNotEmpty() } }.toList()
+        pages.map { it.size } shouldContainExactly listOf(200, 200, 200, 200, 200)
+        pages.flatten() shouldContainExactly history.map { it.id }
+        messages.maxPageServed shouldBe 200
+        stream.position shouldBe MessageCursor(history.last().receivedAt, history.last().id)
     }
 
     @Test
