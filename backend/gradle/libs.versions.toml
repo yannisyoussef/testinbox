@@ -1,5 +1,5 @@
 [versions]
-kotlin = "2.4.20"
+kotlin = "2.4.21"
 springBoot = "4.1.1"
 # Spring Boot 4.1.1 manages Tomcat 11.0.24, which carries CVE-2026-65182 (CRITICAL,
 # fixed in 11.0.25). Pinned above the BOM until a Boot patch manages the fix;
@@ -9,19 +9,19 @@ tomcatEmbed = "11.0.25"
 # CVE-2026-89425, CVE-2026-91776/91777, CVE-2026-68497 — HIGH, fixed). Both
 # BOMs are imported next to the Boot one in every module; a higher platform
 # constraint wins. Remove once the Boot BOM itself manages these or newer.
-jackson3 = "3.1.7"
-jackson2 = "2.21.7"
+jackson3 = "3.2.3"
+jackson2 = "2.22.3"
 coroutines = "1.11.0"
 testcontainers = "1.21.4"
-archunit = "1.5.0"
+archunit = "1.5.1"
 karate = "1.5.2"
-kotest = "6.2.5"
+kotest = "6.2.6"
 subethasmtp = "7.2.2"
 angusMail = "2.0.5"
 jakartaMailApi = "2.1.5"
 jsoup = "1.23.2"
-awsSdk = "2.54.18"
-spotless = "8.10.2"
+awsSdk = "2.56.0"
+spotless = "8.10.4"
 detekt = "1.23.8"
 awaitility = "4.3.0"
 
