@@ -1,0 +1,491 @@
+#!/usr/bin/env bash
+# Stands the entire staging topology up on this machine, deploys to it exactly
+# the way a real host would be deployed to, and runs the post-deployment
+# synthetic suite against it.
+#
+# WHY THIS EXISTS: no staging provider has been chosen (ADR-030 is Proposed,
+# VISION.md §7). Everything except the last step of the pipeline can still be
+# proven, and this proves it — including the parts that only a *deployed*
+# topology can exercise:
+#
+#   * images built from this commit, pushed to a registry, deployed BY DIGEST;
+#   * one migration job run to completion and gated on, applications not
+#     migrating at startup;
+#   * readiness that actually reflects database, schema, object store and the
+#     session-scoped LISTEN connection;
+#   * real TLS through a real nginx, with the long-poll read timeout that a
+#     stock configuration gets wrong;
+#   * the public SDK driving a complete inbound workflow end to end.
+#
+# It is NOT a deployment: nothing here is reachable off this machine, and
+# nothing here selects a hosting provider.
+#
+# Usage: scripts/staging-rehearsal.sh [--keep]
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK="${REHEARSAL_WORK_DIR:-$REPO_ROOT/.rehearsal}"
+REGISTRY_HOST="127.0.0.1:${REHEARSAL_REGISTRY_PORT:-5000}"
+REGISTRY_NAME="testinbox-rehearsal-registry"
+HTTPS_PORT="${REHEARSAL_HTTPS_PORT:-8443}"
+# Raised deliberately when tests are added; a silently shrinking gate is the
+# failure this number exists to catch.
+SYNTHETIC_MINIMUM=18
+# The credential-lifecycle product suite (TI-002 §19). Counted separately
+# because it is a separate verdict: "the deployment is broken" and "the
+# credential lifecycle is broken on a healthy deployment" are different things.
+PRODUCT_SYNTHETIC_MINIMUM=8
+# The TI-005 Postfix edge contract. Separate again: a regression here means the
+# hop that will face the Internet broke, which is not the same verdict as a
+# broken deployment or a broken credential lifecycle.
+EDGE_SYNTHETIC_MINIMUM=11
+HTTP_PORT="${REHEARSAL_HTTP_PORT:-8080}"
+SMTP_PORT="${REHEARSAL_SMTP_PORT:-2525}"
+EDGE_SMTP_PORT="${REHEARSAL_EDGE_SMTP_PORT:-2526}"
+# A realistic deployment-style hostname, not the short compose default: the
+# size boundary depends on how long the trace headers each hop adds are, and a
+# short name would leave the proof depending on spare room it will not have in
+# production.
+EDGE_MYHOSTNAME="${REHEARSAL_EDGE_HOSTNAME:-mail-edge-01.eu-central-1.staging.testinbox.email}"
+# Read from the contract so the suite and the edge can never disagree.
+EDGE_MESSAGE_SIZE_LIMIT="$("$REPO_ROOT/deploy/mail-edge/contract.py" get required.message_size_limit)"
+KEEP=false
+[[ "${1:-}" == "--keep" ]] && KEEP=true
+
+COMPOSE=(docker compose
+  -f "$REPO_ROOT/deploy/staging/compose.yaml"
+  -f "$REPO_ROOT/deploy/staging/compose.data.yaml"
+  -f "$REPO_ROOT/deploy/staging/compose.mail-edge.yaml")
+
+step()  { printf '\n\033[1m=== %s ===\033[0m\n' "$1"; }
+cleanup() {
+  local status=$?
+  if [[ "$KEEP" == true && $status -eq 0 ]]; then
+    echo "--keep: leaving the stack up (docker compose -f deploy/staging/compose.yaml -f deploy/staging/compose.data.yaml down -v)"
+    return
+  fi
+  step "teardown"
+  if [[ $status -ne 0 ]]; then
+    # Evidence first: a failed rehearsal must leave something to debug (§19).
+    echo "--- container status ---"; "${COMPOSE[@]}" ps || true
+    for service in migrator api ingestion web edge mail-edge; do
+      echo "--- $service logs (tail) ---"
+      "${COMPOSE[@]}" logs --tail=80 "$service" 2>/dev/null || true
+    done
+    # A deferred or expired relay is invisible in the application logs; the
+    # queue is where it shows. Metadata only — never message bodies (§28).
+    echo "--- mail queue ---"
+    "${COMPOSE[@]}" exec -T mail-edge postqueue -p 2>/dev/null || true
+  fi
+  "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+  docker rm -f "$REGISTRY_NAME" >/dev/null 2>&1 || true
+  rm -rf "$WORK"
+  exit $status
+}
+trap cleanup EXIT
+
+# MinIO is pulled from a PRIVATE third-party mirror in GHCR, because MinIO
+# withdrew its public images (docs/dev/third-party-mirrors.md). Checked here,
+# before anything is built: without this, a missing `docker login ghcr.io`
+# surfaces as a bare `unauthorized` in the middle of the deploy step, which
+# reads like a broken deployment rather than a missing credential — that is
+# exactly how the withdrawal itself was first seen.
+MIRROR_IMAGE="$(sed -n 's|^[[:space:]]*image:[[:space:]]*\(ghcr\.io/[^[:space:]]*/minio@sha256:[0-9a-f]*\).*$|\1|p' \
+  "$REPO_ROOT/deploy/staging/compose.data.yaml" | head -1)"
+if [[ -z "$MIRROR_IMAGE" ]]; then
+  echo "no GHCR MinIO mirror reference found in deploy/staging/compose.data.yaml — the data tier must pin one by digest" >&2
+  exit 1
+fi
+if ! docker image inspect "$MIRROR_IMAGE" >/dev/null 2>&1 && ! docker pull "$MIRROR_IMAGE" >/dev/null 2>&1; then
+  cat >&2 <<MSG
+cannot pull the MinIO mirror:
+  $MIRROR_IMAGE
+
+It is a private package, so a GHCR login is required:
+  docker login ghcr.io          # username: your GitHub login, password: a token with read:packages
+
+Why it is private and why upstream cannot be used instead:
+  docs/dev/third-party-mirrors.md
+MSG
+  exit 1
+fi
+
+# The environment file drives compose, deploy.sh and the synthetic suite alike.
+mkdir -p "$WORK/tls"
+ENV_FILE="$WORK/.env"
+
+step "1/10 local registry (so images are deployed by real digest, as in production)"
+docker rm -f "$REGISTRY_NAME" >/dev/null 2>&1 || true
+docker run -d --name "$REGISTRY_NAME" -p "$REGISTRY_HOST:5000" registry:3 >/dev/null
+# Wait for it rather than sleeping blindly.
+for _ in $(seq 1 60); do
+  curl -fsS "http://$REGISTRY_HOST/v2/" >/dev/null 2>&1 && break
+  sleep 0.5
+done
+curl -fsS "http://$REGISTRY_HOST/v2/" >/dev/null
+
+step "2/10 build and publish the immutable artifacts"
+GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+# Plain variables rather than an associative array: macOS ships bash 3.2, and
+# this script has to run the same way on a developer machine and on a runner.
+build_and_push() {
+  local name="$1" dockerfile="$2"; shift 2
+  local ref="$REGISTRY_HOST/testinbox-$name"
+  docker build -f "$REPO_ROOT/$dockerfile" --build-arg "GIT_SHA=$GIT_SHA" "$@" \
+    -t "$ref:rehearsal" "$REPO_ROOT" >&2
+  docker push "$ref:rehearsal" >&2
+  # The digest is the deployment identity (ADR-028) — read it back from the
+  # registry rather than trusting the tag we just wrote.
+  # Read the digest back from the REGISTRY for this exact tag. `docker inspect`
+  # .RepoDigests is a list whose order is not defined, so index 0 can be a
+  # digest from an earlier push of the same repository name — which would mean
+  # deploying the wrong bytes, not just a flaky run.
+  local digest
+  digest="$(docker buildx imagetools inspect "$ref:rehearsal" --format '{{.Manifest.Digest}}')"
+  case "$digest" in
+    sha256:*) ;;
+    *) echo "could not resolve a digest for $ref:rehearsal (got '$digest')" >&2; return 1 ;;
+  esac
+  echo "$ref@$digest"
+}
+API_IMAGE="$(build_and_push api       deploy/docker/backend.Dockerfile --build-arg MODULE=api)"
+INGESTION_IMAGE="$(build_and_push ingestion deploy/docker/backend.Dockerfile --build-arg MODULE=ingestion)"
+MIGRATOR_IMAGE="$(build_and_push migrator  deploy/docker/backend.Dockerfile --build-arg MODULE=migrator)"
+WEB_IMAGE="$(build_and_push web       deploy/docker/web.Dockerfile)"
+for ref in "$API_IMAGE" "$INGESTION_IMAGE" "$MIGRATOR_IMAGE" "$WEB_IMAGE"; do echo "  $ref"; done
+
+step "3/10 TLS material (a private CA, so verification stays ON in the synthetic suite)"
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+  -keyout "$WORK/tls/ca.key" -out "$WORK/tls/ca.pem" \
+  -subj "/CN=TestInbox Rehearsal CA" >/dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes \
+  -keyout "$WORK/tls/privkey.pem" -out "$WORK/tls/server.csr" \
+  -subj "/CN=localhost" >/dev/null 2>&1
+openssl x509 -req -in "$WORK/tls/server.csr" -days 2 \
+  -CA "$WORK/tls/ca.pem" -CAkey "$WORK/tls/ca.key" -CAcreateserial \
+  -extfile <(printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\n') \
+  -out "$WORK/tls/leaf.pem" >/dev/null 2>&1
+cat "$WORK/tls/leaf.pem" "$WORK/tls/ca.pem" > "$WORK/tls/fullchain.pem"
+# Readable by the nginx container's user, but the private material stays 600.
+chmod 644 "$WORK/tls/fullchain.pem" "$WORK/tls/ca.pem"
+chmod 600 "$WORK/tls/privkey.pem" "$WORK/tls/ca.key"
+
+step "4/10 environment"
+# Generated per run: the rehearsal must never rely on a value that could also
+# be a real credential, and DeploymentSafety refuses local-development defaults.
+random() { LC_ALL=C tr -dc 'a-zA-Z0-9' </dev/urandom | head -c "${1:-40}"; }
+cat > "$ENV_FILE" <<ENV
+TESTINBOX_API_IMAGE=$API_IMAGE
+TESTINBOX_INGESTION_IMAGE=$INGESTION_IMAGE
+TESTINBOX_WEB_IMAGE=$WEB_IMAGE
+TESTINBOX_MIGRATOR_IMAGE=$MIGRATOR_IMAGE
+TESTINBOX_GIT_SHA=$GIT_SHA
+
+TESTINBOX_ENVIRONMENT=rehearsal
+TESTINBOX_SERVER_NAME=localhost
+TESTINBOX_PUBLIC_BASE_URL=https://localhost:$HTTPS_PORT
+TESTINBOX_MAIL_DOMAIN=rehearsal.testinbox.email
+
+TESTINBOX_BUNDLED_DATA=true
+TESTINBOX_DB_NAME=testinbox
+TESTINBOX_DB_URL=jdbc:postgresql://postgres:5432/testinbox
+TESTINBOX_DB_USER=testinbox_rehearsal
+TESTINBOX_DB_PASSWORD=$(random 40)
+TESTINBOX_S3_ENDPOINT=http://minio:9000
+TESTINBOX_S3_ACCESS_KEY=$(random 24)
+TESTINBOX_S3_SECRET_KEY=$(random 44)
+TESTINBOX_S3_BUCKET=testinbox-mime
+TESTINBOX_BOOTSTRAP_API_KEY=tk_reh_$(random 40)
+
+TESTINBOX_WAIT_WINDOW_CAP=60s
+TESTINBOX_PROXY_READ_TIMEOUT_SECONDS=120
+
+TESTINBOX_EDGE_RATE_PER_SECOND=200
+TESTINBOX_EDGE_BURST=1000
+TESTINBOX_EDGE_CONN_LIMIT=256
+
+TESTINBOX_TLS_DIR=$WORK/tls
+TESTINBOX_HTTP_BIND=127.0.0.1
+TESTINBOX_HTTPS_BIND=127.0.0.1
+TESTINBOX_HTTP_PUBLISHED_PORT=$HTTP_PORT
+TESTINBOX_HTTPS_PUBLISHED_PORT=$HTTPS_PORT
+TESTINBOX_SMTP_BIND=127.0.0.1
+TESTINBOX_SMTP_PUBLISHED_PORT=$SMTP_PORT
+
+# The Postfix edge (TI-005). Published to loopback only, and only so the suite
+# can act as an EXTERNAL sender: the address Postfix sees is the bridge gateway,
+# deliberately outside the loopback-pinned mynetworks. A relay probe from inside
+# mynetworks would be permitted by permit_mynetworks and prove nothing.
+TESTINBOX_EDGE_SMTP_BIND=127.0.0.1
+TESTINBOX_EDGE_SMTP_PORT=$EDGE_SMTP_PORT
+EDGE_MYHOSTNAME=$EDGE_MYHOSTNAME
+
+# Chosen, not inherited: two cold JVMs plus bucket creation on a loaded CI
+# runner is the tightest timing in the pipeline.
+TESTINBOX_READY_TIMEOUT=420
+TESTINBOX_MIGRATION_TIMEOUT=300
+ENV
+set -a; . "$ENV_FILE"; set +a
+export COMPOSE_ENV_FILES="$ENV_FILE"
+
+step "5/10 deploy (the same script a real host runs)"
+# The rehearsal registry replaces ghcr.io as the ownership root; the digest
+# pinning and image-name checks are exercised unchanged.
+EXPECTED_IMAGE_REPOSITORY="$REGISTRY_HOST" "$REPO_ROOT/deploy/staging/deploy.sh"
+
+step "6/10 assert the wait notifier is on a real LISTEN connection"
+# Direct evidence, not inference. The synthetic suite can only observe wake-up
+# *latency* from outside; here the topology is ours, so read the mechanism
+# itself. A transaction-mode pooler would leave listening=false while the
+# product still worked — slower — which is precisely why it needs asserting.
+READINESS=$("${COMPOSE[@]}" exec -T api wget -q -O - http://127.0.0.1:9090/actuator/health/readiness)
+echo "$READINESS"
+case "$READINESS" in
+  *'"listening":true'*) echo "ok — LISTEN connection is live" ;;
+  *) echo "the API is not holding a LISTEN connection (ADR-020); wait latency would silently degrade" >&2; exit 1 ;;
+esac
+
+# ADR-033/034: the database bounds a hung idempotency claim, and readiness
+# says so. compose.data.yaml sets the timeout; this proves the running node
+# reads it back as bounded — the same check a production node enforces.
+case "$READINESS" in
+  *'"bounded":true'*) echo "ok — idle_in_transaction_session_timeout is bounded (dbSession)" ;;
+  *) echo "the API does not report a bounded idle_in_transaction_session_timeout (ADR-033); readiness: $READINESS" >&2; exit 1 ;;
+esac
+
+# Deployment identity (ADR-028/034): the running build must be THIS commit,
+# on both deployables. This is what a dark production deployment asserts from
+# the host (deploy/synthetic/identity), exercised here on every pull request.
+for service in api:9090 ingestion:9091; do
+  name="${service%%:*}"; port="${service##*:}"
+  INFO=$("${COMPOSE[@]}" exec -T "$name" wget -q -O - "http://127.0.0.1:$port/actuator/info")
+  case "$INFO" in
+    *"\"gitSha\":\"$GIT_SHA\""*) echo "ok — $name reports gitSha $GIT_SHA" ;;
+    *) echo "$name does not report the deployed commit ($GIT_SHA): $INFO" >&2; exit 1 ;;
+  esac
+done
+
+# And that Ops can actually see it. A metric that exists in a unit test but is
+# not on the scrape endpoint of the running container is not observability.
+# The last three are Spring Boot's standard binders — the production alerting
+# contract (docs/dev/production.md) relies on them, so their presence is
+# asserted rather than assumed.
+SCRAPE=$("${COMPOSE[@]}" exec -T api wget -q -O - http://127.0.0.1:9090/actuator/prometheus)
+for metric in testinbox_build testinbox_wait_listen_degraded_polling testinbox_wait_requests_active \
+              jvm_memory_used_bytes hikaricp_connections_active process_cpu_usage; do
+  case "$SCRAPE" in
+    *"$metric"*) echo "ok — $metric is on the scrape endpoint" ;;
+    *) echo "$metric is missing from /actuator/prometheus" >&2; exit 1 ;;
+  esac
+done
+# The degraded gauge must read healthy on a stack whose LISTEN connection is up
+# — a gauge stuck at 1 would alert forever and be muted within a week.
+# Matched by regex, not substring: the exposition format renders the value as
+# `0`, `0.0` or `0.000000` depending on the registry, and pinning one spelling
+# would make this fail for a formatting reason and look like an outage.
+DEGRADED_LINE=$(printf '%s\n' "$SCRAPE" | grep -E '^testinbox_wait_listen_degraded_polling(\{[^}]*\})?[[:space:]]' | head -1)
+if printf '%s' "$DEGRADED_LINE" | grep -Eq '[[:space:]]0(\.0*)?$'; then
+  echo "ok — degraded-polling gauge reads healthy ($DEGRADED_LINE)"
+else
+  echo "testinbox_wait_listen_degraded_polling is not 0 on a healthy stack: '$DEGRADED_LINE'" >&2
+  exit 1
+fi
+
+step "7/10 build the public SDK this commit ships, for the synthetic suite"
+( cd "$REPO_ROOT/sdk/typescript" && npm ci --silent && npm run build --silent )
+# `npm ci` needs the SDK's dist/ to already exist: the synthetic package
+# depends on it through a file: reference.
+( cd "$REPO_ROOT/deploy/synthetic" && npm ci --silent --no-audit --no-fund )
+
+step "8/10 post-deployment synthetic verification"
+# TLS verification stays ON: Node is pointed at the rehearsal CA rather than
+# told to ignore certificates.
+# `cd` rather than `npm --prefix`: --prefix relocates package.json but not the
+# working directory, so the test runner would look for tests/ in the caller's cwd.
+cd "$REPO_ROOT/deploy/synthetic"
+mkdir -p build/test-results
+NODE_EXTRA_CA_CERTS="$WORK/tls/ca.pem" \
+TESTINBOX_BASE_URL="https://localhost:$HTTPS_PORT" \
+TESTINBOX_HTTP_BASE_URL="http://localhost:$HTTP_PORT" \
+TESTINBOX_API_KEY="$TESTINBOX_BOOTSTRAP_API_KEY" \
+TESTINBOX_SMTP_HOST=127.0.0.1 \
+TESTINBOX_SMTP_PORT="$SMTP_PORT" \
+TESTINBOX_WAIT_WINDOW_SECONDS=60 \
+TESTINBOX_EDGE=nginx-reference \
+  npm run test:junit
+
+# The synthetic suite is a blocking deployment gate, so it gets the same
+# treatment as every other suite (docs/quality/strategy.md): a green exit code
+# is not evidence that anything ran. A renamed file or a `test.skip` would
+# otherwise shrink the gate silently.
+REPORT="$REPO_ROOT/deploy/synthetic/build/test-results/synthetic.xml"
+test -f "$REPORT" || { echo "synthetic suite produced no report" >&2; exit 1; }
+# Node's junit reporter emits a flat <testsuites> of <testcase> elements with
+# no summary attributes, so the elements themselves are what gets counted.
+RAN=$(grep -c '<testcase' "$REPORT" || true)
+FAILED=$(grep -c '<failure' "$REPORT" || true)
+SKIPPED=$(grep -c '<skipped' "$REPORT" || true)
+echo "synthetic suite: ${RAN:-0} tests, ${FAILED:-0} failed, ${SKIPPED:-0} skipped"
+test "${RAN:-0}" -ge "$SYNTHETIC_MINIMUM" || {
+  echo "expected at least $SYNTHETIC_MINIMUM synthetic tests, got ${RAN:-0}" >&2; exit 1; }
+test "${FAILED:-0}" -eq 0 || { echo "synthetic tests failed" >&2; exit 1; }
+test "${SKIPPED:-0}" -eq 0 || { echo "synthetic tests were skipped" >&2; exit 1; }
+
+step "9/10 product synthetics: credential lifecycle (ADR-032) and idempotency (ADR-033)"
+# First, the handover a real environment performs exactly once: the bootstrap
+# credential mints the first managed administrator and thereby retires itself
+# (ADR-032 §8). Doing it here rather than handing the suite the bootstrap key
+# means CI exercises the transition itself, and lets the suite assert that the
+# environment is running on managed credentials — the check that turns
+# "staging must not rely forever on the bootstrap key" from a docs statement
+# into a gate.
+ADMIN_KEY_JSON=$(
+  curl -fsS --cacert "$WORK/tls/ca.pem" \
+    -X POST "https://localhost:$HTTPS_PORT/v1/api-keys" \
+    -H "Authorization: Bearer $TESTINBOX_BOOTSTRAP_API_KEY" \
+    -H 'Content-Type: application/json' \
+    -d '{"name":"rehearsal-admin","scopes":["api-keys:manage","inboxes:write","messages:read"]}'
+)
+# The top-level "key" member only, so a nested field cannot be picked up by
+# accident. The credential's own alphabet is [a-z2-7_], which is why the class
+# is that narrow.
+TESTINBOX_ADMIN_API_KEY=$(printf '%s' "$ADMIN_KEY_JSON" | sed -n 's/.*"key":"\(ti_[a-z0-9_]*\)".*/\1/p')
+test -n "$TESTINBOX_ADMIN_API_KEY" || {
+  echo "the bootstrap credential could not mint the first managed administrator" >&2; exit 1; }
+
+# And the window must now be shut. Asserted rather than trusted: it is the one
+# behaviour that stops the bootstrap credential becoming permanent, and it is
+# invisible everywhere else — nothing changes, a credential simply stops working.
+BOOTSTRAP_AFTER=$(
+  curl -s -o /dev/null -w '%{http_code}' --cacert "$WORK/tls/ca.pem" \
+    -H "Authorization: Bearer $TESTINBOX_BOOTSTRAP_API_KEY" \
+    "https://localhost:$HTTPS_PORT/v1/api-keys"
+)
+test "$BOOTSTRAP_AFTER" = "401" || {
+  echo "bootstrap credential still authenticates after handover (got $BOOTSTRAP_AFTER, expected 401)" >&2
+  exit 1; }
+echo "ok — the bootstrap credential retired itself once a managed administrator existed"
+
+NODE_EXTRA_CA_CERTS="$WORK/tls/ca.pem" \
+TESTINBOX_BASE_URL="https://localhost:$HTTPS_PORT" \
+TESTINBOX_HTTP_BASE_URL="http://localhost:$HTTP_PORT" \
+TESTINBOX_API_KEY="$TESTINBOX_ADMIN_API_KEY" \
+TESTINBOX_ADMIN_API_KEY="$TESTINBOX_ADMIN_API_KEY" \
+TESTINBOX_SMTP_HOST=127.0.0.1 \
+TESTINBOX_SMTP_PORT="$SMTP_PORT" \
+TESTINBOX_WAIT_WINDOW_SECONDS=60 \
+TESTINBOX_EDGE=nginx-reference \
+  npm run test:product:junit
+
+PRODUCT_REPORT="$REPO_ROOT/deploy/synthetic/build/test-results/synthetic-product.xml"
+test -f "$PRODUCT_REPORT" || { echo "product synthetic produced no report" >&2; exit 1; }
+PRODUCT_RAN=$(grep -c '<testcase' "$PRODUCT_REPORT" || true)
+PRODUCT_FAILED=$(grep -c '<failure' "$PRODUCT_REPORT" || true)
+PRODUCT_SKIPPED=$(grep -c '<skipped' "$PRODUCT_REPORT" || true)
+echo "product synthetic: ${PRODUCT_RAN:-0} tests, ${PRODUCT_FAILED:-0} failed, ${PRODUCT_SKIPPED:-0} skipped"
+test "${PRODUCT_RAN:-0}" -ge "$PRODUCT_SYNTHETIC_MINIMUM" || {
+  echo "expected at least $PRODUCT_SYNTHETIC_MINIMUM product synthetic tests, got ${PRODUCT_RAN:-0}" >&2; exit 1; }
+test "${PRODUCT_FAILED:-0}" -eq 0 || { echo "product synthetic tests failed" >&2; exit 1; }
+test "${PRODUCT_SKIPPED:-0}" -eq 0 || { echo "product synthetic tests were skipped" >&2; exit 1; }
+
+step "10/10 mail-edge contract (TI-005): sender -> Postfix -> ingestion"
+# The edge is the hop that will face the Internet. Everything below sends
+# THROUGH Postfix; the direct-to-ingestion tests elsewhere answer a different
+# question and are not replaced by these.
+#
+# The suite runs against the rehearsal only. The deployed staging estate has no
+# Postfix edge — the real one is a separate dormant Contabo host Ops owns — so
+# this is a separate target rather than skips inside the deployment gate.
+# The edge is brought up HERE, not by deploy.sh. That script is "the same script
+# a real host runs", and a real host does not deploy this: the production edge is
+# a separate, dormant Contabo host that Ops owns and reconciles. Teaching
+# deploy.sh about a Postfix container would make the rehearsal's deployment step
+# stop being a faithful copy of the real one, which is the property that makes it
+# worth running at all.
+# --build, always: the edge image COPYs render.sh, the templates and the
+# contract, so without it a change to any of them silently validates the
+# previously built image. That is how a queue-lifetime change appeared to
+# have no effect.
+"${COMPOSE[@]}" up -d --build --wait --wait-timeout 180 mail-edge || {
+  echo "the mail edge did not become healthy" >&2
+  "${COMPOSE[@]}" logs --tail=60 mail-edge || true
+  exit 1
+}
+"${COMPOSE[@]}" logs mail-edge 2>/dev/null | grep -E "relay target|banner:|ok   [a-z_]+" | sed 's/^/  /' || true
+
+# The rendered generation must satisfy the contract before anything is sent
+# through it. The entrypoint already asserted the RUNNING configuration; this is
+# the static half, and it runs against the very files the container rendered.
+"${COMPOSE[@]}" exec -T mail-edge tar -cf - -C /etc/postfix main.cf master.cf transport generation \
+  | tar -xf - -C "$WORK" 2>/dev/null || true
+"$REPO_ROOT/scripts/check-mail-edge-contract.sh" "$WORK" --profile ci
+
+# The bootstrap credential retired itself in step 9 — that is the point of the
+# handover assertion there — so this mints its own. Least privilege on purpose:
+# the edge suite creates inboxes and reads messages, and nothing it does should
+# require a credential that can mint credentials.
+EDGE_KEY_JSON=$(
+  curl -fsS --cacert "$WORK/tls/ca.pem" \
+    -X POST "https://localhost:$HTTPS_PORT/v1/api-keys" \
+    -H "Authorization: Bearer $TESTINBOX_ADMIN_API_KEY" \
+    -H 'content-type: application/json' \
+    -d '{"name":"rehearsal-mail-edge","scopes":["inboxes:write","messages:read"]}'
+)
+TESTINBOX_EDGE_API_KEY=$(printf '%s' "$EDGE_KEY_JSON" | sed -n 's/.*"key":"\(ti_[a-z0-9_]*\)".*/\1/p')
+test -n "$TESTINBOX_EDGE_API_KEY" || {
+  echo "could not mint a credential for the mail-edge suite" >&2; exit 1; }
+
+(
+  cd "$REPO_ROOT/deploy/synthetic"
+  NODE_EXTRA_CA_CERTS="$WORK/tls/ca.pem" \
+  TESTINBOX_BASE_URL="https://localhost:$HTTPS_PORT" \
+  TESTINBOX_HTTP_BASE_URL="http://localhost:$HTTP_PORT" \
+  TESTINBOX_API_KEY="$TESTINBOX_EDGE_API_KEY" \
+  TESTINBOX_SMTP_HOST=127.0.0.1 \
+  TESTINBOX_SMTP_PORT="$SMTP_PORT" \
+  TESTINBOX_EDGE_SMTP_HOST=127.0.0.1 \
+  TESTINBOX_EDGE_SMTP_PORT="$EDGE_SMTP_PORT" \
+  TESTINBOX_EDGE_MESSAGE_SIZE_LIMIT="$EDGE_MESSAGE_SIZE_LIMIT" \
+    npm run test:edge:junit
+)
+
+EDGE_REPORT="$REPO_ROOT/deploy/synthetic/build/test-results/synthetic-edge.xml"
+test -f "$EDGE_REPORT" || { echo "mail-edge suite produced no report" >&2; exit 1; }
+EDGE_RAN=$(grep -c '<testcase' "$EDGE_REPORT" || true)
+EDGE_FAILED=$(grep -c '<failure' "$EDGE_REPORT" || true)
+EDGE_SKIPPED=$(grep -c '<skipped' "$EDGE_REPORT" || true)
+echo "mail-edge suite: ${EDGE_RAN:-0} tests, ${EDGE_FAILED:-0} failed, ${EDGE_SKIPPED:-0} skipped"
+test "${EDGE_RAN:-0}" -ge "$EDGE_SYNTHETIC_MINIMUM" || {
+  echo "expected at least $EDGE_SYNTHETIC_MINIMUM mail-edge tests, got ${EDGE_RAN:-0}" >&2; exit 1; }
+test "${EDGE_FAILED:-0}" -eq 0 || { echo "mail-edge contract tests failed" >&2; exit 1; }
+test "${EDGE_SKIPPED:-0}" -eq 0 || { echo "mail-edge contract tests were skipped" >&2; exit 1; }
+
+# The storage-side half of ADR-025, which the network suite cannot see: an
+# unknown recipient must leave NO row and NO object anywhere, not merely a 404.
+REHEARSAL_HTTPS_PORT="$HTTPS_PORT" \
+TESTINBOX_EDGE_API_KEY="$TESTINBOX_EDGE_API_KEY" \
+  "$REPO_ROOT/scripts/mail-edge-storage-proof.sh"
+
+# ADR-026: one DATA with several recipients must reach ingestion as ONE inbound
+# event. Final state cannot show that — two separate deliveries also fill both
+# inboxes — so this reads the accepted-transaction counter across the send.
+REHEARSAL_HTTPS_PORT="$HTTPS_PORT" \
+TESTINBOX_EDGE_API_KEY="$TESTINBOX_EDGE_API_KEY" \
+  "$REPO_ROOT/scripts/mail-edge-atomicity-proof.sh"
+
+# The queue proofs need to stop and start ingestion, which a network client
+# cannot do. They run last because they deliberately take the gateway down.
+REHEARSAL_HTTPS_PORT="$HTTPS_PORT" \
+TESTINBOX_EDGE_API_KEY="$TESTINBOX_EDGE_API_KEY" \
+  "$REPO_ROOT/scripts/mail-edge-queue-proofs.sh"
+
+# TI-005 §16. Last, because it drives the edge to its ceilings and restarts
+# Postfix to clear anvil's per-IP counters — nothing after it should depend on
+# the edge being in the rehearsal's permissive state.
+"$REPO_ROOT/scripts/mail-edge-abuse-proofs.sh"
+
+step "rehearsal passed"
+echo "api:       $API_IMAGE"
+echo "ingestion: $INGESTION_IMAGE"
+echo "web:       $WEB_IMAGE"
+echo "migrator:  $MIGRATOR_IMAGE"

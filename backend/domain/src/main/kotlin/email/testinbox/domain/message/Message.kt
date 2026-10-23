@@ -57,7 +57,11 @@ data class Message(
     val envelopeTo: String,
     val rawObjectKey: String,
     val rawSizeBytes: Long,
-    /** SHA-256 of the raw MIME bytes, informational (ADR-019 annotation, not suppression). */
+    /**
+     * SHA-256 of the message with `Received:` trace fields excluded, so transport
+     * hops and their timestamps do not change it (ADR-019 §4, amended 2026-09-17).
+     * Informational annotation, not suppression; the stored raw MIME is unaffected.
+     */
     val contentFingerprint: String,
     val possibleDuplicateOfMessageId: MessageId?,
     val parseStatus: ParseStatus,

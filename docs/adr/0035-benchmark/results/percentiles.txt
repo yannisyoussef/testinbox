@@ -1,0 +1,24 @@
+mode  clients  events/s  ingest p50      p99      max  ret p99  failed retried
+c           1      1620        0.5m     0.9m      15m     3.1m       0       0
+c          16     11341        1.2m     2.6m      24m     3.9m       0       0
+c          64     12877        4.0m    16.0m     111m    15.1m       0       0
+c         128         0        nanm     nanm       0m     nanm       ?       ?
+a           1      1299        0.7m     1.0m       7m     2.9m       0       0
+a          16      2308        6.8m     9.7m      24m     3.1m       0       0
+a          64      1968       31.0m    45.9m      81m     3.7m       0       0
+a         128         0        nanm     nanm       0m     nanm       ?       ?
+b           1      1529        0.5m     0.8m      11m     4.2m       0       0
+b          16      1091       11.5m    49.1m     110m    39.4m       0       0
+b          64       706       70.4m   322.5m     592m   207.6m       0       0
+b         128         0        nanm     nanm       0m     nanm       ?       ?
+
+mode rate  achieved/s  T1 p50/p99   T2 p99   retention p99   failed  aborted
+c      520        521    2.3/  8.9      9.9          13.2        0  no
+a      520        527    3.0/ 10.1      8.4          11.5        0  no
+b      520        520    2.5/ 14.4     14.6          18.9        0  no
+c     1040       1053    1.9/  6.0      6.3           9.0        0  no
+a     1040       1014    4.2/867.6    857.9         921.7        0  no
+b     1040       1036    3.7/296.7    291.4         284.5        0  no
+
+mode rate  achieved/s  T1 p50/p99   T2 p99   retention p99   failed  aborted
+a     1040       1037    2.5/  7.2      6.1           8.7        0  no

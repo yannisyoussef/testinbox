@@ -1,0 +1,3 @@
+pgbench (16.15)
+pgbench: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: FATAL:  sorry, too many clients already
+pgbench: error: could not create connection for client 27

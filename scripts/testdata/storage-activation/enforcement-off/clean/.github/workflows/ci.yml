@@ -1,0 +1,5 @@
+# Fixture: a workflow that names the setting only in prose.
+jobs:
+  build:
+    steps:
+      - run: echo "enforcement stays OFF until the barrier is proven"

@@ -1,0 +1,71 @@
+# Post-deployment synthetic verification
+
+A real TestInbox workflow executed **through a deployed environment**, driven by
+the public TypeScript SDK built from the same commit as the deployed images.
+This is the gate that decides whether a staging deployment succeeded — not
+`/health` (TI-DEPLOY-001 §17/§19).
+
+## What it proves
+
+| Test | What breaks if it fails |
+|---|---|
+| `synthetic.test.mjs` — full workflow | The deployed API, gateway, PostgreSQL, object store, parser or ingress |
+| `longpoll.test.mjs` — full window through the ingress | The reverse-proxy read timeout is shorter than the wait window (§13) |
+| `longpoll.test.mjs` — parked wait woken by SMTP | `LISTEN/NOTIFY` is not reaching waiters — e.g. the database is behind a transaction-mode pooler (ADR-020) |
+| `edge.test.mjs` — edge invariants | The ingress is serving what it must refuse, or refusing what it must serve |
+| `storage.test.mjs` — ADR-035 §13 storage visibility | The deployed artifact predates TI-STORAGE-004 (`GET /v1/workspace/storage` is `404`), a tenant response carries a global figure, a legacy wait without the cursor gets a `409`, or a storage refusal was recorded although live enforcement must be OFF |
+
+## The product suite is separate
+
+`product/apikeys.test.mjs` exercises the credential lifecycle (ADR-032) and is
+**not** part of the deployment gate. Two reasons:
+
+- It needs a credential that can administer keys
+  (`TESTINBOX_ADMIN_API_KEY`). The gate's own credential stays least-privilege,
+  because a key that can mint keys is a much larger thing to leave in an
+  automated runner.
+- "The credential lifecycle is broken on an otherwise healthy deployment" is a
+  different verdict from "do not ship this artifact". Conflating them would
+  make the gate noisier without making it stronger.
+
+```bash
+TESTINBOX_ADMIN_API_KEY=… npm run test:product
+```
+
+It mints two short-lived credentials, proves one authenticates, revokes it,
+proves another still works, then revokes everything it created. Revoked keys
+are retained by design (ADR-032 §5), so each run leaves two inert rows behind.
+
+## Two host-side targets for a production estate (TI-006, ADR-034)
+
+Neither is part of the deployment gate, and neither may skip: each fails
+loudly when its variables are absent.
+
+| target | proves | where it runs |
+|---|---|---|
+| `npm run test:identity` | the running build on **both** deployables is the approved source commit, readiness is UP with `waitNotifier.listening`, and the database session bound is reported — in production, enforced and bounded (`dbSession`) | on the host, against the private management ports (`TESTINBOX_API_MANAGEMENT_URL`, `TESTINBOX_INGESTION_MANAGEMENT_URL`, `TESTINBOX_EXPECTED_GIT_SHA`, `TESTINBOX_EXPECTED_ENVIRONMENT`) |
+| `npm run test:origin` | a direct connection to the origin's own address is **not answered** on any trust-boundary port (443, 80, 25, 2525, 9090, 9091, 5432, 9000), while the public hostname is reachable **over the same address family** (positive control) | from OUTSIDE the host; Ops supplies `TESTINBOX_ORIGIN_PROBE_ADDRESS` (an IP literal) at run time — the address is never committed. Neither suite needs the synthetic API key or the SMTP host |
+
+The origin classifier (`src/origin.mjs`) is the deliberate mirror of the
+unknown-Host one: there a timeout proves nothing, here a timeout is exactly
+what a DROPping firewall produces and is the proof. Both have unit tests.
+
+## Running it
+
+```bash
+npm --prefix ../../sdk/typescript ci && npm --prefix ../../sdk/typescript run build
+npm ci
+TESTINBOX_BASE_URL=https://staging.testinbox.email \
+TESTINBOX_API_KEY=…                 \
+TESTINBOX_SMTP_HOST=…               \
+TESTINBOX_SMTP_PORT=2525            \
+npm test
+```
+
+Nothing has a localhost default: the suite refuses to run without an explicit
+target, because a synthetic test that silently falls back to a local process
+passes while proving nothing.
+
+TLS verification is never disabled. Against an environment using a private CA,
+point Node at it (`NODE_EXTRA_CA_CERTS=/path/to/ca.pem`) — trusting a specific
+CA is not the same as skipping verification.

@@ -4,9 +4,12 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.message.ParseStatus
+import email.testinbox.domain.storage.StorageRefusalReason
+import email.testinbox.persistence.JdbcStorageReservations
 import io.kotest.matchers.longs.shouldBeLessThan
 import io.kotest.matchers.shouldBe
 import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.annotation.Autowired
 import java.util.UUID
 import java.util.concurrent.Executors
 
@@ -84,6 +87,54 @@ class WaitApiTest : ApiIntegrationTestBase() {
         result["status"].asText() shouldBe "TIMEOUT"
         result["arrivedButUnmatchedCount"].asInt() shouldBe 1
         result["parseFailedCount"].asInt() shouldBe 1
+    }
+
+    @Autowired lateinit var storageReservations: JdbcStorageReservations
+
+    /** Commits what T2 or the refusal-only transaction would: a refusal record and its notification. */
+    private fun refuse(inboxId: InboxId) {
+        storageTransactions.execute { storageReservations.recordRefusals(mapOf(inboxId to StorageRefusalReason.INBOX_LIMIT)) }
+    }
+
+    @Autowired lateinit var storageTransactions: org.springframework.transaction.support.TransactionOperations
+
+    @Autowired lateinit var jdbcClient: org.springframework.jdbc.core.simple.JdbcClient
+
+    private fun waitLeases(): Long = jdbcClient.sql("SELECT count(*) FROM wait_lease").query(Long::class.java).single()
+
+    @Test
+    fun `a storage refusal mid-wait wakes the waiter but never changes the legacy result (TI-STORAGE-003)`() {
+        // The refusal pg_notify shares the message channel (ADR-035 §6a). A
+        // released client, with no refusal cursor, must still get MATCHED or
+        // TIMEOUT exactly as before: never a 409.
+        val inbox = createInbox()
+        val inboxId = InboxId(UUID.fromString(inbox["id"].asText()))
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            executor.submit {
+                // Ordered by the wait's own lease, not by sleeps: the refusal lands
+                // while this wait is in progress, then the message arrives.
+                val until = System.nanoTime() + 5_000_000_000L
+                while (waitLeases() == 0L) {
+                    check(System.nanoTime() < until) { "the wait never started" }
+                    Thread.sleep(10)
+                }
+                refuse(inboxId)
+                appendVisibleMessage(inboxId, inbox["address"].asText(), subject = "after the refusal")
+            }
+            val matched = post("/v1/inboxes/$inboxId/messages/wait", """{"matcher":{"subjectContains":"after"},"timeoutSeconds":5}""")
+            matched.statusCode.value() shouldBe 200
+            json.readTree(matched.body)["status"].asText() shouldBe "MATCHED"
+        } finally {
+            executor.shutdownNow()
+        }
+
+        val other = createInbox()
+        val otherId = InboxId(UUID.fromString(other["id"].asText()))
+        refuse(otherId)
+        val timedOut = post("/v1/inboxes/$otherId/messages/wait", """{"timeoutSeconds":1}""")
+        timedOut.statusCode.value() shouldBe 200
+        json.readTree(timedOut.body)["status"].asText() shouldBe "TIMEOUT"
     }
 
     @Test

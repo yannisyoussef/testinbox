@@ -1,0 +1,5 @@
+# Fixture: ingestion base configuration.
+testinbox:
+  storage:
+    node-id: ${TESTINBOX_STORAGE_NODE_ID:testinbox-ingestion}
+    enforcement: OFF

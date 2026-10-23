@@ -1,0 +1,10 @@
+start 2026-09-29T15:09:40Z
+trials done 2026-09-29T15:43:32Z
+sweep start 2026-09-29T16:05:04Z
+exit=0
+sweep done 2026-09-29T16:05:04Z
+v3 start 2026-09-29T16:05:09Z
+v3 done 2026-09-29T16:38:36Z
+sweep-v3 2026-09-29T16:43:19Z
+sweep-v3 FULL-WINDOW start 2026-09-29T16:57:00Z
+exit=0

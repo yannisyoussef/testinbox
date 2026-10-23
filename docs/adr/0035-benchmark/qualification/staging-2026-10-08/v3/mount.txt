@@ -1,0 +1,1 @@
+/dev/mapper/qualslow on /data type ext4 (rw,relatime)

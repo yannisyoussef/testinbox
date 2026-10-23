@@ -1,0 +1,431 @@
+package email.testinbox.observability
+
+import email.testinbox.application.port.ApiKeyMetrics
+import email.testinbox.application.port.ApiKeyOperation
+import email.testinbox.application.port.AuthOutcome
+import email.testinbox.application.port.BlobOperation
+import email.testinbox.application.port.BlobOutcome
+import email.testinbox.application.port.BlobStoreMetrics
+import email.testinbox.application.port.CompactionOutcome
+import email.testinbox.application.port.DriftDirection
+import email.testinbox.application.port.FootprintKind
+import email.testinbox.application.port.IdempotencyMetrics
+import email.testinbox.application.port.IdempotencyOutcome
+import email.testinbox.application.port.InboundMetrics
+import email.testinbox.application.port.InboxMetrics
+import email.testinbox.application.port.NotifierMetrics
+import email.testinbox.application.port.ReconciliationOutcome
+import email.testinbox.application.port.SmtpMetrics
+import email.testinbox.application.port.SmtpRejection
+import email.testinbox.application.port.StorageAccountingMetrics
+import email.testinbox.application.port.WaitMetrics
+import email.testinbox.application.port.WaitOutcome
+import email.testinbox.domain.idempotency.IdempotentOperation
+import email.testinbox.domain.inbox.AddressMode
+import email.testinbox.domain.message.ParseStatus
+import io.micrometer.core.instrument.Gauge
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Tags
+import java.time.Duration
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+
+/*
+ * Micrometer implementations of the observability ports
+ * (`docs/architecture/observability.md`, TI-DEPLOY-002 §10–13).
+ *
+ * NAMING: every meter carries the `testinbox_` prefix, including the ones the
+ * strategy document writes unprefixed (`inbox_created_total` and friends). The
+ * document predates any implementation; the metrics that actually shipped with
+ * ADR-027 are prefixed, and a metrics namespace that is half-prefixed is worse
+ * than either convention consistently applied. The mapping is recorded in the
+ * strategy document so the names there and the names on the wire agree.
+ *
+ * CARDINALITY: every tag value below comes from a Kotlin enum or a boolean, so
+ * the total series count is a product of small constants and cannot grow with
+ * traffic or with anything a caller controls. `MetricCardinalityTest` asserts
+ * that against the whole registry rather than trusting this comment.
+ */
+
+/** Inbox lifecycle. */
+class MicrometerInboxMetrics(
+    private val registry: MeterRegistry,
+) : InboxMetrics {
+    override fun inboxCreated(mode: AddressMode) {
+        // NOT `..._created_total`: the Prometheus exposition format reserves
+        // the `_created` suffix (it is the OpenMetrics counter-birth series),
+        // and Micrometer strips it — that name exports as `testinbox_inbox_total`,
+        // which is not what any dashboard would be written against.
+        registry.counter("testinbox_inbox_creations_total", "mode", mode.name).increment()
+    }
+
+    override fun inboxExpired(count: Int) {
+        if (count > 0) registry.counter("testinbox_inbox_expired_total").increment(count.toDouble())
+    }
+
+    private val retentionBacklog =
+        java.util.concurrent.atomic.AtomicLong(0).also {
+            io.micrometer.core.instrument.Gauge
+                .builder("testinbox_storage_retention_backlog_seconds", it) { v -> v.get().toDouble() }
+                .register(registry)
+        }
+
+    override fun retentionBacklog(seconds: Long) {
+        retentionBacklog.set(maxOf(0L, seconds))
+    }
+
+    override fun inboxDeleted() {
+        registry.counter("testinbox_inbox_deleted_total").increment()
+    }
+}
+
+/** Inbound delivery. */
+class MicrometerInboundMetrics(
+    private val registry: MeterRegistry,
+) : InboundMetrics {
+    override fun messageReceived(parseStatus: ParseStatus) {
+        registry.counter("testinbox_message_received_total", "parse_status", parseStatus.name).increment()
+    }
+
+    override fun parseCompleted(
+        duration: Duration,
+        parseStatus: ParseStatus,
+    ) {
+        registry
+            .timer("testinbox_message_parse_duration_seconds", "parse_status", parseStatus.name)
+            .record(duration)
+    }
+
+    override fun unknownRecipientDiscarded() {
+        registry.counter("testinbox_smtp_unknown_recipient_discard_total").increment()
+    }
+
+    override fun duplicateProviderEventNoop() {
+        registry.counter("testinbox_message_duplicate_event_noop_total").increment()
+    }
+}
+
+/** Long-poll waits. */
+class MicrometerWaitMetrics(
+    private val registry: MeterRegistry,
+) : WaitMetrics {
+    private val active = AtomicInteger(0)
+    private val activeSlots = AtomicLong(0)
+
+    init {
+        // Two gauges, two different questions, and conflating them is easy:
+        // `requests_active` counts waits IN FLIGHT (including the fast path
+        // that never parks), `slots_active` counts the ADR-027 concurrency
+        // slots actually held. Either climbing without the other returning to
+        // zero is a leak.
+        Gauge
+            .builder("testinbox_wait_requests_active", active) { it.get().toDouble() }
+            .strongReference(true)
+            .register(registry)
+        Gauge
+            .builder("testinbox_wait_slots_active", activeSlots) { it.get().toDouble() }
+            .strongReference(true)
+            .register(registry)
+    }
+
+    override fun waitStarted() {
+        active.incrementAndGet()
+    }
+
+    override fun waitCompleted(
+        outcome: WaitOutcome,
+        duration: Duration,
+    ) {
+        active.decrementAndGet()
+        registry
+            .timer("testinbox_wait_request_duration_seconds", "outcome", outcome.name)
+            .record(duration)
+    }
+
+    override fun slotRejected() {
+        registry.counter("testinbox_wait_slot_rejected_total").increment()
+    }
+
+    override fun slotsChanged(delta: Int) {
+        activeSlots.addAndGet(delta.toLong())
+    }
+}
+
+/**
+ * The `LISTEN` transport.
+ *
+ * `testinbox_wait_listen_degraded_polling` is 1 whenever notifications are NOT
+ * being delivered and parked waiters are falling back to bounded re-query. It
+ * is the only continuous signal that separates "healthy" from "healthy but
+ * every wait is now up to a second slower" — a state where HTTP stays green,
+ * messages still arrive, and readiness may not make the regression obvious
+ * (ADR-020, ADR-030 capability 2).
+ *
+ * Deliberately a pushed gauge rather than one that polls notifier health: the
+ * value must change at the instant the transport does, not at the next scrape.
+ */
+class MicrometerNotifierMetrics(
+    private val registry: MeterRegistry,
+) : NotifierMetrics {
+    private val degradedFlag = AtomicLong(1)
+
+    init {
+        // Starts at 1: until a LISTEN connection is established, waiters really
+        // are on the fallback path. Starting at 0 would report healthy for a
+        // process that never connected at all.
+        Gauge
+            .builder("testinbox_wait_listen_degraded_polling", degradedFlag) { it.get().toDouble() }
+            .strongReference(true)
+            .register(registry)
+        // Registered eagerly so the series exists at zero, before the first
+        // reconnect. A counter that only appears once it has fired cannot be
+        // alerted on with `increase()` over a window that contains its birth.
+        registry.counter("testinbox_wait_listen_reconnect_total")
+    }
+
+    override fun listening() {
+        degradedFlag.set(0)
+    }
+
+    override fun degraded() {
+        degradedFlag.set(1)
+    }
+
+    override fun reconnected() {
+        registry.counter("testinbox_wait_listen_reconnect_total").increment()
+    }
+}
+
+/** Object storage. */
+class MicrometerBlobStoreMetrics(
+    private val registry: MeterRegistry,
+) : BlobStoreMetrics {
+    override fun operationCompleted(
+        operation: BlobOperation,
+        duration: Duration,
+        outcome: BlobOutcome,
+    ) {
+        registry
+            .timer(
+                "testinbox_object_storage_operation_duration_seconds",
+                Tags.of("operation", operation.name, "outcome", outcome.name.lowercase()),
+            ).record(duration)
+    }
+}
+
+/** The SMTP listener. */
+class MicrometerSmtpMetrics(
+    private val registry: MeterRegistry,
+) : SmtpMetrics {
+    override fun accepted() {
+        registry.counter("testinbox_smtp_accept_total").increment()
+    }
+
+    override fun rejected(reason: SmtpRejection) {
+        registry.counter("testinbox_smtp_reject_total", "reason", reason.name).increment()
+    }
+}
+
+/**
+ * What is running, as a metric (TI-DEPLOY-002 §13).
+ *
+ * Ops needs to answer "which build is this instance?" from the same place it
+ * reads everything else. The classic `_info` shape — a constant 1 carrying the
+ * facts as labels — is safe here precisely because the labels are fixed for a
+ * process's whole lifetime: one series per deployed build, not one per request.
+ *
+ * The image digest is deliberately ABSENT. An image does not know its own
+ * digest, and a value invented at runtime would be a plausible-looking lie in
+ * the one metric whose entire job is identifying what is deployed. The digest
+ * is deployment metadata and stays with Ops, which chose it; the commit SHA is
+ * baked in at build time and is sufficient to identify the source.
+ */
+class BuildInfoMetric(
+    registry: MeterRegistry,
+    service: String,
+    gitSha: String,
+    version: String,
+) {
+    /**
+     * Held in a field on purpose. Micrometer keeps only a WEAK reference to a
+     * gauge's state object, so a boxed constant passed inline is collected at
+     * the first GC and the metric starts reporting NaN — silently, and only in
+     * a long-running process, which is every deployed one.
+     */
+    private val one = AtomicLong(1)
+
+    init {
+        // `testinbox_build`, not `testinbox_build_info`: `_info` is reserved by
+        // the exposition format too, so the `_info` name exports differently
+        // depending on whether the endpoint serves text or OpenMetrics. A name
+        // that changes with the scrape format is worse than an unidiomatic one.
+        Gauge
+            .builder("testinbox_build", one) { it.get().toDouble() }
+            .tags(Tags.of("service", service, "git_sha", gitSha, "version", version))
+            .strongReference(true)
+            .register(registry)
+    }
+}
+
+/**
+ * Credential authentication and lifecycle (ADR-032, TI-002 §21).
+ *
+ * Nothing identifying a *particular* credential appears here — not the public
+ * id, not the key id, not the workspace, not the scope set. The public id is
+ * safe to display and safe to log, but as a metric label it would be unbounded
+ * and caller-chosen: an attacker presenting fabricated credentials would be
+ * deciding how many series the metrics backend allocates. Per-credential
+ * attribution belongs in the audit log, which is access-controlled.
+ */
+class MicrometerApiKeyMetrics(
+    private val registry: MeterRegistry,
+) : ApiKeyMetrics {
+    init {
+        // Registered at zero so `increase()` over a window containing process
+        // start reports the real number rather than nothing.
+        AuthOutcome.entries.forEach { registry.counter(AUTH, "outcome", it.name) }
+        ApiKeyOperation.entries.forEach { registry.counter(LIFECYCLE, "operation", it.name) }
+    }
+
+    override fun authCompleted(outcome: AuthOutcome) {
+        registry.counter(AUTH, "outcome", outcome.name).increment()
+    }
+
+    override fun lifecycle(operation: ApiKeyOperation) {
+        registry.counter(LIFECYCLE, "operation", operation.name).increment()
+    }
+
+    override fun lastUsedPersisted() {
+        registry.counter(LAST_USED).increment()
+    }
+
+    private companion object {
+        const val AUTH = "testinbox_api_key_auth_total"
+        const val LIFECYCLE = "testinbox_api_key_lifecycle_total"
+
+        /**
+         * How often the coalescing in ADR-032 §7 actually let a write through.
+         * If this ever tracks request volume, the coalescing has stopped
+         * working and the hot path has silently acquired a database write.
+         */
+        const val LAST_USED = "testinbox_api_key_last_used_writes_total"
+    }
+}
+
+/**
+ * Idempotent mutations (ADR-033 §10).
+ *
+ * The idempotency key appears in no label, hashed or otherwise: it is chosen
+ * by the caller, so labelling by it would let a caller decide how much memory
+ * the metrics backend spends. Both labels are closed enums.
+ */
+class MicrometerIdempotencyMetrics(
+    private val registry: MeterRegistry,
+) : IdempotencyMetrics {
+    init {
+        // Registered at zero so `increase()` works over a window containing
+        // process start.
+        IdempotentOperation.entries.forEach { operation ->
+            IdempotencyOutcome.entries.forEach { outcome ->
+                registry.counter(NAME, "operation", operation.name, "outcome", outcome.name)
+            }
+        }
+    }
+
+    override fun completed(
+        operation: IdempotentOperation,
+        outcome: IdempotencyOutcome,
+    ) {
+        registry.counter(NAME, "operation", operation.name, "outcome", outcome.name).increment()
+    }
+
+    private companion object {
+        const val NAME = "testinbox_idempotency_total"
+    }
+}
+
+/**
+ * ADR-035 storage accounting (TI-STORAGE-001).
+ *
+ * `covered_bytes` carries only `kind=committed` for now: reservations do not
+ * exist yet, and a `kind=reserved` series that was always zero would be a
+ * fake metric. The drift and reconciliation counters are pre-registered for
+ * every enum value, so a dashboard sees an explicit zero rather than a missing
+ * series.
+ */
+class MicrometerStorageAccountingMetrics(
+    private val registry: MeterRegistry,
+) : StorageAccountingMetrics {
+    private val unfoldedRows = AtomicLong(0)
+    private val committedBytes = AtomicLong(0)
+
+    private val footprint = FootprintKind.entries.associateWith { AtomicLong(0) }
+    private val observationAge = AtomicLong(-1)
+    private val countsTrusted = AtomicLong(0)
+
+    init {
+        Gauge.builder(UNFOLDED, unfoldedRows) { it.get().toDouble() }.register(registry)
+        footprint.forEach { (kind, value) ->
+            Gauge
+                .builder(FOOTPRINT, value) { it.get().toDouble() }
+                .tags(Tags.of("kind", kind.name.lowercase()))
+                .register(registry)
+        }
+        // -1 until an observation has ever been seen: "never" must not read as "fresh".
+        Gauge.builder(OBSERVATION_AGE, observationAge) { it.get().toDouble() }.register(registry)
+        Gauge.builder(COUNTS_TRUSTED, countsTrusted) { it.get().toDouble() }.register(registry)
+        Gauge
+            .builder(COVERED, committedBytes) { it.get().toDouble() }
+            .tags(Tags.of("kind", "committed"))
+            .register(registry)
+        DriftDirection.entries.forEach { registry.counter(DRIFT, "direction", it.name.lowercase()) }
+        ReconciliationOutcome.entries.forEach { registry.counter(RECONCILIATION, "outcome", it.name.lowercase()) }
+        CompactionOutcome.entries.forEach { registry.counter(COMPACTION, "outcome", it.name.lowercase()) }
+    }
+
+    override fun ledgerObserved(
+        unfoldedRows: Long,
+        committedBytes: Long,
+    ) {
+        this.unfoldedRows.set(unfoldedRows)
+        this.committedBytes.set(committedBytes)
+    }
+
+    override fun footprintObserved(
+        kind: FootprintKind,
+        bytes: Long,
+    ) {
+        footprint[kind]?.set(bytes)
+    }
+
+    override fun filesystemObservationAge(seconds: Long) {
+        observationAge.set(if (seconds < 0) -1 else seconds)
+    }
+
+    override fun footprintCountsTrusted(trusted: Boolean) {
+        countsTrusted.set(if (trusted) 1 else 0)
+    }
+
+    override fun driftRepaired(direction: DriftDirection) {
+        registry.counter(DRIFT, "direction", direction.name.lowercase()).increment()
+    }
+
+    override fun reconciliationCompleted(outcome: ReconciliationOutcome) {
+        registry.counter(RECONCILIATION, "outcome", outcome.name.lowercase()).increment()
+    }
+
+    override fun compactionCompleted(outcome: CompactionOutcome) {
+        registry.counter(COMPACTION, "outcome", outcome.name.lowercase()).increment()
+    }
+
+    private companion object {
+        const val UNFOLDED = "testinbox_storage_ledger_unfolded_rows"
+        const val FOOTPRINT = "testinbox_storage_footprint_bytes"
+        const val OBSERVATION_AGE = "testinbox_storage_filesystem_observation_age_seconds"
+        const val COUNTS_TRUSTED = "testinbox_storage_footprint_counts_trusted"
+        const val COVERED = "testinbox_storage_covered_bytes"
+        const val DRIFT = "testinbox_storage_accounting_drift_total"
+        const val RECONCILIATION = "testinbox_storage_reconciliation_total"
+        const val COMPACTION = "testinbox_storage_ledger_compaction_total"
+    }
+}

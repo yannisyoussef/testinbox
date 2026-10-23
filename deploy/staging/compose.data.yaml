@@ -1,0 +1,91 @@
+# Self-hosted data services for ADR-030 Option A. Overlay onto compose.yaml:
+#
+#   docker compose -f compose.yaml -f compose.data.yaml up -d
+#
+# Omit it when the environment supplies managed PostgreSQL and object storage;
+# the applications only ever see TESTINBOX_DB_URL / TESTINBOX_S3_ENDPOINT.
+#
+# CAPABILITY 2 OF ADR-030 lives here: the API connects to PostgreSQL DIRECTLY.
+# No PgBouncer, no transaction-mode pooler. `LISTEN` needs a session-scoped
+# connection (ADR-020), and a transaction-mode pooler accepts LISTEN and then
+# silently never delivers a notification — the symptom is a latency regression,
+# not an error, which is why it is called out here rather than left implicit.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${TESTINBOX_DB_NAME:-testinbox}
+      POSTGRES_USER: ${TESTINBOX_DB_USER:?set in .env}
+      POSTGRES_PASSWORD: ${TESTINBOX_DB_PASSWORD:?set in .env}
+    command:
+      - postgres
+      # Comfortably above API pool + ingestion pool + LISTEN sessions + the
+      # migration job, so a deployment never fails on connection exhaustion.
+      - -c
+      - max_connections=100
+      # Bounds how long a hung or partitioned API node can hold an idempotency
+      # claim (ADR-033). The default is disabled, which makes the real bound the
+      # TCP keepalive interval — hours, during which that one key is unusable.
+      # No duplicate mutation is possible either way: this is liveness, and it
+      # is the one part of the guarantee the application cannot enforce itself.
+      - -c
+      - idle_in_transaction_session_timeout=30s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TESTINBOX_DB_USER}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # Never published to a host interface: reachable only on the compose
+    # network (§10 — no public PostgreSQL port).
+    expose: ["5432"]
+    networks: [internal]
+
+  minio:
+    # Our own private mirror of MinIO's withdrawn RELEASE.2025-04-22T22-12-26Z —
+    # the same bytes, not an upgrade. Pinned by INDEX digest so an amd64 runner
+    # and an arm64 laptop each resolve their own member natively. Requires
+    # `docker login ghcr.io` (docs/dev/third-party-mirrors.md).
+    image: ghcr.io/yannisyoussef/testinbox-mirror/minio@sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${TESTINBOX_S3_ACCESS_KEY:?set in .env}
+      MINIO_ROOT_PASSWORD: ${TESTINBOX_S3_SECRET_KEY:?set in .env}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # The API and console are internal only — the console in particular is an
+    # administrative surface and is never exposed publicly (§10).
+    expose: ["9000", "9001"]
+    networks: [internal]
+
+  migrator:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  ingestion:
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  minio-data:

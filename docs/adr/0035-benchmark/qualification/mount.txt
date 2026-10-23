@@ -1,0 +1,1 @@
+/work.img on /data type ext4 (rw,relatime)

@@ -1,0 +1,9 @@
+# Fixture: the deployed layer (ADR-034). Enforcement stays at the code default.
+testinbox:
+  storage:
+    enforcement: ${TESTINBOX_STORAGE_ENFORCEMENT:OFF}
+---
+spring:
+  config:
+    activate:
+      on-profile: production

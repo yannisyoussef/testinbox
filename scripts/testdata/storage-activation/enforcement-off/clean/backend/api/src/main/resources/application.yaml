@@ -1,0 +1,6 @@
+# Fixture: the API's base configuration. No enforcement value is committed.
+testinbox:
+  storage:
+    node-id: ${TESTINBOX_STORAGE_NODE_ID:testinbox-api}
+    bucket: testinbox-mime
+    # enforcement: ALL   <- a comment is prose, not configuration

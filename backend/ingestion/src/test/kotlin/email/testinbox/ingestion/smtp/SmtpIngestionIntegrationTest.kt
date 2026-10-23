@@ -2,8 +2,11 @@ package email.testinbox.ingestion.smtp
 
 import email.testinbox.application.port.AppendOutcome
 import email.testinbox.application.port.BlobStore
+import email.testinbox.application.port.InboundMetrics
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.MessageRepository
+import email.testinbox.application.port.SmtpMetrics
+import email.testinbox.application.port.SmtpRejection
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
@@ -15,6 +18,7 @@ import email.testinbox.domain.message.ParseStatus
 import email.testinbox.persistence.JdbcMessageRepository
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContain
+import io.kotest.matchers.ints.shouldBeGreaterThan
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
@@ -33,6 +37,7 @@ import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.testcontainers.containers.MinIOContainer
 import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.utility.DockerImageName
 import java.net.ServerSocket
 import java.time.Duration
 import java.time.Instant
@@ -70,6 +75,56 @@ class SmtpIngestionIntegrationTest {
         @Primary
         fun faultInjectingMessages(delegate: JdbcMessageRepository): FaultInjectingMessageRepository =
             FaultInjectingMessageRepository(delegate)
+
+        /**
+         * Recording metric ports, replacing the Micrometer ones so this test can
+         * assert that the production CALL SITES fire — through the real
+         * `IngestionWiring`, over a real socket.
+         *
+         * `:observability` proves a meter moves when its port method is called;
+         * nothing there proves anything calls it, and the `= NOOP` defaults on
+         * every port make a missing collaborator silent. That is not a
+         * hypothetical failure: this deployable shipped with `LimitMetrics`
+         * absent from `ReceiveInboundDelivery`, so the ADR-027 inbound counters
+         * never moved in production while the metrics suite stayed green.
+         */
+        @Bean
+        @Primary
+        fun recordingSmtpMetrics(): RecordingSmtpMetrics = RecordingSmtpMetrics()
+
+        @Bean
+        @Primary
+        fun recordingInboundMetrics(): RecordingInboundMetrics = RecordingInboundMetrics()
+    }
+
+    class RecordingSmtpMetrics : SmtpMetrics {
+        val accepted =
+            java.util.concurrent.atomic
+                .AtomicInteger(0)
+        val rejections = java.util.concurrent.CopyOnWriteArrayList<SmtpRejection>()
+
+        override fun accepted() {
+            accepted.incrementAndGet()
+        }
+
+        override fun rejected(reason: SmtpRejection) {
+            rejections += reason
+        }
+    }
+
+    class RecordingInboundMetrics : InboundMetrics {
+        val received = java.util.concurrent.CopyOnWriteArrayList<ParseStatus>()
+        val unknownRecipients =
+            java.util.concurrent.atomic
+                .AtomicInteger(0)
+
+        override fun messageReceived(parseStatus: ParseStatus) {
+            received += parseStatus
+        }
+
+        override fun unknownRecipientDiscarded() {
+            unknownRecipients.incrementAndGet()
+        }
     }
 
     companion object {
@@ -79,8 +134,18 @@ class SmtpIngestionIntegrationTest {
 
         @JvmStatic
         val minio: MinIOContainer =
-            MinIOContainer("minio/minio:latest")
-                .withUserName("testinbox")
+            MinIOContainer(
+                // MinIO withdrew its public images: Docker Hub's repository is gone
+                // and quay.io answers 401 for every tag. This is our own private
+                // mirror of the exact same bytes, pinned by index digest to what
+                // the staging data tier runs (deploy/staging/compose.data.yaml) so
+                // the tests still prove that version. Needs a GHCR login —
+                // docs/dev/third-party-mirrors.md.
+                DockerImageName
+                    .parse(
+                        "ghcr.io/yannisyoussef/testinbox-mirror/minio@sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d",
+                    ).asCompatibleSubstituteFor("minio/minio"),
+            ).withUserName("testinbox")
                 .withPassword("testinbox123")
                 .also { it.start() }
 
@@ -96,6 +161,13 @@ class SmtpIngestionIntegrationTest {
             registry.add("testinbox.storage.secret-key") { "testinbox123" }
             registry.add("testinbox.mail-domain") { "testinbox.local" }
             registry.add("testinbox.max-raw-size-bytes") { 64 * 1024 }
+            // Small INGEST budget so the boundary is exercised without a flood.
+            // Workspace-wide inbound budget, deliberately larger than the
+            // per-inbox one so the two scopes are distinguishable in tests.
+            registry.add("testinbox.limits.ingest.capacity") { 4 }
+            registry.add("testinbox.limits.ingest.refill-per-second") { 0.01 }
+            registry.add("testinbox.limits.ingest-per-inbox.capacity") { 3 }
+            registry.add("testinbox.limits.ingest-per-inbox.refill-per-second") { 0.01 }
         }
     }
 
@@ -108,6 +180,10 @@ class SmtpIngestionIntegrationTest {
     @Autowired lateinit var blobs: BlobStore
 
     @Autowired lateinit var jdbc: JdbcClient
+
+    @Autowired lateinit var smtpMetrics: RecordingSmtpMetrics
+
+    @Autowired lateinit var inboundMetrics: RecordingInboundMetrics
 
     @AfterEach
     fun clearFaultInjection() {
@@ -178,9 +254,52 @@ class SmtpIngestionIntegrationTest {
         }
         val received = messages.listVisible(inbox.id)
         received[0].contentFingerprint shouldBe received[1].contentFingerprint
-        received[0].possibleDuplicateOfMessageId shouldBe null
-        // Annotated, never suppressed.
-        received[1].possibleDuplicateOfMessageId shouldBe received[0].id
+        // Asserted as a pair rather than by index: listVisible orders by
+        // (received_at, id), and two deliveries on one connection can land in
+        // the same timestamp, leaving a random uuid to break the tie. The
+        // invariant is that exactly one row is annotated as a duplicate of the
+        // other — annotated, never suppressed (ADR-019) — and that holds
+        // whichever way the tie falls.
+        val original = received.single { it.possibleDuplicateOfMessageId == null }
+        val annotated = received.single { it.possibleDuplicateOfMessageId != null }
+        annotated.possibleDuplicateOfMessageId shouldBe original.id
+    }
+
+    @Test
+    fun `the fingerprint survives the trace headers transport adds (ADR-019 4)`() {
+        // Regression for #27. The gateway stamps its own Received: field on every
+        // DATA transaction, carrying a second-resolution timestamp and a queue id.
+        // Hashing the stored bytes made these two sends fingerprint differently
+        // whenever they straddled a second — reducing the §4 annotation to the
+        // one-second heuristic the ADR rejects. The relayed twin carries two
+        // further hops, so this also proves the fingerprint is not keyed on hop
+        // count, hostnames or the current Postfix topology (TI-005).
+        val inbox = provisionInbox()
+        val direct = corpus("simple-text.eml")
+        val relayed = corpus("simple-text-relayed.eml")
+        relayed.size shouldBeGreaterThan direct.size
+        client().use { smtp ->
+            smtp.send("no-reply@example.com", listOf(inbox.address), direct).code shouldBe 250
+            smtp.send("no-reply@example.com", listOf(inbox.address), relayed).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(inbox.id).size shouldBe 2
+        }
+        val received = messages.listVisible(inbox.id)
+
+        // Same content through a different number of hops: one fingerprint.
+        received.map { it.contentFingerprint }.distinct().size shouldBe 1
+        val original = received.single { it.possibleDuplicateOfMessageId == null }
+        val annotated = received.single { it.possibleDuplicateOfMessageId != null }
+        annotated.possibleDuplicateOfMessageId shouldBe original.id
+
+        // ...and ADR-005 is untouched: the raw bytes still differ, so the
+        // transport evidence behind the matching fingerprints stays visible,
+        // trace headers and all.
+        val rawBytes = received.map { blobs.get(it.rawObjectKey)!!.toString(Charsets.UTF_8) }
+        rawBytes.distinct().size shouldBe 2
+        rawBytes.forEach { it shouldContain "Received:" }
+        rawBytes.single { it.contains("relay.example.net") } shouldContain "0A1B2C3D4E"
     }
 
     @Test
@@ -207,6 +326,48 @@ class SmtpIngestionIntegrationTest {
     }
 
     @Test
+    fun `a message above the ingestion cap is refused with 552 and never reaches Postgres or MinIO`() {
+        // Behind the Postfix edge this cap is defence in depth; in a deployment
+        // without the edge (the dark first release) it is the only one, so the
+        // reply, the counter and the negative proof are asserted on the real socket.
+        val inbox = provisionInbox()
+        val marker = "OVERSIZED-${UUID.randomUUID()}"
+        val header = "From: big@example.com\r\nSubject: $marker\r\n\r\n".toByteArray()
+        val cap = 64 * 1024
+        val line = "x".repeat(76) + "\r\n"
+        val body = StringBuilder()
+        while (header.size + body.length <= cap) body.append(line)
+        val raw = header + body.toString().toByteArray()
+        raw.size shouldBeGreaterThan cap
+        val ghost = "ghost-${UUID.randomUUID().toString().take(8)}@testinbox.local"
+        val refusedBefore = smtpMetrics.rejections.count { it == SmtpRejection.MESSAGE_TOO_LARGE }
+        client().use { smtp ->
+            smtp.send("big@example.com", listOf(inbox.address), raw).code shouldBe 552
+            // A reused connection stays usable: the gateway drained the refused body,
+            // so RSET is answered by the server, not by a stray reply to a body line
+            // misread as a command.
+            smtp.command("RSET").code shouldBe 250
+            // The refusal depends on the byte count alone, never on the recipient: an
+            // unknown address gets the identical reply, so the cap is no membership
+            // oracle (ADR-025; CLAUDE.md invariant 8).
+            smtp.send("big@example.com", listOf(ghost), raw).code shouldBe 552
+        }
+        smtpMetrics.rejections.count { it == SmtpRejection.MESSAGE_TOO_LARGE } shouldBe refusedBefore + 2
+        messages.listVisible(inbox.id).shouldBeEmpty()
+        val dbHits =
+            jdbc
+                .sql("SELECT count(*) AS c FROM message WHERE subject LIKE :m")
+                .param("m", "%$marker%")
+                .query { rs, _ -> rs.getLong("c") }
+                .single()
+        dbHits shouldBe 0L
+        blobs
+            .listKeysOlderThan("", Instant.now().plusSeconds(60))
+            .filter { it.contains(inbox.id.value.toString()) }
+            .shouldBeEmpty()
+    }
+
+    @Test
     fun `attachment email over SMTP stores attachment bytes under per-message keys`() {
         val inbox = provisionInbox()
         client().use { smtp ->
@@ -222,6 +383,102 @@ class SmtpIngestionIntegrationTest {
         attachment.fileName shouldBe "invoice.pdf"
         attachment.objectKey shouldContain "${inbox.id}"
         String(blobs.get(attachment.objectKey)!!.copyOfRange(0, 5)) shouldBe "%PDF-"
+    }
+
+    @Test
+    fun `real SMTP ingestion feeds the ADR-035 ledger (TI-STORAGE-001)`() {
+        // The unchanged production path (gateway, ReceiveInboundDelivery,
+        // JdbcMessageRepository) against V6. The ledger's triggers account for
+        // it, the SMTP reply is the uniform 250 it always was, and nothing
+        // writes to the tables later ADR-035 slices will own.
+        val inbox = provisionInbox()
+        client().use { smtp ->
+            smtp
+                .send(
+                    "billing@example.com",
+                    listOf(inbox.address, "nobody-${UUID.randomUUID()}@testinbox.local"),
+                    corpus("multipart-mixed-attachment.eml"),
+                ).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(inbox.id).size shouldBe 1
+        }
+        val message = messages.listVisible(inbox.id).single()
+        val physical = message.rawSizeBytes + message.attachments.sumOf { it.sizeBytes }
+
+        // base + Σdelta for this workspace: raw + extracted attachment (ADR-035 §2).
+        jdbc
+            .sql(
+                """
+                SELECT (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account WHERE workspace_id = :ws)
+                     + (SELECT coalesce(sum(bytes), 0) FROM storage_delta WHERE workspace_id = :ws)
+                """.trimIndent(),
+            ).param("ws", inbox.workspaceId.value)
+            .query(Long::class.java)
+            .single() shouldBe physical
+        // The unknown recipient left no trace here either (ADR-025).
+        // TI-STORAGE-003: the guarded protocol ran. T2 consumed the reservations,
+        // nothing was ambiguous, nothing latched, and this node's generation is
+        // registered with the storage-v1 capability.
+        assertGuardedProtocolSettled()
+    }
+
+    @Test
+    fun `a multi-recipient event across tenants commits through the guarded protocol and leaves nothing reserved (TI-STORAGE-003)`() {
+        // A multi-recipient event across two tenants, plus an unknown recipient:
+        // one slot, one T1, fenced uploads for both admitted copies, one T2.
+        // Both copies are stored and visible, and no reservation is left.
+        val first = provisionInbox()
+        val second = provisionInbox()
+        client().use { smtp ->
+            smtp
+                .send(
+                    "billing@example.com",
+                    listOf(first.address, "nobody-${UUID.randomUUID()}@testinbox.local", second.address),
+                    corpus("multipart-mixed-attachment.eml"),
+                ).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(first.id).size shouldBe 1
+            messages.listVisible(second.id).size shouldBe 1
+        }
+        for (message in messages.listVisible(first.id) + messages.listVisible(second.id)) {
+            blobs.get(message.rawObjectKey) shouldNotBe null
+        }
+        // TI-STORAGE-003: the guarded protocol ran. T2 consumed the reservations,
+        // nothing was ambiguous, nothing latched, and this node's generation is
+        // registered with the storage-v1 capability.
+        assertGuardedProtocolSettled()
+    }
+
+    @Test
+    fun `the gateway caps an event at the edge's 50 recipients, answering 452 for the excess (ADR-035)`() {
+        // The cap equals the mail edge contract (ADR-035 §15), and bounds T1's event.
+        val contract = java.io.File("../../deploy/mail-edge/contract.yaml").readText()
+        Regex("""smtpd_recipient_limit:\s*"(\d+)"""").find(contract)!!.groupValues[1].toInt() shouldBe SmtpGateway.MAX_RECIPIENTS
+        java.net.Socket("localhost", smtpPort).use { socket ->
+            val reader = socket.getInputStream().bufferedReader(Charsets.US_ASCII)
+            val out = socket.getOutputStream()
+
+            fun reply(): String {
+                var line: String
+                do line = reader.readLine() while (line.length > 3 && line[3] == '-')
+                return line
+            }
+
+            fun send(command: String): String {
+                out.write("$command\r\n".toByteArray())
+                out.flush()
+                return reply()
+            }
+            reply()
+            send("EHLO cap.example")
+            send("MAIL FROM:<sender@example.com>")
+            val replies = (1..51).map { send("RCPT TO:<cap-$it@testinbox.local>") }
+            replies.take(50).all { it.startsWith("250") } shouldBe true
+            replies.last().take(3) shouldBe "452"
+            send("QUIT")
+        }
     }
 
     @Test
@@ -354,6 +611,77 @@ class SmtpIngestionIntegrationTest {
     }
 
     @Test
+    fun `ingest rate limiting never changes the SMTP reply (ADR-025 uniformity preserved)`() {
+        val inbox = provisionInbox()
+        val ghost = "ghost-${UUID.randomUUID().toString().take(8)}@testinbox.local"
+        val raw = corpus("simple-text.eml")
+        // The configured INGEST capacity for these tests is 3 per inbox.
+        client().use { smtp ->
+            repeat(5) {
+                // Every delivery answers 250 whether it was stored or dropped, and
+                // an unknown recipient answers 250 too. A visible refusal here would
+                // rebuild exactly the enumeration oracle ADR-025 removed.
+                smtp.send("flood@example.com", listOf(inbox.address), raw).code shouldBe 250
+            }
+            smtp.send("flood@example.com", listOf(ghost), raw).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            // Storage is bounded by the budget: the excess was discarded in-process.
+            messages.listVisible(inbox.id).size shouldBe 3
+        }
+    }
+
+    @Test
+    fun `one flooded inbox does not consume another inbox's inbound budget`() {
+        // Same workspace on purpose: across workspaces the budgets are separate
+        // anyway, so that would prove nothing about the per-inbox scope.
+        val workspaceId = WorkspaceId(UUID.randomUUID())
+        val flooded = provisionInbox(workspaceId)
+        val quiet = provisionInbox(workspaceId)
+        val raw = corpus("simple-text.eml")
+        client().use { smtp ->
+            repeat(5) { smtp.send("flood@example.com", listOf(flooded.address), raw).code shouldBe 250 }
+            // A different inbox in the same workspace is still served: the INGEST
+            // budget is keyed per inbox as well as per workspace, so a flood at one
+            // guessed EXACT address cannot starve the rest of the workspace.
+            smtp.send("legit@example.com", listOf(quiet.address), raw).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            // The flood stops at the per-inbox cap (3), below the workspace cap
+            // (4) — so it is the per-inbox scope doing the limiting...
+            messages.listVisible(flooded.id).size shouldBe 3
+            // ...and crucially the workspace still has a token left for its
+            // other inboxes. Charging the workspace bucket for deliveries the
+            // per-inbox bucket already refused would have consumed all 4 and
+            // black-holed this one.
+            messages.listVisible(quiet.id).size shouldBe 1
+        }
+    }
+
+    @Test
+    fun `the workspace-wide inbound ceiling refuses once every inbox has spent its share`() {
+        val workspaceId = WorkspaceId(UUID.randomUUID())
+        val first = provisionInbox(workspaceId)
+        val second = provisionInbox(workspaceId)
+        val third = provisionInbox(workspaceId)
+        val raw = corpus("simple-text.eml")
+        client().use { smtp ->
+            // 3 + 1 fills the workspace budget of 4 without any single inbox
+            // reaching its own cap of 3.
+            repeat(3) { smtp.send("a@example.com", listOf(first.address), raw).code shouldBe 250 }
+            smtp.send("b@example.com", listOf(second.address), raw).code shouldBe 250
+            // The workspace ceiling now binds, even though this inbox has spent
+            // nothing of its own.
+            smtp.send("c@example.com", listOf(third.address), raw).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            messages.listVisible(first.id).size shouldBe 3
+            messages.listVisible(second.id).size shouldBe 1
+        }
+        messages.listVisible(third.id).shouldBeEmpty()
+    }
+
+    @Test
     fun `expired inbox is indistinguishable from an unknown recipient at the SMTP level`() {
         val inbox = provisionInbox()
         inboxes.markDeleted(inbox.workspaceId, inbox.id, Instant.now())
@@ -361,5 +689,59 @@ class SmtpIngestionIntegrationTest {
             smtp.send("a@b.c", listOf(inbox.address), corpus("simple-text.eml")).code shouldBe 250
         }
         messages.listVisible(inbox.id).shouldBeEmpty()
+    }
+
+    @Test
+    fun `the production call sites fire — accepted, stored, and the invisible discard`() {
+        // Everything here goes through the real SMTP socket and the real
+        // IngestionWiring, so it fails if a metric call site is deleted OR if a
+        // metrics collaborator stops being wired — the two failures the
+        // :observability suite structurally cannot see.
+        val acceptedBefore = smtpMetrics.accepted.get()
+        val storedBefore = inboundMetrics.received.size
+        val discardedBefore = inboundMetrics.unknownRecipients.get()
+
+        val inbox = provisionInbox()
+        client().use { smtp ->
+            smtp.send("no-reply@example.com", listOf(inbox.address), corpus("simple-text.eml")).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            inboundMetrics.received.size shouldBe storedBefore + 1
+        }
+        smtpMetrics.accepted.get() shouldBe acceptedBefore + 1
+        inboundMetrics.received.last() shouldBe ParseStatus.OK
+        inboundMetrics.unknownRecipients.get() shouldBe discardedBefore
+
+        // ADR-025: an unknown recipient gets the SAME uniform 250, so the
+        // accept counter moves identically and only the discard counter tells
+        // anyone the mail went nowhere. That asymmetry is the reason this
+        // counter exists at all.
+        val ghost = "ghost-${UUID.randomUUID().toString().take(8)}@testinbox.local"
+        client().use { smtp ->
+            smtp.send("no-reply@example.com", listOf(ghost), corpus("simple-text.eml")).code shouldBe 250
+        }
+        await().atMost(Duration.ofSeconds(10)).untilAsserted {
+            inboundMetrics.unknownRecipients.get() shouldBe discardedBefore + 1
+        }
+        smtpMetrics.accepted.get() shouldBe acceptedBefore + 2
+        inboundMetrics.received.size shouldBe storedBefore + 1
+
+        // A recipient outside our mail domain is refused at RCPT, by reason —
+        // a syntax/domain check, never an existence check (ADR-025).
+        client().use { smtp ->
+            runCatching { smtp.send("no-reply@example.com", listOf("someone@example.com"), corpus("simple-text.eml")) }
+        }
+        smtpMetrics.rejections shouldContain SmtpRejection.INVALID_RECIPIENT
+    }
+
+    private fun assertGuardedProtocolSettled() {
+        for (table in listOf("storage_reservation", "storage_admission_latch")) {
+            jdbc.sql("SELECT count(*) FROM $table").query(Long::class.java).single() shouldBe 0
+        }
+        jdbc.sql("SELECT count(*) FROM storage_ambiguity WHERE resolved_at IS NULL").query(Long::class.java).single() shouldBe 0
+        jdbc
+            .sql("SELECT count(*) FROM storage_node WHERE capability = 'storage-v1' AND NOT clean_shutdown")
+            .query(Long::class.java)
+            .single() shouldBe 1
     }
 }

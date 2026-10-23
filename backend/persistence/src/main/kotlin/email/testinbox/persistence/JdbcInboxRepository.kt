@@ -2,7 +2,9 @@ package email.testinbox.persistence
 
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
+import email.testinbox.application.port.NOTIFICATION_CHANNEL
 import email.testinbox.domain.InboxId
+import email.testinbox.domain.MessageId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.inbox.AddressMode
@@ -10,6 +12,7 @@ import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.inbox.InboxState
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.stereotype.Repository
+import org.springframework.transaction.annotation.Transactional
 import java.sql.ResultSet
 import java.time.Instant
 import java.util.UUID
@@ -17,7 +20,8 @@ import java.util.UUID
 @Repository
 class JdbcInboxRepository(
     private val jdbc: JdbcClient,
-) : InboxRepository {
+) : InboxRepository,
+    email.testinbox.application.port.InboxTeardown {
     override fun insert(inbox: Inbox): InsertInboxOutcome {
         // ON CONFLICT DO NOTHING against the partial routable-address index keeps
         // the enclosing transaction usable on the conflict path (EXACT mode runs
@@ -65,6 +69,7 @@ class JdbcInboxRepository(
             .optional()
             .orElse(null)
 
+    @Transactional
     override fun markDeleted(
         workspaceId: WorkspaceId,
         id: InboxId,
@@ -83,7 +88,26 @@ class JdbcInboxRepository(
             .param("now", Timestamps.toDb(now))
             .param("id", id.value)
             .update()
+        notifyWaiters(id)
         return existing
+    }
+
+    /**
+     * Issue #87: a wait parked on this inbox must learn promptly that it serves
+     * nothing any more. The same channel and payload a message commit uses,
+     * in the same transaction as the transition (ADR-020: never
+     * notify-after-commit), so the waiter's re-evaluation sees the new state.
+     * The callers own the transaction (`DeleteInbox`, `ExpireInboxes`); the
+     * `@Transactional` on both transitions is the same belt-and-braces as
+     * `JdbcMessageRepository.appendVisible`.
+     */
+    private fun notifyWaiters(id: InboxId) {
+        jdbc
+            .sql("SELECT pg_notify(:channel, :payload)")
+            .param("channel", NOTIFICATION_CHANNEL)
+            .param("payload", id.value.toString())
+            .query()
+            .listOfRows()
     }
 
     override fun findExpiredActive(
@@ -119,22 +143,72 @@ class JdbcInboxRepository(
             .query { rs, _ -> mapInbox(rs) }
             .list()
 
-    override fun transitionToExpired(id: InboxId): Boolean =
-        jdbc
-            .sql("UPDATE inbox SET state = 'EXPIRED' WHERE id = :id AND state = 'EXPIRING'")
-            .param("id", id.value)
-            .update() == 1
+    @Transactional
+    override fun transitionToExpired(id: InboxId): Boolean {
+        val moved =
+            jdbc
+                .sql("UPDATE inbox SET state = 'EXPIRED' WHERE id = :id AND state = 'EXPIRING'")
+                .param("id", id.value)
+                .update() == 1
+        if (moved) notifyWaiters(id)
+        return moved
+    }
 
     override fun findHardDeletable(limit: Int): List<Inbox> =
         jdbc
-            .sql("SELECT * FROM inbox WHERE state IN ('EXPIRED', 'DELETED') LIMIT :limit")
-            .param("limit", limit)
+            // Longest-waiting first: an inbox past T_max is never starved behind younger ones.
+            .sql(
+                "SELECT * FROM inbox WHERE state IN ('EXPIRED', 'DELETED') " +
+                    "ORDER BY coalesce(deleted_at, grace_until, expires_at), id LIMIT :limit",
+            ).param("limit", limit)
             .query { rs, _ -> mapInbox(rs) }
             .list()
 
     override fun hardDelete(id: InboxId) {
         jdbc.sql("DELETE FROM inbox WHERE id = :id").param("id", id.value).update()
     }
+
+    override fun messageIdsOf(
+        inboxId: InboxId,
+        limit: Int,
+    ): List<MessageId> =
+        jdbc
+            .sql("SELECT id FROM message WHERE inbox_id = :inbox ORDER BY received_at, id LIMIT :limit")
+            .param("inbox", inboxId.value)
+            .param("limit", limit)
+            .query { rs, _ -> MessageId(rs.getObject("id", UUID::class.java)) }
+            .list()
+
+    override fun deleteMessages(
+        inboxId: InboxId,
+        ids: Collection<MessageId>,
+    ): Int =
+        if (ids.isEmpty()) {
+            0
+        } else {
+            // Exact ids, and only of this inbox: a batch never reaches another inbox's rows.
+            jdbc
+                .sql("DELETE FROM message WHERE inbox_id = :inbox AND id IN (:ids)")
+                .param("inbox", inboxId.value)
+                .param("ids", ids.map { it.value })
+                .update()
+        }
+
+    override fun teardownWaitingSince(id: InboxId): Instant? =
+        jdbc
+            .sql(
+                "SELECT coalesce(deleted_at, grace_until, expires_at) AS since FROM inbox WHERE id = :id AND state IN ('EXPIRED', 'DELETED')",
+            ).param("id", id.value)
+            .query { rs, _ -> Timestamps.fromDb(rs, "since") }
+            .list()
+            .firstOrNull()
+
+    override fun oldestTeardownWaitingSince(): Instant? =
+        jdbc
+            .sql("SELECT min(coalesce(deleted_at, grace_until, expires_at)) AS since FROM inbox WHERE state IN ('EXPIRED', 'DELETED')")
+            .query { rs, _ -> Timestamps.fromDb(rs, "since") }
+            .list()
+            .firstOrNull()
 
     private fun mapInbox(rs: ResultSet): Inbox =
         Inbox(

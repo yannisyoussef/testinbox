@@ -1,0 +1,39 @@
+{
+  "tool": "infra/testinbox/storage/qualification-check.py",
+  "normalization": "ti-qc-runtime-config-v1",
+  "checkedAt": "2026-10-08T17:44:07+00:00",
+  "record": "staging-amd64-vmi2932906-2026-10-08",
+  "valid": true,
+  "problems": [],
+  "differences": {},
+  "observed": {
+    "minio.platformMemberDigest": "sha256:3f97c5651cb6662b880c787a232b6b34fec8d8922e08d6617b25d241a21164bb",
+    "minio.release": "RELEASE.2025-04-22T22-12-26Z",
+    "minio.commitId": "0d7408fc9969caf07de6a8c3a84f9fbb10a6739e",
+    "minio.mode": "single-node-single-drive",
+    "minio.driveCount": "1",
+    "minio.timeoutEnvironment": "none",
+    "minio.timeoutCliFlags": "none",
+    "minio.runtimeConfig.hash": "sha256:b0821e88cbdb913fb2837554c715d3c32da21efe7f9bcaed7b6b62cae443c558",
+    "minio.storageClassInlineDefaults": "release-defaults",
+    "host.kernelRelease": "6.8.0-142-generic",
+    "host.filesystemType": "ext4",
+    "host.mountOptions": "rw,relatime",
+    "network.directPath": "true",
+    "network.proxy": "none"
+  },
+  "runtimeConfigNormalized": "api.cluster_deadline=10s\napi.cors_allow_origin=*\napi.delete_cleanup_interval=5m\napi.gzip_objects=off\napi.list_quorum=strict\napi.object_max_versions=9223372036854775807\napi.odirect=on\napi.remote_transport_deadline=2h\napi.replication_max_lrg_workers=10\napi.replication_max_workers=500\napi.replication_priority=auto\napi.requests_max=0\napi.root_access=on\napi.stale_uploads_cleanup_interval=6h\napi.stale_uploads_expiry=24h\napi.sync_events=off\napi.transition_workers=100\ndrive.max_timeout=30s\nscanner.alert_excess_folders=50000\nscanner.alert_excess_versions=100\nscanner.speed=default\nstorage_class=<unknown-subsystem>",
+  "dataMount": "bind /srv/testinbox/minio/data -> /data",
+  "path": {
+    "endpoint": "http://tb-minio:9000",
+    "sharedNetworks": [
+      "testinbox_internal"
+    ],
+    "proxyEnv": []
+  },
+  "notes": [
+    "imageIndexDigest sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d asserted by the record; the host pulls the platform member by digest"
+  ],
+  "enforcementMode": "off",
+  "latchWritten": null
+}

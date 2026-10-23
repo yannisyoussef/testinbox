@@ -1,14 +1,22 @@
 package email.testinbox.application.usecase
 
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.idempotency.Idempotency
+import email.testinbox.application.idempotency.IdempotencyRequest
+import email.testinbox.application.idempotency.InboxSnapshot
+import email.testinbox.application.idempotency.RequestFingerprint
 import email.testinbox.application.port.ExactAddressReservations
+import email.testinbox.application.port.IdempotencyScope
+import email.testinbox.application.port.InboxMetrics
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
+import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.ReserveOutcome
-import email.testinbox.application.port.TransactionRunner
+import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.idempotency.IdempotentOperation
 import email.testinbox.domain.inbox.AddressMode
 import email.testinbox.domain.inbox.ExactReservation
 import email.testinbox.domain.inbox.GeneratedAddress
@@ -16,6 +24,9 @@ import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.inbox.InboxState
 import email.testinbox.domain.inbox.LocalPartPolicy
 import email.testinbox.domain.inbox.ReservationStatus
+import email.testinbox.domain.limits.QuotaDimension
+import email.testinbox.domain.limits.QuotaExceeded
+import email.testinbox.domain.limits.QuotaPolicy
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -29,9 +40,20 @@ import java.util.UUID
 class CreateInbox(
     private val inboxes: InboxRepository,
     private val reservations: ExactAddressReservations,
-    private val tx: TransactionRunner,
+    private val quotas: WorkspaceQuotaState,
+    private val policy: QuotaPolicy,
     private val clock: Clock,
     private val config: TestInboxConfig,
+    private val metrics: LimitMetrics = LimitMetrics.NOOP,
+    private val inboxMetrics: InboxMetrics = InboxMetrics.NOOP,
+    /**
+     * Owns the transaction boundary, with or without an idempotency key —
+     * which is why this use case no longer takes a `TransactionRunner` of its
+     * own. Exactly one thing deciding where the transaction begins is what
+     * makes "the claim and the mutation commit together" true by construction
+     * rather than by every call site remembering (ADR-033 §2).
+     */
+    private val idempotency: Idempotency,
 ) {
     data class Command(
         val workspaceId: WorkspaceId,
@@ -45,6 +67,8 @@ class CreateInbox(
     sealed interface Result {
         data class Created(
             val inbox: Inbox,
+            /** True when this replays a previously committed creation (ADR-033). */
+            val replayed: Boolean = false,
         ) : Result
 
         /** EXACT local-part already reserved or in cooldown — maps to 409 (ADR-021). */
@@ -53,12 +77,37 @@ class CreateInbox(
             val availableAt: Instant?,
         ) : Result
 
+        /**
+         * A workspace allowance is exhausted — maps to 409, not 429 (ADR-027
+         * §8): waiting does not help, the caller must free capacity.
+         */
+        data class QuotaRejected(
+            val exceeded: QuotaExceeded,
+        ) : Result
+
         data class InvalidRequest(
             val reason: String,
         ) : Result
+
+        /** The idempotency key is bound to a different logical request. Terminal. */
+        data object IdempotencyKeyReused : Result
+
+        /** A concurrent identical request is still running. Transient; retrying is correct. */
+        data object IdempotencyInProgress : Result
+
+        /**
+         * The key is bound, but this artifact cannot read the stored snapshot —
+         * reachable only after an ADR-028 rollback across a snapshot version
+         * bump. Re-executing would duplicate; guessing would lie.
+         */
+        data object IdempotencyReplayUnavailable : Result
     }
 
-    fun execute(command: Command): Result {
+    @JvmOverloads
+    fun execute(
+        command: Command,
+        request: IdempotencyRequest? = null,
+    ): Result {
         val now = clock.instant()
         val ttl =
             when {
@@ -78,10 +127,60 @@ class CreateInbox(
                     Duration.ofSeconds(command.ttlSeconds)
                 }
             }
-        return when (command.addressMode) {
-            AddressMode.GENERATED -> createGenerated(command, now, ttl)
-            AddressMode.EXACT -> createExact(command, now, ttl)
+        // One transaction for the whole admission decision, with the workspace
+        // guard as its first statement (ADR-027 §6): deriving a count and then
+        // inserting is check-then-act, so without it N concurrent creates all
+        // observe capacity for one. The guard must precede any inbox write, or
+        // it closes a lock-order cycle with the retention sweep's DELETE.
+        // The claim precedes the ADR-027 guard, and must: if it came after,
+        // a replay of a request that succeeded when the workspace had room
+        // would be answered `quota-exceeded` once the workspace filled — a
+        // replay giving a different answer than the original is the feature
+        // failing. The resulting lock order (claim, workspace, reservation,
+        // inbox) is total and acquired in that order on every path.
+        return idempotency.around(
+            request = request,
+            scope = { IdempotencyScope(command.workspaceId, command.projectId, IdempotentOperation.CREATE_INBOX) },
+            fingerprint = { RequestFingerprint.of(command) },
+            outcomes =
+                Idempotency.Outcomes(
+                    replay = { snapshot ->
+                        InboxSnapshot.toInbox(snapshot)?.let { Result.Created(it, replayed = true) }
+                            ?: Result.IdempotencyReplayUnavailable
+                    },
+                    keyReused = { Result.IdempotencyKeyReused },
+                    inProgress = { Result.IdempotencyInProgress },
+                    // Only a committed creation binds the key; every refusal
+                    // returns null and rolls the claim back (ADR-033 §4).
+                    snapshotOf = { result -> (result as? Result.Created)?.let { InboxSnapshot.of(it.inbox) } },
+                ),
+        ) {
+            quotas.guardAdmission(command.workspaceId)
+            admit(command.workspaceId)?.let {
+                metrics.quotaRejected(it.dimension)
+                return@around Result.QuotaRejected(it)
+            }
+            when (command.addressMode) {
+                AddressMode.GENERATED -> createGenerated(command, now, ttl)
+                AddressMode.EXACT -> createExact(command, now, ttl)
+            }
         }
+    }
+
+    /** Null when the workspace may take one more inbox; otherwise why not. */
+    private fun admit(workspaceId: WorkspaceId): QuotaExceeded? {
+        val activeInboxes = quotas.activeInboxCount(workspaceId)
+        if (!policy.admits(QuotaDimension.ACTIVE_INBOXES, activeInboxes)) {
+            return QuotaExceeded(QuotaDimension.ACTIVE_INBOXES, policy.maxActiveInboxes, activeInboxes)
+        }
+        // A workspace at its storage ceiling may keep receiving mail for the
+        // inboxes it already holds (ADR-027 §2), but may not enlarge its
+        // footprint by adding more.
+        val stored = quotas.storedBytes(workspaceId)
+        if (!policy.admits(QuotaDimension.STORED_BYTES, stored, amount = 0)) {
+            return QuotaExceeded(QuotaDimension.STORED_BYTES, policy.maxStoredBytes, stored)
+        }
+        return null
     }
 
     private fun createGenerated(
@@ -97,6 +196,7 @@ class CreateInbox(
                 newInbox(command, now, ttl, AddressMode.GENERATED, GeneratedAddress.localPart(command.aliasHint))
             when (inboxes.insert(inbox)) {
                 InsertInboxOutcome.Inserted -> {
+                    inboxMetrics.inboxCreated(AddressMode.GENERATED)
                     return Result.Created(inbox)
                 }
 
@@ -132,7 +232,8 @@ class CreateInbox(
                 }
             }
         val inbox = newInbox(command, now, ttl, AddressMode.EXACT, localPart)
-        return tx.required {
+        // Already inside the transaction `Idempotency.around` opened.
+        return run {
             val reservation =
                 ExactReservation(
                     id = UUID.randomUUID(),
@@ -150,8 +251,14 @@ class CreateInbox(
 
                 ReserveOutcome.Reserved -> {
                     when (inboxes.insert(inbox)) {
-                        InsertInboxOutcome.Inserted -> Result.Created(inbox)
-                        InsertInboxOutcome.AddressTaken -> Result.AddressConflict(localPart, null)
+                        InsertInboxOutcome.Inserted -> {
+                            inboxMetrics.inboxCreated(AddressMode.EXACT)
+                            Result.Created(inbox)
+                        }
+
+                        InsertInboxOutcome.AddressTaken -> {
+                            Result.AddressConflict(localPart, null)
+                        }
                     }
                 }
             }

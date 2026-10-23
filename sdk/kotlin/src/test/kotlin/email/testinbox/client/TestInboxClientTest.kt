@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -23,7 +24,14 @@ class TestInboxClientTest {
     private lateinit var server: HttpServer
     private lateinit var client: TestInboxClient
 
-    data class RecordedRequest(val method: String, val path: String, val auth: String?, val body: String)
+    data class RecordedRequest(
+        val method: String,
+        val path: String,
+        val auth: String?,
+        val body: String,
+        val idempotencyKey: String? = null,
+        val userAgent: String? = null,
+    )
 
     data class ScriptedResponse(val status: Int, val body: String, val delayMillis: Long = 0)
 
@@ -41,6 +49,8 @@ class TestInboxClientTest {
                     exchange.requestURI.path,
                     exchange.requestHeaders.getFirst("Authorization"),
                     body,
+                    exchange.requestHeaders.getFirst("Idempotency-Key"),
+                    exchange.requestHeaders.getFirst("User-Agent"),
                 )
             val scripted = responses.poll() ?: ScriptedResponse(500, """{"title":"unscripted"}""")
             if (scripted.delayMillis > 0) Thread.sleep(scripted.delayMillis)
@@ -182,6 +192,61 @@ class TestInboxClientTest {
     }
 
     @Test
+    fun `429 maps to a typed rate-limit error carrying the server's retry hint`() {
+        script(201, inboxJson)
+        script(
+            429,
+            """{"type":"https://testinbox.email/problems/rate-limit-exceeded","title":"Rate limit exceeded",
+               "status":429,"detail":"Too many INBOX_CREATE requests","category":"INBOX_CREATE",
+               "retryAfterSeconds":7,"correlationId":"c-429"}""",
+        )
+        val inbox = client.createInboxBlocking()
+        val exception =
+            assertThrows(TestInboxRateLimitException::class.java) {
+                inbox.awaitMessageBlocking(Duration.ofSeconds(5))
+            }
+        assertEquals(java.time.Duration.ofSeconds(7), exception.retryAfter)
+        assertEquals("INBOX_CREATE", exception.category)
+        assertEquals("c-429", exception.correlationId)
+    }
+
+    @Test
+    fun `quota exhaustion is a distinct error from an address conflict on the same 409`() {
+        // Two different 409 meanings share the status code, so the SDK must
+        // discriminate on the problem type, never on the status (ADR-027 §8).
+        script(
+            409,
+            """{"type":"https://testinbox.email/problems/quota-exceeded","title":"Quota exceeded",
+               "status":409,"detail":"ACTIVE_INBOXES exhausted","quota":"ACTIVE_INBOXES",
+               "limit":2,"current":2}""",
+        )
+        val quota =
+            assertThrows(TestInboxQuotaExceededException::class.java) { client.createInboxBlocking() }
+        assertEquals("ACTIVE_INBOXES", quota.quota)
+        assertEquals(2L, quota.limit)
+        assertEquals(2L, quota.current)
+
+        script(
+            409,
+            """{"type":"https://testinbox.email/problems/address-already-reserved","title":"Conflict",
+               "status":409,"retryAfterSeconds":3600}""",
+        )
+        assertThrows(TestInboxConflictException::class.java) {
+            client.createInboxBlocking(CreateInboxOptions(addressMode = AddressMode.EXACT, localPart = "qa"))
+        }
+    }
+
+    @Test
+    fun `a rate-limited create is never retried automatically`() {
+        // Idempotency-Key is unimplemented, so an automatic retry of a resource-
+        // creating POST could create duplicate inboxes. The caller decides.
+        script(429, """{"type":"https://testinbox.email/problems/rate-limit-exceeded","status":429}""")
+        assertThrows(TestInboxRateLimitException::class.java) { client.createInboxBlocking() }
+        // Exactly one request was made: no hidden retry.
+        assertEquals(1, requests.size)
+    }
+
+    @Test
     fun `messages listing and delete round-trip`() {
         script(201, inboxJson)
         script(200, """{"items":[$messageJson],"nextCursor":null}""")
@@ -207,5 +272,179 @@ class TestInboxClientTest {
             val message = inbox.awaitMessage(Duration.ofSeconds(10)) { subjectContains("Verify") }
             assertEquals("no-reply@example.com", message.from)
         }
+    }
+    private val createdKeyJson =
+        """
+        {"apiKey":{"id":"22222222-2222-2222-2222-222222222222","publicId":"abcdefghijklmnop",
+          "name":"github-ci","scopes":["inboxes:write"],"createdAt":"2026-09-08T12:00:00Z",
+          "expiresAt":null,"revokedAt":null,"lastUsedAt":null,
+          "createdByApiKeyId":"33333333-3333-3333-3333-333333333333","futureField":1},
+         "key":"ti_k1_abcdefghijklmnop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_bbbb"}
+        """.trimIndent()
+
+    @Test
+    fun `creating a key surfaces the credential once, on a type that keeps it out of toString`() {
+        script(201, createdKeyJson)
+        val created =
+            runBlocking {
+                client.apiKeys.create(listOf(ApiScope.INBOXES_WRITE), name = "github-ci")
+            }
+
+        assertEquals("ti_k1_abcdefghijklmnop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_bbbb", created.secret)
+        // Rendering the object must never render the credential: a test
+        // failure message, a log line and a debugger dump all go through here.
+        assertFalse(created.toString().contains(created.secret))
+        assertTrue(created.toString().contains("redacted"))
+        assertEquals("abcdefghijklmnop", created.apiKey.publicId)
+        assertEquals(listOf(ApiScope.INBOXES_WRITE), created.apiKey.scopes)
+    }
+
+    @Test
+    fun `the metadata type has no property that could hold a credential`() {
+        script(200, """{"id":"22222222-2222-2222-2222-222222222222","publicId":"abcdefghijklmnop",
+             "scopes":["messages:read"],"createdAt":"2026-09-08T12:00:00Z"}""")
+        val metadata = runBlocking { client.apiKeys.get("22222222-2222-2222-2222-222222222222") }
+
+        // Structural, not a spot check: a property added later that could hold
+        // secret material fails here rather than leaking through an SDK type.
+        // Java reflection on purpose — kotlin-reflect is not a dependency this
+        // SDK has, and adding one for a test would be the wrong trade.
+        val suspicious = listOf("secret", "key", "hash", "verifier", "token", "credential", "password")
+        val offending =
+            ApiKeyMetadata::class.java.declaredFields
+                .filter { it.type == String::class.java }
+                .map { it.name }
+                .filter { name -> suspicious.any { name.lowercase().endsWith(it) } }
+        assertEquals(emptyList<String>(), offending)
+        // Guard the guard: reflection that found no fields at all would pass.
+        assertTrue(ApiKeyMetadata::class.java.declaredFields.isNotEmpty())
+        assertFalse(metadata.toString().contains("secret"))
+    }
+
+    @Test
+    fun `an unknown future scope round-trips instead of failing to deserialise`() {
+        script(200, """{"id":"22222222-2222-2222-2222-222222222222","publicId":"abcdefghijklmnop",
+             "scopes":["messages:read","inboxes:delete"],"createdAt":"2026-09-08T12:00:00Z"}""")
+        val metadata = runBlocking { client.apiKeys.get("22222222-2222-2222-2222-222222222222") }
+        // Modelled as a value class over the wire string rather than an enum
+        // precisely so a server ahead of this SDK does not break the client.
+        assertEquals(listOf(ApiScope.MESSAGES_READ, ApiScope("inboxes:delete")), metadata.scopes)
+    }
+
+    @Test
+    fun `listing pages and never carries a credential`() {
+        script(
+            200,
+            """{"items":[{"id":"22222222-2222-2222-2222-222222222222","publicId":"abcdefghijklmnop",
+              "scopes":[],"createdAt":"2026-09-08T12:00:00Z","revokedAt":"2026-09-08T13:00:00Z"}],
+              "nextCursor":"abc"}""",
+        )
+        val page = runBlocking { client.apiKeys.list(limit = 1) }
+        assertEquals("abc", page.nextCursor)
+        assertTrue(page.items.single().isRevoked)
+        assertEquals("GET", requests.last().method)
+        assertEquals("/v1/api-keys", requests.last().path)
+    }
+
+    @Test
+    fun `revocation is a DELETE and tolerates an empty body`() {
+        script(204, "")
+        runBlocking { client.apiKeys.revoke("22222222-2222-2222-2222-222222222222") }
+        val request = requests.last()
+        assertEquals("DELETE", request.method)
+        assertEquals("/v1/api-keys/22222222-2222-2222-2222-222222222222", request.path)
+    }
+
+    @Test
+    fun `a key without the management scope gets a typed authorization failure`() {
+        script(403, """{"type":"https://testinbox.email/problems/missing-scope","title":"Missing scope",
+             "status":403,"detail":"This operation requires the 'api-keys:manage' scope"}""")
+        // Typed, so a caller can distinguish "wrong credential" from "this
+        // credential is not allowed to do that" without parsing strings.
+        assertThrows(TestInboxForbiddenException::class.java) {
+            runBlocking { client.apiKeys.list() }
+        }
+    }
+
+    @Test
+    fun `a revoked credential surfaces as an auth failure, not a transport error`() {
+        script(401, """{"type":"https://testinbox.email/problems/unauthorized","title":"Unauthorized","status":401}""")
+        assertThrows(TestInboxAuthException::class.java) {
+            runBlocking { client.apiKeys.list() }
+        }
+    }
+
+    @Test
+    fun `the credential is sent as a bearer token and nowhere else`() {
+        script(201, createdKeyJson)
+        runBlocking { client.apiKeys.create(listOf(ApiScope.API_KEYS_MANAGE)) }
+        val request = requests.last()
+        assertEquals("Bearer tk_unit", request.auth)
+        // The request body carries the *requested scopes*, never a credential.
+        assertFalse(request.body.contains("tk_unit"))
+        assertTrue(request.body.contains("api-keys:manage"))
+    }
+
+    @Test
+    fun `an idempotency key is sent verbatim and only when the caller supplies one`() {
+        script(201, inboxJson)
+        runBlocking { client.createInbox(CreateInboxOptions(idempotencyKey = "ci-job-4711-attempt")) }
+        assertEquals("ci-job-4711-attempt", requests.last().idempotencyKey)
+
+        script(201, inboxJson)
+        runBlocking { client.createInbox() }
+        // Absent by default: the SDK must not invent a key, because one
+        // generated per attempt defeats the feature and one generated inside a
+        // process that then dies protects nothing.
+        assertNull(requests.last().idempotencyKey)
+    }
+
+    @Test
+    fun `the same key is reused across calls rather than regenerated`() {
+        val key = "stable-operation-key-01"
+        script(201, inboxJson)
+        script(201, inboxJson)
+        runBlocking {
+            client.createInbox(CreateInboxOptions(idempotencyKey = key))
+            client.createInbox(CreateInboxOptions(idempotencyKey = key))
+        }
+        assertEquals(listOf(key, key), requests.map { it.idempotencyKey }.filterNotNull())
+    }
+
+    @Test
+    fun `key creation forwards the caller's key`() {
+        script(201, createdKeyJson)
+        runBlocking { client.apiKeys.create(listOf(ApiScope.MESSAGES_READ), idempotencyKey = "mint-once-abcdef") }
+        assertEquals("mint-once-abcdef", requests.last().idempotencyKey)
+    }
+
+    @Test
+    fun `a suppressed duplicate key creation surfaces as a typed conflict`() {
+        script(
+            409,
+            """{"type":"https://testinbox.email/problems/idempotency-secret-not-replayable",
+                "title":"Credential already created","status":409,
+                "detail":"This request already created a credential.",
+                "apiKeyId":"22222222-2222-2222-2222-222222222222","publicId":"abcdefghijklmnop"}""",
+        )
+        val error =
+            assertThrows(TestInboxCredentialAlreadyCreatedException::class.java) {
+                runBlocking { client.apiKeys.create(listOf(ApiScope.MESSAGES_READ), idempotencyKey = "mint-once-abcdef") }
+            }
+        // Its own type, carrying what was created: the caller revokes and mints
+        // again without a list call, and never confuses this with an address
+        // conflict or a quota refusal, which are also 409.
+        assertEquals("22222222-2222-2222-2222-222222222222", error.apiKeyId)
+        assertEquals("abcdefghijklmnop", error.publicId)
+    }
+
+    @Test
+    fun `every request identifies this SDK rather than the runtime`() {
+        script(201, inboxJson)
+        runBlocking { client.createInbox() }
+        assertEquals(
+            "testinbox-sdk-jvm/${email.testinbox.client.internal.transport.SDK_VERSION}",
+            requests.last().userAgent,
+        )
     }
 }

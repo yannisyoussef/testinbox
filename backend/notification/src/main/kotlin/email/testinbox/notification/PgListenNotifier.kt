@@ -3,6 +3,7 @@ package email.testinbox.notification
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.NOTIFICATION_CHANNEL
 import email.testinbox.application.port.NotifierHealth
+import email.testinbox.application.port.NotifierMetrics
 import email.testinbox.application.port.WaitHandle
 import email.testinbox.application.port.WakeOutcome
 import email.testinbox.domain.InboxId
@@ -26,6 +27,12 @@ data class PgListenNotifierConfig(
     /** Bounded degraded-mode re-query interval while LISTEN is down (ADR-020: order of 1–2s). */
     val degradedInterval: Duration = Duration.ofSeconds(1),
     val reconnectBackoff: Duration = Duration.ofMillis(500),
+    /**
+     * The LISTEN session's `application_name`. ADR-035 §14 (a): every session of
+     * an ADR-035-aware binary is named `testinbox-%:%:storage-v1`, so the
+     * activation barrier can tell it from an old binary's `testinbox-listen`.
+     */
+    val applicationName: String = "testinbox-listen:api:storage-v1",
 )
 
 /**
@@ -44,6 +51,7 @@ data class PgListenNotifierConfig(
  */
 class PgListenNotifier(
     private val config: PgListenNotifierConfig,
+    private val metrics: NotifierMetrics = NotifierMetrics.NOOP,
 ) : MessageNotifier,
     AutoCloseable {
     private val waiters = ConcurrentHashMap<String, MutableSet<Waiter>>()
@@ -84,6 +92,7 @@ class PgListenNotifier(
         while (running) {
             if (!firstAttempt) {
                 reconnects.incrementAndGet()
+                metrics.reconnected()
                 sleepQuietly(config.reconnectBackoff.toMillis())
                 if (!running) return
             }
@@ -94,6 +103,11 @@ class PgListenNotifier(
                 connection.createStatement().use { it.execute("LISTEN $NOTIFICATION_CHANNEL") }
                 val pg = connection.unwrap(PGConnection::class.java)
                 listening.set(true)
+                // Ops-visible the instant the transport changes, not at the
+                // next health probe: while this is false, waits still resolve
+                // — just up to `degradedInterval` slower — so nothing else in
+                // the system distinguishes healthy from silently degraded.
+                metrics.listening()
                 epoch.incrementAndGet()
                 // ADR-020: after LISTEN restoration every parked waiter re-runs its query once.
                 wakeAll()
@@ -105,6 +119,7 @@ class PgListenNotifier(
                 if (running) log.warn("LISTEN connection lost: {}", e.message)
             } finally {
                 listening.set(false)
+                metrics.degraded()
                 runCatching { connection?.close() }
             }
         }
@@ -122,7 +137,7 @@ class PgListenNotifier(
             Properties().apply {
                 setProperty("user", config.username)
                 setProperty("password", config.password)
-                setProperty("ApplicationName", "testinbox-listen")
+                setProperty("ApplicationName", config.applicationName)
             }
         return DriverManager.getConnection(config.jdbcUrl, props)
     }

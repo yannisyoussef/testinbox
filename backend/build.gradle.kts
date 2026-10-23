@@ -60,6 +60,11 @@ subprojects {
 
         tasks.withType<Test>().configureEach {
             useJUnitPlatform()
+            // A @Test that returns a value (for example an expression-bodied
+            // Kotlin test ending in a property check) is a discovery WARNING in
+            // JUnit 6 and is silently NOT executed. Fail the build instead: a
+            // test that does not run is worse than no test.
+            systemProperty("junit.platform.discovery.issue.severity.critical", "warning")
             testLogging {
                 events("failed", "skipped")
                 showStandardStreams = false

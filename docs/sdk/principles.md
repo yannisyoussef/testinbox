@@ -40,3 +40,45 @@
     expose plain data (`message.subject`, `message.links`) so callers use
     whatever assertion library they already have; TestInbox does not ship
     its own `assertThat`.
+
+11. **A credential the SDK hands back is modelled so it is hard to leak**
+    (ADR-032). `create` returns a `CreatedApiKey` whose secret sits *beside*
+    the metadata rather than inside it, so the metadata type — the one that
+    gets logged, stored and passed around — has no field that could hold a
+    credential at all. The Kotlin type keeps the secret out of `toString`.
+    Metadata is mapped field by field rather than spread from the wire
+    response, so a future server field cannot land on a type documented as
+    never carrying secret material.
+
+12. **Java interop is compiled, not asserted.** The JVM SDK's blocking facades
+    exist for plain-Java callers (ADR-023), so `sdk/kotlin/src/test/java`
+    contains real Java source compiled against the built classes. It earns its
+    place: it caught a scope type declared as a `@JvmInline value class`, whose
+    constants compile to name-mangled accessors and whose constructor compiles
+    to `box-impl` — no legal Java expression could produce one, making the
+    key-creation call uninvokable from the language it was added for. No Kotlin
+    test could have noticed.
+
+13. **Every request identifies the SDK.** Both clients send
+    `User-Agent: testinbox-sdk-<lang>/<version>`, and a test in each holds that
+    version to the one the package actually ships. Until TI-003 neither did, so
+    requests were attributed to whatever the runtime defaulted to — which meant
+    reaching a Cloudflare-fronted deployment depended on an unexamined
+    interaction between a runtime default and an edge heuristic. Declaring it
+    turns an accidental dependency into a stated one, and makes SDK traffic
+    separable from ad-hoc calls in an access log.
+
+14. **A storage refusal is observed, never guessed at, and never acknowledged
+    by accident** (ADR-035 §13c). Both SDKs seed a per-`Inbox` observation
+    cursor from the representation's `storageRefusalCount`, send it on every
+    wait window by default, and surface the server's `409` as a typed error
+    (`TestInboxStorageLimitExceededError` / `...Exception`) after advancing the
+    cursor to the refusal count — monotonically, atomically on the JVM, so
+    concurrent waits are safe. The cursor advances in exactly two cases: a
+    surfaced `409`, and an explicit `afterStorageRefusalCount` from the caller.
+    A `MATCHED` or `TIMEOUT` echo never advances it, because a match may have
+    outranked a refusal the caller has not seen. Against a server that predates
+    the contract the SDK sends no boundary rather than inventing a zero; a
+    malformed `409` is a protocol error rather than a fabricated field; and the
+    storage error is never retried, because waiting does not help.
+

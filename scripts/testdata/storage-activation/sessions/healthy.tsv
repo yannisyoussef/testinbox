@@ -1,0 +1,4 @@
+testinbox-api:api-1:storage-v1	testinbox_app
+testinbox-listen:api:storage-v1	testinbox_app
+testinbox-ingestion:ing-1:storage-v1	testinbox_app
+ops:storage-activation-check	testinbox_ops

@@ -1,6 +1,6 @@
 # ADR-020: Wait Reliability and Timeout Semantics
 
-**Status:** Accepted (amends [ADR-007](0007-event-coordination-strategy.md)
+**Status:** Accepted (§3 amended by [ADR-035](0035-physical-storage-bound-at-ingest.md): one opt-in, authenticated-only wait outcome; amends [ADR-007](0007-event-coordination-strategy.md)
 and [ADR-012](0012-wait-for-message-semantics.md); the normative wait
 contract in `docs/architecture/wait-semantics.md` is updated accordingly)
 
@@ -81,6 +81,8 @@ introduced, the `LISTEN` connection must bypass it or use session mode.
 
 ### 3. Wait-window expiry returns `200` with an explicit result
 
+> **Amended by [ADR-035](0035-physical-storage-bound-at-ingest.md) (2026-09-29).** A wait that carries the optional `afterStorageRefusalCount` cursor also ends with `409` `…/problems/storage-limit-exceeded` when a copy addressed to the waited inbox was refused by a storage ceiling after that cursor (ADR-035 §13c). A wait without the cursor keeps exactly the behaviour below; `MATCHED`, `TIMEOUT` and `410` are unchanged.
+
 `POST /v1/inboxes/{id}/messages/wait` returns:
 
 - `200 OK` `{ "status": "MATCHED", "message": { ... } }` on a match;
@@ -127,3 +129,17 @@ The two timeout layers are distinct and must not be conflated:
   test proving parked waiters still resolve.
 - SDK long-poll chaining keys off the `status` field, not HTTP status
   classes, simplifying retry/error taxonomies.
+
+## Clarification (2026-10-19, issue #87)
+
+A wait parked on an `ACTIVE` inbox re-evaluates on every wake. The
+evaluation reads the inbox's state in the same snapshot as its messages; an
+inbox that is `EXPIRED`, `DELETED` or gone in that snapshot ends the wait
+with `410 Gone` before any match is considered, so a message that arrived
+before the transition is never returned after it — the same visibility the
+read endpoints give. The `EXPIRED` and `DELETED` transitions `pg_notify` the
+inbox's channel inside their own transaction, so the waiter learns promptly
+rather than at its window's end. `EXPIRING` keeps serving, and a wait started
+while `ACTIVE` continues through the grace period as before: ADR-009 makes
+`Expiring` reject *new* waiters, not existing ones. This note adds no new
+decision; it records how §3's `410` is reached for a wait already parked.

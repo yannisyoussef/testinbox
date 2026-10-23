@@ -1,0 +1,24 @@
+{"key": "v3-freeze45-R2s/0-2565a074/raw.eml", "scenario": "v3-freeze45-R2s", "exists_at_sweep": false, "visible_during_poll": false, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-R2s/1-c71c5fd1/raw.eml", "scenario": "v3-freeze45-R2s", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-R2s/2-8db0c1bb/raw.eml", "scenario": "v3-freeze45-R2s", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-R2s/3-b9a000ad/raw.eml", "scenario": "v3-freeze45-R2s", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-R2s/4-fb863afc/raw.eml", "scenario": "v3-freeze45-R2s", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-R2s/5-d62b2be0/raw.eml", "scenario": "v3-freeze45-R2s", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-R2s/6-fc2c23f6/raw.eml", "scenario": "v3-freeze45-R2s", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-R2s/7-0e5214ff/raw.eml", "scenario": "v3-freeze45-R2s", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-R2s/8-648db530/raw.eml", "scenario": "v3-freeze45-R2s", "exists_at_sweep": false, "visible_during_poll": false, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-R2s/9-449385fb/raw.eml", "scenario": "v3-freeze45-R2s", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-W/0-638d7368/raw.eml", "scenario": "v3-freeze45-W", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-W/1-72e2828e/raw.eml", "scenario": "v3-freeze45-W", "exists_at_sweep": false, "visible_during_poll": false, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-W/2-40575f81/raw.eml", "scenario": "v3-freeze45-W", "exists_at_sweep": false, "visible_during_poll": false, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-W/3-fc05329e/raw.eml", "scenario": "v3-freeze45-W", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-W/4-5803098f/raw.eml", "scenario": "v3-freeze45-W", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze45-W/5-d8a3396b/raw.eml", "scenario": "v3-freeze45-W", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze120-R2s/0-fc4827bb/raw.eml", "scenario": "v3-freeze120-R2s", "exists_at_sweep": false, "visible_during_poll": false, "appeared_after_poll_window": false}
+{"key": "v3-freeze120-R2s/1-55729d79/raw.eml", "scenario": "v3-freeze120-R2s", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze120-R2s/2-e9bab503/raw.eml", "scenario": "v3-freeze120-R2s", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze120-R2s/3-6a845646/raw.eml", "scenario": "v3-freeze120-R2s", "exists_at_sweep": false, "visible_during_poll": false, "appeared_after_poll_window": false}
+{"key": "v3-freeze120-W/0-358a0d2c/raw.eml", "scenario": "v3-freeze120-W", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze120-W/1-18d2ed14/raw.eml", "scenario": "v3-freeze120-W", "exists_at_sweep": true, "visible_during_poll": true, "appeared_after_poll_window": false}
+{"key": "v3-freeze120-W/2-880e2120/raw.eml", "scenario": "v3-freeze120-W", "exists_at_sweep": false, "visible_during_poll": false, "appeared_after_poll_window": false}
+{"summary": true, "keys": 23, "appeared_after_poll_window": 0}

@@ -11,6 +11,31 @@ info:
 
     Pre-v1 stability is signalled via the `X-API-Stability: experimental`
     response header rather than by breaking silently.
+
+    **Idempotency.** `POST /v1/inboxes` and `POST /v1/api-keys` accept an
+    optional `Idempotency-Key` header (ADR-033) so a client that loses a
+    response can retry without creating a second resource. Records are retained
+    for a bounded window (six hours by default) and then expire. Note that
+    `POST /v1/api-keys` **suppresses the duplicate rather than replaying the
+    response**: the credential is returned exactly once and is unrecoverable,
+    so a replay is `409 idempotency-secret-not-replayable` naming the key that
+    was created.
+
+    **Transport-level refusals apply to every operation** and are therefore not
+    repeated on each one. All use `application/problem+json` with a stable
+    `type` and a `correlationId`:
+
+    - `401 unauthorized` — no or invalid credential. Returned *before* routing,
+      so an unknown path is indistinguishable from a known one to an
+      unauthenticated caller.
+    - `404 not-found` — no such path.
+    - `405 method-not-allowed` — known path, wrong method. Carries `Allow`.
+    - `406 not-acceptable` / `415 unsupported-media-type` — content negotiation.
+    - `503 schema-unavailable` — the node's schema is behind its artifact
+      (ADR-029); carries `Retry-After`.
+
+    None of these is a `5xx`. A `500` from this API means a server fault, which
+    is what makes it worth alerting on.
 servers:
   - url: /v1
 security:
@@ -20,8 +45,55 @@ components:
     apiKey:
       type: http
       scheme: bearer
-      description: Opaque workspace/project-scoped API key (ADR-010).
+      description: >
+        Workspace/project-scoped API key (ADR-010, ADR-032). Structured rather
+        than fully opaque — `ti_k1_<publicId>_<secret>_<check>` — so a
+        credential is recognisable to a secret scanner and a truncated paste is
+        detectable. Only the `publicId` segment is non-secret.
   parameters:
+    idempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        Opaque, client-chosen key making a retry of *this* logical request safe
+        (ADR-033). 16–255 printable ASCII characters and no spaces
+        (`0x21`–`0x7e`); not required to be a UUID, and the server infers
+        nothing from its content.
+
+        Scoped to the caller's workspace and this operation, so the same value
+        is safe for unrelated tenants and for a different endpoint. On
+        `POST /v1/inboxes` it survives credential rotation: retrying with a
+        different API key of the same workspace still replays.
+
+        `POST /v1/api-keys` is the exception (ADR-033 §4a). A replay there is
+        additionally bound to the credential that claimed the key, because the
+        result depends on the actor — scopes are ceilinged by the actor's and
+        expiry is clamped to it — and the refusal names a credential for you to
+        revoke. A different credential replaying the same key is answered
+        `idempotency-key-reused`, so it can never be pointed at a key another
+        pipeline minted.
+
+        The key is bound to the *semantic* content of the request. Retrying the
+        same request replays the committed result; sending a different request
+        under the same key is `409 idempotency-key-reused` and never executes.
+
+        Only a **committed success** binds the key. A validation error, a quota
+        refusal or an address conflict leaves it unbound, so a corrected retry
+        with the same key executes normally.
+
+          Sending it to an operation that does not support it is refused rather
+        than ignored — `400 idempotency-not-supported`, on any `/v1` route.
+        Refused rather than ignored because a route that accepted and silently
+        dropped the header would tell a client, by saying nothing, that its
+        retries are safe. A client that stamps the header onto every outbound
+        request must therefore expect this `400` on operations that do not list
+        the parameter.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 255
+        pattern: "^[\\x21-\\x7e]+$"
     inboxId:
       name: id
       in: path
@@ -38,10 +110,43 @@ components:
       required: true
       schema: { type: string, format: uuid }
   headers:
+    idempotencyReplayed:
+      description: >
+        Present and `true` when this response replays a previously committed
+        result rather than performing the mutation (ADR-033).
+      schema: { type: boolean }
     correlationId:
       description: Correlation id echoed in logs/traces and RFC 7807 bodies.
       schema: { type: string }
+    rateLimitLimit:
+      description: Burst capacity of the bucket governing this request (ADR-027).
+      schema: { type: integer, format: int64 }
+    rateLimitRemaining:
+      description: Whole tokens left in that bucket after this request.
+      schema: { type: integer, format: int64 }
+    rateLimitReset:
+      description: Seconds until at least one token is available again.
+      schema: { type: integer, format: int64 }
+    retryAfter:
+      description: >
+        RFC 9110 Retry-After, in whole seconds. Present only where waiting
+        actually helps — never on a quota refusal, which waiting cannot fix.
+      schema: { type: integer, format: int64 }
   responses:
+    RateLimited:
+      description: >
+        Too many requests for this workspace
+        (`type: https://testinbox.email/problems/rate-limit-exceeded`).
+        Limits are workspace-scoped and derived from the authenticated API
+        key, so rotating a key does not reset them.
+      headers:
+        Retry-After: { $ref: "#/components/headers/retryAfter" }
+        RateLimit-Limit: { $ref: "#/components/headers/rateLimitLimit" }
+        RateLimit-Remaining: { $ref: "#/components/headers/rateLimitRemaining" }
+        RateLimit-Reset: { $ref: "#/components/headers/rateLimitReset" }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
     Problem:
       description: RFC 7807 problem.
       content:
@@ -60,7 +165,58 @@ components:
         correlationId: { type: string }
         retryAfterSeconds:
           type: integer
-          description: Present on address-already-reserved conflicts still in cooldown (ADR-021).
+          description: >
+            Seconds until a retry may succeed. Present on rate-limit and
+            concurrent-wait refusals, and on address-already-reserved
+            conflicts still in cooldown (ADR-021). Absent on quota-exceeded,
+            where waiting does not help.
+        category:
+          type: string
+          description: Rate category that refused the request (ADR-027).
+        quota:
+          type: string
+          description: Quota dimension that is exhausted, on quota-exceeded.
+        limit:
+          type: integer
+          format: int64
+          description: Configured allowance for the exceeded limit.
+        current:
+          type: integer
+          format: int64
+          description: Current consumption of the exceeded quota dimension.
+        apiKeyId:
+          type: string
+          format: uuid
+          description: >
+            On `idempotency-secret-not-replayable`, the credential this request
+            already created.
+        publicId:
+          type: string
+          description: >
+            On `idempotency-secret-not-replayable`, that credential's non-secret
+            handle.
+        inboxId:
+          type: string
+          format: uuid
+          description: On `storage-limit-exceeded`, the inbox whose wait observed the refusal (ADR-035 §13c).
+        refusalReason:
+          allOf: [{ $ref: "#/components/schemas/StorageRefusalReason" }]
+          description: On `storage-limit-exceeded`, why the most recent copy was refused.
+        afterStorageRefusalCount:
+          type: integer
+          format: int64
+          description: >
+            On `storage-limit-exceeded`, the observation boundary this call
+            evaluated against: the caller's `afterStorageRefusalCount`, clamped
+            once to the count seen at the call's first evaluation.
+        storageRefusalCount:
+          type: integer
+          format: int64
+          description: On `storage-limit-exceeded`, the inbox's refusal count in the deciding snapshot.
+        lastStorageRefusalAt:
+          type: string
+          format: date-time
+          description: On `storage-limit-exceeded`, when the most recent refusal was recorded.
       required: [type, title, status]
     AddressMode:
       type: string
@@ -75,6 +231,47 @@ components:
     ParseStatus:
       type: string
       enum: [OK, FAILED]
+    StorageRefusalReason:
+      type: string
+      description: >
+        The narrowest storage ceiling that refused a copy (ADR-035 §4):
+        the inbox's own limit, its workspace's limit, or service capacity.
+        `SERVICE_CAPACITY` is one bit — no global figure accompanies it.
+        Clients must tolerate unknown future values.
+      enum: [INBOX_LIMIT, WORKSPACE_LIMIT, SERVICE_CAPACITY]
+    StorageUsage:
+      type: object
+      description: >
+        Physical storage accounting for ONE scope of the caller's own tenancy
+        (ADR-035 §13). `storedBytes` is committed content; `reservedBytes`
+        counts in-flight reservations in every state (a stale reservation is
+        not free). `overLimit` is `storedBytes + reservedBytes > limitBytes`
+        for this scope; `availableBytes` is what this scope can still admit,
+        never below zero. No figure here ever describes another workspace or
+        the service as a whole.
+      properties:
+        limitBytes:
+          type: integer
+          format: int64
+          description: The effective limit of this scope. A policy value, not a constant.
+        storedBytes:
+          type: integer
+          format: int64
+          description: Committed bytes (raw MIME plus every extracted attachment).
+        reservedBytes:
+          type: integer
+          format: int64
+          description: Bytes held by unreleased reservations, whatever their state or age.
+        availableBytes:
+          type: integer
+          format: int64
+          description: >
+            `max(0, limitBytes - storedBytes - reservedBytes)` for a workspace.
+            For an inbox, the minimum of the inbox's and its workspace's
+            headroom, since both must admit a copy.
+        overLimit:
+          type: boolean
+          description: Whether `storedBytes + reservedBytes` exceeds `limitBytes`. Equality is not over.
     CreateInboxRequest:
       type: object
       properties:
@@ -101,6 +298,29 @@ components:
         state: { $ref: "#/components/schemas/InboxState" }
         createdAt: { type: string, format: date-time }
         expiresAt: { type: string, format: date-time }
+        storage:
+          allOf: [{ $ref: "#/components/schemas/StorageUsage" }]
+          description: >
+            This inbox's storage accounting, read live at response time
+            (ADR-035 §13b) — including on an idempotent create replay. Its
+            `limitBytes` is the effective inbox limit; `availableBytes` is the
+            minimum of inbox and workspace headroom.
+        storageRefusalCount:
+          type: integer
+          format: int64
+          description: >
+            How many copies were refused for this inbox because of a storage
+            ceiling. Monotonic, starts at 0. Pass it as a wait's
+            `afterStorageRefusalCount` to observe later refusals.
+        lastStorageRefusalAt:
+          type: [string, "null"]
+          format: date-time
+          description: When the most recent refusal was recorded; null while none has been.
+        lastStorageRefusalReason:
+          oneOf:
+            - $ref: "#/components/schemas/StorageRefusalReason"
+            - type: "null"
+          description: The most recent refusal's reason; null while none has been. Clients must tolerate unknown future values.
       required: [id, address, addressMode, state, createdAt, expiresAt]
     EmailHeader:
       type: object
@@ -163,7 +383,11 @@ components:
           items: { $ref: "#/components/schemas/AttachmentMeta" }
         contentFingerprint:
           type: string
-          description: SHA-256 of raw MIME — informational annotation, never a dedup key (ADR-019).
+          description: >-
+            SHA-256 of the message with `Received:` trace fields excluded, so the same
+            content fingerprints alike however many transport hops stamped it (ADR-019 §4,
+            amended 2026-09-17). Informational annotation, never a dedup key. The raw bytes
+            served by `/raw` are unchanged and still carry every trace header.
         possibleDuplicateOfMessageId:
           type: string
           format: uuid
@@ -214,6 +438,22 @@ components:
             Requested wait window; the server caps a single call (default
             cap 60s). SDKs chain calls for longer caller timeouts
             (ADR-012/020).
+        afterStorageRefusalCount:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >
+            Opt in to storage-refusal observation (ADR-035 §13c). The inbox's
+            `storageRefusalCount` the caller has already observed: 0 from the
+            create response, the value from a `GET`, or the
+            `storageRefusalCount` of a `409` it has handled. When a snapshot
+            holds no matching message and the inbox's refusal count exceeds
+            this boundary, the call answers `409 storage-limit-exceeded`
+            instead of parking. A value above the current count is clamped,
+            once, to the count seen at the call's first evaluation, so a
+            future value never suppresses a real refusal. A negative value is
+            `400`. **Omit it for the pre-ADR-035 behaviour:** a storage
+            refusal then never produces a `409`.
       required: [timeoutSeconds]
     WaitResult:
       type: object
@@ -235,12 +475,126 @@ components:
         parseFailedCount:
           type: integer
           description: Messages that became visible during the window with parseStatus FAILED.
+        storageRefusalCount:
+          type: integer
+          format: int64
+          description: >
+            Informational (ADR-035 §13c): the inbox's refusal count in the
+            SAME snapshot that decided this result, never a fresh read. A
+            refusal committed after that snapshot is not echoed. Adopting it
+            as the next `afterStorageRefusalCount` is the caller's explicit
+            choice and would skip any refusal that a match outranked.
+        lastStorageRefusalAt:
+          type: [string, "null"]
+          format: date-time
+          description: Informational; from the same snapshot as `storageRefusalCount`.
       required: [status, elapsedMs]
+    ApiScope:
+      type: string
+      description: >
+        Permission carried by an API key (ADR-010, ADR-032 §10). Clients must
+        tolerate unknown future values.
+      enum: ["inboxes:write", "messages:read", "api-keys:manage"]
+    ApiKey:
+      type: object
+      description: >
+        API-key metadata. This schema **never** carries secret material — the
+        credential itself exists only in the `key` field of a CreatedApiKey,
+        returned exactly once (ADR-032 §4).
+      properties:
+        id: { type: string, format: uuid }
+        publicId:
+          type: string
+          description: >
+            Non-secret handle embedded in the credential. Safe to display, log
+            and quote in a support ticket; grants nothing on its own.
+        name:
+          type: string
+          description: Operator-chosen label, e.g. the CI system that holds it.
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/ApiScope" }
+        createdAt: { type: string, format: date-time }
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absent when the key does not expire.
+        revokedAt:
+          type: string
+          format: date-time
+          description: Absent while the key is usable. A revoked key is retained, never deleted.
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: >
+            Approximate — refreshed at most once per coalescing interval
+            (5 minutes) and may lag by that much after a burst (ADR-032 §7).
+            Intended for "is this still in use?", never as an audit record.
+        createdByApiKeyId:
+          type: string
+          format: uuid
+          description: >
+            The credential that minted this one. It may reference a credential
+            this API does not expose: a workspace's first managed key is minted
+            with the bootstrap credential, and `GET /v1/api-keys/{id}` answers
+            `404` for that id. Treat it as an audit breadcrumb to correlate
+            with the `testinbox.audit` log, not as a followable link.
+      required: [id, publicId, scopes, createdAt]
+    CreatedApiKey:
+      type: object
+      description: >
+        The one and only response that ever contains a credential. The
+        plaintext is not stored, so it cannot be shown again or recovered —
+        there is no "show key" endpoint and there can be no "recover key"
+        (ADR-032 §4). A lost key is replaced by minting a new one and revoking
+        the old.
+      properties:
+        apiKey: { $ref: "#/components/schemas/ApiKey" }
+        key:
+          type: string
+          description: >
+            The full credential, e.g. `ti_k1_<publicId>_<secret>_<check>`.
+            Present here and nowhere else, ever.
+          examples: ["ti_k1_a3f7q2mzk4x9b6dt_REDACTED-SECRET-COMPONENT-NEVER-SHOWN-IN-DOCS_7h2q"]
+      required: [apiKey, key]
+    ApiKeyPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ApiKey" }
+        nextCursor:
+          type: string
+          description: Opaque cursor; absent when no further page exists.
+      required: [items]
+    CreateApiKeyRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          description: Operator-chosen label. Not a secret and not unique.
+        scopes:
+          type: array
+          minItems: 1
+          items: { $ref: "#/components/schemas/ApiScope" }
+          description: >
+            Least privilege — request only what the holder needs. A key cannot
+            grant a scope the caller does not itself hold, so a CI key can
+            never escalate. Immutable once created (ADR-032 §10).
+        expiresInSeconds:
+          type: integer
+          format: int64
+          minimum: 60
+          description: Optional lifetime. Omit for a key that does not expire.
+      required: [scopes]
 paths:
   /inboxes:
     post:
       operationId: createInbox
       summary: Create an inbox (GENERATED or EXACT addressing, ADR-021).
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
       requestBody:
         required: true
         content:
@@ -248,9 +602,19 @@ paths:
             schema: { $ref: "#/components/schemas/CreateInboxRequest" }
       responses:
         "201":
-          description: Inbox created.
+          description: >
+            Inbox created — or, when `Idempotency-Replayed` is true, the inbox
+            a previous identical request created. A replay reports the resource
+            as it was at creation; it is a record of what the request did, not
+            an assertion that the inbox still exists, so a replay followed by a
+            fetch may yield `404` once the inbox has expired. The `storage`,
+            `storageRefusalCount`, `lastStorageRefusalAt` and
+            `lastStorageRefusalReason` members are read live at response time,
+            on a replay too (ADR-035 §13b); only the inbox's identity and state
+            are replayed from the record.
           headers:
             X-Correlation-Id: { $ref: "#/components/headers/correlationId" }
+            Idempotency-Replayed: { $ref: "#/components/headers/idempotencyReplayed" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Inbox" }
@@ -259,11 +623,34 @@ paths:
         "403": { $ref: "#/components/responses/Problem" }
         "409":
           description: >
-            EXACT local-part already reserved or in cooldown
-            (`type: https://testinbox.email/problems/address-already-reserved`).
+            Either the EXACT local-part is already reserved or in cooldown
+            (`type: https://testinbox.email/problems/address-already-reserved`,
+            ADR-021), or a workspace quota is exhausted
+            (`type: https://testinbox.email/problems/quota-exceeded`, ADR-027).
+            Clients must discriminate on the problem `type`, never on the
+            status code. Quota exhaustion carries no `Retry-After`: waiting
+            does not help, the caller must free capacity.
+
+            With an `Idempotency-Key`, three further types are possible:
+            `idempotency-key-reused` (the key is bound to a different logical
+            request — retrying with it can never succeed),
+            `idempotency-request-in-progress` (a concurrent identical request
+            is still running — carries `Retry-After`, and retrying is correct)
+            and `idempotency-replay-unavailable` (the key is bound to a
+            committed request whose stored result this server cannot decode —
+            retrying with it can never succeed; use a new key).
+
+            `idempotency-replay-unavailable` is reachable only after an
+            ADR-028 artifact rollback across a snapshot version bump, where a
+            newer artifact wrote a record an older one cannot read. The
+            mutation it names *did* commit; re-executing would duplicate it,
+            so the key is reported spent rather than replayed or re-run.
+
+            Neither an address conflict nor a quota refusal binds the key.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /inboxes/{id}:
     get:
       operationId: getInbox
@@ -323,20 +710,83 @@ paths:
             schema: { $ref: "#/components/schemas/WaitRequest" }
       responses:
         "200":
-          description: MATCHED with the message, or TIMEOUT with diagnostics (never 408 — ADR-020).
+          description: >
+            MATCHED with the message, or TIMEOUT with diagnostics (never 408 —
+            ADR-020). Both carry the informational `storageRefusalCount` and
+            `lastStorageRefusalAt` from the deciding snapshot. A visible match
+            always wins over a refusal (ADR-035 §13c).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WaitResult" }
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
-        "410":
+        "409":
           description: >
-            Inbox is no longer ACTIVE
-            (`type: https://testinbox.email/problems/inbox-gone`).
+            Only when the request carried `afterStorageRefusalCount`
+            (`type: https://testinbox.email/problems/storage-limit-exceeded`,
+            ADR-035 §13c): the deciding snapshot held no matching message and
+            the inbox's refusal count exceeds the observation boundary. A
+            storage ceiling refused a copy for this inbox — possibly the one
+            being awaited — so waiting does not help and there is no
+            `Retry-After`. The body carries `inboxId`, `refusalReason`, the
+            effective `afterStorageRefusalCount`, `storageRefusalCount` and
+            `lastStorageRefusalAt`. For `INBOX_LIMIT` and `WORKSPACE_LIMIT` it
+            also carries `quota: STORED_BYTES`, `limit` and `current`
+            (`stored + reserved`) for the named scope; for `SERVICE_CAPACITY`
+            those members are ABSENT, because no global figure is disclosed.
+            It is decided before any concurrent wait slot is claimed, so it
+            consumes none. Requests that omit `afterStorageRefusalCount` can
+            never receive it. Precedence: request-rate `429` → `400` → `404` →
+            `410` → `200 MATCHED` → this `409` → slot `429` → `200 TIMEOUT`.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
+        "410":
+          description: >
+            Inbox is no longer ACTIVE
+            (`type: https://testinbox.email/problems/inbox-gone`). Also the
+            outcome of a wait that was parked when its inbox became EXPIRED or
+            DELETED: the wait ends promptly, and never returns a message after
+            that transition, even one that arrived before it.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429":
+          description: >
+            Either the workspace's wait request rate was exceeded
+            (`type: .../rate-limit-exceeded`) or it already holds every
+            concurrent wait slot
+            (`type: .../concurrent-wait-limit-exceeded`). Both are
+            time-recoverable and carry `Retry-After`.
+          headers:
+            Retry-After: { $ref: "#/components/headers/retryAfter" }
+            RateLimit-Limit: { $ref: "#/components/headers/rateLimitLimit" }
+            RateLimit-Remaining: { $ref: "#/components/headers/rateLimitRemaining" }
+            RateLimit-Reset: { $ref: "#/components/headers/rateLimitReset" }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+  /workspace/storage:
+    get:
+      operationId: getWorkspaceStorage
+      summary: Storage accounting of the authenticated key's own workspace (ADR-035 §13a).
+      description: >
+        Requires `messages:read`. The workspace is always the authenticated
+        key's own: no workspace id is accepted from the path, query, body or
+        a header. `limitBytes` is the effective workspace limit;
+        `availableBytes` is `max(0, limitBytes - storedBytes - reservedBytes)`.
+        The response never carries a global or another workspace's figure.
+        Charged against the `READ` rate category.
+      responses:
+        "200":
+          description: The workspace's storage usage, read from one database snapshot.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StorageUsage" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /messages/{id}:
     get:
       operationId: getMessage
@@ -368,6 +818,7 @@ paths:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /messages/{id}/attachments:
     get:
       operationId: listAttachments
@@ -400,3 +851,157 @@ paths:
               schema: { type: string, format: binary }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api-keys:
+    post:
+      operationId: createApiKey
+      summary: Mint a managed API key; the credential is returned exactly once.
+      description: >
+        Requires the `api-keys:manage` scope. The response is the only place
+        the credential ever appears — it is not stored and cannot be shown
+        again (ADR-032 §4). The new key belongs to the caller's own workspace
+        and project, which are derived from the authenticated credential and
+        can never be supplied by the client.
+      parameters:
+        - $ref: "#/components/parameters/idempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateApiKeyRequest" }
+      responses:
+        "201":
+          description: Key created; `key` carries the plaintext for the first and last time.
+          headers:
+            X-Correlation-Id: { $ref: "#/components/headers/correlationId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedApiKey" }
+        "400":
+          description: >
+            `type: https://testinbox.email/problems/invalid-request` — an
+            unknown or empty scope, a name over 100 characters, or an
+            `expiresInSeconds` outside the supported range.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403":
+          description: >
+            The caller lacks `api-keys:manage`
+            (`type: https://testinbox.email/problems/missing-scope`), or asked
+            for a scope it does not itself hold
+            (`type: https://testinbox.email/problems/scope-escalation`).
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "409":
+          description: >
+            Only with an `Idempotency-Key`, and this endpoint **suppresses the
+            duplicate rather than replaying the response** (ADR-033 §8).
+
+            `type: https://testinbox.email/problems/idempotency-secret-not-replayable`
+            — this exact request already created a credential. It is named by
+            `apiKeyId` and `publicId` so it can be revoked without a list call,
+            but its secret was returned once and cannot be re-issued: nothing
+            in the system retains it (ADR-032 §4). Revoke it and mint again
+            under a fresh key.
+
+            A refusal rather than a `200` with the credential omitted, so a
+            client cannot write an absent secret into its store and fail
+            somewhere else later.
+
+            Also possible: `idempotency-key-reused`,
+            `idempotency-request-in-progress` and
+            `idempotency-replay-unavailable`, as for inbox creation.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      operationId: listApiKeys
+      summary: List the workspace's API keys, newest first. Never returns secret material.
+      description: >
+        Requires the `api-keys:manage` scope. Revoked keys are included — they
+        are retained for audit — and are identified by a present `revokedAt`.
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          description: >
+            Clamped, not validated: values below 1 or above 200 are adjusted to
+            the nearest bound rather than refused, so a client need not encode
+            the server's page-size policy.
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: A page of key metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKeyPage" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api-keys/{id}:
+    get:
+      operationId: getApiKey
+      summary: Metadata for one key. Never returns the secret.
+      description: >
+        Requires the `api-keys:manage` scope. A **revoked** key is still
+        returned — revocation is a state change, not a deletion — and is
+        identified by a present `revokedAt`. "Delete then expect 404" is
+        therefore the wrong check; read `revokedAt` instead.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Key metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiKey" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404":
+          description: >
+            No such key **in the caller's workspace**. A key belonging to
+            another workspace is reported identically, so the endpoint cannot
+            be used to probe for credentials elsewhere.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    delete:
+      operationId: revokeApiKey
+      summary: Revoke a key. The row is retained; only its usability changes.
+      description: >
+        Requires the `api-keys:manage` scope. Revocation takes effect on the
+        next request on every node — no authorization state is cached
+        (ADR-032 §5). **Idempotent**: revoking an already-revoked key is `204`,
+        so a client retrying after a network failure is never told its own
+        successful call failed. Whether a key was already revoked is visible
+        in its `revokedAt`.
+
+        Revoking the last key holding `api-keys:manage` is permitted: refusing
+        it would forbid revoking a compromised administrative credential. The
+        break-glass path is the bootstrap credential, which reopens exactly
+        when no usable managed admin key remains (ADR-032 §8).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: The key is revoked and no longer authenticates.
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }

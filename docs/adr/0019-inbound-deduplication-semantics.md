@@ -1,7 +1,8 @@
 # ADR-019: Inbound Message Deduplication Semantics
 
 **Status:** Accepted, amended by
-[ADR-026](0026-recipient-scoped-provider-delivery-identity.md)
+[ADR-026](0026-recipient-scoped-provider-delivery-identity.md) and by the
+§4 fingerprint amendment of 2026-09-17 (below)
 (amends the deduplication consequence of
 [ADR-003](0003-inbound-mail-abstraction.md); replaces the deduplication
 contract previously described in `docs/architecture/inbound-mail-flow.md`
@@ -14,6 +15,46 @@ and the "effectively-once" language in `docs/architecture/message-lifecycle.md`)
 > event carries several envelope recipients, and is superseded by
 > `(provider, providerMessageId, normalized envelope recipient)`. Read this
 > ADR for the rationale, ADR-026 for the current key.
+
+> **Amendment (2026-09-17, owner decision on [#27](https://github.com/yannisyoussef/testinbox/issues/27)).**
+> §4 below defined `contentFingerprint` as a hash of raw MIME. Taken literally
+> that is a hash of the *stored* bytes, which include the `Received:` trace
+> field every transport hop prepends — our own SMTP gateway, and the Postfix
+> relay ahead of it (ADR-004/TI-005). Those fields carry a second-resolution
+> timestamp and a queue identifier, so two byte-identical sends fingerprinted
+> differently unless they happened to land inside the same wall-clock second.
+> That silently reduced the §4 annotation to the one-second heuristic this very
+> ADR rejects under *Alternatives considered*, and it surfaced as an
+> intermittent CI failure rather than as a reported defect.
+>
+> `contentFingerprint` is therefore **no longer a literal SHA-256 of the
+> complete stored raw MIME**. It is a transport-insensitive content
+> fingerprint, computed by:
+>
+> - operating only on the top-level RFC message header block;
+> - excluding complete `Received:` header fields, case-insensitively,
+>   including their folded continuation lines;
+> - preserving all other header bytes;
+> - preserving the header/body separator;
+> - preserving the body bytes exactly;
+> - SHA-256 over the resulting bytes.
+>
+> Everything §4 says about its *status* stands unchanged: it is informational
+> metadata. It never suppresses a message, never becomes a provider
+> deduplication key, never uses `Message-ID` as identity, and never alters the
+> stored raw MIME. Two distinct SMTP `DATA` transactions remain two visible
+> `Message` rows even when their normalized fingerprints match.
+>
+> **Accepted trade-off.** Messages differing *only* in their `Received:` trace
+> headers now fingerprint alike and may be annotated as possible duplicates.
+> Their distinct transport evidence remains fully visible through `/raw`, which
+> continues to serve the exact byte sequence TestInbox received, trace headers
+> included — [ADR-005](0005-message-raw-mime-storage.md) is unchanged.
+>
+> **Deliberately not topology-coupled.** The normalization keys on the field
+> name alone. It does not depend on TestInbox hostnames, on the number of SMTP
+> hops, or on the current Postfix layout, so introducing, moving or removing a
+> relay requires no change to it.
 
 ## Context
 
@@ -67,7 +108,9 @@ risks hiding SUT defects.
    between the two may cause the sender MTA to retry and produce a second
    row. This is rare, and presenting both rows is the faithful outcome.
 4. **Annotation instead of suppression.** A content fingerprint (hash of
-   raw MIME) is stored as informational metadata on every message. If a
+   raw MIME — **see the 2026-09-17 amendment above: this is now a
+   transport-insensitive hash that excludes `Received:` trace fields**) is
+   stored as informational metadata on every message. If a
    new message shares a fingerprint with an existing message in the same
    inbox, it is persisted normally and additionally annotated
    (`possibleDuplicateOfMessageId`). Tests and the dashboard can then

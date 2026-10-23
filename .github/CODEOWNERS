@@ -1,0 +1,52 @@
+# Code owners — review that a CI gate cannot substitute for.
+#
+# Flyway migrations are listed because artifact rollback (ADR-028/029) depends
+# on every migration being expand-only, and `scripts/check-migration-safety.sh`
+# can only catch the unambiguous breaks. The judgement calls it cannot make —
+# a constraint tightened rather than widened, a backfill that assumes the new
+# code is already deployed, a change that is technically additive but
+# semantically incompatible — are exactly what a human review is for.
+/backend/persistence/src/main/resources/db/migration/ @yannisyoussef
+
+# The deployment contract with the Infinity Ops platform: what GitHub sends,
+# what it is allowed to hold, and what a green run is permitted to claim
+# (ADR-030). A change here can quietly reintroduce a host credential or turn a
+# handoff back into a false deployment success.
+/.github/workflows/                                   @yannisyoussef
+/scripts/gitlab-handoff.sh                            @yannisyoussef
+/scripts/check-migration-safety.sh                    @yannisyoussef
+/scripts/validate-image-digest.sh                     @yannisyoussef
+# The production promotion contract (ADR-034): what may be handed to the
+# production reconcile, and the one context master's protection requires.
+/scripts/verify-production-candidate.sh               @yannisyoussef
+/scripts/promotion-gate.sh                            @yannisyoussef
+/scripts/await-candidate-build.sh                     @yannisyoussef
+/scripts/check-backup-scope.sh                        @yannisyoussef
+/deploy/                                              @yannisyoussef
+
+# Accepted ADRs are authoritative (CLAUDE.md); they are amended by new ADRs,
+# not edited in passing.
+/docs/adr/                                            @yannisyoussef
+
+# The credential path (ADR-032). A change here can weaken authentication in
+# ways no gate can see: the format's entropy claim, the constant-time
+# comparison, the bootstrap window that closes itself, or the single response
+# allowed to carry a plaintext credential. The tests assert today's behaviour;
+# only a human can judge whether a change to that behaviour is intended.
+/backend/domain/src/main/kotlin/email/testinbox/domain/tenant/     @yannisyoussef
+/backend/application/src/main/kotlin/email/testinbox/application/usecase/AuthenticateApiKey.kt @yannisyoussef
+/backend/application/src/main/kotlin/email/testinbox/application/usecase/ApiKeyLifecycle.kt    @yannisyoussef
+/backend/application/src/main/kotlin/email/testinbox/application/deployment/DeploymentSafety.kt @yannisyoussef
+/backend/api/src/main/kotlin/email/testinbox/api/auth/             @yannisyoussef
+
+# The hand-authored REST contract is the source of truth (ADR-022); the
+# compatibility gate catches breaking shapes, not breaking meanings.
+/backend/api/contract/openapi.yaml                                 @yannisyoussef
+
+# The idempotency claim (ADR-033). Its correctness rests on properties of one
+# SQL statement that no unit test can see: that the claim and the mutation
+# share a transaction, that the conflicting row is locked rather than merely
+# detected, and that the lock timeout bounds the claim and nothing else.
+# Changing any of them silently reintroduces duplicate mutations.
+/backend/application/src/main/kotlin/email/testinbox/application/idempotency/ @yannisyoussef
+/backend/persistence/src/main/kotlin/email/testinbox/persistence/JdbcIdempotencyRecords.kt @yannisyoussef

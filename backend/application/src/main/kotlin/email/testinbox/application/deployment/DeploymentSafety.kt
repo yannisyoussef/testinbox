@@ -1,0 +1,1045 @@
+package email.testinbox.application.deployment
+
+import email.testinbox.application.storage.EffectiveStoragePolicy
+import email.testinbox.application.storage.LAB_PLATFORM_CLASS
+import email.testinbox.application.storage.NodeRole
+import email.testinbox.application.storage.QualificationMatch
+import email.testinbox.application.storage.QualificationRecordSource
+import email.testinbox.application.storage.StorageDeclarations
+import email.testinbox.domain.storage.FilesystemContainment
+import email.testinbox.domain.storage.FootprintModel
+import email.testinbox.domain.storage.InboxShare
+import email.testinbox.domain.tenant.ApiKeyFormat
+import java.time.Duration
+
+/**
+ * The configuration a deployed process is about to run with, reduced to the
+ * facts worth refusing to start over.
+ *
+ * Framework-free and shared by both deployables on purpose: the API and the
+ * ingestion gateway are separate processes (ADR-001) reading overlapping
+ * configuration, and a safety check written twice is a safety check that
+ * drifts — the same reasoning that put limit enforcement in one use case
+ * rather than in each adapter (ADR-027 §3).
+ */
+data class DeploymentSettings(
+    /** The environment this process believes it is in, e.g. "staging". */
+    val environment: String,
+    val mailDomain: String,
+    val databaseUrl: String,
+    val databaseUsername: String,
+    val databasePassword: String,
+    val storageEndpoint: String,
+    val storageAccessKey: String,
+    val storageSecretKey: String,
+    /** Public origin this environment is reached on, e.g. `https://api.staging.testinbox.email`. */
+    val publicBaseUrl: String?,
+    /** Bootstrap fixture key, if one is configured. Null/blank when absent. */
+    val bootstrapApiKey: String?,
+    val waitWindowCap: Duration,
+    /**
+     * Read/idle timeout of the reverse proxy in front of this process, as
+     * configured for the environment. Declared rather than probed: the point
+     * is to fail the deployment when the two are set inconsistently.
+     */
+    val proxyReadTimeout: Duration?,
+    /**
+     * Hard ceiling on how long the environment's ingress will hold ANY request,
+     * when it has one. Cloudflare caps a request at ~100 s on the deployed
+     * staging path (ADR-030), and no application setting can raise that — so a
+     * wait window that needs more than the ceiling allows produces a 524 no
+     * matter what `proxyReadTimeout` claims.
+     *
+     * Null where the ingress is ours and imposes no ceiling of its own, as in
+     * the provider-neutral nginx topology.
+     */
+    val edgeRequestCeiling: Duration?,
+    val limitsEnabled: Boolean,
+    /**
+     * The Spring profiles this process started with. Production's fail-closed
+     * overrides live in a profile-specific document, so "environment says
+     * production, profile does not" means those overrides were never loaded —
+     * a staging configuration wearing a production label.
+     */
+    val activeProfiles: Set<String> = emptySet(),
+    /** Whether this deployable serves a public HTTP origin (the API does; the SMTP gateway does not). */
+    val publicSurface: Boolean = true,
+    /** Whether the object-store adapter would create its bucket at startup. */
+    val createBucket: Boolean = false,
+    /**
+     * Whether an unbounded database session timeout takes this node out of
+     * readiness (ADR-033/034). Null where the deployable has no such
+     * indicator (the SMTP gateway); production requires true on the API.
+     */
+    val requireDatabaseSessionTimeout: Boolean? = null,
+    /**
+     * ADR-035 §18: the enforcement mode and every declaration a non-OFF
+     * deployment must carry. OFF with nothing declared is Phase 2 as it ships.
+     */
+    val storage: StorageDeclarations = StorageDeclarations.OFF,
+)
+
+/**
+ * The facts about production that are decided, not configured (ADR-034).
+ *
+ * They live in code rather than in a profile document because a profile
+ * document can be overridden by an environment variable, and the point of a
+ * production invariant is that it cannot be. The domain is the tenant domain
+ * ADR-004 fixed for the public MX; the host fragments are the names of every
+ * environment that is not production.
+ */
+object ProductionPolicy {
+    const val ENVIRONMENT = "production"
+    const val PROFILE = "production"
+    const val MAIL_DOMAIN = "inbox.testinbox.email"
+
+    /**
+     * Names of every environment that is not production, matched as a
+     * substring of the host. Loopback is refused too, but by the exact
+     * authority check the deployed baseline already uses —
+     * `localhost.db.example.com` is a real remote host there and stays one here.
+     */
+    val NON_PRODUCTION_HOST_FRAGMENTS: List<String> = listOf("staging", "rehearsal", ".local")
+
+    /** Profiles that name an environment; none may be active alongside `production`. */
+    val OTHER_ENVIRONMENT_PROFILES: Set<String> = setOf("staging", "rehearsal", "local", "dev", "test")
+}
+
+data class DeploymentViolation(
+    val setting: String,
+    val problem: String,
+)
+
+/**
+ * Fails a deployed process fast when its configuration is a local-development
+ * default, a plaintext-HTTP public surface, or a proxy timeout that would
+ * convert TestInbox's own `200 {status: TIMEOUT}` into a gateway error.
+ *
+ * The failure mode this exists for is silence: every one of these settings has
+ * a working local default, so a missing environment variable does not produce
+ * an error — it produces a staging environment running on `testinbox/testinbox`
+ * against `localhost`, which looks healthy right up until it is reachable.
+ */
+object DeploymentSafety {
+    /**
+     * Values that ship in `application.yaml` and `docker-compose.yml` for local
+     * development. Their presence in a deployed profile means an environment
+     * variable was not supplied, not that someone chose them.
+     */
+    private val LOCAL_DEV_SECRETS = setOf("testinbox", "testinbox123", "changeme", "password", "postgres", "minioadmin")
+    private const val LOCAL_MAIL_DOMAIN = "testinbox.local"
+    private val LOCAL_HOSTS = setOf("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+    /** Host of a `//host`, `//[v6]` or `@host` authority — bracketed IPv6 included. */
+    private val AUTHORITY = Regex("""(?://|@)(\[[^\]]*]|[^/@\[\]:?#]+)(?::\d+)?(?:[/?#]|$)""")
+
+    /**
+     * Minimum length for a bootstrap key in a deployed environment.
+     *
+     * 43 characters is `base64(32 bytes)`. The figure is a floor on *encoded
+     * randomness*, not on typing effort: ADR-032 §2's argument for SHA-256
+     * over a password KDF rests on the secret being high-entropy, and that
+     * argument covers managed keys by construction but covers the bootstrap
+     * credential only if the operator supplies real entropy. At 32 characters
+     * a human-chosen passphrase satisfied the check and would have been the
+     * one crackable row in the table — and the highest-privilege one.
+     */
+    const val MIN_BOOTSTRAP_KEY_LENGTH = 43
+
+    /**
+     * A crude but honest entropy proxy. It cannot measure entropy, but it does
+     * reject the shapes that have none — a repeated character, a short word
+     * padded to length — without pretending to more rigour than it has.
+     */
+    const val MIN_BOOTSTRAP_KEY_DISTINCT_CHARS = 16
+
+    /**
+     * How much longer the proxy must wait than the server's own maximum wait
+     * window (ADR-020). Covers request/response transit and the server's own
+     * scheduling slack; anything tighter makes a legitimate long poll a race.
+     */
+    val PROXY_TIMEOUT_MARGIN: Duration = Duration.ofSeconds(30)
+
+    /**
+     * Split into one function per concern rather than one long sequence: the
+     * checks are independent, and a single method accumulating all of them is
+     * both harder to read and — measurably — over the project's complexity
+     * threshold.
+     */
+    fun validate(settings: DeploymentSettings): List<DeploymentViolation> =
+        buildList {
+            addAll(checkMailDomain(settings))
+            addAll(checkDatabase(settings))
+            addAll(checkObjectStorage(settings))
+            addAll(checkPublicBaseUrl(settings))
+            addAll(checkBootstrapKey(settings))
+            addAll(checkProxyTimeout(settings))
+            addAll(checkEdgeCeiling(settings))
+            addAll(checkLimits(settings))
+            addAll(checkProduction(settings))
+            addAll(StorageEnforcementSafety.check(settings))
+        }
+
+    private fun checkMailDomain(settings: DeploymentSettings): List<DeploymentViolation> =
+        if (settings.mailDomain.isBlank() || settings.mailDomain.equals(LOCAL_MAIL_DOMAIN, ignoreCase = true)) {
+            listOf(
+                DeploymentViolation(
+                    "testinbox.mail-domain",
+                    "is the local-development default '$LOCAL_MAIL_DOMAIN' — set the mail domain for ${settings.environment}",
+                ),
+            )
+        } else {
+            emptyList()
+        }
+
+    private fun checkDatabase(settings: DeploymentSettings): List<DeploymentViolation> =
+        buildList {
+            if (settings.databaseUrl.isBlank()) {
+                add(DeploymentViolation("spring.datasource.url", "is not set"))
+            } else if (!settings.databaseUrl.startsWith("jdbc:postgresql://", ignoreCase = true)) {
+                // `jdbc:postgresql:testinbox` is a valid URL for an implicit localhost, and
+                // it has no authority for the loopback check to see.
+                add(DeploymentViolation("spring.datasource.url", "must name its host explicitly (jdbc:postgresql://host:port/db)"))
+            } else if (containsLocalHost(settings.databaseUrl)) {
+                add(
+                    DeploymentViolation(
+                        "spring.datasource.url",
+                        "points at the local host — a deployed process needs the environment's database",
+                    ),
+                )
+            }
+            if (settings.databaseUsername.isBlank()) {
+                add(DeploymentViolation("spring.datasource.username", "is not set"))
+            }
+            if (isLocalDevSecret(settings.databasePassword)) {
+                add(
+                    DeploymentViolation(
+                        "spring.datasource.password",
+                        "is a local-development default or empty — inject the environment's credential",
+                    ),
+                )
+            }
+        }
+
+    private fun checkObjectStorage(settings: DeploymentSettings): List<DeploymentViolation> =
+        buildList {
+            if (settings.storageEndpoint.isBlank()) {
+                add(DeploymentViolation("testinbox.storage.endpoint", "is not set"))
+            } else if (!settings.storageEndpoint.matches(Regex("(?i)https?://.+"))) {
+                add(DeploymentViolation("testinbox.storage.endpoint", "must be an absolute http(s):// URL"))
+            } else if (containsLocalHost(settings.storageEndpoint)) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.storage.endpoint",
+                        "points at the local host — a deployed process needs the environment's object store",
+                    ),
+                )
+            }
+            if (isLocalDevSecret(settings.storageAccessKey)) {
+                add(DeploymentViolation("testinbox.storage.access-key", "is a local-development default or empty"))
+            }
+            if (isLocalDevSecret(settings.storageSecretKey)) {
+                add(DeploymentViolation("testinbox.storage.secret-key", "is a local-development default or empty"))
+            }
+        }
+
+    private fun checkPublicBaseUrl(settings: DeploymentSettings): List<DeploymentViolation> {
+        // Absent is legitimate: the ingestion gateway terminates SMTP and has
+        // no public HTTP origin of its own.
+        val url = settings.publicBaseUrl ?: return emptyList()
+        val problem =
+            when {
+                url.isBlank() -> "is blank"
+                url.startsWith("http://", ignoreCase = true) -> "is plaintext HTTP — a public surface must be HTTPS"
+                !url.startsWith("https://", ignoreCase = true) -> "is not an absolute https:// URL"
+                else -> return emptyList()
+            }
+        return listOf(DeploymentViolation("testinbox.public-base-url", problem))
+    }
+
+    private fun checkBootstrapKey(settings: DeploymentSettings): List<DeploymentViolation> {
+        val key = settings.bootstrapApiKey?.takeIf { it.isNotBlank() } ?: return emptyList()
+        return buildList {
+            if (ApiKeyFormat.looksLikeCredential(key)) {
+                // It would be routed to the managed-credential path, which only
+                // ever resolves `kind = 'MANAGED'` rows, so the break-glass
+                // credential would be silently dead — discovered during the
+                // outage it exists to resolve.
+                add(
+                    DeploymentViolation(
+                        "testinbox.bootstrap.api-key",
+                        "starts with the reserved '${ApiKeyFormat.PRODUCT_MARKER}_' prefix, which routes it to the " +
+                            "managed-credential path where it can never authenticate",
+                    ),
+                )
+            }
+            if (key.toSet().size < MIN_BOOTSTRAP_KEY_DISTINCT_CHARS) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.bootstrap.api-key",
+                        "uses only ${key.toSet().size} distinct characters; a deployed bootstrap key must be " +
+                            "generated randomly (openssl rand -base64 32), not chosen",
+                    ),
+                )
+            }
+            if (key.length < MIN_BOOTSTRAP_KEY_LENGTH) {
+                // Length only — never the value, never a hash of it (ADR-010).
+                add(
+                    DeploymentViolation(
+                        "testinbox.bootstrap.api-key",
+                        "is ${key.length} characters; a deployed bootstrap key must be at least $MIN_BOOTSTRAP_KEY_LENGTH",
+                    ),
+                )
+            }
+            if (LOCAL_DEV_SECRETS.any { key.equals(it, ignoreCase = true) } || key.startsWith("tk_e2e_")) {
+                add(DeploymentViolation("testinbox.bootstrap.api-key", "is a known development/test fixture key"))
+            }
+        }
+    }
+
+    private fun checkProxyTimeout(settings: DeploymentSettings): List<DeploymentViolation> {
+        val proxyTimeout =
+            settings.proxyReadTimeout
+                ?: return listOf(
+                    DeploymentViolation(
+                        "testinbox.proxy-read-timeout",
+                        "is not declared — without it nothing checks that the ingress outlives a " +
+                            "${settings.waitWindowCap.toSeconds()}s wait",
+                    ),
+                )
+        val required = settings.waitWindowCap.plus(PROXY_TIMEOUT_MARGIN)
+        if (proxyTimeout >= required) return emptyList()
+        return listOf(
+            DeploymentViolation(
+                "testinbox.proxy-read-timeout",
+                "is ${proxyTimeout.toSeconds()}s but the wait window cap is ${settings.waitWindowCap.toSeconds()}s; " +
+                    "the proxy would abort a legitimate long poll before the server answers " +
+                    "(need at least ${required.toSeconds()}s)",
+            ),
+        )
+    }
+
+    /**
+     * The declared proxy timeout is what *we* configured; the ceiling is what
+     * the environment will actually tolerate. Checking only the former lets a
+     * deployment pass validation and then fail in production: raise the wait
+     * window to 90 s, declare a 120 s proxy timeout, and every full-window wait
+     * is cut at Cloudflare's 100 s and returns 524 — with every check green.
+     */
+    private fun checkEdgeCeiling(settings: DeploymentSettings): List<DeploymentViolation> {
+        val ceiling = settings.edgeRequestCeiling ?: return emptyList()
+        val violations = mutableListOf<DeploymentViolation>()
+        val required = settings.waitWindowCap.plus(PROXY_TIMEOUT_MARGIN)
+        if (required > ceiling) {
+            violations +=
+                DeploymentViolation(
+                    "testinbox.wait-window-cap",
+                    "is ${settings.waitWindowCap.toSeconds()}s, which needs ${required.toSeconds()}s of ingress " +
+                        "patience, but this environment's ingress cuts a request at ${ceiling.toSeconds()}s; " +
+                        "a full-window wait would fail there whatever the proxy timeout says. Raising this is " +
+                        "an edge decision, not an application setting",
+                )
+        }
+        settings.proxyReadTimeout?.let { declared ->
+            if (declared > ceiling) {
+                violations +=
+                    DeploymentViolation(
+                        "testinbox.proxy-read-timeout",
+                        "is declared as ${declared.toSeconds()}s but the environment's ingress cuts a request at " +
+                            "${ceiling.toSeconds()}s; the declared value is not achievable here",
+                    )
+            }
+        }
+        return violations
+    }
+
+    private fun checkLimits(settings: DeploymentSettings): List<DeploymentViolation> =
+        if (settings.limitsEnabled) {
+            emptyList()
+        } else {
+            listOf(
+                DeploymentViolation(
+                    "testinbox.limits.enabled",
+                    "is false — a reachable deployment would be unprotected (ADR-027)",
+                ),
+            )
+        }
+
+    /**
+     * Production is the one environment where a misconfiguration is not
+     * recoverable by redeploying: it serves real tenants. So the checks here
+     * are stricter than the deployed baseline, and they are keyed on BOTH the
+     * declared environment and the active profile, because each can be set
+     * without the other and each mistake is silent on its own.
+     */
+    private fun checkProduction(settings: DeploymentSettings): List<DeploymentViolation> {
+        val declared = settings.environment.equals(ProductionPolicy.ENVIRONMENT, ignoreCase = true)
+        val profiled = ProductionPolicy.PROFILE in settings.activeProfiles
+        if (!declared && !profiled) return emptyList()
+        return buildList {
+            addAll(checkProductionIdentity(settings, declared, profiled))
+            addAll(checkProductionSurfaces(settings))
+            addAll(checkProductionStorage(settings))
+        }
+    }
+
+    private fun checkProductionIdentity(
+        settings: DeploymentSettings,
+        declared: Boolean,
+        profiled: Boolean,
+    ): List<DeploymentViolation> =
+        buildList {
+            if (declared && !profiled) {
+                add(
+                    DeploymentViolation(
+                        "spring.profiles.active",
+                        "does not include '${ProductionPolicy.PROFILE}' although TESTINBOX_ENVIRONMENT is " +
+                            "'${settings.environment}'; the production fail-closed overrides were never loaded",
+                    ),
+                )
+            }
+            if (profiled && !declared) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.deployment.environment",
+                        "is '${settings.environment}' while the '${ProductionPolicy.PROFILE}' profile is active; " +
+                            "a production process must declare itself as one",
+                    ),
+                )
+            }
+            if (!settings.environment.equals(ProductionPolicy.ENVIRONMENT) && declared) {
+                add(DeploymentViolation("testinbox.deployment.environment", "must be exactly '${ProductionPolicy.ENVIRONMENT}'"))
+            }
+            val mixed = settings.activeProfiles.intersect(ProductionPolicy.OTHER_ENVIRONMENT_PROFILES)
+            if (profiled && mixed.isNotEmpty()) {
+                // A later profile document overrides an earlier one; `production,staging`
+                // would let a resurrected staging document win over the production overrides.
+                add(
+                    DeploymentViolation(
+                        "spring.profiles.active",
+                        "activates '${mixed.sorted().joinToString(",")}' alongside '${ProductionPolicy.PROFILE}'; " +
+                            "no other environment profile may be active with it",
+                    ),
+                )
+            }
+            if (!settings.mailDomain.equals(ProductionPolicy.MAIL_DOMAIN, ignoreCase = true)) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.mail-domain",
+                        "must be '${ProductionPolicy.MAIL_DOMAIN}' in production (ADR-004); another value would " +
+                            "route tenant mail for a domain the public MX does not name",
+                    ),
+                )
+            }
+        }
+
+    private fun checkProductionSurfaces(settings: DeploymentSettings): List<DeploymentViolation> =
+        buildList {
+            if (settings.publicSurface && settings.publicBaseUrl.isNullOrBlank()) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.public-base-url",
+                        "is not set — a production node with a public surface must declare its HTTPS origin",
+                    ),
+                )
+            }
+            settings.publicBaseUrl?.let { url ->
+                namesNonProductionHost(url)?.let { fragment ->
+                    add(DeploymentViolation("testinbox.public-base-url", "names a non-production host ('$fragment')"))
+                }
+            }
+            if (settings.edgeRequestCeiling == null) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.deployment.edge-request-ceiling",
+                        "is not declared — production must state the ingress's hard per-request ceiling so the " +
+                            "wait window is proven to fit underneath it (ADR-030)",
+                    ),
+                )
+            }
+        }
+
+    private fun checkProductionStorage(settings: DeploymentSettings): List<DeploymentViolation> =
+        buildList {
+            if (settings.createBucket) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.storage.create-bucket",
+                        "is true — production runtime credentials must not hold CreateBucket; pre-provision the " +
+                            "bucket and let readiness fail if it is absent (ADR-034)",
+                    ),
+                )
+            }
+            namesNonProductionHost(settings.storageEndpoint)?.let { fragment ->
+                add(DeploymentViolation("testinbox.storage.endpoint", "names a non-production host ('$fragment')"))
+            }
+            namesNonProductionHost(settings.databaseUrl)?.let { fragment ->
+                add(DeploymentViolation("spring.datasource.url", "names a non-production host ('$fragment')"))
+            }
+            if (settings.requireDatabaseSessionTimeout == false) {
+                // The profile document sets true; an environment variable can flip it, and
+                // then an unbounded idle_in_transaction_session_timeout would be reported
+                // instead of taking the node out of readiness (ADR-033).
+                add(
+                    DeploymentViolation(
+                        "testinbox.deployment.require-database-session-timeout",
+                        "is false — production must enforce the database session bound, not merely report it",
+                    ),
+                )
+            }
+        }
+
+    /** The offending fragment, or null. Matched on the authority only, so a path or query cannot trip it. */
+    private fun namesNonProductionHost(value: String): String? {
+        val authority =
+            AUTHORITY
+                .find(value.lowercase())
+                ?.groupValues
+                ?.get(1)
+                ?.removeSurrounding("[", "]") ?: return null
+        if (authority in LOCAL_HOSTS) return authority
+        return ProductionPolicy.NON_PRODUCTION_HOST_FRAGMENTS.firstOrNull { authority.contains(it) }
+    }
+
+    /** Renders violations for a startup failure. Setting *names* and problems only — no values. */
+    fun describe(violations: List<DeploymentViolation>): String =
+        violations.joinToString(
+            prefix = "Refusing to start: deployed configuration is unsafe.\n",
+            separator = "\n",
+        ) { "  - ${it.setting} ${it.problem}" }
+
+    private fun isLocalDevSecret(value: String): Boolean = value.isBlank() || LOCAL_DEV_SECRETS.any { value.equals(it, ignoreCase = true) }
+
+    /**
+     * Matches a loopback authority, not a substring: `//localhost.example.com`
+     * is a real remote host and must not be rejected.
+     */
+    private fun containsLocalHost(value: String): Boolean =
+        AUTHORITY
+            .findAll(value.lowercase())
+            .map { it.groupValues[1].removeSurrounding("[", "]") }
+            .any { it in LOCAL_HOSTS }
+}
+
+/**
+ * ADR-035 §9a and §18: what a deployment must declare, and prove consistent,
+ * before any ceiling may refuse a tenant copy (TI-STORAGE-006 §5–§14).
+ *
+ * OFF is the requalification and recovery mode (§14 Phase 2, the MinIO
+ * change rule): it must keep starting with nothing declared, with a stale or
+ * absent qualification, and with a changed backend. So OFF checks only the
+ * SANITY of whatever is declared (a negative *G* is a mistake in any mode),
+ * never its completeness, the filesystem containment or the qualification match.
+ *
+ * A non-OFF mode refuses on every one of the §18 prerequisites separately,
+ * and reports all of them at once, so an operator sees the whole gap rather
+ * than one restart at a time.
+ */
+object StorageEnforcementSafety {
+    private const val ENFORCEMENT = "testinbox.storage.enforcement"
+    private const val ENVIRONMENT_KEY = "testinbox.deployment.environment"
+    private const val GLOBAL = "testinbox.storage.global-limit-bytes"
+    private const val QUOTA = "testinbox.storage.declared-bucket-quota-bytes"
+    private const val PROCESSES = "testinbox.storage.declared-max-ingestion-processes"
+    private const val SHARE = "testinbox.storage.inbox-share"
+    private const val CHURN = "testinbox.storage.measured-quota-lag-churn-bytes"
+    private const val IDENTITY = "testinbox.storage.backend-identity"
+    private const val API_NODES = "testinbox.storage.activation.expected-api-nodes"
+    private const val NODE_ID = "testinbox.storage.node-id"
+    private const val INGESTION_NODES = "testinbox.storage.activation.expected-ingestion-nodes"
+    private const val UPLOAD = "upload-implementation-version"
+    private const val FS = "testinbox.storage.filesystem"
+    private val MAX_OBSERVATION_AGE: java.time.Duration = java.time.Duration.ofHours(1)
+    private val MAX_RETENTION_PACING_DELAY: java.time.Duration = java.time.Duration.ofDays(7)
+
+    fun check(settings: DeploymentSettings): List<DeploymentViolation> {
+        val storage = settings.storage
+        return labRecord(settings, storage) + if (storage.enforced) enforced(settings, storage) else sanity(storage)
+    }
+
+    /** The environment a lab-only qualification record is accepted in, and the only one (issue #102). */
+    const val LAB_ENVIRONMENT = "lab"
+    private const val LAB_RECORD = "testinbox.storage.qualification.lab-record-path"
+
+    /**
+     * Issue #102: a lab-only record is refused, in EVERY mode, anywhere but the
+     * `lab` environment. OFF included: a staging or production process that has
+     * the path configured at all is misconfigured, and says so before it serves.
+     * (`lab` with the production profile is already refused by the production
+     * identity check: that profile demands environment `production`.)
+     */
+    private fun labRecord(
+        settings: DeploymentSettings,
+        storage: StorageDeclarations,
+    ): List<DeploymentViolation> =
+        buildList {
+            val lab = storage.qualificationRecords.filter { it.source == QualificationRecordSource.LAB }
+            if (lab.isNotEmpty() && settings.environment != LAB_ENVIRONMENT) {
+                add(
+                    DeploymentViolation(
+                        LAB_RECORD,
+                        "is set (record '${lab.first().recordId}') but $ENVIRONMENT_KEY is '${settings.environment}'; a lab-only " +
+                            "qualification record is accepted in environment '$LAB_ENVIRONMENT' and nowhere else (issue #102)",
+                    ),
+                )
+            }
+            lab.filterNot { it.isLab }.forEach {
+                add(DeploymentViolation(LAB_RECORD, "record '${it.recordId}' is not platformClass '$LAB_PLATFORM_CLASS'"))
+            }
+            // "lab" is a label a host declares about itself. What the application CAN
+            // check is that the label does not point at a shared environment's data:
+            // the production tenant domain, or a host named for staging or the
+            // rehearsal, is not a lab, whatever the variable says (security review P2-a).
+            if (settings.environment == LAB_ENVIRONMENT) {
+                if (settings.mailDomain.equals(ProductionPolicy.MAIL_DOMAIN, ignoreCase = true) ||
+                    settings.mailDomain.contains("staging", ignoreCase = true)
+                ) {
+                    add(
+                        DeploymentViolation(
+                            "testinbox.mail-domain",
+                            "is '${settings.mailDomain}' in environment '$LAB_ENVIRONMENT'; a lab serves no shared environment's domain",
+                        ),
+                    )
+                }
+                listOf(
+                    "spring.datasource.url" to settings.databaseUrl,
+                    "testinbox.storage.endpoint" to settings.storageEndpoint,
+                    "testinbox.public-base-url" to settings.publicBaseUrl.orEmpty(),
+                ).forEach { (key, value) ->
+                    SHARED_ENVIRONMENT_FRAGMENTS.firstOrNull { value.contains(it, ignoreCase = true) }?.let { fragment ->
+                        add(DeploymentViolation(key, "names a shared environment's host ('$fragment') in environment '$LAB_ENVIRONMENT'"))
+                    }
+                }
+            }
+        }
+
+    /** Host name fragments a lab must not point at: another environment's data services. */
+    private val SHARED_ENVIRONMENT_FRAGMENTS = listOf("staging", "rehearsal", "production", "prod.")
+
+    /** OFF: declared values must still be well-formed; absence is fine. */
+    private fun sanity(storage: StorageDeclarations): List<DeploymentViolation> =
+        buildList {
+            storage.globalLimitBytes?.let { if (it <= 0) add(DeploymentViolation(GLOBAL, "is $it; G must be positive")) }
+            storage.declaredBucketQuotaBytes?.let { if (it <= 0) add(DeploymentViolation(QUOTA, "is $it; Q must be positive")) }
+            storage.declaredMaxIngestionProcesses?.let { if (it <= 0) add(DeploymentViolation(PROCESSES, "is $it; must be at least 1")) }
+            storage.measuredQuotaLagChurnBytes?.let { if (it < 0) add(DeploymentViolation(CHURN, "is $it; must not be negative")) }
+            storage.inboxShare?.let { share -> shareProblem(share)?.let { add(DeploymentViolation(SHARE, it)) } }
+            addAll(filesystemSanity(storage.filesystem))
+            storage.node?.let { node ->
+                // The allowlist is `testinbox-<service>:<node>:storage-v1`: a colon in the
+                // node id would make this node's OWN sessions read as violations.
+                if (node.nodeId.isBlank()) {
+                    add(
+                        DeploymentViolation(NODE_ID, "is blank; every process needs its own stable node id (ADR-035 §9)"),
+                    )
+                }
+                if (':' in
+                    node.nodeId
+                ) {
+                    add(
+                        DeploymentViolation(
+                            NODE_ID,
+                            "contains ':'; the §14 (a) session name 'testinbox-<service>:<node>:storage-v1' cannot carry one",
+                        ),
+                    )
+                }
+            }
+            // H ≥ G would make the policy itself unconstructible: a mistake in any
+            // mode, named here rather than thrown at wiring.
+            val g = storage.globalLimitBytes
+            if (g != null && g > 0 && (storage.declaredMaxIngestionProcesses ?: 1) > 0) {
+                runCatching { EffectiveStoragePolicy.finalizeBudget(storage).bytes }
+                    .onSuccess { h ->
+                        if (h >=
+                            g
+                        ) {
+                            add(DeploymentViolation(GLOBAL, "is $g but H is $h; the admission cap G − H must be positive (ADR-035 §9)"))
+                        }
+                    }
+            }
+        }
+
+    private fun enforced(
+        settings: DeploymentSettings,
+        storage: StorageDeclarations,
+    ): List<DeploymentViolation> =
+        buildList {
+            if (settings.environment.isBlank()) {
+                add(
+                    DeploymentViolation(
+                        "testinbox.deployment.environment",
+                        "is not set although $ENFORCEMENT is ${storage.enforcement}; a ceiling may refuse only in a " +
+                            "declared, fully validated deployed environment (ADR-035 §14)",
+                    ),
+                )
+            }
+            // TI-STORAGE-006E (ADR-035 Amendment 2 §A2.7): ALL may not carry traffic beyond the
+            // synthetic suite until both public-boundary decisions are made and built:
+            // (A) the envelope-order recipient-existence oracle, and (B) single-sender
+            // amplification (docs/security/storage-public-boundary-decisions.md). Until then,
+            // production may not run ALL at all.
+            if (storage.enforcement == email.testinbox.domain.storage.StorageEnforcement.ALL &&
+                settings.environment == ProductionPolicy.ENVIRONMENT
+            ) {
+                add(
+                    DeploymentViolation(
+                        ENFORCEMENT,
+                        "is ALL in production, but the public-boundary mitigations of ADR-035 Amendment 2 §A2.7 " +
+                            "(A: the envelope-order oracle, B: single-sender amplification) are not built; " +
+                            "ALL stays dark-staging only",
+                    ),
+                )
+            }
+            // ADR-035 Amendment 2 §A2.5: TENANT_LIMITS leaves the global footprint ceiling
+            // observational, so the containment theorem does not hold and filesystem
+            // exhaustion stays reachable. It is approved for dark staging qualification
+            // only: production may not run it, whatever records ship.
+            if (storage.enforcement == email.testinbox.domain.storage.StorageEnforcement.TENANT_LIMITS &&
+                settings.environment == ProductionPolicy.ENVIRONMENT
+            ) {
+                add(
+                    DeploymentViolation(
+                        ENFORCEMENT,
+                        "is TENANT_LIMITS in production, but that mode does not contain the filesystem " +
+                            "(ADR-035 Amendment 2 §A2.5); it is approved for dark staging qualification only",
+                    ),
+                )
+            }
+            addAll(sanity(storage))
+            addAll(declarations(storage))
+            addAll(qualification(storage, settings.environment == LAB_ENVIRONMENT))
+        }
+
+    /**
+     * The non-OFF declarations (ADR-035 §18, as amended by Amendment 2).
+     *
+     * The physical link is the filesystem-containment contract: its declarations
+     * and the static inequality I-C are required in every non-OFF mode
+     * ([filesystemContainment]), and gate F proves them against the real
+     * filesystem before activation. The legacy bucket-quota fuse
+     * `Q ≥ G + max(1 GiB, 10 % of G, H + churn)` is **no longer required or
+     * evaluated** (Amendment 2 §A2.3; owner review c): the MinIO bucket quota may
+     * stay configured as an optional secondary defence, and a declared Q or churn
+     * figure is only checked for being well-formed ([sanity]). Gate Q — the
+     * backend qualification match — is a different thing and stays mandatory
+     * ([qualification]).
+     */
+    private fun declarations(storage: StorageDeclarations): List<DeploymentViolation> =
+        buildList {
+            val g = storage.globalLimitBytes
+            if (g ==
+                null
+            ) {
+                add(DeploymentViolation(GLOBAL, "is not declared; a non-OFF deployment must state G (ADR-035 §18 prerequisite 10)"))
+            }
+            val processes = storage.declaredMaxIngestionProcesses
+            if (processes == null) {
+                add(
+                    DeploymentViolation(
+                        PROCESSES,
+                        "is not declared; H needs the ingestion process count INCLUDING deploy surge (ADR-035 §9)",
+                    ),
+                )
+            }
+            if (storage.inboxShare ==
+                null
+            ) {
+                add(DeploymentViolation(SHARE, "is not declared; a non-OFF deployment must state the inbox share (ADR-035 §3)"))
+            }
+            addAll(nodeDeclarations(storage, processes))
+            // Independent of G: every filesystem gap is reported with the others.
+            addAll(filesystemContainment(storage, processes))
+            // The payload finalize budget H must be computable; its overflow is a refusal, never a wrap.
+            val computable = g != null && g > 0
+            if (computable && (processes ?: 1) > 0) {
+                runCatching { EffectiveStoragePolicy.finalizeBudget(storage).bytes }.onFailure {
+                    add(
+                        DeploymentViolation(
+                            PROCESSES,
+                            "makes H = processes × ${storage.maxConcurrentWrites} × ${storage.maxObjectBytes} overflow; refused, never wrapped",
+                        ),
+                    )
+                }
+            }
+        }
+
+    /** Every declared filesystem figure must be well-formed, in any mode. */
+    private fun filesystemSanity(fs: email.testinbox.application.storage.FilesystemDeclarations): List<DeploymentViolation> =
+        buildList {
+            listOf(
+                "block-size-bytes" to fs.blockSizeBytes,
+                "object-overhead-max-bytes" to fs.objectOverheadMaxBytes,
+                "global-footprint-limit-bytes" to fs.globalFootprintLimitBytes,
+                "deletion-debt-budget-bytes" to fs.deletionDebtBudgetBytes,
+                "metadata-budget-bytes" to fs.metadataBudgetBytes,
+                "operational-reserve-bytes" to fs.operationalReserveBytes,
+                "capacity-bytes" to fs.capacityBytes,
+                "inodes" to fs.inodes,
+                "probe-budget-bytes" to fs.probeBudgetBytes,
+            ).forEach { (key, value) ->
+                if (value != null &&
+                    value <= 0
+                ) {
+                    add(DeploymentViolation("$FS.$key", "is $value; must be positive"))
+                }
+            }
+            fs.observationMaxAge?.let {
+                if (it.isNegative || it.isZero) add(DeploymentViolation("$FS.observation-max-age", "is $it; must be positive"))
+                // A typo such as 1000d would let a stale observation count as evidence for ever.
+                if (it > MAX_OBSERVATION_AGE) {
+                    add(DeploymentViolation("$FS.observation-max-age", "is $it; must be at most $MAX_OBSERVATION_AGE"))
+                }
+            }
+            fs.retentionPacingMaxDelay?.let {
+                // T_max bounds how long pacing may keep a tenant's deleted content on disk.
+                if (it.isNegative || it.isZero || it > MAX_RETENTION_PACING_DELAY) {
+                    add(
+                        DeploymentViolation(
+                            "$FS.retention-pacing-max-delay",
+                            "is $it; must be positive and at most $MAX_RETENTION_PACING_DELAY",
+                        ),
+                    )
+                }
+            }
+            fs.monitorRole?.let {
+                // A database role name: the trigger stamps session_user, which never has spaces or quotes.
+                if (!it.matches(Regex("[a-z_][a-z0-9_]{0,62}"))) {
+                    add(DeploymentViolation("$FS.monitor-role", "is '$it'; must be a lower-case PostgreSQL role name"))
+                }
+            }
+            fs.blockSizeBytes?.let {
+                if (it > 0 && it !in FootprintModel.SUPPORTED_BLOCK_SIZES) {
+                    add(DeploymentViolation("$FS.block-size-bytes", "is $it; must be one of ${FootprintModel.SUPPORTED_BLOCK_SIZES}"))
+                }
+            }
+            val b = fs.blockSizeBytes?.takeIf { it in FootprintModel.SUPPORTED_BLOCK_SIZES }
+            val oMax = fs.objectOverheadMaxBytes?.takeIf { it > 0 }
+            if (b != null && oMax != null) {
+                runCatching { FootprintModel(b, oMax) }.onFailure {
+                    add(DeploymentViolation("$FS.object-overhead-max-bytes", "${it.message} (filesystem-containment contract §3)"))
+                }
+            }
+        }
+
+    /**
+     * The static containment condition of the filesystem-containment contract
+     * (§2.1 I-C, §3.5), on DECLARED figures: the declared filesystem holds the
+     * declared budgets, has an inode per block, and leaves a positive footprint
+     * admission cap `G_F − H_F`. Whether the filesystem really is that size is
+     * gate F's question (independent Ops evidence), never this check's.
+     */
+    private fun filesystemContainment(
+        storage: StorageDeclarations,
+        processes: Int?,
+    ): List<DeploymentViolation> =
+        buildList {
+            val fs = storage.filesystem
+            val required =
+                listOf(
+                    "block-size-bytes" to fs.blockSizeBytes,
+                    "object-overhead-max-bytes" to fs.objectOverheadMaxBytes,
+                    "global-footprint-limit-bytes" to fs.globalFootprintLimitBytes,
+                    "deletion-debt-budget-bytes" to fs.deletionDebtBudgetBytes,
+                    "metadata-budget-bytes" to fs.metadataBudgetBytes,
+                    "operational-reserve-bytes" to fs.operationalReserveBytes,
+                    "capacity-bytes" to fs.capacityBytes,
+                    "inodes" to fs.inodes,
+                    "observation-max-age" to fs.observationMaxAge,
+                    "probe-budget-bytes" to fs.probeBudgetBytes,
+                    "monitor-role" to fs.monitorRole,
+                )
+            required.filter { it.second == null }.forEach { (key, _) ->
+                add(
+                    DeploymentViolation(
+                        "$FS.$key",
+                        "is not declared; a non-OFF deployment must declare its dedicated filesystem (filesystem-containment contract §1)",
+                    ),
+                )
+            }
+            if (required.any { it.second == null } || filesystemSanity(fs).isNotEmpty()) return@buildList
+            val model = FootprintModel(checkNotNull(fs.blockSizeBytes), checkNotNull(fs.objectOverheadMaxBytes))
+            val capacity = checkNotNull(fs.capacityBytes)
+            val gF = checkNotNull(fs.globalFootprintLimitBytes)
+            val reserve = checkNotNull(fs.operationalReserveBytes)
+            runCatching {
+                FilesystemContainment.requiredCapacityBytes(
+                    gF,
+                    checkNotNull(fs.deletionDebtBudgetBytes),
+                    checkNotNull(fs.metadataBudgetBytes),
+                    reserve,
+                    checkNotNull(fs.probeBudgetBytes),
+                )
+            }.onSuccess { needed ->
+                if (needed > capacity) {
+                    add(
+                        DeploymentViolation(
+                            "$FS.capacity-bytes",
+                            "is $capacity but G_F + D_budget + P_F + M + R_ops = $needed (filesystem-containment contract §2.1, I-C)",
+                        ),
+                    )
+                }
+            }.onFailure {
+                add(DeploymentViolation("$FS.capacity-bytes", "G_F + D_budget + P_F + M + R_ops overflows; refused, never wrapped"))
+            }
+            // P_F keeps rule (P) admissible for a held late object and the probes (contract §2.1, progress).
+            // When the payload H already overflows, that one violation names the cause.
+            val minimumProbeBudget =
+                runCatching { EffectiveStoragePolicy.finalizeBudget(storage) }
+                    .mapCatching { Math.addExact(model.bound(storage.maxObjectBytes, 1), model.bound(0, 1)) }
+                    .getOrNull()
+            if (minimumProbeBudget != null && checkNotNull(fs.probeBudgetBytes) < minimumProbeBudget) {
+                add(
+                    DeploymentViolation(
+                        "$FS.probe-budget-bytes",
+                        "is ${fs.probeBudgetBytes} but P_F must be at least F(max object, 1) + F(0, 1) = $minimumProbeBudget " +
+                            "(filesystem-containment contract §2.1)",
+                    ),
+                )
+            }
+            val minimumReserve = FilesystemContainment.minimumOperationalReserveBytes(capacity)
+            if (reserve < minimumReserve) {
+                add(
+                    DeploymentViolation(
+                        "$FS.operational-reserve-bytes",
+                        "is $reserve but the recovery reserve must be at least max(5 % of C_fs, 2 GiB) = $minimumReserve",
+                    ),
+                )
+            }
+            val minimumInodes = model.minimumInodes(capacity)
+            if (checkNotNull(fs.inodes) < minimumInodes) {
+                add(
+                    DeploymentViolation(
+                        "$FS.inodes",
+                        "is ${fs.inodes} but one inode per block needs $minimumInodes (filesystem-containment contract §3.5: mkfs -i ${model.blockSizeBytes})",
+                    ),
+                )
+            }
+            // When the payload H already overflows, that one violation names the cause.
+            val payloadBudgetComputable = runCatching { EffectiveStoragePolicy.finalizeBudget(storage) }.isSuccess
+            if (processes != null && processes > 0 && payloadBudgetComputable) {
+                runCatching { model.finalizeBudgetBytes(processes, storage.maxConcurrentWrites, storage.maxObjectBytes) }
+                    .onSuccess { hF ->
+                        if (hF >= gF) {
+                            add(
+                                DeploymentViolation(
+                                    "$FS.global-footprint-limit-bytes",
+                                    "is $gF but H_F = processes × writes × φ(max object) = $hF; the footprint cap G_F − H_F must be positive",
+                                ),
+                            )
+                        }
+                    }.onFailure { add(DeploymentViolation(PROCESSES, "makes H_F overflow; refused, never wrapped")) }
+            }
+        }
+
+    /** The declared inventory (§14 (a)), this node's place in it, and the process count it implies. */
+    private fun nodeDeclarations(
+        storage: StorageDeclarations,
+        processes: Int?,
+    ): List<DeploymentViolation> =
+        buildList {
+            // The positive inventory (§14 (a)) needs a DECLARED node set; nothing may be inferred from heartbeats.
+            if (storage.expectedApiNodes.isEmpty()) {
+                add(
+                    DeploymentViolation(
+                        API_NODES,
+                        "is not declared; the activation inventory needs the exact api node ids (TI-STORAGE-006 §20)",
+                    ),
+                )
+            }
+            if (storage.expectedIngestionNodes.isEmpty()) {
+                add(
+                    DeploymentViolation(
+                        INGESTION_NODES,
+                        "is not declared; the activation inventory needs the exact ingestion node ids (TI-STORAGE-006 §20)",
+                    ),
+                )
+            }
+            storage.node?.let { node ->
+                val declaredFor = if (node.role == NodeRole.API) storage.expectedApiNodes else storage.expectedIngestionNodes
+                val key = if (node.role == NodeRole.API) API_NODES else INGESTION_NODES
+                if (declaredFor.isNotEmpty() && node.nodeId !in declaredFor) {
+                    add(
+                        DeploymentViolation(
+                            key,
+                            "does not include this node's own id '${node.nodeId}' (${node.role.name.lowercase()}); it would start as an " +
+                                "undeclared node and break the inventory it must satisfy",
+                        ),
+                    )
+                }
+            }
+            if (processes != null && processes > 0 && storage.expectedIngestionNodes.size > processes) {
+                // What the application CAN check: the declared inventory alone already
+                // exceeds the declared count. Surge above the inventory stays Ops's word.
+                add(
+                    DeploymentViolation(
+                        PROCESSES,
+                        "is $processes but ${storage.expectedIngestionNodes.size} ingestion nodes are declared " +
+                            "(${storage.expectedIngestionNodes.sorted().joinToString(",")}); each holds 16 write slots, so H would " +
+                            "under-count them (ADR-035 §9)",
+                    ),
+                )
+            }
+        }
+
+    /**
+     * The §9a match. [inLab] admits lab-sourced records as a startup gate: they
+     * must match the declared identity and the running upload implementation
+     * exactly, like any record, but their content eligibility is not consulted
+     * — a lab record is never evidence, and it never leaves the lab (issue
+     * #102). Outside the lab, lab-sourced records are not even candidates.
+     */
+    private fun qualification(
+        storage: StorageDeclarations,
+        inLab: Boolean,
+    ): List<DeploymentViolation> =
+        buildList {
+            if (storage.uploadImplementationVersion.isBlank()) {
+                add(DeploymentViolation("$IDENTITY.$UPLOAD", "the running binary carries no upload implementation version"))
+            }
+            val identity = storage.backendIdentity
+            if (identity == null) {
+                add(
+                    DeploymentViolation(
+                        IDENTITY,
+                        "is not declared; a non-OFF deployment must state the storage combination so it can be matched " +
+                            "against a shipped qualification record (ADR-035 §9a)",
+                    ),
+                )
+                return@buildList
+            }
+            val candidates = storage.qualificationRecords.filter { inLab || it.source != QualificationRecordSource.LAB }
+            if (candidates.isEmpty()) {
+                add(DeploymentViolation(IDENTITY, "cannot be matched: this artifact ships no qualification record (ADR-035 §9a)"))
+                return@buildList
+            }
+            val comparisons = QualificationMatch.compareAll(identity, storage.uploadImplementationVersion, candidates)
+            val matching = candidates.filterIndexed { i, _ -> comparisons[i].matches }
+            if (matching.isEmpty()) {
+                val closest = comparisons.minByOrNull { it.mismatchedElements.size }
+                val uploadOnly = closest != null && closest.mismatchedElements == listOf(QualificationMatch.UPLOAD_IMPLEMENTATION)
+                add(
+                    DeploymentViolation(
+                        if (uploadOnly) "$IDENTITY.$UPLOAD" else IDENTITY,
+                        "matches no shipped qualification record; closest is '${closest?.recordId}' differing in " +
+                            "${closest?.mismatchedElements?.joinToString(", ")} (ADR-035 §9a: a mismatch is a refusal, not a warning)",
+                    ),
+                )
+                return@buildList
+            }
+            val eligible = matching.filter { it.eligibility().eligible || (inLab && it.source == QualificationRecordSource.LAB) }
+            if (eligible.isEmpty()) {
+                val record = matching.first()
+                add(
+                    DeploymentViolation(
+                        IDENTITY,
+                        "matches record '${record.recordId}', which is not enablement-eligible: " +
+                            record.eligibility().reasons.joinToString("; ") + " (ADR-035 §18 gate 7a)",
+                    ),
+                )
+            }
+        }
+
+    private fun shareProblem(share: String): String? =
+        runCatching { InboxShare.of(share) }
+            .fold(onSuccess = { null }, onFailure = { "is '$share'; the inbox share must be a decimal in (0, 1] (ADR-035 §3)" })
+}

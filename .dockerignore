@@ -1,0 +1,17 @@
+# Build outputs and local state must never enter a build context: they make the
+# context large, they defeat layer caching, and a stale build/ directory copied
+# into an image is a class of "it worked on my machine" that is very hard to see.
+.git
+.github
+.idea
+**/build/
+**/node_modules/
+**/dist/
+**/.gradle/
+**/test-results/
+**/playwright-report/
+web/.next/
+docs/
+prompts/
+*.md
+!README.md

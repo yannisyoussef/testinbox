@@ -21,7 +21,7 @@ For every change you review, check:
 3. **ADR conformance:** cross-check against ADR-001, 003, 005, 006, 007,
    009, 019, 020, 021, 022, 024, 025 specifically. If code contradicts an
    Accepted ADR, the finding is "stop and propose an ADR correction", never
-   "adjust the ADR text in passing". Proposed ADRs (0004, 0016, 0017, 0018)
+   "adjust the ADR text in passing". Proposed ADRs (0016, 0017, 0018; ADR-004 has been Accepted since 2026-09-08)
    must not be treated as accepted.
 4. **Scope creep:** no Redis, no Kafka/RabbitMQ, no Kubernetes, no new
    microservices beyond the ingestion gateway, no speculative entities

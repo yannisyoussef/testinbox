@@ -1,0 +1,31 @@
+pgbench (16.15)
+transaction type: multiple scripts
+scaling factor: 1
+query mode: simple
+number of clients: 16
+number of threads: 8
+maximum number of tries: 10
+duration: 20 s
+number of transactions actually processed: 48424
+number of failed transactions: 0 (0.000%)
+number of transactions retried: 0 (0.000%)
+total number of retries: 0
+latency average = 6.609 ms
+initial connection time = 6.821 ms
+tps = 2421.083425 (without initial connection time)
+SQL script 1: /b/a_ingest.sql
+ - weight: 20 (targets 95.2% of total)
+ - 46162 transactions (95.3% of total, tps = 2307.988870)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+ - total number of retries: 0
+ - latency average = 6.847 ms
+ - latency stddev = 0.899 ms
+SQL script 2: /b/a_retention.sql
+ - weight: 1 (targets 4.8% of total)
+ - 2262 transactions (4.7% of total, tps = 113.094554)
+ - number of failed transactions: 0 (0.000%)
+ - number of transactions retried: 0 (0.000%)
+ - total number of retries: 0
+ - latency average = 1.655 ms
+ - latency stddev = 0.862 ms

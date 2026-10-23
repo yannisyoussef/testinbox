@@ -45,7 +45,7 @@ flowchart LR
 
 ### TypeScript/JavaScript (`@testinbox/client`)
 
-- **Minimum supported consumer runtime: Node ≥ 20** (`engines` field);
+- **Minimum supported consumer runtime: Node ≥ 22** (`engines` field);
   built/published on the current active Node LTS in CI, which is a
   toolchain choice invisible to consumers (see
   [ADR-023](../adr/0023-sdk-runtime-baselines.md)).

@@ -1,0 +1,4 @@
+[["slow-dm500ms-before-W", 6, {"throttle_ms": 500, "client": "W", "throttle_at": "before_put", "hold_s": 45, "poll_s": 120}],
+ ["slow-dm2000ms-before-W", 3, {"throttle_ms": 2000, "client": "W", "throttle_at": "before_put", "hold_s": 45, "poll_s": 120}],
+ ["slow-dm500ms-W", 6, {"throttle_ms": 500, "client": "W", "throttle_at": "after_ack", "throttle_after_ms": 0, "hold_s": 45, "poll_s": 120}],
+ ["slow-dm500ms-after5ms-W", 3, {"throttle_ms": 500, "client": "W", "throttle_at": "after_ack", "throttle_after_ms": 5, "hold_s": 45, "poll_s": 120}]]

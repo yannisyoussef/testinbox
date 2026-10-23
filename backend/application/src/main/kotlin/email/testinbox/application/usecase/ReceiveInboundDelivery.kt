@@ -1,23 +1,29 @@
 package email.testinbox.application.usecase
 
+import email.testinbox.application.ContentFingerprint
 import email.testinbox.application.ObjectKeys
 import email.testinbox.application.Sha256
 import email.testinbox.application.port.AppendOutcome
-import email.testinbox.application.port.BlobStore
+import email.testinbox.application.port.InboundMetrics
 import email.testinbox.application.port.InboxRepository
+import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.MimeParseResult
 import email.testinbox.application.port.MimeParser
-import email.testinbox.application.port.TransactionRunner
+import email.testinbox.application.port.RateLimiter
+import email.testinbox.application.storage.CopyPlan
+import email.testinbox.application.storage.GuardedStorage
 import email.testinbox.domain.AttachmentId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.inbox.Inbox
+import email.testinbox.domain.limits.RateCategory
 import email.testinbox.domain.message.Attachment
 import email.testinbox.domain.message.Message
 import email.testinbox.domain.message.ParseStatus
 import email.testinbox.domain.message.ParsedContent
 import org.slf4j.LoggerFactory
 import java.time.Clock
+import java.time.Duration
 import java.util.UUID
 
 /**
@@ -45,10 +51,13 @@ import java.util.UUID
 class ReceiveInboundDelivery(
     private val inboxes: InboxRepository,
     private val messages: MessageRepository,
-    private val blobs: BlobStore,
+    /** ADR-035's guarded protocol: slot, T1, fenced uploads, T2 (TI-STORAGE-003). */
+    private val storage: GuardedStorage,
     private val parser: MimeParser,
-    private val transactions: TransactionRunner,
+    private val rateLimiter: RateLimiter,
     private val clock: Clock,
+    private val metrics: LimitMetrics = LimitMetrics.NOOP,
+    private val inboundMetrics: InboundMetrics = InboundMetrics.NOOP,
 ) {
     data class Command(
         val envelopeFrom: String?,
@@ -65,80 +74,147 @@ class ReceiveInboundDelivery(
         val discardedRecipients: Int,
         /** Recipients already recorded for this provider event — reprocessing no-ops (ADR-026). */
         val duplicateRecipients: Int,
+        /** Recipients whose inbound rate budget was exhausted; their content was discarded. */
+        val rateLimitedRecipients: Int = 0,
+        /**
+         * Copies refused by an ENFORCED storage ceiling (ADR-035 §4). Always 0
+         * while enforcement is OFF. Internal: the SMTP reply never shows it.
+         */
+        val storageRefusedRecipients: Int = 0,
     )
 
-    private data class Prepared(
+    /** One recipient copy, planned before T1: its ids, exact keys and exact bytes. */
+    private class Prepared(
         val inbox: Inbox,
         val recipient: String,
         val messageId: MessageId,
         val rawKey: String,
         val attachments: List<Attachment>,
+        val attachmentBytes: List<ByteArray>,
         val parseStatus: ParseStatus,
         val parseError: String?,
         val parsed: ParsedContent?,
     ) {
-        val objectKeys: List<String> get() = listOf(rawKey) + attachments.map { it.objectKey }
+        fun plan(raw: ByteArray): CopyPlan =
+            CopyPlan(
+                candidate =
+                    StorageAdmissionCandidate(
+                        messageId = messageId,
+                        workspaceId = inbox.workspaceId,
+                        inboxId = inbox.id,
+                        objectKeys = listOf(rawKey) + attachments.map { it.objectKey },
+                    ),
+                objects = listOf(rawKey to raw) + attachments.zip(attachmentBytes) { a, bytes -> a.objectKey to bytes },
+            )
     }
 
     fun execute(command: Command): Result {
+        // Storage health first, before any recipient resolves: while storage
+        // is latched or its breaker is open, EVERY event gets the same 451,
+        // whether its recipients exist or not. Checked after resolution, only
+        // events with a known recipient would get it, and the 451/250 split
+        // would be a recipient-existence oracle (ADR-025).
+        storage.unavailable()?.let { throw it }
         val now = clock.instant()
         val recipients = command.recipients.map { it.trim().lowercase() }.distinct()
-        val fingerprint = Sha256.hex(command.raw)
+        // Transport-insensitive by ADR-019 §4 as amended: the gateway (and any
+        // relay ahead of it) stamps a Received: field whose timestamp and queue
+        // id would otherwise make two identical sends fingerprint differently.
+        // The stored raw keeps every trace header (ADR-005).
+        val fingerprint = ContentFingerprint.of(command.raw)
         // One event, one parse: recipients of the same event share the bytes.
+        val parseStartedAt = System.nanoTime()
         val parseResult = parser.parse(command.raw)
+        val parseStatus = if (parseResult is MimeParseResult.Parsed) ParseStatus.OK else ParseStatus.FAILED
+        // Timed around the parser alone, so the measurement is parsing cost and
+        // not storage or database latency. A hostile MIME corpus entry that
+        // takes seconds shows up here and nowhere else.
+        inboundMetrics.parseCompleted(Duration.ofNanos(System.nanoTime() - parseStartedAt), parseStatus)
 
         var discarded = 0
+        var rateLimited = 0
         val prepared = mutableListOf<Prepared>()
         for (recipient in recipients) {
             val inbox = inboxes.findReceivableByAddress(recipient)
             if (inbox == null || !inbox.canReceiveAt(now)) {
-                logDiscard(recipient, command)
+                logDiscard(recipient, command, "unknown_recipient")
+                // ADR-025 keeps the SMTP reply uniform for an unknown
+                // recipient, so this counter is the only thing that makes the
+                // volume of undeliverable mail visible at all.
+                inboundMetrics.unknownRecipientDiscarded()
                 discarded++
                 continue
             }
-            prepared += prepare(inbox, recipient, command, parseResult)
+            // One copy per inbox per event (ADR-035 §4). Normalized addresses are
+            // already distinct and an inbox has one address, so this never fires
+            // today; it keeps the invariant local rather than implied.
+            if (prepared.any { it.inbox.id == inbox.id }) continue
+            // ADR-027 §4: the inbound budget is charged per workspace AND per
+            // inbox, so a flood against one guessed EXACT address cannot consume
+            // the whole workspace's allowance. Charged only after the recipient
+            // resolves, so the ADR-025 unknown path never reaches the limiter.
+            // Narrow scope FIRST, and short-circuit. Spending both unconditionally
+            // would let a flood against one guessed address keep draining the
+            // workspace token after its own bucket is empty — starving every
+            // other inbox in that workspace, which is precisely what the
+            // per-inbox key exists to prevent.
+            val inboxBudget = rateLimiter.tryConsume(inbox.workspaceId, RateCategory.INGEST, inbox.id)
+            val workspaceBudget =
+                if (inboxBudget.allowed) rateLimiter.tryConsume(inbox.workspaceId, RateCategory.INGEST) else null
+            if (!inboxBudget.allowed || workspaceBudget?.allowed != true) {
+                // Discarded in-process, exactly as ADR-025 discards unknown
+                // recipients. The SMTP reply is unchanged (ADR-027 §1): making a
+                // refusal visible here would rebuild the enumeration oracle.
+                logDiscard(recipient, command, "ingest_rate_limited")
+                // The only signal that a live inbox is losing mail: the SMTP
+                // reply stays uniform by design (ADR-027 §1), so this counter and
+                // the log line above are what make it observable at all.
+                metrics.rateDecision(RateCategory.INGEST, allowed = false)
+                rateLimited++
+                continue
+            }
+            prepared += prepare(inbox, recipient, parseResult)
         }
-        if (prepared.isEmpty()) return Result(emptyList(), discarded, 0)
+        if (prepared.isEmpty()) return Result(emptyList(), discarded, 0, rateLimited)
 
-        // One transaction for every recipient row of this event: all rows and
-        // their pg_notify calls commit together, or none of them do.
-        val outcomes =
-            transactions.required {
-                prepared.map { candidate ->
-                    val message = candidate.toMessage(command, fingerprint, now)
-                    candidate to messages.appendVisible(message)
+        // ADR-035 §2: every copy costs exactly its raw.eml plus every extracted
+        // attachment object (attachments count twice). The size is exact and
+        // known before any write: one parse, the same bytes for every copy.
+        val plans = prepared.map { it.plan(command.raw) }
+        val byMessage = prepared.associateBy { it.messageId }
+        val report =
+            storage.ingest(plans.first().bytes, plans) { admitted ->
+                // Inside T2, after the reservation fence and the inbox locks: all
+                // of this event's rows and notifications commit together (ADR-026).
+                admitted.associate { plan ->
+                    val copy = byMessage.getValue(plan.messageId)
+                    plan.messageId to (messages.appendVisible(copy.toMessage(command, fingerprint, now)) == AppendOutcome.Appended)
                 }
             }
 
-        val accepted = mutableListOf<MessageId>()
-        var duplicates = 0
-        for ((candidate, outcome) in outcomes) {
-            when (outcome) {
-                AppendOutcome.Appended -> {
-                    accepted += candidate.messageId
-                }
-
-                AppendOutcome.DuplicateProviderEvent -> {
-                    duplicates++
-                    // Reprocessed event: the blobs written for this no-op are ours alone
-                    // (per-message keys), so removing them cannot touch the original row.
-                    candidate.objectKeys.forEach(blobs::delete)
-                }
-            }
+        for (id in report.appended) inboundMetrics.messageReceived(byMessage.getValue(id).parseStatus)
+        // Reprocessed event (ADR-026): no new row. Its reservation went to
+        // RELEASING in the same commit, and cleanup deletes its objects.
+        repeat(report.duplicates.size) { inboundMetrics.duplicateProviderEventNoop() }
+        for ((inboxId, reason) in report.refused) {
+            // ADR-035 §12: a storage ceiling is a discard with the uniform 250,
+            // recorded on the inbox for its tenant, never shown over SMTP.
+            prepared.firstOrNull { it.inbox.id == inboxId }?.let { logDiscard(it.recipient, command, "storage_${reason.name.lowercase()}") }
         }
-        return Result(accepted, discarded, duplicates)
+        return Result(report.appended, discarded, report.duplicates.size, rateLimited, report.refused.size)
     }
 
     private fun prepare(
         inbox: Inbox,
         recipient: String,
-        command: Command,
         parseResult: MimeParseResult,
     ): Prepared {
+        // Ids and exact keys are generated BEFORE T1: they are what the
+        // reservation authorizes and what the write fence binds (ADR-035 §5).
+        // The raw bytes are still stored before the row (ADR-005): uploads
+        // happen between T1 and T2.
         val messageId = MessageId(UUID.randomUUID())
         val rawKey = ObjectKeys.raw(inbox.workspaceId, inbox.id, messageId)
-        // ADR-005: raw bytes stored durably before the row is persisted.
-        blobs.put(rawKey, command.raw, "message/rfc822")
 
         return when (parseResult) {
             is MimeParseResult.Parsed -> {
@@ -146,7 +222,6 @@ class ReceiveInboundDelivery(
                     parseResult.content.attachments.map { mimeAttachment ->
                         val attachmentId = AttachmentId(UUID.randomUUID())
                         val key = ObjectKeys.attachment(inbox.workspaceId, inbox.id, messageId, attachmentId)
-                        blobs.put(key, mimeAttachment.bytes, mimeAttachment.contentType ?: "application/octet-stream")
                         Attachment(
                             id = attachmentId,
                             messageId = messageId,
@@ -162,6 +237,7 @@ class ReceiveInboundDelivery(
                     messageId = messageId,
                     rawKey = rawKey,
                     attachments = attachments,
+                    attachmentBytes = parseResult.content.attachments.map { it.bytes },
                     parseStatus = ParseStatus.OK,
                     parseError = null,
                     parsed =
@@ -185,6 +261,7 @@ class ReceiveInboundDelivery(
                     messageId = messageId,
                     rawKey = rawKey,
                     attachments = emptyList(),
+                    attachmentBytes = emptyList(),
                     parseStatus = ParseStatus.FAILED,
                     parseError = parseResult.reason,
                     parsed = null,
@@ -221,10 +298,12 @@ class ReceiveInboundDelivery(
     private fun logDiscard(
         recipient: String,
         command: Command,
+        reason: String,
     ) {
         // ADR-025: metadata only — hashed recipient token, sender domain, size. Never content.
         log.info(
-            "smtp_unknown_recipient_discard recipientHash={} senderDomain={} sizeBytes={}",
+            "smtp_discard reason={} recipientHash={} senderDomain={} sizeBytes={}",
+            reason,
             Sha256.hex(recipient).take(16),
             command.envelopeFrom?.substringAfter('@', missingDelimiterValue = "unknown") ?: "unknown",
             command.raw.size,

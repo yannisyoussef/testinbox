@@ -26,23 +26,53 @@ REVISION="$2"
 [[ -f "$BASE" ]] || { echo "base spec not found: $BASE" >&2; exit 2; }
 [[ -f "$REVISION" ]] || { echo "revision spec not found: $REVISION" >&2; exit 2; }
 
+# A cached binary is trusted only when it actually runs. The executable bit says
+# nothing about whether the file is a working binary for THIS platform, so a
+# cache left behind by a truncated download — or by an older revision of this
+# script, which fetched a Linux build on macOS — was reused forever and failed
+# every invocation until someone deleted $CACHE_DIR by hand. Checking by
+# execution lets the cache self-heal instead.
+#
+# Deliberately not applied to an explicit OASDIFF_BIN override: that is the
+# caller's escape hatch, and validating it would break a deliberate stub.
+cached_binary_runs() {
+  [[ -x "$1" ]] && "$1" --version >/dev/null 2>&1
+}
+
 resolve_oasdiff() {
   if [[ -n "${OASDIFF_BIN:-}" ]]; then
     echo "$OASDIFF_BIN"
     return
   fi
   local binary="$CACHE_DIR/oasdiff"
-  if [[ ! -x "$binary" ]]; then
-    local arch
+  if ! cached_binary_runs "$binary"; then
+    local arch os
     case "$(uname -m)" in
       x86_64) arch=amd64 ;;
       aarch64 | arm64) arch=arm64 ;;
       *) echo "unsupported architecture: $(uname -m)" >&2; exit 2 ;;
     esac
+    # The OS was hardcoded to linux, so on a developer machine this silently
+    # downloaded a Linux binary and failed with "cannot execute binary file".
+    # A gate that only CI can run is a gate discovered too late.
+    case "$(uname -s)" in
+      Linux) os=linux ;;
+      # oasdiff ships one universal macOS archive rather than per-arch ones.
+      Darwin) os=darwin; arch=all ;;
+      *) echo "unsupported operating system: $(uname -s)" >&2; exit 2 ;;
+    esac
     mkdir -p "$CACHE_DIR"
+    rm -f "$binary"
     curl -fsSL \
-      "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_linux_${arch}.tar.gz" |
+      "https://github.com/oasdiff/oasdiff/releases/download/v${OASDIFF_VERSION}/oasdiff_${OASDIFF_VERSION}_${os}_${arch}.tar.gz" |
       tar xz -C "$CACHE_DIR" oasdiff
+    # Fail loudly here rather than letting an unusable download reach the run
+    # below, where it surfaces as a blank version banner and a "command not
+    # found" from the gate itself.
+    cached_binary_runs "$binary" || {
+      echo "downloaded oasdiff is not runnable: $binary" >&2
+      exit 2
+    }
   fi
   echo "$binary"
 }

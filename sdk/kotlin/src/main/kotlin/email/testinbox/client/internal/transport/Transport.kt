@@ -3,9 +3,17 @@ package email.testinbox.client.internal.transport
 import email.testinbox.client.TestInboxApiException
 import email.testinbox.client.TestInboxAuthException
 import email.testinbox.client.TestInboxConflictException
+import email.testinbox.client.TestInboxCredentialAlreadyCreatedException
+import email.testinbox.client.TestInboxIdempotencyConflictException
+import email.testinbox.client.TestInboxIdempotencyInProgressException
 import email.testinbox.client.TestInboxForbiddenException
 import email.testinbox.client.TestInboxInboxGoneException
 import email.testinbox.client.TestInboxNotFoundException
+import email.testinbox.client.TestInboxProtocolException
+import email.testinbox.client.TestInboxQuotaExceededException
+import email.testinbox.client.TestInboxRateLimitException
+import email.testinbox.client.TestInboxStorageLimitExceededException
+import email.testinbox.client.StorageRefusalReason
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -27,6 +35,20 @@ internal data class CreateInboxRequestDto(
     val localPart: String? = null,
 )
 
+/**
+ * ADR-035 §13 `StorageUsage` on the wire. Every member nullable here so that a
+ * malformed object is detected by the public mapping and reported as a
+ * protocol error, rather than defaulted to zero by the decoder.
+ */
+@Serializable
+internal data class StorageUsageDto(
+    val limitBytes: Long? = null,
+    val storedBytes: Long? = null,
+    val reservedBytes: Long? = null,
+    val availableBytes: Long? = null,
+    val overLimit: Boolean? = null,
+)
+
 @Serializable
 internal data class InboxDto(
     val id: String,
@@ -35,6 +57,11 @@ internal data class InboxDto(
     val state: String = "ACTIVE",
     val createdAt: String? = null,
     val expiresAt: String? = null,
+    // ADR-035 §13b members: all absent from a server that predates TI-STORAGE-004 (ADR-028).
+    val storage: StorageUsageDto? = null,
+    val storageRefusalCount: Long? = null,
+    val lastStorageRefusalAt: String? = null,
+    val lastStorageRefusalReason: String? = null,
 )
 
 @Serializable
@@ -89,7 +116,12 @@ internal data class MatcherDto(
 )
 
 @Serializable
-internal data class WaitRequestDto(val matcher: MatcherDto, val timeoutSeconds: Long)
+internal data class WaitRequestDto(
+    val matcher: MatcherDto,
+    val timeoutSeconds: Long,
+    /** ADR-035 §13c boundary. Null is OMITTED on the wire (`explicitNulls = false`): the legacy request, never 0. */
+    val afterStorageRefusalCount: Long? = null,
+)
 
 @Serializable
 internal data class WaitResultDto(
@@ -98,6 +130,41 @@ internal data class WaitResultDto(
     val elapsedMs: Long = 0,
     val arrivedButUnmatchedCount: Int? = null,
     val parseFailedCount: Int? = null,
+    /** Informational echoes from the deciding snapshot (ADR-035 §13c); never adopted as a boundary. */
+    val storageRefusalCount: Long? = null,
+    val lastStorageRefusalAt: String? = null,
+)
+
+@Serializable
+internal data class ApiKeyDto(
+    val id: String,
+    val publicId: String,
+    val name: String? = null,
+    val scopes: List<String> = emptyList(),
+    val createdAt: String? = null,
+    val expiresAt: String? = null,
+    val revokedAt: String? = null,
+    val lastUsedAt: String? = null,
+    val createdByApiKeyId: String? = null,
+)
+
+/**
+ * The wire shape of the one response that carries a credential. The secret
+ * sits beside the metadata rather than inside it, which is what lets the
+ * public [email.testinbox.client.ApiKeyMetadata] type have no field for it at
+ * all (ADR-032 §4).
+ */
+@Serializable
+internal data class CreatedApiKeyDto(val apiKey: ApiKeyDto, val key: String)
+
+@Serializable
+internal data class ApiKeyPageDto(val items: List<ApiKeyDto> = emptyList(), val nextCursor: String? = null)
+
+@Serializable
+internal data class CreateApiKeyRequestDto(
+    val name: String? = null,
+    val scopes: List<String>,
+    val expiresInSeconds: Long? = null,
 )
 
 @Serializable
@@ -108,7 +175,33 @@ internal data class ProblemDto(
     val detail: String? = null,
     val correlationId: String? = null,
     val retryAfterSeconds: Long? = null,
+    val category: String? = null,
+    val quota: String? = null,
+    val limit: Long? = null,
+    val current: Long? = null,
+    val apiKeyId: String? = null,
+    val publicId: String? = null,
+    // ADR-035 §13c storage-limit-exceeded members; `quota`/`limit`/`current` above are reused.
+    val inboxId: String? = null,
+    val refusalReason: String? = null,
+    val afterStorageRefusalCount: Long? = null,
+    val storageRefusalCount: Long? = null,
+    val lastStorageRefusalAt: String? = null,
 )
+
+/**
+ * Identifies this SDK in the server's access logs.
+ *
+ * Until now no shipped SDK sent one, so requests were attributed to whatever
+ * the runtime defaulted to. Staging Ops found the consequence: reaching the
+ * deployed API depended on an unexamined interaction between a runtime default
+ * and a Cloudflare heuristic — harmless in practice, but nothing would have
+ * predicted or quickly diagnosed it if it had not been.
+ *
+ * Kept in step with the Gradle version by `SdkVersionTest`.
+ */
+internal const val SDK_VERSION = "0.1.0-SNAPSHOT"
+internal const val USER_AGENT = "testinbox-sdk-jvm/$SDK_VERSION"
 
 internal class Transport(
     private val baseUrl: String,
@@ -118,48 +211,106 @@ internal class Transport(
     // Forward compatibility: unknown fields and enum values must never break parsing.
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 
-    suspend fun createInbox(request: CreateInboxRequestDto): InboxDto =
-        json.decodeFromString(
+    /**
+     * A body that does not decode is a contract violation, reported as a
+     * typed protocol error (docs/sdk/principles.md #6) rather than as the
+     * serialisation library's own exception escaping the public API.
+     */
+    private fun <T> decode(
+        serializer: kotlinx.serialization.KSerializer<T>,
+        body: ByteArray,
+        label: String,
+    ): T =
+        runCatching { json.decodeFromString(serializer, String(body)) }
+            .getOrElse { throw TestInboxProtocolException("the server sent an undecodable $label") }
+
+    suspend fun createInbox(request: CreateInboxRequestDto, idempotencyKey: String? = null): InboxDto =
+        decode(
             InboxDto.serializer(),
-            execute("POST", "/v1/inboxes", json.encodeToString(CreateInboxRequestDto.serializer(), request))
-                .let { String(it) },
+            execute(
+                "POST",
+                "/v1/inboxes",
+                json.encodeToString(CreateInboxRequestDto.serializer(), request),
+                idempotencyKey,
+            ),
+            "inbox",
         )
 
     suspend fun getInbox(id: String): InboxDto =
-        json.decodeFromString(InboxDto.serializer(), String(execute("GET", "/v1/inboxes/$id")))
+        decode(InboxDto.serializer(), execute("GET", "/v1/inboxes/$id"), "inbox")
 
     suspend fun deleteInbox(id: String) {
         execute("DELETE", "/v1/inboxes/$id")
     }
 
     suspend fun listMessages(inboxId: String): MessagePageDto =
-        json.decodeFromString(
-            MessagePageDto.serializer(),
-            String(execute("GET", "/v1/inboxes/$inboxId/messages")),
-        )
+        decode(MessagePageDto.serializer(), execute("GET", "/v1/inboxes/$inboxId/messages"), "message page")
 
     suspend fun wait(inboxId: String, request: WaitRequestDto): WaitResultDto =
-        json.decodeFromString(
+        decode(
             WaitResultDto.serializer(),
-            String(
-                execute(
-                    "POST",
-                    "/v1/inboxes/$inboxId/messages/wait",
-                    json.encodeToString(WaitRequestDto.serializer(), request),
-                ),
+            execute(
+                "POST",
+                "/v1/inboxes/$inboxId/messages/wait",
+                json.encodeToString(WaitRequestDto.serializer(), request),
             ),
+            "wait result",
         )
 
+    /** ADR-035 §13a: the authenticated key's own workspace. */
+    suspend fun getWorkspaceStorage(): StorageUsageDto =
+        decode(StorageUsageDto.serializer(), execute("GET", "/v1/workspace/storage"), "workspace storage")
+
     suspend fun getMessage(id: String): MessageDto =
-        json.decodeFromString(MessageDto.serializer(), String(execute("GET", "/v1/messages/$id")))
+        decode(MessageDto.serializer(), execute("GET", "/v1/messages/$id"), "message")
 
     suspend fun rawMime(messageId: String): ByteArray = execute("GET", "/v1/messages/$messageId/raw")
 
-    private suspend fun execute(method: String, path: String, body: String? = null): ByteArray {
+    suspend fun createApiKey(
+        request: CreateApiKeyRequestDto,
+        idempotencyKey: String? = null,
+    ): CreatedApiKeyDto =
+        decode(
+            CreatedApiKeyDto.serializer(),
+            execute(
+                "POST",
+                "/v1/api-keys",
+                json.encodeToString(CreateApiKeyRequestDto.serializer(), request),
+                idempotencyKey,
+            ),
+            "created API key",
+        )
+
+    suspend fun listApiKeys(cursor: String?, limit: Int?): ApiKeyPageDto {
+        val query =
+            listOfNotNull(
+                cursor?.let { "cursor=" + java.net.URLEncoder.encode(it, Charsets.UTF_8) },
+                limit?.let { "limit=$it" },
+            ).joinToString("&")
+        val path = "/v1/api-keys" + if (query.isEmpty()) "" else "?$query"
+        return decode(ApiKeyPageDto.serializer(), execute("GET", path), "API key page")
+    }
+
+    suspend fun getApiKey(id: String): ApiKeyDto =
+        decode(ApiKeyDto.serializer(), execute("GET", "/v1/api-keys/$id"), "API key")
+
+    suspend fun revokeApiKey(id: String) {
+        execute("DELETE", "/v1/api-keys/$id")
+    }
+
+    private suspend fun execute(
+        method: String,
+        path: String,
+        body: String? = null,
+        idempotencyKey: String? = null,
+    ): ByteArray {
         val builder =
             HttpRequest.newBuilder(URI.create(baseUrl.trimEnd('/') + path))
                 .header("Authorization", "Bearer $apiKey")
                 .header("Accept", "application/json, message/rfc822, application/octet-stream")
+                .header("User-Agent", USER_AGENT)
+        // Sent verbatim; never generated or rewritten here (ADR-033).
+        idempotencyKey?.let { builder.header("Idempotency-Key", it) }
         if (body != null) {
             builder.header("Content-Type", "application/json")
             builder.method(method, HttpRequest.BodyPublishers.ofString(body))
@@ -169,21 +320,163 @@ internal class Transport(
         val response =
             httpClient.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofByteArray()).await()
         if (response.statusCode() in 200..299) return response.body()
-        throw mapError(response.statusCode(), response.body())
+        throw mapError(response.statusCode(), response.body(), response.headers())
     }
 
-    private fun mapError(status: Int, body: ByteArray): RuntimeException {
+    private fun mapError(
+        status: Int,
+        body: ByteArray,
+        headers: java.net.http.HttpHeaders,
+    ): RuntimeException {
         val problem =
             runCatching { json.decodeFromString(ProblemDto.serializer(), String(body)) }
-                .getOrElse { ProblemDto() }
+                // A member of the wrong type (a count sent as a string) must not
+                // erase the problem TYPE: the storage-limit mapping below then
+                // reports the malformed body as a protocol error instead of a
+                // generic conflict.
+                .getOrElse { ProblemDto(type = problemTypeOf(body), detail = "malformed problem body") }
         val detail = problem.detail ?: problem.title ?: "HTTP $status"
-        return when (status) {
-            401 -> TestInboxAuthException(detail, problem.correlationId)
-            403 -> TestInboxForbiddenException(detail, problem.correlationId)
-            404 -> TestInboxNotFoundException(detail, problem.correlationId)
-            409 -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
-            410 -> TestInboxInboxGoneException(detail, problem.correlationId)
+        val retryAfter =
+            (problem.retryAfterSeconds ?: headers.firstValue("Retry-After").orElse(null)?.toLongOrNull())
+                ?.let(java.time.Duration::ofSeconds)
+        return when {
+            status == 401 -> TestInboxAuthException(detail, problem.correlationId, problem.type, status)
+            // 403 carries two meanings — `missing-scope` and
+            // `scope-escalation` — so the problem type travels with it.
+            status == 403 -> TestInboxForbiddenException(detail, problem.correlationId, problem.type, status)
+            status == 404 -> TestInboxNotFoundException(detail, problem.correlationId, problem.type, status)
+            status == 409 -> mapConflict(problem, detail, retryAfter)
+            status == 410 -> TestInboxInboxGoneException(detail, problem.correlationId, problem.type, status)
+            status == 429 ->
+                TestInboxRateLimitException(
+                    detail,
+                    problem.correlationId,
+                    retryAfter = retryAfter,
+                    category = problem.category,
+                    limit = problem.limit ?: headers.firstValue("RateLimit-Limit").orElse(null)?.toLongOrNull(),
+                    remaining = headers.firstValue("RateLimit-Remaining").orElse(null)?.toLongOrNull(),
+                )
             else -> TestInboxApiException(status, problem.type, detail, problem.correlationId)
         }
+    }
+
+    private companion object {
+        const val STORAGE_LIMIT_STATUS = 409
+    }
+
+    /** The `type` member alone, from a body the full DTO could not decode; null when even that is unreadable. */
+    private fun problemTypeOf(body: ByteArray): String? =
+        runCatching {
+            (json.parseToJsonElement(String(body)) as? kotlinx.serialization.json.JsonObject)
+                ?.get("type")
+                ?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+                ?.takeIf { it.isString }
+                ?.content
+        }.getOrNull()
+
+    /**
+     * Several distinct `409`s share that status (ADR-021, ADR-027, ADR-033)
+     * and their correct client actions differ — free capacity, wait out a
+     * cooldown, retry with the same key, never reuse the key, or revoke and
+     * re-mint. Discriminating on the problem type rather than the status code
+     * is what `docs/api/principles.md` #3 asks of a client.
+     *
+     * Split out of [mapError] because the conflict family alone carries more
+     * branches than every other status put together.
+     */
+    private fun mapConflict(
+        problem: ProblemDto,
+        detail: String,
+        retryAfter: java.time.Duration?,
+    ): RuntimeException {
+        val type = problem.type
+        return when {
+            // Exact match on the full URI: this is the one 409 a wait may answer
+            // with, and a suffix match would let an unrelated future type share it.
+            type == TestInboxStorageLimitExceededException.STORAGE_LIMIT_EXCEEDED_TYPE -> storageLimitExceeded(problem, detail)
+            type?.endsWith("/quota-exceeded") == true ->
+                TestInboxQuotaExceededException(
+                    detail,
+                    problem.correlationId,
+                    quota = problem.quota,
+                    limit = problem.limit,
+                    current = problem.current,
+                )
+            type?.endsWith("/idempotency-request-in-progress") == true ->
+                TestInboxIdempotencyInProgressException(detail, problem.correlationId, retryAfter)
+            type?.endsWith("/idempotency-secret-not-replayable") == true ->
+                TestInboxCredentialAlreadyCreatedException(
+                    detail,
+                    problem.correlationId,
+                    problem.apiKeyId,
+                    problem.publicId,
+                )
+            // The two terminal types share one exception because they ask the
+            // same thing of a caller, but `problemType` is carried so "my key
+            // scheme is wrong" stays distinguishable from "an artifact
+            // rollback ate my record".
+            type?.endsWith("/idempotency-key-reused") == true ||
+                type?.endsWith("/idempotency-replay-unavailable") == true ->
+                TestInboxIdempotencyConflictException(detail, problem.correlationId, type)
+            else -> TestInboxConflictException(detail, problem.correlationId, problem.retryAfterSeconds)
+        }
+    }
+
+    /**
+     * A `storage-limit-exceeded` problem carries five semantic members
+     * (ADR-035 §13c). The problem TYPE claims the meaning, so a body that
+     * claims it and omits one of them is a contract violation: a protocol
+     * error, never a fabricated zero, a guessed reason or a generic conflict.
+     * An unknown `refusalReason` STRING is not malformed and passes through.
+     */
+    private fun storageLimitExceeded(problem: ProblemDto, detail: String): RuntimeException {
+        val missing =
+            listOfNotNull(
+                "inboxId".takeIf { problem.inboxId == null },
+                "refusalReason".takeIf { problem.refusalReason == null },
+                "afterStorageRefusalCount".takeIf { problem.afterStorageRefusalCount == null },
+                "storageRefusalCount".takeIf { problem.storageRefusalCount == null },
+                "lastStorageRefusalAt".takeIf { problem.lastStorageRefusalAt == null },
+            )
+        val negative =
+            listOfNotNull(
+                "afterStorageRefusalCount".takeIf { (problem.afterStorageRefusalCount ?: 0) < 0 },
+                "storageRefusalCount".takeIf { (problem.storageRefusalCount ?: 0) < 0 },
+            )
+        if (missing.isNotEmpty() || negative.isNotEmpty()) {
+            val what =
+                listOfNotNull(
+                    missing.takeIf { it.isNotEmpty() }?.let { "without " + it.joinToString(", ") },
+                    negative.takeIf { it.isNotEmpty() }?.let { "with a negative " + it.joinToString(", ") },
+                ).joinToString(" and ")
+            return TestInboxProtocolException(
+                "the server sent a storage-limit-exceeded problem $what",
+                problem.correlationId,
+                problem.type,
+                STORAGE_LIMIT_STATUS,
+            )
+        }
+        val lastRefusalAt =
+            runCatching { java.time.Instant.parse(problem.lastStorageRefusalAt) }
+                .getOrElse {
+                    return TestInboxProtocolException(
+                        "the server sent an unparseable 'lastStorageRefusalAt'",
+                        problem.correlationId,
+                        problem.type,
+                        STORAGE_LIMIT_STATUS,
+                    )
+                }
+        return TestInboxStorageLimitExceededException(
+            message = detail,
+            correlationId = problem.correlationId,
+            inboxId = problem.inboxId!!,
+            refusalReason = StorageRefusalReason(problem.refusalReason!!),
+            afterStorageRefusalCount = problem.afterStorageRefusalCount!!,
+            storageRefusalCount = problem.storageRefusalCount!!,
+            lastStorageRefusalAt = lastRefusalAt,
+            quota = problem.quota,
+            limit = problem.limit,
+            current = problem.current,
+        )
     }
 }

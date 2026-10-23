@@ -4,11 +4,13 @@ import email.testinbox.api.auth.AuthAttributes
 import email.testinbox.api.auth.requireScope
 import email.testinbox.application.query.InboxQueries
 import email.testinbox.application.query.MessageQueries
+import email.testinbox.application.query.StorageQueries
 import email.testinbox.application.usecase.CreateInbox
 import email.testinbox.application.usecase.DeleteInbox
 import email.testinbox.application.usecase.WaitForMessage
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.inbox.AddressMode
+import email.testinbox.domain.limits.QuotaExceeded
 import email.testinbox.domain.message.HeaderMatcher
 import email.testinbox.domain.message.MessageMatcher
 import email.testinbox.domain.tenant.ApiScope
@@ -27,6 +29,8 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
+private val CONCURRENT_WAIT_RETRY_AFTER: java.time.Duration = java.time.Duration.ofSeconds(1)
+
 @RestController
 @RequestMapping("/v1/inboxes")
 class InboxController(
@@ -35,6 +39,7 @@ class InboxController(
     private val waitForMessage: WaitForMessage,
     private val inboxQueries: InboxQueries,
     private val messageQueries: MessageQueries,
+    private val storageQueries: StorageQueries,
 ) {
     @PostMapping
     fun create(
@@ -43,6 +48,22 @@ class InboxController(
     ): ResponseEntity<*> {
         val key = AuthAttributes.principal(request)
         key.requireScope(ApiScope.INBOXES_WRITE)
+        val idempotency =
+            when (val header = IdempotencyHeader.read(request, key.id)) {
+                is IdempotencyHeader.Outcome.Invalid -> {
+                    return Problems.respond(
+                        Problems.of(HttpStatus.BAD_REQUEST, "invalid-request", "Invalid request", header.reason, request),
+                    )
+                }
+
+                IdempotencyHeader.Outcome.Absent -> {
+                    null
+                }
+
+                is IdempotencyHeader.Outcome.Present -> {
+                    header.request
+                }
+            }
         val mode =
             when (body.addressMode) {
                 null, "GENERATED" -> {
@@ -75,10 +96,41 @@ class InboxController(
                     aliasHint = body.aliasHint,
                     localPart = body.localPart,
                 ),
+                idempotency,
             )
         return when (result) {
             is CreateInbox.Result.Created -> {
-                ResponseEntity.status(HttpStatus.CREATED).body(InboxDto.from(result.inbox))
+                // 201 either way: the resource exists because of this logical
+                // request, which is what the status describes. The header is
+                // the signal, so a client never has to branch for correctness.
+                ResponseEntity
+                    .status(HttpStatus.CREATED)
+                    .apply {
+                        // Only when the caller opted in: a header on every
+                        // creation would imply the endpoint is always
+                        // idempotent, which it is not.
+                        if (idempotency != null) header(IdempotencyHeader.REPLAYED, result.replayed.toString())
+                        // ADR-035 §13b: the storage members are LIVE, read now
+                        // for the created or replayed inbox id. They are never
+                        // part of the idempotency snapshot, so a replay reports
+                        // the original identity with the current accounting.
+                    }.body(InboxDto.from(result.inbox, storageQueries.inbox(key.workspaceId, result.inbox.id)))
+            }
+
+            CreateInbox.Result.IdempotencyKeyReused -> {
+                Problems.respond(Problems.keyReused(request))
+            }
+
+            CreateInbox.Result.IdempotencyInProgress -> {
+                Problems.respond(Problems.inProgress(request), retryAfter = Duration.ofSeconds(1))
+            }
+
+            CreateInbox.Result.IdempotencyReplayUnavailable -> {
+                Problems.respond(Problems.replayUnavailable(request))
+            }
+
+            is CreateInbox.Result.QuotaRejected -> {
+                quotaProblem(result.exceeded, request)
             }
 
             is CreateInbox.Result.InvalidRequest -> {
@@ -123,7 +175,7 @@ class InboxController(
         val inbox =
             inboxQueries.get(key.workspaceId, InboxId(id))
                 ?: return inboxNotFound(request)
-        return ResponseEntity.ok(InboxDto.from(inbox))
+        return ResponseEntity.ok(InboxDto.from(inbox, storageQueries.inbox(key.workspaceId, inbox.id)))
     }
 
     @DeleteMapping("/{id}")
@@ -219,32 +271,32 @@ class InboxController(
                             headers = headerMatchers,
                         ),
                     timeoutSeconds = timeoutSeconds,
+                    // Passed through as sent: absent stays absent (legacy
+                    // contract), and the use case refuses a negative value.
+                    afterStorageRefusalCount = body.afterStorageRefusalCount,
                 ),
             )
         return when (result) {
             is WaitForMessage.Result.Matched -> {
-                ResponseEntity.ok(
-                    WaitResultDto(
-                        status = "MATCHED",
-                        message = MessageDto.from(result.message),
-                        elapsedMs = result.elapsedMs,
-                        arrivedButUnmatchedCount = null,
-                        parseFailedCount = null,
-                    ),
-                )
+                ResponseEntity.ok(WaitResultDto.matched(MessageDto.from(result.message), result.elapsedMs, result.refusals))
             }
 
             is WaitForMessage.Result.Timeout -> {
                 // ADR-020: window expiry is a successful query with a negative answer — never 408.
                 ResponseEntity.ok(
-                    WaitResultDto(
-                        status = "TIMEOUT",
-                        message = null,
+                    WaitResultDto.timeout(
                         elapsedMs = result.elapsedMs,
                         arrivedButUnmatchedCount = result.arrivedButUnmatchedCount,
                         parseFailedCount = result.parseFailedCount,
+                        refusals = result.refusals,
                     ),
                 )
+            }
+
+            is WaitForMessage.Result.StorageLimitExceeded -> {
+                // ADR-035 §13c: state-shaped, so 409 and no Retry-After. Rendered
+                // from the result alone: no second read may enrich it.
+                Problems.respond(Problems.storageLimitExceeded(result, request))
             }
 
             WaitForMessage.Result.InboxGone -> {
@@ -263,6 +315,21 @@ class InboxController(
                 inboxNotFound(request)
             }
 
+            is WaitForMessage.Result.ConcurrentWaitLimitExceeded -> {
+                // Rate-shaped, not state-shaped: a slot frees with time (ADR-027 §8).
+                Problems.respond(
+                    Problems
+                        .of(
+                            HttpStatus.TOO_MANY_REQUESTS,
+                            "concurrent-wait-limit-exceeded",
+                            "Concurrent wait limit exceeded",
+                            "This workspace already holds all ${result.limit} concurrent wait slots",
+                            request,
+                        ).also { it.setProperty("limit", result.limit) },
+                    retryAfter = CONCURRENT_WAIT_RETRY_AFTER,
+                )
+            }
+
             is WaitForMessage.Result.InvalidRequest -> {
                 Problems.respond(
                     Problems.of(
@@ -276,6 +343,30 @@ class InboxController(
             }
         }
     }
+
+    /**
+     * Quota exhaustion is 409, never 429 (ADR-027 §8): waiting does not help,
+     * so advertising a retry would send SDKs and CI scripts into a loop that
+     * cannot succeed. The caller must free capacity.
+     */
+    private fun quotaProblem(
+        exceeded: QuotaExceeded,
+        request: HttpServletRequest,
+    ): ResponseEntity<*> =
+        Problems.respond(
+            Problems
+                .of(
+                    HttpStatus.CONFLICT,
+                    "quota-exceeded",
+                    "Quota exceeded",
+                    "Workspace quota ${exceeded.dimension.name} exhausted (${exceeded.current}/${exceeded.limit})",
+                    request,
+                ).also {
+                    it.setProperty("quota", exceeded.dimension.name)
+                    it.setProperty("limit", exceeded.limit)
+                    it.setProperty("current", exceeded.current)
+                },
+        )
 
     private fun inboxNotFound(request: HttpServletRequest): ResponseEntity<*> =
         Problems.respond(

@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "recordId": "laptop-arm64-reference-2026-09-29",
+  "qualifiedAt": "2026-09-29T16:57:00Z",
+  "minio": {
+    "imageIndexDigest": "sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d",
+    "platformMemberDigest": "sha256:54d3d6a0a58fb25b4e9943d1db3828d3b4de44666f911381b4fda57175488194",
+    "platform": "linux/arm64",
+    "release": "RELEASE.2025-04-22T22-12-26Z",
+    "commitId": "0d7408fc9969caf07de6a8c3a84f9fbb10a6739e",
+    "binarySha256": "6c2f3142c94240206123177f4ba1e360daa5d1e0a4962e90757ef4f92c3ab57c",
+    "mode": "single-node-single-drive",
+    "driveCount": 1,
+    "timeoutEnvironment": {},
+    "timeoutCliFlags": [],
+    "runtimeConfig": {
+      "normalized": "release-defaults",
+      "hash": null
+    },
+    "storageClassInlineDefaults": "release-defaults",
+    "storageClassInlineDefaultsBasis": "asserted from a fresh data directory with no MINIO_* variables and no mc admin config changes (release defaults by construction); not captured from mc admin config get"
+  },
+  "host": {
+    "kernelRelease": "6.12.76-linuxkit",
+    "architecture": "aarch64",
+    "filesystemType": "ext4",
+    "mountOptions": "rw,relatime",
+    "device": "loop device /work.img (created per run)"
+  },
+  "network": {
+    "directPath": true,
+    "proxy": "none",
+    "tls": false
+  },
+  "uploadImplementationVersion": "adr035-presigned-put-v1",
+  "uploadImplementationNote": "the harness (harness.py) implements the ADR \u00a75 shape: presigned single-part PUT, signed content-length and If-None-Match: *, one attempt, abort by RST after TIOCOUTQ=0; the application's FencedUploader declares the same version",
+  "qualification": {
+    "platformClass": "laptop",
+    "platform": "Docker Desktop VM on an Apple Silicon laptop",
+    "evidenceReference": "docs/adr/0035-benchmark/qualification/",
+    "procedure": "docs/adr/0035-benchmark/minio-probes/QUALIFICATION.md",
+    "scenarios": [
+      "base-W",
+      "base-R100ms",
+      "freeze45-W",
+      "freeze120-W",
+      "freeze45-R2s",
+      "freeze120-R2s",
+      "phase1ms-R2s",
+      "phase3ms-R2s",
+      "phase5ms-R2s",
+      "phase10ms-R2s",
+      "phase20ms-R2s",
+      "v3-freeze45-R2s",
+      "v3-freeze45-W",
+      "v3-freeze120-R2s",
+      "v3-freeze120-W"
+    ],
+    "trials": 111,
+    "lateCommits": 0,
+    "slowWExecuted": false
+  },
+  "enablementEligible": false,
+  "ineligibilityReasons": [
+    "platformClass is laptop: ADR-035 \u00a718 gate 7a requires the deployed host's own combination",
+    "slow-W was not executed (ADR-035 \u00a79a)",
+    "runtime admin configuration was asserted as defaults but never captured or hashed (mc admin config get)"
+  ]
+}

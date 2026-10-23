@@ -46,7 +46,14 @@ documentation must not describe behavior beyond what is specified here.
    clients/proxies auto-retry it), `204` is rejected (cannot carry the
    diagnostics). The unmatched/parse-failed counts are the primary
    "why did my test time out" diagnostic. A wait issued against an inbox
-   that is no longer `Active` returns `410 Gone` (RFC 7807). See
+   that is no longer `Active` returns `410 Gone` (RFC 7807), and so does a
+   wait already parked when its inbox becomes `EXPIRED` or `DELETED`: the
+   transition notifies the inbox's channel in its own transaction, the waiter
+   re-evaluates, and the evaluation reads the inbox's state from the same
+   snapshot as the messages, so a message that matched before the transition
+   is never returned after it — exactly what the read endpoints answer
+   (issue #87). `EXPIRING` keeps serving: a wait started while `ACTIVE`
+   continues through the grace period. See
    [ADR-020](../adr/0020-wait-reliability-and-timeout-semantics.md).
    The server wait window expiring (`status: TIMEOUT`, SDK may chain) is
    distinct from the SDK caller's overall timeout expiring (surfaced as a
@@ -98,6 +105,53 @@ documentation must not describe behavior beyond what is specified here.
    Deployment note: `LISTEN` requires a session-scoped connection
    (bypass transaction-pooling proxies such as PgBouncer in transaction
    mode).
+
+## Storage refusal observation (ADR-035 §13c, opt-in)
+
+A storage ceiling refuses a copy silently over SMTP (ADR-035 §12), so the
+wait is where an authenticated caller learns that the message it awaits may
+never arrive. The behaviour is **opt-in** and additive (ADR-015):
+
+1. **The cursor.** A request may carry `afterStorageRefusalCount` (int64 ≥ 0):
+   the inbox's `storageRefusalCount` the caller has already observed — `0`
+   from the create response, the value from a `GET`, or the
+   `storageRefusalCount` of a `409` it has handled. The server stores no
+   per-client cursor; the request carries the boundary. A negative value is
+   `400`. A value above the current count is clamped **once**, to the count
+   seen at the call's first evaluation, so a future value cannot suppress a
+   real refusal.
+2. **One snapshot per evaluation.** Every evaluation reads the inbox's visible
+   messages (with their attachments) and its refusal record from one database
+   snapshot and decides, in order: a matching visible message → `200 MATCHED`
+   (a match always wins); otherwise, if a cursor was supplied and
+   `refusal_count` exceeds the boundary → `409 storage-limit-exceeded`;
+   otherwise park and re-evaluate on every wake, `200 TIMEOUT` at the window's
+   end. The refusal's `pg_notify` uses the inbox's channel, so a refusal
+   wakes a parked waiter exactly as a message does; the ADR-020 reconnect and
+   degraded re-query cover it too.
+3. **Precedence.** Request-rate `429` → `400` → `404` → `410` → `MATCHED` →
+   `409` → concurrent-wait `429` → `TIMEOUT`. The `409` is decided before any
+   wait slot is claimed, so it consumes none, and it carries no `Retry-After`:
+   waiting does not help (ADR-027 §8).
+4. **The `409` body** names `inboxId`, `refusalReason`, the effective
+   `afterStorageRefusalCount`, `storageRefusalCount` and `lastStorageRefusalAt`.
+   For `INBOX_LIMIT` and `WORKSPACE_LIMIT` it also carries
+   `quota: STORED_BYTES`, `limit` and `current` for the named scope; for
+   `SERVICE_CAPACITY` those members are absent (one bit, ADR-035 §13d).
+5. **The echo.** Every `200` carries `storageRefusalCount` and
+   `lastStorageRefusalAt` from the **same snapshot that decided it**, never a
+   fresh read. Adopting the echo as the next cursor is the caller's explicit
+   choice and would skip any refusal that a match outranked.
+6. **Omitting the cursor is exactly the pre-ADR-035 contract.** A storage
+   refusal never produces a `409`; the call ends `MATCHED` or `TIMEOUT`, and
+   `TIMEOUT` carries the count for diagnosis. Released SDKs omit it.
+7. **A rolled-back server ignores the cursor** (ADR-028). An artifact that
+   predates this contract accepts the member and never answers `409`, and its
+   `200` carries no `storageRefusalCount`. A client must therefore read "no
+   `409`" as "no refusal" only when the `200` carries the count.
+
+The ergonomic per-`Inbox` cursor and typed error in the SDKs are a later slice
+(ADR-035 §13c, TI-STORAGE-005); everything above is reachable with raw REST.
 
 ## Explicit non-guarantees
 

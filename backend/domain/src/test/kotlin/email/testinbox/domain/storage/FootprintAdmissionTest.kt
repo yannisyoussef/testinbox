@@ -1,0 +1,223 @@
+package email.testinbox.domain.storage
+
+import email.testinbox.domain.storage.FootprintAdmission.Load
+import email.testinbox.domain.storage.FootprintAdmission.Snapshot
+import email.testinbox.domain.storage.FootprintAdmission.Verdict
+import io.kotest.matchers.shouldBe
+import io.kotest.property.Arb
+import io.kotest.property.arbitrary.list
+import io.kotest.property.arbitrary.long
+import io.kotest.property.checkAll
+import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Test
+
+/**
+ * The filesystem-containment admission rules (contract §2.1, §2.4). The point is
+ * not that F bounds a SET (FootprintModelTest proves that), but that admitting
+ * on the exact post-admission aggregate keeps the filesystem contained across
+ * arbitrary operation sequences, which a per-copy φ charge does not.
+ */
+class FootprintAdmissionTest {
+    private val kib = 1024L
+    private val model = FootprintModel.REFERENCE
+
+    private fun limits(
+        g: Long,
+        c: Long,
+        h: Long = 0,
+        m: Long = 0,
+        r: Long = 0,
+        p: Long = 0,
+    ) = FootprintAdmission.Limits(g, h, m, r, c, p)
+
+    @Test
+    fun `the owner's counterexample - a phi charge admits what the aggregate refuses`() {
+        // φ(4096) = 28 688, but F(4096, 1) − F(0, 0) = 32 800.
+        model.ofObject(4096) shouldBe 28_688
+        model.bound(4096, 1) - model.bound(0, 0) shouldBe 32_800
+        val headroom = 30_000L
+        val lim = limits(g = Long.MAX_VALUE, c = headroom)
+        val empty = Snapshot(Load.ZERO, Load.ZERO, trashBytes = 0)
+
+        // The old rule: F(L) + φ(copy) ≤ capacity. It would admit...
+        (model.bound(0, 0) + model.ofObject(4096) <= headroom) shouldBe true
+        // ...and the aggregate would then exceed the capacity. The corrected rule refuses.
+        FootprintAdmission.decide(model, lim, empty, listOf(Load(4096, 1))) shouldBe listOf(Verdict.CONTAINMENT)
+        FootprintAdmission.decide(model, limits(g = Long.MAX_VALUE, c = 32_800), empty, listOf(Load(4096, 1))) shouldBe
+            listOf(Verdict.ADMITTED)
+    }
+
+    @Test
+    fun `copies of one event are decided against running totals - the event as a whole fits`() {
+        val copy = Load(10 * kib, 2)
+        val one = model.bound(copy.bytes, copy.objects)
+        val two = model.bound(2 * copy.bytes, 2 * copy.objects)
+        val lim = limits(g = two + 5, c = Long.MAX_VALUE)
+        FootprintAdmission.decide(model, lim, Snapshot(Load.ZERO, Load.ZERO, 0), List(3) { copy }) shouldBe
+            listOf(Verdict.ADMITTED, Verdict.ADMITTED, Verdict.GLOBAL_FOOTPRINT)
+        (one < two) shouldBe true
+    }
+
+    @Test
+    fun `a refused copy adds nothing - a smaller later copy can still fit`() {
+        val big = Load(64 * kib, 1)
+        val small = Load(0, 1)
+        val lim = limits(g = model.bound(0, 1), c = Long.MAX_VALUE)
+        FootprintAdmission.decide(model, lim, Snapshot(Load.ZERO, Load.ZERO, 0), listOf(big, small)) shouldBe
+            listOf(Verdict.GLOBAL_FOOTPRINT, Verdict.ADMITTED)
+    }
+
+    @Test
+    fun `rule G bounds the live footprint, rule C the whole potential - debt reduces the ceiling`() {
+        val live = Load(100 * kib, 4)
+        val debt = Load(50 * kib, 3)
+        val copy = Load(4 * kib, 1)
+        val liveAfter = model.bound(live.bytes + copy.bytes, live.objects + copy.objects)
+        val allAfter = model.bound(live.bytes + debt.bytes + copy.bytes, live.objects + debt.objects + copy.objects)
+        val trash = 7_000L
+        val h = 1_000L
+        val m = 2_000L
+        val r = 3_000L
+        val snapshot = Snapshot(live, debt, trash)
+        // Exactly at both boundaries: admitted.
+        FootprintAdmission.decide(
+            model,
+            limits(g = liveAfter + h, c = allAfter + trash + h + m + r, h = h, m = m, r = r),
+            snapshot,
+            listOf(copy),
+        ) shouldBe
+            listOf(Verdict.ADMITTED)
+        // One byte under (G).
+        FootprintAdmission.decide(
+            model,
+            limits(g = liveAfter + h - 1, c = Long.MAX_VALUE, h = h, m = m, r = r),
+            snapshot,
+            listOf(copy),
+        ) shouldBe
+            listOf(Verdict.GLOBAL_FOOTPRINT)
+        // One byte under (C): the debt, not the live set, is what refuses.
+        FootprintAdmission.decide(
+            model,
+            limits(g = Long.MAX_VALUE, c = allAfter + trash + h + m + r - 1, h = h, m = m, r = r),
+            snapshot,
+            listOf(copy),
+        ) shouldBe
+            listOf(Verdict.CONTAINMENT)
+    }
+
+    @Test
+    fun `no observation, no admission - without W there is no bound on trash`() {
+        FootprintAdmission.decide(
+            model,
+            limits(g = Long.MAX_VALUE, c = Long.MAX_VALUE),
+            Snapshot(Load.ZERO, Load.ZERO, null),
+            listOf(Load(0, 1)),
+        ) shouldBe
+            listOf(Verdict.UNOBSERVED)
+        FootprintAdmission.potential(model, Snapshot(Load.ZERO, Load.ZERO, null)) shouldBe null
+    }
+
+    @Test
+    fun `an overflowing aggregate is indeterminate - an infrastructure refusal, never a capacity verdict, never wrapped`() {
+        val huge = Snapshot(Load(Long.MAX_VALUE / 2, 1), Load.ZERO, 0)
+        FootprintAdmission.decide(model, limits(g = Long.MAX_VALUE, c = Long.MAX_VALUE), huge, listOf(Load(Long.MAX_VALUE / 2, 1))) shouldBe
+            listOf(Verdict.INDETERMINATE)
+        // Totals that overflow are corrupt: the whole event is refused, never a mix of verdicts.
+        FootprintAdmission.decide(
+            model,
+            limits(g = Long.MAX_VALUE, c = Long.MAX_VALUE),
+            huge,
+            listOf(Load(10, 1), Load(Long.MAX_VALUE / 2, 1), Load(10, 1)),
+        ) shouldBe List(3) { Verdict.INDETERMINATE }
+    }
+
+    @Test
+    fun `a probe during a purge stall is refused by rule P however few probe rows remain`() {
+        // Probe trash whose rows observations superseded is in W, with no row left: a cap on
+        // probe ROWS would admit forever. Rule P charges the potential, and H_F stays reserved.
+        val k = model.bound(0, 1)
+        val stalledProbeTrash = 40 * k
+        val snapshot = Snapshot(Load(1_000, 1), Load.ZERO, stalledProbeTrash)
+        val h = 2 * model.bound(15L * 1024 * 1024, 1)
+        val exact = model.bound(1_000, 2) + stalledProbeTrash + h
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = exact, h = h), snapshot) shouldBe Verdict.ADMITTED
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = exact - 1, h = h), snapshot) shouldBe Verdict.CONTAINMENT
+        // Room for the probe itself but not for H_F: refused (a rule without H_F would admit it).
+        val withoutReserve = model.bound(1_000, 2) + stalledProbeTrash
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = withoutReserve + h / 2, h = h), snapshot) shouldBe
+            Verdict.CONTAINMENT
+    }
+
+    @Test
+    fun `a late object's pending row is charged the aggregate increase, not phi - rule P at exact headroom`() {
+        // The owner's counterexample, now on the sweep path: x = 4 096 B, one object.
+        val snapshot = Snapshot(Load.ZERO, Load.ZERO, 0)
+        val x = Load(4096, 1)
+        model.bound(4096, 1) - model.bound(0, 0) shouldBe 32_800
+        FootprintAdmission.decideRowFreeDebt(model, limits(g = 0, c = 32_800), snapshot, x) shouldBe Verdict.ADMITTED
+        FootprintAdmission.decideRowFreeDebt(model, limits(g = 0, c = 32_799), snapshot, x) shouldBe Verdict.CONTAINMENT
+        // A φ charge would have admitted it at 28 688 + 1 B of headroom.
+        FootprintAdmission.decideRowFreeDebt(model, limits(g = 0, c = model.ofObject(4096) + 1), snapshot, x) shouldBe
+            Verdict.CONTAINMENT
+        // On a non-empty aggregate the charge is ΔF over the whole of L + D, rounded once.
+        val busy = Snapshot(Load(10_000_001, 7), Load(3_333, 2), 5_000)
+        val need = model.bound(10_000_001 + 3_333 + 4_096, 10) + 5_000
+        FootprintAdmission.decideRowFreeDebt(model, limits(g = 0, c = need), busy, x) shouldBe Verdict.ADMITTED
+        FootprintAdmission.decideRowFreeDebt(model, limits(g = 0, c = need - 1), busy, x) shouldBe Verdict.CONTAINMENT
+    }
+
+    @Test
+    fun `a probe is admitted by rule P - the potential with its row, without the probe reserve`() {
+        val snapshot = Snapshot(Load(1_000, 1), Load(500, 1), 7_000)
+        val fits = model.bound(1_500, 3) + 7_000 + 11 + 13 + 17
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = fits, h = 11, m = 13, r = 17, p = 1_000_000), snapshot) shouldBe
+            Verdict.ADMITTED
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = fits - 1, h = 11, m = 13, r = 17), snapshot) shouldBe
+            Verdict.CONTAINMENT
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = Long.MAX_VALUE), snapshot.copy(trashBytes = null)) shouldBe
+            Verdict.UNOBSERVED
+        FootprintAdmission.decideProbe(model, limits(g = 0, c = Long.MAX_VALUE), Snapshot(Load(Long.MAX_VALUE, 1), Load.ZERO, 0)) shouldBe
+            Verdict.INDETERMINATE
+    }
+
+    @Test
+    fun `the probe budget is reserved by rule C, byte for byte`() {
+        val snapshot = Snapshot(Load(1_000, 1), Load(500, 1), 7_000)
+        val copy = Load(4_096, 1)
+        val probe = model.bound(0, 1) * 4
+        val needed = model.bound(1_000 + 500 + 4_096, 3) + 7_000 + probe
+        FootprintAdmission.decide(model, limits(g = Long.MAX_VALUE, c = needed, p = probe), snapshot, listOf(copy)) shouldBe
+            listOf(Verdict.ADMITTED)
+        FootprintAdmission.decide(model, limits(g = Long.MAX_VALUE, c = needed - 1, p = probe), snapshot, listOf(copy)) shouldBe
+            listOf(Verdict.CONTAINMENT)
+    }
+
+    @Test
+    fun `Lemma 2 over sets - a copy of several objects raises F by at least the sum of their phi and at most F of the copy`() {
+        runBlocking {
+            checkAll(
+                2_000,
+                Arb.long(0L, 1L shl 34),
+                Arb.long(0L, 100_000L),
+                Arb.list(Arb.long(0L, 15L * 1024 * 1024), 1..8),
+            ) { p, n, objects ->
+                val copy = Load(objects.sum(), objects.size.toLong())
+                val delta = model.bound(p + copy.bytes, n + copy.objects) - model.bound(p, n)
+                (delta >= objects.sumOf { model.ofObject(it) }) shouldBe true
+                (delta <= model.bound(copy.bytes, copy.objects)) shouldBe true
+            }
+        }
+    }
+
+    @Test
+    fun `the aggregate increment is between phi and F of the copy (Lemma 2)`() {
+        runBlocking {
+            checkAll(2_000, Arb.long(0L, 1L shl 30), Arb.long(0L, 10_000L), Arb.long(0L, 15L * 1024 * 1024)) { p, n, x ->
+                val delta = model.bound(p + x, n + 1) - model.bound(p, n)
+                (delta >= model.ofObject(x)) shouldBe true
+                (delta <= model.bound(x, 1)) shouldBe true
+            }
+        }
+    }
+    // Containment across arbitrary interleavings of atomic steps: FootprintWorldTest.
+}

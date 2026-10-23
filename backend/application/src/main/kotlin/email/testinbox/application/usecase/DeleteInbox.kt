@@ -2,6 +2,7 @@ package email.testinbox.application.usecase
 
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.ExactAddressReservations
+import email.testinbox.application.port.InboxMetrics
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.domain.InboxId
@@ -20,6 +21,7 @@ class DeleteInbox(
     private val tx: TransactionRunner,
     private val clock: Clock,
     private val config: TestInboxConfig,
+    private val metrics: InboxMetrics = InboxMetrics.NOOP,
 ) {
     sealed interface Result {
         data object Deleted : Result
@@ -37,6 +39,7 @@ class DeleteInbox(
             if (inbox.addressMode == AddressMode.EXACT) {
                 reservations.startCooldown(inboxId, now.plus(config.exactCooldown))
             }
+            metrics.inboxDeleted()
             Result.Deleted
         }
     }

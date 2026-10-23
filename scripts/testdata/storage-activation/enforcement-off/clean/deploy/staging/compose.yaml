@@ -1,0 +1,8 @@
+# Fixture: the staging compose file passes the setting through with an OFF default.
+services:
+  api:
+    environment:
+      TESTINBOX_STORAGE_ENFORCEMENT: ${TESTINBOX_STORAGE_ENFORCEMENT:-OFF}
+  ingestion:
+    environment:
+      TESTINBOX_STORAGE_ENFORCEMENT: "${TESTINBOX_STORAGE_ENFORCEMENT:-OFF}"

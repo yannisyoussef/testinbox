@@ -99,9 +99,22 @@ they are not resolvable by further internal analysis alone.
    obligations for an inbound-mail service open to any authenticated user).
    Narrowed by ADR-025: unknown-recipient content is never stored, so this
    decision now covers only mail attributed to a tenant's inbox.
-3. **Which inbound provider to build first in production** (self-hosted
-   Postfix vs. AWS SES) — affects deployment/ops investment ordering
-   (ADR-004).
+   — **APPROVED IN PRINCIPLE** (2026-09-08) for the product boundary
+   recorded in [ADR-004](docs/adr/0004-initial-inbound-provider-strategy.md):
+   inbound-only, tenant-owned inboxes, ephemeral content, not a human
+   disposable-mail service, not an SMTP relay, and no retention for addresses
+   with no active inbox. This is the product/architecture approval that
+   unblocks implementation. It is **not** legal advice, and **public
+   production activation remains gated** on the privacy policy, terms, abuse
+   process, retention documentation and appropriate legal review.
+3. ~~**Which inbound provider to build first in production**~~ —
+   **DECIDED** (2026-09-08) by
+   [ADR-004](docs/adr/0004-initial-inbound-provider-strategy.md) (Accepted):
+   a dedicated self-hosted **Postfix relay edge**, on its own EU host, relaying
+   over an authenticated private channel to production ingestion. Managed
+   accept-then-store providers are retained as a documented fallback; adopting
+   one would conflict with ADR-025 and requires a new owner decision and an ADR
+   supersession.
 4. **Maven Central and npm publishing ownership**: who holds the Sonatype
    namespace (`email.testinbox`) and npm org (`@testinbox`), and who controls
    signing keys / npm 2FA — required before ADR-017 can move past "Proposed."
@@ -110,6 +123,14 @@ they are not resolvable by further internal analysis alone.
 6. **Whether a `TestRun` entity is a real product requirement** or an
    assumption inherited from the brief — no concrete use case currently
    justifies it for MVP.
-7. **Target initial deployment environment** (self-hosted/on-prem vs. a
-   TestInbox-operated cloud service vs. both) — affects DevOps/SRE priorities
-   and multi-tenancy urgency.
+7. ~~**Target initial deployment environment**~~ — **DECIDED** for staging by
+   [ADR-030](docs/adr/0030-staging-deployment-target.md) (Accepted): the
+   existing Infinity shared dev/staging host, behind Cloudflare and the
+   estate's Traefik, delivered pull-based through GitLab `infinity-core`.
+   Persistent staging is live. **Production decided** (2026-09-19) by
+   [ADR-034](docs/adr/0034-production-platform-and-promotion.md) (Accepted):
+   the existing OVH dedicated host in France for the application/data plane,
+   operated through the same Ops estate, with the public SMTP edge on its own
+   EU host (item 3 / ADR-004). Production is dark-deployable and **not live**:
+   no MX, no public SMTP, no tenant traffic, pending TI-007 and the human
+   gates ADR-004 records.

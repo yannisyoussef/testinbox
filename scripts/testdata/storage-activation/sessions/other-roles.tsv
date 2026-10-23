@@ -1,0 +1,6 @@
+testinbox-api:api-1:storage-v1	testinbox_app
+testinbox-listen:api-1:storage-v1	testinbox_app
+testinbox-ingestion:ing-1:storage-v1	testinbox_app
+pg_dump	backup_role
+psql	dba
+postgres_exporter	monitor

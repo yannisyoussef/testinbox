@@ -1,6 +1,9 @@
 package email.testinbox.ingestion.smtp
 
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.deployment.SchemaCompatibility
+import email.testinbox.application.port.SmtpMetrics
+import email.testinbox.application.port.SmtpRejection
 import email.testinbox.application.usecase.ReceiveInboundDelivery
 import email.testinbox.ingestion.config.IngestionProperties
 import org.slf4j.LoggerFactory
@@ -11,6 +14,7 @@ import org.subethamail.smtp.MessageHandler
 import org.subethamail.smtp.RejectException
 import org.subethamail.smtp.server.SMTPServer
 import java.io.InputStream
+import java.io.OutputStream
 
 const val LOCAL_SMTP_PROVIDER = "local-smtp"
 
@@ -35,6 +39,8 @@ class SmtpGateway(
     private val receive: ReceiveInboundDelivery,
     private val properties: IngestionProperties,
     private val config: TestInboxConfig,
+    private val schema: SchemaCompatibility,
+    private val metrics: SmtpMetrics = SmtpMetrics.NOOP,
 ) : SmartLifecycle {
     @Volatile private var server: SMTPServer? = null
 
@@ -44,6 +50,10 @@ class SmtpGateway(
                 .port(properties.smtp.port)
                 .messageHandlerFactory { context: MessageContext -> Handler() }
                 .maxMessageSize(config.maxRawSizeBytes.toInt())
+                // ADR-035 §12/§15: the gateway's explicit recipient cap equals the
+                // edge's (contract.yaml smtpd_recipient_limit = 50), and bounds an
+                // event for T1. The excess gets 452 at RCPT, tenant-independent.
+                .maxRecipients(MAX_RECIPIENTS)
                 .softwareName("TestInbox")
                 .build()
         smtpServer.start()
@@ -71,6 +81,10 @@ class SmtpGateway(
             val domain = normalized.substringAfterLast('@', missingDelimiterValue = "")
             if (domain != config.mailDomain.lowercase() || normalized.substringBefore('@').isEmpty()) {
                 // Syntax/domain-level rejection only — never an existence check (ADR-025).
+                // Counted by reason, and the reasons are protocol-level only:
+                // recipient existence is never one of them, so this counter can
+                // never become an enumeration oracle.
+                metrics.rejected(SmtpRejection.INVALID_RECIPIENT)
                 throw RejectException(553, "Requested action not taken: mailbox name not allowed")
             }
             recipients += normalized
@@ -78,6 +92,18 @@ class SmtpGateway(
 
         override fun data(data: InputStream): String? {
             val raw = readBounded(data)
+            // ADR-029 §4, gateway side. Readiness reports the same fact, but
+            // nothing in the shipped topology stops mail reaching a not-ready
+            // gateway — SMTP is a direct TCP listener, not something behind a
+            // health-aware proxy. A 451 is the honest answer and the one the
+            // failure-modes doc already prescribes for infrastructure trouble:
+            // the sending MTA retries, and nothing is lost.
+            val schemaStatus = schema.status()
+            if (!schemaStatus.compatible) {
+                log.error("refusing inbound delivery: {}", schemaStatus.detail)
+                metrics.rejected(SmtpRejection.SCHEMA_UNAVAILABLE)
+                throw RejectException(451, "Requested action aborted: local error in processing")
+            }
             try {
                 receive.execute(
                     ReceiveInboundDelivery.Command(
@@ -92,9 +118,15 @@ class SmtpGateway(
                 // Persistence/storage unavailable: soft-fail the whole transaction so the
                 // sender retries it as a unit — nothing was committed (failure-modes.md).
                 log.error("inbound delivery failed; soft-failing the DATA transaction", e)
+                metrics.rejected(SmtpRejection.PROCESSING_FAILED)
                 throw RejectException(451, "Requested action aborted: local error in processing")
             }
-            // Uniform success regardless of recipient resolution (ADR-025).
+            // Uniform success regardless of recipient resolution (ADR-025) — so
+            // this counter measures accepted TRANSACTIONS, not delivered mail.
+            // What was actually stored, discarded as unknown or refused for rate
+            // is the inbound counters' job; conflating them here would make the
+            // uniform reply look like a delivery guarantee.
+            metrics.accepted()
             return null
         }
 
@@ -103,13 +135,22 @@ class SmtpGateway(
         private fun readBounded(data: InputStream): ByteArray {
             val bytes = data.readNBytes(config.maxRawSizeBytes.toInt() + 1)
             if (bytes.size > config.maxRawSizeBytes) {
+                // Read the rest of the DATA stream (through the terminating dot) to the
+                // void before refusing: SubEthaSMTP drains only on success, so an
+                // unread tail would be parsed as commands and desynchronise every
+                // later transaction on a reused connection. Nothing is buffered.
+                data.transferTo(OutputStream.nullOutputStream())
+                metrics.rejected(SmtpRejection.MESSAGE_TOO_LARGE)
                 throw RejectException(552, "Requested mail action aborted: exceeded storage allocation")
             }
             return bytes
         }
     }
 
-    private companion object {
-        val log = LoggerFactory.getLogger(SmtpGateway::class.java)
+    companion object {
+        /** One event's recipients: the edge's cap, and T1's per-event bound. */
+        const val MAX_RECIPIENTS = email.testinbox.application.usecase.StorageAdmissionRequest.MAX_CANDIDATES
+
+        private val log = LoggerFactory.getLogger(SmtpGateway::class.java)
     }
 }

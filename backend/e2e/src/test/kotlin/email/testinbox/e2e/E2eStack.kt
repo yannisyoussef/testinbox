@@ -6,6 +6,7 @@ import org.springframework.boot.builder.SpringApplicationBuilder
 import org.springframework.context.ConfigurableApplicationContext
 import org.testcontainers.containers.MinIOContainer
 import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.utility.DockerImageName
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.ServerSocket
@@ -21,12 +22,50 @@ import java.sql.DriverManager
  */
 object E2eStack {
     const val API_KEY = "tk_e2e_acceptance_key"
+
+    /**
+     * Limits are deployment configuration, not per-workspace state, so the
+     * ADR-027 scenarios run against extra API nodes with deliberately tiny
+     * allowances, sharing the same database. Two of them, because a node tight
+     * on both dimensions could not show which one refused: the quota node has
+     * a generous rate, the rate node a generous quota.
+     */
+    const val QUOTA_API_KEY = "tk_e2e_quota_key"
+    const val RATE_API_KEY = "tk_e2e_rate_key"
+
+    /**
+     * Credential-lifecycle scenarios get their own node and workspace because
+     * minting a managed administrator is what closes the bootstrap window
+     * (ADR-032 §8). Doing it in the shared acceptance workspace would revoke
+     * [API_KEY] out from under every other test in this module.
+     */
+    const val KEY_ADMIN_BOOTSTRAP_KEY = "tk_e2e_key_admin_bootstrap"
+
+    /**
+     * Workspace-storage figures are a live aggregate (ADR-035 §13): every
+     * suite's mail, expiry sweep and reservation release in the shared
+     * acceptance workspace moves them between any two requests, so equality
+     * of two snapshots taken at different instants is only an invariant in a
+     * workspace nothing else touches. The SDK storage proof gets one of its
+     * own, on its own node, exactly like the limit and key-admin scenarios.
+     */
+    const val STORAGE_API_KEY = "tk_e2e_storage_key"
     const val MAIL_DOMAIN = "testinbox.local"
 
     val postgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:16-alpine").also { it.start() }
     val minio: MinIOContainer =
-        MinIOContainer("minio/minio:latest")
-            .withUserName("testinbox")
+        MinIOContainer(
+            // MinIO withdrew its public images: Docker Hub's repository is gone
+            // and quay.io answers 401 for every tag. This is our own private
+            // mirror of the exact same bytes, pinned by index digest to what
+            // the staging data tier runs (deploy/staging/compose.data.yaml) so
+            // the tests still prove that version. Needs a GHCR login —
+            // docs/dev/third-party-mirrors.md.
+            DockerImageName
+                .parse(
+                    "ghcr.io/yannisyoussef/testinbox-mirror/minio@sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d",
+                ).asCompatibleSubstituteFor("minio/minio"),
+        ).withUserName("testinbox")
             .withPassword("testinbox123")
             .also { it.start() }
 
@@ -52,16 +91,128 @@ object E2eStack {
                     commonProperties +
                         mapOf(
                             "server.port" to "0",
+                            // ADR-035 §9/§19: every live process needs its own node id; the API
+                            // claims it like the gateway does (TI-STORAGE-006), so the several API
+                            // nodes this stack runs cannot share the default.
+                            "testinbox.storage.node-id" to "e2e-api-main",
                             "testinbox.bootstrap.api-key" to API_KEY,
                             "testinbox.sweep-interval" to "1s",
                             "testinbox.expiry-grace" to "1s",
                             "testinbox.wait-window-cap" to "10s",
+                            // Generous here: the main acceptance flows must not
+                            // trip a limit they are not testing.
+                            "testinbox.limits.max-active-inboxes" to "1000",
+                            "testinbox.limits.inbox-create.capacity" to "1000",
+                            "testinbox.limits.inbox-create.refill-per-second" to "1000",
+                            "testinbox.limits.wait.capacity" to "1000",
+                            "testinbox.limits.wait.refill-per-second" to "1000",
+                            "testinbox.limits.ingest.capacity" to "1000",
+                            "testinbox.limits.ingest.refill-per-second" to "1000",
+                            "testinbox.limits.ingest-per-inbox.capacity" to "1000",
+                            "testinbox.limits.ingest-per-inbox.refill-per-second" to "1000",
                         ),
                 ),
             )
 
     val apiPort: Int = apiContext.environment.getProperty("local.server.port")!!.toInt()
     val apiBaseUrl: String = "http://localhost:$apiPort"
+
+    private val restrictedNodes =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
+    private fun restrictedNode(
+        bootstrapKey: String,
+        workspaceId: String,
+        overrides: Map<String, String>,
+    ): ConfigurableApplicationContext =
+        SpringApplicationBuilder(ApiApplication::class.java)
+            .run(
+                *args(
+                    commonProperties +
+                        mapOf(
+                            "server.port" to "0",
+                            "testinbox.storage.node-id" to "e2e-api-${restrictedNodes.incrementAndGet()}",
+                            "testinbox.bootstrap.api-key" to bootstrapKey,
+                            "testinbox.bootstrap.workspace-id" to workspaceId,
+                            "testinbox.bootstrap.project-id" to workspaceId,
+                            "testinbox.sweep-interval" to "1s",
+                            "testinbox.expiry-grace" to "1s",
+                        ) + overrides,
+                ),
+            )
+
+    /** Tight quota, generous rate: a refusal here is unambiguously the quota. */
+    val quotaApiContext: ConfigurableApplicationContext =
+        restrictedNode(
+            QUOTA_API_KEY,
+            "00000000-0000-0000-0000-0000000000q1".replace('q', 'a'),
+            mapOf(
+                "testinbox.limits.max-active-inboxes" to "2",
+                "testinbox.limits.inbox-create.capacity" to "1000",
+                "testinbox.limits.inbox-create.refill-per-second" to "1000",
+            ),
+        )
+
+    val quotaApiBaseUrl: String =
+        "http://localhost:${quotaApiContext.environment.getProperty("local.server.port")!!}"
+
+    /** Tight rate, generous quota: a refusal here is unambiguously the rate. */
+    val rateApiContext: ConfigurableApplicationContext =
+        restrictedNode(
+            RATE_API_KEY,
+            "00000000-0000-0000-0000-0000000000r1".replace('r', 'b'),
+            mapOf(
+                "testinbox.limits.max-active-inboxes" to "1000",
+                "testinbox.limits.inbox-create.capacity" to "2",
+                // Slow refill so the boundary cannot heal mid-test.
+                "testinbox.limits.inbox-create.refill-per-second" to "0.01",
+            ),
+        )
+
+    val rateApiBaseUrl: String =
+        "http://localhost:${rateApiContext.environment.getProperty("local.server.port")!!}"
+
+    val keyAdminApiContext: ConfigurableApplicationContext =
+        restrictedNode(
+            KEY_ADMIN_BOOTSTRAP_KEY,
+            "00000000-0000-0000-0000-0000000000c1",
+            mapOf(
+                "testinbox.wait-window-cap" to "10s",
+                "testinbox.limits.max-active-inboxes" to "1000",
+                "testinbox.limits.inbox-create.capacity" to "1000",
+                "testinbox.limits.inbox-create.refill-per-second" to "1000",
+                "testinbox.limits.wait.capacity" to "1000",
+                "testinbox.limits.wait.refill-per-second" to "1000",
+                "testinbox.limits.ingest.capacity" to "1000",
+                "testinbox.limits.ingest.refill-per-second" to "1000",
+                "testinbox.limits.ingest-per-inbox.capacity" to "1000",
+                "testinbox.limits.ingest-per-inbox.refill-per-second" to "1000",
+                // The shipped KEY_ADMIN budget is deliberately tight; a
+                // rotation rehearsal is a handful of calls but the fixtures
+                // around it are not.
+                "testinbox.limits.key-admin.capacity" to "1000",
+                "testinbox.limits.key-admin.refill-per-second" to "1000",
+            ),
+        )
+
+    val keyAdminApiBaseUrl: String =
+        "http://localhost:${keyAdminApiContext.environment.getProperty("local.server.port")!!}"
+
+    /** Quiet workspace for the storage-figure proofs; generous limits, nothing else uses it. */
+    val storageApiContext: ConfigurableApplicationContext =
+        restrictedNode(
+            STORAGE_API_KEY,
+            "00000000-0000-0000-0000-0000000000d1",
+            mapOf(
+                "testinbox.limits.max-active-inboxes" to "1000",
+                "testinbox.limits.inbox-create.capacity" to "1000",
+                "testinbox.limits.inbox-create.refill-per-second" to "1000",
+            ),
+        )
+
+    val storageApiBaseUrl: String =
+        "http://localhost:${storageApiContext.environment.getProperty("local.server.port")!!}"
 
     val ingestionContext: ConfigurableApplicationContext =
         SpringApplicationBuilder(IngestionApplication::class.java)
@@ -83,7 +234,7 @@ object E2eStack {
             connection.createStatement().use {
                 it.execute(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity " +
-                        "WHERE application_name = 'testinbox-listen'",
+                        "WHERE application_name LIKE 'testinbox-listen:%:storage-v1'",
                 )
             }
         }

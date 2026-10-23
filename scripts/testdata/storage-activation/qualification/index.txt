@@ -1,0 +1,3 @@
+# Fixture qualification records (ADR-035 §9a). One file name per line; only listed records count.
+laptop-arm64-reference.json
+production-amd64-candidate.json

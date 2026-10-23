@@ -9,7 +9,7 @@ changing anything.
 - **Accepted ADRs in `docs/adr/` are authoritative.** `docs/architecture/`,
   `docs/api/`, `docs/sdk/`, `docs/security/`, `docs/quality/` are the
   normative elaboration. Code serves the ADRs, not the other way around.
-- `Proposed` ADRs (currently 0004, 0016, 0017, 0018) require a human
+- `Proposed` ADRs (currently 0016, 0017, 0018) require a human
   decision before implementation may rely on them. **Never silently promote
   a Proposed ADR to Accepted.**
 - If an Accepted ADR appears impossible/contradictory during implementation:
@@ -65,11 +65,123 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
    state (`ACTIVE`/`COOLDOWN`/`RELEASED` + `available_at` with guarded
    transactional reclaim) — **never a `now()`-dependent index predicate**.
    Generated tokens are never reused. Cooldown is config-driven.
-8. **Security.** API keys hashed at rest, never logged. Untrusted HTML is
+8. **Limits (ADR-027, amended by ADR-035).** Rate limits and quotas key on the **workspace**,
+   derived from the authenticated key — never on an API key (rotation would
+   reset them), a header, or a source IP. Enforcement lives in the
+   application layer, never in an HTTP filter, or the ingestion gateway is
+   unprotected. **No limit may change an SMTP reply**: a syntactically valid
+   recipient always gets the uniform `250` of ADR-025, or the differing
+   replies become a workspace-membership oracle. Rate refusals are `429` +
+   `Retry-After`; quota exhaustion is `409` (waiting does not help). Inbox
+   quota usage (`maxActiveInboxes`) is derived from real rows. **Storage
+   usage** (ADR-035) is derived, or database-maintained (statement triggers
+   into an append-only ledger) and **reconciled against the authoritative
+   `message`/`attachment` rows**. It is **never** an application-maintained,
+   unauditable counter: a cascade delete runs no application code to
+   decrement one.
+9. **Security.** API keys hashed at rest, never logged. Untrusted HTML is
    never rendered on the primary origin (sandboxed iframe, CSP, no remote
    loads — ADR-011). Never auto-fetch URLs from message content. Every
    query workspace-scoped; cross-tenant read is a security bug. Cross-tenant
    lookups return `404`, not `403`.
+
+## Deployment (ADR-028/029/030/034 — staging is LIVE, production is DARK-DEPLOYABLE)
+
+- **Build once, promote many.** Images are built only by
+  `.github/workflows/build-images.yml`; the **digest** is the deployment
+  identity. Never deploy by tag, never publish `latest`, never rebuild per
+  environment. `scripts/validate-image-digest.sh` enforces it.
+- **Exactly one migration executor**: the `migrator` deployable. Deployed
+  applications set `spring.flyway.enabled: false` and refuse *readiness* until
+  the schema matches what their own artifact bundles. A schema **ahead** of the
+  artifact is healthy — that is a rolled-back artifact, and forbidding it would
+  make rollback impossible after any migration.
+- Migrations are **expand-only**. A migration that drops/renames/narrows makes
+  artifact rollback unsafe and must say so in the PR (`docs/dev/rollback.md`).
+- **The proxy read timeout must exceed `testinbox.wait-window-cap` by ≥30s**, or
+  a legitimate `200 {status: TIMEOUT}` becomes a 504. nginx's default is exactly
+  60s — the same as the cap. Both sides read one variable and `DeploymentSafety`
+  refuses to start on a mismatch.
+- LISTEN needs a **session-scoped** connection. A transaction-mode pooler
+  accepts `LISTEN` and silently never delivers; the symptom is latency, not an
+  error. Never put the database behind one.
+- Edge limits (nginx) are infrastructure ceilings and are **not** the ADR-027
+  tenant policy — that stays in the application layer where it also covers the
+  ingestion gateway.
+- A deployment is not successful because containers are running: the
+  post-deployment synthetic suite (`deploy/synthetic/`) is the gate.
+  `scripts/staging-rehearsal.sh` runs the whole thing locally.
+- **GitHub does not deploy.** It builds, proves, and hands a digest set to
+  GitLab `infinity/infinity-core`, which reconciles the host. The only
+  cross-system secret GitHub holds is `GITLAB_TRIGGER_TOKEN`. Never reintroduce
+  a host credential here, and never let a workflow claim a deployment
+  succeeded because the trigger returned 2xx — the verdict lives in Ops.
+- **The deployed edge is Cloudflare → Traefik, not our nginx.** The nginx
+  topology in `deploy/staging/` is the self-hosted reference and the PR
+  rehearsal; both are kept. Tests must assert the *invariant*, not one edge's
+  mechanism (`deploy/synthetic/src/edge.mjs` is the worked example).
+- **Cloudflare caps a request at ~100s**, so `TESTINBOX_WAIT_WINDOW_CAP` must
+  not exceed 70s on staging. It is 60s. Raising it is an edge decision, not an
+  environment variable.
+- Migrations are gated by `scripts/check-migration-safety.sh` and owned in
+  `.github/CODEOWNERS`; a destructive one must declare
+  `-- testinbox:rollback-unsafe:` and then cannot be promoted silently.
+- Metric labels come from closed enums only — never a workspace/inbox/message
+  id, key, address or correlation id. Watch
+  `testinbox_wait_listen_degraded_polling`: it is the only signal that
+  LISTEN/NOTIFY has failed, because everything else stays green.
+- **Production (ADR-034).** `staging` and `production` are profile GROUPS over
+  one `deployed` layer; the production overrides are the **second document of
+  `application-deployed.yaml`**, never a separate `application-production.yaml`
+  — Spring orders the group as `[production, deployed]` and the LATER profile
+  wins, so a separate file is silently shadowed (`DeployedProfileLayeringTest`
+  proves the real files). `DeploymentSafety` — not the document — enforces the
+  invariants (profile ↔ environment agreement, non-blank environment,
+  `inbox.testinbox.email`, no loopback/staging/rehearsal hosts,
+  `create-bucket=false`, a declared edge ceiling, session bound enforced).
+  Never copy the deployed layer into a second profile.
+- **A production candidate is a source SHA whose four digests each carry a
+  provenance attestation for that SHA from `build-images.yml`** — never a
+  merge commit's parent (squash/rebase are allowed), never a tag. `master`
+  requires ONE context, `Production promotion gate`; production is reached
+  only by the manual `Production handoff` on `master`, and green means Ops
+  *accepted the request*. Rollback floors live in `deploy/rollback-floors.txt`.
+- **Backups never contain tenant content**: `deploy/backup/scope.txt`
+  classifies every table and `check-backup-scope.sh` refuses a dump that
+  carries `message`/`inbox`/`attachment` rows — or that examines nothing.
+- No public MX record, no live production, no `master` auto-deploy.
+
+## The Postfix mail edge (ADR-004, TI-005)
+
+The inbound edge is a **dedicated, dormant** Postfix host Ops owns. The
+application repo owns its *behavioural contract* and proves it in the rehearsal;
+Ops owns the host, nftables, systemd, WireGuard and the substitution values.
+`deploy/mail-edge/contract.yaml` is the machine-readable invariant manifest, and
+must never acquire a host IP, secret or deployment detail. Full rationale:
+`docs/architecture/mail-edge-contract.md`.
+
+- The rehearsal renders the **production relay form**, never the dormant
+  `discard:` one. An unknown-recipient test against a discarding edge proves
+  nothing: the message must actually reach ingestion for ingestion to discard it.
+  `render.sh` refuses the dormant form in the `ci` profile.
+- **`postfix check` is not a health check.** It validates syntax, not values, and
+  passes configurations that leave smtpd answering nothing (a zero-length
+  `*_notice_recipient` is the known one). The `220` banner gate is what makes the
+  static gate trustworthy; both are blocking.
+- `mynetworks` is **pinned to loopback**, never derived. `permit_mynetworks` is
+  evaluated first, so a container-derived value makes the test sender trusted and
+  the open-relay proof vacuous.
+- CI may override **only** the keys under `ci_overridable`; `render.sh` refuses
+  anything else and the production values are asserted separately in every
+  profile. `message_size_limit` is deliberately NOT overridable.
+- The edge and ingestion ceilings are both 15 MiB. The contract is the property —
+  *everything the edge accepts must remain acceptable to ingestion after
+  TestInbox-owned transport headers are added* — never a measured byte reserve.
+- `scripts/check-mail-edge-contract.test.sh` is the mutation suite. It **fails**
+  rather than skips when Docker is absent: a mutation suite that quietly skips is
+  the failure it exists to prevent.
+- `deploy.sh` does not know about the edge, and must not. It is the script a real
+  host runs, and a real host does not deploy this.
 
 ## Coding conventions
 
@@ -77,7 +189,9 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
   (`./gradlew spotlessCheck` / `spotlessApply`).
 - Backend runtime Java 25, Spring Boot 4.x. JVM SDK (`sdk/kotlin`) is an
   independent build with **Java 17 bytecode baseline** (ADR-023) — do not
-  raise it or leak backend deps into it. TS SDK targets Node ≥ 20.
+  raise it or leak backend deps into it. TS SDK targets Node ≥ 22
+  (ADR-023 as amended; Node 20 is EOL). `@types/node` tracks that floor, not
+  the newest tested line — `scripts/check-node-types-floor.sh` enforces it.
 - Persistence is plain SQL via Spring `JdbcClient` + Flyway migrations in
   `backend/persistence/src/main/resources/db/migration`. Never edit an
   applied migration; add a new one.
@@ -122,12 +236,24 @@ All backend commands run from `backend/` (Gradle wrapper committed there):
 ```
 
 Detekt is detached from `check` on purpose: its current stable line cannot run
-on a Java 25 runtime, so `./gradlew detekt` must be invoked with `JAVA_HOME`
-pointing at a Java 21 JDK (the CI static-analysis job does exactly this).
-Everything else builds and runs on Java 25.
+on a Java 25 runtime, so it must be invoked with **Gradle itself** on a Java 21
+JDK. `JAVA_HOME` alone is not enough on a machine whose default JVM is 25 — the
+daemon keeps running on 25 and Detekt aborts with a bare `> 25.0.3`:
+
+```
+./gradlew detekt --no-daemon -Dorg.gradle.java.home=/path/to/jdk-21
+```
+
+CI gets this for free because its runner has only Java 21 installed. Everything
+else builds and runs on Java 25.
 
 Local dependencies: `docker compose up -d` from the repo root (Postgres 16 +
-MinIO). SDKs: `sdk/kotlin` has its own `./gradlew build`; `sdk/typescript`
+MinIO). **MinIO is pinned to a private GHCR mirror we own, by index digest** —
+MinIO withdrew its public images, so `quay.io`/Docker Hub cannot be restored and
+must never be pinned again; a GHCR login (`read:packages`) is required locally
+and CI logs in with `GITHUB_TOKEN`. The mirror holds the *same* bytes as the
+withdrawn release, per platform: changing to a newer MinIO is a separate
+decision, not a mirroring change (`docs/dev/third-party-mirrors.md`). SDKs: `sdk/kotlin` has its own `./gradlew build`; `sdk/typescript`
 and `web` use `npm ci && npm test` / `npm run build`. Full local setup:
 `docs/dev/local-setup.md`.
 

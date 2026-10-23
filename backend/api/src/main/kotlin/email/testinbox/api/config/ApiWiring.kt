@@ -1,40 +1,220 @@
 package email.testinbox.api.config
 
+import email.testinbox.application.LimitsConfig
+import email.testinbox.application.Sha256
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.deployment.DatabaseSessionPolicy
+import email.testinbox.application.deployment.SchemaCompatibility
+import email.testinbox.application.idempotency.Idempotency
+import email.testinbox.application.port.ApiKeyMetrics
 import email.testinbox.application.port.ApiKeyRepository
+import email.testinbox.application.port.AuditLog
 import email.testinbox.application.port.BlobStore
+import email.testinbox.application.port.BlobStoreMetrics
 import email.testinbox.application.port.ExactAddressReservations
+import email.testinbox.application.port.IdempotencyMetrics
+import email.testinbox.application.port.IdempotencyRecords
+import email.testinbox.application.port.InboxMetrics
 import email.testinbox.application.port.InboxRepository
+import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
+import email.testinbox.application.port.NotifierMetrics
+import email.testinbox.application.port.RateLimiter
+import email.testinbox.application.port.StorageAccountingMetrics
+import email.testinbox.application.port.StorageAmbiguity
+import email.testinbox.application.port.StorageInspection
+import email.testinbox.application.port.StorageLedger
+import email.testinbox.application.port.StorageProtocolMetrics
+import email.testinbox.application.port.StorageVisibility
 import email.testinbox.application.port.TransactionRunner
+import email.testinbox.application.port.WaitMetrics
+import email.testinbox.application.port.WaitObservations
+import email.testinbox.application.port.WaitSlots
+import email.testinbox.application.port.WorkspaceQuotaState
+import email.testinbox.application.query.ApiKeyQueries
 import email.testinbox.application.query.InboxQueries
 import email.testinbox.application.query.MessageQueries
+import email.testinbox.application.query.StorageQueries
+import email.testinbox.application.storage.EffectiveStoragePolicy
+import email.testinbox.application.storage.ReleaseStaleReservations
+import email.testinbox.application.storage.StorageDeclarations
+import email.testinbox.application.storage.VerifyAmbiguousUploads
 import email.testinbox.application.usecase.AuthenticateApiKey
+import email.testinbox.application.usecase.CoalescingLastUsedRecorder
+import email.testinbox.application.usecase.CompactStorageLedger
+import email.testinbox.application.usecase.CreateApiKey
 import email.testinbox.application.usecase.CreateInbox
 import email.testinbox.application.usecase.DeleteInbox
 import email.testinbox.application.usecase.ExpireInboxes
 import email.testinbox.application.usecase.OrphanBlobSweep
+import email.testinbox.application.usecase.ReconcileStorageAccounting
+import email.testinbox.application.usecase.RevokeApiKey
 import email.testinbox.application.usecase.WaitForMessage
+import email.testinbox.application.usecase.WaitSyncHook
+import email.testinbox.domain.storage.StorageCapacityPolicy
 import email.testinbox.notification.PgListenNotifier
 import email.testinbox.notification.PgListenNotifierConfig
+import email.testinbox.observability.BuildInfoMetric
+import email.testinbox.observability.MicrometerApiKeyMetrics
+import email.testinbox.observability.MicrometerBlobStoreMetrics
+import email.testinbox.observability.MicrometerIdempotencyMetrics
+import email.testinbox.observability.MicrometerInboxMetrics
+import email.testinbox.observability.MicrometerLimitMetrics
+import email.testinbox.observability.MicrometerNotifierMetrics
+import email.testinbox.observability.MicrometerStorageAccountingMetrics
+import email.testinbox.observability.MicrometerStorageProtocolMetrics
+import email.testinbox.observability.MicrometerWaitMetrics
+import email.testinbox.observability.Slf4jAuditLog
+import email.testinbox.persistence.BundledMigrations
+import email.testinbox.persistence.JdbcDatabaseSessionSettings
+import email.testinbox.persistence.JdbcRateLimiter
+import email.testinbox.persistence.JdbcSchemaHistory
+import email.testinbox.persistence.JdbcStorageAmbiguity
+import email.testinbox.persistence.JdbcStorageReservations
 import email.testinbox.storage.S3BlobStore
 import email.testinbox.storage.S3BlobStoreConfig
+import io.micrometer.core.instrument.MeterRegistry
+import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.jdbc.core.simple.JdbcClient
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Clock
 
 @Configuration
-class ApiWiring {
+class ClockConfig {
     @Bean
     fun clock(): Clock = Clock.systemUTC()
+}
+
+/**
+ * Metric adapters, separated from `ApiWiring` only so that class can take them
+ * as constructor properties rather than repeating them in the signature of
+ * nearly every bean it defines.
+ */
+@Configuration
+class ApiMetricsWiring {
+    @Bean
+    fun limitMetrics(registry: MeterRegistry): LimitMetrics = MicrometerLimitMetrics(registry)
+
+    @Bean
+    fun inboxMetrics(registry: MeterRegistry): InboxMetrics = MicrometerInboxMetrics(registry)
+
+    @Bean
+    fun waitMetrics(registry: MeterRegistry): WaitMetrics = MicrometerWaitMetrics(registry)
+
+    @Bean
+    fun blobStoreMetrics(registry: MeterRegistry): BlobStoreMetrics = MicrometerBlobStoreMetrics(registry)
+
+    @Bean
+    fun notifierMetrics(registry: MeterRegistry): NotifierMetrics = MicrometerNotifierMetrics(registry)
+
+    @Bean
+    fun apiKeyMetrics(registry: MeterRegistry): ApiKeyMetrics = MicrometerApiKeyMetrics(registry)
+
+    @Bean
+    fun idempotencyMetrics(registry: MeterRegistry): IdempotencyMetrics = MicrometerIdempotencyMetrics(registry)
+
+    @Bean
+    fun storageAccountingMetrics(registry: MeterRegistry): StorageAccountingMetrics = MicrometerStorageAccountingMetrics(registry)
+
+    /** The EFFECTIVE policy's G and H, and the effective mode, so Ops reads what admission really applies. */
+    @Bean
+    fun storageProtocolMetrics(
+        registry: MeterRegistry,
+        policy: StorageCapacityPolicy,
+        declarations: StorageDeclarations,
+    ): StorageProtocolMetrics = MicrometerStorageProtocolMetrics(registry, policy, declarations.enforcement)
+
+    /** Credential lifecycle audit trail (TI-002 §14) on its own `testinbox.audit` logger. */
+    @Bean
+    fun auditLog(): AuditLog = Slf4jAuditLog()
+
+    /**
+     * "Which build is this?" answered from the same place Ops reads everything
+     * else. The image digest is deliberately not a label: an image cannot know
+     * its own digest, and a value invented here would be a convincing lie in
+     * the one metric whose whole job is identity.
+     */
+    @Bean
+    fun buildInfoMetric(
+        registry: MeterRegistry,
+        properties: TestInboxProperties,
+    ): BuildInfoMetric =
+        BuildInfoMetric(
+            registry,
+            service = "testinbox-api",
+            gitSha = properties.deployment.gitSha,
+            version = javaClass.`package`?.implementationVersion ?: "unknown",
+        )
+}
+
+/**
+ * Collaborators shared by most beans are injected once here rather than
+ * repeated in every factory method's parameter list — including the metric
+ * ports, which nearly every use case now takes and none of which vary per
+ * bean.
+ */
+@Configuration
+class ApiWiring(
+    private val clock: Clock,
+    private val properties: TestInboxProperties,
+    private val limitMetrics: LimitMetrics,
+    private val inboxMetrics: InboxMetrics,
+    private val waitMetrics: WaitMetrics,
+    private val apiKeyMetrics: ApiKeyMetrics,
+    private val idempotencyMetrics: IdempotencyMetrics,
+    private val audit: AuditLog,
+) {
+    /**
+     * One coordinator, shared by both idempotent use cases. The retention and
+     * claim wait are deployment policy (ADR-033 §3/§9), so they are configured
+     * rather than hardcoded at the call sites.
+     */
+    @Bean
+    fun idempotency(
+        records: IdempotencyRecords,
+        tx: TransactionRunner,
+        properties: TestInboxProperties,
+    ): Idempotency =
+        Idempotency(
+            records = records,
+            tx = tx,
+            clock = clock,
+            retention = properties.idempotency.retention,
+            claimWait = properties.idempotency.claimWait,
+            metrics = idempotencyMetrics,
+        )
 
     @Bean
     fun testInboxConfig(properties: TestInboxProperties): TestInboxConfig = properties.toConfig()
 
+    @Bean
+    fun limitsConfig(properties: TestInboxProperties): LimitsConfig =
+        properties.limits.toConfig().also {
+            if (!it.enabled) {
+                LoggerFactory
+                    .getLogger(ApiWiring::class.java)
+                    .warn("testinbox.limits.enabled=false — rate limits and quotas are NOT enforced")
+            }
+        }
+
+    @Bean
+    fun rateLimiter(
+        jdbc: JdbcClient,
+        transactionManager: PlatformTransactionManager,
+        limits: LimitsConfig,
+    ): RateLimiter = JdbcRateLimiter(jdbc, transactionManager) { category, perInbox -> limits.rateFor(category, perInbox) }
+
     @Bean(destroyMethod = "close")
-    fun blobStore(properties: TestInboxProperties): BlobStore =
+    fun blobStore(
+        properties: TestInboxProperties,
+        metrics: BlobStoreMetrics,
+    ): BlobStore =
         S3BlobStore(
             S3BlobStoreConfig(
                 endpoint = properties.storage.endpoint,
@@ -42,45 +222,128 @@ class ApiWiring {
                 accessKey = properties.storage.accessKey,
                 secretKey = properties.storage.secretKey,
                 bucket = properties.storage.bucket,
+                createBucket = properties.storage.createBucket,
             ),
+            metrics,
         )
 
+    /**
+     * Backs the `schema` readiness indicator and the request-time gate
+     * (ADR-029 §4). Wiring is the only place this adapter meets the
+     * persistence adapter (ADR-024): the policy itself lives in the
+     * application layer behind the `SchemaHistory` port.
+     */
+    @Bean
+    fun schemaCompatibility(
+        jdbc: JdbcClient,
+        properties: TestInboxProperties,
+    ): SchemaCompatibility {
+        val bundled = BundledMigrations.highest()
+        // An artifact that cannot see its own migrations reports "nothing to
+        // require" and waves every schema through — the guard failing open,
+        // silently, in exactly the packaging (a nested Boot jar) that only a
+        // real deployment exercises.
+        check(bundled != null || properties.deployment.environment.isNullOrBlank()) {
+            "no migrations found on the classpath: this artifact cannot verify the schema it requires (ADR-029 §4)"
+        }
+        return SchemaCompatibility(JdbcSchemaHistory(jdbc), bundled)
+    }
+
+    /** Backs the `dbSession` readiness indicator (ADR-033 deployment requirement, ADR-034). */
+    @Bean
+    fun databaseSessionPolicy(jdbc: JdbcClient): DatabaseSessionPolicy = DatabaseSessionPolicy(JdbcDatabaseSessionSettings(jdbc))
+
     @Bean(initMethod = "start", destroyMethod = "close")
-    fun messageNotifier(dataSourceProperties: DataSourceProperties): PgListenNotifier =
+    fun messageNotifier(
+        dataSourceProperties: DataSourceProperties,
+        metrics: NotifierMetrics,
+    ): PgListenNotifier =
         PgListenNotifier(
             PgListenNotifierConfig(
                 jdbcUrl = dataSourceProperties.determineUrl(),
                 username = dataSourceProperties.determineUsername().orEmpty(),
                 password = dataSourceProperties.determinePassword().orEmpty(),
+                applicationName = "testinbox-listen:${properties.storage.nodeId}:storage-v1",
             ),
+            metrics,
         )
 
     @Bean
     fun createInbox(
         inboxes: InboxRepository,
         reservations: ExactAddressReservations,
-        tx: TransactionRunner,
-        clock: Clock,
+        quotas: WorkspaceQuotaState,
+        limits: LimitsConfig,
         config: TestInboxConfig,
-    ): CreateInbox = CreateInbox(inboxes, reservations, tx, clock, config)
+        idempotency: Idempotency,
+    ): CreateInbox =
+        CreateInbox(
+            inboxes,
+            reservations,
+            quotas,
+            limits.quotas,
+            clock,
+            config,
+            limitMetrics,
+            inboxMetrics,
+            idempotency,
+        )
 
     @Bean
     fun deleteInbox(
         inboxes: InboxRepository,
         reservations: ExactAddressReservations,
         tx: TransactionRunner,
-        clock: Clock,
         config: TestInboxConfig,
-    ): DeleteInbox = DeleteInbox(inboxes, reservations, tx, clock, config)
+    ): DeleteInbox = DeleteInbox(inboxes, reservations, tx, clock, config, inboxMetrics)
 
+    /**
+     * ADR-035 §3: the ONE effective storage policy, shared with T1 in the
+     * ingestion gateway through the same factory. It decides the limits a
+     * tenant sees; it enforces nothing on its own.
+     */
     @Bean
+    fun storageCapacityPolicy(
+        limits: LimitsConfig,
+        declarations: StorageDeclarations,
+    ): StorageCapacityPolicy = EffectiveStoragePolicy.of(limits, declarations)
+
+    /** ADR-035 §13a/§13b read side: workspace and inbox `StorageUsage`, tenant-scoped. */
+    @Bean
+    fun storageQueries(
+        visibility: StorageVisibility,
+        policy: StorageCapacityPolicy,
+    ): StorageQueries = StorageQueries(visibility, policy)
+
+    /**
+     * [hook] is the ADR-035 §17 test seam; no production bean of that type
+     * exists, so the use case runs with [WaitSyncHook.NOOP]. A test context
+     * may contribute one to interleave a commit with the evaluation sequence.
+     */
+    @Bean
+    @Suppress("LongParameterList") // a @Bean method's parameters are its dependencies: one per wait collaborator
     fun waitForMessage(
         inboxes: InboxRepository,
-        messages: MessageRepository,
+        observations: WaitObservations,
         notifier: MessageNotifier,
-        clock: Clock,
+        waitSlots: WaitSlots,
+        limits: LimitsConfig,
         config: TestInboxConfig,
-    ): WaitForMessage = WaitForMessage(inboxes, messages, notifier, clock, config)
+        policy: StorageCapacityPolicy,
+        hook: ObjectProvider<WaitSyncHook>,
+    ): WaitForMessage =
+        WaitForMessage(
+            inboxes,
+            observations,
+            notifier,
+            waitSlots,
+            limits.quotas.maxConcurrentWaits,
+            clock,
+            config,
+            policy,
+            hook = hook.getIfAvailable { WaitSyncHook.NOOP },
+            metrics = waitMetrics,
+        )
 
     @Bean
     fun expireInboxes(
@@ -88,20 +351,93 @@ class ApiWiring {
         reservations: ExactAddressReservations,
         blobs: BlobStore,
         tx: TransactionRunner,
-        clock: Clock,
         config: TestInboxConfig,
-    ): ExpireInboxes = ExpireInboxes(inboxes, reservations, blobs, tx, clock, config)
+        ledger: StorageLedger,
+        declarations: email.testinbox.application.storage.StorageDeclarations,
+    ): ExpireInboxes =
+        ExpireInboxes(
+            inboxes,
+            reservations,
+            blobs,
+            tx,
+            clock,
+            config,
+            inboxMetrics,
+            // TI-STORAGE-006E PR D: paced under ALL with a declared filesystem only.
+            email.testinbox.application.storage.FootprintWiring.pacedTeardown(
+                declarations,
+                ledger,
+                clock,
+                inboxes as? email.testinbox.application.port.InboxTeardown,
+            ),
+        )
+
+    /** ADR-035 §10 ledger compaction. Observational only: nothing admits or refuses on it yet. */
+    @Bean
+    fun compactStorageLedger(
+        ledger: StorageLedger,
+        metrics: StorageAccountingMetrics,
+        reconcile: ReconcileStorageAccounting,
+        declarations: email.testinbox.application.storage.StorageDeclarations,
+    ): CompactStorageLedger =
+        CompactStorageLedger(
+            ledger,
+            metrics,
+            clock = clock,
+            // TI-STORAGE-006E PR D: with a declared filesystem, a distrust event is
+            // reconciled within a minute, not at the next 6 h pass.
+            onUntrusted =
+                email.testinbox.application.storage.FootprintWiring
+                    .onUntrusted(declarations) { reconcile.reconcile() },
+        )
+
+    /** ADR-035 §10 reconciliation of the ledger against the source rows. */
+    @Bean
+    fun reconcileStorageAccounting(
+        ledger: StorageLedger,
+        metrics: StorageAccountingMetrics,
+    ): ReconcileStorageAccounting = ReconcileStorageAccounting(ledger, metrics)
+
+    /**
+     * Coalesces `last_used_at` writes (ADR-032 §7). One instance per process,
+     * because the in-memory half of the coalescing is per-process state.
+     */
+    @Bean
+    fun lastUsedRecorder(apiKeys: ApiKeyRepository): CoalescingLastUsedRecorder =
+        CoalescingLastUsedRecorder(apiKeys, metrics = apiKeyMetrics)
 
     @Bean
-    fun orphanBlobSweep(
-        blobs: BlobStore,
-        messages: MessageRepository,
-        clock: Clock,
-        properties: TestInboxProperties,
-    ): OrphanBlobSweep = OrphanBlobSweep(blobs, messages, clock, properties.orphanMinAge)
+    fun authenticateApiKey(
+        apiKeys: ApiKeyRepository,
+        lastUsed: CoalescingLastUsedRecorder,
+    ): AuthenticateApiKey =
+        AuthenticateApiKey(
+            apiKeys,
+            clock,
+            // Configuration is what retires a bootstrap credential: rotate the
+            // setting and the previous one stops authenticating on the next
+            // request; unset it and there is genuinely no break-glass
+            // (ADR-032 §8).
+            configuredBootstrapKeyHash =
+                properties.bootstrap.apiKey
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let(Sha256::hex),
+            metrics = apiKeyMetrics,
+            lastUsed = lastUsed.asRecorder(),
+            audit = audit,
+        )
 
     @Bean
-    fun authenticateApiKey(apiKeys: ApiKeyRepository): AuthenticateApiKey = AuthenticateApiKey(apiKeys)
+    fun createApiKey(
+        apiKeys: ApiKeyRepository,
+        idempotency: Idempotency,
+    ): CreateApiKey = CreateApiKey(apiKeys, clock, audit, apiKeyMetrics, idempotency = idempotency)
+
+    @Bean
+    fun revokeApiKey(apiKeys: ApiKeyRepository): RevokeApiKey = RevokeApiKey(apiKeys, clock, audit, apiKeyMetrics)
+
+    @Bean
+    fun apiKeyQueries(apiKeys: ApiKeyRepository): ApiKeyQueries = ApiKeyQueries(apiKeys)
 
     @Bean
     fun inboxQueries(inboxes: InboxRepository): InboxQueries = InboxQueries(inboxes)
@@ -110,5 +446,6 @@ class ApiWiring {
     fun messageQueries(
         messages: MessageRepository,
         blobs: BlobStore,
-    ): MessageQueries = MessageQueries(messages, blobs)
+        inboxes: InboxRepository,
+    ): MessageQueries = MessageQueries(messages, blobs, inboxes)
 }

@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "recordId": "staging-amd64-vmi2932906-2026-10-08",
+  "qualifiedAt": "2026-10-08T17:43:18Z",
+  "minio": {
+    "imageIndexDigest": "sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d",
+    "platformMemberDigest": "sha256:3f97c5651cb6662b880c787a232b6b34fec8d8922e08d6617b25d241a21164bb",
+    "platform": "linux/amd64",
+    "release": "RELEASE.2025-04-22T22-12-26Z",
+    "commitId": "0d7408fc9969caf07de6a8c3a84f9fbb10a6739e",
+    "binarySha256": "53e2a2cb16c5366ea6fbbc479c19ddb4c6a0948273e752f740fb1fbf27bb817c",
+    "mode": "single-node-single-drive",
+    "driveCount": 1,
+    "timeoutEnvironment": {},
+    "timeoutCliFlags": [],
+    "runtimeConfig": {
+      "normalized": "ti-qc-runtime-config-v1",
+      "hash": "sha256:b0821e88cbdb913fb2837554c715d3c32da21efe7f9bcaed7b6b62cae443c558"
+    },
+    "storageClassInlineDefaults": "release-defaults",
+    "storageClassInlineDefaultsBasis": "fresh data directory, no MINIO_STORAGE_CLASS_* / inline variables; single-drive MinIO exposes no storage_class admin subsystem (captured as <unknown-subsystem> in the hashed configuration)"
+  },
+  "host": {
+    "kernelRelease": "6.8.0-142-generic",
+    "architecture": "x86_64",
+    "filesystemType": "ext4",
+    "mountOptions": "rw,relatime",
+    "device": "ext4 on a dm-delay mapper over a loop device (created per run); live staging: ext4 loop image /var/lib/testinbox-minio/ext4.img mounted rw,relatime"
+  },
+  "network": {
+    "directPath": true,
+    "proxy": "none",
+    "tls": false
+  },
+  "uploadImplementationVersion": "adr035-presigned-put-v1",
+  "uploadImplementationNote": "harness.py implements the ADR §5 shape (presigned single-part PUT, signed content-length and If-None-Match: *, one attempt, abort by RST after TIOCOUTQ=0); the application's FencedUploader declares the same version",
+  "qualification": {
+    "platformClass": "staging-host",
+    "platform": "the staging host itself: Contabo VPS vmi2932906, KVM, x86_64, Ubuntu 24.04, Docker 29.x; privileged harness container on the host kernel",
+    "evidenceReference": "docs/adr/0035-benchmark/qualification/staging-2026-10-08/",
+    "procedure": "docs/adr/0035-benchmark/minio-probes/QUALIFICATION.md; qualification/run-slow.sh --mode dm with plan.json, plan3.json and plan-slow.json, each swept after >= 17 min",
+    "scenarios": [
+      "base-R100ms",
+      "base-W",
+      "freeze120-R2s",
+      "freeze120-W",
+      "freeze45-R2s",
+      "freeze45-W",
+      "phase10ms-R2s",
+      "phase1ms-R2s",
+      "phase20ms-R2s",
+      "phase3ms-R2s",
+      "phase5ms-R2s",
+      "slow-dm2000ms-before-W",
+      "slow-dm500ms-W",
+      "slow-dm500ms-after5ms-W",
+      "slow-dm500ms-before-W",
+      "v3-freeze120-R2s",
+      "v3-freeze120-W",
+      "v3-freeze45-R2s",
+      "v3-freeze45-W"
+    ],
+    "trials": 129,
+    "lateCommits": 0,
+    "slowWExecuted": true,
+    "slowWMechanism": "dm-delay (device-mapper delay target over the loop device), write delay 500 ms / 2000 ms",
+    "slowWMaxCommitLagAfterCompletedWitnessS": 4.613,
+    "cMaxSeconds": 900
+  },
+  "enablementEligible": true,
+  "ineligibilityReasons": []
+}

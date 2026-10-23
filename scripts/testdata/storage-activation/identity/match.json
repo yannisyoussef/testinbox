@@ -1,0 +1,32 @@
+{
+  "minio": {
+    "imageIndexDigest": "sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d",
+    "platformMemberDigest": "sha256:54d3d6a0f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f18194",
+    "release": "RELEASE.2025-04-22T22-12-26Z",
+    "commitId": "fixture-commit-a1ea29fa",
+    "mode": "single-node-single-drive",
+    "driveCount": 1,
+    "timeoutEnvironment": {
+      "MINIO_IDLE_TIMEOUT": "30s",
+      "MINIO_CONN_USER_TIMEOUT": "10m",
+      "MINIO_DRIVE_MAX_TIMEOUT": "default"
+    },
+    "timeoutCliFlags": [
+      "--idle-timeout=30s"
+    ],
+    "runtimeConfig": {
+      "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "storageClassInlineDefaults": "release-defaults"
+  },
+  "host": {
+    "kernelRelease": "6.8.0-fixture-arm64",
+    "filesystemType": "ext4",
+    "mountOptions": "rw,relatime"
+  },
+  "network": {
+    "directPath": true,
+    "proxy": "none"
+  },
+  "uploadImplementationVersion": "adr035-upload-v1"
+}

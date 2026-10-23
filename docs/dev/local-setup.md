@@ -6,7 +6,22 @@ Everything runs locally — no AWS credentials, no cloud dependency (ADR-004).
 
 - JDK 25 (Temurin recommended)
 - Docker (for Postgres, MinIO, and Testcontainers-based tests)
-- Node.js >= 20 (TypeScript SDK and web UI)
+- A GHCR login, because MinIO comes from a **private** mirror we own — MinIO
+  withdrew its public images, so upstream cannot be used
+  ([`third-party-mirrors.md`](third-party-mirrors.md)):
+
+  ```bash
+  docker login ghcr.io      # username: your GitHub login, password: a token with read:packages
+  ```
+
+  Without it, `docker compose up -d` and every Testcontainers suite fail with
+  `unauthorized` on the MinIO image.
+- Node.js >= 22.12 (TypeScript SDK and web UI). This is the **development**
+  toolchain floor, set by vitest 5 (`^22.12.0 || ^24 || >=26`); Next 16 needs
+  only >= 20.9. It is deliberately *not* the SDK's published support floor,
+  which is `engines: node >= 22` — consumers never install our dev
+  dependencies, so a test-runner requirement must not become a consumer one
+  (ADR-023).
 
 ## 1. Start dependencies
 
@@ -74,7 +89,34 @@ cd web && npm ci && npm test           # Playwright (chromium via npx playwright
 The e2e suite runs the TypeScript SDK's live integration tests against the
 booted stack, so Node must be on the PATH for `:e2e:test`.
 
-## 5. Web UI (debugging dashboard)
+## 5. Rate limits and quotas
+
+Enforcement is on by default (ADR-027). Local defaults are generous — 200
+active inboxes, 2 GiB stored, 50 concurrent waits, 60 inbox creations of
+burst — so ordinary development never trips them. Override any of them:
+
+```bash
+TESTINBOX_LIMITS_MAX_ACTIVE_INBOXES=5 \
+TESTINBOX_LIMITS_INBOX_CREATE_CAPACITY=2 \
+./gradlew :api:bootRun
+```
+
+A refused request tells you which control fired: `429` with `Retry-After`
+means a rate limit (waiting helps), `409` with problem type `quota-exceeded`
+means an allowance is full (delete an inbox instead). Every governed response
+carries `RateLimit-Limit`/`-Remaining`/`-Reset`.
+
+Setting `testinbox.limits.enabled=false` disables enforcement and logs a
+startup warning — useful for load experiments, never for a shared deployment.
+
+Both deployables configure limits independently (`testinbox.limits.*` is read
+by the API and by the ingestion gateway separately), so a shared environment
+must set them consistently in both. The inbound `INGEST` budget only exists in
+the gateway's configuration, and an over-rate delivery is invisible to the
+sender by design — `testinbox_rate_decision_total{category="INGEST",
+outcome="rejected"}` is the signal that a workspace is losing mail.
+
+## 6. Web UI (debugging dashboard)
 
 ```bash
 cd web && npm ci && TESTINBOX_API_URL=http://localhost:8080 npm run dev

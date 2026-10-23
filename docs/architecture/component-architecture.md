@@ -70,6 +70,15 @@ flowchart TB
   talks to the same Postgres/object storage, so it is "independently
   deployable," not "independently owns data" (and not "independently
   reimplements invariants").
+- **observability**: Micrometer adapters for the application's metric ports,
+  so the metric vocabulary stays framework-free (ADR-027 §9).
+- **migrator**: a one-shot deployable that applies Flyway migrations to
+  completion and exits, so a deployment can gate on the result and the running
+  applications never migrate (ADR-029). It carries `persistence`'s migration
+  resources at runtime and compiles against no TestInbox class at all —
+  enforced by ArchUnit. It owns no domain area, no state and no API: a
+  deployment artifact rather than a service, which is why it does not
+  contradict ADR-001.
 
 ## Why not split further
 

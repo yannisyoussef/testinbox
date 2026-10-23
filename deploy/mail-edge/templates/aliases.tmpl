@@ -1,0 +1,9 @@
+# TestInbox SMTP edge — /etc/aliases. RENDERED by deploy/mail-edge/render.sh.
+#
+# Ubuntu ships no `postmaster` user, so this alias is what makes `local:`
+# delivery resolve at all. Ops shipped it broken once: the alias resolved to an
+# address that was not local, re-entered routing, and the mail was silently
+# discarded while the log said `sent`. mydestination listing $myhostname is what
+# prevents that.
+postmaster: __EDGE_POSTMASTER_ACCOUNT__
+root: __EDGE_POSTMASTER_ACCOUNT__

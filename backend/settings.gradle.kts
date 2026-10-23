@@ -6,10 +6,13 @@ include(
     "persistence",
     "storage",
     "notification",
+    "observability",
     "api",
     "ingestion",
+    "migrator",
     "architecture",
     "e2e",
+    "benchmark",
 )
 
 dependencyResolutionManagement {

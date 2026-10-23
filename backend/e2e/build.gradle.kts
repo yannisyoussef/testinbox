@@ -11,6 +11,8 @@ dependencies {
     testImplementation(libs.kotest.assertions)
     testImplementation("org.springframework.boot:spring-boot-starter-jdbc")
     testImplementation(platform(libs.spring.boot.dependencies))
+    testImplementation(platform(libs.jackson3.bom))
+    testImplementation(platform(libs.jackson2.bom))
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.boot:spring-boot-starter-web")
     testImplementation(libs.testcontainers.postgresql)

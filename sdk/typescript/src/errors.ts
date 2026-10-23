@@ -1,3 +1,5 @@
+import type { StorageRefusalReason } from "./types.js";
+
 /**
  * Typed error taxonomy for `@testinbox/client`.
  *
@@ -15,11 +17,44 @@ export interface ProblemDetails {
   detail?: string;
   instance?: string;
   correlationId?: string;
-  /** Present on address-already-reserved conflicts still in cooldown (ADR-021). */
+  /**
+   * Seconds until a retry may succeed. Present on rate-limit and
+   * concurrent-wait refusals, and on address-already-reserved conflicts still
+   * in cooldown (ADR-021). Absent on quota-exceeded, where waiting does not
+   * help.
+   */
   retryAfterSeconds?: number;
+  /** Rate category that refused the request (ADR-027). */
+  category?: string;
+  /** On `idempotency-secret-not-replayable`, the credential already created. */
+  apiKeyId?: string;
+  /** That credential's non-secret handle. */
+  publicId?: string;
+  /** Quota dimension that is exhausted, on quota-exceeded (ADR-027). */
+  quota?: string;
+  /** Configured allowance for the exceeded limit. */
+  limit?: number;
+  /** Current consumption of the exceeded quota dimension. */
+  current?: number;
+  /** Tokens left, when the server reports it. */
+  remaining?: number;
+  /** On `storage-limit-exceeded`, the inbox whose wait observed the refusal (ADR-035 §13c). */
+  inboxId?: string;
+  /** On `storage-limit-exceeded`, why the most recent copy was refused. Unknown future values pass through. */
+  refusalReason?: string;
+  /** On `storage-limit-exceeded`, the observation boundary the server evaluated against. */
+  afterStorageRefusalCount?: number;
+  /** On `storage-limit-exceeded`, the inbox's refusal count in the deciding snapshot. */
+  storageRefusalCount?: number;
+  /** On `storage-limit-exceeded`, when the most recent refusal was recorded (RFC 3339). */
+  lastStorageRefusalAt?: string;
 }
 
-/** Base class for every error thrown by the TestInbox SDK. */
+/**
+ * Base class for every error the TestInbox SDK raises about the server or the
+ * protocol. Local argument validation uses the platform's own `TypeError` and
+ * `RangeError`, as a native library would.
+ */
 export class TestInboxError extends Error {
   /** HTTP status code, when the error originates from an HTTP response. */
   readonly status?: number;
@@ -89,6 +124,129 @@ export class TestInboxInboxGoneError extends TestInboxError {
   }
 }
 
+/**
+ * 429 — the workspace's request budget for this operation is exhausted
+ * (ADR-027). Waiting helps: `retryAfterSeconds` is the server's own estimate.
+ *
+ * Deliberately never retried automatically by the SDK: `POST /v1/inboxes`
+ * creates a resource and the SDK does not choose your `Idempotency-Key` for
+ * you (a key it invented would be lost with the process that invented it), so
+ * an automatic retry could create duplicate inboxes. The caller decides.
+ */
+export class TestInboxRateLimitError extends TestInboxError {
+  readonly retryAfterSeconds?: number;
+  /** Rate category that refused the request, when the server names one. */
+  readonly category?: string;
+  readonly limit?: number;
+  readonly remaining?: number;
+
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxRateLimitError";
+    this.retryAfterSeconds = problem?.retryAfterSeconds;
+    this.category = problem?.category;
+    this.limit = problem?.limit;
+    this.remaining = problem?.remaining;
+  }
+}
+
+/**
+ * 409 with problem type `quota-exceeded` — a workspace resource allowance is
+ * exhausted (ADR-027). Distinct from `TestInboxRateLimitError` because
+ * waiting does **not** help: the caller must free capacity, for example by
+ * deleting an inbox.
+ */
+export class TestInboxQuotaExceededError extends TestInboxError {
+  /** Quota dimension that is exhausted, e.g. `ACTIVE_INBOXES`. */
+  readonly quota?: string;
+  readonly limit?: number;
+  readonly current?: number;
+
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxQuotaExceededError";
+    this.quota = problem?.quota;
+    this.limit = problem?.limit;
+    this.current = problem?.current;
+  }
+}
+
+/**
+ * The server's response did not match the committed contract: a member the
+ * contract requires was absent or malformed, or a timestamp would not parse.
+ * Typed rather than an `Invalid Date` or a bare `TypeError` escaping from the
+ * SDK's internals (docs/sdk/principles.md #6). Nothing is fabricated to paper
+ * over it.
+ */
+export class TestInboxProtocolError extends TestInboxError {
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxProtocolError";
+  }
+}
+
+/**
+ * 409 with problem type `storage-limit-exceeded` (ADR-035 §13c): a wait that
+ * observed storage refusals found none of the awaited messages, and a storage
+ * ceiling had refused a copy for this inbox after the observation boundary —
+ * possibly the very message being awaited.
+ *
+ * State-shaped: waiting does not help and the SDK never retries it. By the
+ * time your handler runs, the inbox's `storageRefusalCursor` has already
+ * advanced to `storageRefusalCount`, so the next wait on that object observes
+ * only later refusals.
+ *
+ * `quota`, `limit` and `current` describe the refusing scope — the inbox for
+ * `INBOX_LIMIT`, the workspace for `WORKSPACE_LIMIT` — and are absent for
+ * `SERVICE_CAPACITY`, which is one bit: no global figure is ever disclosed
+ * (ADR-035 §13d).
+ */
+export class TestInboxStorageLimitExceededError extends TestInboxError {
+  readonly inboxId: string;
+  /** Known values are `INBOX_LIMIT`, `WORKSPACE_LIMIT` and `SERVICE_CAPACITY`; future values pass through. */
+  readonly refusalReason: StorageRefusalReason;
+  /** The boundary the server evaluated against: your cursor, clamped once to the count at the first evaluation. */
+  readonly afterStorageRefusalCount: number;
+  /** The inbox's refusal count in the deciding snapshot — what the cursor advanced to. */
+  readonly storageRefusalCount: number;
+  readonly lastStorageRefusalAt: Date;
+  // `declare`d, so an absent member is genuinely absent on the instance
+  // (`"quota" in error` is false), not a property holding `undefined`.
+  /** `STORED_BYTES` for a tenant scope; absent for `SERVICE_CAPACITY`. */
+  declare readonly quota?: string;
+  /** The refusing scope's limit; absent for `SERVICE_CAPACITY`. */
+  declare readonly limit?: number;
+  /** The refusing scope's `stored + reserved`; absent for `SERVICE_CAPACITY`. */
+  declare readonly current?: number;
+
+  constructor(
+    message: string,
+    problem: ProblemDetails,
+    fields: {
+      inboxId: string;
+      refusalReason: string;
+      afterStorageRefusalCount: number;
+      storageRefusalCount: number;
+      lastStorageRefusalAt: Date;
+      quota?: string;
+      limit?: number;
+      current?: number;
+    },
+    options?: ErrorOptions,
+  ) {
+    super(message, problem, options);
+    this.name = "TestInboxStorageLimitExceededError";
+    this.inboxId = fields.inboxId;
+    this.refusalReason = fields.refusalReason;
+    this.afterStorageRefusalCount = fields.afterStorageRefusalCount;
+    this.storageRefusalCount = fields.storageRefusalCount;
+    this.lastStorageRefusalAt = fields.lastStorageRefusalAt;
+    if (fields.quota !== undefined) this.quota = fields.quota;
+    if (fields.limit !== undefined) this.limit = fields.limit;
+    if (fields.current !== undefined) this.current = fields.current;
+  }
+}
+
 /** Any other non-2xx HTTP response. */
 export class TestInboxApiError extends TestInboxError {
   constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
@@ -131,3 +289,63 @@ export class TestInboxTimeoutError extends TestInboxError {
     this.parseFailedCount = diagnostics.parseFailedCount;
   }
 }
+
+/**
+ * The `Idempotency-Key` is bound to a different request, or to one whose result
+ * this server cannot reproduce (ADR-033 §7).
+ *
+ * **Terminal.** Retrying with the same key cannot succeed; use a new one. Its
+ * own type rather than a plain conflict because several distinct `409`s share
+ * that status and the correct action differs for each.
+ *
+ * The two terminal types share this one error because they ask the same thing
+ * of a caller. `problem.type` tells them apart when it matters:
+ * `.../idempotency-key-reused` is the client's own key scheme colliding,
+ * `.../idempotency-replay-unavailable` is this server unable to reproduce a
+ * result it did commit.
+ */
+export class TestInboxIdempotencyConflictError extends TestInboxApiError {
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxIdempotencyConflictError";
+  }
+}
+
+/**
+ * An identical request with the same key is still running (ADR-033 §7).
+ *
+ * **Transient**, and the opposite action to
+ * {@link TestInboxIdempotencyConflictError}: retry with the same key, and once
+ * the first request commits the retry replays its result.
+ */
+export class TestInboxIdempotencyInProgressError extends TestInboxApiError {
+  /** Seconds the server suggests waiting, when it sent one. */
+  readonly retryAfterSeconds?: number;
+
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxIdempotencyInProgressError";
+    if (problem?.retryAfterSeconds !== undefined) this.retryAfterSeconds = problem.retryAfterSeconds;
+  }
+}
+
+/**
+ * This exact request already created a credential (ADR-033 §8).
+ *
+ * Duplicate suppression rather than replay: the secret was returned once and
+ * nothing retains it, so it cannot be re-issued. `apiKeyId` and `publicId` name
+ * what was created, so the caller can revoke it and mint again under a fresh
+ * key without a list call.
+ */
+export class TestInboxCredentialAlreadyCreatedError extends TestInboxApiError {
+  readonly apiKeyId?: string;
+  readonly publicId?: string;
+
+  constructor(message: string, problem?: ProblemDetails, options?: ErrorOptions) {
+    super(message, problem, options);
+    this.name = "TestInboxCredentialAlreadyCreatedError";
+    if (typeof problem?.apiKeyId === "string") this.apiKeyId = problem.apiKeyId;
+    if (typeof problem?.publicId === "string") this.publicId = problem.publicId;
+  }
+}
+

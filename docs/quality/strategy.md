@@ -16,7 +16,15 @@ after it.
 | API contract | Karate or REST Assured against a running instance | Verifies the OpenAPI contract matches actual behavior; run against the same build that will be released. |
 | Acceptance / end-to-end | The product's own SDKs, dogfooding | The MVP slice itself (create → send → wait → assert → cleanup) is validated by running it through the real JVM and TypeScript SDKs, not just internal test harnesses — if the SDK can't do it ergonomically, the feature isn't done. |
 | UI | Playwright | Dashboard: message inspection renders safely (sandboxed HTML, no script execution), core admin flows (API key creation, project management). |
+| Deployment | Container build, `staging-rehearsal.sh`, synthetic suite | The deployment path itself: images build and run non-root, one migration job applies exactly what the artifact bundles, readiness reflects database/schema/object store/`LISTEN`/DB session bound, both deployables report the deployed commit, and a real inbound workflow succeeds through a real TLS ingress. A full server wait window is parked through the actual reverse proxy, because a proxy read timeout shorter than the wait window is invisible to every other layer. Two host-side targets exist for a production estate — build identity on the management ports, and direct-origin isolation from outside — with unit-tested classifiers. |
 | Architecture | ArchUnit | Enforces module boundaries from `docs/architecture/component-architecture.md` (e.g., `domain` module must not depend on Spring/JPA/provider-specific types). |
+| Idempotent mutations | Domain + application + Postgres integration + API + e2e + product synthetic | ADR-033: canonical fingerprinting (absent vs empty, field-boundary shifting, local-part case), the single-transaction claim proven against real Postgres under eight-way concurrency, the `lock_timeout` not leaking onto the rest of the transaction, refusals rolling their claim back, workspace and operation isolation, batched retention sweep, and the header being refused where it is not honoured. |
+| Credential lifecycle | Domain + application + Postgres integration + API + e2e + product synthetic | ADR-032: format parsing (truncation, transposition, an unknown future version), revocation taking effect on the next request with no cache to wait out, expiry, scope enforcement and the refusal to grant a scope the creator lacks, the bootstrap window closing and reopening *and* the configured value being what retires it, coalesced `last_used_at` writes across nodes, and the negative proofs — no representation but the single `201` carries a credential, and nothing reaches the logs at debug level. |
+| HTTP contract edges | API integration (`UnmatchedRouteTest`) | Unknown path, wrong method, unsupported media type. Reported from staging as `500`s: a catch-all `@ExceptionHandler(Exception::class)` caught Spring's own dispatch failures, so every client typo became an ERROR stack trace and real `500`s stopped being distinguishable from them. |
+| Postfix mail edge | Rendered-config gate + mutation proofs + edge synthetics through real Postfix 3.8.6 | TI-005/ADR-004: the hop that will face the Internet. Acceptance is equivalent for tenant, unknown and postmaster recipients on code, full reply text and ordering; an unknown recipient is *relayed* and discarded in ingestion, proven against Postgres and MinIO rather than by a 404; one DATA to several recipients stays one inbound event; a transient failure queues and retries to exactly one delivery; queue expiry emits a signal and no DSN. The mutation suite is the load-bearing part — a Docker subnet in `mynetworks`, a default `local_header_rewrite_clients`, a defined `relay_recipient_maps`, `smtp_destination_recipient_limit=1`, the dormant `discard:` line, a multi-day production queue lifetime, a 25 MiB ceiling, and a configuration that passes `postfix check` while leaving smtpd answering nothing. |
+| Content fingerprint | Application unit + ingestion Testcontainers (`simple-text-relayed.eml`) | ADR-019 §4 as amended: the same content fingerprints alike across differing `Received:` timestamps, queue identifiers, folded continuation lines and hop counts, while `Received-SPF:`/`X-Received:` and a `Received:` line in the *body* stay content and still change it. Asserted through the real gateway — which stamps its own trace header — against a relayed twin carrying two further hops, and paired with the negative proof that `/raw` still differs. Hashing the stored bytes made two identical sends match only inside one wall-clock second, which reached CI as an intermittent failure, not a bug report. |
+| Properties a runtime test cannot see | ArchUnit source rules | Some invariants have no observable failure: constant-time verification produces identical outputs either way, and a second credential-minting path would work perfectly. These are pinned as rules over call sites — `MessageDigest.isEqual` is called and `String.equals` is not; the plaintext is rendered in exactly one place; only `CreateApiKey` writes a managed row; no audit event has a field that could hold a secret. Each carries a guard-the-guard check, because a rule that resolves nothing passes silently. |
+| Resource limits | Postgres integration + API + e2e | Rate/quota decisions (ADR-027): capacity boundaries, multi-node budget sharing across two limiter instances, per-workspace and per-inbox isolation, derived usage surviving a cascade delete, the `429`/`409` split, and that no limiter key derives from a request header. |
 | Concurrency | Targeted tests | Concurrent `createInbox()` token collisions, concurrent `EXACT` reservations racing to `409` (ADR-021), concurrent waiters on one inbox, wait-request cancellation/resource cleanup, inbox-expiry-vs-inbound-delivery race (`docs/architecture/inbound-mail-flow.md`), persist+`pg_notify` single-transaction atomicity, and a kill-the-`LISTEN`-connection test proving parked waiters still resolve after reconnect (ADR-020). |
 | Security | Dependency/SCA scanning, SAST, targeted tests for the threat-model mitigations (XSS sandbox escape attempts, SSRF attempt via extracted links, cross-tenant access attempts) | Tied directly to `docs/security/threat-model.md` — each mitigation there should have a corresponding test, not just a design statement. |
 | Mutation testing | Where valuable (e.g., PIT/Kotlin mutation tooling) on the matcher/dedup/lifecycle-state-machine logic specifically | Not applied blanket across the codebase — targeted at logic where "the tests pass but a subtle bug survives" is a realistic, costly failure mode (matching, deduplication, TTL transitions). |
@@ -33,6 +41,12 @@ passed. CI must additionally assert, from the test report output, that:
 - Zero skipped/ignored tests beyond an explicit, reviewed allow-list.
 - Coverage/mutation reports (where used) are generated and checked, not just
   attempted.
+- No test method is silently dropped at discovery. A JUnit `@Test` that
+  returns a value (an expression-bodied Kotlin test ending in a property
+  check, for example) is only a discovery WARNING and is never executed; the
+  backend build sets `junit.platform.discovery.issue.severity.critical=warning`,
+  so it fails the build instead. Three property tests went unexecuted this way
+  before the guard existed (TI-STORAGE-006E).
 
 This is implemented by `scripts/verify-test-results.sh`, which CI runs after
 the build. Because CI jobs execute disjoint suites, the verifier takes an
@@ -51,16 +65,76 @@ gate.
 | Gate | Tool | Fails CI? |
 |---|---|---|
 | Formatting | Spotless/ktlint | Yes |
-| Kotlin static analysis | Detekt (backend + JVM SDK) | Yes |
+| Kotlin static analysis | Detekt (backend + JVM SDK) | Yes. Run it locally with `./gradlew detekt --no-daemon -Dorg.gradle.java.home=<jdk-21>`; `JAVA_HOME` alone leaves the daemon on Java 25 and Detekt aborts with a bare `> 25.0.3` |
 | Test execution evidence | `verify-test-results.sh` | Yes |
 | Verifier self-test | `verify-test-results.test.sh` | Yes |
 | Architecture boundaries | ArchUnit | Yes |
+| JVM SDK usable from plain Java | `JavaInteropTest` (Java source compiled against the built SDK) | Yes — it caught `ApiScope` as a `@JvmInline value class`, whose constants compile to name-mangled accessors no Java caller can reference |
 | OpenAPI structure/style | Spectral | Yes |
 | OpenAPI backwards compatibility | oasdiff vs. the PR base spec | Yes on ERR; warnings (e.g. removing an optional parameter) are reported only |
 | Compatibility-gate self-test | `openapi-breaking-check.test.sh` | Yes |
 | Secret detection | gitleaks (working tree) | Yes |
+| Deployment-gate self-tests | `validate-image-digest.test.sh`, `deploy-preflight.test.sh` (including the staging rollback floor: below-floor, unlabelled, boundary, acknowledged and unreadable-floors images), `check-rollback-floors.test.sh` (22: the one floor check behind staging and production, with its fail-closed cases, plus the real ADR-035 floors against this repository's history: before the first guarded-ingest floor, the first floor itself, a pre-clock-episode guarded artifact, the TI-STORAGE-003 safety floor and — since TI-STORAGE-006E — the TI-STORAGE-006 floor are refused; the TI-STORAGE-006E containment floor and the head are allowed), `gitlab-handoff.test.sh`, `check-migration-safety.test.sh`, `scan-images.test.sh` | Yes |
+| Production-contract self-tests (ADR-034) | `verify-production-candidate.test.sh` (25 cases: non-develop or cross-repository head, no merged PR, one of four artifacts missing, a tag-shaped digest, artifacts attested to another commit / by another repository's workflow / from another ref, rollback floors incl. an absent floors file, and the positive controls — the stubbed `gh` refuses any attestation call missing a binding flag), `promotion-gate.test.sh` (11: failed/cancelled/skipped/missing/unlisted leg, zero legs, nothing to aggregate), `await-candidate-build.test.sh` (10: a failed or cancelled develop build, a build that never comes, a build still running at the deadline, a feature-branch head refused without a query), `check-backup-scope.test.sh` (162: content rows in every spelling `pg_dump` and hand tooling produce, quoted/`UNLOGGED`/multiline/digit-suffixed `CREATE TABLE`, the documented `pg_restore -l` recipe, a missing control-plane table, a dump that examines nothing, each ADR-035 table or content table omitted or classified `+`; `INSERT INTO` inside function bodies, strings, comments and COPY data rows retaining nothing while multi-row, mixed-case, `ONLY`, `\copy` and `OVERRIDING` content inserts are refused; unterminated bodies/strings/comments/COPY blocks, truncated statements, unnameable tables, raw archives and raw listings refused as ambiguous; statements a plain dump never contains but which could create or fetch rows at restore (`CREATE TABLE ... AS` in every spelling, `SELECT ... INTO`, `MERGE`, a data-modifying CTE, `DO`, a function call, `UPDATE`, a materialized view, a subscription, a rule, a schema-qualified user-function call in a default/constraint/index/row, a non-empty `search_path`, `setval`/`set_config` with non-literal arguments, `COPY` from a file or program, table data after a trigger definition, `\\i`, `\\set`, a `\\connect` with a conninfo string, an unknown keyword, a statement longer than the reader buffers, a quoted identifier outside the schema alphabet, a function created in `pg_catalog`, any DDL or data before pg_dump's empty-`search_path` prologue, an INSERT that is not the VALUES form) refused rather than assumed row-free, while the DDL forms a dump of this schema contains (function signatures in GRANT/REVOKE/ALTER/COMMENT, foreign keys, expression indexes on built-ins, generated columns, triggers after the data) keep passing; and a genuine `pg_dump` of a database migrated with the real V1..V10 files, seeded with hostile content rows, in every documented dump form — that half needs Docker and fails without it) | Yes — on every pull request, because the gates they protect run only on a promotion |
+| Candidate identity + `Production promotion gate` | `release-candidate.yml` | Yes, on a pull request to `master` only; the one context `master` requires |
+| Production fail-closed configuration | `DeploymentSafetyTest`, `DeploymentSafetyCheckTest`, `IngestionDeploymentSafetyCheckTest`, `DeployedConfigurationTest`, `DeployedProfileLayeringTest` (api + ingestion: the REAL profile documents loaded through Spring — the production overrides win, staging is untouched), `S3BlobStoreTest` | Yes — staging configuration labelled production, a blank environment under a deployed profile, an env var re-enabling bucket creation or demoting the session bound, a production node creating its bucket, a shadowed per-profile file, and profiles that drift |
+| Third-party image mirror pinning | `check-minio-mirror-pin.sh`, `check-minio-mirror-pin.test.sh` (18 cases: a partial re-pin, a withdrawn `quay.io`/Docker Hub reference, the mirror by mutable tag, a provenance doc recording another digest, a consumer that lost its pin, a foreign mirror, a truncated digest, the false-positive guards for `asCompatibleSubstituteFor("minio/minio")`, prose and workflows, and — TI-STORAGE-006 — a pinned digest with no ADR-035 qualification record, a record for another digest, a record omitted from or dangling in `index.txt`, a missing records directory) | Yes — MinIO withdrew its public images, so six consumers pin one mirror digest; a partial re-pin would leave the rehearsal and the test suites proving different versions with everything green (`docs/dev/third-party-mirrors.md`) |
+| ADR-035 activation and enablement gates (TI-STORAGE-006) | `StorageEnforcementSafetyTest`, `QualificationMatchTest`, `QualificationRecordsTest`, `FencedUploaderVersionTest`, `ActivationBarrierTest`, `JdbcActivationInventoryTest`, `EnforcementModesTest`, the Spring-level `DeploymentSafetyCheckTest`/`IngestionDeploymentSafetyCheckTest` cases; `check-storage-enforcement-off.sh` (+ `.test.sh`, 17 cases incl. Spring's lenient enum spellings), `check-storage-activation.test.sh` (176 cases: every gate fails independently on fixtures, the role scope, gate D's pinned §11 constants (a tolerance written into the evidence is ignored, a missing concurrency, a same-lock reference, other errors, a run the harness marked non-ADR), gate E production BLOCKED against this repository's real `master`, and gate F: each row alone, every missing, malformed, stale or contradictory input, the database-recorded base case, and the `TENANT_LIMITS` isolation preflight), `check-minio-mirror-pin.sh` now coupled to the qualification records (18 cases) | Yes — a committed environment turning enforcement on, a non-OFF value with any §18 declaration missing or inconsistent, a backend identity that matches no eligible shipped record, a pinned MinIO digest without a record, and a barrier gate that cannot fail |
+| Migration rollback safety | `check-migration-safety.sh` | Yes on an **undeclared** rollback-breaking migration; a **declared** one warns on develop and blocks promotion |
+| Edge invariant classifier | `deploy/synthetic/unit` | Yes |
+| Container build + non-root runtime | `build-images.yml` | Yes |
+| Ephemeral staging rehearsal + synthetic suite | `staging-rehearsal.sh` | Yes |
+| Idempotency product synthetic | `staging-rehearsal.sh` step 9 / `npm run test:product` | Yes in the rehearsal. Proves a retried create returns the same inbox through the deployed edge, a changed request under the same key is refused, and a refused request leaves its key free. |
+| Credential-lifecycle product synthetic | `staging-rehearsal.sh` step 9 / `npm run test:product` | Yes in the rehearsal. Against a **deployed** environment it is a separate run from the deployment gate: it needs a credential that can administer keys, and "the credential lifecycle is broken on an otherwise healthy deployment" is a different verdict from "do not ship this artifact" |
+| Container vulnerabilities | Trivy (`scan-images.sh`) | **No on develop/PR — informational.** **Yes on promotion to `master`**, for HIGH/CRITICAL *with a fix available* |
 | Dependency vulnerabilities | OSV-Scanner (npm lockfiles) | **No — informational** |
-| Dependency updates | Dependabot (grouped, weekly) | n/a — opens PRs |
+| Dependency updates | Dependabot (grouped, weekly, `target-branch: develop`) | n/a — opens PRs |
+
+The container build and the ephemeral rehearsal are **required status checks on
+`develop`**, and `deploy-staging.yml` runs on every pull request with no path
+filter. That is deliberate and costs CI minutes on changes that plainly do not
+need an image build — a documentation edit pays for one.
+
+The filter was removed because a required check that never runs is never
+*reported*, and branch protection cannot tell an absent check from a pending
+one: it blocks the merge forever. While `deploy-staging.yml` filtered on
+`deploy|backend|web|sdk|scripts`, every docs-only and config-only pull request
+to `develop` was unmergeable without an admin bypass — in a repository whose
+ADRs are authoritative, that is a routine shape of change, not an edge case.
+
+The two rejected alternatives are worth recording, because both look cheaper:
+dropping the checks from the required list demotes a gate the deployment path
+depends on, which this document forbids doing silently; and skipping the jobs
+from inside the workflow reports them green without running them, which is the
+failure mode named at the top of this section.
+
+**Trivy is environment-sensitive** (ADR-028 §6, as amended). One thing the
+informational path taught, 2026-09-19: the pinned Trivy release's assets had
+been removed upstream, the install failed inside a `continue-on-error` step,
+and the informational scan **silently did not run on every `develop` push**
+while every step showed green. It surfaced only because the blocking
+promotion leg does not swallow the error. The install is now its own step
+whose failure annotates the run and writes "DID NOT RUN" into the summary —
+still not a deploy blocker, because an unreachable mirror is not a finding,
+but no longer invisible. On develop and
+pull requests it is non-blocking for the same reason as OSV-Scanner, one layer
+down: a CVE published in a base image is not a regression introduced by the
+merge that happens to run next, and making every historical CVE a deployment
+blocker is how a team learns to skip the gate. On **promotion to `master`** it
+blocks on HIGH/CRITICAL — but only where a fix exists (`--ignore-unfixed` in
+both modes), because refusing to release over a vulnerability nobody can
+remediate does not make the release safer, it just stops the release. Promotion
+is a deliberate, infrequent, human act; that is the right moment to require a
+decision rather than a shrug.
+
+`scripts/scan-images.test.sh` proves both halves against a stubbed scanner:
+findings do not block develop, findings do block promotion, `--ignore-unfixed`
+is present in both modes, all four images are scanned, and a scanner that
+failed to install fails the step instead of passing quietly.
+
+The deployment gates that *are* blocking — digest ownership/pinning, non-root
+runtime, migration success, readiness, the synthetic suite, migration rollback
+safety — all have something proving they can fail.
 
 OSV-Scanner is deliberately non-blocking: a CVE published in a transitive
 dependency is not a regression introduced by the pull request that happens to
@@ -82,3 +156,24 @@ treated with the same seriousness as the security threat model — new corpus
 entries should be added whenever a real-world malformed message causes an
 issue, growing the suite as a regression net over time (a "fuzz corpus"
 mindset, not a fixed fixture set written once).
+
+## ADR-035 storage protocol
+
+Where each ADR-035 §17 test lives is mapped in
+[`adr-035-test-map.md`](adr-035-test-map.md). The guarded ingest path is
+proven against real PostgreSQL and the pinned MinIO. A TCP fault proxy
+(storage test fixtures) injects stalls, swallowed responses, resets and
+canned answers. Sync hooks and SQL back-dating drive every interleaving,
+with no sleep deciding one, and every gate has a test proving it can fail.
+The physical-bound rehearsal and the `TENANT_LIMITS`/`ALL` refusal tests run
+with enforcement enabled only inside their own isolated tests. A deployable can
+now be CONFIGURED non-OFF (TI-STORAGE-006), but it refuses to start unless every
+ADR-035 §18 declaration is present and consistent and the declared storage
+backend exactly matches an enablement-eligible qualification record shipped in
+the artifact; no such record exists yet, so no artifact can enforce anywhere.
+The activation barrier itself (ADR-035 §14) is evaluated by
+`scripts/check-storage-activation.sh` against a deployed estate, and the §11
+benchmark by `scripts/storage-benchmark.sh` on the staging host class; both
+produce evidence that is recorded, never asserted
+(`docs/dev/production-ops-acceptance.md` rows O–V).
+
