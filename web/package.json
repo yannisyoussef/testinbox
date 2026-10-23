@@ -10,8 +10,8 @@
     "test": "playwright test"
   },
   "dependencies": {
-    "dompurify": "^3.4.16",
-    "next": "^16.3.8",
+    "dompurify": "^3.4.17",
+    "next": "^16.4.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },
