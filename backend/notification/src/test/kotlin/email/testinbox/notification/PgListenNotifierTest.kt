@@ -1,9 +1,11 @@
 package email.testinbox.notification
 
 import email.testinbox.application.port.NOTIFICATION_CHANNEL
+import email.testinbox.application.port.NotificationPayload
 import email.testinbox.application.port.NotifierMetrics
 import email.testinbox.application.port.WakeOutcome
 import email.testinbox.domain.InboxId
+import email.testinbox.domain.WorkspaceId
 import io.kotest.matchers.longs.shouldBeGreaterThan
 import io.kotest.matchers.shouldBe
 import org.awaitility.Awaitility.await
@@ -84,13 +86,55 @@ class PgListenNotifierTest {
 
     private fun connect(): Connection = DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password)
 
-    private fun notify(inboxId: InboxId) {
+    private fun notify(inboxId: InboxId) = notify(NotificationPayload.encode(WorkspaceId(UUID.randomUUID()), inboxId))
+
+    private fun notify(payload: String) {
         connect().use { connection ->
             connection.prepareStatement("SELECT pg_notify(?, ?)").use {
                 it.setString(1, NOTIFICATION_CHANNEL)
-                it.setString(2, inboxId.value.toString())
+                it.setString(2, payload)
                 it.executeQuery()
             }
+        }
+    }
+
+    private fun wokenWithin(
+        handle: email.testinbox.application.port.WaitHandle,
+        millis: Long,
+    ): Boolean = handle.awaitWake(Instant.now().plusMillis(millis)) == WakeOutcome.WOKEN
+
+    @Test
+    fun `a workspace subscription is woken by its own workspace's notifications only`() {
+        val workspaceId = WorkspaceId(UUID.randomUUID())
+        notifier.subscribeWorkspace(workspaceId).use { handle ->
+            // Another workspace's message: the stream must not even wake, or the
+            // wake is observable as timing (ADR-025 through the API).
+            notify(NotificationPayload.encode(WorkspaceId(UUID.randomUUID()), InboxId(UUID.randomUUID())))
+            wokenWithin(handle, 700) shouldBe false
+            notify(NotificationPayload.encode(workspaceId, InboxId(UUID.randomUUID())))
+            wokenWithin(handle, 5_000) shouldBe true
+        }
+    }
+
+    @Test
+    fun `a legacy bare-inbox payload wakes that inbox's waiter and no workspace stream`() {
+        val inboxId = InboxId(UUID.randomUUID())
+        notifier.subscribe(inboxId).use { waiter ->
+            notifier.subscribeWorkspace(WorkspaceId(UUID.randomUUID())).use { stream ->
+                notify(inboxId.value.toString())
+                wokenWithin(waiter, 5_000) shouldBe true
+                wokenWithin(stream, 700) shouldBe false
+            }
+        }
+    }
+
+    @Test
+    fun `a payload that is neither shape wakes nobody`() {
+        val inboxId = InboxId(UUID.randomUUID())
+        notifier.subscribe(inboxId).use { waiter ->
+            notify("not-a-uuid")
+            notify("")
+            wokenWithin(waiter, 700) shouldBe false
         }
     }
 

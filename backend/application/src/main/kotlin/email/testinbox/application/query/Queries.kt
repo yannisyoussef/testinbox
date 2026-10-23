@@ -1,6 +1,7 @@
 package email.testinbox.application.query
 
 import email.testinbox.application.port.BlobStore
+import email.testinbox.application.port.InboxCursor
 import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.MessageCursor
 import email.testinbox.application.port.MessageRepository
@@ -24,6 +25,14 @@ class InboxQueries(
         workspaceId: WorkspaceId,
         inboxId: InboxId,
     ): Inbox? = inboxes.findById(workspaceId, inboxId)
+
+    /** The workspace's inboxes, newest first; [states] empty means every state still present. */
+    fun listPage(
+        workspaceId: WorkspaceId,
+        states: Set<email.testinbox.domain.inbox.InboxState>,
+        before: InboxCursor?,
+        limit: Int,
+    ): List<Inbox> = inboxes.listPage(workspaceId, states, before, limit)
 }
 
 /**
@@ -51,6 +60,14 @@ class MessageQueries(
         limit: Int,
     ): List<Message> =
         if (servable(inboxes.findById(workspaceId, inboxId))) messages.listPage(workspaceId, inboxId, after, limit) else emptyList()
+
+    /** Across the workspace's serving inboxes; the adapter joins on the inbox state. */
+    fun listWorkspacePage(
+        workspaceId: WorkspaceId,
+        cursor: MessageCursor?,
+        limit: Int,
+        descending: Boolean,
+    ): List<Message> = messages.listWorkspacePage(workspaceId, cursor, limit, descending)
 
     fun rawMime(
         workspaceId: WorkspaceId,

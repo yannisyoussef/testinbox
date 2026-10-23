@@ -12,6 +12,7 @@ import org.springframework.web.HttpMediaTypeNotSupportedException
 import org.springframework.web.HttpRequestMethodNotSupportedException
 import org.springframework.web.bind.MissingServletRequestParameterException
 import org.springframework.web.bind.annotation.ExceptionHandler
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestControllerAdvice
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
 import org.springframework.web.servlet.NoHandlerFoundException
@@ -50,21 +51,23 @@ class ApiExceptionHandler {
             ),
         )
 
+    /**
+     * An unparseable path id is a plain 404 (the resource it names cannot
+     * exist); an unparseable query parameter is the caller's request being
+     * malformed, so the collection it addresses is not "not found".
+     */
     @ExceptionHandler(MethodArgumentTypeMismatchException::class)
     fun typeMismatch(
-        // Deliberately unused: an unparseable id is reported as a plain 404.
-        ignored: MethodArgumentTypeMismatchException,
+        e: MethodArgumentTypeMismatchException,
         request: HttpServletRequest,
     ): ResponseEntity<ProblemDetail> =
-        Problems.respond(
-            Problems.of(
-                HttpStatus.NOT_FOUND,
-                "not-found",
-                "Not found",
-                null,
-                request,
-            ),
-        )
+        if (e.parameter.hasParameterAnnotation(RequestParam::class.java)) {
+            Problems.respond(
+                Problems.of(HttpStatus.BAD_REQUEST, "invalid-request", "Invalid request", "Malformed query parameter '${e.name}'", request),
+            )
+        } else {
+            Problems.respond(Problems.of(HttpStatus.NOT_FOUND, "not-found", "Not found", null, request))
+        }
 
     /**
      * Spring's own request-dispatch failures already carry the right status;
