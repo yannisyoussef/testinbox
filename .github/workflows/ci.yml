@@ -54,7 +54,7 @@ jobs:
           # Detekt 1.23.x cannot run on a Java 25 runtime; the analyzer and this
           # job run on 21. Compilation elsewhere still targets 25.
           java-version: 21
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@v6
       - name: Detekt (backend)
         working-directory: backend
         run: ./gradlew detekt
@@ -203,7 +203,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 25
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@v6
       # Testcontainers pulls through the Docker daemon, so it is the daemon that
       # must hold the credential — not Gradle.
       - name: Log in to GHCR (private MinIO mirror)
@@ -247,7 +247,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@v6
       - name: Log in to GHCR (private MinIO mirror)
         uses: docker/login-action@v4
         with:
@@ -284,7 +284,7 @@ jobs:
           java-version: |
             ${{ matrix.java }}
             25
-      - uses: gradle/actions/setup-gradle@v5
+      - uses: gradle/actions/setup-gradle@v6
       - name: Build and test
         working-directory: sdk/kotlin
         run: ./gradlew build
