@@ -247,8 +247,9 @@ class FootprintT1AdmissionTest {
     }
 
     @Test
-    fun `a copy refused by a narrower ceiling adds nothing to the footprint running total`() {
-        // Inbox 0 is full by payload; inboxes 1 and 2 then share the footprint headroom of exactly two copies.
+    fun `a copy refused by a narrower ceiling retains its transient global footprint price`() {
+        // Inbox 0 is full by payload. Two virtual prefix copies fit; the third
+        // does not, regardless of whether the first copy was stored.
         val tightInbox = StorageCapacityPolicy(1L shl 40, InboxShare.of("1"), 1L shl 41, 0)
         val store =
             object : StorageAdmissionStore {
@@ -272,6 +273,6 @@ class FootprintT1AdmissionTest {
         val result =
             StorageAdmission(store, tightInbox, StorageEnforcement.ALL, footprint = policy(limits(capacity = model.bound(8192, 2))))
                 .admit(StorageAdmissionRequest(4096, candidates(3), "node-a", UUID.randomUUID()))
-        result.shape() shouldBe listOf(StorageRefusalReason.INBOX_LIMIT.name, "admitted", "admitted")
+        result.shape() shouldBe listOf(StorageRefusalReason.INBOX_LIMIT.name, "admitted", "SERVICE_CAPACITY")
     }
 }

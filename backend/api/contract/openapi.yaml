@@ -325,6 +325,12 @@ components:
         The narrowest storage ceiling that refused a copy (ADR-035 §4):
         the inbox's own limit, its workspace's limit, or service capacity.
         `SERVICE_CAPACITY` is one bit — no global figure accompanies it.
+        Under enforced global storage limits, every normalized distinct envelope
+        position is conservatively priced, including unknown or otherwise refused
+        recipients. Nothing is stored for unknown recipients. Near capacity this
+        can refuse a later known copy even when earlier copies are discarded.
+        Across separate emails, own delivery/refusal outcomes can still reveal
+        recipient existence under globally constrained conditions (ADR-037).
         Clients must tolerate unknown future values.
       enum: [INBOX_LIMIT, WORKSPACE_LIMIT, SERVICE_CAPACITY]
     StorageUsage:

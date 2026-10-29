@@ -422,3 +422,31 @@ is M3i (1,689); run the full required scope again at the next code milestone.
 
 The recorded lifecycle design precedes implementation; CLI, participant
 classification, T1/state/credential drain and erasure/restore are not built yet.
+
+## M4a — full-envelope storage privacy rule
+
+ADR-037 is accepted for implementation (owner decision 2026-10-29). The
+receive path carries original normalized distinct envelope positions into
+GuardedStorage/T1. Global payload and footprint prefixes conservatively price
+unknown, rate-limited and tenant-refused positions; only real admitted copies
+get reservations/objects. Own tenant totals still charge admitted copies only.
+SMTP uniformity and provider-event normalization/dedup remain unchanged.
+
+Two independent payload/footprint regression tests failed against the prior
+code and pass after the fix. Added 500 fixed-seed substitutions for each
+global ceiling, invalid/reordered position checks, unknown/rate/tenant
+receive-to-storage journeys and a real PostgreSQL no-fake-reservation proof.
+Two old assertions expected refused predecessors to leave global room;
+updated explicitly for ADR-037. The independent PostgreSQL reference model
+now prices public envelope positions globally, retaining real admitted usage
+for subsequent events. No assertions or activation gates were removed.
+
+Full backend build PASS (2m34s); verifier 1,698 tests across twelve modules,
+zero failures/errors/skips. Java 21 Detekt PASS (10s). All eighteen migrations
+remain expand-only; storage-OFF guard, diff and secret checks pass. The HTTP
+contract and SDK prose disclose conservative pricing and residual cross-event
+recipient inference. No production configuration, deployment or access change.
+
+Next: capacity proof including all thirty shares, explicit legacy shares and
+worst-case transient envelope headroom, then durable allocation/debt/usage
+enforcement. See [COHORT-STORAGE.md](COHORT-STORAGE.md). M4 is not complete.

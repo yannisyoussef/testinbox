@@ -51,15 +51,16 @@ class StorageAdmissionPropertyTest : PersistenceIntegrationTest() {
             enforcement: StorageEnforcement,
             f: Long,
             candidates: List<Pair<UUID, UUID>>,
-        ): List<String> =
-            candidates.map { (ws, ib) ->
+        ): List<String> {
+            val globalBeforeEvent = global
+            return candidates.mapIndexed { position, (ws, ib) ->
                 val tenant = enforcement != StorageEnforcement.OFF
                 val enforceGlobal = enforcement == StorageEnforcement.ALL
                 val reason =
                     when {
                         tenant && (inbox[ib] ?: 0) + f > inboxLimit -> "INBOX_LIMIT"
                         tenant && (workspace[ws] ?: 0) + f > workspaceLimit -> "WORKSPACE_LIMIT"
-                        enforceGlobal && global + f > cap -> "SERVICE_CAPACITY"
+                        enforceGlobal && globalBeforeEvent + (position + 1) * f > cap -> "SERVICE_CAPACITY"
                         else -> null
                     }
                 if (reason == null) {
@@ -69,6 +70,7 @@ class StorageAdmissionPropertyTest : PersistenceIntegrationTest() {
                     reason
                 }
             }
+        }
 
         override fun toString() = "global=$global workspaces=$workspace inboxes=$inbox"
     }

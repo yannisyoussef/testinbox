@@ -19,7 +19,11 @@ export type ParseStatus = "OK" | "FAILED" | (string & {});
 
 /**
  * Why a storage ceiling refused a copy of a message (ADR-035 §4): the inbox's
- * own limit, its workspace's limit, or service capacity. `SERVICE_CAPACITY` is
+ * own limit, its workspace's limit, or service capacity. Under global enforcement,
+ * unknown/refused envelope positions are conservatively priced too (ADR-037).
+ * Across emails, own delivery outcomes may still expose recipient existence
+ * under globally constrained conditions; delaying diagnostics cannot remove it.
+ * `SERVICE_CAPACITY` is
  * one bit — no global figure ever accompanies it. Unknown future values are
  * passed through as the exact wire string.
  */

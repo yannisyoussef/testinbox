@@ -118,6 +118,7 @@ class GuardedStorage(
     fun ingest(
         bytesPerCopy: Long,
         copies: List<CopyPlan>,
+        envelopePositions: List<Int> = copies.indices.toList(),
         persist: (List<CopyPlan>) -> Map<MessageId, Boolean>,
     ): GuardedIngestReport {
         require(copies.isNotEmpty()) { "an event with no candidate never reaches storage" }
@@ -126,7 +127,7 @@ class GuardedStorage(
         val trial = admitThroughBreaker()
         var trialEnded = trial == null
         try {
-            val report = ingestHoldingSlot(bytesPerCopy, copies, persist, trialEvent = trial != null)
+            val report = ingestHoldingSlot(bytesPerCopy, copies, envelopePositions, persist, trialEvent = trial != null)
             if (trial != null) {
                 if (report.appended.isEmpty() && report.duplicates.isEmpty()) {
                     breaker.abandonTrial()
@@ -198,6 +199,7 @@ class GuardedStorage(
     private fun ingestHoldingSlot(
         bytesPerCopy: Long,
         copies: List<CopyPlan>,
+        envelopePositions: List<Int>,
         persist: (List<CopyPlan>) -> Map<MessageId, Boolean>,
         /** This event is the breaker's half-open real-event trial. */
         trialEvent: Boolean,
@@ -205,7 +207,7 @@ class GuardedStorage(
         val guard = SlotGuard(acquireSlot(copies))
         try {
             hook.afterSlot()
-            val result = admit(bytesPerCopy, copies)
+            val result = admit(bytesPerCopy, copies, envelopePositions)
             hook.afterAdmission()
             val admittedIds = result.admitted.map { it.candidate.messageId }.toSet()
             val admitted = copies.filter { it.messageId in admittedIds }
@@ -382,10 +384,11 @@ class GuardedStorage(
     private fun admit(
         bytesPerCopy: Long,
         copies: List<CopyPlan>,
+        envelopePositions: List<Int>,
     ) = try {
         val started = System.nanoTime()
         admission
-            .admit(StorageAdmissionRequest(bytesPerCopy, copies.map { it.candidate }, node.nodeId, node.generation))
+            .admit(StorageAdmissionRequest(bytesPerCopy, copies.map { it.candidate }, node.nodeId, node.generation, envelopePositions))
             .also { result ->
                 metrics.lockWait(Duration.ofNanos(System.nanoTime() - started))
                 result.decisions.forEach { decision ->
