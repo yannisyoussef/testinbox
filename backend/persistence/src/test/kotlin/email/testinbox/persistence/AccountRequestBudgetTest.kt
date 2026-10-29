@@ -12,7 +12,6 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.jdbc.core.simple.JdbcClient
-import java.time.Clock
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -26,7 +25,9 @@ class AccountRequestBudgetTest : PersistenceIntegrationTest() {
     @Autowired lateinit var tx: TransactionRunner
 
     @Autowired lateinit var sessions: JdbcHumanSessions
-    private val clock = Clock.systemUTC()
+    private val clock =
+        email.testinbox.application.Clocks
+            .utcMicros()
 
     @BeforeEach fun resetBudgets() {
         jdbc.sql("DELETE FROM human_request_budget").update()

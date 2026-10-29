@@ -23,7 +23,6 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
-import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
@@ -75,7 +74,15 @@ class HumanProductApiTest : ApiIntegrationTestBase() {
             .param("id", id.value)
             .param("email", "$id@example.invalid")
             .update()
-        val session = checkNotNull(IssueHumanSession(sessions, transactions, Clock.systemUTC()).execute(id))
+        val session =
+            checkNotNull(
+                IssueHumanSession(
+                    sessions,
+                    transactions,
+                    email.testinbox.application.Clocks
+                        .utcMicros(),
+                ).execute(id),
+            )
         if (admit) call("/account/admission", "POST", session).statusCode() shouldBe 200
         return session
     }

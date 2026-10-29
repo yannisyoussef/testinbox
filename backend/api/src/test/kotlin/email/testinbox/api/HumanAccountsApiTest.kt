@@ -16,7 +16,6 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
-import java.time.Clock
 import java.time.Duration
 import java.util.UUID
 
@@ -65,7 +64,15 @@ class HumanAccountsApiTest : ApiIntegrationTestBase() {
             ).param("id", id.value)
             .param("email", "${id.value}@example.invalid")
             .update()
-        return id to checkNotNull(IssueHumanSession(sessions, transactions, Clock.systemUTC()).execute(id))
+        return id to
+            checkNotNull(
+                IssueHumanSession(
+                    sessions,
+                    transactions,
+                    email.testinbox.application.Clocks
+                        .utcMicros(),
+                ).execute(id),
+            )
     }
 
     private fun call(

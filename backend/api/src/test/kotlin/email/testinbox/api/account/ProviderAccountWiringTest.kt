@@ -10,7 +10,6 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
 import org.springframework.beans.factory.support.DefaultListableBeanFactory
-import java.time.Clock
 import java.util.Base64
 
 class ProviderAccountWiringTest {
@@ -28,7 +27,15 @@ class ProviderAccountWiringTest {
         properties: ProviderAccountProperties,
         accounts: HumanAccountProperties = accountConfig,
     ): ProviderAccountRuntime =
-        ProviderAccountWiring(store, registration, identities, sessions, tx, Clock.systemUTC()).providerAccountRuntime(
+        ProviderAccountWiring(
+            store,
+            registration,
+            identities,
+            sessions,
+            tx,
+            email.testinbox.application.Clocks
+                .utcMicros(),
+        ).providerAccountRuntime(
             accounts,
             properties,
             registry,

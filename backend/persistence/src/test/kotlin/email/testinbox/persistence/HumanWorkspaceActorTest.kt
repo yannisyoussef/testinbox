@@ -23,7 +23,6 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.jdbc.core.simple.JdbcClient
-import java.time.Clock
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -42,7 +41,9 @@ class HumanWorkspaceActorTest : PersistenceIntegrationTest() {
     @Autowired lateinit var records: JdbcIdempotencyRecords
 
     @Autowired lateinit var tx: TransactionRunner
-    private val clock = Clock.systemUTC()
+    private val clock =
+        email.testinbox.application.Clocks
+            .utcMicros()
     private val events = mutableListOf<AuditEvent>()
     private val audit =
         object : AuditLog {

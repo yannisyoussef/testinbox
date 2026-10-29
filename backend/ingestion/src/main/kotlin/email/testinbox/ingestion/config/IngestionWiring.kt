@@ -103,7 +103,9 @@ class IngestionWiring(
     private val blobStoreMetrics: BlobStoreMetrics,
 ) {
     @Bean
-    fun clock(): Clock = Clock.systemUTC()
+    fun clock(): Clock =
+        email.testinbox.application.Clocks
+            .utcMicros()
 
     @Bean
     fun testInboxConfig(properties: IngestionProperties): TestInboxConfig = properties.toConfig()
