@@ -195,7 +195,7 @@ class SchemaUpgradeTest : PersistenceIntegrationTest() {
         // If this scan silently found nothing, the compatibility policy would
         // read "no migrations bundled" and wave every schema through.
         BundledMigrations.versions().map { it.raw } shouldBe
-            listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17")
+            listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18")
     }
 
     @Test

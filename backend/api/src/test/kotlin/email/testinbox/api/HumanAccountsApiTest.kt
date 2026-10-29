@@ -255,6 +255,31 @@ class HumanAccountsApiTest : ApiIntegrationTestBase() {
     }
 
     @Test
+    fun `metadata hot polling is bounded across normalized routes while logout remains usable`() {
+        val (id, session) = login()
+        call("/account/session", session = session).statusCode() shouldBe 200
+        jdbc
+            .sql("UPDATE human_request_budget SET requests=60,window_start=now()+interval '1 minute' WHERE account_id=:id")
+            .param("id", id.value)
+            .update()
+        for (path in listOf("/account/session", "/%61ccount/waitlist", "/account;probe/waitlist")) {
+            val refused = call(path, session = session)
+            refused.statusCode() shouldBe 429
+            assertPrivate(refused)
+            (
+                refused
+                    .headers()
+                    .firstValue("Retry-After")
+                    .orElseThrow()
+                    .toLong() > 0
+            ) shouldBe true
+        }
+        post("/account/admission", session).statusCode() shouldBe 429
+        post("/account/logout", session).statusCode() shouldBe 204
+        call("/account/session", session = session).statusCode() shouldBe 401
+    }
+
+    @Test
     fun `waitlist requires explicit opt in reveals only own state and never grants a workspace`() {
         val (account, session) = login()
         val before = jdbc.sql("SELECT count(*) FROM workspace").query(Long::class.javaObjectType).single()

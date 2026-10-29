@@ -160,6 +160,20 @@ components:
         actually helps — never on a quota refusal, which waiting cannot fix.
       schema: { type: integer, format: int64 }
   responses:
+    AccountRequestLimited:
+      description: >
+        Account metadata requests (session, admission and waitlist) share a
+        60-per-minute authenticated account budget and a 3600-per-minute global
+        budget, using the database clock. Logout remains available. Login
+        delivery budgets and workspace product limits are separate. Neither
+        participant identities nor global consumption counts are exposed.
+      headers:
+        Retry-After:
+          description: Seconds until retry; included on every budget refusal.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
     RateLimited:
       description: >
         Too many requests for this workspace
@@ -1491,6 +1505,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/HumanSessionView" }
         "401": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/AccountRequestLimited" }
         "503": { $ref: "#/components/responses/Problem" }
   /account/logout:
     servers: [{ url: / }]
@@ -1538,6 +1553,7 @@ paths:
         "401": { $ref: "#/components/responses/Problem" }
         "400": { $ref: "#/components/responses/Problem" }
         "403": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/AccountRequestLimited" }
         "503": { $ref: "#/components/responses/Problem" }
   /account/email/request:
     servers: [{ url: / }]
@@ -1717,6 +1733,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/BetaWaitlistView" }
         "401": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/AccountRequestLimited" }
         "503": { $ref: "#/components/responses/Problem" }
     post:
       operationId: joinBetaWaitlist
@@ -1743,6 +1760,7 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/AccountRequestLimited" }
         "503": { $ref: "#/components/responses/Problem" }
     delete:
       operationId: withdrawBetaWaitlist
@@ -1759,6 +1777,7 @@ paths:
         "400": { $ref: "#/components/responses/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/AccountRequestLimited" }
         "503": { $ref: "#/components/responses/Problem" }
 
   /account/methods:

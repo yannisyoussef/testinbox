@@ -372,3 +372,30 @@ The full evidence, exact runtime/jar identities and setup/test corrections live
 in the frontend checkpoint document. This does not exercise external OAuth
 consent or provision a sending domain; those remain Ops acceptance tasks.
 No production/shared-branch or storage-enforcement state changed.
+
+
+## M3i — distributed authenticated account metadata budgets
+
+Final full build PASS (2m41s); result verifier: 1,689 tests, zero failures,
+errors or skips. Architecture 55, persistence 448, API 266, remaining counts
+unchanged. Detekt Java 21 PASS (13s); backup suite 187/187 includes genuine
+dumps retaining either new transient table and mandatory-deny mutations.
+All eighteen migrations are expand-only; diff and scoped secret checks pass.
+
+Eight PostgreSQL cases prove cross-session/adapter budgets, eight-way account
+and global concurrency, charging refused requests, database-clock window
+rollover, rollback/no-transaction refusal and invalid/suspended session refusal.
+A new HTTP journey covers normalized paths, private 429/Retry-After and
+successful logout after exhaustion. Two architecture cases protect the sole
+writer and catch a concrete adapter bypass. The initial guard used the literal
+method name and missed Kotlin's inline-ID name suffix, failing BOTH guard
+cases; matching the unmangled base name fixes them without an allow-list
+exception. Initial line-format errors were fixed; no gate was relaxed.
+
+Real native integration after adding the budget: PASS. Two admitted accounts,
+two STARTTLS code deliveries, one human-issued SDK key, isolated live resources,
+raw MIME/exact attachment bytes and zero sessions after both logouts. New jars:
+API `3c1d59ebeda8331f05cbb23e1bc86c49585cccef5863084f0b95e16ac6d7cca8`;
+ingestion `97f34a4bb69cdcfa1243b4791958bb251d97c7b129d48752622cfc567c79c0b7`;
+migrator `d33e5df3f6732d2bf11a6548f0caa9675caec6d4c7e71bfb2751c6ab9b1b1a0d`.
+Disposable Docker fixtures are removed. Production and shared refs unchanged.

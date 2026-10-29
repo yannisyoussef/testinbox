@@ -277,6 +277,21 @@ Next independent implementation: account/operator lifecycle, account-action
 and key-inventory bounds, deletion/restore safeguards. ADR-037 remains proposed
 and its owner question is pending; do not implement or assume its acceptance.
 
+## Account metadata request bounds (M3i, verified locally)
+
+Session/admission/waitlist requests share a 60/minute authenticated-account
+budget across sessions/nodes and a 3600/minute global budget. Logout remains
+usable after exhaustion; product requests keep workspace budgets. There is no
+unbounded source/credential map. V18's two transient tables are excluded from
+backups. Full build PASS (2m41s), verifier 1,689 tests/no skips; Detekt PASS,
+backup suite 187/187; eighteen expand-only migrations. The two-account real
+native browser/STARTTLS/SMTP/MIME/attachment/isolation/logout rehearsal passes
+again. See [ACCOUNT-ACTIONS.md](ACCOUNT-ACTIONS.md).
+
+Next independent increment: actual operator/account suspension, permanent
+credential revocation, ingestion admission/drain, deletion and restore safety,
+and key inventory bound. Keep proposed ADR-037 unimplemented pending answer.
+
 ## Resource-policy decision (M4, proposed only)
 
 [ADR-037](../../adr/0037-bounded-cohort-storage-and-disclosure.md) proposes

@@ -1,10 +1,12 @@
 package email.testinbox.api.account
 
+import email.testinbox.application.port.AccountRequestBudgets
 import email.testinbox.application.port.BetaAdmissions
 import email.testinbox.application.port.HumanSessions
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.usecase.AdmitBetaParticipant
 import email.testinbox.application.usecase.AuthenticateHumanSession
+import email.testinbox.application.usecase.ChargeAccountRequest
 import email.testinbox.application.usecase.ResolveHumanWorkspace
 import email.testinbox.application.usecase.RevokeHumanSession
 import org.springframework.boot.context.properties.ConfigurationProperties
@@ -40,6 +42,13 @@ class HumanAccountWiring {
         tx: TransactionRunner,
         clock: Clock,
     ): AuthenticateHumanSession = AuthenticateHumanSession(sessions, tx, clock)
+
+    @Bean
+    fun chargeAccountRequest(
+        authenticate: AuthenticateHumanSession,
+        budgets: AccountRequestBudgets,
+        tx: TransactionRunner,
+    ): ChargeAccountRequest = ChargeAccountRequest(authenticate, budgets, tx)
 
     @Bean
     fun resolveHumanWorkspace(

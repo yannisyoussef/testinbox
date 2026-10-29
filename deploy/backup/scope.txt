@@ -78,3 +78,7 @@
 # the next trust verification recreates it at the current order, so gate F
 # then needs a fresh sweep.
 - storage_containment_watermark
+
+# Short-lived request counts, not identity or authority.
+- human_request_global
+- human_request_budget
