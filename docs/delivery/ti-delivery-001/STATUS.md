@@ -37,14 +37,36 @@ passed on the integrated tree, including real PostgreSQL/MinIO adapter and
 black-box E2E tests. This does not mean the frontend, identity, admission or
 public-release conditions are complete. No shared PR was merged.
 
-Review found a follow-up in stream failure cleanup: a subscription acquired
-before `Stream` initialization fails is not closed. Add deterministic
-regression cases and fix before calling this backend foundation reviewed.
+Review found and fixed stream failure cleanup: a subscription acquired before
+`Stream` initialization fails was not closed, and a failed unsubscribe could
+keep its wait slot. Three deterministic regression cases failed before the
+fix; all pass after it. The combined read/cleanup failure preserves the
+original exception and records cleanup as suppressed.
+
+Final `./gradlew spotlessApply build --console=plain`: PASS. The result
+verifier confirms 1,452 tests across all twelve backend modules, zero
+failures/errors/skips. Its fourteen self-tests pass. Migration safety checks
+pass for all eleven migrations. Detekt passes with the installed Homebrew
+Java 21 runtime; Java 25 remains the compilation/runtime target. Gitleaks
+finds no leaks in the delivery commits or changed application sources.
+
+## Accepted design (M1)
+
+The owner accepted ADR-036 for implementation on 2026-10-29 through the
+explicit architecture question. Native backend identity, maintained OAuth
+libraries, email codes, revocable sessions, one participant workspace and a
+fixed thirty-account admission transaction are accepted. Production activation
+is still separate. See `docs/adr/0036-human-identity-and-beta-admission.md`.
+
+Next implementation increment: M3 account/admission domain, transaction port,
+new expand-only migration and real PostgreSQL concurrency tests. Keep the
+adapter unexposed and admissions closed by default. Authentication, console
+integration and effective resource protection remain incomplete.
 
 ## Next milestone and exact continuation
 
-M1: make the human identity/admission architecture and contract concrete;
-review the existing console foundation in parallel where independent.
+M3: implement and prove account/admission persistence before exposing a signup
+endpoint; prepare the authored account contract before adding HTTP behavior.
 
 1. Read `AGENTS.md`, `CLAUDE.md`, this file, [PLAN.md](PLAN.md) and
    [DISCOVERY.md](DISCOVERY.md). The ignored handoff may be absent in another
@@ -52,13 +74,13 @@ review the existing console foundation in parallel where independent.
 2. Inspect `git status --short --branch` and `git log -5 --oneline`; preserve
    in-progress work. Fetch refs before starting another milestone; do not
    automatically reset or pull over a checkpoint branch.
-3. Review backend PR #107 at `986532ee00d08aa2a3fcad03cfd75887fcce879a`
-   against the current base and frontend MR !4 at
+3. Backend PR #107 at `986532ee00d08aa2a3fcad03cfd75887fcce879a`
+   is integrated locally as `72d5c5a`, not merged remotely. Reuse frontend MR !4 at
    `f184776412596e82eb384e338e75e3cbf5bfd66b`. A local integration branch is
    allowed; merging shared branches is not authorized by discovery.
-4. Draft the smallest identity/session/admission contract and ADR proposal;
-   compare native auth, isolated Keycloak and an external IdP. Keep Proposed
-   decisions visibly Proposed; do not change an Accepted invariant in passing.
+4. Implement ADR-036, explicitly accepted by the owner. Write the account HTTP
+   contract before its controllers. Do not change another Accepted invariant
+   in passing or silently accept any unrelated Proposed ADR.
 5. Specify cap transaction, retry/linking behavior, one-workspace provisioning,
    suspension/session/key revocation and account deletion. Revisit ADR-027,
    ADR-033 and ADR-034 assumptions explicitly. Include security abuse cases
@@ -73,8 +95,11 @@ review the existing console foundation in parallel where independent.
 
 - GitLab frontend work needs its own checkout and repository guidance before
   editing. Current primary checkout contains only the Inspector.
-- A Java 21 runtime is needed for Detekt; Java 25/Node/Docker are present.
-- Full integration/E2E/browser baselines are not yet executed for this delivery.
+- Java 21 for Detekt is at
+  `/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home`; Java 25,
+  Node and Docker are present.
+- Backend integration/E2E baselines passed. Frontend browser checks and the
+  ephemeral edge deployment rehearsal are not yet run for this delivery.
 - Issue #87 is open but implemented already; verify rather than duplicate it.
 - No new OAuth credentials, paid service, sending-domain change or public
   access decision is implied by the implementation plan.

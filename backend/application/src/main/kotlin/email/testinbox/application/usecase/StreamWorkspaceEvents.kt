@@ -141,7 +141,15 @@ class StreamWorkspaceEvents(
             // Subscribe BEFORE the first read (check → subscribe → recheck): a
             // message committed between the two is caught by the recheck, never lost.
             val handle = notifier.subscribeWorkspace(workspaceId)
-            Open.Opened(Stream(workspaceId, slot, handle, after, now))
+            try {
+                Open.Opened(Stream(workspaceId, slot, handle, after, now))
+            } catch (e: RuntimeException) {
+                // Initialization reads inboxes and messages after subscribing.
+                // If either read fails, no Stream reaches the caller to close
+                // this handle. Preserve the read failure if cleanup fails too.
+                runCatching { handle.close() }.exceptionOrNull()?.let(e::addSuppressed)
+                throw e
+            }
         } catch (e: RuntimeException) {
             release(slot)
             throw e
@@ -298,8 +306,11 @@ class StreamWorkspaceEvents(
         }
 
         override fun close() {
-            handle.close()
-            release(slot)
+            try {
+                handle.close()
+            } finally {
+                release(slot)
+            }
         }
     }
 

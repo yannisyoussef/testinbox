@@ -37,6 +37,7 @@
 | [0033](0033-idempotent-mutations.md) | Idempotent mutations | Accepted (deployment-requirement gap closed by 0034) |
 | [0034](0034-production-platform-and-promotion.md) | Production platform, promotion contract and data lifecycle | Accepted |
 | [0035](0035-physical-storage-bound-at-ingest.md) | Physical storage bound at ingest | Accepted |
+| [0036](0036-human-identity-and-beta-admission.md) | Human identity, sessions and bounded beta admission | Accepted for implementation (2026-10-29, TI-DELIVERY-001; activation separately gated) |
 
 `Proposed` ADRs require a human decision (see `VISION.md` §Human Decisions
 Required Before Implementation) before they can move to `Accepted`.

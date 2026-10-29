@@ -7,7 +7,12 @@ import email.testinbox.application.InMemoryInboxRepository
 import email.testinbox.application.InMemoryMessageRepository
 import email.testinbox.application.MutableClock
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.port.InboxCursor
+import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.MessageCursor
+import email.testinbox.application.port.MessageNotifier
+import email.testinbox.application.port.MessageRepository
+import email.testinbox.application.port.WaitHandle
 import email.testinbox.application.port.WakeOutcome
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
@@ -49,20 +54,24 @@ class StreamWorkspaceEventsTest {
     private val clock = MutableClock(Instant.parse("2026-10-20T10:00:00Z"))
     private val config = TestInboxConfig(mailDomain = "testinbox.local", waitWindowCap = Duration.ofSeconds(60))
 
-    private fun useCase(maxConcurrentWaits: Long = 5) =
-        StreamWorkspaceEvents(
-            inboxes,
-            messages,
-            notifier,
-            slots,
-            maxConcurrentWaits,
-            clock,
-            config,
-            rateLimiter,
-            metrics,
-            inboxScanInterval = Duration.ofSeconds(2),
-            visibilityLag = Duration.ofSeconds(60),
-        )
+    private fun useCase(
+        maxConcurrentWaits: Long = 5,
+        inboxRepository: InboxRepository = inboxes,
+        messageRepository: MessageRepository = messages,
+        messageNotifier: MessageNotifier = notifier,
+    ) = StreamWorkspaceEvents(
+        inboxRepository,
+        messageRepository,
+        messageNotifier,
+        slots,
+        maxConcurrentWaits,
+        clock,
+        config,
+        rateLimiter,
+        metrics,
+        inboxScanInterval = Duration.ofSeconds(2),
+        visibilityLag = Duration.ofSeconds(60),
+    )
 
     private fun inbox(
         workspace: WorkspaceId = workspaceId,
@@ -335,4 +344,78 @@ class StreamWorkspaceEventsTest {
         val stream = open()
         stream.deadline shouldBe clock.now.plus(Duration.ofSeconds(60))
     }
+
+    @Test
+    fun `an opening inbox read failure closes the subscription and frees its slot`() {
+        val failing =
+            object : InboxRepository by inboxes {
+                override fun listPage(
+                    workspaceId: WorkspaceId,
+                    states: Set<InboxState>,
+                    before: InboxCursor?,
+                    limit: Int,
+                ): List<Inbox> = error("inbox read failed")
+            }
+
+        shouldThrow<IllegalStateException> {
+            useCase(inboxRepository = failing).open(workspaceId, null)
+        }.message shouldBe "inbox read failed"
+
+        notifier.handles.single().closed shouldBe true
+        slots.held shouldBe 0
+        metrics.slotDelta.get() shouldBe 0
+        open().use { slots.held shouldBe 1 }
+        slots.held shouldBe 0
+    }
+
+    @Test
+    fun `an opening message read failure closes the subscription and frees its slot`() {
+        val failing =
+            object : MessageRepository by messages {
+                override fun listWorkspacePage(
+                    workspaceId: WorkspaceId,
+                    cursor: MessageCursor?,
+                    limit: Int,
+                    descending: Boolean,
+                ): List<Message> = error("message read failed")
+            }
+
+        val failure =
+            shouldThrow<IllegalStateException> {
+                useCase(messageRepository = failing, messageNotifier = failingUnsubscribeNotifier()).open(workspaceId, null)
+            }
+        failure.message shouldBe "message read failed"
+        failure.suppressed.single().message shouldBe "unsubscribe failed"
+
+        notifier.handles.single().closed shouldBe true
+        slots.held shouldBe 0
+        metrics.slotDelta.get() shouldBe 0
+    }
+
+    @Test
+    fun `a failed unsubscribe still frees the stream slot`() {
+        val stream =
+            useCase(messageNotifier = failingUnsubscribeNotifier())
+                .open(workspaceId, null)
+                .shouldBeInstanceOf<StreamWorkspaceEvents.Open.Opened>()
+                .stream
+
+        shouldThrow<IllegalStateException> { stream.close() }.message shouldBe "unsubscribe failed"
+        notifier.handles.single().closed shouldBe true
+        slots.held shouldBe 0
+        metrics.slotDelta.get() shouldBe 0
+    }
+
+    private fun failingUnsubscribeNotifier(): MessageNotifier =
+        object : MessageNotifier by notifier {
+            override fun subscribeWorkspace(workspaceId: WorkspaceId): WaitHandle {
+                val handle = notifier.subscribeWorkspace(workspaceId)
+                return object : WaitHandle by handle {
+                    override fun close() {
+                        handle.close()
+                        error("unsubscribe failed")
+                    }
+                }
+            }
+        }
 }
