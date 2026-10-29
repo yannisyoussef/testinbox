@@ -83,12 +83,26 @@ COPY public.exact_address_reservation (id) FROM stdin;
 \.
 COPY public.flyway_schema_history (installed_rank) FROM stdin;
 \.
+COPY public.human_account (id, contact_email) FROM stdin;
+\.
+COPY public.beta_cohort (id) FROM stdin;
+\.
+COPY public.beta_admission (cohort_id, place) FROM stdin;
+\.
 CREATE TABLE public.message (id uuid);
 CREATE TABLE public.inbox (id uuid);
 SQL
 }
 control_plane_dump > "$WORK/good.sql"
 check "a control-plane-only dump passes (content tables schema-only)" 0 "$WORK/good.sql"
+for table in human_account beta_cohort beta_admission; do
+  awk -v omitted="$table" '
+    $0 ~ "^COPY public\\." omitted " " { skipping=1; next }
+    skipping && $0 == "\\." { skipping=0; next }
+    !skipping { print }
+  ' "$WORK/good.sql" > "$WORK/missing-$table.sql"
+  check_says "a backup missing $table is refused" 1 "MISSING: $table" "$WORK/missing-$table.sql"
+done
 
 { control_plane_dump; printf 'COPY public.message (id, raw_object_key) FROM stdin;\n\\.\n'; } > "$WORK/content.sql"
 check "a dump carrying message rows is refused — it would retain expired mail" 1 "$WORK/content.sql"
@@ -188,6 +202,12 @@ COPY public.api_key (id, key_hash) FROM stdin;
 COPY public.exact_address_reservation (id) FROM stdin;
 \.
 COPY public.flyway_schema_history (installed_rank) FROM stdin;
+\.
+COPY public.human_account (id) FROM stdin;
+\.
+COPY public.beta_cohort (id) FROM stdin;
+\.
+COPY public.beta_admission (place) FROM stdin;
 \.
 SQL
 check "COPY data rows that look like statements, quotes or terminators are data, not statements" 0 "$WORK/data-rows.sql"
@@ -381,7 +401,7 @@ printf 'PGDMP\x01\x0e\x00\x04\x08binary archive bytes' > "$WORK/archive.dump"
 check_says "a custom-format archive is refused with the pg_restore -l recipe" 1 "is a pg_dump archive, not plain SQL" "$WORK/archive.dump"
 
 # --- pg_restore -l style table lists -----------------------------------------
-printf 'workspace\nproject\napi_key\nexact_address_reservation\nflyway_schema_history\n' > "$WORK/list.txt"
+printf 'workspace\nproject\napi_key\nexact_address_reservation\nflyway_schema_history\nhuman_account\nbeta_cohort\nbeta_admission\n' > "$WORK/list.txt"
 check "a table list of exactly the control plane passes" 0 "$WORK/list.txt"
 # The documented recipe, run against a genuine `pg_restore -l` excerpt.
 cat > "$WORK/restore.list" <<'LIST'
@@ -393,6 +413,9 @@ cat > "$WORK/restore.list" <<'LIST'
 3119; 0 16413 TABLE DATA public api_key testinbox
 3120; 0 16424 TABLE DATA public exact_address_reservation testinbox
 3121; 0 16380 TABLE DATA public flyway_schema_history testinbox
+3123; 0 16381 TABLE DATA public human_account testinbox
+3124; 0 16382 TABLE DATA public beta_cohort testinbox
+3125; 0 16383 TABLE DATA public beta_admission testinbox
 215; 1259 16391 TABLE public message testinbox
 LIST
 awk '/ TABLE DATA / {print $7}' "$WORK/restore.list" > "$WORK/from-restore.txt"
@@ -401,10 +424,10 @@ check_says "the raw pg_restore -l listing itself is refused, naming the recipe" 
 printf '3122; 0 16435 TABLE DATA public message testinbox\n' >> "$WORK/restore.list"
 awk '/ TABLE DATA / {print $7}' "$WORK/restore.list" > "$WORK/from-restore-content.txt"
 check "and refuses once message data appears in the archive listing" 1 "$WORK/from-restore-content.txt"
-printf 'public.workspace\nPUBLIC.PROJECT\n"api_key"\nexact_address_reservation\nflyway_schema_history\n' > "$WORK/list-forms.txt"
+printf 'public.workspace\nPUBLIC.PROJECT\n"api_key"\nexact_address_reservation\nflyway_schema_history\nHUMAN_ACCOUNT\npublic.beta_cohort\n"beta_admission"\n' > "$WORK/list-forms.txt"
 check "schema prefixes, quoting and case in a list are normalised" 0 "$WORK/list-forms.txt"
-printf 'workspace\nproject\napi_key\nexact_address_reservation\nflyway_schema_history\ninbox\n' > "$WORK/list-inbox.txt"
-check "a list including inbox data is refused" 1 "$WORK/list-inbox.txt"
+{ cat "$WORK/list.txt"; printf 'inbox\n'; } > "$WORK/list-inbox.txt"
+check_says "a list including inbox data is refused" 1 "RETAINS CONTENT: inbox" "$WORK/list-inbox.txt"
 check "a missing input is a usage error" 2 "$WORK/nope.txt"
 
 # --- ADR-035 (V6): the seven accounting/admission tables ----------------------
@@ -509,6 +532,8 @@ SQL
       psql <<'SQL' >/dev/null && seeded=1 || seeded=0
 INSERT INTO workspace (id, name, created_at) VALUES ('11111111-1111-1111-1111-111111111111', E'ws ''quoted'' \\ backslash\nINSERT INTO public.message VALUES (1);', now());
 INSERT INTO project (id, workspace_id, name, created_at) VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', 'p', now());
+INSERT INTO human_account (id, contact_email, contact_verified_at, created_at) VALUES ('77777777-7777-7777-7777-777777777777', 'backup-fixture@example.invalid', now(), now());
+INSERT INTO beta_admission (cohort_id, place, account_id, workspace_id, project_id, admitted_at) VALUES ('beta-30', 1, '77777777-7777-7777-7777-777777777777', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', now());
 INSERT INTO api_key (id, workspace_id, project_id, key_hash, scopes, created_at) VALUES ('33333333-3333-3333-3333-333333333333', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', repeat('a', 64), ARRAY['inboxes:write'], now());
 INSERT INTO exact_address_reservation (id, workspace_id, local_part, inbox_id, status, reserved_at) VALUES ('44444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'qa', '55555555-5555-5555-5555-555555555555', 'ACTIVE', now());
 INSERT INTO inbox (id, workspace_id, project_id, address, address_mode, state, created_at, expires_at) VALUES ('55555555-5555-5555-5555-555555555555', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'qa@inbox.testinbox.local', 'EXACT', 'ACTIVE', now(), now() + interval '1 hour');

@@ -18,6 +18,12 @@
 + api_key
 + exact_address_reservation
 + flyway_schema_history
+# ADR-036 (V12): durable identity and participant allocation. This adds
+# contact personal data to control-plane backups; notices/retention and the
+# deletion/restore procedure must be completed before participant activation.
++ human_account
++ beta_cohort
++ beta_admission
 - inbox
 - message
 - attachment

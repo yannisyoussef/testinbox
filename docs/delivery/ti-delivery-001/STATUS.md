@@ -21,6 +21,13 @@ explicit access authorization.
   develop and master are unchanged. Human login is not implemented yet.
 - Nothing pushed, merged, deployed or activated. No external messages sent.
 - New root `AGENTS.md` points to existing repository guidance and these files.
+- Saved local milestones: `4a79dca` (M0), `72d5c5a` (console integration),
+  `da8acef` (stream fix and accepted ADR-036).
+- Frontend companion checkout:
+  `/Users/yannisbabineni/Projects/infinity/testinbox-web`, clean develop at
+  `e6304d01d341ad3e90a6953211e2a7dba9904e68`; origin/master
+  `8da2d40a264179bb0e74fd7c4a6631fccade2c68`. No tracked AGENTS/CLAUDE files
+  exist in the frontend checkout. Its README and `docs/handoff.md` apply.
 
 ## Verification saved for M0
 
@@ -58,15 +65,29 @@ libraries, email codes, revocable sessions, one participant workspace and a
 fixed thirty-account admission transaction are accepted. Production activation
 is still separate. See `docs/adr/0036-human-identity-and-beta-admission.md`.
 
-Next implementation increment: M3 account/admission domain, transaction port,
-new expand-only migration and real PostgreSQL concurrency tests. Keep the
-adapter unexposed and admissions closed by default. Authentication, console
-integration and effective resource protection remain incomplete.
+## Account/admission foundation (M3a)
+
+Implemented and verified: framework-free account/admission model, one
+transactional provisioner, PostgreSQL adapter, expand-only V12 and backup
+classification. Both cohort controls default false. SQL bounds the one cohort
+to places 1–30, one account/workspace/project per membership, and preserves
+consumed places when an account is removed. No public endpoint uses it yet.
+
+Verification: full backend build and final result verifier report 1,467 tests,
+zero failures/errors/skips; thirteen new PostgreSQL proofs and two architecture
+guard tests. Detekt, formatting, migration safety and backup classification
+pass. The backup suite passes 165/165 with `LC_ALL=C`; its production gate is
+unchanged. See [VERIFICATION.md](VERIFICATION.md) for exact commands and limits.
+
+Next increment: authored human-account HTTP contract, email challenge/session
+and OAuth adapters, bounded verification attempts and transient state, then
+frontend real-session wiring. Do not confuse `capacity_ready=false` with an
+implemented resource policy; M4 remains a release gate.
 
 ## Next milestone and exact continuation
 
-M3: implement and prove account/admission persistence before exposing a signup
-endpoint; prepare the authored account contract before adding HTTP behavior.
+M3b: implement authentication/session/provider flows around the tested cohort
+transaction; author the account contract before its HTTP behavior.
 
 1. Read `AGENTS.md`, `CLAUDE.md`, this file, [PLAN.md](PLAN.md) and
    [DISCOVERY.md](DISCOVERY.md). The ignored handoff may be absent in another
@@ -81,10 +102,11 @@ endpoint; prepare the authored account contract before adding HTTP behavior.
 4. Implement ADR-036, explicitly accepted by the owner. Write the account HTTP
    contract before its controllers. Do not change another Accepted invariant
    in passing or silently accept any unrelated Proposed ADR.
-5. Specify cap transaction, retry/linking behavior, one-workspace provisioning,
-   suspension/session/key revocation and account deletion. Revisit ADR-027,
-   ADR-033 and ADR-034 assumptions explicitly. Include security abuse cases
-   and test mapping before implementation.
+5. Reuse `AdmitBetaParticipant` and `JdbcBetaAdmissions`; do not create another
+   participant provisioner. Add email/OAuth identity resolution and revocable
+   sessions. The source of the account ID must be the validated identity/session,
+   never a request field. Complete suspension/key/ingestion and deletion policy
+   before participant activation. Revisit ADR-027/033/034 assumptions explicitly.
 6. Propose a cohort resource budget and the scoped storage-policy path. Do not
    enable production TENANT_LIMITS/ALL or mistake OFF for capacity enforcement.
    See ADR-035 Amendment 2 and the public-boundary decision document.
@@ -93,8 +115,8 @@ endpoint; prepare the authored account contract before adding HTTP behavior.
 
 ## Known follow-ups, not hidden completion claims
 
-- GitLab frontend work needs its own checkout and repository guidance before
-  editing. Current primary checkout contains only the Inspector.
+- GitLab frontend is checked out beside this repository. Create its own delivery
+  branch and checkpoint before editing. The primary repo contains only the Inspector.
 - Java 21 for Detekt is at
   `/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home`; Java 25,
   Node and Docker are present.
