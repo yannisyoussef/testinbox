@@ -168,6 +168,14 @@ components:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
   schemas:
+    BetaWaitlistView:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [WAITING, NOT_WAITING, ADMITTED, UNAVAILABLE] }
+        joinedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
     HumanSessionView:
       type: object
       additionalProperties: false
@@ -1679,4 +1687,64 @@ paths:
           headers:
             Location: { schema: { type: string, format: uri } }
         "400": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+
+  /account/waitlist:
+    servers: [{ url: / }]
+    get:
+      operationId: getBetaWaitlist
+      security: [{ humanSession: [] }]
+      summary: Read this verified account's own waitlist state.
+      description: >
+        No other applicant, position or count is disclosed. Expired entries
+        are removed. An admission is reported as ADMITTED, not waiting.
+      responses:
+        "200":
+          description: Own state only. WAITING includes joinedAt and expiresAt; other states are NOT_WAITING or ADMITTED.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BetaWaitlistView" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: joinBetaWaitlist
+      security: [{ humanSession: [] }]
+      summary: Explicitly join the bounded beta waitlist with this account's verified contact.
+      description: >
+        Requires exact Origin and X-CSRF-Token. No body, query, account, email
+        or workspace field is accepted. One entry per active verified account;
+        retry preserves its original timestamps, so retries cannot extend
+        retention. Maximum 1000 entries and a configured lifetime of 1–90 days
+        are enforced server-side. No admission, workspace, key or sending action.
+        Full returns UNAVAILABLE with no count; admission remains independent.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Own WAITING, ADMITTED or UNAVAILABLE decision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BetaWaitlistView" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: withdrawBetaWaitlist
+      security: [{ humanSession: [] }]
+      summary: Withdraw this account's waitlist entry, without changing its admission.
+      description: Requires exact Origin and X-CSRF-Token, with no body or query. Idempotent; no email is sent.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: This account has no waitlist entry. }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
         "503": { $ref: "#/components/responses/Problem" }

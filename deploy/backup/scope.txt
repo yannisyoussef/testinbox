@@ -32,6 +32,8 @@
 - human_auth_gate
 - email_login_challenge
 - provider_login_state
+# ADR-036 (V16): optional expiring waitlist; restore never re-enrolls a withdrawn applicant.
+- beta_waitlist
 - inbox
 - message
 - attachment

@@ -253,4 +253,79 @@ class HumanAccountsApiTest : ApiIntegrationTestBase() {
         response.statusCode() shouldBe 404
         assertPrivate(response)
     }
+
+    @Test
+    fun `waitlist requires explicit opt in reveals only own state and never grants a workspace`() {
+        val (account, session) = login()
+        val before = jdbc.sql("SELECT count(*) FROM workspace").query(Long::class.javaObjectType).single()
+        val read = call("/account/waitlist", session = session)
+        read.statusCode() shouldBe 200
+        json.readTree(read.body())["status"].asText() shouldBe "NOT_WAITING"
+        val joined = post("/account/waitlist", session)
+        joined.statusCode() shouldBe 200
+        val view = json.readTree(joined.body())
+        view["status"].asText() shouldBe "WAITING"
+        view.fieldNames().asSequence().toSet() shouldBe setOf("status", "joinedAt", "expiresAt")
+        joined.body().contains(account.value.toString()) shouldBe false
+        assertPrivate(joined)
+        post("/account/waitlist", session).body() shouldBe joined.body()
+        call("/v1/workspace", session = session).statusCode() shouldBe 401
+        jdbc
+            .sql("SELECT count(*) FROM beta_admission WHERE account_id=:id")
+            .param("id", account.value)
+            .query(Long::class.javaObjectType)
+            .single() shouldBe 0
+        jdbc.sql("SELECT count(*) FROM workspace").query(Long::class.javaObjectType).single() shouldBe before
+    }
+
+    @Test
+    fun `waitlist mutations enforce exact origin CSRF and refuse caller supplied account data`() {
+        val (_, session) = login()
+        for (method in listOf("POST", "DELETE")) {
+            call("/account/waitlist", method, session).statusCode() shouldBe 403
+            call("/account/waitlist", method, session, "https://evil.invalid", HumanSessionCookies.csrf(session.credential))
+                .statusCode() shouldBe 403
+            call("/account/waitlist", method, session, "https://console.example.invalid", "wrong").statusCode() shouldBe 403
+            call("/account/waitlist", method, origin = "https://console.example.invalid").statusCode() shouldBe 401
+        }
+        post("/account/waitlist", session, """{"accountId":"${UUID.randomUUID()}"}""").statusCode() shouldBe 400
+        post("/account/waitlist?email=other@example.invalid", session).statusCode() shouldBe 400
+        call("/account/waitlist", extra = mapOf("Authorization" to "Bearer $adminKey")).statusCode() shouldBe 401
+    }
+
+    @Test
+    fun `waitlist withdrawal cannot remove another account or extend expired participation`() {
+        val (first, a) = login()
+        val (second, b) = login()
+        post("/account/waitlist", a).statusCode() shouldBe 200
+        post("/account/waitlist", b).statusCode() shouldBe 200
+        val deleted =
+            call(
+                "/account/waitlist",
+                "DELETE",
+                a,
+                "https://console.example.invalid",
+                HumanSessionCookies.csrf(a.credential),
+                extra = mapOf("X-Account-Id" to second.value.toString()),
+            )
+        deleted.statusCode() shouldBe 204
+        deleted.body() shouldBe ""
+        jdbc
+            .sql("SELECT count(*) FROM beta_waitlist WHERE account_id=:id")
+            .param("id", first.value)
+            .query(Long::class.javaObjectType)
+            .single() shouldBe 0
+        json.readTree(call("/account/waitlist", session = b).body())["status"].asText() shouldBe "WAITING"
+        jdbc
+            .sql(
+                """
+                UPDATE beta_waitlist SET joined_at=joined_at-interval '31 days',expires_at=expires_at-interval '31 days'
+                WHERE account_id=:id
+                """.trimIndent(),
+            ).param("id", second.value)
+            .update()
+        json.readTree(call("/account/waitlist", session = b).body())["status"].asText() shouldBe "NOT_WAITING"
+        post("/account/waitlist", b).statusCode() shouldBe 200
+        json.readTree(call("/account/session", session = b).body())["admission"].asText() shouldBe "NOT_ADMITTED"
+    }
 }

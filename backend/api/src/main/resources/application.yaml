@@ -31,6 +31,9 @@ testinbox:
   accounts:
     enabled: ${TESTINBOX_ACCOUNTS_ENABLED:false}
     public-origin: ${TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN:}
+    waitlist:
+      retention: ${TESTINBOX_ACCOUNTS_WAITLIST_RETENTION:30d}
+      maximum: ${TESTINBOX_ACCOUNTS_WAITLIST_MAXIMUM:1000}
     oauth:
       state-key-base64: ${TESTINBOX_ACCOUNTS_OAUTH_STATE_KEY_BASE64:}
       google:

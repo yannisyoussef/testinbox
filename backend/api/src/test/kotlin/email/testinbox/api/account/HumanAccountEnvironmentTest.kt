@@ -14,7 +14,12 @@ import java.util.Base64
 /** Read the real shipped YAML; a missing/wrong env mapping must fail before a host window. */
 class HumanAccountEnvironmentTest {
     @Configuration(proxyBeanMethods = false)
-    @EnableConfigurationProperties(HumanAccountProperties::class, EmailLoginProperties::class, ProviderAccountProperties::class)
+    @EnableConfigurationProperties(
+        HumanAccountProperties::class,
+        EmailLoginProperties::class,
+        ProviderAccountProperties::class,
+        BetaWaitlistProperties::class,
+    )
     class PropertiesOnly
 
     private fun context(values: Map<String, Any> = emptyMap()): ApplicationContextRunner =
@@ -93,6 +98,20 @@ class HumanAccountEnvironmentTest {
             oauth.github.clientSecret shouldBe "github-credential"
             oauth.toString().contains("fixture-state-key") shouldBe false
             oauth.google.toString().contains("google-credential") shouldBe false
+        }
+    }
+
+    @Test
+    fun `waitlist environment names bind bounded policy without changing defaults in existing rows`() {
+        context(
+            mapOf(
+                "TESTINBOX_ACCOUNTS_WAITLIST_RETENTION" to "14d",
+                "TESTINBOX_ACCOUNTS_WAITLIST_MAXIMUM" to "100",
+            ),
+        ).run { context ->
+            val policy = context.getBean(BetaWaitlistProperties::class.java).policy
+            policy?.retention shouldBe java.time.Duration.ofDays(14)
+            policy?.maximum shouldBe 100
         }
     }
 }

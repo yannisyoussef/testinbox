@@ -197,10 +197,31 @@ changed. These tests use a local RSA-signing provider, not live Google/GitHub
 consent. The complete human console, waitlist/account controls, resource-policy
 release gate and cross-repository browser acceptance are still outstanding.
 
+## Waitlist increment (M3g, verified locally)
+
+Latest saved prior milestone: `74a6c83`. Explicit session/CSRF-bound join,
+read/withdraw, one unique account entry, a database ceiling of 1,000 places and
+scheduled expiry are implemented. Proposed retention is thirty days,
+configurable within 1–90 days; its acceptance remains a release decision.
+Waitlist is excluded from backups and grants no product authority. See
+[WAITLIST.md](WAITLIST.md). No campaign or automatic admission follows joining.
+
+Full backend build: PASS (2m37s), final verifier 1,648 tests across twelve
+modules, zero failures/errors/skips. Backup suite 181/181; all sixteen
+migrations expand-only; Detekt, formatting, diff and scoped gitleaks pass.
+A shrinking-ceiling regression failed before the query counted every existing
+entry, then passes after correction. The first full run also caught the
+explicit migration inventory still ending at V15; it now explicitly includes
+V16, preserving the exact discovery assertion. No failed checks were waived.
+
+All three login methods plus the waitlist are local and dormant. The human
+product authority/credential actor, account/operator lifecycle, real console,
+M4 policy decisions and cross-repository acceptance remain incomplete.
+
 ## Next milestone and exact continuation
 
-M3g: explicit bounded waitlist and account/operator lifecycle, then the
-Next.js same-origin session/real-console flow. All three login methods are
+M3h: explicit human workspace/credential actor and account/operator lifecycle,
+then the Next.js same-origin session/real-console flow. All three login methods are
 implemented locally but dormant; live provider/sender acceptance and the M4
 resource-policy decision remain release gates. Do not repeat accepted ADR-036
 or ask the owner to reauthorize implementation.

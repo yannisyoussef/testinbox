@@ -440,7 +440,7 @@ check "a missing input is a usage error" 2 "$WORK/nope.txt"
 # classification check; marking one '+' is refused outright, in either mode,
 # because backing it up would carry derived or transient state (ADR-035 §14).
 for t in workspace_storage_account inbox_storage storage_delta storage_reservation \
-         storage_ambiguity storage_node storage_admission_latch storage_clock_episode human_session email_login_challenge human_auth_gate provider_login_state; do
+         storage_ambiguity storage_node storage_admission_latch storage_clock_episode human_session email_login_challenge human_auth_gate provider_login_state beta_waitlist; do
   grep -qx -- "- $t" "$SCOPE_FILE" || { echo "FAIL — $t is not classified '-' in the real scope"; fail=$((fail + 1)); continue; }
   grep -vx -- "- $t" "$SCOPE_FILE" > "$WORK/omit-$t.txt"
   out=$(BACKUP_SCOPE="$WORK/omit-$t.txt" "$GATE" --classification "$MIGRATIONS" 2>&1); st=$?
@@ -539,6 +539,7 @@ INSERT INTO workspace (id, name, created_at) VALUES ('11111111-1111-1111-1111-11
 INSERT INTO project (id, workspace_id, name, created_at) VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', 'p', now());
 INSERT INTO human_account (id, contact_email, contact_verified_at, created_at) VALUES ('77777777-7777-7777-7777-777777777777', 'backup-fixture@example.invalid', now(), now());
 INSERT INTO human_identity (provider, issuer, subject, account_id, created_at) VALUES ('EMAIL', 'testinbox', 'backup-fixture@example.invalid', '77777777-7777-7777-7777-777777777777', now());
+INSERT INTO beta_waitlist (account_id,place,joined_at,expires_at) VALUES ('77777777-7777-7777-7777-777777777777', 1, now(), now()+interval '30 days');
 INSERT INTO provider_login_state (state_hash,browser_hash,source_hash,provider,encrypted_request,created_at,expires_at) VALUES (repeat('d',64), repeat('e',64), repeat('f',64), 'GOOGLE', 'encrypted-fixture', now(), now()+interval '10 minutes');
 INSERT INTO human_auth_gate (id) VALUES (1);
 INSERT INTO email_login_challenge (id,email,browser_hash,source_hash,code_verifier,created_at,expires_at,attempts_remaining,state) VALUES ('88888888-8888-8888-8888-888888888888', 'backup-fixture@example.invalid', repeat('a',64), repeat('b',64), repeat('c',64), now(), now()+interval '10 minutes', 5, 'FAILED');
@@ -557,7 +558,7 @@ SQL
         echo "FAIL — seeding the synthetic database failed"; fail=$((fail + 1))
       fi
       # Real authentication rows must be omitted, not just empty classified tables.
-      for transient in human_session email_login_challenge human_auth_gate provider_login_state; do
+      for transient in human_session email_login_challenge human_auth_gate provider_login_state beta_waitlist; do
         transient_args=(); for t in $(grep -E '^- ' "$SCOPE_FILE" | sed 's/^- //'); do
           [[ "$t" == "$transient" ]] || transient_args+=(--exclude-table-data="public.$t")
         done

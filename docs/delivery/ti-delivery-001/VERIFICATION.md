@@ -275,3 +275,27 @@ checker to root-installed copies before migrations. No infrastructure change.
 - No external OAuth credentials/consent, DNS, SMTP delivery, live host or shared
   branch was touched. This does not prove frontend BFF/cookie behavior or
   provider setup in the eventual authorized environment.
+
+## M3g — explicit bounded waitlist
+
+- `TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 ./gradlew spotlessApply build --console=plain`:
+  final PASS, 2m37s. Verifier: 1,648 across twelve modules, zero failures/errors/skips.
+  Architecture 51, domain 126, application 455, persistence 431, API 251;
+  other module counts unchanged from M3f.
+- Focused PostgreSQL/HTTP/architecture tests passed before full regression.
+  Eleven PostgreSQL cases include concurrent independent provisioners, full
+  1,000-entry SQL ceiling, retention/withdrawal, rollback and account cascade.
+  Three HTTP journeys, two domain bounds, two writer guards with bypass,
+  four cleanup/policy tests and the real YAML env-binding case also pass.
+- A new shrinking-budget regression failed on the initial slot-only query.
+  Counting all existing entries before selecting a slot makes it pass, including
+  entries whose place lies above the newly lowered ceiling.
+- The first full build had one failure: its explicit migration inventory still
+  stopped at V15. Updated the exact list to include V16, without weakening it;
+  final full build is green. Formatting errors during development were fixed.
+- `LC_ALL=C ./scripts/check-backup-scope.test.sh`: 181/181, including a real
+  waitlist-containing dump and mandatory-deny misclassification tests.
+- Migration safety: all sixteen expand-only. Detekt on Java 21, formatting,
+  diff check and scoped gitleaks: PASS. No threshold or activation gate changed.
+- Retention is an implementation default awaiting owner acceptance; no people
+  were enrolled, contacted or admitted and no live configuration changed.
