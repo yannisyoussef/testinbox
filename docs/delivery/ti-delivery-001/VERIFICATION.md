@@ -215,3 +215,34 @@ API/Angus dependencies, avoiding generic spring.mail auto-configuration.
 No sending identity, host setting, password, DNS or live service was touched.
 These tests do not claim external delivery, Google/GitHub protocol validation
 or a real browser/BFF journey. Production flags and admissions remain off.
+
+
+## M3e — bounded encrypted provider state and verified-provider transaction
+
+Final full `TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 ./gradlew build
+--console=plain`: PASS (1m 26s). Final verifier: 1,596 tests across twelve
+modules, zero failures/errors/skips. Counts: architecture 49, domain 124,
+application 455, persistence 420, API 214; other module counts unchanged.
+Detekt on Java 21 and formatting pass without suppressions or threshold
+changes. Backup suite 178/178; nine tables retained, twenty-five excluded;
+all fifteen migrations expand-only. Scoped secret scans find no leaks.
+
+Four crypto-helper cases, fourteen PostgreSQL state/sign-in cases, two domain
+boundary cases, three cleanup and three writer/issuer guard cases were added.
+State is encrypted and contextual authentication fails for altered bytes,
+provider, state hash or key. Eight independent consumers yield exactly one
+request. Real limits span peers/providers and preserve consumed/replaced rate
+metadata. Atomic provider identity/session rollback is verified. These are
+upstream-proof-assuming application tests, not actual Google/GitHub protocol
+acceptance, which remains M3f.
+
+Failure history: an inherited test helper had a default-argument overload
+ambiguity; it now has a distinct provider name. The new guard initially counted
+Kotlin's issuer default-argument self-delegation as an external caller. The
+corrected guard excludes self-calls only and still fails both concrete-state
+and unverified-issuer negative fixtures. The initial full build had only that
+guard failure; focused guard/static checks and the final full build pass.
+
+Readonly deployment reference: infinity-core `9b4f57e70687cb64dc08447d3dd6ecf5ffd715c7`,
+`infra/testinbox/reconcile.sh` gate 3b compares the candidate's backup scope and
+checker to root-installed copies before migrations. No infrastructure change.

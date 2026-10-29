@@ -31,6 +31,7 @@
 # remain transient; no login state may be resurrected by a restore.
 - human_auth_gate
 - email_login_challenge
+- provider_login_state
 - inbox
 - message
 - attachment

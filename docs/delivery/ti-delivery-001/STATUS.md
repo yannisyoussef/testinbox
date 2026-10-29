@@ -22,7 +22,8 @@ explicit access authorization.
 - Nothing pushed, merged, deployed or activated. No external messages sent.
 - New root `AGENTS.md` points to existing repository guidance and these files.
 - Saved local milestones: `4a79dca` (M0), `72d5c5a` (console integration),
-  `da8acef` (stream fix and accepted ADR-036), `e52d057` (M3a admission).
+  `da8acef` (stream fix and accepted ADR-036), `e52d057` (M3a admission),
+  `792564f` (M3b sessions), `bab3521` (M3c email core), `7a60631` (M3d email HTTP).
 - Frontend companion checkout:
   `/Users/yannisbabineni/Projects/infinity/testinbox-web`, on its own delivery branch, starting at
   `e6304d01d341ad3e90a6953211e2a7dba9904e68`; origin/master
@@ -149,11 +150,33 @@ not the required 32; its incomplete-flow response was correct. Another test's
 HTTP helper omitted Origin, correctly refused as 403. Correct fixture key and
 Origin-capable transport pass without weakening the production checks.
 
+## Federated login state (M3e, verified foundation)
+
+AEAD-encrypted, ten-minute, browser/provider-bound single-use state,
+bounded rate metadata, V15, cleanup and the verified-provider sign-in
+transaction are implemented and tested. Full build, Detekt and formatting
+pass. Final verifier: 1,596 tests across twelve modules, zero failures/errors/
+skips; backup suite 178/178; fifteen expand-only migrations. See
+[PROVIDER-LOGIN.md](PROVIDER-LOGIN.md). Google/GitHub HTTP/protocol adapters
+are still unimplemented: upstream proof is assumed in these core tests.
+
+The first focused run had an overloaded test-helper name; the helper now
+names its provider operation. The new issuer guard initially counted Kotlin's
+own default-argument bridge as an external issuer. It now excludes internal
+self-delegation while independently proving both external bypass fixtures
+fail. Production behavior and guard allow-lists were not relaxed.
+
+Read-only Ops source check: infinity-core master `9b4f57e70687cb64dc08447d3dd6ecf5ffd715c7`
+requires root-installed backup scope AND checker to match the candidate before
+migrating (reconcile.sh gate 3b), then applies the candidate grants before
+starting services. Include this explicit host prerequisite in the final Ops
+packet; no host preparation was authorized or performed here.
+
 ## Next milestone and exact continuation
 
-M3e: Google/GitHub protocol adapters, using the maintained Spring Security
-client managed by Boot (7.1.1), bounded browser-bound provider state, no stored
-provider tokens or implicit linking. Then waitlist/operator lifecycle and the
+M3f: wire and verify Google/GitHub protocol adapters using the maintained
+Spring Security client managed by Boot (7.1.1), the tested M3e state lifecycle,
+no stored provider tokens or implicit linking. Then waitlist/operator lifecycle and the
 Next.js same-origin session/real-console flow. Email is implemented but dormant.
 
 1. Read `AGENTS.md`, `CLAUDE.md`, this file, [PLAN.md](PLAN.md) and
