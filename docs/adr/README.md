@@ -39,5 +39,7 @@
 | [0035](0035-physical-storage-bound-at-ingest.md) | Physical storage bound at ingest | Accepted |
 | [0036](0036-human-identity-and-beta-admission.md) | Human identity, sessions and bounded beta admission | Accepted for implementation (2026-10-29, TI-DELIVERY-001; activation separately gated) |
 
+| [0037](0037-bounded-cohort-storage-and-disclosure.md) | Bounded cohort storage and capacity disclosure | Proposed — owner decision required |
+
 `Proposed` ADRs require a human decision (see `VISION.md` §Human Decisions
 Required Before Implementation) before they can move to `Accepted`.

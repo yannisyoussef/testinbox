@@ -260,6 +260,16 @@ all aliases while the original API stays operational. Complete API/architecture
 and Detekt pass; combined verifier 1,678 tests, no failures/errors/skips.
 Next.js product streaming transport is in progress in the frontend repository.
 
+## Resource-policy decision (M4, proposed only)
+
+[ADR-037](../../adr/0037-bounded-cohort-storage-and-disclosure.md) proposes
+128 MiB payload / 256 MiB footprint per participant, no overcommit, attributed
+deletion debt and full-envelope pricing. It explicitly accepts the remaining
+cross-event capacity side channel, rather than claiming shares remove it.
+Owner acceptance is pending; no corresponding policy implementation or
+production gate relaxation is permitted yet. Concrete global/debt/reserve
+configuration remains an evidence-based release/Operations step.
+
 ## Next milestone and exact continuation
 
 M3h: explicit human workspace/credential actor and account/operator lifecycle,
