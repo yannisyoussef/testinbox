@@ -23,7 +23,8 @@ class Slf4jAuditLog : AuditLog {
         val correlationId = MDC.get(CORRELATION_KEY)
         val common =
             "at=${event.at} workspaceId=${event.workspaceId.value} " +
-                "actorApiKeyId=${event.actorApiKeyId?.value ?: "-"} correlationId=${correlationId ?: "-"}"
+                "actorApiKeyId=${event.actorApiKeyId?.value ?: "-"} " +
+                "actorHumanAccountId=${event.actorHumanAccountId?.value ?: "-"} correlationId=${field(correlationId)}"
         when (event) {
             is AuditEvent.ApiKeyCreated -> {
                 log.info(
@@ -31,7 +32,7 @@ class Slf4jAuditLog : AuditLog {
                     common,
                     event.apiKeyId.value,
                     event.publicId,
-                    event.name ?: "-",
+                    field(event.name),
                     event.scopes
                         .map { it.wire }
                         .sorted()
@@ -55,6 +56,47 @@ class Slf4jAuditLog : AuditLog {
                 // estate is still shipping the bootstrap secret.
                 log.warn("event=bootstrap.superseded {}", common)
             }
+        }
+    }
+
+    /** Logfmt-compatible quoting, preserving a user label without letting it forge fields or lines. */
+    private fun field(value: String?): String {
+        if (value == null) return "-"
+        if (value.matches(Regex("[A-Za-z0-9._:@/-]+"))) return value
+        return buildString {
+            append('"')
+            for (character in value) {
+                when (character) {
+                    '"' -> {
+                        append("\\\"")
+                    }
+
+                    '\\' -> {
+                        append("\\\\")
+                    }
+
+                    '\n' -> {
+                        append("\\n")
+                    }
+
+                    '\r' -> {
+                        append("\\r")
+                    }
+
+                    '\t' -> {
+                        append("\\t")
+                    }
+
+                    else -> {
+                        if (character.isISOControl() || character == '\u2028' || character == '\u2029') {
+                            append("\\u").append(character.code.toString(16).padStart(4, '0'))
+                        } else {
+                            append(character)
+                        }
+                    }
+                }
+            }
+            append('"')
         }
     }
 

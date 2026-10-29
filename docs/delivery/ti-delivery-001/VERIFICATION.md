@@ -310,3 +310,24 @@ the unchanged M3g modules: 1,650 tests, zero failures/errors/skips (API 253).
 Formatting/diff checks pass. No new migration or backup classification.
 Frontend proxy checkpoint `fb54107`: 62 units, typecheck/build and 30 fixture
 browser cases pass. Its native login UI is a separate unfinished increment.
+
+
+## M3h — human workspace/credential actor foundation
+
+Full backend build: PASS (2m31s). After replacing an eight-argument private
+helper with an explicit claim-actor value, complete persistence suite: PASS
+(2m15s), Detekt on Java 21: PASS (5s). Final combined verifier: 1,666 tests,
+zero failures/errors/skips; architecture 53, application 458, persistence 440,
+observability 37, remaining modules unchanged. Backup suite: 181/181; seventeen
+expand-only migrations, diff and scoped secret scans pass.
+
+New tests cover live admitted authority, revoked/suspended/deleting sessions,
+private memberships, separate human and machine claim ownership, six concurrent
+key creates, rollback/retry, persisted human provenance without plaintext,
+application-level management scope, and forbidden alternate actor constructors.
+Audit tests first exposed raw key-label log injection; quoting/escaping fixes the
+failing regression without changing stored labels. Compile typos and a static
+parameter-count violation were corrected; no gate was waived.
+
+No product HTTP aliases, live credentials, shared refs or hosts changed.
+Semantic rollback and account deletion/restore safety remain release gates.

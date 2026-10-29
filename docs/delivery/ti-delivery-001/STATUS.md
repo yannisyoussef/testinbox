@@ -230,6 +230,24 @@ fixtures are in progress, not verified yet. Human product/credential authority
 and native real-backend acceptance still remain. No publication/activation.
 
 
+## Human product actor (M3h foundation, verified locally)
+
+Explicit workspace actors, live session/admission resolution, human key provenance
+and independently bound idempotency claims are implemented. Only the existing
+credential use case mints keys; human sessions never become API keys. The full
+build passed, then the complete persistence suite passed after a private
+parameter-grouping refactor. Final verifier: 1,666 tests, no failures/errors/skips;
+Detekt and formatting pass, seventeen migrations are expand-only, backup suite
+181/181. Audit labels now quote/escape untrusted values; a regression caught the
+previous log-field injection before correction. No HTTP product aliases yet.
+
+Frontend `aaa9e3a` verifies native login/admission/waitlist/logout over fixture
+HTTPS (69 units, 35 browser checks); native product operations remain explicitly
+unavailable. Next: author product aliases and reuse controllers with route-derived
+human authority, workspace budgets, Origin/CSRF and actor-bound idempotency.
+See [HUMAN-CONSOLE.md](HUMAN-CONSOLE.md). Account lifecycle/action budgets, M4
+resource policy and real cross-repository acceptance remain release gates.
+
 ## Next milestone and exact continuation
 
 M3h: explicit human workspace/credential actor and account/operator lifecycle,

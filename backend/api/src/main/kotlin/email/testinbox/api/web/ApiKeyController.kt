@@ -209,6 +209,10 @@ class ApiKeyController(
                 ResponseEntity.noContent().build<Void>()
             }
 
+            RevokeApiKeyOutcome.NotPermitted -> {
+                Problems.respond(Problems.of(HttpStatus.FORBIDDEN, "missing-scope", "Missing scope", null, request))
+            }
+
             RevokeApiKeyOutcome.NotFound -> {
                 notFound(request)
             }
