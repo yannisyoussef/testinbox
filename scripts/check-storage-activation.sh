@@ -784,8 +784,13 @@ SELECT json_build_object(
       SELECT r.app || ': ' || p.priv || ' on ' || p.tbl
         FROM reach r
         JOIN (SELECT tbl, priv FROM (VALUES ('storage_sweep_run'), ('storage_delta'), ('workspace_storage_account'),
-                                            ('storage_containment_watermark')) AS t(tbl)
+                                            ('storage_containment_watermark'), ('storage_legacy_share'),
+                                            ('storage_cohort_plan'), ('workspace_deletion_charge')) AS t(tbl)
                      CROSS JOIN (VALUES ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE')) AS v(priv)
+              UNION ALL
+              -- ADR-037: a participant marker is inserted once by provisioning; erasing or
+              -- rewriting it would drop its workspace out of the cohort pool.
+              SELECT 'participant_workspace', priv FROM (VALUES ('UPDATE'), ('DELETE'), ('TRUNCATE')) AS v(priv)
               UNION ALL
               SELECT tbl, priv FROM (VALUES ('inbox_storage'), ('storage_footprint_trust'), ('storage_deletion_debt'),
                                             ('storage_debt_watermark'), ('storage_filesystem_observation'), ('storage_node'),

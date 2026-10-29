@@ -265,5 +265,9 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         state shouldContain "$api:INSERTonstorage_delta".replace(" ", "")
         state shouldContain "$api:UPDATEonstorage_footprint_trust.trusted_epoch".replace(" ", "")
         state shouldContain "$api:INSERTonstorage_filesystem_observation".replace(" ", "")
+        state shouldContain "$api:INSERTonworkspace_deletion_charge"
+        state shouldContain "$api:UPDATEonstorage_cohort_plan"
+        state shouldContain "$api:DELETEonstorage_legacy_share"
+        state shouldContain "$api:DELETEonparticipant_workspace"
     }
 }

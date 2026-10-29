@@ -373,3 +373,18 @@ the semantic rollback floor. Restore does not restore capacity approval or
 cleanup evidence. Recovery is hold-first and operator-reconciled; see
 [cohort storage](cohort-storage.md). Neither a successful migration nor a
 backup restore authorizes reopening registration.
+
+## The workspace-scoped NOTIFY payload (TI-DELIVERY-001)
+
+Since TI-DELIVERY-001, both deployables emit `pg_notify` with the payload
+`<workspaceId>/<inboxId>` (`NotificationPayload`) instead of the bare inbox id.
+A new listener decodes both shapes; an **older listener looks waiters up by the
+raw payload, so a new payload wakes nobody**. Its waits then sleep to the
+deadline past a persisted match, and nothing goes red: LISTEN stays healthy and
+`testinbox_wait_listen_degraded_polling` stays 0. Only wait latency shows it.
+
+- **Roll out reader-first**: the API before (or with) ingestion, never after it.
+- **Roll back API and ingestion together** across this change. Never roll the
+  API back below it while any ingestion node still runs it; roll ingestion back
+  first, or both in one step.
+- The payload is application code, not schema, so the database needs nothing.
