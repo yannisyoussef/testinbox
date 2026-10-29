@@ -52,3 +52,33 @@ The durable reservation/provisioning and per-workspace footprint/debt path,
 matching HTTP/SDK/UI visibility, lifecycle/restore safety and release package
 are not complete. Tests of envelope accounting alone do not complete M4 or
 make third-party registration ready.
+
+## M4b — conservative cohort feasibility arithmetic
+
+Implemented the fixed 128 MiB/256 MiB share constants and a checked capacity
+calculation reserving all thirty places, explicit legacy shares, a complete
+worst-case transient envelope and finalization. It independently checks global
+payload, global footprint and filesystem containment; unattributed deletion
+debt, trash, probe, metadata and operational reserves are additional. Missing
+declarations or arithmetic overflow return Unproven, never a zero-sized fit.
+The shared factory uses actual protocol/configuration maxima, without OFF
+reference defaults as supposed capacity evidence.
+
+Seven domain cases and one factory case added; complete domain/application/
+architecture suites PASS (133/466/55), Java 21 Detekt PASS. Equality/one-byte
+shortfall for each boundary, tiny-object amplification, legacy shares, missing
+fields, overflow and 1,000 bound-subadditivity cases are covered. Initial
+format errors and a test-only Kotlin infix/shift precedence mistake were
+corrected; no production rule was weakened. Prior full backend baseline is
+M4a (1,698); these are focused results, not a new full backend run.
+
+This is feasibility arithmetic, not verified host capacity or active limits.
+With the reference footprint model and one ingestion process, the worst
+50-recipient/501-object envelope costs 2,297,642,303 footprint bytes; all
+participant shares plus that envelope plus finalization need about 9.876 GiB
+of global footprint allowance BEFORE legacy shares. The corresponding payload
+allowance needs about 5.449 GiB before legacy shares. No such values were
+installed or inferred to be the live configuration.
+
+Next: durable participant workspace/share markers retained through membership
+removal, then persisted global budget approval and debt/usage enforcement.
