@@ -33,6 +33,7 @@ class HumanAccountsApiTest : ApiIntegrationTestBase() {
 
     @BeforeEach
     fun closeCohort() {
+        jdbc.sql("DELETE FROM participant_workspace").update()
         jdbc.sql("DELETE FROM beta_admission").update()
         jdbc.sql("UPDATE beta_cohort SET admissions_open=false, capacity_ready=false").update()
     }

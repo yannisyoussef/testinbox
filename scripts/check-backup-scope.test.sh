@@ -91,13 +91,15 @@ COPY public.beta_cohort (id) FROM stdin;
 \.
 COPY public.beta_admission (cohort_id, place) FROM stdin;
 \.
+COPY public.participant_workspace (workspace_id, cohort_id, place) FROM stdin;
+\.
 CREATE TABLE public.message (id uuid);
 CREATE TABLE public.inbox (id uuid);
 SQL
 }
 control_plane_dump > "$WORK/good.sql"
 check "a control-plane-only dump passes (content tables schema-only)" 0 "$WORK/good.sql"
-for table in human_account human_identity beta_cohort beta_admission; do
+for table in human_account human_identity beta_cohort beta_admission participant_workspace; do
   awk -v omitted="$table" '
     $0 ~ "^COPY public\\." omitted " " { skipping=1; next }
     skipping && $0 == "\\." { skipping=0; next }
@@ -212,6 +214,8 @@ COPY public.human_identity (subject) FROM stdin;
 COPY public.beta_cohort (id) FROM stdin;
 \.
 COPY public.beta_admission (place) FROM stdin;
+\.
+COPY public.participant_workspace (workspace_id, place) FROM stdin;
 \.
 SQL
 check "COPY data rows that look like statements, quotes or terminators are data, not statements" 0 "$WORK/data-rows.sql"
@@ -405,7 +409,7 @@ printf 'PGDMP\x01\x0e\x00\x04\x08binary archive bytes' > "$WORK/archive.dump"
 check_says "a custom-format archive is refused with the pg_restore -l recipe" 1 "is a pg_dump archive, not plain SQL" "$WORK/archive.dump"
 
 # --- pg_restore -l style table lists -----------------------------------------
-printf 'workspace\nproject\napi_key\nexact_address_reservation\nflyway_schema_history\nhuman_account\nhuman_identity\nbeta_cohort\nbeta_admission\n' > "$WORK/list.txt"
+printf 'workspace\nproject\napi_key\nexact_address_reservation\nflyway_schema_history\nhuman_account\nhuman_identity\nbeta_cohort\nbeta_admission\nparticipant_workspace\n' > "$WORK/list.txt"
 check "a table list of exactly the control plane passes" 0 "$WORK/list.txt"
 # The documented recipe, run against a genuine `pg_restore -l` excerpt.
 cat > "$WORK/restore.list" <<'LIST'
@@ -421,6 +425,7 @@ cat > "$WORK/restore.list" <<'LIST'
 3126; 0 16384 TABLE DATA public human_identity testinbox
 3124; 0 16382 TABLE DATA public beta_cohort testinbox
 3125; 0 16383 TABLE DATA public beta_admission testinbox
+3127; 0 16385 TABLE DATA public participant_workspace testinbox
 215; 1259 16391 TABLE public message testinbox
 LIST
 awk '/ TABLE DATA / {print $7}' "$WORK/restore.list" > "$WORK/from-restore.txt"
@@ -429,11 +434,21 @@ check_says "the raw pg_restore -l listing itself is refused, naming the recipe" 
 printf '3122; 0 16435 TABLE DATA public message testinbox\n' >> "$WORK/restore.list"
 awk '/ TABLE DATA / {print $7}' "$WORK/restore.list" > "$WORK/from-restore-content.txt"
 check "and refuses once message data appears in the archive listing" 1 "$WORK/from-restore-content.txt"
-printf 'public.workspace\nPUBLIC.PROJECT\n"api_key"\nexact_address_reservation\nflyway_schema_history\nHUMAN_ACCOUNT\npublic.human_identity\npublic.beta_cohort\n"beta_admission"\n' > "$WORK/list-forms.txt"
+printf 'public.workspace\nPUBLIC.PROJECT\n"api_key"\nexact_address_reservation\nflyway_schema_history\nHUMAN_ACCOUNT\npublic.human_identity\npublic.beta_cohort\n"beta_admission"\npublic.participant_workspace\n' > "$WORK/list-forms.txt"
 check "schema prefixes, quoting and case in a list are normalised" 0 "$WORK/list-forms.txt"
 { cat "$WORK/list.txt"; printf 'inbox\n'; } > "$WORK/list-inbox.txt"
 check_says "a list including inbox data is refused" 1 "RETAINS CONTENT: inbox" "$WORK/list-inbox.txt"
 check "a missing input is a usage error" 2 "$WORK/nope.txt"
+
+# The participant marker cannot be omitted or silently classified transient.
+for mode in omit deny; do
+  if [[ "$mode" == omit ]]; then sed '/^+ participant_workspace$/d' "$SCOPE_FILE" > "$WORK/marker-$mode.scope"
+  else sed 's/^+ participant_workspace$/- participant_workspace/' "$SCOPE_FILE" > "$WORK/marker-$mode.scope"; fi
+  out=$(BACKUP_SCOPE="$WORK/marker-$mode.scope" "$GATE" --classification "$MIGRATIONS" 2>&1); st=$?
+  if [[ $st == 1 && "$out" == *"SCOPE MISCLASSIFIED: participant_workspace"* ]]; then
+    echo "ok   — $mode of participant marker backup coverage is refused"; pass=$((pass + 1))
+  else echo "FAIL — $mode of participant marker backup coverage passed ($st)"; fail=$((fail + 1)); fi
+done
 
 # --- ADR-035 (V6): the seven accounting/admission tables ----------------------
 # Each must be classified, and classified '-'. Omitting one fails the
@@ -546,6 +561,7 @@ INSERT INTO human_auth_gate (id) VALUES (1);
 INSERT INTO email_login_challenge (id,email,browser_hash,source_hash,code_verifier,created_at,expires_at,attempts_remaining,state) VALUES ('88888888-8888-8888-8888-888888888888', 'backup-fixture@example.invalid', repeat('a',64), repeat('b',64), repeat('c',64), now(), now()+interval '10 minutes', 5, 'FAILED');
 INSERT INTO human_session (verifier, account_id, created_at, expires_at, last_seen_at) VALUES (repeat('b', 64), '77777777-7777-7777-7777-777777777777', now(), now() + interval '1 hour', now());
 INSERT INTO beta_admission (cohort_id, place, account_id, workspace_id, project_id, admitted_at) VALUES ('beta-30', 1, '77777777-7777-7777-7777-777777777777', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', now());
+INSERT INTO participant_workspace (workspace_id, cohort_id, place, allocated_at) VALUES ('11111111-1111-1111-1111-111111111111', 'beta-30', 1, now());
 INSERT INTO api_key (id, workspace_id, project_id, key_hash, scopes, created_at, created_by_human_account_id) VALUES ('33333333-3333-3333-3333-333333333333', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', repeat('a', 64), ARRAY['inboxes:write'], now(), '77777777-7777-7777-7777-777777777777');
 INSERT INTO exact_address_reservation (id, workspace_id, local_part, inbox_id, status, reserved_at) VALUES ('44444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'qa', '55555555-5555-5555-5555-555555555555', 'ACTIVE', now());
 INSERT INTO inbox (id, workspace_id, project_id, address, address_mode, state, created_at, expires_at) VALUES ('55555555-5555-5555-5555-555555555555', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'qa@inbox.testinbox.local', 'EXACT', 'ACTIVE', now(), now() + interval '1 hour');
@@ -580,6 +596,16 @@ SQL
         echo "FAIL — the genuine dump does not contain the function bodies the regression is about ($bodies lines)"; fail=$((fail + 1))
       fi
       check "genuine pg_dump --exclude-table-data for every '-' table passes (the Ops production form)" 0 "$WORK/v10-exclude-table-data.sql"
+      pg_dump "${exclude_args[@]}" --exclude-table-data=public.participant_workspace > "$WORK/missing-participant-marker.sql"
+      check_says "a genuine dump losing durable participant classification is refused" 1 "MISSING: participant_workspace" "$WORK/missing-participant-marker.sql"
+      # Restore the full production-form dump into a fresh database. The
+      # marker must survive with the same fixed share; authentication stays out.
+      psql -c 'CREATE DATABASE marker_restore' </dev/null >/dev/null
+      if docker exec -i -e PGPASSWORD=t "$PG_CONTAINER" psql -v ON_ERROR_STOP=1 -q -h 127.0.0.1 -U postgres -d marker_restore < "$WORK/v10-exclude-table-data.sql" > "$WORK/restore.log" 2>&1; then
+        restored=$(docker exec -e PGPASSWORD=t "$PG_CONTAINER" psql -tAc "SELECT count(*) FROM participant_workspace WHERE place=1 AND payload_limit_bytes=134217728 AND footprint_limit_bytes=268435456" -h 127.0.0.1 -U postgres -d marker_restore)
+        if [[ "$restored" == 1 ]]; then echo "ok   — genuine restore keeps the participant marker and fixed share"; pass=$((pass + 1))
+        else echo "FAIL — restored marker/share mismatch"; fail=$((fail + 1)); fi
+      else echo "FAIL — genuine backup restore failed: $(tail -2 "$WORK/restore.log")"; fail=$((fail + 1)); fi
       pg_dump "${keep_args[@]}" > "$WORK/v10-table.sql" 2>/dev/null
       check "genuine pg_dump --table for every '+' table passes" 0 "$WORK/v10-table.sql"
       pg_dump --inserts "${exclude_args[@]}" > "$WORK/v10-exclude-inserts.sql" 2>/dev/null

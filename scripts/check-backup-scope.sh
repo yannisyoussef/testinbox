@@ -67,6 +67,12 @@ for required in "${REQUIRED_DENY[@]}"; do
   done
 done
 
+# ADR-037: losing this marker can reclassify deleted participants as legacy
+# and forget their charged share. It is durable control-plane state, never '-'.
+marker_kept=0
+for kept in "${KEEP[@]}"; do [[ "$kept" == participant_workspace ]] && marker_kept=1; done
+(( marker_kept )) || { echo "SCOPE MISCLASSIFIED: participant_workspace must be '+' in $SCOPE" >&2; exit 1; }
+
 classified() {
   local t="$1" x
   for x in "${KEEP[@]}" "${DENY[@]}"; do [[ "$x" == "$t" ]] && return 0; done
@@ -132,7 +138,9 @@ is_table_list() {
 # line) names a table that carries data. Output: `DATA <table>` per data
 # statement, or `AMBIGUOUS <reason>` for input the reader cannot account for.
 read_sql_dump() {
-  awk '
+  # Byte-oriented lexer: octal UTF-8 BOM bytes must match under UTF-8 caller
+  # locales too. This affects only parsing, never the dump's stored content.
+  LC_ALL=C awk '
     function ambiguous(why) { print "AMBIGUOUS\t" why }
     # One identifier at the start of s: bare, or "quoted" with only the
     # characters a table name in this schema can have. Sets ident_len.

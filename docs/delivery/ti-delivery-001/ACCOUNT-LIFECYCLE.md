@@ -2,17 +2,20 @@
 
 This is the recorded design before implementation, under accepted ADR-036.
 It is not an installed operator tool or a participant-activation approval.
-Latest verified account implementation is `9353294`; native frontend is
-`117ec42`. ADR-037 remains Proposed and cannot be implemented without its
-pending owner decision. Physical storage/tunnel qualification is not reopened.
+The native identity/console foundation is locally verified. ADR-037 was
+accepted for implementation on 2026-10-29 after the storage/privacy explanation.
+Physical storage/tunnel qualification is not reopened. This document records
+lifecycle work still outstanding; only the durable marker foundation below
+is now implemented.
 
 ## Preserve durable participant classification
 
-Introduce a small persistent participant-workspace marker, written atomically
+V19 now adds the persistent participant-workspace marker, written atomically
 by the existing admission provisioner and backfilled from existing admissions.
-It contains a workspace UUID and creation time, not a contact or session.
-It remains while the workspace exists, even after deleting account/membership
-references. Otherwise deleting a human account could make its old workspace
+It contains a workspace UUID, spent place, fixed payload/footprint ceilings and
+allocation time, not a contact or session. It survives account/membership AND
+workspace removal. Application roles cannot erase or enlarge it. An old
+unidentifiable cleared membership stops the upgrade for reconciliation. Otherwise deleting a human account could make its old workspace
 look like an unrestricted legacy workspace and revive its machine keys.
 
 A security-barrier view exposes only workspace ID and current eligibility,
@@ -75,8 +78,7 @@ metadata rows per participant workspace, covering machine-created children as
 well as human-created keys. A revoke/expiry frees usable capacity, not retained
 audit history. Expose a private, contract-first refusal with the relevant own
 workspace dimension; never expose global inventory. Legacy owner/monitoring
-workspaces retain their existing behavior. These bounds do not substitute for
-ADR-037 storage policy or authorize its implementation.
+workspaces retain their existing behavior. These bounds do not substitute for ADR-037's runtime storage policy.
 
 ## Required proof / remaining release work
 

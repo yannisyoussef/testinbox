@@ -47,6 +47,7 @@ class HumanProductApiTest : ApiIntegrationTestBase() {
 
     @BeforeEach
     fun resetCohort() {
+        jdbc.sql("DELETE FROM participant_workspace").update()
         jdbc.sql("DELETE FROM beta_admission").update()
         jdbc.sql("UPDATE beta_cohort SET admissions_open=true,capacity_ready=true").update()
     }

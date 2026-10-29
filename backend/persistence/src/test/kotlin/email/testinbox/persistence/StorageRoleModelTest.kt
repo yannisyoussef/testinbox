@@ -197,6 +197,25 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
             email.testinbox.application.usecase
                 .ChargeAccountRequest(authenticate, JdbcAccountRequestBudgets(client), tx)
         charge.execute(issued.credential.value)!!.allowed shouldBe true
+        db.jdbc.sql("UPDATE beta_cohort SET admissions_open=true,capacity_ready=true").update()
+        val admission =
+            email.testinbox.application.usecase
+                .AdmitBetaParticipant(
+                    JdbcBetaAdmissions(client),
+                    tx,
+                    java.time.Clock.systemUTC(),
+                ).execute(account) as email.testinbox.application.usecase.AdmitBetaParticipant.Result.Admitted
+        client
+            .sql("SELECT count(*) FROM participant_workspace WHERE workspace_id=?")
+            .param(admission.admission.workspaceId.value)
+            .query(Long::class.java)
+            .single() shouldBe 1
+        for (role in listOf(client, smtp)) {
+            failure { role.sql("DELETE FROM participant_workspace WHERE false").update() } shouldContain "permission denied"
+            failure { role.sql("UPDATE participant_workspace SET place=place WHERE false").update() } shouldContain "permission denied"
+        }
+        failure { smtp.sql("INSERT INTO participant_workspace DEFAULT VALUES").update() } shouldContain "permission denied"
+
         val tables =
             listOf(
                 "api_key",

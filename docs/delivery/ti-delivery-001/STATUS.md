@@ -18,7 +18,8 @@ explicit access authorization.
 - M0 discovery and durable delivery/resumption documents: complete.
 - Existing console API PR #107 integrated locally without conflicts; its
   authored contract and V11 indexes are present on this branch. Remote PR,
-  develop and master are unchanged. Human HTTP login is implemented in the local M3d/M3f increments; the site still needs real-session wiring.
+  develop and master are unchanged. Native login, admission/waitlist and real human console wiring are implemented
+  and locally verified. Lifecycle/resource enforcement and release gates remain.
 - Nothing pushed, merged, deployed or activated. No external messages sent.
 - New root `AGENTS.md` points to existing repository guidance and these files.
 - Saved local milestones: `4a79dca` (M0), `72d5c5a` (console integration),
@@ -316,10 +317,12 @@ configuration remains an evidence-based release/Operations step.
 
 ## Next milestone and exact continuation
 
-M3h: explicit human workspace/credential actor and account/operator lifecycle,
-then the Next.js same-origin session/real-console flow. All three login methods are
-implemented locally but dormant; live provider/sender acceptance and the M4
-resource-policy implementation/evidence remain release gates. Do not repeat accepted ADR-036
+M4: finish enforceable participant storage shares/debt/usage and match the
+persisted pool proof to runtime declarations. Complete account/operator lifecycle,
+key bounds and restore safety alongside it. Native human console and all three
+login protocols are locally implemented; external provider/sender acceptance,
+release review and activation remain separate gates. ADR-036 and ADR-037 are
+both accepted for implementation; do not ask again. Do not repeat accepted ADR-036
 or ask the owner to reauthorize implementation.
 
 1. Read `AGENTS.md`, `CLAUDE.md`, this file, [PLAN.md](PLAN.md) and
@@ -437,3 +440,62 @@ installed or inferred to be the live configuration.
 
 Next: durable participant workspace/share markers retained through membership
 removal, then persisted global budget approval and debt/usage enforcement.
+
+## M4c — durable participant workspace/share allocation
+
+V19 adds `participant_workspace`: workspace UUID, spent cohort/place, fixed
+128 MiB payload / 256 MiB footprint ceilings and allocation time. It contains
+no contact/session/content. Existing admissions are backfilled; the legacy
+owner is not reclassified. Admission creates the marker atomically through
+its existing sole writer. Retrying creates no second marker. A failed
+provisioning transaction rolls back the marker, membership and workspace.
+
+The marker remains after membership/account/workspace removal; its FK keeps
+the spent place. Runtime API grants allow insert/read, not update/delete;
+SMTP grants allow read, not write. SQL checks prohibit increasing either
+ceiling. A membership missing its marker fails closed for admission retry
+and human authority. An unidentified pre-V19 tombstone stops migration for
+reconciliation rather than silently losing participant classification.
+No production role or schema was changed.
+
+Backups MUST retain the marker: the scope and checker enforce `+`, and tests
+prove that omitted/misclassified/lost data is refused. A genuine PostgreSQL
+dump/restore preserves its identity and fixed ceilings. This does not prove
+post-restore human authorization: quarantine, deletion/revocation
+reconciliation and external semantic rollback floors remain lifecycle gates.
+
+Final full backend build PASS (2m36s); verifier 1,712 tests across twelve
+modules, no failures/errors/skips (domain 133, application 466, persistence
+456, API 266, architecture 55; remaining modules unchanged). Java 21 Detekt
+PASS (9s). Backup suite 192/192; all nineteen migrations expand-only;
+storage-OFF guard, diff and redacted secret checks pass. Initial schema
+inventory expected only V1..V18; extended its explicit list to V19. One
+backup fixture lacked the new kept table. Two existing BOM tests also exposed
+the SQL lexer's locale dependency: its byte parser now runs under C locale
+only, retaining UTF-8 content bytes unchanged. Those regressions and the
+whole backup suite pass under the caller's C.UTF-8 environment.
+
+Final real native browser/mail rehearsal PASS on this production-source tree:
+two email-verified private accounts, two negotiated STARTTLS code deliveries,
+two markers with exactly the accepted shares and membership mapping, one
+human-issued SDK key and zero sessions after logout. Existing real SMTP,
+MIME/attachment-byte, event/pagination/lifecycle and cross-account 404 checks
+pass. No mock identity/backend/mail adapter. All disposable fixtures cleaned.
+API jar `79016bc803214365afe25b7eccd0210d2cd7469dcba64443c46f1f7af2220cbf`;
+ingestion `50a3b2aadbb6c7021ce1729a62d169c93bd796736d62fcb201c3d928a0d26165`;
+migrator `a49975f15d42cff01b93601ce33d27d9bcd7d9bd6c0a980dc8881ba30e804cb7`.
+
+This completes durable classification/allocation ONLY, not the active storage
+policy. Runtime quota/deletion charging, persisted pool proof/config match,
+matching usage/refusal visibility and lifecycle/restore controls remain.
+`capacity_ready` still has scaffold semantics until those are connected;
+manual truth is not M4 proof. Production storage modes/access remain unchanged.
+
+Exact next work is M4d in [COHORT-STORAGE.md](COHORT-STORAGE.md). Start with
+attributed cleanup charging that cannot be freed by global debt compaction
+into non-empty trash, then consume the charges and shares in the ONE T1
+snapshot and the same private usage/refusal snapshots. Author that HTTP/SDK
+contract first. Reuse the accepted decisions; do not ask the owner again or
+restart physical D3/tunnel qualification. Ops must stage the candidate backup
+scope AND checker before migrator at release gate 3b, and install the candidate
+grants afterward. This checkpoint authorizes none of those live steps.

@@ -22,7 +22,7 @@ interface BetaAdmissions {
     /** Consumed places include deleted-account tombstones. Null means full. */
     fun nextPlace(): Int?
 
-    /** Creates all three rows together; only AdmitBetaParticipant calls this. */
+    /** Creates the workspace, project, membership and durable fixed share together; only AdmitBetaParticipant calls this. */
     fun create(
         admission: BetaAdmission,
         workspace: Workspace,

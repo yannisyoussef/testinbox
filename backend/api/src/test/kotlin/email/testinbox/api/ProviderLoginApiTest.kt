@@ -54,6 +54,7 @@ class ProviderLoginApiTest : ApiIntegrationTestBase() {
 
     @BeforeEach
     fun reset() {
+        jdbc.sql("DELETE FROM participant_workspace").update()
         jdbc.sql("DELETE FROM beta_admission").update()
         jdbc.sql("DELETE FROM human_account").update()
         jdbc.sql("DELETE FROM provider_login_state").update()

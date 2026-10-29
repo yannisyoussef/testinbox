@@ -44,6 +44,7 @@ abstract class EmailLoginTestSupport : PersistenceIntegrationTest() {
 
     @BeforeEach
     fun cleanAuth() {
+        jdbc.sql("DELETE FROM participant_workspace").update()
         jdbc.sql("DELETE FROM beta_admission").update()
         jdbc.sql("DELETE FROM human_account").update()
         jdbc.sql("DELETE FROM email_login_challenge").update()

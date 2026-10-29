@@ -46,9 +46,17 @@ class JdbcBetaAdmissions(
 
     override fun findAdmission(id: HumanAccountId): BetaAdmission? =
         jdbc
-            .sql("SELECT workspace_id, project_id, place, admitted_at FROM beta_admission WHERE account_id = :account")
-            .param("account", id.value)
+            .sql(
+                """
+                SELECT a.workspace_id, a.project_id, a.place, a.admitted_at, p.workspace_id AS allocated_workspace
+                  FROM beta_admission a
+                  LEFT JOIN participant_workspace p ON p.workspace_id=a.workspace_id
+                    AND p.cohort_id=a.cohort_id AND p.place=a.place
+                 WHERE a.account_id=:account
+                """.trimIndent(),
+            ).param("account", id.value)
             .query { rs, _ ->
+                check(rs.getObject("allocated_workspace") != null) { "participant membership has no durable storage share" }
                 BetaAdmission(
                     id,
                     WorkspaceId(checkNotNull(rs.getObject("workspace_id", UUID::class.java))),
@@ -96,6 +104,20 @@ class JdbcBetaAdmissions(
             .param("account", admission.accountId.value)
             .param("workspace", admission.workspaceId.value)
             .param("project", admission.projectId.value)
+            .param("at", Timestamps.toDb(admission.admittedAt))
+            .update()
+        // The durable share/classification is part of the SAME admission
+        // transaction. It survives later membership/workspace removal; no
+        // routine API operation may delete it or enlarge the fixed ceilings.
+        jdbc
+            .sql(
+                """
+                INSERT INTO participant_workspace (workspace_id, cohort_id, place, allocated_at)
+                VALUES (:workspace, :cohort, :place, :at)
+                """.trimIndent(),
+            ).param("workspace", admission.workspaceId.value)
+            .param("cohort", BetaCohortPolicy.NAME)
+            .param("place", admission.place)
             .param("at", Timestamps.toDb(admission.admittedAt))
             .update()
     }

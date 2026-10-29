@@ -37,6 +37,7 @@ class BetaWaitlistTest : PersistenceIntegrationTest() {
     private val policy = BetaWaitlistPolicy()
 
     @BeforeEach fun reset() {
+        jdbc.sql("DELETE FROM participant_workspace").update()
         jdbc.sql("DELETE FROM beta_admission").update()
         jdbc.sql("DELETE FROM human_account").update()
         jdbc.sql("UPDATE beta_cohort SET admissions_open=false,capacity_ready=false").update()

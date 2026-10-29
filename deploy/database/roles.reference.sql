@@ -50,6 +50,12 @@ REVOKE ALL ON api_key, idempotency_record, human_account, human_identity, beta_c
     human_session, email_login_challenge, human_auth_gate, provider_login_state,
     beta_waitlist, human_request_global, human_request_budget FROM :"ingestion_role";
 
+-- Durable participant markers: API provisioning inserts once; neither
+-- deployable may erase classification/budget or enlarge a share. SMTP reads
+-- workspace-only classification, never its underlying human membership.
+REVOKE UPDATE, DELETE ON participant_workspace FROM :"api_role";
+REVOKE INSERT, UPDATE, DELETE ON participant_workspace FROM :"ingestion_role";
+
 -- Written only by the migrator.
 REVOKE INSERT, UPDATE, DELETE ON flyway_schema_history FROM :"api_role", :"ingestion_role";
 

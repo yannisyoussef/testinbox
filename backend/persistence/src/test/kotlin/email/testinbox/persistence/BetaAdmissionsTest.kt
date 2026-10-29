@@ -37,6 +37,7 @@ class BetaAdmissionsTest : PersistenceIntegrationTest() {
     @BeforeEach
     fun resetCohort() {
         // Only these tests use the dormant cohort. Product/owner fixtures stay intact.
+        jdbc.sql("DELETE FROM participant_workspace").update()
         jdbc.sql("DELETE FROM beta_admission").update()
         jdbc.sql("DELETE FROM human_account").update()
         jdbc.sql("UPDATE beta_cohort SET admissions_open = false, capacity_ready = false").update()
@@ -195,7 +196,9 @@ class BetaAdmissionsTest : PersistenceIntegrationTest() {
         count("workspace") shouldBe beforeWorkspaces
         count("project") shouldBe beforeProjects
         count("beta_admission") shouldBe 0
+        count("participant_workspace") shouldBe 0
         admit(id).admission.place shouldBe 1
+        count("participant_workspace") shouldBe 1
     }
 
     @Test
@@ -283,5 +286,68 @@ class BetaAdmissionsTest : PersistenceIntegrationTest() {
             start.countDown()
             executor.shutdownNow()
         }
+    }
+
+    @Test
+    fun `admission creates one durable fixed share and retry never allocates a second`() {
+        openWithCapacity()
+        val id = applicant()
+        val first = admit(id)
+        admit(id).admission shouldBe first.admission
+        count("participant_workspace") shouldBe 1
+        val marker =
+            jdbc
+                .sql(
+                    "SELECT workspace_id, place, payload_limit_bytes, footprint_limit_bytes FROM participant_workspace",
+                ).query()
+                .singleRow()
+        marker["workspace_id"] shouldBe first.admission.workspaceId.value
+        marker["place"] shouldBe first.admission.place
+        marker["payload_limit_bytes"] shouldBe email.testinbox.domain.storage.ParticipantStorageShare.PAYLOAD_BYTES
+        marker["footprint_limit_bytes"] shouldBe email.testinbox.domain.storage.ParticipantStorageShare.FOOTPRINT_BYTES
+    }
+
+    @Test
+    fun `participant classification survives cleared membership and removed workspace without freeing the seat`() {
+        openWithCapacity()
+        val id = applicant()
+        val admission = admit(id).admission
+        jdbc.sql("DELETE FROM human_account WHERE id=:id").param("id", id.value).update()
+        jdbc.sql("UPDATE beta_admission SET workspace_id=NULL,project_id=NULL WHERE place=:place").param("place", admission.place).update()
+        jdbc.sql("DELETE FROM project WHERE id=:id").param("id", admission.projectId.value).update()
+        jdbc.sql("DELETE FROM workspace WHERE id=:id").param("id", admission.workspaceId.value).update()
+        jdbc
+            .sql("SELECT count(*) FROM participant_workspace WHERE workspace_id=:id")
+            .param("id", admission.workspaceId.value)
+            .query(Long::class.javaObjectType)
+            .single() shouldBe 1
+        // The marker's FK protects the spent place even if a future cleanup
+        // accidentally tries to delete the now non-identifying tombstone.
+        shouldThrow<DataIntegrityViolationException> {
+            jdbc.sql("DELETE FROM beta_admission WHERE place=:place").param("place", admission.place).update()
+        }
+        admit().admission.place shouldBe 2
+    }
+
+    @Test
+    fun `the database refuses increases to either accepted participant ceiling`() {
+        openWithCapacity()
+        admit()
+        for (column in listOf("payload_limit_bytes", "footprint_limit_bytes")) {
+            shouldThrow<DataIntegrityViolationException> {
+                jdbc.sql("UPDATE participant_workspace SET $column=$column+1").update()
+            }
+        }
+    }
+
+    @Test
+    fun `lost share is corrupt membership not a new admission or unbounded legacy fallback`() {
+        openWithCapacity()
+        val id = applicant()
+        val original = admit(id).admission
+        jdbc.sql("DELETE FROM participant_workspace WHERE workspace_id=:id").param("id", original.workspaceId.value).update()
+        shouldThrow<IllegalStateException> { store.findAdmission(id) }.message shouldContain "no durable storage share"
+        shouldThrow<IllegalStateException> { useCase().execute(id) }.message shouldContain "no durable storage share"
+        count("beta_admission") shouldBe 1
     }
 }

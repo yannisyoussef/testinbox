@@ -52,6 +52,7 @@ class HumanWorkspaceActorTest : PersistenceIntegrationTest() {
         }
 
     @BeforeEach fun reset() {
+        jdbc.sql("DELETE FROM participant_workspace").update()
         jdbc.sql("DELETE FROM beta_admission").update()
         jdbc.sql("DELETE FROM human_account").update()
         jdbc.sql("UPDATE beta_cohort SET admissions_open=true,capacity_ready=true").update()
