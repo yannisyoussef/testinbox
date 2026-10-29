@@ -24,7 +24,7 @@ explicit access authorization.
 - Saved local milestones: `4a79dca` (M0), `72d5c5a` (console integration),
   `da8acef` (stream fix and accepted ADR-036), `e52d057` (M3a admission).
 - Frontend companion checkout:
-  `/Users/yannisbabineni/Projects/infinity/testinbox-web`, clean develop at
+  `/Users/yannisbabineni/Projects/infinity/testinbox-web`, on its own delivery branch, starting at
   `e6304d01d341ad3e90a6953211e2a7dba9904e68`; origin/master
   `8da2d40a264179bb0e74fd7c4a6631fccade2c68`. No tracked AGENTS/CLAUDE files
   exist in the frontend checkout. Its README and `docs/handoff.md` apply.
@@ -110,11 +110,29 @@ Frontend local checkpoints: `48f8607` integrates the existing console;
 and all 28 browser tests pass; audit reports zero vulnerabilities. Browser
 proof uses a fixture backend, not a real cross-repository account session.
 
+## Email verification core (M3c, verified)
+
+Verified foundation: eight-digit keyed code proof; browser binding; ten-minute
+expiry; five atomic attempts; one-time consumption; immutable identity
+resolution without email-based linking; account/session atomicity; global,
+source, recipient and retained-row budgets; expand-only V14 and scheduled
+cleanup independent of new requests. See [EMAIL-LOGIN.md](EMAIL-LOGIN.md).
+
+Full build plus the final API suite and result verifier: 1,552 tests across
+twelve modules, zero failures/errors/skips. Detekt passes without threshold
+changes. Backup suite 175/175; all fourteen migrations expand-only; nine
+control-plane tables retained and twenty-four tables excluded. Local fixture
+mail only; no HTTP email issuer or delivery adapter exists yet. Google/GitHub
+identity persistence tests assume verified protocol proof; they do not prove
+OAuth signature/state/nonce handling. Those protocol adapters remain next.
+
+The owner-only production service and all shared branches are unchanged.
+
 ## Next milestone and exact continuation
 
-M3c: implement real email/provider
-verification around the tested session and cohort transactions. No HTTP login
-issuer exists yet. Author each new operation before its HTTP behavior.
+M3d: author and wire the email HTTP contract and transactional delivery
+adapter around M3c. Then implement Google/GitHub protocol adapters and the
+Next.js same-origin session flow. No HTTP login issuer exists yet.
 
 1. Read `AGENTS.md`, `CLAUDE.md`, this file, [PLAN.md](PLAN.md) and
    [DISCOVERY.md](DISCOVERY.md). The ignored handoff may be absent in another

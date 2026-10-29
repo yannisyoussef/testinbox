@@ -22,10 +22,15 @@
 # contact personal data to control-plane backups; notices/retention and the
 # deletion/restore procedure must be completed before participant activation.
 + human_account
++ human_identity
 + beta_cohort
 + beta_admission
 # ADR-036 (V13): restoring a backup must never restore a browser login.
 - human_session
+# ADR-036 (V14): codes are verifier-only but login state and source hashes
+# remain transient; no login state may be resurrected by a restore.
+- human_auth_gate
+- email_login_challenge
 - inbox
 - message
 - attachment

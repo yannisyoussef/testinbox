@@ -85,6 +85,8 @@ COPY public.flyway_schema_history (installed_rank) FROM stdin;
 \.
 COPY public.human_account (id, contact_email) FROM stdin;
 \.
+COPY public.human_identity (provider, issuer, subject, account_id) FROM stdin;
+\.
 COPY public.beta_cohort (id) FROM stdin;
 \.
 COPY public.beta_admission (cohort_id, place) FROM stdin;
@@ -95,7 +97,7 @@ SQL
 }
 control_plane_dump > "$WORK/good.sql"
 check "a control-plane-only dump passes (content tables schema-only)" 0 "$WORK/good.sql"
-for table in human_account beta_cohort beta_admission; do
+for table in human_account human_identity beta_cohort beta_admission; do
   awk -v omitted="$table" '
     $0 ~ "^COPY public\\." omitted " " { skipping=1; next }
     skipping && $0 == "\\." { skipping=0; next }
@@ -204,6 +206,8 @@ COPY public.exact_address_reservation (id) FROM stdin;
 COPY public.flyway_schema_history (installed_rank) FROM stdin;
 \.
 COPY public.human_account (id) FROM stdin;
+\.
+COPY public.human_identity (subject) FROM stdin;
 \.
 COPY public.beta_cohort (id) FROM stdin;
 \.
@@ -401,7 +405,7 @@ printf 'PGDMP\x01\x0e\x00\x04\x08binary archive bytes' > "$WORK/archive.dump"
 check_says "a custom-format archive is refused with the pg_restore -l recipe" 1 "is a pg_dump archive, not plain SQL" "$WORK/archive.dump"
 
 # --- pg_restore -l style table lists -----------------------------------------
-printf 'workspace\nproject\napi_key\nexact_address_reservation\nflyway_schema_history\nhuman_account\nbeta_cohort\nbeta_admission\n' > "$WORK/list.txt"
+printf 'workspace\nproject\napi_key\nexact_address_reservation\nflyway_schema_history\nhuman_account\nhuman_identity\nbeta_cohort\nbeta_admission\n' > "$WORK/list.txt"
 check "a table list of exactly the control plane passes" 0 "$WORK/list.txt"
 # The documented recipe, run against a genuine `pg_restore -l` excerpt.
 cat > "$WORK/restore.list" <<'LIST'
@@ -414,6 +418,7 @@ cat > "$WORK/restore.list" <<'LIST'
 3120; 0 16424 TABLE DATA public exact_address_reservation testinbox
 3121; 0 16380 TABLE DATA public flyway_schema_history testinbox
 3123; 0 16381 TABLE DATA public human_account testinbox
+3126; 0 16384 TABLE DATA public human_identity testinbox
 3124; 0 16382 TABLE DATA public beta_cohort testinbox
 3125; 0 16383 TABLE DATA public beta_admission testinbox
 215; 1259 16391 TABLE public message testinbox
@@ -424,7 +429,7 @@ check_says "the raw pg_restore -l listing itself is refused, naming the recipe" 
 printf '3122; 0 16435 TABLE DATA public message testinbox\n' >> "$WORK/restore.list"
 awk '/ TABLE DATA / {print $7}' "$WORK/restore.list" > "$WORK/from-restore-content.txt"
 check "and refuses once message data appears in the archive listing" 1 "$WORK/from-restore-content.txt"
-printf 'public.workspace\nPUBLIC.PROJECT\n"api_key"\nexact_address_reservation\nflyway_schema_history\nHUMAN_ACCOUNT\npublic.beta_cohort\n"beta_admission"\n' > "$WORK/list-forms.txt"
+printf 'public.workspace\nPUBLIC.PROJECT\n"api_key"\nexact_address_reservation\nflyway_schema_history\nHUMAN_ACCOUNT\npublic.human_identity\npublic.beta_cohort\n"beta_admission"\n' > "$WORK/list-forms.txt"
 check "schema prefixes, quoting and case in a list are normalised" 0 "$WORK/list-forms.txt"
 { cat "$WORK/list.txt"; printf 'inbox\n'; } > "$WORK/list-inbox.txt"
 check_says "a list including inbox data is refused" 1 "RETAINS CONTENT: inbox" "$WORK/list-inbox.txt"
@@ -435,7 +440,7 @@ check "a missing input is a usage error" 2 "$WORK/nope.txt"
 # classification check; marking one '+' is refused outright, in either mode,
 # because backing it up would carry derived or transient state (ADR-035 §14).
 for t in workspace_storage_account inbox_storage storage_delta storage_reservation \
-         storage_ambiguity storage_node storage_admission_latch storage_clock_episode human_session; do
+         storage_ambiguity storage_node storage_admission_latch storage_clock_episode human_session email_login_challenge human_auth_gate; do
   grep -qx -- "- $t" "$SCOPE_FILE" || { echo "FAIL — $t is not classified '-' in the real scope"; fail=$((fail + 1)); continue; }
   grep -vx -- "- $t" "$SCOPE_FILE" > "$WORK/omit-$t.txt"
   out=$(BACKUP_SCOPE="$WORK/omit-$t.txt" "$GATE" --classification "$MIGRATIONS" 2>&1); st=$?
@@ -533,6 +538,9 @@ SQL
 INSERT INTO workspace (id, name, created_at) VALUES ('11111111-1111-1111-1111-111111111111', E'ws ''quoted'' \\ backslash\nINSERT INTO public.message VALUES (1);', now());
 INSERT INTO project (id, workspace_id, name, created_at) VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', 'p', now());
 INSERT INTO human_account (id, contact_email, contact_verified_at, created_at) VALUES ('77777777-7777-7777-7777-777777777777', 'backup-fixture@example.invalid', now(), now());
+INSERT INTO human_identity (provider, issuer, subject, account_id, created_at) VALUES ('EMAIL', 'testinbox', 'backup-fixture@example.invalid', '77777777-7777-7777-7777-777777777777', now());
+INSERT INTO human_auth_gate (id) VALUES (1);
+INSERT INTO email_login_challenge (id,email,browser_hash,source_hash,code_verifier,created_at,expires_at,attempts_remaining,state) VALUES ('88888888-8888-8888-8888-888888888888', 'backup-fixture@example.invalid', repeat('a',64), repeat('b',64), repeat('c',64), now(), now()+interval '10 minutes', 5, 'FAILED');
 INSERT INTO human_session (verifier, account_id, created_at, expires_at, last_seen_at) VALUES (repeat('b', 64), '77777777-7777-7777-7777-777777777777', now(), now() + interval '1 hour', now());
 INSERT INTO beta_admission (cohort_id, place, account_id, workspace_id, project_id, admitted_at) VALUES ('beta-30', 1, '77777777-7777-7777-7777-777777777777', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', now());
 INSERT INTO api_key (id, workspace_id, project_id, key_hash, scopes, created_at) VALUES ('33333333-3333-3333-3333-333333333333', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', repeat('a', 64), ARRAY['inboxes:write'], now());
@@ -547,12 +555,14 @@ SQL
       else
         echo "FAIL — seeding the synthetic database failed"; fail=$((fail + 1))
       fi
-      # A real session row must be omitted, not merely an empty classified table.
-      session_args=(); for t in $(grep -E '^- ' "$SCOPE_FILE" | sed 's/^- //'); do
-        [[ "$t" == human_session ]] || session_args+=(--exclude-table-data="public.$t")
+      # Real authentication rows must be omitted, not just empty classified tables.
+      for transient in human_session email_login_challenge human_auth_gate; do
+        transient_args=(); for t in $(grep -E '^- ' "$SCOPE_FILE" | sed 's/^- //'); do
+          [[ "$t" == "$transient" ]] || transient_args+=(--exclude-table-data="public.$t")
+        done
+        pg_dump "${transient_args[@]}" > "$WORK/auth-retained-$transient.sql"
+        check_says "a genuine dump retaining $transient is refused" 1 "RETAINS CONTENT: $transient" "$WORK/auth-retained-$transient.sql"
       done
-      pg_dump "${session_args[@]}" > "$WORK/session-retained.sql"
-      check_says "a genuine dump retaining a browser session is refused" 1 "RETAINS CONTENT: human_session" "$WORK/session-retained.sql"
       # The dump forms docs/dev/production.md documents.
       exclude_args=(); for t in $(grep -E '^- ' "$SCOPE_FILE" | sed 's/^- //'); do exclude_args+=(--exclude-table-data="public.$t"); done
       keep_args=(); for t in $(grep -E '^\+ ' "$SCOPE_FILE" | sed 's/^+ //'); do keep_args+=(--table="public.$t"); done

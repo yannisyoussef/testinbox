@@ -164,3 +164,26 @@ entry to 3.4.17 plus the checkpoint. Clean install, typecheck, production build,
 fixture correction still verifies two real resumes, deduplication and one
 open stream. `npm audit --omit=dev`: zero vulnerabilities. No real account
 proxy, email/OAuth flow or cross-repository acceptance is claimed yet.
+
+
+## M3c — bounded email verification/identity core
+
+Full `TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 ./gradlew spotlessApply build
+--console=plain`: PASS. After adding only the scheduler unit cases, the final
+full `:api:test` also passes. `VERIFY_SCOPE=all` confirms 1,552 tests across
+twelve modules, zero failures/errors/skips: domain 122, application 451,
+architecture 46, persistence 406, API 193; other modules unchanged.
+
+Detekt with the documented Java 21 invocation passes; the two initially
+flagged contact-validation conditions were separated into named checks,
+without suppressions or threshold changes. Initial Spotless failures concerned
+an overlong assertion and a constructor whose lambda indentation exceeded
+the line limit; both split, no formatter relaxation. The focused 27 PostgreSQL
+flow/budget/identity cases and seven domain/application helper cases pass.
+
+`LC_ALL=C ./scripts/check-backup-scope.test.sh`: 175/175. The real dump has
+identity, challenge, session and registration-lock rows. Every new transient
+row is excluded, and each deliberately retained variant fails for its exact
+reason. Scope: nine durable, twenty-four excluded tables. Migration safety:
+all fourteen expand-only. Credentials/sending are test fixtures only; no
+external provider protocol, SMTP integration or real email delivery is claimed.
