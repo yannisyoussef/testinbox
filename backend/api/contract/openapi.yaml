@@ -1748,3 +1748,26 @@ paths:
         "401": { $ref: "#/components/responses/Problem" }
         "403": { $ref: "#/components/responses/Problem" }
         "503": { $ref: "#/components/responses/Problem" }
+
+  /account/methods:
+    servers: [{ url: / }]
+    get:
+      operationId: getHumanSignInMethods
+      security: []
+      summary: List the configured human sign-in methods, without account or cohort information.
+      description: No credentials, applicant identities, participant counts or capacity figures. No-store; disabled account flow returns 503.
+      responses:
+        "200":
+          description: Ready methods only. Empty means sign-in is unavailable on this deployment.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [methods]
+                properties:
+                  methods:
+                    type: array
+                    uniqueItems: true
+                    items: { type: string, enum: [email, google, github] }
+        "503": { $ref: "#/components/responses/Problem" }

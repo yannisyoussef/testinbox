@@ -298,4 +298,13 @@ class ProviderLoginApiTest : ApiIntegrationTestBase() {
         noIdentity()
         location(complete("github", attempt)) shouldBe "https://console.example.invalid/console"
     }
+
+    @Test
+    fun `method readiness exposes configured providers without creating or disclosing an account`() {
+        val response = call("/account/methods")
+        response.statusCode() shouldBe 200
+        response.body() shouldBe """{"methods":["google","github"]}"""
+        response.headers().firstValue("Cache-Control").orElse("") shouldBe "no-store"
+        noIdentity()
+    }
 }

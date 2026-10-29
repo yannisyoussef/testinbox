@@ -299,3 +299,14 @@ checker to root-installed copies before migrations. No infrastructure change.
   diff check and scoped gitleaks: PASS. No threshold or activation gate changed.
 - Retention is an implementation default awaiting owner acceptance; no people
   were enrolled, contacted or admitted and no live configuration changed.
+
+## M5a backend readiness for the native site
+
+Authored `/account/methods` then its readonly controller and two integration
+cases (email-only and Google/GitHub-only); disabled route remains 503. No
+identity/cohort storage is read or created. Complete `:api:test`: PASS, 1m9s;
+architecture and Detekt: PASS. Final result verifier combines this rerun with
+the unchanged M3g modules: 1,650 tests, zero failures/errors/skips (API 253).
+Formatting/diff checks pass. No new migration or backup classification.
+Frontend proxy checkpoint `fb54107`: 62 units, typecheck/build and 30 fixture
+browser cases pass. Its native login UI is a separate unfinished increment.

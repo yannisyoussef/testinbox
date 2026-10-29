@@ -316,4 +316,12 @@ class EmailLoginApiTest : ApiIntegrationTestBase() {
         (newCookie == first) shouldBe false
         json.readTree(call("/account/session", cookie = newCookie).body())["contactEmail"].asText() shouldBe secondAddress
     }
+
+    @Test
+    fun `email readiness does not advertise unconfigured providers or contact information`() {
+        val response = call("/account/methods")
+        response.statusCode() shouldBe 200
+        response.body() shouldBe """{"methods":["email"]}"""
+        jdbc.sql("SELECT count(*) FROM human_account").query(Long::class.javaObjectType).single() shouldBe 0
+    }
 }

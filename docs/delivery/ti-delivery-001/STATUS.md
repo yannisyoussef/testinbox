@@ -218,6 +218,18 @@ All three login methods plus the waitlist are local and dormant. The human
 product authority/credential actor, account/operator lifecycle, real console,
 M4 policy decisions and cross-repository acceptance remain incomplete.
 
+## Frontend account integration (M5a, in progress)
+
+Backend prior milestone is `fd417ca` (M3g). The authored `/account/methods`
+readiness operation is implemented and verified: complete API suite, architecture
+and Detekt pass; final verifier 1,650 tests, zero failures/errors/skips. The
+endpoint lists only configured method names, creates no account and inherits
+the disabled account/no-store boundary. Frontend root proxy is saved at
+`fb54107` (62 units and 30 fixture browser checks). Its native screens and HTTPS
+fixtures are in progress, not verified yet. Human product/credential authority
+and native real-backend acceptance still remain. No publication/activation.
+
+
 ## Next milestone and exact continuation
 
 M3h: explicit human workspace/credential actor and account/operator lifecycle,
