@@ -187,3 +187,31 @@ row is excluded, and each deliberately retained variant fails for its exact
 reason. Scope: nine durable, twenty-four excluded tables. Migration safety:
 all fourteen expand-only. Credentials/sending are test fixtures only; no
 external provider protocol, SMTP integration or real email delivery is claimed.
+
+
+## M3d — email HTTP, delivery adapter and configuration boundary
+
+Final `TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 ./gradlew spotlessApply build
+--console=plain`: PASS (1m 23s final run). Verifier: 1,570 tests across twelve
+modules, zero failures/errors/skips; API floor rises from 193 to 211, other
+module counts unchanged. Detekt, formatting and diff checks pass.
+
+Eighteen new API/adapter/configuration cases include twelve email journey
+cases, missing-origin/provider-config isolation, a genuine local SMTP peer
+that advertises AUTH without STARTTLS (no AUTH/MAIL/RCPT/DATA or code reaches
+it), and the actual shipped YAML's environment mappings. The account body
+ceiling catches both declared-length and chunked oversized requests before
+JSON conversion, including an encoded controller path. Two Set-Cookie values
+are asserted separately; same-account re-authentication invalidates the old
+cookie. A caller cannot reset the peer budget through X-Forwarded-For.
+
+Initial HTTP failures: the fixture key had 35 bytes instead of 32, leaving
+email correctly unavailable; the incomplete-config test used an HTTP helper
+that omitted Origin and was correctly refused. Fixed fixture/transport only.
+Overlong controller chains were split for Spotless; no rule was suppressed.
+
+The mail adapter uses Spring context-support plus the already pinned mail
+API/Angus dependencies, avoiding generic spring.mail auto-configuration.
+No sending identity, host setting, password, DNS or live service was touched.
+These tests do not claim external delivery, Google/GitHub protocol validation
+or a real browser/BFF journey. Production flags and admissions remain off.

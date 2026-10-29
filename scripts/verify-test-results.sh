@@ -59,7 +59,7 @@ BACKEND_MODULES=(
   "backend/notification:9"
   "backend/observability:35"
   "backend/ingestion:145"
-  "backend/api:193"
+  "backend/api:211"
   "backend/migrator:6"
   # TI-STORAGE-006: the ADR-035 §11 benchmark harness's own unit tests (the
   # gate evaluator, the open-loop scheduler, the safety preflight).

@@ -18,6 +18,10 @@ dependencies {
     implementation(project(":observability"))
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
+    // Explicit sending adapter: do not activate unrelated spring.mail auto-configuration.
+    implementation("org.springframework:spring-context-support")
+    implementation(libs.jakarta.mail.api)
+    implementation(libs.angus.mail)
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     // Scrape endpoint on the private management port (docs/architecture/observability.md).
     runtimeOnly("io.micrometer:micrometer-registry-prometheus")

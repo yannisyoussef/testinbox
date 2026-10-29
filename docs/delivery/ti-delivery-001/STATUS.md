@@ -128,11 +128,33 @@ OAuth signature/state/nonce handling. Those protocol adapters remain next.
 
 The owner-only production service and all shared branches are unchanged.
 
+## Email HTTP/delivery increment (M3d, verified)
+
+Latest verified core: `bab3521`. The main authored contract and controllers now
+implement email-code requests/verification, secure browser/session cookies,
+closed-enum metrics, a 4 KiB pre-JSON body limit and mandatory-STARTTLS sending.
+Invalid/incomplete human/email configuration closes that flow while preserving
+the existing Bearer API. Both shipped flags default false; no credentials,
+host or sender were provisioned and no external email was sent.
+
+Final full build and verifier: 1,570 tests across twelve modules, zero
+failures/errors/skips. Includes the complete new HTTP journey, two-cookie
+handling, same-account rotation, encoded/chunked body-limit probes, live SMTP
+refusal without STARTTLS, unavailable-config isolation and real YAML/env
+binding. See [EMAIL-LOGIN.md](EMAIL-LOGIN.md) for the environment contract and
+[VERIFICATION.md](VERIFICATION.md) for actual evidence and limits.
+
+The first HTTP run failed safely because the test key decoded to 35 bytes,
+not the required 32; its incomplete-flow response was correct. Another test's
+HTTP helper omitted Origin, correctly refused as 403. Correct fixture key and
+Origin-capable transport pass without weakening the production checks.
+
 ## Next milestone and exact continuation
 
-M3d: author and wire the email HTTP contract and transactional delivery
-adapter around M3c. Then implement Google/GitHub protocol adapters and the
-Next.js same-origin session flow. No HTTP login issuer exists yet.
+M3e: Google/GitHub protocol adapters, using the maintained Spring Security
+client managed by Boot (7.1.1), bounded browser-bound provider state, no stored
+provider tokens or implicit linking. Then waitlist/operator lifecycle and the
+Next.js same-origin session/real-console flow. Email is implemented but dormant.
 
 1. Read `AGENTS.md`, `CLAUDE.md`, this file, [PLAN.md](PLAN.md) and
    [DISCOVERY.md](DISCOVERY.md). The ignored handoff may be absent in another

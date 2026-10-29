@@ -18,19 +18,16 @@ data class HumanAccountProperties(
     val enabled: Boolean = false,
     val publicOrigin: String = "",
 ) {
-    init {
-        if (enabled) {
-            val origin = runCatching { URI(publicOrigin) }.getOrNull()
-            require(
-                origin != null && origin.scheme == "https" && !origin.host.isNullOrBlank() &&
+    /** Invalid account configuration disables this boundary, without taking down the Bearer API. */
+    val canonicalOrigin: String? =
+        runCatching { URI(publicOrigin) }
+            .getOrNull()
+            ?.takeIf { origin ->
+                origin.scheme == "https" && !origin.host.isNullOrBlank() &&
                     origin.host == origin.host.lowercase() && origin.rawUserInfo == null && origin.rawQuery == null &&
                     origin.rawFragment == null && origin.rawPath.isNullOrEmpty() && origin.port != 443 &&
-                    publicOrigin == "https://${origin.rawAuthority}",
-            ) {
-                "enabled human accounts require an explicit canonical HTTPS public origin"
-            }
-        }
-    }
+                    publicOrigin == "https://${origin.rawAuthority}"
+            }?.let { publicOrigin }
 }
 
 @Configuration

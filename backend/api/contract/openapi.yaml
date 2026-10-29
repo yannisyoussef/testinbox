@@ -21,7 +21,7 @@ info:
     so a replay is `409 idempotency-secret-not-replayable` naming the key that
     was created.
 
-    **Transport-level refusals apply to every operation** and are therefore not
+    **These transport-level refusals apply to `/v1` operations** and are therefore not
     repeated on each one. All use `application/problem+json` with a stable
     `type` and a `correlationId`:
 
@@ -1518,4 +1518,94 @@ paths:
         "401": { $ref: "#/components/responses/Problem" }
         "400": { $ref: "#/components/responses/Problem" }
         "403": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /account/email/request:
+    servers: [{ url: / }]
+    post:
+      operationId: requestEmailLogin
+      security: []
+      summary: Request a browser-bound, eight-digit sign-in code.
+      description: >
+        Requires the exact configured public Origin. Accepts only an email;
+        creates no account, admission or workspace. The 202 response does not
+        disclose account existence or guarantee provider delivery. Sets
+        __Host-ti_login as Secure, HttpOnly, SameSite=Lax, Path=/, no Domain.
+        A resend invalidates only the requesting browser's usable challenge.
+        All account bodies are bounded at 4096 bytes before JSON parsing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        "202":
+          description: Generic challenge response; no code, browser secret or account existence in JSON.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [challengeId, expiresAt]
+                properties:
+                  challengeId: { type: string, format: uuid }
+                  expiresAt: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "413": { $ref: "#/components/responses/Problem" }
+        "415": { $ref: "#/components/responses/Problem" }
+        "429":
+          description: The login request budget is exhausted. Account existence is not tested.
+          headers:
+            Retry-After: { $ref: "#/components/headers/retryAfter" }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /account/email/verify:
+    servers: [{ url: / }]
+    post:
+      operationId: verifyEmailLogin
+      security: []
+      summary: Consume this browser's sign-in code once and issue a revocable human session.
+      description: >
+        Requires the exact configured public Origin and the __Host-ti_login
+        cookie from the request step. Five failed code attempts and a
+        ten-minute lifetime are enforced atomically. Missing, expired,
+        exhausted, mismatched-browser and replayed challenges are 401 with
+        the same public problem. A wrong browser cannot spend attempts.
+        On success sets __Host-ti_session and clears __Host-ti_login with
+        two separate Set-Cookie headers. Does not admit a participant or
+        issue a machine API key. Contact collisions never link providers.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [challengeId, code]
+              properties:
+                challengeId: { type: string, format: uuid }
+                code:
+                  type: string
+                  maxLength: 64
+                  description: Eight ASCII digits; other bounded strings count as a failed code attempt.
+      responses:
+        "204":
+          description: Code consumed and session issued. Credentials appear only in HttpOnly cookies.
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409":
+          description: Verified contact belongs to another sign-in method; no account or identity was linked.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "413": { $ref: "#/components/responses/Problem" }
+        "415": { $ref: "#/components/responses/Problem" }
         "503": { $ref: "#/components/responses/Problem" }

@@ -28,6 +28,18 @@ spring:
     enabled: true
 
 testinbox:
+  accounts:
+    enabled: ${TESTINBOX_ACCOUNTS_ENABLED:false}
+    public-origin: ${TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN:}
+    email:
+      enabled: ${TESTINBOX_ACCOUNTS_EMAIL_ENABLED:false}
+      verification-key-base64: ${TESTINBOX_ACCOUNTS_EMAIL_VERIFICATION_KEY_BASE64:}
+      smtp:
+        host: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_HOST:}
+        port: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_PORT:587}
+        username: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_USERNAME:}
+        password: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_PASSWORD:}
+        from: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_FROM:}
   mail-domain: ${TESTINBOX_MAIL_DOMAIN:testinbox.local}
   default-ttl: 15m
   max-ttl: 24h

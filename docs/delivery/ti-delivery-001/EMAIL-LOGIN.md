@@ -75,3 +75,57 @@ recovery. Those remain explicit M3/M4/M5/M6 work. A source identifier must come
 from the verified deployment peer; do not trust arbitrary forwarded headers.
 When using a BFF, shared-peer limits aggregate its traffic unless a separately
 reviewed trusted-source mechanism is configured.
+
+## M3d — HTTP and delivery adapter
+
+The main authored contract now includes `/account/email/request` (202) and
+`/account/email/verify` (204 with two separate Set-Cookie values). DTO fields
+are checked explicitly, and JSON bodies are limited to 4 KiB before parsing,
+including chunked requests and encoded paths. Origin checks apply before
+verification. A login browser secret is never returned in JSON. Verification
+sets the human session cookie and clears the challenge cookie; same-account
+re-authentication invalidates the preceding credential.
+
+Email remains off by default. Invalid human origins and incomplete email
+configuration return 503 for the new flow while existing `/v1` Bearer requests
+keep working. The configuration gauge describes syntactic readiness, not
+provider delivery; closed-enum sending/verification counters expose failures.
+No provider exception, recipient, code or credential is a metric label.
+
+The delivery adapter uses Spring's mail abstraction and the repository's
+existing pinned Jakarta Mail/Angus dependencies. It does not enable generic
+`spring.mail` auto-configuration. It requires authenticated port 587 with
+STARTTLS, hostname verification, TLS 1.2/1.3 and finite five-second connection,
+read and write timeouts. A real local SMTP peer advertising authentication
+without STARTTLS receives EHLO but no authentication, recipient or code.
+There is no implicit sending identity or inbound-edge fallback.
+
+### Environment contract for later Ops review
+
+The real shipped YAML maps these exact names; binding tests read that YAML.
+These describe setup requirements, not instructions to enable them now.
+
+| Name | Purpose / current default |
+|---|---|
+| `TESTINBOX_ACCOUNTS_ENABLED` | Human boundary, false |
+| `TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN` | Explicit canonical HTTPS origin, empty |
+| `TESTINBOX_ACCOUNTS_EMAIL_ENABLED` | Email sign-in, false |
+| `TESTINBOX_ACCOUNTS_EMAIL_VERIFICATION_KEY_BASE64` | Base64 of 32 random secret bytes, empty |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_HOST` | Approved transactional provider hostname, empty |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_PORT` | 587, required STARTTLS |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_USERNAME` | Sending credential, empty |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_PASSWORD` | Sending secret, empty |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_FROM` | Approved authenticated sending address, empty |
+
+New account/provider credentials must be API-only, host-secret material. Do
+not place them in the frontend, ingestion environment, shared Git remote or
+chat. Ops still needs to confirm the sending identity's provider authentication,
+its product sending budget and network reachability. Existing forwarding aliases
+and inbound SMTP do not provide this. No host/env/DNS change or external email
+was made by this delivery increment.
+
+Final verification: full backend build and 1,570-test result verifier pass,
+zero failures/errors/skips. The fixture-backed HTTP journey, genuine plaintext
+SMTP refusal, misconfiguration isolation and real-YAML env binding cases are
+included. This is not a real Brevo/provider delivery or browser/BFF proof;
+those remain acceptance work with authorized credentials and activation.

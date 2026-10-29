@@ -1,7 +1,6 @@
 package email.testinbox.api.account
 
 import email.testinbox.application.identity.SessionCredential
-import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import jakarta.servlet.http.Cookie
 import org.junit.jupiter.api.Test
@@ -60,7 +59,7 @@ class HumanSessionCookiesTest {
             "https://Console.example.invalid",
             "https://console.example.invalid:443",
         ).forEach { origin ->
-            shouldThrow<IllegalArgumentException> { HumanAccountProperties(enabled = true, publicOrigin = origin) }
+            HumanAccountProperties(enabled = true, publicOrigin = origin).canonicalOrigin shouldBe null
         }
     }
 }

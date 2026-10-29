@@ -41,12 +41,12 @@ class HumanAccountBoundaryFilter(
         response.setHeader("Pragma", "no-cache")
         response.setHeader("X-Content-Type-Options", "nosniff")
         response.setHeader("Referrer-Policy", "no-referrer")
-        if (!properties.enabled) {
+        if (!properties.enabled || properties.canonicalOrigin == null) {
             reject(request, response, HttpStatus.SERVICE_UNAVAILABLE, "accounts-unavailable")
             return false
         }
         if (request.method !in setOf("GET", "HEAD", "OPTIONS") &&
-            request.getHeaders("Origin").toList() != listOf(properties.publicOrigin)
+            request.getHeaders("Origin").toList() != listOf(properties.canonicalOrigin)
         ) {
             reject(request, response, HttpStatus.FORBIDDEN, "invalid-origin")
             return false
