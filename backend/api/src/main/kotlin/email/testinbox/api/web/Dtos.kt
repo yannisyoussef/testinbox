@@ -34,6 +34,8 @@ data class StorageUsageDto(
     val reservedBytes: Long,
     val availableBytes: Long,
     val overLimit: Boolean,
+    @get:com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    val footprint: email.testinbox.application.query.WorkspaceFootprintView? = null,
 ) {
     companion object {
         fun from(view: StorageUsageView): StorageUsageDto =
@@ -43,6 +45,7 @@ data class StorageUsageDto(
                 reservedBytes = view.reservedBytes,
                 availableBytes = view.availableBytes,
                 overLimit = view.overLimit,
+                footprint = view.footprint,
             )
     }
 }

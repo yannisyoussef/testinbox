@@ -56,6 +56,7 @@ data class InboxStorageFigures(
 data class WorkspaceStorageFigures(
     val workspace: StorageUsage,
     val inboxes: Map<InboxId, InboxStorageFigures>,
+    val budget: email.testinbox.application.storage.WorkspaceStorageBudget? = null,
 ) {
     fun inbox(id: InboxId): InboxStorageFigures = inboxes[id] ?: InboxStorageFigures.EMPTY
 }
@@ -113,6 +114,7 @@ interface InboxObservation {
 data class TenantStorageFigures(
     val inbox: StorageUsage,
     val workspace: StorageUsage,
+    val budget: email.testinbox.application.storage.WorkspaceStorageBudget? = null,
 )
 
 /**

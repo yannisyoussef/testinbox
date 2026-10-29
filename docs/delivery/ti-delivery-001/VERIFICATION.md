@@ -539,3 +539,12 @@ contract first. Reuse the accepted decisions; do not ask the owner again or
 restart physical D3/tunnel qualification. Ops must stage the candidate backup
 scope AND checker before migrator at release gate 3b, and install the candidate
 grants afterward. This checkpoint authorizes none of those live steps.
+
+## Completed runtime storage checkpoint (M4d)
+
+See [STATUS.md](STATUS.md#m4d--runtime-limits-cleanup-charging-and-private-visibility-complete)
+for the complete implementation and actual final verification. Earlier M4c
+notes about scaffold readiness describe that historical checkpoint; M4d
+replaces the scaffold with the persisted live pool gate. The operator
+procedure is [cohort storage](../../dev/cohort-storage.md). Activation and
+lifecycle/restore release decisions remain separate.

@@ -51,6 +51,22 @@ object EffectiveStoragePolicy {
         return StorageCapacityPolicy(workspace, share, globalLimit, finalizeBudget(declarations).bytes)
     }
 
+    /** The same payload formula for private reads and T1's persisted workspace share. */
+    fun forWorkspace(
+        policy: StorageCapacityPolicy,
+        budget: WorkspaceStorageBudget?,
+    ): StorageCapacityPolicy =
+        if (budget == null) {
+            policy
+        } else {
+            StorageCapacityPolicy(
+                minOf(policy.workspaceLimitBytes, budget.payloadBytes),
+                policy.inboxShare,
+                policy.globalLimitBytes,
+                policy.finalizeBudgetBytes,
+            )
+        }
+
     /**
      * The global footprint rules of the filesystem-containment contract, or
      * null while the filesystem is not fully declared (an `OFF` deployment;
@@ -63,34 +79,36 @@ object EffectiveStoragePolicy {
         val overhead = fs.objectOverheadMaxBytes ?: return null
         val model = FootprintModel(block, overhead)
         val budget = finalizeBudget(declarations)
-        return FootprintPolicy(
-            model = model,
-            limits =
-                FootprintAdmission.Limits(
-                    globalFootprintLimitBytes = fs.globalFootprintLimitBytes ?: return null,
-                    finalizeBudgetBytes =
-                        model.finalizeBudgetBytes(
-                            budget.declaredMaxIngestionProcesses,
-                            budget.maxConcurrentWrites,
-                            budget.maxObjectBytes,
-                        ),
-                    metadataBudgetBytes = fs.metadataBudgetBytes ?: return null,
-                    operationalReserveBytes = fs.operationalReserveBytes ?: return null,
-                    capacityBytes = fs.capacityBytes ?: return null,
-                    probeBudgetBytes = fs.probeBudgetBytes ?: return null,
-                ),
-            monitorRole = fs.monitorRole ?: return null,
-            worstCaseEvent =
-                runCatching {
-                    // A copy is at most its raw object plus every decoded part, each bounded by
-                    // the largest object; 50 recipients of 501 objects each.
-                    val copyBytes = Math.multiplyExact(declarations.maxObjectBytes, 2L)
-                    FootprintAdmission.Load(
-                        Math.multiplyExact(copyBytes, MAX_RECIPIENTS),
-                        Math.multiplyExact(MAX_OBJECTS_PER_COPY, MAX_RECIPIENTS),
-                    )
-                }.getOrDefault(FootprintAdmission.Load(Long.MAX_VALUE / 2, Long.MAX_VALUE / 2)),
-        )
+        val policy =
+            FootprintPolicy(
+                model = model,
+                limits =
+                    FootprintAdmission.Limits(
+                        globalFootprintLimitBytes = fs.globalFootprintLimitBytes ?: return null,
+                        finalizeBudgetBytes =
+                            model.finalizeBudgetBytes(
+                                budget.declaredMaxIngestionProcesses,
+                                budget.maxConcurrentWrites,
+                                budget.maxObjectBytes,
+                            ),
+                        metadataBudgetBytes = fs.metadataBudgetBytes ?: return null,
+                        operationalReserveBytes = fs.operationalReserveBytes ?: return null,
+                        capacityBytes = fs.capacityBytes ?: return null,
+                        probeBudgetBytes = fs.probeBudgetBytes ?: return null,
+                    ),
+                monitorRole = fs.monitorRole ?: return null,
+                worstCaseEvent =
+                    runCatching {
+                        // A copy is at most its raw object plus every decoded part, each bounded by
+                        // the largest object; 50 recipients of 501 objects each.
+                        val copyBytes = Math.multiplyExact(declarations.maxObjectBytes, 2L)
+                        FootprintAdmission.Load(
+                            Math.multiplyExact(copyBytes, MAX_RECIPIENTS),
+                            Math.multiplyExact(MAX_OBJECTS_PER_COPY, MAX_RECIPIENTS),
+                        )
+                    }.getOrDefault(FootprintAdmission.Load(Long.MAX_VALUE / 2, Long.MAX_VALUE / 2)),
+            )
+        return policy.copy(cohort = CohortStorageRuntime(declarations, model, policy.limits, policy.worstCaseEvent))
     }
 
     /**

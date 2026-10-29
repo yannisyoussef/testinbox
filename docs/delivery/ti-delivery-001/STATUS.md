@@ -19,8 +19,8 @@ explicit access authorization.
 - Existing console API PR #107 integrated locally without conflicts; its
   authored contract and V11 indexes are present on this branch. Remote PR,
   develop and master are unchanged. Native login, admission/waitlist and real human console wiring are implemented
-  and locally verified. Lifecycle/resource enforcement and release gates remain.
-- Nothing pushed, merged, deployed or activated. No external messages sent.
+  and locally verified. Runtime cohort storage is complete (M4d below); lifecycle and release gates remain.
+- Feature-branch push and PR/MR creation are now owner-authorized. Shared branches, production and access remain unchanged; see M4d and the review requests for publication state.
 - New root `AGENTS.md` points to existing repository guidance and these files.
 - Saved local milestones: `4a79dca` (M0), `72d5c5a` (console integration),
   `da8acef` (stream fix and accepted ADR-036), `e52d057` (M3a admission),
@@ -499,3 +499,98 @@ contract first. Reuse the accepted decisions; do not ask the owner again or
 restart physical D3/tunnel qualification. Ops must stage the candidate backup
 scope AND checker before migrator at release gate 3b, and install the candidate
 grants afterward. This checkpoint authorizes none of those live steps.
+
+## M4d — runtime limits, cleanup charging and private visibility complete
+
+The owner authorized finishing this work, pushing the feature branches and
+opening review requests. ADR-037 acceptance is unchanged; no deployment or
+participant activation was authorized.
+
+V20 attributes cleanup to persistent participant/legacy workspace identity and
+keeps a workspace mirror independent of global debt compaction. Finite charges
+are freed only by a later valid, fresh, trusted, zero-trash observation;
+pending/late charges survive. Legacy/OFF deletion with no allocated share adds
+no per-workspace mirror. V21 stores an operator-reviewed non-overcommitted
+pool and fences incompatible/unenforcing node registrations and heartbeats.
+Both migrations are expand-only and dormant without activation.
+
+The one T1 snapshot includes persisted payload/footprint shares, all reserved
+states and cleanup. Participants are capped at 128 MiB payload / 256 MiB
+conservative footprint. Existing workspace/inbox limits may only narrow that
+budget. Admission, inbox creation, workspace usage, private wait 409s, both
+SDKs and the real console read the same own-workspace accounting. The console
+separates payload, physical charge and pending cleanup, uses binary units and
+explains silent SMTP quota discards. No global capacity is returned.
+
+`ReserveCohortStorage` is the sole pool writer. The offline `storage-budget`
+command uses owner credentials, no HTTP/Spring/schedulers, explicit declarations
+and exact legacy inventory. It takes cohort then global T1 locks, requires both
+admission flags closed, checks live nodes, observations, existing loads and all
+thirty shares before committing. Failure rolls the transaction back. Allocations
+cannot shrink/disappear. Revoke keeps shares/fence and invalidates approval.
+Manual `capacity_ready=true` cannot bypass the real readiness collaborator.
+Runtime roles cannot mutate approval, shares or cleanup. Restores retain shares
+but exclude approval, sessions and cleanup evidence. See
+[operator procedure](../../dev/cohort-storage.md).
+
+Verification on the final production-source tree:
+
+- Full backend build and normal Spotless rules PASS (2m51s); 1,726 tests in all
+  twelve modules, zero failures/errors/skips, verified by the result checker:
+  domain 133, application 467, persistence 468, API 267, architecture 55,
+  storage 54, notification 9, observability 37, ingestion 145, migrator 6,
+  benchmark 57, E2E 28. Twelve new PostgreSQL pool/cleanup/concurrency cases
+  include the exact 128 MiB boundary and a restored marker fencing OFF nodes.
+- Backend Java 21 Detekt PASS (5s). No formatting/static-analysis gate relaxed.
+- Backup suite 197/197 PASS with genuine dumps/restores and both durable share
+  tables; missing/misclassified/transient data is refused. All 21 migrations
+  pass the existing expand-only check. Storage-OFF config policy PASS.
+- OpenAPI compatibility gate PASS (warnings only for extensible response reason
+  additions). API schema disclosure coverage includes the footprint object.
+- TS SDK 75/75 PASS; Kotlin/Java SDK build PASS with the old Java constructor
+  retained and two new footprint protocol cases. Local HTTP fixture sockets
+  and URLs now explicitly use the same IPv4 loopback address after two
+  intermittent mixed-localhost response failures. No transport retry added.
+- Frontend types/production build, 90 units PASS. Browser fixture suite:
+  34 passed initially; one stale enforcement-copy assertion corrected, its
+  focused rerun PASS. Real native acceptance below covers final UI/source.
+- Changed-source redacted secret scan PASS (277 files at scan time); generated
+  build artifacts were excluded from the source scan. Diff whitespace PASS.
+
+The real native rehearsal now uses an isolated ALL-mode deployment, the
+existing lab-only startup-record path (explicitly not enablement evidence),
+actual API/ingestion node registrations, an offline pool reservation, a lab
+observation and real PostgreSQL/MinIO/SMTP ingestion plus the
+STARTTLS login sender. Two private email-verified accounts were admitted;
+SDK credentials were created once; sessions were revoked on logout.
+
+Tiny MIME attachments exhaust physical share before payload: the input is
+explicitly checked to parse successfully with 498 extracted attachments.
+The next refused copy gets SMTP 250, creates no message, and the private wait
+returns WORKSPACE_FOOTPRINT_LIMIT / STORED_FOOTPRINT without global figures.
+Deleting the live inbox lowers payload while cleanup remains charged in API
+and console. MIME/attachment bytes, event recovery, expiry, cross-account 404,
+private key handling and independent SDK access after logout all PASS.
+All disposable containers/network/volumes were removed. Candidate jar hashes:
+API `69a2fed4332feb92a6778bf880c2e5b5fbfbe63e0bdbf577da818e422caeed26`,
+ingestion `5176c7cb437b340b56d4c00a9370e2aae8ac536091d6bc3eb3980e209e433018`,
+migrator `cfd8afc07b37507a897c96e8395f18fcbf17fc7867bf3354d740f50181b3ca0d`.
+These identify local proof artifacts, never release/promotion digests.
+
+The first native attempts were NOT passes: deployment safety rejected missing
+lab identity/domain declarations; another input exceeded the 500-part MIME
+limit and exercised raw-only storage. The corrected fixtures passed with the
+original safety checks. Historical grant/schema assertions were updated for
+V20/V21; identity-only tests use an explicit scoped capacity double, while the
+real native test uses the unstubbed gate. The publication candidate does not
+hide those distinctions.
+
+Remaining release work is separate: M3j account/operator suspension/deletion,
+revocation/restore reconciliation and semantic floors, release/notice/OAuth
+and sending-identity configuration, actual Ops capacity/qualification/grants
+and authorized promotion/access widening. Production ALL/TENANT_LIMITS startup
+refusals remain. The live owner-only SMTP/MX service is unchanged.
+
+Exact next action: review the backend and frontend `feature/ti-delivery-001-beta`
+branches against develop, using their PR/MR and linked verification. No shared
+branch merge, host edit or third-party admission follows from this checkpoint.

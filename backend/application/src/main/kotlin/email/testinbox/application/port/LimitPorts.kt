@@ -59,6 +59,11 @@ interface RateLimiter {
  * be decremented from an `ON DELETE CASCADE`, so it would drift upward until
  * every workspace wedged at "quota exceeded" (ADR-027 §4).
  */
+data class WorkspaceStorageQuota(
+    val usedBytes: Long,
+    val payloadLimitBytes: Long?,
+)
+
 interface WorkspaceQuotaState {
     /**
      * Serializes admission decisions for this workspace for the remainder of
@@ -76,6 +81,9 @@ interface WorkspaceQuotaState {
 
     /** Raw MIME plus extracted attachment bytes currently retained. */
     fun storedBytes(workspaceId: WorkspaceId): Long
+
+    /** Same own-workspace ledger/reservations and persisted share the usage read reports. */
+    fun storageQuota(workspaceId: WorkspaceId): WorkspaceStorageQuota = WorkspaceStorageQuota(storedBytes(workspaceId), null)
 }
 
 /** A held concurrent-wait slot; releasing it frees capacity for the tenant. */

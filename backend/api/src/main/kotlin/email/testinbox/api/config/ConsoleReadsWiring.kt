@@ -32,7 +32,8 @@ class ConsoleReadsWiring {
         quotas: WorkspaceQuotaState,
         rateLimiter: RateLimiter,
         waitSlots: WaitSlots,
-    ): WorkspaceQueries = WorkspaceQueries(tenants, config.mailDomain, limits, quotas, rateLimiter, waitSlots)
+        storage: email.testinbox.application.query.StorageQueries,
+    ): WorkspaceQueries = WorkspaceQueries(tenants, config.mailDomain, limits, quotas, rateLimiter, waitSlots, storage)
 
     /** The workspace event stream: a parked wait over the whole workspace, one slot per stream (ADR-027 §7). */
     @Bean

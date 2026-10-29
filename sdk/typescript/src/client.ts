@@ -228,6 +228,16 @@ function toApiKeyMetadata(dto: ApiKeyDto): ApiKeyMetadata {
  * plausible-looking zero.
  */
 function toStorageUsage(dto: StorageUsageDto, label: string): StorageUsage {
+  let footprint: StorageUsage["footprint"];
+  if (dto.footprint !== undefined) {
+    const f = dto.footprint;
+    if (!isRecord(f) || ["limitBytes", "usedBytes", "pendingCleanupBytes", "availableBytes"].some(k => typeof f[k] !== "number" || !Number.isSafeInteger(f[k]) || (f[k] as number) < 0) || typeof f.overLimit !== "boolean" || typeof f.enforced !== "boolean") {
+      throw new TestInboxProtocolError(`the server sent ${label} without valid footprint figures`);
+    }
+    footprint = Object.freeze({limitBytes: f.limitBytes as number, usedBytes: f.usedBytes as number,
+      pendingCleanupBytes: f.pendingCleanupBytes as number, availableBytes: f.availableBytes as number,
+      overLimit: f.overLimit, enforced: f.enforced});
+  }
   const bytes = (name: "limitBytes" | "storedBytes" | "reservedBytes" | "availableBytes"): number => {
     const value = dto[name];
     if (typeof value !== "number" || !Number.isSafeInteger(value)) {
@@ -244,6 +254,7 @@ function toStorageUsage(dto: StorageUsageDto, label: string): StorageUsage {
     reservedBytes: bytes("reservedBytes"),
     availableBytes: bytes("availableBytes"),
     overLimit: dto.overLimit,
+    ...(footprint === undefined ? {} : { footprint }),
   });
 }
 

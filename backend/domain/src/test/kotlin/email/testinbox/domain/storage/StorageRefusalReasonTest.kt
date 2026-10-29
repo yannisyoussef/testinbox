@@ -14,8 +14,10 @@ import org.junit.jupiter.api.Test
  */
 class StorageRefusalReasonTest {
     @Test
-    fun `the closed set is exactly the three ADR-035 §4 ceilings, narrowest first`() {
-        StorageRefusalReason.entries.map { it.name } shouldBe listOf("INBOX_LIMIT", "WORKSPACE_LIMIT", "SERVICE_CAPACITY")
-        StorageRefusalReason.entries.map { it.scope } shouldBe listOf(StorageScope.INBOX, StorageScope.WORKSPACE, StorageScope.GLOBAL)
+    fun `the closed set is the payload and ADR-037 footprint ceilings, narrowest first`() {
+        StorageRefusalReason.entries.map { it.name } shouldBe
+            listOf("INBOX_LIMIT", "WORKSPACE_LIMIT", "WORKSPACE_FOOTPRINT_LIMIT", "SERVICE_CAPACITY")
+        StorageRefusalReason.entries.map { it.scope } shouldBe
+            listOf(StorageScope.INBOX, StorageScope.WORKSPACE, StorageScope.WORKSPACE, StorageScope.GLOBAL)
     }
 }

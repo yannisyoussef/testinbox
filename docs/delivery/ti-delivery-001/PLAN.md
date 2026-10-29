@@ -103,3 +103,10 @@ existing promotion and Ops process, not parallel production changes.
 - Keep credentials, private material, real message content and personal test
   data out of commits, logs and artifacts. Use the owner's configured identity
   and plain Conventional Commit messages without attribution trailers.
+
+## M4 completion and review publication
+
+M4 runtime storage is complete and locally verified; see STATUS M4d. The owner
+now authorizes feature-branch pushes and backend/frontend PR/MR creation. This
+is not a merge/deployment approval. Continue M3j lifecycle/restore and M6 release
+work after review; do not reopen the accepted ADR-036/037 implementation choices.

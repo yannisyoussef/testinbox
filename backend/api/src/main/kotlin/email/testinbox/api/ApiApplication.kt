@@ -12,5 +12,9 @@ import org.springframework.scheduling.annotation.EnableScheduling
 class ApiApplication
 
 fun main(args: Array<String>) {
+    if (args.firstOrNull() == "storage-budget") {
+        CohortBudgetCommand.run(args)
+        return
+    }
     runApplication<ApiApplication>(*args)
 }

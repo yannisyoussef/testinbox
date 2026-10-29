@@ -44,6 +44,7 @@ export type {
   ParseStatus,
   StorageRefusalReason,
   StorageUsage,
+  WorkspaceFootprintUsage,
   TestInboxClientOptions,
   WaitForMessageOptions,
 } from "./types";

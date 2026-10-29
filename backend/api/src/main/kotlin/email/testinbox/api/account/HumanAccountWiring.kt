@@ -64,9 +64,27 @@ class HumanAccountWiring {
     ): RevokeHumanSession = RevokeHumanSession(sessions, tx)
 
     @Bean
+    fun cohortStorageReadiness(
+        declarations: email.testinbox.application.storage.StorageDeclarations,
+        jdbc: org.springframework.jdbc.core.simple.JdbcClient,
+    ): email.testinbox.application.storage.CohortStorageReadiness {
+        val policy =
+            email.testinbox.application.storage.EffectiveStoragePolicy
+                .footprint(declarations)
+        val gate = email.testinbox.persistence.JdbcFootprintGate(jdbc)
+        return email.testinbox.application.storage.CohortStorageReadiness {
+            runCatching {
+                val observed = gate.observe()
+                policy != null && policy.unavailability(observed) == null && policy.cohort?.ready(observed?.cohort) == true
+            }.getOrDefault(false)
+        }
+    }
+
+    @Bean
     fun admitBetaParticipant(
         admissions: BetaAdmissions,
         tx: TransactionRunner,
         clock: Clock,
-    ): AdmitBetaParticipant = AdmitBetaParticipant(admissions, tx, clock)
+        capacity: email.testinbox.application.storage.CohortStorageReadiness,
+    ): AdmitBetaParticipant = AdmitBetaParticipant(admissions, tx, clock, capacity)
 }

@@ -43,7 +43,15 @@ class BetaAdmissionsTest : PersistenceIntegrationTest() {
         jdbc.sql("UPDATE beta_cohort SET admissions_open = false, capacity_ready = false").update()
     }
 
-    private fun useCase(repository: BetaAdmissions = store) = AdmitBetaParticipant(repository, transactions, clock)
+    private fun useCase(repository: BetaAdmissions = store) =
+        AdmitBetaParticipant(
+            repository,
+            transactions,
+            clock,
+            email.testinbox.application.storage.CohortStorageReadiness {
+                true
+            },
+        )
 
     private fun applicant(
         verified: Boolean = true,

@@ -35,6 +35,11 @@ import java.util.UUID
     ],
 )
 class HumanProductApiTest : ApiIntegrationTestBase() {
+    // This suite proves human HTTP authorization, not capacity feasibility.
+    // The native ALL rehearsal exercises the real, unstubbed capacity bean.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    lateinit var capacity: email.testinbox.application.storage.CohortStorageReadiness
+
     @Autowired lateinit var jdbc: JdbcClient
 
     @Autowired lateinit var sessions: JdbcHumanSessions
@@ -47,9 +52,20 @@ class HumanProductApiTest : ApiIntegrationTestBase() {
 
     @BeforeEach
     fun resetCohort() {
+        org.mockito.Mockito
+            .`when`(capacity.ready())
+            .thenReturn(true)
         jdbc.sql("DELETE FROM participant_workspace").update()
         jdbc.sql("DELETE FROM beta_admission").update()
         jdbc.sql("UPDATE beta_cohort SET admissions_open=true,capacity_ready=true").update()
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    fun clearFixtureAdmission() {
+        jdbc.sql("DELETE FROM participant_workspace").update()
+        jdbc.sql("DELETE FROM beta_admission").update()
+        jdbc.sql("UPDATE beta_cohort SET admissions_open=false,capacity_ready=false").update()
+        jdbc.sql("DELETE FROM storage_admission_latch WHERE reason='incompatible cohort storage node'").update()
     }
 
     private fun login(admit: Boolean = true): IssueHumanSession.Issued {

@@ -119,7 +119,7 @@ class ApiScope(
  * scope only; nothing here describes another workspace or the service as a
  * whole. A plain immutable value with ordinary getters for Java callers.
  */
-class StorageUsage(
+class StorageUsage @JvmOverloads constructor(
     /** The effective limit of this scope: a policy value, not a constant. */
     val limitBytes: Long,
     /** Committed bytes: raw MIME plus every extracted attachment. */
@@ -131,16 +131,17 @@ class StorageUsage(
     /** Whether `storedBytes + reservedBytes` exceeds `limitBytes`. Equality is not over. */
     @get:JvmName("isOverLimit")
     val overLimit: Boolean,
+    val footprint: WorkspaceFootprintUsage? = null,
 ) {
     override fun equals(other: Any?): Boolean =
         this === other ||
             (
                 other is StorageUsage &&
                     other.limitBytes == limitBytes && other.storedBytes == storedBytes && other.reservedBytes == reservedBytes &&
-                    other.availableBytes == availableBytes && other.overLimit == overLimit
+                    other.availableBytes == availableBytes && other.overLimit == overLimit && other.footprint == footprint
             )
 
-    override fun hashCode(): Int = listOf(limitBytes, storedBytes, reservedBytes, availableBytes, overLimit).hashCode()
+    override fun hashCode(): Int = listOf(limitBytes, storedBytes, reservedBytes, availableBytes, overLimit, footprint).hashCode()
 
     override fun toString(): String =
         "StorageUsage(limitBytes=$limitBytes, storedBytes=$storedBytes, reservedBytes=$reservedBytes, " +
@@ -160,9 +161,21 @@ class StorageUsage(
                 availableBytes =
                     dto.availableBytes ?: throw TestInboxProtocolException("the server sent $label without 'availableBytes'"),
                 overLimit = dto.overLimit ?: throw TestInboxProtocolException("the server sent $label without 'overLimit'"),
+                footprint = dto.footprint?.let { f ->
+                    fun number(value: Long?, name: String): Long = value?.takeIf { it>=0 }
+                        ?: throw TestInboxProtocolException("the server sent $label without valid footprint '$name'")
+                    WorkspaceFootprintUsage(number(f.limitBytes,"limitBytes"),number(f.usedBytes,"usedBytes"),
+                        number(f.pendingCleanupBytes,"pendingCleanupBytes"),number(f.availableBytes,"availableBytes"),
+                        f.overLimit ?: throw TestInboxProtocolException("missing footprint overLimit"),
+                        f.enforced ?: throw TestInboxProtocolException("missing footprint enforced"))
+                },
             )
     }
 }
+
+/** Own-workspace conservative physical-space charge, including pending cleanup. No service totals. */
+data class WorkspaceFootprintUsage(val limitBytes: Long, val usedBytes: Long, val pendingCleanupBytes: Long,
+    val availableBytes: Long, val overLimit: Boolean, val enforced: Boolean)
 
 /**
  * Why a storage ceiling refused a copy (ADR-035 §4). A wrapper over the wire
@@ -185,6 +198,7 @@ class StorageRefusalReason(
 
         /** The workspace's limit. */
         @JvmField val WORKSPACE_LIMIT: StorageRefusalReason = StorageRefusalReason("WORKSPACE_LIMIT")
+        @JvmField val WORKSPACE_FOOTPRINT_LIMIT: StorageRefusalReason = StorageRefusalReason("WORKSPACE_FOOTPRINT_LIMIT")
 
         /** Service capacity — one bit, and the only thing a tenant learns about it. */
         @JvmField val SERVICE_CAPACITY: StorageRefusalReason = StorageRefusalReason("SERVICE_CAPACITY")

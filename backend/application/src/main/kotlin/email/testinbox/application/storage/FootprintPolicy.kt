@@ -26,6 +26,7 @@ data class FootprintPolicy(
      * that would overflow in T1 answers INDETERMINATE before resolution (§2.1).
      */
     val worstCaseEvent: FootprintAdmission.Load = FootprintAdmission.Load.ZERO,
+    val cohort: CohortStorageRuntime? = null,
 ) {
     private fun corrupt(observed: ObservedFootprint): Boolean =
         listOf(observed.liveBytes, observed.liveObjects, observed.debtBytes, observed.debtObjects).any { it < 0 } ||
@@ -47,27 +48,51 @@ data class FootprintPolicy(
      */
     fun unavailability(observed: ObservedFootprint?): FootprintUnavailability? =
         when {
-            observed == null -> FootprintUnavailability.UNREADABLE
+            observed == null -> {
+                FootprintUnavailability.UNREADABLE
+            }
 
-            !observed.countsTrusted -> FootprintUnavailability.UNTRUSTED
+            !observed.countsTrusted -> {
+                FootprintUnavailability.UNTRUSTED
+            }
 
-            observed.trashBytes == null || observed.startedSeq == null -> FootprintUnavailability.UNOBSERVED
+            observed.trashBytes == null || observed.startedSeq == null -> {
+                FootprintUnavailability.UNOBSERVED
+            }
 
             // Negative or overflowing totals are corrupt: T1 would answer INDETERMINATE after
             // resolution, so the check before resolution must answer it first.
-            corrupt(observed) -> FootprintUnavailability.INDETERMINATE
+            corrupt(observed) -> {
+                FootprintUnavailability.INDETERMINATE
+            }
 
-            observed.startedSeq < observed.compactedThroughSeq -> FootprintUnavailability.OBSERVATION_BELOW_WATERMARK
+            observed.startedSeq < observed.compactedThroughSeq -> {
+                FootprintUnavailability.OBSERVATION_BELOW_WATERMARK
+            }
 
-            observed.startedSeq <= observed.distrustedSeq -> FootprintUnavailability.OBSERVATION_BEFORE_DISTRUST
+            observed.startedSeq <= observed.distrustedSeq -> {
+                FootprintUnavailability.OBSERVATION_BEFORE_DISTRUST
+            }
 
-            observed.blockSizeBytes != model.blockSizeBytes -> FootprintUnavailability.OBSERVATION_BLOCK_SIZE
+            observed.blockSizeBytes != model.blockSizeBytes -> {
+                FootprintUnavailability.OBSERVATION_BLOCK_SIZE
+            }
 
-            (observed.capacityBytes ?: -1) < capacityBytes -> FootprintUnavailability.OBSERVATION_CAPACITY
+            (observed.capacityBytes ?: -1) < capacityBytes -> {
+                FootprintUnavailability.OBSERVATION_CAPACITY
+            }
 
-            observed.writtenBy != monitorRole -> FootprintUnavailability.OBSERVATION_WRITER
+            observed.writtenBy != monitorRole -> {
+                FootprintUnavailability.OBSERVATION_WRITER
+            }
 
-            else -> null
+            else -> {
+                if (observed.cohort?.required == true) {
+                    if (cohort == null) FootprintUnavailability.COHORT_UNAPPROVED else cohort.unavailable(observed.cohort)
+                } else {
+                    null
+                }
+            }
         }
 }
 
@@ -103,6 +128,8 @@ enum class FootprintUnavailability {
 
     /** The aggregate overflowed: corrupt totals. */
     INDETERMINATE,
+    COHORT_UNAPPROVED,
+    COHORT_BUDGET_EXHAUSTED,
 }
 
 /** T1 (or rule P) found the footprint rules not evaluable. Infrastructure: `451`, never `SERVICE_CAPACITY`. */

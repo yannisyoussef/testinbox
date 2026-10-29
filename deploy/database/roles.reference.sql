@@ -64,6 +64,7 @@ REVOKE INSERT, UPDATE, DELETE ON flyway_schema_history FROM :"api_role", :"inges
 -- any column grant, so the column grants below come after.
 REVOKE INSERT, UPDATE, DELETE ON
     storage_delta, workspace_storage_account, inbox_storage,
+    storage_legacy_share, storage_cohort_plan, workspace_deletion_charge,
     storage_deletion_debt, storage_debt_watermark, storage_footprint_trust,
     storage_filesystem_observation, storage_sweep_run, storage_containment_watermark
     FROM :"api_role", :"ingestion_role";

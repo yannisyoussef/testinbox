@@ -401,9 +401,17 @@ class GuardedStorage(
                         is StorageAdmissionDecision.Refused -> {
                             metrics.admission(
                                 when (decision.reason) {
-                                    StorageRefusalReason.INBOX_LIMIT -> StorageAdmissionOutcome.REFUSED_INBOX
-                                    StorageRefusalReason.WORKSPACE_LIMIT -> StorageAdmissionOutcome.REFUSED_WORKSPACE
-                                    StorageRefusalReason.SERVICE_CAPACITY -> StorageAdmissionOutcome.REFUSED_GLOBAL
+                                    StorageRefusalReason.INBOX_LIMIT -> {
+                                        StorageAdmissionOutcome.REFUSED_INBOX
+                                    }
+
+                                    StorageRefusalReason.WORKSPACE_LIMIT, StorageRefusalReason.WORKSPACE_FOOTPRINT_LIMIT -> {
+                                        StorageAdmissionOutcome.REFUSED_WORKSPACE
+                                    }
+
+                                    StorageRefusalReason.SERVICE_CAPACITY -> {
+                                        StorageAdmissionOutcome.REFUSED_GLOBAL
+                                    }
                                 },
                             )
                         }

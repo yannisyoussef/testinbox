@@ -107,7 +107,9 @@ class StorageDisclosureTest : ApiIntegrationTestBase() {
                     tenant.apiKey,
                 ).body,
             )
-        for (reason in StorageRefusalReason.entries) {
+        // This context intentionally has storage OFF and no footprint model.
+        // The ALL-mode native rehearsal checks footprint 409 scope/privacy separately.
+        for (reason in StorageRefusalReason.entries.filter { it != StorageRefusalReason.WORKSPACE_FOOTPRINT_LIMIT }) {
             val refused = InboxId(UUID.fromString(json.readTree(post("/v1/inboxes", """{}""", tenant.apiKey).body)["id"].asText()))
             guardedRefusals.refuse(tenant.workspaceId, refused, reason)
             val response =
@@ -159,7 +161,7 @@ class StorageDisclosureTest : ApiIntegrationTestBase() {
     @Test
     fun `the contract's tenant schemas declare no global figure either`() {
         val openApi = OpenAPIV3Parser().readLocation(File("contract/openapi.yaml").absolutePath, null, null).openAPI
-        for (schema in listOf("StorageUsage", "Inbox", "WaitResult", "Problem", "WaitRequest")) {
+        for (schema in listOf("StorageUsage", "WorkspaceFootprintUsage", "Inbox", "WaitResult", "Problem", "WaitRequest")) {
             val names =
                 openApi.components.schemas
                     .getValue(schema)
@@ -169,6 +171,6 @@ class StorageDisclosureTest : ApiIntegrationTestBase() {
         openApi.components.schemas
             .getValue("StorageUsage")
             .properties.keys shouldBe
-            setOf("limitBytes", "storedBytes", "reservedBytes", "availableBytes", "overLimit")
+            setOf("limitBytes", "storedBytes", "reservedBytes", "availableBytes", "overLimit", "footprint")
     }
 }

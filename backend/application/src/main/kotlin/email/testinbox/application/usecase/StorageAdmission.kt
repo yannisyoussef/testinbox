@@ -223,6 +223,10 @@ object StorageAdmissionRules {
         return checked {
             val inboxUsed = snapshot.inboxes.mapValuesTo(HashMap()) { it.value.usage.usedBytes }
             val workspaceUsed = snapshot.workspaces.mapValuesTo(HashMap()) { it.value.usedBytes }
+            val workspaceObjects =
+                snapshot.workspaces.mapValuesTo(
+                    HashMap(),
+                ) { Math.addExact(it.value.committedObjects, it.value.reservedObjects) }
             placements.mapIndexed { index, placement ->
                 // Only the public envelope shape affects global prefix cost. Unknown,
                 // rate-limited and tenant-refused positions cost the same as known ones.
@@ -273,17 +277,56 @@ object StorageAdmissionRules {
                             }
                         }
                     } ?: false
+                val budget = snapshot.budgets[placement.workspaceId]
+                val workspaceLimit = minOf(policy.workspaceLimitBytes, budget?.payloadBytes ?: policy.workspaceLimitBytes)
+                val inboxLimit = policy.inboxShare.floorOf(workspaceLimit)
+                val workspaceFootprintExceeded =
+                    if (budget == null || footprint == null) {
+                        false
+                    } else {
+                        val bytes =
+                            Math.addExact(
+                                Math.addExact(workspaceUsed.getValue(placement.workspaceId), bytesPerCopy),
+                                budget.cleanup.bytes,
+                            )
+                        val objects =
+                            Math.addExact(
+                                Math.addExact(workspaceObjects.getValue(placement.workspaceId), objectsPerCopy),
+                                budget.cleanup.objects,
+                            )
+                        footprint.model.bound(bytes, objects) > budget.footprintBytes
+                    }
+                if (budget != null && footprint == null && enforcement.enforces(StorageScope.WORKSPACE)) {
+                    throw StorageFootprintUnavailableException(FootprintUnavailability.UNREADABLE)
+                }
                 val exceeded =
                     StorageScope.entries.filter { scope ->
-                        Math.addExact(used.getValue(scope), bytesPerCopy) > policy.limitOf(scope) ||
+                        Math.addExact(used.getValue(scope), bytesPerCopy) >
+                            when (scope) {
+                                StorageScope.INBOX -> inboxLimit
+                                StorageScope.WORKSPACE -> workspaceLimit
+                                StorageScope.GLOBAL -> policy.limitOf(scope)
+                            } ||
                             (scope == StorageScope.GLOBAL && footprintExceeded)
                     }
-                val refusing = exceeded.firstOrNull(enforcement::enforces)
+                val ordered =
+                    buildList {
+                        if (StorageScope.INBOX in exceeded) add(StorageRefusalReason.INBOX_LIMIT)
+                        if (StorageScope.WORKSPACE in exceeded) add(StorageRefusalReason.WORKSPACE_LIMIT)
+                        if (workspaceFootprintExceeded) add(StorageRefusalReason.WORKSPACE_FOOTPRINT_LIMIT)
+                        if (StorageScope.GLOBAL in exceeded) add(StorageRefusalReason.SERVICE_CAPACITY)
+                    }
+                val refusing = ordered.firstOrNull { enforcement.enforces(it.scope) }
                 val admitted = refusing == null
-                val ceiling = (refusing ?: exceeded.firstOrNull())?.let(StorageRefusalReason::of)
+                val ceiling = refusing ?: ordered.firstOrNull()
                 if (admitted) {
                     inboxUsed[placement.inboxId] = Math.addExact(used.getValue(StorageScope.INBOX), bytesPerCopy)
                     workspaceUsed[placement.workspaceId] = Math.addExact(used.getValue(StorageScope.WORKSPACE), bytesPerCopy)
+                    workspaceObjects[placement.workspaceId] =
+                        Math.addExact(
+                            workspaceObjects.getValue(placement.workspaceId),
+                            objectsPerCopy,
+                        )
                 }
                 Verdict(admitted, ceiling)
             }
@@ -370,7 +413,7 @@ class StorageAdmission(
             verifyOwnership(request, snapshot)
             val placements = request.candidates.map { StorageAdmissionRules.Placement(it.workspaceId, it.inboxId) }
             val verdicts =
-                if (footprint == null && request.envelopePositions == placements.indices.toList()) {
+                if (footprint == null && snapshot.budgets.isEmpty() && request.envelopePositions == placements.indices.toList()) {
                     rules(policy, enforcement, request.bytesPerCopy, placements, snapshot)
                 } else {
                     StorageAdmissionRules.decide(

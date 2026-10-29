@@ -75,7 +75,7 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
             "GRANT SELECT, INSERT, UPDATE, DELETE ON workspace, project, inbox, message, attachment",
             "GRANT SELECT, INSERT, UPDATE, DELETE ON storage_delta, workspace_storage_account, inbox_storage",
             "GRANT USAGE ON storage_delta_id_seq, storage_ambiguity_id_seq",
-            "GRANT SELECT ON exact_address_reservation",
+            "GRANT SELECT ON exact_address_reservation, participant_workspace, storage_legacy_share, workspace_deletion_charge, storage_cohort_plan",
         )
 
     @Test
@@ -135,7 +135,7 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
         db.grant(
             api,
             "GRANT SELECT ON storage_filesystem_observation, storage_debt_watermark",
-            "GRANT SELECT ON storage_deletion_debt",
+            "GRANT SELECT ON storage_deletion_debt, participant_workspace, storage_legacy_share, workspace_deletion_charge, storage_cohort_plan, workspace, storage_node",
             "GRANT SELECT, UPDATE (distrust_epoch) ON storage_footprint_trust",
             "GRANT EXECUTE ON FUNCTION storage_confirm_footprint_trust()",
         )
@@ -279,7 +279,7 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
         db.grant(
             ingestion,
             "GRANT SELECT ON storage_deletion_debt, storage_filesystem_observation, storage_debt_watermark, storage_footprint_trust",
-            "GRANT SELECT ON workspace_storage_account, storage_delta, storage_reservation",
+            "GRANT SELECT ON workspace_storage_account, storage_delta, storage_reservation, participant_workspace, storage_legacy_share, workspace_deletion_charge, storage_cohort_plan, workspace, storage_node",
             "GRANT EXECUTE ON FUNCTION storage_record_probe_debt(text), storage_resolve_probe_debt(text)",
         )
         val asIngestion = db.connectAs(ingestion)

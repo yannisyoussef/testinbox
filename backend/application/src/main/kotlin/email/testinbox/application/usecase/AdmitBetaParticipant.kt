@@ -20,6 +20,11 @@ class AdmitBetaParticipant(
     private val admissions: BetaAdmissions,
     private val transactions: TransactionRunner,
     private val clock: Clock,
+    private val capacity: email.testinbox.application.storage.CohortStorageReadiness =
+        email.testinbox.application.storage
+            .CohortStorageReadiness {
+                false
+            },
 ) {
     sealed interface Result {
         data class Admitted(
@@ -45,7 +50,7 @@ class AdmitBetaParticipant(
 
             admissions.findAdmission(accountId)?.let { return@required Result.Admitted(it, newlyAdmitted = false) }
             if (!policy.admissionsOpen) return@required Result.Closed
-            if (!policy.capacityReady) return@required Result.CapacityUnavailable
+            if (!policy.capacityReady || !capacity.ready()) return@required Result.CapacityUnavailable
             val place = admissions.nextPlace() ?: return@required Result.Full
 
             val now = clock.instant()

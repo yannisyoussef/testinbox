@@ -129,7 +129,14 @@ class BetaWaitlistTest : PersistenceIntegrationTest() {
         join(admitted)
         join(waiting)
         jdbc.sql("UPDATE beta_cohort SET admissions_open=true,capacity_ready=true").update()
-        AdmitBetaParticipant(admissions, tx, clock).execute(admitted).shouldBeInstanceOf<AdmitBetaParticipant.Result.Admitted>()
+        AdmitBetaParticipant(
+            admissions,
+            tx,
+            clock,
+            email.testinbox.application.storage.CohortStorageReadiness {
+                true
+            },
+        ).execute(admitted).shouldBeInstanceOf<AdmitBetaParticipant.Result.Admitted>()
         manage(at = now.plus(Duration.ofDays(1))).purge()
         store.find(expired) shouldBe null
         store.find(admitted) shouldBe null

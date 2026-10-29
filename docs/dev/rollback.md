@@ -362,3 +362,14 @@ controls while a ceiling is enforced:
   violation gauge stays 1 until the API returns or enforcement is set OFF.
 - `OFF` is the escape hatch in every direction: it must be in place on both
   deployables before either artifact changes.
+
+## ADR-037 cohort storage semantic floor
+
+V20/V21 are schema-expand-only; they do not activate enforcement. After the
+first participant/pool activation, old-capability and OFF nodes intentionally
+set the storage latch rather than bypass participant ceilings. Deploy the API
+reader for `WORKSPACE_FOOTPRINT_LIMIT` before enabling its writer and record
+the semantic rollback floor. Restore does not restore capacity approval or
+cleanup evidence. Recovery is hold-first and operator-reconciled; see
+[cohort storage](cohort-storage.md). Neither a successful migration nor a
+backup restore authorizes reopening registration.

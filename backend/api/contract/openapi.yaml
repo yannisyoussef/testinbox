@@ -280,7 +280,7 @@ components:
           description: On `storage-limit-exceeded`, the inbox whose wait observed the refusal (ADR-035 §13c).
         refusalReason:
           allOf: [{ $ref: "#/components/schemas/StorageRefusalReason" }]
-          description: On `storage-limit-exceeded`, why the most recent copy was refused.
+          description: On `storage-limit-exceeded`, why the most recent copy was refused. WORKSPACE_FOOTPRINT_LIMIT uses STORED_FOOTPRINT and the caller's charged footprint for dimension/limit/current.
         afterStorageRefusalCount:
           type: integer
           format: int64
@@ -314,7 +314,7 @@ components:
     QuotaDimension:
       type: string
       description: "A quota dimension (ADR-027 §5). Clients must tolerate unknown future values."
-      enum: [ACTIVE_INBOXES, STORED_BYTES, CONCURRENT_WAITS]
+      enum: [ACTIVE_INBOXES, STORED_BYTES, STORED_FOOTPRINT, CONCURRENT_WAITS]
     RateCategory:
       type: string
       description: "A rate category (ADR-027 §4). Clients must tolerate unknown future values."
@@ -332,11 +332,11 @@ components:
         Across separate emails, own delivery/refusal outcomes can still reveal
         recipient existence under globally constrained conditions (ADR-037).
         Clients must tolerate unknown future values.
-      enum: [INBOX_LIMIT, WORKSPACE_LIMIT, SERVICE_CAPACITY]
+      enum: [INBOX_LIMIT, WORKSPACE_LIMIT, WORKSPACE_FOOTPRINT_LIMIT, SERVICE_CAPACITY]
     StorageUsage:
       type: object
       description: >
-        Physical storage accounting for ONE scope of the caller's own tenancy
+        Stored content payload accounting for ONE scope of the caller's own tenancy
         (ADR-035 §13). `storedBytes` is committed content; `reservedBytes`
         counts in-flight reservations in every state (a stale reservation is
         not free). `overLimit` is `storedBytes + reservedBytes > limitBytes`
@@ -366,6 +366,28 @@ components:
         overLimit:
           type: boolean
           description: Whether `storedBytes + reservedBytes` exceeds `limitBytes`. Equality is not over.
+        footprint:
+          allOf: [{ $ref: "#/components/schemas/WorkspaceFootprintUsage" }]
+          description: Present for a workspace with a declared bounded share; never global usage.
+    WorkspaceFootprintUsage:
+      type: object
+      description: >
+        Conservative own-workspace disk-footprint bound, including committed
+        content, every in-flight reservation and pending physical cleanup.
+        S3 deletion and global debt compaction alone do not release cleanup
+        charges; a later valid empty-trash filesystem observation is required.
+        Both payload and footprint limits apply. SMTP acceptance is uniform,
+        so mail refused by a limit is discarded without a sender bounce.
+      required: [limitBytes, usedBytes, pendingCleanupBytes, availableBytes, overLimit, enforced]
+      properties:
+        limitBytes: { type: integer, format: int64, minimum: 1 }
+        usedBytes: { type: integer, format: int64, minimum: 0 }
+        pendingCleanupBytes: { type: integer, format: int64, minimum: 0 }
+        availableBytes: { type: integer, format: int64, minimum: 0 }
+        overLimit: { type: boolean }
+        enforced:
+          type: boolean
+          description: Whether this workspace footprint ceiling currently refuses mail.
     CreateInboxRequest:
       type: object
       properties:

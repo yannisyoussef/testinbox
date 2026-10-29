@@ -64,7 +64,7 @@ class StorageVisibilityTest : PersistenceIntegrationTest() {
 
         val figures = read(ws, inbox)
 
-        figures.workspace shouldBe StorageUsage(stored, reserved)
+        figures.workspace shouldBe StorageUsage(stored, reserved, reservedObjects = if (parts and 4 != 0) 1 else 0)
         figures.inbox(InboxId(inbox)).usage shouldBe StorageUsage(stored, reserved)
         figures.inbox(InboxId(inbox)).refusals shouldBe StorageRefusalSnapshot.NONE
     }
@@ -79,7 +79,7 @@ class StorageVisibilityTest : PersistenceIntegrationTest() {
 
         val figures = read(ws, inbox)
 
-        figures.workspace shouldBe StorageUsage(7, 11)
+        figures.workspace shouldBe StorageUsage(7, 11, reservedObjects = 1)
         figures.inbox(InboxId(inbox)) shouldBe InboxStorageFigures(StorageUsage(7, 11), StorageRefusalSnapshot.NONE)
         // And a scope with nothing at all is zero, not absent.
         val empty = db.inbox(ws)
@@ -96,7 +96,7 @@ class StorageVisibilityTest : PersistenceIntegrationTest() {
         fx.reservation(ws, inbox, 200, state = "RELEASING", createdAgo = java.time.Duration.ofDays(30))
 
         val figures = read(ws, inbox)
-        figures.workspace shouldBe StorageUsage(0, 300)
+        figures.workspace shouldBe StorageUsage(0, 300, reservedObjects = 2)
         figures.inbox(InboxId(inbox)).usage shouldBe StorageUsage(0, 300)
     }
 
@@ -114,7 +114,7 @@ class StorageVisibilityTest : PersistenceIntegrationTest() {
         fx.reservation(ws, b, 1_000)
 
         val figures = read(ws, a, b)
-        figures.workspace shouldBe StorageUsage(10 + 5 + 1 + 100, 1_000)
+        figures.workspace shouldBe StorageUsage(10 + 5 + 1 + 100, 1_000, reservedObjects = 1)
         figures.inbox(InboxId(a)).usage shouldBe StorageUsage(11, 0)
         figures.inbox(InboxId(b)).usage shouldBe StorageUsage(5, 1_000)
     }
@@ -215,7 +215,7 @@ class StorageVisibilityTest : PersistenceIntegrationTest() {
         val after = read(ws, inbox)
 
         withClue("one statement sees each fold wholly or not at all") {
-            listOf(before, during, after).map { it.workspace }.toSet() shouldBe setOf(StorageUsage(130, 50))
+            listOf(before, during, after).map { it.workspace }.toSet() shouldBe setOf(StorageUsage(130, 50, reservedObjects = 1))
             listOf(before, during, after).map { it.inbox(InboxId(inbox)).usage }.toSet() shouldBe setOf(StorageUsage(130, 50))
         }
     }

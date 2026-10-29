@@ -176,9 +176,11 @@ class CreateInbox(
         // A workspace at its storage ceiling may keep receiving mail for the
         // inboxes it already holds (ADR-027 §2), but may not enlarge its
         // footprint by adding more.
-        val stored = quotas.storedBytes(workspaceId)
-        if (!policy.admits(QuotaDimension.STORED_BYTES, stored, amount = 0)) {
-            return QuotaExceeded(QuotaDimension.STORED_BYTES, policy.maxStoredBytes, stored)
+        val observed = quotas.storageQuota(workspaceId)
+        val stored = observed.usedBytes
+        val effective = policy.copy(maxStoredBytes = minOf(policy.maxStoredBytes, observed.payloadLimitBytes ?: policy.maxStoredBytes))
+        if (!effective.admits(QuotaDimension.STORED_BYTES, stored, amount = 0)) {
+            return QuotaExceeded(QuotaDimension.STORED_BYTES, effective.maxStoredBytes, stored)
         }
         return null
     }

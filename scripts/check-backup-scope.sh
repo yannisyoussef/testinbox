@@ -59,7 +59,7 @@ done < "$SCOPE"
 # so the scope file itself is refused.
 REQUIRED_DENY=(inbox message attachment human_session email_login_challenge human_auth_gate provider_login_state beta_waitlist human_request_global human_request_budget
                workspace_storage_account inbox_storage storage_delta
-               storage_reservation storage_ambiguity storage_node storage_admission_latch
+               storage_reservation storage_ambiguity storage_node storage_admission_latch storage_cohort_plan workspace_deletion_charge
                storage_clock_episode storage_deletion_debt storage_filesystem_observation)
 for required in "${REQUIRED_DENY[@]}"; do
   for kept in "${KEEP[@]}"; do
@@ -71,6 +71,9 @@ done
 # and forget their charged share. It is durable control-plane state, never '-'.
 marker_kept=0
 for kept in "${KEEP[@]}"; do [[ "$kept" == participant_workspace ]] && marker_kept=1; done
+legacy_kept=0
+for kept in "${KEEP[@]}"; do [[ "$kept" == storage_legacy_share ]] && legacy_kept=1; done
+(( legacy_kept )) || { echo "SCOPE MISCLASSIFIED: storage_legacy_share must be '+' in $SCOPE" >&2; exit 1; }
 (( marker_kept )) || { echo "SCOPE MISCLASSIFIED: participant_workspace must be '+' in $SCOPE" >&2; exit 1; }
 
 classified() {

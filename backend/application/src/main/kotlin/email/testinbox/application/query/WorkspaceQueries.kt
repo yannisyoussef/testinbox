@@ -58,6 +58,7 @@ class WorkspaceQueries(
     private val quotas: WorkspaceQuotaState,
     private val rateLimiter: RateLimiter,
     private val waitSlots: WaitSlots,
+    private val storage: StorageQueries? = null,
 ) {
     fun workspace(
         workspaceId: WorkspaceId,
@@ -69,10 +70,15 @@ class WorkspaceQueries(
 
     fun usage(workspaceId: WorkspaceId): WorkspaceUsageView {
         val policy = limits.quotas
+        val actualStorage = storage?.workspace(workspaceId)
         val quotaViews =
             listOf(
                 QuotaView(QuotaDimension.ACTIVE_INBOXES, policy.maxActiveInboxes, quotas.activeInboxCount(workspaceId)),
-                QuotaView(QuotaDimension.STORED_BYTES, policy.maxStoredBytes, quotas.storedBytes(workspaceId)),
+                QuotaView(
+                    QuotaDimension.STORED_BYTES,
+                    actualStorage?.limitBytes ?: policy.maxStoredBytes,
+                    actualStorage?.let { Math.addExact(it.storedBytes, it.reservedBytes) } ?: quotas.storedBytes(workspaceId),
+                ),
                 QuotaView(QuotaDimension.CONCURRENT_WAITS, policy.maxConcurrentWaits, waitSlots.held(workspaceId)),
             )
         val rateViews =

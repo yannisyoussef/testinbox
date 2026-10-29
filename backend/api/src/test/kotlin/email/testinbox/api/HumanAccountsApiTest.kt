@@ -23,6 +23,11 @@ import java.util.UUID
 /** Cookies are supplied explicitly over the disposable HTTP transport; production cookies are Secure. */
 @TestPropertySource(properties = ["testinbox.accounts.enabled=true", "testinbox.accounts.public-origin=https://console.example.invalid"])
 class HumanAccountsApiTest : ApiIntegrationTestBase() {
+    // This suite proves human HTTP authorization, not capacity feasibility.
+    // The native ALL rehearsal exercises the real, unstubbed capacity bean.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    lateinit var capacity: email.testinbox.application.storage.CohortStorageReadiness
+
     @Autowired lateinit var jdbc: JdbcClient
 
     @Autowired lateinit var sessions: JdbcHumanSessions
@@ -33,9 +38,20 @@ class HumanAccountsApiTest : ApiIntegrationTestBase() {
 
     @BeforeEach
     fun closeCohort() {
+        org.mockito.Mockito
+            .`when`(capacity.ready())
+            .thenReturn(true)
         jdbc.sql("DELETE FROM participant_workspace").update()
         jdbc.sql("DELETE FROM beta_admission").update()
         jdbc.sql("UPDATE beta_cohort SET admissions_open=false, capacity_ready=false").update()
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    fun clearFixtureAdmission() {
+        jdbc.sql("DELETE FROM participant_workspace").update()
+        jdbc.sql("DELETE FROM beta_admission").update()
+        jdbc.sql("UPDATE beta_cohort SET admissions_open=false,capacity_ready=false").update()
+        jdbc.sql("DELETE FROM storage_admission_latch WHERE reason='incompatible cohort storage node'").update()
     }
 
     private fun login(): Pair<HumanAccountId, IssueHumanSession.Issued> {
@@ -200,6 +216,13 @@ class HumanAccountsApiTest : ApiIntegrationTestBase() {
         jdbc.sql("UPDATE beta_cohort SET admissions_open=true").update()
         json.readTree(post("/account/admission", session).body())["status"].asText() shouldBe "CAPACITY_UNAVAILABLE"
         jdbc.sql("UPDATE beta_cohort SET capacity_ready=true").update()
+        org.mockito.Mockito
+            .`when`(capacity.ready())
+            .thenReturn(false)
+        json.readTree(post("/account/admission", session).body())["status"].asText() shouldBe "CAPACITY_UNAVAILABLE"
+        org.mockito.Mockito
+            .`when`(capacity.ready())
+            .thenReturn(true)
         val accepted = post("/account/admission", session)
         accepted.statusCode() shouldBe 200
         val membership = json.readTree(accepted.body())

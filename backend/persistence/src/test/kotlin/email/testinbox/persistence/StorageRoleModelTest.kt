@@ -84,6 +84,13 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         db.applyReferenceGrants()
         db.applyReferenceGrants() // re-run after every migration
 
+        for (runtime in listOf(asApi, asIngestion)) {
+            for (table in listOf("storage_cohort_plan", "storage_legacy_share", "workspace_deletion_charge")) {
+                failure { runtime.sql("DELETE FROM $table WHERE false").update() } shouldContain "permission denied"
+                failure { runtime.sql("INSERT INTO $table DEFAULT VALUES").update() } shouldContain "permission denied"
+            }
+            failure { runtime.sql("SELECT storage_release_workspace_charges()").query().listOfRows() } shouldContain "permission denied"
+        }
         // Ingestion: commits mail (the ledger and debt triggers run as their owner), registers
         // and heartbeats its node, records a refusal, and runs the probe pair.
         val ws = db.workspace()
@@ -204,6 +211,8 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
                     JdbcBetaAdmissions(client),
                     tx,
                     java.time.Clock.systemUTC(),
+                    email.testinbox.application.storage
+                        .CohortStorageReadiness { true },
                 ).execute(account) as email.testinbox.application.usecase.AdmitBetaParticipant.Result.Admitted
         client
             .sql("SELECT count(*) FROM participant_workspace WHERE workspace_id=?")

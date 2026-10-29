@@ -313,7 +313,8 @@ class ApiWiring(
     fun storageQueries(
         visibility: StorageVisibility,
         policy: StorageCapacityPolicy,
-    ): StorageQueries = StorageQueries(visibility, policy)
+        declarations: StorageDeclarations,
+    ): StorageQueries = StorageQueries(visibility, policy, EffectiveStoragePolicy.footprint(declarations), declarations.enforcement)
 
     /**
      * [hook] is the ADR-035 §17 test seam; no production bean of that type
@@ -331,6 +332,7 @@ class ApiWiring(
         config: TestInboxConfig,
         policy: StorageCapacityPolicy,
         hook: ObjectProvider<WaitSyncHook>,
+        declarations: StorageDeclarations,
     ): WaitForMessage =
         WaitForMessage(
             inboxes,
@@ -343,6 +345,7 @@ class ApiWiring(
             policy,
             hook = hook.getIfAvailable { WaitSyncHook.NOOP },
             metrics = waitMetrics,
+            footprintModel = EffectiveStoragePolicy.footprint(declarations)?.model,
         )
 
     @Bean

@@ -79,7 +79,14 @@ class HumanWorkspaceActorTest : PersistenceIntegrationTest() {
 
     private fun owner(): Pair<HumanWorkspaceOwner, IssueHumanSession.Issued> {
         val id = applicant()
-        AdmitBetaParticipant(admissions, tx, clock).execute(id).shouldBeInstanceOf<AdmitBetaParticipant.Result.Admitted>()
+        AdmitBetaParticipant(
+            admissions,
+            tx,
+            clock,
+            email.testinbox.application.storage.CohortStorageReadiness {
+                true
+            },
+        ).execute(id).shouldBeInstanceOf<AdmitBetaParticipant.Result.Admitted>()
         val session = login(id)
         return requireNotNull(resolver().execute(session.credential.value)) to session
     }

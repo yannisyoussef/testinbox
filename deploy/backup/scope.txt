@@ -85,3 +85,8 @@
 # Short-lived request counts, not identity or authority.
 - human_request_global
 - human_request_budget
+
+# ADR-037: preserve legacy allocations; restore never restores pool approval or cleanup evidence.
++ storage_legacy_share
+- storage_cohort_plan
+- workspace_deletion_charge

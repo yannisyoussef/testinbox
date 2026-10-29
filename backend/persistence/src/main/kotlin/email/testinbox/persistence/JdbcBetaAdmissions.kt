@@ -22,11 +22,14 @@ class JdbcBetaAdmissions(
 ) : BetaAdmissions {
     override fun lockPolicy(): BetaCohortPolicy {
         requireTransaction()
-        return jdbc
-            .sql("SELECT admissions_open, capacity_ready FROM beta_cohort WHERE id = :cohort FOR UPDATE")
-            .param("cohort", BetaCohortPolicy.NAME)
-            .query { rs, _ -> BetaCohortPolicy(rs.getBoolean("admissions_open"), rs.getBoolean("capacity_ready")) }
-            .single()
+        val policy =
+            jdbc
+                .sql("SELECT admissions_open, capacity_ready FROM beta_cohort WHERE id = :cohort FOR UPDATE")
+                .param("cohort", BetaCohortPolicy.NAME)
+                .query { rs, _ -> BetaCohortPolicy(rs.getBoolean("admissions_open"), rs.getBoolean("capacity_ready")) }
+                .single()
+        jdbc.sql("SELECT pg_advisory_xact_lock(35,1)").query { _, _ -> Unit }.single()
+        return policy
     }
 
     override fun lockApplicant(id: HumanAccountId): AdmissionApplicant? {
