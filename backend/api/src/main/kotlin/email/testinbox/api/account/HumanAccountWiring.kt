@@ -5,6 +5,7 @@ import email.testinbox.application.port.HumanSessions
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.usecase.AdmitBetaParticipant
 import email.testinbox.application.usecase.AuthenticateHumanSession
+import email.testinbox.application.usecase.ResolveHumanWorkspace
 import email.testinbox.application.usecase.RevokeHumanSession
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.boot.context.properties.EnableConfigurationProperties
@@ -39,6 +40,13 @@ class HumanAccountWiring {
         tx: TransactionRunner,
         clock: Clock,
     ): AuthenticateHumanSession = AuthenticateHumanSession(sessions, tx, clock)
+
+    @Bean
+    fun resolveHumanWorkspace(
+        authenticate: AuthenticateHumanSession,
+        admissions: BetaAdmissions,
+        tx: TransactionRunner,
+    ): ResolveHumanWorkspace = ResolveHumanWorkspace(authenticate, admissions, tx)
 
     @Bean
     fun revokeHumanSession(

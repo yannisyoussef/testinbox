@@ -1,5 +1,6 @@
 package email.testinbox.api.account
 
+import email.testinbox.api.auth.ProductRoutes
 import email.testinbox.api.web.Problems
 import jakarta.servlet.http.HttpServletRequest
 import org.springframework.core.MethodParameter
@@ -11,6 +12,8 @@ import org.springframework.http.converter.HttpMessageConverter
 import org.springframework.web.bind.annotation.ControllerAdvice
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
+import org.springframework.web.context.request.RequestContextHolder
+import org.springframework.web.context.request.ServletRequestAttributes
 import org.springframework.web.servlet.mvc.method.annotation.RequestBodyAdviceAdapter
 import java.io.ByteArrayInputStream
 import java.lang.reflect.Type
@@ -18,13 +21,15 @@ import java.lang.reflect.Type
 class HumanAccountBodyTooLarge : RuntimeException("account request exceeds its body ceiling")
 
 /** Runs before JSON allocation, including on chunked requests and normalized paths. */
-@ControllerAdvice(basePackageClasses = [EmailLoginController::class])
+@ControllerAdvice
 class HumanAccountBodyLimit : RequestBodyAdviceAdapter() {
     override fun supports(
         parameter: MethodParameter,
         targetType: Type,
         converterType: Class<out HttpMessageConverter<*>>,
-    ): Boolean = true
+    ): Boolean =
+        parameter.containingClass.packageName.startsWith("email.testinbox.api.account") ||
+            ((RequestContextHolder.getRequestAttributes() as? ServletRequestAttributes)?.request?.let(ProductRoutes::isHuman) == true)
 
     override fun beforeBodyRead(
         inputMessage: HttpInputMessage,
@@ -46,7 +51,7 @@ class HumanAccountBodyLimit : RequestBodyAdviceAdapter() {
     }
 }
 
-@RestControllerAdvice(basePackageClasses = [EmailLoginController::class])
+@RestControllerAdvice
 @Order(Ordered.HIGHEST_PRECEDENCE)
 class HumanAccountBodyErrors {
     @ExceptionHandler(HumanAccountBodyTooLarge::class)

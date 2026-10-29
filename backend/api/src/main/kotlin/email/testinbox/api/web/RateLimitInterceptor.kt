@@ -1,6 +1,7 @@
 package email.testinbox.api.web
 
 import email.testinbox.api.auth.AuthAttributes
+import email.testinbox.api.auth.ProductRoutes
 import email.testinbox.application.LimitsConfig
 import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.RateLimiter
@@ -62,6 +63,11 @@ object RateCategories {
     fun of(
         method: String,
         path: String,
+    ): RateCategory = classify(method, ProductRoutes.canonical(path))
+
+    private fun classify(
+        method: String,
+        path: String,
     ): RateCategory =
         when {
             KEY_ADMIN.matches(path) -> RateCategory.KEY_ADMIN
@@ -95,13 +101,10 @@ class RateLimitInterceptor(
         response: HttpServletResponse,
         handler: Any,
     ): Boolean {
-        if (!request.requestURI.startsWith("/v1/")) return true
-        // Identity always comes from the authenticated key, never from a path
-        // parameter, a body field, or any header (ADR-027 §3).
-        val apiKey = request.getAttribute(AuthAttributes.API_KEY) ?: return true
-        val workspaceId = (apiKey as email.testinbox.domain.tenant.ApiKey).workspaceId
-
-        val category = RateCategories.of(request.method, request.requestURI)
+        val path = ProductRoutes.matched(request) ?: return true
+        // Only a server-verified actor selects the shared workspace budget.
+        val workspaceId = AuthAttributes.principal(request).workspaceId
+        val category = RateCategories.of(request.method, path)
         val decision = rateLimiter.tryConsume(workspaceId, category)
         metrics.rateDecision(category, decision.allowed)
 
@@ -155,7 +158,6 @@ class RateLimitWebConfig(
     override fun addInterceptors(registry: InterceptorRegistry) {
         registry
             .addInterceptor(interceptor)
-            .addPathPatterns("/v1/**")
             .order(RATE_LIMIT_INTERCEPTOR_ORDER)
     }
 }

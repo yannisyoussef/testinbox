@@ -33,7 +33,7 @@ import java.util.UUID
 private val CONCURRENT_WAIT_RETRY_AFTER: java.time.Duration = java.time.Duration.ofSeconds(1)
 
 @RestController
-@RequestMapping("/v1/inboxes")
+@RequestMapping("/v1/inboxes", "/account/product/inboxes")
 class InboxController(
     private val createInbox: CreateInbox,
     private val deleteInbox: DeleteInbox,
@@ -50,7 +50,7 @@ class InboxController(
         val key = AuthAttributes.principal(request)
         key.requireScope(ApiScope.INBOXES_WRITE)
         val idempotency =
-            when (val header = IdempotencyHeader.read(request, key.id)) {
+            when (val header = IdempotencyHeader.read(request, key)) {
                 is IdempotencyHeader.Outcome.Invalid -> {
                     return Problems.respond(
                         Problems.of(HttpStatus.BAD_REQUEST, "invalid-request", "Invalid request", header.reason, request),

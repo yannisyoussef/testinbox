@@ -1,8 +1,12 @@
 package email.testinbox.api.web
 
+import email.testinbox.api.auth.ProductRoutes
 import email.testinbox.application.idempotency.IdempotencyRequest
 import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.idempotency.IdempotencyKey
+import email.testinbox.domain.tenant.ApiKey
+import email.testinbox.domain.tenant.HumanWorkspaceOwner
+import email.testinbox.domain.tenant.WorkspaceActor
 import jakarta.servlet.http.HttpServletRequest
 
 /**
@@ -28,6 +32,22 @@ object IdempotencyHeader {
             val reason: String,
         ) : Outcome
     }
+
+    fun read(
+        request: HttpServletRequest,
+        actor: WorkspaceActor,
+    ): Outcome =
+        when (val parsed = read(request, (actor as? ApiKey)?.id)) {
+            is Outcome.Present -> {
+                Outcome.Present(
+                    parsed.request.copy(actorHumanAccountId = (actor as? HumanWorkspaceOwner)?.accountId),
+                )
+            }
+
+            else -> {
+                parsed
+            }
+        }
 
     fun read(
         request: HttpServletRequest,
@@ -71,5 +91,5 @@ object IdempotentRoutes {
     fun supports(
         method: String,
         path: String,
-    ): Boolean = SUPPORTED.any { (m, p) -> m.equals(method, ignoreCase = true) && p.matches(path) }
+    ): Boolean = SUPPORTED.any { (m, p) -> m.equals(method, ignoreCase = true) && p.matches(ProductRoutes.canonical(path)) }
 }

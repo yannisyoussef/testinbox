@@ -1,5 +1,6 @@
 package email.testinbox.api
 
+import email.testinbox.api.auth.ProductRoutes
 import email.testinbox.api.web.RateCategories
 import email.testinbox.domain.limits.RateCategory
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -28,7 +29,7 @@ class RouteCoverageTest : ApiIntegrationTestBase() {
             .flatMap { info ->
                 val paths = info.pathPatternsCondition?.patternValues ?: emptySet()
                 info.methodsCondition.methods.flatMap { method ->
-                    paths.filter { it.startsWith("/v1/") }.map { method.name to it }
+                    paths.filter { it.startsWith("/v1/") || it.startsWith("/account/product/") }.map { method.name to it }
                 }
             }
 
@@ -49,7 +50,7 @@ class RouteCoverageTest : ApiIntegrationTestBase() {
                 // class than intended, so assert each one is explicitly matched
                 // by a rule rather than landing on the fallback by accident.
                 RateCategories.of(method, concrete(pattern)) == RateCategories.DEFAULT &&
-                    !(method == "POST" && pattern == "/v1/inboxes")
+                    !(method == "POST" && ProductRoutes.canonical(pattern) == "/v1/inboxes")
             }
         unclassified.shouldBeEmpty()
     }
@@ -71,6 +72,17 @@ class RouteCoverageTest : ApiIntegrationTestBase() {
         RateCategories.of("GET", "/v1/workspace/usage") shouldBe RateCategory.READ
         // A parked connection over the whole workspace is a wait (ADR-027 §7).
         RateCategories.of("GET", "/v1/workspace/events") shouldBe RateCategory.WAIT
+    }
+
+    @Test
+    fun `every human product alias matches its v1 method and category`() {
+        val routes = v1Routes()
+        val human = routes.filter { it.second.startsWith("/account/product/") }
+        human.size shouldBe routes.count { it.second.startsWith("/v1/") }
+        human.forEach { (method, pattern) ->
+            routes.contains(method to ProductRoutes.canonical(pattern)) shouldBe true
+            RateCategories.of(method, concrete(pattern)) shouldBe RateCategories.of(method, concrete(ProductRoutes.canonical(pattern)))
+        }
     }
 
     @Test

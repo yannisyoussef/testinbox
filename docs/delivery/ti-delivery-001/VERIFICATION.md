@@ -331,3 +331,25 @@ parameter-count violation were corrected; no gate was waived.
 
 No product HTTP aliases, live credentials, shared refs or hosts changed.
 Semantic rollback and account deletion/restore safety remain release gates.
+
+
+## M3h — human console HTTP adapter
+
+Authored fifteen paths / nineteen operations before wiring the same existing
+controllers. Final complete API and architecture run: PASS (1m15s). API 265,
+architecture 53; combined verifier 1,678 tests across twelve modules, zero
+failures/errors/skips. Final Detekt Java 21 PASS; formatting, diff and scoped
+account/auth secret scans pass. No new migration or backup behavior.
+
+Ten new real HTTP/PostgreSQL/MinIO journeys cover every alias's authority,
+private inbox/read/delete/raw access, actual bounded event stream, normalized
+paths, exact Origin/CSRF before JSON, chunked body ceiling, one-time SDK keys,
+human versus machine replay, logout independence and shared workspace budgets.
+Contract coverage explicitly requires cookie security and mutation proof
+parameters on all aliases. Existing default-off/misconfigured tests cover them.
+The initial fixture referenced `verifier` instead of calling `verifier()`;
+corrected at compile. A guessed route count (22) failed; the exact authored
+inventory is 19, and all 19 are exercised. No boundary assertion was waived.
+
+Frontend human product transport and real backend/browser acceptance remain
+unfinished; this checkpoint is not participant-ready or deployed.

@@ -14,6 +14,9 @@ class HumanAccountsDisabledApiTest : ApiIntegrationTestBase() {
         val client = HttpClient.newHttpClient()
         listOf(
             "/account/session",
+            "/account/product/workspace",
+            "/%61ccount/product/workspace",
+            "/account;probe/product/workspace",
             "/account/not-a-route",
             "/account;probe/session",
             "/%61ccount/session",

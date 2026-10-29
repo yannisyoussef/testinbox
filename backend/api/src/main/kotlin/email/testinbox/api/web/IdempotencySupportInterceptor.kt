@@ -1,5 +1,6 @@
 package email.testinbox.api.web
 
+import email.testinbox.api.auth.ProductRoutes
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
 import org.springframework.core.annotation.Order
@@ -31,8 +32,9 @@ class IdempotencySupportInterceptor(
         response: HttpServletResponse,
         handler: Any,
     ): Boolean {
+        val path = ProductRoutes.matched(request) ?: return true
         if (request.getHeader(IdempotencyHeader.NAME) == null) return true
-        if (IdempotentRoutes.supports(request.method, request.requestURI)) return true
+        if (IdempotentRoutes.supports(request.method, path)) return true
 
         val problem =
             Problems.of(
@@ -65,7 +67,6 @@ class IdempotencySupportWebConfig(
     override fun addInterceptors(registry: InterceptorRegistry) {
         registry
             .addInterceptor(interceptor)
-            .addPathPatterns("/v1/**")
             .order(RATE_LIMIT_INTERCEPTOR_ORDER + 10)
     }
 }

@@ -31,7 +31,7 @@ private val CONCURRENT_STREAM_RETRY_AFTER: Duration = Duration.ofSeconds(1)
  * adapters' statements do not select one (ADR-035 §13d).
  */
 @RestController
-@RequestMapping("/v1/workspace")
+@RequestMapping("/v1/workspace", "/account/product/workspace")
 class WorkspaceController(
     private val storageQueries: StorageQueries,
     private val workspaceQueries: WorkspaceQueries,

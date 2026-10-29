@@ -32,7 +32,7 @@ columns in V17, preserving old-artifact schema compatibility. Backups retain
 key verifier/provenance as control-plane data, exclude claim rows as before.
 Semantic rollback/account-restore safety is a distinct release gate.
 
-## HTTP reuse (next increment)
+## HTTP reuse (implemented and locally verified)
 
 Author `/account/product/...` operations before their handlers. Reuse the same
 inbox/message/workspace/key controllers and application operations as `/v1`.
@@ -48,7 +48,10 @@ with stable human-account actor binding. Enforce the account body ceiling
 before JSON on the aliased handlers. Return cross-workspace 404; ignore any
 caller account/workspace/project headers. Validate all negative boundaries.
 
-## Next.js product wiring
+Nineteen operations on fifteen paths reuse the four existing controllers.
+Complete API suite: 265 PASS; combined verifier: 1,678; Detekt PASS.
+
+## Next.js product wiring (in progress)
 
 Add an explicit streaming account-product proxy: only known product routes,
 secure cookie/Origin/CSRF, bounded request bodies, no machine credential,

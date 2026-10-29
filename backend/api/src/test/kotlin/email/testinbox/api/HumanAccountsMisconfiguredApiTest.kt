@@ -9,6 +9,7 @@ class HumanAccountsMisconfiguredApiTest : ApiIntegrationTestBase() {
     @Test
     fun `an invalid human origin closes accounts while the existing Bearer API stays operational`() {
         get("/account/session").statusCode.value() shouldBe 503
+        get("/account/product/workspace").statusCode.value() shouldBe 503
         get("/account/oauth/authorize/google").statusCode.value() shouldBe 503
         get("/v1/workspace").statusCode.value() shouldBe 200
     }

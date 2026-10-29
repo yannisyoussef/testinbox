@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.RestController
 import java.util.UUID
 
 @RestController
-@RequestMapping("/v1/messages")
+@RequestMapping("/v1/messages", "/account/product/messages")
 class MessageController(
     private val messageQueries: MessageQueries,
 ) {

@@ -248,6 +248,18 @@ human authority, workspace budgets, Origin/CSRF and actor-bound idempotency.
 See [HUMAN-CONSOLE.md](HUMAN-CONSOLE.md). Account lifecycle/action budgets, M4
 resource policy and real cross-repository acceptance remain release gates.
 
+## Human product HTTP aliases (M3h adapter, verified locally)
+
+Actor foundation saved at `bd269f3`. The authored contract now exposes nineteen
+human product operations, implemented by the same four controllers as `/v1`.
+Resolved handler patterns select cookie versus Bearer authority, including
+encoded/matrix URLs. Exact Origin/CSRF and pre-JSON 4 KiB limits cover human
+mutations; workspace rate/wait/idempotency budgets cover both route families.
+One-time keys keep human actor-bound replay. Disabled/incomplete accounts close
+all aliases while the original API stays operational. Complete API/architecture
+and Detekt pass; combined verifier 1,678 tests, no failures/errors/skips.
+Next.js product streaming transport is in progress in the frontend repository.
+
 ## Next milestone and exact continuation
 
 M3h: explicit human workspace/credential actor and account/operator lifecycle,

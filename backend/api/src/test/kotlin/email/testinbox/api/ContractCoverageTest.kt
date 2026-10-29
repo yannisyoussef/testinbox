@@ -31,6 +31,27 @@ class ContractCoverageTest : ApiIntegrationTestBase() {
     }
 
     @Test
+    fun `all human product aliases explicitly declare cookie authority and mutation proofs`() {
+        val api = OpenAPIV3Parser().readLocation(contract.absolutePath, null, null).openAPI
+        val aliases = api.paths.filterKeys { it.startsWith("/account/product/") }
+        aliases.size shouldBe 15
+        aliases.forEach { (_, item) ->
+            item.servers.map { it.url } shouldBe listOf("/")
+            item.readOperationsMap().forEach { (method, operation) ->
+                operation.security.flatMap { it.keys }.toSet() shouldBe setOf("humanSession")
+                if (method.name in setOf("POST", "DELETE")) {
+                    operation.parameters.mapNotNull { it.`$ref` }.containsAll(
+                        listOf(
+                            "#/components/parameters/humanOrigin",
+                            "#/components/parameters/humanCsrf",
+                        ),
+                    ) shouldBe true
+                }
+            }
+        }
+    }
+
+    @Test
     fun `every contract operation is implemented and every product handler is documented`() {
         val openApi = OpenAPIV3Parser().readLocation(contract.absolutePath, null, null).openAPI
         val contractOperations =
