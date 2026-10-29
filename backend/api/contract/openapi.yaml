@@ -1609,3 +1609,74 @@ paths:
         "413": { $ref: "#/components/responses/Problem" }
         "415": { $ref: "#/components/responses/Problem" }
         "503": { $ref: "#/components/responses/Problem" }
+
+  /account/oauth/authorize/{provider}:
+    servers: [{ url: / }]
+    get:
+      operationId: startProviderLogin
+      security: []
+      summary: Start Google or GitHub sign-in, bound to this browser.
+      description: >
+        Uses authorization code with S256 PKCE and, for Google, OIDC nonce.
+        Sets __Host-ti_oauth (Secure, HttpOnly, SameSite=Lax, Path=/,
+        ten minutes, no Domain). The public origin, scopes, provider endpoints
+        and callback are server configuration, never request parameters.
+        No return URL or account identifier is accepted. Bounded server state
+        is encrypted, single-use and excluded from backups. No workspace is
+        created. Unconfigured providers fail closed without affecting /v1.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [google, github] }
+      responses:
+        "302":
+          description: Redirect to the configured provider. All account responses are no-store.
+          headers:
+            Location: { schema: { type: string, format: uri } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /account/oauth/callback/{provider}:
+    servers: [{ url: / }]
+    get:
+      operationId: completeProviderLogin
+      security: []
+      summary: Complete one browser-bound provider login without implicit linking.
+      description: >
+        Accepts the provider's code or error and the original state. Requires
+        the initiating browser's __Host-ti_oauth cookie. Wrong browser,
+        provider, expired or replayed state cannot sign in. Valid state is
+        consumed before provider I/O, so a failed exchange needs a fresh start.
+        Google ID-token signature, issuer, audience, expiry and nonce are
+        checked by the maintained OIDC client. Require verified Gmail contact
+        or an authoritative Google Workspace contact. GitHub uses immutable
+        numeric user ID and its authenticated verified primary email endpoint.
+        Unsupported/unverified contact can use the separate email-code flow;
+        no account is linked automatically. Tokens are discarded, no framework
+        session is created. Success sets __Host-ti_session and clears the
+        attempt cookie, redirecting to the fixed /console. Failure redirects
+        to /login with a closed error code and no provider detail. No admission
+        or API key is created. Duplicate or oversized callback parameters fail.
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, enum: [google, github] }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string, maxLength: 256 }
+        - name: code
+          in: query
+          schema: { type: string, maxLength: 2048 }
+        - name: error
+          in: query
+          schema: { type: string, maxLength: 128 }
+      responses:
+        "302":
+          description: Fixed console/login redirect; success credentials only in secure HttpOnly cookies.
+          headers:
+            Location: { schema: { type: string, format: uri } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }

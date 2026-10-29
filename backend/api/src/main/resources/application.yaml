@@ -31,6 +31,16 @@ testinbox:
   accounts:
     enabled: ${TESTINBOX_ACCOUNTS_ENABLED:false}
     public-origin: ${TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN:}
+    oauth:
+      state-key-base64: ${TESTINBOX_ACCOUNTS_OAUTH_STATE_KEY_BASE64:}
+      google:
+        enabled: ${TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_ENABLED:false}
+        client-id: ${TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_CLIENT_ID:}
+        client-secret: ${TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_CLIENT_SECRET:}
+      github:
+        enabled: ${TESTINBOX_ACCOUNTS_OAUTH_GITHUB_ENABLED:false}
+        client-id: ${TESTINBOX_ACCOUNTS_OAUTH_GITHUB_CLIENT_ID:}
+        client-secret: ${TESTINBOX_ACCOUNTS_OAUTH_GITHUB_CLIENT_SECRET:}
     email:
       enabled: ${TESTINBOX_ACCOUNTS_EMAIL_ENABLED:false}
       verification-key-base64: ${TESTINBOX_ACCOUNTS_EMAIL_VERIFICATION_KEY_BASE64:}
@@ -69,3 +79,9 @@ management:
   endpoint:
     health:
       show-details: always
+
+# Token exchanges and mail protocols must not emit secrets at debug level.
+logging:
+  level:
+    org.springframework.web.client: WARN
+    org.springframework.security.oauth2: WARN

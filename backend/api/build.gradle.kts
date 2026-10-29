@@ -18,6 +18,9 @@ dependencies {
     implementation(project(":observability"))
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-jdbc")
+    // Managed protocol libraries, without a security starter that changes Bearer authentication.
+    implementation("org.springframework.security:spring-security-oauth2-client")
+    implementation("org.springframework.security:spring-security-oauth2-jose")
     // Explicit sending adapter: do not activate unrelated spring.mail auto-configuration.
     implementation("org.springframework:spring-context-support")
     implementation(libs.jakarta.mail.api)

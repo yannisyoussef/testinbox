@@ -246,3 +246,32 @@ guard failure; focused guard/static checks and the final full build pass.
 Readonly deployment reference: infinity-core `9b4f57e70687cb64dc08447d3dd6ecf5ffd715c7`,
 `infra/testinbox/reconcile.sh` gate 3b compares the candidate's backup scope and
 checker to root-installed copies before migrations. No infrastructure change.
+
+## M3f — Google/GitHub maintained protocol adapter
+
+- `TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 ./gradlew spotlessApply build --console=plain`:
+  PASS, 1m25s; all twelve modules, including real adapters and mail E2E.
+- After three configuration tests and explicit disabled/HEAD/env regressions,
+  `TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 ./gradlew spotlessApply :api:test --console=plain`:
+  PASS, 1m9s. Production code unchanged after the full build.
+- `VERIFY_SCOPE=all ./scripts/verify-test-results.sh`: 1,625 tests, zero
+  failures/errors/skips. API 243, other module counts as M3e.
+- Detekt on Java 21: PASS, no thresholds changed. `git diff --check` and scoped
+  gitleaks of main account sources: PASS.
+- 25 HTTP/provider cases use disposable PostgreSQL and an actual local HTTP
+  token/user-info/JWKS server with generated RSA signatures. They verify both
+  sign-in methods, S256 verifier exchange, immutable ID/private verified email,
+  cookie/session separation, wrong browser/provider, replay/expiry, denial,
+  collision, duplicate/oversized input, HEAD refusal and bad signature/issuer/
+  audience/nonce/missing nonce/expiry/contact/code/redirect behavior.
+- Three wiring tests prove fixed official endpoints/minimal scopes and
+  disabled/incomplete isolation without storage I/O. Shipped-YAML env tests
+  verify API-only secret names and redacted property strings.
+- Initial compile runs exposed SDK nullable signatures/JSON iteration and
+  formatting errors; corrected without changing contract or assertions.
+  Detekt flagged an overly combined contact condition; named Gmail/Workspace
+  checks retain the same proof and pass. No failed protocol assertion was
+  removed or downgraded.
+- No external OAuth credentials/consent, DNS, SMTP delivery, live host or shared
+  branch was touched. This does not prove frontend BFF/cookie behavior or
+  provider setup in the eventual authorized environment.

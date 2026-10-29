@@ -18,12 +18,13 @@ explicit access authorization.
 - M0 discovery and durable delivery/resumption documents: complete.
 - Existing console API PR #107 integrated locally without conflicts; its
   authored contract and V11 indexes are present on this branch. Remote PR,
-  develop and master are unchanged. Human login is not implemented yet.
+  develop and master are unchanged. Human HTTP login is implemented in the local M3d/M3f increments; the site still needs real-session wiring.
 - Nothing pushed, merged, deployed or activated. No external messages sent.
 - New root `AGENTS.md` points to existing repository guidance and these files.
 - Saved local milestones: `4a79dca` (M0), `72d5c5a` (console integration),
   `da8acef` (stream fix and accepted ADR-036), `e52d057` (M3a admission),
-  `792564f` (M3b sessions), `bab3521` (M3c email core), `7a60631` (M3d email HTTP).
+  `792564f` (M3b sessions), `bab3521` (M3c email core), `7a60631` (M3d email HTTP),
+  `f078aa6` (M3e encrypted provider state), followed by the M3f provider protocol checkpoint.
 - Frontend companion checkout:
   `/Users/yannisbabineni/Projects/infinity/testinbox-web`, on its own delivery branch, starting at
   `e6304d01d341ad3e90a6953211e2a7dba9904e68`; origin/master
@@ -172,12 +173,37 @@ migrating (reconcile.sh gate 3b), then applies the candidate grants before
 starting services. Include this explicit host prerequisite in the final Ops
 packet; no host preparation was authorized or performed here.
 
+## OAuth protocol wiring (M3f, verified locally)
+
+The authored Google/GitHub start/callback contract is implemented using the
+Boot-managed Spring Security 7.1.1 resolver and authentication providers.
+S256 PKCE, Google nonce/signature/issuer/audience/time validation, GitHub numeric
+identity and verified primary contact, fixed redirects, single-use encrypted
+state and discarded provider tokens are verified. No SecurityContext,
+HttpSession, provider-token store or security starter changes legacy auth.
+See [PROVIDER-LOGIN.md](PROVIDER-LOGIN.md) for scope, configuration and limits.
+
+Full backend build: PASS (1m25s). The final complete API suite after added
+configuration/default/HEAD regressions also passes (1m9s). The result verifier
+reports 1,625 tests across twelve modules, zero failures/errors/skips. Includes
+25 real HTTP/provider/PostgreSQL cases, three fixed-registration/default tests
+and the real shipped YAML/env binding case. Detekt, formatting, diff and scoped
+secret checks pass. New imports/nullability and overlong test/response lines
+were corrected during compile/format runs; a complex contact condition was
+split into named checks to meet the unchanged static-analysis gate.
+
+No live OAuth application, provider credential, sender, host or shared ref was
+changed. These tests use a local RSA-signing provider, not live Google/GitHub
+consent. The complete human console, waitlist/account controls, resource-policy
+release gate and cross-repository browser acceptance are still outstanding.
+
 ## Next milestone and exact continuation
 
-M3f: wire and verify Google/GitHub protocol adapters using the maintained
-Spring Security client managed by Boot (7.1.1), the tested M3e state lifecycle,
-no stored provider tokens or implicit linking. Then waitlist/operator lifecycle and the
-Next.js same-origin session/real-console flow. Email is implemented but dormant.
+M3g: explicit bounded waitlist and account/operator lifecycle, then the
+Next.js same-origin session/real-console flow. All three login methods are
+implemented locally but dormant; live provider/sender acceptance and the M4
+resource-policy decision remain release gates. Do not repeat accepted ADR-036
+or ask the owner to reauthorize implementation.
 
 1. Read `AGENTS.md`, `CLAUDE.md`, this file, [PLAN.md](PLAN.md) and
    [DISCOVERY.md](DISCOVERY.md). The ignored handoff may be absent in another

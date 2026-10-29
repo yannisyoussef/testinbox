@@ -14,7 +14,7 @@ import java.util.Base64
 /** Read the real shipped YAML; a missing/wrong env mapping must fail before a host window. */
 class HumanAccountEnvironmentTest {
     @Configuration(proxyBeanMethods = false)
-    @EnableConfigurationProperties(HumanAccountProperties::class, EmailLoginProperties::class)
+    @EnableConfigurationProperties(HumanAccountProperties::class, EmailLoginProperties::class, ProviderAccountProperties::class)
     class PropertiesOnly
 
     private fun context(values: Map<String, Any> = emptyMap()): ApplicationContextRunner =
@@ -61,6 +61,38 @@ class HumanAccountEnvironmentTest {
             email.smtp.password shouldBe "fixture"
             email.smtp.from shouldBe "login@example.invalid"
             SmtpLoginDelivery.validate(email.smtp)
+        }
+    }
+
+    @Test
+    fun `documented OAuth variables bind to the shipped disabled defaults and separate API secrets`() {
+        context().run { context ->
+            val oauth = context.getBean(ProviderAccountProperties::class.java)
+            oauth.stateKeyBase64 shouldBe ""
+            oauth.google.enabled shouldBe false
+            oauth.github.enabled shouldBe false
+        }
+        context(
+            mapOf(
+                "TESTINBOX_ACCOUNTS_OAUTH_STATE_KEY_BASE64" to "fixture-state-key",
+                "TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_ENABLED" to "true",
+                "TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_CLIENT_ID" to "google-id",
+                "TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_CLIENT_SECRET" to "google-credential",
+                "TESTINBOX_ACCOUNTS_OAUTH_GITHUB_ENABLED" to "true",
+                "TESTINBOX_ACCOUNTS_OAUTH_GITHUB_CLIENT_ID" to "github-id",
+                "TESTINBOX_ACCOUNTS_OAUTH_GITHUB_CLIENT_SECRET" to "github-credential",
+            ),
+        ).run { context ->
+            val oauth = context.getBean(ProviderAccountProperties::class.java)
+            oauth.stateKeyBase64 shouldBe "fixture-state-key"
+            oauth.google.configured() shouldBe true
+            oauth.google.clientId shouldBe "google-id"
+            oauth.google.clientSecret shouldBe "google-credential"
+            oauth.github.configured() shouldBe true
+            oauth.github.clientId shouldBe "github-id"
+            oauth.github.clientSecret shouldBe "github-credential"
+            oauth.toString().contains("fixture-state-key") shouldBe false
+            oauth.google.toString().contains("google-credential") shouldBe false
         }
     }
 }

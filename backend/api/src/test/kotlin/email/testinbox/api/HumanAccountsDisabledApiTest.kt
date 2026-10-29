@@ -12,7 +12,14 @@ class HumanAccountsDisabledApiTest : ApiIntegrationTestBase() {
     @Test
     fun `default configuration disables account routes including normalized paths and unknown routes`() {
         val client = HttpClient.newHttpClient()
-        listOf("/account/session", "/account/not-a-route", "/account;probe/session", "/%61ccount/session").forEach { path ->
+        listOf(
+            "/account/session",
+            "/account/not-a-route",
+            "/account;probe/session",
+            "/%61ccount/session",
+            "/account/oauth/authorize/google",
+            "/account/oauth/callback/github?code=fixture&state=fixture",
+        ).forEach { path ->
             val request = HttpRequest.newBuilder(URI(url(path))).header("Authorization", "Bearer $adminKey").build()
             val response = client.send(request, HttpResponse.BodyHandlers.ofString())
             response.statusCode() shouldBe 503
