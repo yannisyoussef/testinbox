@@ -48,6 +48,15 @@ security:
   - apiKey: []
 components:
   securitySchemes:
+    humanSession:
+      type: apiKey
+      in: cookie
+      name: __Host-ti_session
+      description: >
+        Opaque human session, separate from API keys. Secure, HttpOnly,
+        SameSite=Lax, Path=/ and no Domain. A verified identity issues it;
+        request fields cannot select an account or workspace. These account
+        endpoints are disabled by default and return 503 until configured.
     apiKey:
       type: http
       scheme: bearer
@@ -159,6 +168,36 @@ components:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
   schemas:
+    HumanSessionView:
+      type: object
+      additionalProperties: false
+      required: [contactEmail, expiresAt, csrfToken, admission]
+      properties:
+        contactEmail: { type: string, format: email }
+        expiresAt: { type: string, format: date-time }
+        csrfToken:
+          type: string
+          description: Session-bound CSRF token, required in X-CSRF-Token for account mutations. Never a login credential.
+        admission:
+          type: string
+          enum: [NOT_ADMITTED, ADMITTED]
+        workspaceId: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+    BetaAdmissionResult:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ADMITTED, CLOSED, FULL, CAPACITY_UNAVAILABLE]
+        workspaceId: { type: string, format: uuid }
+        projectId: { type: string, format: uuid }
+      description: >
+        Login does not spend a participant place. Admission creates exactly
+        one private workspace and project only when open, within thirty
+        participant places and with the separate capacity gate satisfied.
+        Existing participants receive their original membership on retry.
     Problem:
       type: object
       description: RFC 7807 problem details.
@@ -1413,3 +1452,70 @@ paths:
         "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "429": { $ref: "#/components/responses/RateLimited" }
+
+  /account/session:
+    servers: [{ url: / }]
+    get:
+      operationId: getHumanSession
+      security: [{ humanSession: [] }]
+      summary: Read this browser's current human session and live membership.
+      description: >
+        Cache-Control is no-store on every account response, including errors.
+        No account/workspace request field is trusted. Session/account state
+        is rechecked on each operation. A session never authorizes /v1 Bearer
+        operations, and an API key never authorizes account operations.
+      responses:
+        "200":
+          description: Authenticated session. Workspace/project are present only for an admitted account.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HumanSessionView" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /account/logout:
+    servers: [{ url: / }]
+    post:
+      operationId: logoutHumanSession
+      security: [{ humanSession: [] }]
+      summary: Revoke this browser session and expire its cookie.
+      description: >
+        Requires the exact configured public Origin and a matching X-CSRF-Token.
+        A repeated logout with no valid cookie returns 204 and clears the cookie.
+        Other sessions are unaffected. No request body is accepted.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Session revoked or already absent. Set-Cookie expires __Host-ti_session with its original secure attributes.
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /account/admission:
+    servers: [{ url: / }]
+    post:
+      operationId: admitBetaParticipant
+      security: [{ humanSession: [] }]
+      summary: Request one of the fixed thirty beta participant places.
+      description: >
+        Requires the exact configured public Origin and a matching X-CSRF-Token.
+        Takes no account, workspace, project, limit or scope request field.
+        Non-admitted callers receive no tenant authority. Capacity figures and
+        other participants' identifiers are never disclosed.
+      parameters:
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Current admission decision. Closed/full/unavailable create no workspace.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BetaAdmissionResult" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }

@@ -435,7 +435,7 @@ check "a missing input is a usage error" 2 "$WORK/nope.txt"
 # classification check; marking one '+' is refused outright, in either mode,
 # because backing it up would carry derived or transient state (ADR-035 §14).
 for t in workspace_storage_account inbox_storage storage_delta storage_reservation \
-         storage_ambiguity storage_node storage_admission_latch storage_clock_episode; do
+         storage_ambiguity storage_node storage_admission_latch storage_clock_episode human_session; do
   grep -qx -- "- $t" "$SCOPE_FILE" || { echo "FAIL — $t is not classified '-' in the real scope"; fail=$((fail + 1)); continue; }
   grep -vx -- "- $t" "$SCOPE_FILE" > "$WORK/omit-$t.txt"
   out=$(BACKUP_SCOPE="$WORK/omit-$t.txt" "$GATE" --classification "$MIGRATIONS" 2>&1); st=$?
@@ -533,6 +533,7 @@ SQL
 INSERT INTO workspace (id, name, created_at) VALUES ('11111111-1111-1111-1111-111111111111', E'ws ''quoted'' \\ backslash\nINSERT INTO public.message VALUES (1);', now());
 INSERT INTO project (id, workspace_id, name, created_at) VALUES ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', 'p', now());
 INSERT INTO human_account (id, contact_email, contact_verified_at, created_at) VALUES ('77777777-7777-7777-7777-777777777777', 'backup-fixture@example.invalid', now(), now());
+INSERT INTO human_session (verifier, account_id, created_at, expires_at, last_seen_at) VALUES (repeat('b', 64), '77777777-7777-7777-7777-777777777777', now(), now() + interval '1 hour', now());
 INSERT INTO beta_admission (cohort_id, place, account_id, workspace_id, project_id, admitted_at) VALUES ('beta-30', 1, '77777777-7777-7777-7777-777777777777', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', now());
 INSERT INTO api_key (id, workspace_id, project_id, key_hash, scopes, created_at) VALUES ('33333333-3333-3333-3333-333333333333', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', repeat('a', 64), ARRAY['inboxes:write'], now());
 INSERT INTO exact_address_reservation (id, workspace_id, local_part, inbox_id, status, reserved_at) VALUES ('44444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'qa', '55555555-5555-5555-5555-555555555555', 'ACTIVE', now());
@@ -546,6 +547,12 @@ SQL
       else
         echo "FAIL — seeding the synthetic database failed"; fail=$((fail + 1))
       fi
+      # A real session row must be omitted, not merely an empty classified table.
+      session_args=(); for t in $(grep -E '^- ' "$SCOPE_FILE" | sed 's/^- //'); do
+        [[ "$t" == human_session ]] || session_args+=(--exclude-table-data="public.$t")
+      done
+      pg_dump "${session_args[@]}" > "$WORK/session-retained.sql"
+      check_says "a genuine dump retaining a browser session is refused" 1 "RETAINS CONTENT: human_session" "$WORK/session-retained.sql"
       # The dump forms docs/dev/production.md documents.
       exclude_args=(); for t in $(grep -E '^- ' "$SCOPE_FILE" | sed 's/^- //'); do exclude_args+=(--exclude-table-data="public.$t"); done
       keep_args=(); for t in $(grep -E '^\+ ' "$SCOPE_FILE" | sed 's/^+ //'); do keep_args+=(--table="public.$t"); done

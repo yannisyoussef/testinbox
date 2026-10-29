@@ -24,6 +24,8 @@
 + human_account
 + beta_cohort
 + beta_admission
+# ADR-036 (V13): restoring a backup must never restore a browser login.
+- human_session
 - inbox
 - message
 - attachment

@@ -115,3 +115,52 @@ waitlist, real authenticated console, suspension across API/ingestion,
 account deletion/restore, effective cohort storage fairness, browser checks,
 independent delivery reviews and live activation. M3a is a tested dormant
 foundation, not a claim that the thirty-person beta is ready to release.
+
+
+## M3b — revocable sessions and account HTTP boundary
+
+Local implementation under accepted ADR-036; no deployment or login issuer.
+
+- `TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1 ./gradlew spotlessApply build --console=plain`:
+  PASS. Full domain/application/adapter/API/SMTP/E2E regression build.
+- `./gradlew detekt --no-daemon -Dorg.gradle.java.home=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home --console=plain`:
+  PASS. Runtime/compilation target remains Java 25.
+- `VERIFY_SCOPE=all ./scripts/verify-test-results.sh`: PASS, 1,513 tests,
+  twelve modules, zero failures/errors/skips. Floors ratcheted to actual counts.
+- Module counts: domain 119, application 447, architecture 44, persistence 379,
+  storage 54, notification 9, observability 35, ingestion 145, API 190,
+  migrator 6, benchmark 57, E2E 28.
+- `LC_ALL=C ./scripts/check-backup-scope.test.sh`: PASS, 168/168. Adds
+  classification-omission, forbidden-retention and genuine pg_dump session
+  regressions. Scope: eight durable tables, twenty-two excluded tables.
+- Migration safety: all thirteen migrations expand-only; verifier self-test
+  14/14; formatting, diff and scoped Gitleaks scans pass.
+
+Failure history retained: the first sixteen session integration cases had
+12 failures because `SpringTransactionRunner` asserted nullable callbacks
+non-null after commit. Its value wrapper fixes the generic adapter; three
+real database tests prove nullable commit, nested/Unit values and exception
+rollback. A subsequent full domain/application/architecture/persistence run
+found two harness expectations: Kotlin value-class method mangling in the
+new writer guard and the bundled migration-list assertion. Both corrected
+without relaxing the invariant or test floor. The first API run failed before
+API cases initialized because Docker Ryuk was unreachable via localhost;
+explicit local IPv4 passed with resource cleanup still enabled. The final
+full build uses that address and includes all cases.
+
+Evidence: sixteen session/PostgreSQL cases (including eight independent
+issuers racing for five sessions), three transaction cases, four domain
+boundary cases, three credential cases, two writer-guard cases, sixteen
+cookie/account HTTP cases, and two account schema-gate cases. HTTP tests use
+an explicit test cookie over disposable HTTP; the cookie builder and response
+assertions require Secure/HttpOnly/SameSite/host-only attributes. They do not
+claim a real browser/BFF/provider callback has been verified.
+
+## Frontend companion milestone
+
+Local `48f8607` reuses MR !4; `ad38dea` updates only DOMPurify and its lock
+entry to 3.4.17 plus the checkpoint. Clean install, typecheck, production build,
+35 unit tests and all 28 fixture-backed browser tests pass. The stream-window
+fixture correction still verifies two real resumes, deduplication and one
+open stream. `npm audit --omit=dev`: zero vulnerabilities. No real account
+proxy, email/OAuth flow or cross-repository acceptance is claimed yet.

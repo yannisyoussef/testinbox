@@ -51,15 +51,15 @@ ROOT="${VERIFY_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # were initially left alone, which meant every one of them could have been
 # deleted with CI still green.
 BACKEND_MODULES=(
-  "backend/architecture:42"
-  "backend/domain:115"
-  "backend/application:444"
-  "backend/persistence:360"
+  "backend/architecture:44"
+  "backend/domain:119"
+  "backend/application:447"
+  "backend/persistence:379"
   "backend/storage:54"
   "backend/notification:9"
   "backend/observability:35"
   "backend/ingestion:145"
-  "backend/api:172"
+  "backend/api:190"
   "backend/migrator:6"
   # TI-STORAGE-006: the ADR-035 §11 benchmark harness's own unit tests (the
   # gate evaluator, the open-loop scheduler, the safety preflight).

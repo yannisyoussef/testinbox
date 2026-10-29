@@ -27,5 +27,12 @@ class SpringTransactionRunner(
             isolationLevel = TransactionDefinition.ISOLATION_READ_COMMITTED
         }
 
-    override fun <T> required(block: () -> T): T = template.execute { block() }!!
+    // T may legitimately be nullable (for example an authentication refusal).
+    // Wrap the callback value rather than asserting the application's value
+    // non-null after the transaction has already committed.
+    override fun <T> required(block: () -> T): T = checkNotNull(template.execute { Value(block()) }).value
+
+    private data class Value<T>(
+        val value: T,
+    )
 }

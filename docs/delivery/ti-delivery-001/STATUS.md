@@ -22,7 +22,7 @@ explicit access authorization.
 - Nothing pushed, merged, deployed or activated. No external messages sent.
 - New root `AGENTS.md` points to existing repository guidance and these files.
 - Saved local milestones: `4a79dca` (M0), `72d5c5a` (console integration),
-  `da8acef` (stream fix and accepted ADR-036).
+  `da8acef` (stream fix and accepted ADR-036), `e52d057` (M3a admission).
 - Frontend companion checkout:
   `/Users/yannisbabineni/Projects/infinity/testinbox-web`, clean develop at
   `e6304d01d341ad3e90a6953211e2a7dba9904e68`; origin/master
@@ -84,10 +84,37 @@ and OAuth adapters, bounded verification attempts and transient state, then
 frontend real-session wiring. Do not confuse `capacity_ready=false` with an
 implemented resource policy; M4 remains a release gate.
 
+## Session boundary increment (M3b, verified)
+
+The session model, account-locking PostgreSQL adapter and lifecycle use cases
+are implemented, with an authored `/account` HTTP contract. The boundary
+stays disabled by default, requires an explicit HTTPS public origin, keeps
+cookie and Bearer authority separate, and reuses M3a admission. See
+[ACCOUNT-BOUNDARY.md](ACCOUNT-BOUNDARY.md). Final full build and verifier:
+1,513 tests across twelve modules, zero failures/errors/skips. Detekt passes
+on Java 21; thirteen migrations are expand-only; the backup suite passes
+168/168, including a real session-containing dump and misclassification cases.
+The result verifier self-test passes 14/14. Formatting, diff and scoped secret
+checks pass. No HTTP login issuer exists yet; this is a verified foundation,
+not completed Google/GitHub/email signup.
+
+The first session test run exposed `SpringTransactionRunner` asserting nullable
+application results non-null after commit. Its callback now wraps the value,
+with real PostgreSQL null-commit and exception-rollback tests. An initial API
+suite could not connect to Docker's Ryuk at localhost; it passed with the
+explicit local Docker address `TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1`, with
+cleanup and all assertions kept enabled.
+
+Frontend local checkpoints: `48f8607` integrates the existing console;
+`ad38dea` patches DOMPurify 3.4.17. Clean install, typecheck, build, 35 units
+and all 28 browser tests pass; audit reports zero vulnerabilities. Browser
+proof uses a fixture backend, not a real cross-repository account session.
+
 ## Next milestone and exact continuation
 
-M3b: implement authentication/session/provider flows around the tested cohort
-transaction; author the account contract before its HTTP behavior.
+M3c: implement real email/provider
+verification around the tested session and cohort transactions. No HTTP login
+issuer exists yet. Author each new operation before its HTTP behavior.
 
 1. Read `AGENTS.md`, `CLAUDE.md`, this file, [PLAN.md](PLAN.md) and
    [DISCOVERY.md](DISCOVERY.md). The ignored handoff may be absent in another
@@ -110,18 +137,19 @@ transaction; author the account contract before its HTTP behavior.
 6. Propose a cohort resource budget and the scoped storage-policy path. Do not
    enable production TENANT_LIMITS/ALL or mistake OFF for capacity enforcement.
    See ADR-035 Amendment 2 and the public-boundary decision document.
-7. Save M1 findings, decisions, actual tests, outstanding owner-only facts and
+7. Save milestone findings, decisions, actual tests, outstanding owner-only facts and
    exact next action here, then make a coherent local milestone commit.
 
 ## Known follow-ups, not hidden completion claims
 
-- GitLab frontend is checked out beside this repository. Create its own delivery
-  branch and checkpoint before editing. The primary repo contains only the Inspector.
+- GitLab frontend has its own delivery branch and checkpoint beside this
+  repository. The primary repo contains only the Inspector.
 - Java 21 for Detekt is at
   `/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home`; Java 25,
   Node and Docker are present.
-- Backend integration/E2E baselines passed. Frontend browser checks and the
-  ephemeral edge deployment rehearsal are not yet run for this delivery.
+- Backend integration/E2E baselines passed. The frontend fixture browser suite
+  passes; real cross-repository console acceptance and the ephemeral edge
+  deployment rehearsal have not yet run for this delivery.
 - Issue #87 is open but implemented already; verify rather than duplicate it.
 - No new OAuth credentials, paid service, sending-domain change or public
   access decision is implied by the implementation plan.

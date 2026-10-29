@@ -57,7 +57,7 @@ done < "$SCOPE"
 # rebuilt after a restore. Classifying any of them `+` would put content, or
 # state that describes an object store that is not backed up, into a backup,
 # so the scope file itself is refused.
-REQUIRED_DENY=(inbox message attachment
+REQUIRED_DENY=(inbox message attachment human_session
                workspace_storage_account inbox_storage storage_delta
                storage_reservation storage_ambiguity storage_node storage_admission_latch
                storage_clock_episode storage_deletion_debt storage_filesystem_observation)
