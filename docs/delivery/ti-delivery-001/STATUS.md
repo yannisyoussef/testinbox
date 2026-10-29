@@ -16,7 +16,9 @@ explicit access authorization.
   origin/develop, verified with fetch and ls-remote on 2026-10-29).
 - origin/master: `ff21481fe2781f8ac75d95ccc1c40f6830214504`; same file tree.
 - M0 discovery and durable delivery/resumption documents: complete.
-- Runtime implementation, contract and migrations: unchanged.
+- Existing console API PR #107 integrated locally without conflicts; its
+  authored contract and V11 indexes are present on this branch. Remote PR,
+  develop and master are unchanged. Human login is not implemented yet.
 - Nothing pushed, merged, deployed or activated. No external messages sent.
 - New root `AGENTS.md` points to existing repository guidance and these files.
 
@@ -26,6 +28,18 @@ explicit access authorization.
 --console=plain` passed. Domain 115, application 424, architecture 38; zero
 failures/errors/skips. Domain/application tests restored from Gradle cache;
 architecture ran. See [DISCOVERY.md](DISCOVERY.md) for scope and limitations.
+
+## Console foundation verification (M2, backend portion)
+
+The existing PR #107 at `986532ee00d08aa2a3fcad03cfd75887fcce879a`
+integrated cleanly on the delivery branch. `./gradlew build --console=plain`
+passed on the integrated tree, including real PostgreSQL/MinIO adapter and
+black-box E2E tests. This does not mean the frontend, identity, admission or
+public-release conditions are complete. No shared PR was merged.
+
+Review found a follow-up in stream failure cleanup: a subscription acquired
+before `Stream` initialization fails is not closed. Add deterministic
+regression cases and fix before calling this backend foundation reviewed.
 
 ## Next milestone and exact continuation
 

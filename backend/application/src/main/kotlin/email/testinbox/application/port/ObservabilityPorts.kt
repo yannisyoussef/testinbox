@@ -114,7 +114,7 @@ interface WaitMetrics {
         duration: Duration,
     ) {}
 
-    /** A wait refused because the workspace already holds every slot (ADR-027 §3). */
+    /** A wait refused because the workspace already holds every slot (ADR-027 §7). */
     fun slotRejected() {}
 
     /** +1 on claim, -1 on release. Must be paired, or a leak looks like load. */

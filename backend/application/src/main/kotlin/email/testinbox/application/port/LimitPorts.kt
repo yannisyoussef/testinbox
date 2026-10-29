@@ -41,6 +41,16 @@ interface RateLimiter {
         category: RateCategory,
         inboxId: InboxId? = null,
     ): RateDecision
+
+    /**
+     * Whole tokens the workspace holds in [category] right now, without
+     * spending one. Null when the implementation cannot say (a fake, or a
+     * bucket never seen — which is full). A usage read, never a decision.
+     */
+    fun peek(
+        workspaceId: WorkspaceId,
+        category: RateCategory,
+    ): Long? = null
 }
 
 /**
@@ -74,7 +84,7 @@ interface WaitSlot : AutoCloseable {
 }
 
 /**
- * Concurrent long-poll admission (ADR-027 §3). Slots are claimed by database
+ * Concurrent long-poll admission (ADR-027 §7). Slots are claimed by database
  * constraint rather than by a lock — the same pattern ADR-021 uses for exact
  * addresses — so wait admission never contends with the inbound write path.
  */
@@ -93,6 +103,9 @@ interface WaitSlots {
 
     /** Reclaims slots whose holder died; returns how many were freed. */
     fun reapExpired(): Int
+
+    /** Slots the workspace holds right now: live leases only, a dead holder's lease counts for nothing. A usage read. */
+    fun held(workspaceId: WorkspaceId): Long
 }
 
 /**

@@ -62,6 +62,18 @@ class RouteCoverageTest : ApiIntegrationTestBase() {
     }
 
     @Test
+    fun `the console reads are charged READ and the event stream WAIT, each by an explicit rule`() {
+        RateCategories.of("GET", "/v1/inboxes") shouldBe RateCategory.READ
+        // The same path, POST, stays the create category: the method matters.
+        RateCategories.of("POST", "/v1/inboxes") shouldBe RateCategory.INBOX_CREATE
+        RateCategories.of("GET", "/v1/messages") shouldBe RateCategory.READ
+        RateCategories.of("GET", "/v1/workspace") shouldBe RateCategory.READ
+        RateCategories.of("GET", "/v1/workspace/usage") shouldBe RateCategory.READ
+        // A parked connection over the whole workspace is a wait (ADR-027 §7).
+        RateCategories.of("GET", "/v1/workspace/events") shouldBe RateCategory.WAIT
+    }
+
+    @Test
     fun `an unmapped route falls back to the most restrictive category`() {
         // Default-deny: a future endpoint that nobody classified is throttled,
         // not free.

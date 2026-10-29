@@ -36,6 +36,12 @@ info:
 
     None of these is a `5xx`. A `500` from this API means a server fault, which
     is what makes it worth alerting on.
+
+    A `text/event-stream` operation types its body as text and lists the
+    events it emits in an `x-sse-events` extension on the media type: a map
+    from event name to the schema of that event's `data`. The map is the
+    closed list for this version of the contract, and clients must still
+    ignore event names they do not know, so the next version can add one.
 servers:
   - url: /v1
 security:
@@ -230,7 +236,16 @@ components:
       enum: [ACTIVE, EXPIRING, EXPIRED, DELETED]
     ParseStatus:
       type: string
+      description: Clients must tolerate unknown future values.
       enum: [OK, FAILED]
+    QuotaDimension:
+      type: string
+      description: "A quota dimension (ADR-027 §5). Clients must tolerate unknown future values."
+      enum: [ACTIVE_INBOXES, STORED_BYTES, CONCURRENT_WAITS]
+    RateCategory:
+      type: string
+      description: "A rate category (ADR-027 §4). Clients must tolerate unknown future values."
+      enum: [INBOX_CREATE, WAIT, READ, DOWNLOAD, INGEST, KEY_ADMIN]
     StorageRefusalReason:
       type: string
       description: >
@@ -404,6 +419,133 @@ components:
           type: string
           description: Opaque cursor; absent when no further page exists.
       required: [items]
+
+    InboxPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Inbox" }
+        nextCursor:
+          type: string
+          description: Opaque cursor; absent when no further page exists.
+      required: [items]
+
+    Project:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+      required: [id, name, createdAt]
+
+    Workspace:
+      type: object
+      description: The authenticated key's own workspace; never another's, never a global figure.
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+        mailDomain:
+          type: string
+          description: The domain this deployment routes; every address of the workspace ends in it.
+        project:
+          oneOf:
+            - $ref: "#/components/schemas/Project"
+            - type: "null"
+          description: The project the credential was minted in; null if that row is gone.
+      required: [id, name, createdAt, mailDomain]
+
+    QuotaUsage:
+      type: object
+      description: "One quota dimension (ADR-027 §5): retained consumption, bounded; refused with `409 quota-exceeded`."
+      properties:
+        dimension: { $ref: "#/components/schemas/QuotaDimension" }
+        limit:
+          type: integer
+          format: int64
+          description: >
+            The workspace's own limit. For `STORED_BYTES` this is the figure
+            `createInbox` refuses on; the storage protocol (ADR-035) admits a
+            copy on the ledger figures `GET /v1/workspace/storage` reports,
+            which can differ.
+        current:
+          type: integer
+          format: int64
+          description: Derived from the rows that exist right now, never from a maintained counter.
+      required: [dimension, limit, current]
+
+    RateUsage:
+      type: object
+      description: "One rate category (ADR-027 §4): frequency, bounded; refused with `429` and `Retry-After`."
+      properties:
+        category: { $ref: "#/components/schemas/RateCategory" }
+        limit:
+          type: integer
+          format: int64
+          description: The burst allowance (bucket capacity), as `RateLimit-Limit` reports it.
+        refillPerSecond: { type: number, format: double }
+        remaining:
+          type: [integer, "null"]
+          format: int64
+          description: Whole tokens available right now, read without spending one; null when the limiter cannot say.
+      required: [category, limit, refillPerSecond]
+
+    WorkspaceUsage:
+      type: object
+      properties:
+        enforced:
+          type: boolean
+          description: "`testinbox.limits.enabled`. When false, every figure is reported and nothing is refused."
+        quotas:
+          type: array
+          items: { $ref: "#/components/schemas/QuotaUsage" }
+        rates:
+          type: array
+          items: { $ref: "#/components/schemas/RateUsage" }
+      required: [enforced, quotas, rates]
+
+    MessageEvent:
+      type: object
+      description: >
+        `data` of a `message.received` stream event: a summary. Fetch
+        `GET /v1/messages/{id}` for the bodies, headers, links and
+        attachments. The event's `id` line is the message's position, the
+        value to resume from.
+      properties:
+        id: { type: string, format: uuid }
+        inboxId: { type: string, format: uuid }
+        receivedAt: { type: string, format: date-time }
+        subject: { type: [string, "null"] }
+        from: { type: [string, "null"] }
+        parseStatus: { $ref: "#/components/schemas/ParseStatus" }
+      required: [id, inboxId, receivedAt, parseStatus]
+
+    InboxEvent:
+      type: object
+      description: >
+        `data` of an `inbox.*` stream event. `state` is the row's state as
+        last read: on `inbox.gone` it is the last state seen (`EXPIRED` or
+        `DELETED`) before the sweep removed the row, never a distinct value.
+        Inbox events carry no `id` line and are not resumable.
+      properties:
+        id: { type: string, format: uuid }
+        address: { type: string }
+        state: { $ref: "#/components/schemas/InboxState" }
+        expiresAt: { type: string, format: date-time }
+      required: [id, address, state, expiresAt]
+    StreamEndEvent:
+      type: object
+      description: "`data` of the `end` event that closes every window; its `id` line equals `resume`."
+      properties:
+        reason:
+          type: string
+          description: "Why the window closed. Clients must tolerate unknown future values."
+          enum: [window]
+        resume:
+          type: string
+          description: The position to send as `Last-Event-ID` on the next connection.
+      required: [reason, resume]
     MessageMatcher:
       type: object
       description: A message matches iff ALL specified fields match. ParseFailed messages never match.
@@ -590,6 +732,53 @@ components:
       required: [scopes]
 paths:
   /inboxes:
+    get:
+      operationId: listInboxes
+      summary: The workspace's inboxes, newest first.
+      description: >
+        Requires `messages:read`. Lists every inbox of the authenticated key's
+        own workspace that still has a row — `ACTIVE`, `EXPIRING`, `EXPIRED`
+        and `DELETED` alike, until the sweep hard-deletes it — unless `state`
+        narrows it. Each item carries its live `storage` figures, read for the
+        whole page in one set-based read (ADR-035 §13b). Keyset-paged on
+        `(createdAt, id)`: a page costs the same wherever it sits. Charged
+        against the `READ` rate category.
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: Only inboxes in this state, matched case-insensitively. Absent means every state still present.
+          schema: { $ref: "#/components/schemas/InboxState" }
+        - name: cursor
+          in: query
+          required: false
+          description: An `InboxPage.nextCursor`; opaque.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          description: Clamped to 1..200, not validated; a non-integer is `400`.
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        "200":
+          description: One page of inboxes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InboxPage" }
+        "400":
+          description: >
+            `type: https://testinbox.email/problems/invalid-request` — a
+            malformed `cursor`, an unknown `state` or a non-integer `limit`.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403":
+          description: "The caller lacks `messages:read` (`type: https://testinbox.email/problems/missing-scope`)."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
     post:
       operationId: createInbox
       summary: Create an inbox (GENERATED or EXACT addressing, ADR-021).
@@ -693,6 +882,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MessagePage" }
+        "400":
+          description: "`type: https://testinbox.email/problems/invalid-request` — a malformed `cursor` or a non-integer `limit`."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
         "401": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
   /inboxes/{id}/messages/wait:
@@ -767,6 +961,170 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
+  /workspace:
+    get:
+      operationId: getWorkspace
+      summary: The authenticated key's own workspace and project.
+      description: >
+        Requires `messages:read`. No workspace id is accepted from the path,
+        query, body or a header: the workspace is the credential's own
+        (ADR-027). `mailDomain` is the domain the deployment routes, the one
+        every address of this workspace ends in. Charged against `READ`.
+      responses:
+        "200":
+          description: The workspace, its mail domain and the key's project.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403":
+          description: "The caller lacks `messages:read` (`type: https://testinbox.email/problems/missing-scope`)."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /workspace/usage:
+    get:
+      operationId: getWorkspaceUsage
+      summary: Quotas and rate limits of the workspace, with current consumption (ADR-027).
+      description: >
+        Requires `messages:read`. Reports the policy the use cases enforce
+        and the consumption **derived from rows** (ADR-027 §5): each quota
+        figure is the one its own refusal is decided on (`createInbox` for
+        `ACTIVE_INBOXES` and `STORED_BYTES`, the wait and the event stream
+        for `CONCURRENT_WAITS`), never a maintained counter. Storage
+        *admission* (ADR-035) is decided on the ledger figures that
+        `GET /v1/workspace/storage` reports, which is the read to use for
+        headroom. Quota exhaustion is a `409` on the write that would exceed
+        it, never a `429`; rate refusals are `429` with `Retry-After`.
+        `rates[].remaining` is read without spending a token. `enforced`
+        reports the deployment's `testinbox.limits.enabled`: when false every
+        figure is still reported and nothing is refused. Charged against
+        `READ`.
+      responses:
+        "200":
+          description: The workspace's quotas and rate limits.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceUsage" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403":
+          description: "The caller lacks `messages:read` (`type: https://testinbox.email/problems/missing-scope`)."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /workspace/events:
+    get:
+      operationId: streamWorkspaceEvents
+      summary: Server-sent events for the workspace, one bounded window at a time (ADR-020).
+      description: >
+        Requires `messages:read`. A `text/event-stream` of what happens in the
+        authenticated key's own workspace: `message.received` for every
+        message that becomes visible in a serving inbox, and
+        `inbox.created` / `inbox.expiring` / `inbox.expired` /
+        `inbox.deleted` / `inbox.gone` for the lifecycle. The stream is a
+        parked wait over the whole workspace: it is charged against `WAIT`
+        and holds one of the workspace's concurrent-wait slots for its whole
+        window (ADR-027 §7), so a workspace that holds every slot is refused
+        `429 concurrent-wait-limit-exceeded`. Nothing another workspace does
+        is observable on it — not as an event, not as timing.
+
+        **Windows.** The stream opens with a `retry:` line, then runs for at
+        most `wait-window-cap` (60 s by default, under every edge's request
+        ceiling) and closes deliberately with an `end` event, whose `id` line
+        and `data.resume` are the position to continue from. The client
+        reconnects with that value as `Last-Event-ID`. Reconnecting is the
+        client's loop, not a browser `EventSource`'s: a reconnect can be
+        refused `429` (rate or slot) and must honour `Retry-After`, which an
+        `EventSource` does not.
+
+        **Delivery.** Every `message.received` event carries the message's
+        position as its `id` line. A message's `receivedAt` is stamped at
+        receipt, before its raw bytes are stored and the row commits, so a
+        message can become visible with a position older than one already
+        delivered; the server therefore re-reads a **visibility horizon of
+        90 s** behind the newest position on every wake and deduplicates
+        what it has already sent. Within one window every message is
+        delivered exactly once, in *visibility* order: a later event may
+        carry an older `receivedAt` and `id` line than one already
+        delivered, so `id` lines are not monotonic and a client must never
+        stop on "older than the last one". Across windows delivery is
+        **at-least-once**: the next window re-reads the same horizon behind
+        `Last-Event-ID`, so events the client already saw may repeat.
+        Deduplicate on the message's `id` in `data` (a client may drop
+        entries whose `receivedAt` is more than 90 s behind the newest
+        position it has seen). Resuming from any `id` line seen is safe; the
+        `end` event's `id` is the newest position. A message committed within
+        90 s of its receipt is never missed. A backlog is sent a page at a
+        time, at once, each page after the first charged against `READ`
+        like a message list page, so a long backlog paces itself under the
+        workspace's rate policy. A client that goes away is noticed on the
+        server's next write — within one keep-alive — and its slot is freed
+        then.
+
+        Inbox events come from a periodic re-read of the workspace's rows,
+        carry no `id` line, are not resumable, and are best-effort across the
+        gap between two windows: a transition that happens entirely between
+        them is not reported by the next window. `inbox.gone` means the
+        sweep hard-deleted the row after `EXPIRED` or `DELETED`. A comment
+        line is sent at least every 15 s while idle so intermediaries keep
+        the connection open. Clients must ignore event names they do not
+        know.
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: >
+            The `id` line of the last event seen (a `message.received` or an
+            `end`). The stream resumes from it; blank is treated as absent.
+          schema: { type: string }
+      responses:
+        "200":
+          description: >
+            The event stream. `data` of a `message.received` event is a
+            `MessageEvent`; of an `inbox.*` event an `InboxEvent`; of `end` a
+            `StreamEndEvent`. The mapping from event name to schema is in
+            `x-sse-events`; generators treat the body as text.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-sent events (one `event:`/`id:`/`data:` frame per event, blank-line separated), not a JSON document.
+              x-sse-events:
+                message.received: { $ref: "#/components/schemas/MessageEvent" }
+                inbox.created: { $ref: "#/components/schemas/InboxEvent" }
+                inbox.expiring: { $ref: "#/components/schemas/InboxEvent" }
+                inbox.expired: { $ref: "#/components/schemas/InboxEvent" }
+                inbox.deleted: { $ref: "#/components/schemas/InboxEvent" }
+                inbox.gone: { $ref: "#/components/schemas/InboxEvent" }
+                end: { $ref: "#/components/schemas/StreamEndEvent" }
+        "400":
+          description: "`type: https://testinbox.email/problems/invalid-request` — a malformed `Last-Event-ID`."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403":
+          description: "The caller lacks `messages:read` (`type: https://testinbox.email/problems/missing-scope`)."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "429":
+          description: >
+            The workspace's `WAIT` rate budget is exhausted
+            (`rate-limit-exceeded`, with the `RateLimit-*` headers) or it
+            already holds every concurrent-wait slot
+            (`concurrent-wait-limit-exceeded`). Both carry `Retry-After`,
+            which a reconnecting client must honour.
+          headers:
+            Retry-After: { $ref: "#/components/headers/retryAfter" }
+            RateLimit-Limit: { $ref: "#/components/headers/rateLimitLimit" }
+            RateLimit-Remaining: { $ref: "#/components/headers/rateLimitRemaining" }
+            RateLimit-Reset: { $ref: "#/components/headers/rateLimitReset" }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
   /workspace/storage:
     get:
       operationId: getWorkspaceStorage
@@ -786,6 +1144,56 @@ paths:
               schema: { $ref: "#/components/schemas/StorageUsage" }
         "401": { $ref: "#/components/responses/Problem" }
         "403": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /messages:
+    get:
+      operationId: listWorkspaceMessages
+      summary: Messages across every serving inbox of the workspace.
+      description: >
+        Requires `messages:read`. The union of the workspace's inboxes that
+        still serve reads — a message of an `EXPIRED` or `DELETED` inbox is
+        never listed, however long paced retention keeps its row. Newest first
+        by default (a feed); `order=asc` walks forward from a cursor, which is
+        how a client catches up after a gap — from the position of the
+        **newest message it holds**, not from a `desc` page's `nextCursor`,
+        which points at that page's oldest item. The cursor is opaque and of
+        the same kind as the per-inbox list's and the event stream's
+        positions, so the three interoperate. Charged against `READ`.
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: A `MessagePage.nextCursor` or a stream event's `id`; opaque.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          description: Clamped to 1..200, not validated; a non-integer is `400`.
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: order
+          in: query
+          required: false
+          description: "`desc` (default): strictly before the cursor, newest first. `asc`: strictly after it, oldest first. Matched case-insensitively."
+          schema: { type: string, enum: [asc, desc], default: desc }
+      responses:
+        "200":
+          description: One page of messages.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessagePage" }
+        "400":
+          description: >
+            `type: https://testinbox.email/problems/invalid-request` — a
+            malformed `cursor`, an unknown `order` or a non-integer `limit`.
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "403":
+          description: "The caller lacks `messages:read` (`type: https://testinbox.email/problems/missing-scope`)."
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
         "429": { $ref: "#/components/responses/RateLimited" }
   /messages/{id}:
     get:
