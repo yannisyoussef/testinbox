@@ -1,6 +1,6 @@
 # ADR-037: Bounded cohort storage and capacity disclosure
 
-**Status: Proposed — owner acceptance required before implementing this policy.**
+**Status: Accepted for implementation — owner decision 2026-10-29.**
 No production configuration, storage activation or admission is authorized.
 
 ## Why this decision is separate
@@ -13,13 +13,13 @@ small parts and metadata amplify it. The existing production ALL/TENANT_LIMITS
 refusals stay intact until the corresponding mitigations and release evidence
 are complete. Existing D3 physical qualification is reused, not reopened.
 
-## Proposed beta policy
+## Accepted beta policy
 
 1. **Participant ceilings:** each of the fixed thirty workspaces gets at most
    128 MiB payload and 256 MiB of conservative physical footprint, including
    extracted attachments. Both ceilings apply; this is not a promise that
    128 MiB always fits. At most thirty shares total 7.5 GiB of footprint.
-   These are proposed beta ceilings, not claims about existing configuration.
+   These are accepted implementation ceilings, not claims about existing configuration.
 2. **No overcommit:** admission requires a durable reserved footprint share.
    Sum of all thirty reserved participant shares plus explicitly budgeted
    owner/synthetic/legacy workspaces must fit the qualified global footprint
@@ -52,9 +52,14 @@ are complete. Existing D3 physical qualification is reused, not reopened.
    to force the cliff; they do not prove the channel impossible. This is a
    scoped amendment to ADR-025's recipient-existence confidentiality expectation;
    SMTP acceptance and unknown-recipient non-persistence are unchanged.
-   Alternative requiring another design: suppress/delay individual global
-   refusal diagnostics. Do not silently claim the recommended option closes
-   every cross-event channel.
+   Delaying or suppressing the diagnostic does not close the channel: the
+   sender can still observe whether its own message was stored. Keep useful
+   immediate diagnostics; do not claim this closes every cross-event channel.
+   Before release, prove that all reserved shares plus the worst-case transient
+   envelope pricing and finalization headroom fit the global allowance. Keep
+   the separate containment/deletion/probe/metadata reserves satisfied too.
+   This makes ordinary participant exhaustion less likely to reach a global
+   cliff; it is not a proof that every global failure is tenant-independent.
 7. **Availability and operator evidence:** bound active inboxes, API requests,
    waits, participant key inventory and signup metadata. Track own workspace
    refusal and aggregate SERVICE_CAPACITY counters without tenant metric labels.
@@ -85,3 +90,13 @@ operator/global debt and recovery can still temporarily interrupt service.
 Users get accurate private usage and refusal information rather than a false
 storage promise. A materially different privacy or resource policy needs a
 new explicit decision; numerical capacity increases are never automatic.
+
+## Owner decision record
+
+The owner requested the storage/privacy trade-offs, received the explanation
+of dual ceilings, unborrowable shares, uniform SMTP discard semantics and
+residual recipient inference, then answered “go ahead with your recommendation
+then”. This accepts the implementation policy above. Capacity verification,
+production promotion, deployment, access widening and opening registration
+remain separate release gates. No delayed-diagnostic mechanism is approved
+as a purported privacy fix.

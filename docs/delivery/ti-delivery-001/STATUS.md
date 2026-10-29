@@ -290,7 +290,7 @@ again. See [ACCOUNT-ACTIONS.md](ACCOUNT-ACTIONS.md).
 
 Next independent increment: actual operator/account suspension, permanent
 credential revocation, ingestion admission/drain, deletion and restore safety,
-and key inventory bound. Keep proposed ADR-037 unimplemented pending answer.
+and key inventory bound. ADR-037 is now accepted for implementation; production gates stay closed.
 
 ## Lifecycle next increment and database privacy boundary
 
@@ -300,16 +300,18 @@ in-flight drain before implementation. Do not treat a suspended flag or an
 empty queue alone as proof of lifecycle completion. The locally verified role-template change
 removes identity/session/key/snapshot access from the SMTP DB role;
 three dedicated PostgreSQL role tests and Detekt pass; no live role was changed. Concrete lifecycle/key bounds and restore safety
-remain next, independently of pending ADR-037.
+remain next, alongside accepted ADR-037.
 
-## Resource-policy decision (M4, proposed only)
+## Resource-policy decision (M4, accepted for implementation)
 
-[ADR-037](../../adr/0037-bounded-cohort-storage-and-disclosure.md) proposes
+[ADR-037](../../adr/0037-bounded-cohort-storage-and-disclosure.md) accepts
 128 MiB payload / 256 MiB footprint per participant, no overcommit, attributed
 deletion debt and full-envelope pricing. It explicitly accepts the remaining
 cross-event capacity side channel, rather than claiming shares remove it.
-Owner acceptance is pending; no corresponding policy implementation or
-production gate relaxation is permitted yet. Concrete global/debt/reserve
+The owner accepted implementation after the storage/privacy explanation on
+2026-10-29. Immediate own-workspace diagnostics remain; hiding them would not
+remove the observable absence of a message. Production gate relaxation is
+not authorized. Concrete global/debt/reserve
 configuration remains an evidence-based release/Operations step.
 
 ## Next milestone and exact continuation
@@ -317,7 +319,7 @@ configuration remains an evidence-based release/Operations step.
 M3h: explicit human workspace/credential actor and account/operator lifecycle,
 then the Next.js same-origin session/real-console flow. All three login methods are
 implemented locally but dormant; live provider/sender acceptance and the M4
-resource-policy decision remain release gates. Do not repeat accepted ADR-036
+resource-policy implementation/evidence remain release gates. Do not repeat accepted ADR-036
 or ask the owner to reauthorize implementation.
 
 1. Read `AGENTS.md`, `CLAUDE.md`, this file, [PLAN.md](PLAN.md) and
@@ -368,3 +370,12 @@ checkpoint with `git log --oneline -- docs/delivery/ti-delivery-001 AGENTS.md`.
 Read the actual diff and status if interrupted mid-milestone; a status document
 is a pointer, not proof that uncommitted code passed a test. Do not store keys,
 credential values, personal message content or real test-user data here.
+
+## Current work: accepted M4 storage policy
+
+Remote refs refreshed on 2026-10-29; backend and frontend bases are unchanged
+and both working trees were clean at entry. Implement full-envelope transient
+pricing first, preserving normalization/provider dedup and unknown-content
+non-persistence. Then durable non-overcommitted participant shares, debt
+attribution and private HTTP usage semantics. No configuration numbers are
+inferred from filesystem size, and production ALL/TENANT_LIMITS refusals stay.
