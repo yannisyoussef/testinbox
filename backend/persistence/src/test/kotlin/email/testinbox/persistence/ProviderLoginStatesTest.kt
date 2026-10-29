@@ -6,6 +6,7 @@ import email.testinbox.application.usecase.ConsumeProviderLoginState
 import email.testinbox.application.usecase.PurgeProviderLoginState
 import email.testinbox.application.usecase.RecordProviderLoginState
 import email.testinbox.domain.identity.LoginProvider
+import email.testinbox.domain.identity.ProviderLoginState
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
@@ -135,13 +136,13 @@ class ProviderLoginStatesTest : EmailLoginTestSupport() {
 
     @Test
     fun `source hourly and retained row ceilings include consumed and replaced attempts`() {
-        repeat(60) { startProvider() }
+        repeat(RecordProviderLoginState.MAX_PER_SOURCE) { startProvider() }
         recorder().execute(LoginProvider.GOOGLE, SessionCredential.generate().value, payload, "198.51.100.1") shouldBe
             RecordProviderLoginState.Result.Limited
         // Different peers still share the same database-wide hourly ceiling.
-        repeat(140) { n ->
+        repeat(RecordProviderLoginState.MAX_PER_HOUR - RecordProviderLoginState.MAX_PER_SOURCE) { n ->
             recorder()
-                .execute(LoginProvider.GOOGLE, SessionCredential.generate().value, payload, "203.0.113.${n / 50}")
+                .execute(LoginProvider.GOOGLE, SessionCredential.generate().value, payload, "203.0.113.${n / 10}")
                 .shouldBeInstanceOf<RecordProviderLoginState.Result.Recorded>()
         }
         recorder().execute(LoginProvider.GOOGLE, SessionCredential.generate().value, payload, "192.0.2.1") shouldBe
@@ -156,16 +157,36 @@ class ProviderLoginStatesTest : EmailLoginTestSupport() {
                 """
                 INSERT INTO provider_login_state (state_hash,browser_hash,source_hash,provider,created_at,expires_at)
                 SELECT lpad(n::text,64,'0'), repeat('a',64), repeat('b',64), 'GOOGLE', :at, :expires
-                FROM generate_series(1,1000) n
+                FROM generate_series(1,:total) n
                 """.trimIndent(),
             ).param("at", Timestamps.toDb(at))
             .param("expires", Timestamps.toDb(at.plusSeconds(600)))
+            .param("total", RecordProviderLoginState.MAX_RETAINED)
             .update()
         recorder().execute(LoginProvider.GOOGLE, SessionCredential.generate().value, payload, "198.51.100.1") shouldBe
             RecordProviderLoginState.Result.Limited
         clock.advance(22 * 3600)
         startProvider()
         count("provider_login_state") shouldBe 1
+    }
+
+    @Test
+    fun `a full day of spent states at the hourly limit never blocks a new sign in`() {
+        val hours = ProviderLoginState.RETENTION.toHours().toInt() - 1
+        jdbc
+            .sql(
+                """
+                INSERT INTO provider_login_state (state_hash,browser_hash,source_hash,provider,created_at,expires_at)
+                SELECT lpad(n::text,64,'0'), repeat('a',64), repeat('b',64), 'GOOGLE',
+                    :now - (1 + n / :perHour) * interval '1 hour', :now - (1 + n / :perHour) * interval '1 hour' + interval '600 seconds'
+                FROM generate_series(0,:total - 1) n
+                """.trimIndent(),
+            ).param("now", Timestamps.toDb(clock.instant()))
+            .param("perHour", RecordProviderLoginState.MAX_PER_HOUR)
+            .param("total", RecordProviderLoginState.MAX_PER_HOUR * hours)
+            .update()
+        startProvider()
+        count("provider_login_state") shouldBe RecordProviderLoginState.MAX_PER_HOUR * hours + 1L
     }
 
     @Test

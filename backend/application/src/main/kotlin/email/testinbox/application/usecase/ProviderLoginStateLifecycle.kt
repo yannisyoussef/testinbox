@@ -57,9 +57,15 @@ class RecordProviderLoginState(
     }
 
     companion object {
-        const val MAX_RETAINED: Int = 1000
+        /**
+         * Every retained row, spent ones included. Above [MAX_PER_HOUR] times the 24-hour retention (4,800),
+         * so spent states kept for replay detection never lock out sign-in; it fails closed only on an anomaly.
+         */
+        const val MAX_RETAINED: Int = 5_000
         const val MAX_PER_HOUR: Int = 200
-        const val MAX_PER_SOURCE: Int = 60
+
+        /** Per verified source, per quarter hour: its hourly equivalent (60) stays well under [MAX_PER_HOUR]. */
+        const val MAX_PER_SOURCE: Int = 15
     }
 }
 

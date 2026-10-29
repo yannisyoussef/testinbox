@@ -5,6 +5,7 @@ import email.testinbox.api.account.EmailLoginCookies
 import email.testinbox.api.account.HumanSessionCookies
 import email.testinbox.application.identity.EmailLoginCode
 import email.testinbox.application.port.EmailLoginDelivery
+import email.testinbox.application.usecase.RequestEmailLogin
 import email.testinbox.domain.identity.ContactEmail
 import io.kotest.matchers.shouldBe
 import io.micrometer.core.instrument.MeterRegistry
@@ -228,7 +229,7 @@ class EmailLoginApiTest : ApiIntegrationTestBase() {
 
     @Test
     fun `forwarded source headers cannot reset the verified peer sending budget`() {
-        repeat(60) { n ->
+        repeat(RequestEmailLogin.MAX_PER_SOURCE) { n ->
             call(
                 "/account/email/request",
                 """{"email":"${email()}"}""",
@@ -240,7 +241,7 @@ class EmailLoginApiTest : ApiIntegrationTestBase() {
             """{"email":"${email()}"}""",
             extra = mapOf("X-Forwarded-For" to "203.0.113.99"),
         ).statusCode() shouldBe 429
-        mail.codes.size shouldBe 60
+        mail.codes.size shouldBe RequestEmailLogin.MAX_PER_SOURCE
     }
 
     @Test

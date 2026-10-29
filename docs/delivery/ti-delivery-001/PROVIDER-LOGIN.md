@@ -22,8 +22,11 @@ callback setting, host or public access was created or changed.
   Invalid ciphertext/context/key fails closed and cannot be retried as a
   usable state. A fresh browser attempt is required.
 - Replacing one browser's pending attempt erases only that browser's payload,
-  across providers. Bound retained rate metadata to 1,000 entries, starts to
-  200/hour globally and 60/15 minutes per verified deployment source.
+  across providers. Bound retained rate metadata to 5,000 entries, starts to
+  200/hour globally and 15/15 minutes per verified deployment source (so one
+  source can never use up the global hour). The 5,000 lies above what the hourly
+  limit can retain over the 24-hour window (4,800), so sustained legitimate use
+  never reaches it; it only fails closed on an anomaly.
   Consumed/replaced attempts remain charged; switching browser/provider does
   not reset the shared source/global inventory.
 - Clear expired payloads on request and with a minute scheduler. Retain only

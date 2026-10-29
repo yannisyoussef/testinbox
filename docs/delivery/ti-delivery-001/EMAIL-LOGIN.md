@@ -27,8 +27,9 @@ adapter. Existing contact forwarding/inbound SMTP cannot send login codes.
   browser binding. Another browser cannot spend attempts or consume a code.
   A resend replaces only that browser's active challenge after the resend
   limit passes. A late delivery result cannot revive a replaced challenge.
-- Initial sending ceilings: 200/hour globally, 60/15 minutes per verified
-  deployment source, 3/15 minutes per recipient and a 60-second resend gap.
+- Initial sending ceilings: 200/hour globally, 15/15 minutes per verified
+  deployment source (its hourly equivalent stays under the global hour, so one
+  source cannot block everyone), 3/15 minutes per recipient and a 60-second resend gap.
   Pending, failed and consumed attempts still count. Retain at most 5,000
   challenge rows; purge after 24 hours, on request and via a minute scheduler.
   The short resend refusal returns its actual remaining delay; other ceilings

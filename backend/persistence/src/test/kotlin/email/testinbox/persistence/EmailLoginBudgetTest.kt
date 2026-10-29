@@ -53,7 +53,7 @@ class EmailLoginBudgetTest : EmailLoginTestSupport() {
     @Test
     fun `the global hourly budget spans all recipients sources and request nodes`() {
         repeat(RequestEmailLogin.MAX_PER_HOUR) { n ->
-            request().execute(email(), "198.51.100.${n / 50}").shouldBeInstanceOf<RequestEmailLogin.Result.Accepted>()
+            request().execute(email(), "198.51.100.${n / 10}").shouldBeInstanceOf<RequestEmailLogin.Result.Accepted>()
         }
         request().execute(email(), "203.0.113.1").shouldBeInstanceOf<RequestEmailLogin.Result.Throttled>()
         sent.size shouldBe 200

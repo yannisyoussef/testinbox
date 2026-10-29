@@ -127,7 +127,12 @@ class RequestEmailLogin(
         const val MAX_RETAINED: Int = 5_000
         const val MAX_PER_HOUR: Int = 200
         const val MAX_PER_RECIPIENT: Int = 3
-        const val MAX_PER_SOURCE: Int = 60
+
+        /**
+         * Per verified source, per quarter hour. Its hourly equivalent (60) stays well under
+         * [MAX_PER_HOUR]: a single source must never be able to use up everyone's budget.
+         */
+        const val MAX_PER_SOURCE: Int = 15
         val RESEND_DELAY: Duration = Duration.ofSeconds(60)
     }
 }
