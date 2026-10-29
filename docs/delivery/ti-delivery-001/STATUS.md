@@ -260,6 +260,23 @@ all aliases while the original API stays operational. Complete API/architecture
 and Detekt pass; combined verifier 1,678 tests, no failures/errors/skips.
 Next.js product streaming transport is in progress in the frontend repository.
 
+## Native console and real backend acceptance (M5, locally verified)
+
+Frontend `4b220b9` replaces the transitional machine-key console session with
+live admitted human authority and server logout; the Inspector remains a
+separate key tool. Typecheck/build, 88 units and 35 HTTPS fixture browser cases
+pass. Frontend `117ec42` adds and passes a real Kotlin/PostgreSQL/MinIO/SMTP/
+Next.js rehearsal: two email-verified private accounts, authenticated STARTTLS
+codes, human-issued SDK key/replay, paging and live mail, MIME/attachment bytes,
+cross-account 404s, both logouts and independent SDK access. Final disposable
+DB has 2 admissions, 1 human-issued key and 0 sessions. All fixtures removed.
+See frontend `docs/delivery/TI-DELIVERY-001.md` for commands, identities, honest
+failure history and limits. No live provider credentials/consent were changed.
+
+Next independent implementation: account/operator lifecycle, account-action
+and key-inventory bounds, deletion/restore safeguards. ADR-037 remains proposed
+and its owner question is pending; do not implement or assume its acceptance.
+
 ## Resource-policy decision (M4, proposed only)
 
 [ADR-037](../../adr/0037-bounded-cohort-storage-and-disclosure.md) proposes
@@ -310,8 +327,8 @@ or ask the owner to reauthorize implementation.
   `/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home`; Java 25,
   Node and Docker are present.
 - Backend integration/E2E baselines passed. The frontend fixture browser suite
-  passes; real cross-repository console acceptance and the ephemeral edge
-  deployment rehearsal have not yet run for this delivery.
+  passes; real native cross-repository acceptance now passes. The ephemeral edge
+  deployment rehearsal remains a later release gate.
 - Issue #87 is open but implemented already; verify rather than duplicate it.
 - No new OAuth credentials, paid service, sending-domain change or public
   access decision is implied by the implementation plan.

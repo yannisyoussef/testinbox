@@ -353,3 +353,22 @@ inventory is 19, and all 19 are exercised. No boundary assertion was waived.
 
 Frontend human product transport and real backend/browser acceptance remain
 unfinished; this checkpoint is not participant-ready or deployed.
+
+
+## M5d/e — native console and real browser/mail journey
+
+Frontend saved `4b220b9`: typecheck/build, 88 units and all 35 fixture browser
+checks pass. Saved `117ec42`: native rehearsal passes against real current-source
+API/migrator/ingestion jars, PostgreSQL, qualified pinned MinIO, authenticated
+STARTTLS email sink and Next.js over temporary HTTPS. Two verified accounts,
+private memberships and actual SDK-key provenance are checked; full MIME and
+attachment bytes cross the new proxy, foreign live resources return 404,
+stream/lifecycle/expiry/reconnect work, and logout leaves zero sessions while
+the SDK key remains usable. Actual DB totals 2/1/0. Labelled local containers
+and networks are removed. Fixture certificates/credentials are removed from
+successful and failed runs; private failure logs are retained outside Git.
+
+The full evidence, exact runtime/jar identities and setup/test corrections live
+in the frontend checkpoint document. This does not exercise external OAuth
+consent or provision a sending domain; those remain Ops acceptance tasks.
+No production/shared-branch or storage-enforcement state changed.
