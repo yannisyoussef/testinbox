@@ -40,6 +40,7 @@ class ProviderAccountWiringTest {
             properties,
             registry,
             DefaultListableBeanFactory().getBeanProvider(ProviderProtocols::class.java),
+            email.testinbox.application.TestInboxConfig(mailDomain = "inbox.testinbox.test"),
         )
 
     @Test

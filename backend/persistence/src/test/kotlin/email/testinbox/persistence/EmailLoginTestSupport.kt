@@ -52,9 +52,19 @@ abstract class EmailLoginTestSupport : PersistenceIntegrationTest() {
     }
 
     protected fun request(deliver: EmailLoginDelivery = delivery): RequestEmailLogin =
-        RequestEmailLogin(JdbcEmailLogins(jdbc), JdbcHumanAuthenticationLock(jdbc), transactions, crypto, deliver, clock, observations)
+        RequestEmailLogin(
+            JdbcEmailLogins(jdbc),
+            JdbcHumanAuthenticationLock(jdbc),
+            transactions,
+            crypto,
+            deliver,
+            clock,
+            observations,
+            SERVICE_DOMAINS,
+        )
 
-    protected fun resolver(): ResolveVerifiedIdentity = ResolveVerifiedIdentity(identities, registration, transactions, clock)
+    protected fun resolver(): ResolveVerifiedIdentity =
+        ResolveVerifiedIdentity(identities, registration, transactions, clock, SERVICE_DOMAINS)
 
     protected fun verifier(sessionStore: HumanSessions = JdbcHumanSessions(jdbc)): VerifyEmailLogin =
         VerifyEmailLogin(
@@ -105,3 +115,8 @@ class EmailLoginClock : Clock() {
 
     override fun withZone(zone: ZoneId): Clock = this
 }
+
+/** The inbound domain these tests pretend TestInbox receives for: never a login address. */
+internal val SERVICE_DOMAINS =
+    email.testinbox.domain.identity
+        .ServiceMailDomains(listOf("inbox.testinbox.test"))

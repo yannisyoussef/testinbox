@@ -6,6 +6,7 @@ import email.testinbox.application.port.EmailLoginEvent
 import email.testinbox.application.port.HumanSessions
 import email.testinbox.application.usecase.AuthenticateHumanSession
 import email.testinbox.application.usecase.RequestEmailLogin
+import email.testinbox.application.usecase.ResolveVerifiedIdentity
 import email.testinbox.application.usecase.VerifyEmailLogin
 import email.testinbox.domain.identity.EmailChallengeState
 import email.testinbox.domain.identity.HumanSession
@@ -133,6 +134,30 @@ class EmailLoginFlowTest : EmailLoginTestSupport() {
         transactions.required { store.lockChallenge(delayed.id) }?.state shouldBe EmailChallengeState.REPLACED
         verifier().execute(delayed.id, binding.value, oldCode) shouldBe VerifyEmailLogin.Result.Rejected
         finish(checkNotNull(replacement)).shouldBeInstanceOf<VerifyEmailLogin.Result.Verified>()
+    }
+
+    @Test
+    fun `a TestInbox inbox address is never a login identity - no code is sent and no account is made, for any provider`() {
+        // The takeover the security review found: an inbox address can be re-reserved by
+        // another workspace after its cooldown, and would then receive the account's codes.
+        val inbox = email("alice@inbox.testinbox.test")
+        request().execute(inbox, "198.51.100.1") shouldBe RequestEmailLogin.Result.ServiceAddress
+        request().execute(email("alice@deep.inbox.testinbox.test"), "198.51.100.1") shouldBe RequestEmailLogin.Result.ServiceAddress
+        sent.toList() shouldBe emptyList()
+        count("email_login_challenge") shouldBe 0
+        resolver().execute(VerifiedLoginIdentity(LoginProvider.GOOGLE, "https://accounts.google.com", "subject-1", inbox)) shouldBe
+            ResolveVerifiedIdentity.Result.ServiceAddress
+        resolver().execute(VerifiedLoginIdentity(LoginProvider.GITHUB, "https://github.com", "4242", inbox)) shouldBe
+            ResolveVerifiedIdentity.Result.ServiceAddress
+        resolver().execute(VerifiedLoginIdentity.email(inbox)) shouldBe ResolveVerifiedIdentity.Result.ServiceAddress
+        count("human_account") shouldBe 0
+        // A look-alike domain is an ordinary address.
+        (
+            resolver().execute(
+                VerifiedLoginIdentity.email(email("alice@evil-inbox.testinbox.test")),
+            ) is ResolveVerifiedIdentity.Result.Resolved
+        ) shouldBe
+            true
     }
 
     @Test

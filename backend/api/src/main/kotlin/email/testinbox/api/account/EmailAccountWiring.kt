@@ -13,6 +13,7 @@ import email.testinbox.application.usecase.IssueHumanSession
 import email.testinbox.application.usecase.RequestEmailLogin
 import email.testinbox.application.usecase.ResolveVerifiedIdentity
 import email.testinbox.application.usecase.VerifyEmailLogin
+import email.testinbox.domain.identity.ServiceMailDomains
 import io.micrometer.core.instrument.MeterRegistry
 import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.context.properties.ConfigurationProperties
@@ -69,12 +70,13 @@ class EmailAccountWiring(
         properties: EmailLoginProperties,
         delivery: ObjectProvider<EmailLoginDelivery>,
         registry: MeterRegistry,
+        config: email.testinbox.application.TestInboxConfig,
     ): EmailAccountRuntime {
         val runtime =
             when {
                 !accounts.enabled || !properties.enabled -> EmailAccountRuntime(EmailAccountAvailability.DISABLED)
                 accounts.canonicalOrigin == null -> EmailAccountRuntime(EmailAccountAvailability.INCOMPLETE)
-                else -> configured(properties, delivery, registry)
+                else -> configured(properties, delivery, registry, ServiceMailDomains(listOf(config.mailDomain)))
             }
         registry.gauge("testinbox_email_login_configured", runtime) { if (it.availability == EmailAccountAvailability.READY) 1.0 else 0.0 }
         return runtime
@@ -84,6 +86,7 @@ class EmailAccountWiring(
         properties: EmailLoginProperties,
         delivery: ObjectProvider<EmailLoginDelivery>,
         registry: MeterRegistry,
+        serviceDomains: ServiceMailDomains,
     ): EmailAccountRuntime {
         val crypto =
             try {
@@ -98,12 +101,12 @@ class EmailAccountWiring(
             }
         val observations = EmailLoginObservations { counters.getValue(it).increment() }
         val sender = delivery.ifAvailable ?: SmtpLoginDelivery(properties.smtp)
-        val resolver = ResolveVerifiedIdentity(identities, registration, transactions, clock)
+        val resolver = ResolveVerifiedIdentity(identities, registration, transactions, clock, serviceDomains)
         val issuer = IssueHumanSession(sessions, transactions, clock)
         return EmailAccountRuntime(
             EmailAccountAvailability.READY,
             EmailAccountFlows(
-                RequestEmailLogin(store, registration, transactions, crypto, sender, clock, observations),
+                RequestEmailLogin(store, registration, transactions, crypto, sender, clock, observations, serviceDomains),
                 VerifyEmailLogin(store, registration, transactions, crypto, resolver, issuer, clock, observations),
             ),
         )

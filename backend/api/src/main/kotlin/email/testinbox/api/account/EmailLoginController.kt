@@ -47,6 +47,11 @@ class EmailLoginController(
                 ResponseEntity.accepted().header(HttpHeaders.SET_COOKIE, cookie).body(ChallengeView(result.id, result.expiresAt))
             }
 
+            // A TestInbox inbox address: refused like a malformed one (a property of the address, not of any account).
+            RequestEmailLogin.Result.ServiceAddress -> {
+                invalid(request)
+            }
+
             is RequestEmailLogin.Result.Throttled -> {
                 Problems.respond(
                     Problems.of(HttpStatus.TOO_MANY_REQUESTS, "account-rate-limit-exceeded", "Too many requests", null, request),

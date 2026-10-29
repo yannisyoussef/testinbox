@@ -202,6 +202,15 @@ class EmailLoginApiTest : ApiIntegrationTestBase() {
     }
 
     @Test
+    fun `a TestInbox inbox address is refused exactly like a malformed one, and no code is sent to it`() {
+        val inbox = call("/account/email/request", """{"email":"alice@testinbox.local"}""")
+        val malformed = call("/account/email/request", """{"email":"not an email"}""")
+        inbox.statusCode() shouldBe 400
+        json.readTree(inbox.body())["type"] shouldBe json.readTree(malformed.body())["type"]
+        mail.codes.keys.none { it.endsWith("@testinbox.local") } shouldBe true
+    }
+
+    @Test
     fun `a premature resend returns a bounded retry hint and preserves the earlier code`() {
         val address = email()
         val challenge = start(address)

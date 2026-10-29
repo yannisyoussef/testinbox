@@ -14,6 +14,8 @@ class ResolveVerifiedIdentity(
     private val registration: HumanAuthenticationLock,
     private val transactions: TransactionRunner,
     private val clock: Clock,
+    /** TestInbox's own inbound domains: never a login or contact identity (see [ServiceMailDomains]). */
+    private val serviceDomains: email.testinbox.domain.identity.ServiceMailDomains,
 ) {
     sealed interface Result {
         data class Resolved(
@@ -23,10 +25,14 @@ class ResolveVerifiedIdentity(
         data object DifferentMethod : Result
 
         data object CapacityUnavailable : Result
+
+        /** The verified email is a TestInbox inbox address: refused before any account is found or made. */
+        data object ServiceAddress : Result
     }
 
     fun execute(identity: VerifiedLoginIdentity): Result =
         transactions.required {
+            if (serviceDomains.owns(identity.email)) return@required Result.ServiceAddress
             registration.lock()
             identities.find(identity)?.let { return@required Result.Resolved(it) }
             if (identities.findByContact(identity.email) != null) return@required Result.DifferentMethod

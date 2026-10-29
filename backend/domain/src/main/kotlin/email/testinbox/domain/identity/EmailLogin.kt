@@ -32,6 +32,29 @@ value class ContactEmail private constructor(
     }
 }
 
+/**
+ * The mail domains TestInbox itself RECEIVES for (and their subdomains). An
+ * address there is a TestInbox inbox, which any workspace can hold and, after
+ * the exact-address cooldown, re-reserve (ADR-021). It is therefore never a
+ * login or contact identity: a code sent there would reach whoever holds the
+ * inbox, and any participant could mint verified accounts from their own.
+ */
+class ServiceMailDomains(
+    domains: Collection<String>,
+) {
+    private val owned: Set<String> =
+        domains.map { it.trim().trimEnd('.').lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.toSet()
+
+    init {
+        require(owned.isNotEmpty()) { "at least one service mail domain is required" }
+    }
+
+    fun owns(email: ContactEmail): Boolean {
+        val domain = email.value.substringAfter('@')
+        return owned.any { domain == it || domain.endsWith(".$it") }
+    }
+}
+
 enum class LoginProvider { EMAIL, GOOGLE, GITHUB }
 
 data class VerifiedLoginIdentity(

@@ -25,6 +25,8 @@ class RequestEmailLogin(
     private val delivery: EmailLoginDelivery,
     private val clock: Clock,
     private val observations: EmailLoginObservations = EmailLoginObservations.NOOP,
+    /** TestInbox's own inbound domains: a code is never sent to one of its inboxes. */
+    private val serviceDomains: email.testinbox.domain.identity.ServiceMailDomains,
 ) {
     sealed interface Result {
         class Accepted(
@@ -38,6 +40,12 @@ class RequestEmailLogin(
         data class Throttled(
             val retryAfter: Duration,
         ) : Result
+
+        /**
+         * The address is a TestInbox inbox. Refused like a malformed address: it is a
+         * property of the address alone, so it reveals nothing about any account.
+         */
+        data object ServiceAddress : Result
     }
 
     fun execute(
@@ -45,6 +53,7 @@ class RequestEmailLogin(
         verifiedSource: String,
         browserToken: String? = null,
     ): Result {
+        if (serviceDomains.owns(email)) return Result.ServiceAddress
         val browser = SessionCredential.parse(browserToken) ?: SessionCredential.generate()
         val code = EmailLoginCode.generate()
         val challenge =

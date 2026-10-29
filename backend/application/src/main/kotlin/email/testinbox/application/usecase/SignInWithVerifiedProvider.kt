@@ -43,6 +43,11 @@ class SignInWithVerifiedProvider(
                 ResolveVerifiedIdentity.Result.CapacityUnavailable -> {
                     Result.CapacityUnavailable
                 }
+
+                // A provider account whose verified email is a TestInbox inbox address.
+                ResolveVerifiedIdentity.Result.ServiceAddress -> {
+                    Result.Rejected
+                }
             }
         }
     }

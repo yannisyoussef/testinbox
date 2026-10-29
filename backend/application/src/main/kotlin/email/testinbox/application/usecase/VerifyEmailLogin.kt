@@ -68,6 +68,11 @@ class VerifyEmailLogin(
                     ResolveVerifiedIdentity.Result.CapacityUnavailable -> {
                         Result.CapacityUnavailable
                     }
+
+                    // Only a challenge created before the address check could reach here.
+                    ResolveVerifiedIdentity.Result.ServiceAddress -> {
+                        Result.Rejected
+                    }
                 }
             }
         observations.record(

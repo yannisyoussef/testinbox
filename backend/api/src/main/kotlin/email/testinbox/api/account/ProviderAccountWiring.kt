@@ -77,6 +77,7 @@ class ProviderAccountWiring(
         properties: ProviderAccountProperties,
         registry: MeterRegistry,
         override: ObjectProvider<ProviderProtocols>,
+        config: email.testinbox.application.TestInboxConfig,
     ): ProviderAccountRuntime {
         val flows =
             if (!accounts.enabled || accounts.canonicalOrigin == null) {
@@ -92,7 +93,14 @@ class ProviderAccountWiring(
                         RecordProviderLoginState(store, registration, tx, crypto, clock),
                         ConsumeProviderLoginState(store, tx, crypto, clock),
                         SignInWithVerifiedProvider(
-                            ResolveVerifiedIdentity(identities, registration, tx, clock),
+                            ResolveVerifiedIdentity(
+                                identities,
+                                registration,
+                                tx,
+                                clock,
+                                email.testinbox.domain.identity
+                                    .ServiceMailDomains(listOf(config.mailDomain)),
+                            ),
                             IssueHumanSession(sessions, tx, clock),
                             tx,
                         ),

@@ -54,7 +54,13 @@ class HumanIdentitiesTest : EmailLoginTestSupport() {
                 }
             }
         shouldThrow<IllegalStateException> {
-            ResolveVerifiedIdentity(broken, registration, transactions, clock).execute(VerifiedLoginIdentity.email(email()))
+            ResolveVerifiedIdentity(
+                broken,
+                registration,
+                transactions,
+                clock,
+                SERVICE_DOMAINS,
+            ).execute(VerifiedLoginIdentity.email(email()))
         }
         count("human_account") shouldBe 0
         count("human_identity") shouldBe 0
@@ -129,6 +135,7 @@ class HumanIdentitiesTest : EmailLoginTestSupport() {
                                 JdbcHumanAuthenticationLock(jdbc),
                                 transactions,
                                 clock,
+                                SERVICE_DOMAINS,
                             )
                         ready.countDown()
                         check(go.await(10, TimeUnit.SECONDS))
