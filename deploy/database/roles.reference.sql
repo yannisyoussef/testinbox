@@ -41,6 +41,15 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"api_role", :"ingestion_role";
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO :"api_role", :"ingestion_role";
 
+-- ADR-036: the internet-facing SMTP process does not authenticate humans.
+-- A broad table grant must not give it contacts, login state or admission data.
+-- Machine key verifiers and browser request snapshots are API-only too.
+-- Account lifecycle will expose only its minimal workspace eligibility view,
+-- never these underlying identity/control-plane tables.
+REVOKE ALL ON api_key, idempotency_record, human_account, human_identity, beta_cohort, beta_admission,
+    human_session, email_login_challenge, human_auth_gate, provider_login_state,
+    beta_waitlist, human_request_global, human_request_budget FROM :"ingestion_role";
+
 -- Written only by the migrator.
 REVOKE INSERT, UPDATE, DELETE ON flyway_schema_history FROM :"api_role", :"ingestion_role";
 

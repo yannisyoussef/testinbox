@@ -399,3 +399,26 @@ API `3c1d59ebeda8331f05cbb23e1bc86c49585cccef5863084f0b95e16ac6d7cca8`;
 ingestion `97f34a4bb69cdcfa1243b4791958bb251d97c7b129d48752622cfc567c79c0b7`;
 migrator `d33e5df3f6732d2bf11a6548f0caa9675caec6d4c7e71bfb2751c6ab9b1b1a0d`.
 Disposable Docker fixtures are removed. Production and shared refs unchanged.
+
+
+## Identity/credential database role restriction (M3j preparation)
+
+The broad ordinary-DML template previously granted SMTP ingestion access to
+new human contacts, sessions, provider/challenge data, admissions, waitlist and
+account counters. It now revokes those tables plus API-key verifiers and browser
+idempotency snapshots from ingestion. The API's required grants remain.
+
+Complete `StorageRoleModelTest` (three PostgreSQL cases): PASS (7s), including
+the existing storage operations and gate F, and real denied SELECT/DELETE on
+thirteen identity/credential tables plus forbidden state/admission updates.
+The positive API role issues/authenticates a real session and charges its
+budget using the SAME role-bound DataSource/transaction manager. Detekt PASS;
+formatting/diff pass. Initial test compile used TransactionTemplate where this
+adapter expects PlatformTransactionManager; corrected without production-code
+or assertion changes. No new migration, backup behavior or live grant change.
+This focused run replaces local persistence result files; do not call the
+whole current report directory a fresh 1,690-test run. Prior complete build
+is M3i (1,689); run the full required scope again at the next code milestone.
+
+The recorded lifecycle design precedes implementation; CLI, participant
+classification, T1/state/credential drain and erasure/restore are not built yet.

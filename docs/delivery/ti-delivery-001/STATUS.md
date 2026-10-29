@@ -292,6 +292,16 @@ Next independent increment: actual operator/account suspension, permanent
 credential revocation, ingestion admission/drain, deletion and restore safety,
 and key inventory bound. Keep proposed ADR-037 unimplemented pending answer.
 
+## Lifecycle next increment and database privacy boundary
+
+[ACCOUNT-LIFECYCLE.md](ACCOUNT-LIFECYCLE.md) records the intended authority,
+write ordering, durable participant marker, T1 eligibility fence and honest
+in-flight drain before implementation. Do not treat a suspended flag or an
+empty queue alone as proof of lifecycle completion. The locally verified role-template change
+removes identity/session/key/snapshot access from the SMTP DB role;
+three dedicated PostgreSQL role tests and Detekt pass; no live role was changed. Concrete lifecycle/key bounds and restore safety
+remain next, independently of pending ADR-037.
+
 ## Resource-policy decision (M4, proposed only)
 
 [ADR-037](../../adr/0037-bounded-cohort-storage-and-disclosure.md) proposes

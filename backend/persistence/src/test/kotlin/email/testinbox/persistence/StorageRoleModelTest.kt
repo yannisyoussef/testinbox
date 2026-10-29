@@ -159,6 +159,74 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `ingestion cannot read or mutate human identity metadata while the API can authenticate and budget sessions`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+        db.login(api)
+        val smtp = db.login(ingestion)
+        db.login(monitor)
+        db.applyReferenceGrants()
+        val account =
+            email.testinbox.domain.identity
+                .HumanAccountId(UUID.randomUUID())
+        db.jdbc
+            .sql("INSERT INTO human_account VALUES (:id,'role-fixture@example.invalid',now(),'ACTIVE',now())")
+            .param("id", account.value)
+            .update()
+        // Use the SAME role-bound DataSource for JDBC and transactions; an admin
+        // transaction around another role's autocommit calls would be a false proof.
+        val source =
+            SimpleDriverDataSource(org.postgresql.Driver(), postgres.jdbcUrl.substringBeforeLast('/') + "/" + db.name, api, "pw-$api")
+        val client = JdbcClient.create(source)
+        val tx =
+            SpringTransactionRunner(
+                org.springframework.jdbc.datasource
+                    .DataSourceTransactionManager(source),
+            )
+        val sessions = JdbcHumanSessions(client)
+        val issued =
+            checkNotNull(
+                email.testinbox.application.usecase
+                    .IssueHumanSession(sessions, tx, java.time.Clock.systemUTC())
+                    .execute(account),
+            )
+        val authenticate =
+            email.testinbox.application.usecase
+                .AuthenticateHumanSession(sessions, tx, java.time.Clock.systemUTC())
+        authenticate.execute(issued.credential.value)!!.account.id shouldBe account
+        val charge =
+            email.testinbox.application.usecase
+                .ChargeAccountRequest(authenticate, JdbcAccountRequestBudgets(client), tx)
+        charge.execute(issued.credential.value)!!.allowed shouldBe true
+        val tables =
+            listOf(
+                "api_key",
+                "idempotency_record",
+                "human_account",
+                "human_identity",
+                "beta_cohort",
+                "beta_admission",
+                "human_session",
+                "email_login_challenge",
+                "human_auth_gate",
+                "provider_login_state",
+                "beta_waitlist",
+                "human_request_global",
+                "human_request_budget",
+            )
+        tables.forEach { table ->
+            failure { smtp.sql("SELECT * FROM $table").query().listOfRows() } shouldContain "permission denied"
+            failure { smtp.sql("DELETE FROM $table WHERE false").update() } shouldContain "permission denied"
+        }
+        failure { smtp.sql("UPDATE human_account SET state='SUSPENDED' WHERE false").update() } shouldContain "permission denied"
+        failure { smtp.sql("UPDATE beta_cohort SET admissions_open=true WHERE false").update() } shouldContain "permission denied"
+        client
+            .sql("SELECT count(*) FROM human_account WHERE id=:id")
+            .param("id", account.value)
+            .query(Long::class.javaObjectType)
+            .single() shouldBe 1
+    }
+
+    @Test
     fun `a blanket DML grant on every table - the earlier Ops role script - is exactly what gate F refuses`() {
         val db = LedgerTestDatabase.create(postgres, admin)
         db.login(api)
