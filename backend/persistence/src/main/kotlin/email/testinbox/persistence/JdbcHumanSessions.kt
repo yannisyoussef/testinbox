@@ -26,8 +26,9 @@ class JdbcHumanSessions(
     override fun lockAccount(accountId: HumanAccountId): HumanAccount? {
         requireTransaction()
         return jdbc
-            .sql("SELECT contact_email, state, contact_verified_at FROM human_account WHERE id = :id FOR UPDATE")
-            .param("id", accountId.value)
+            .sql(
+                "SELECT contact_email, ${LifecycleSql.EFFECTIVE_STATE} AS state, contact_verified_at FROM human_account WHERE id = :id FOR UPDATE",
+            ).param("id", accountId.value)
             .query { rs, _ ->
                 HumanAccount(
                     accountId,

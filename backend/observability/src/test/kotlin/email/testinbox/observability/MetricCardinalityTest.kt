@@ -60,6 +60,7 @@ class MetricCardinalityTest {
         }
         inbound.unknownRecipientDiscarded()
         inbound.duplicateProviderEventNoop()
+        inbound.inactiveRecipientDiscarded()
 
         val wait = MicrometerWaitMetrics(registry)
         WaitOutcome.entries.forEach {
@@ -276,8 +277,10 @@ class MetricCardinalityTest {
         registry.meters.size shouldBe before
         // A generous ceiling that still fails loudly if a per-caller label
         // is ever introduced. ADR-035 §16 (TI-STORAGE-003) added about 45
-        // enum-bounded series.
-        (before < 160) shouldBe true
+        // enum-bounded series; TI-DELIVERY-002 account lifecycle added five
+        // (one inbound counter, one admission outcome, one auth outcome and two
+        // quota dimensions), every one from a closed enum: 163 series today.
+        io.kotest.assertions.withClue("series=$before") { (before < 170) shouldBe true }
     }
 
     @Test

@@ -168,6 +168,8 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         val workspaceId = email.testinbox.domain.WorkspaceId(ws)
         JdbcSchemaHistory(smtp).read()
         checkNotNull(JdbcInboxRepository(smtp).findReceivableByAddress("$inbox@ledger.test"))
+        // Account lifecycle: the early eligibility read (a legacy workspace has no row).
+        JdbcWorkspaceEligibility(smtp).status(workspaceId) shouldBe email.testinbox.application.port.WorkspaceStatus.LEGACY
         val delivered = checkNotNull(message(ws, inbox, rawBytes = 100, attachments = listOf(10), connection = smtp))
         JdbcMessageRepository(smtp).findEarliestIdByFingerprint(inboxId, "fingerprint-absent") shouldBe null
         JdbcRateLimiter(smtp, txManager) { _, _ ->
@@ -409,12 +411,20 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
                 "beta_waitlist",
                 "human_request_global",
                 "human_request_budget",
+                "lifecycle_restore_clearance",
             )
         tables.forEach { table ->
             failure { smtp.sql("SELECT * FROM $table").query().listOfRows() } shouldContain "permission denied"
             failure { smtp.sql("DELETE FROM $table WHERE false").update() } shouldContain "permission denied"
         }
         failure { smtp.sql("UPDATE human_account SET state='SUSPENDED' WHERE false").update() } shouldContain "permission denied"
+        // The lifecycle view gives SMTP exactly a workspace id and a boolean: no account, contact or quarantine detail.
+        smtp
+            .sql("SELECT * FROM workspace_lifecycle_eligibility WHERE workspace_id = ?")
+            .param(admission.admission.workspaceId.value)
+            .query { rs, _ -> (1..rs.metaData.columnCount).map { rs.metaData.getColumnName(it) } to rs.getBoolean("active") }
+            .single() shouldBe (listOf("workspace_id", "active") to true)
+        failure { smtp.sql("INSERT INTO lifecycle_restore_clearance (id) VALUES (1)").update() } shouldContain "permission denied"
         failure { smtp.sql("UPDATE beta_cohort SET admissions_open=true WHERE false").update() } shouldContain "permission denied"
         client
             .sql("SELECT count(*) FROM human_account WHERE id=:id")
@@ -596,6 +606,7 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
                 "storage_legacy_share" to READ,
                 "workspace_deletion_charge" to READ,
                 "storage_cohort_plan" to READ,
+                "workspace_lifecycle_eligibility" to READ,
                 "storage_ambiguity_id_seq" to setOf("USAGE"),
             )
     }

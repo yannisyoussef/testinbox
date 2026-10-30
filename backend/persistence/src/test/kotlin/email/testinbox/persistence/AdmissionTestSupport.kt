@@ -217,6 +217,7 @@ class AdmissionFixture(
                 when (it) {
                     is StorageAdmissionDecision.Admitted -> "admitted"
                     is StorageAdmissionDecision.Refused -> it.reason.name
+                    is StorageAdmissionDecision.Inactive -> "inactive"
                 }
             }
     }
