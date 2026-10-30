@@ -52,10 +52,18 @@ manual follow-up.
   plus 24 h, which is 72 h with shipped values. It is read from the same
   `TESTINBOX_EXACT_COOLDOWN` and `TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY`
   the deployment uses, and `TI_LIFECYCLE_DELETION_OVERDUE_AFTER` overrides it.
-- A `DELETION_PENDING` account with no record is reported as overdue by
-  `status` and adopted by the timer. That covers restored, pre-V23 or
-  hand-edited data. A pending record whose account row is already gone is
-  closed as `ERASED`, with `anomaly=ACCOUNT_ROW_ABSENT`.
+- A `DELETION_PENDING` account with no record (restored, pre-V23 or
+  hand-edited data) is reported as `UNRECORDED` by `status` (exit 5). The
+  timer adopts it and reports the adoption (`anomaly=ADOPTED_UNRECORDED`,
+  exit 5), because its age restarts at adoption.
+- A pending record whose account row is gone is **never** stamped `ERASED`.
+  It keeps its stage and is reported as `anomaly=ACCOUNT_ROW_ABSENT` (exit
+  6) by `status`, `status <uuid>`, `delete` and `process-deletions`, with a
+  documented manual resolution. The workflow cannot tie the workspace to the
+  account safely once the row is gone.
+- A run reads the record after the account row lock. The erasing
+  transaction is preceded by a guard-free quiesce (`FOR UPDATE` on the
+  account), so an in-flight idempotent console request cannot deadlock it.
 - **Backups.** Erasure does not reach a backup taken before it. Such a
   backup keeps the identity until it ages out under the backup retention Ops
   operates. Nothing promises immediate erasure from backups. A restore replay
@@ -86,20 +94,30 @@ credentials are audited separately.
   workspace. It now also revokes every other still-usable managed key, in
   every workspace (`legacyRevokedKeys=` in its output), before it records
   the clearance.
-- **Access does not reopen before that.** `AuthenticateApiKey` reads the
-  restore clearance per request (`RestoreQuarantine`, `JdbcRestoreQuarantine`)
-  and refuses every managed key of a legacy workspace while the database is
-  quarantined. Participant keys were already refused. The answer is `401`,
-  counted as `WORKSPACE_INACTIVE`, with no new metric series, and the secret is
-  still verified first, so the refusal is no oracle. Without this, an owner
-  key revoked after the backup would have worked between the restore and
-  the reconciliation.
-- The bootstrap credential is not revoked or rotated by reconciliation. It
-  authenticates only against the value the API is currently configured with,
-  and only while no usable managed administrator exists. After
-  reconciliation it is therefore the break-glass that re-keys the owner. The
-  restore procedure now requires confirming it is configured before
-  reconciling. The full audit of configured credentials is in
+- **No restored managed key works before that.** `AuthenticateApiKey` reads
+  the restore clearance per request (`RestoreQuarantine`,
+  `JdbcRestoreQuarantine`) and refuses every managed key of a legacy
+  workspace while the database is quarantined. Participant keys were already
+  refused. The answer is `401`, counted as its own closed outcome
+  `QUARANTINED`. The secret is still verified first, so the refusal is no
+  oracle. The gauge `testinbox_restore_quarantined` reports the state; it is
+  not a readiness failure, and Ops alerts on it outside a restore window.
+  Without this, an owner key revoked after the backup would have worked
+  between the restore and the reconciliation.
+- **The bootstrap credential is not quarantine-gated,** so "access" does not
+  fully close during quarantine. It authenticates whenever the presented
+  token matches the configured value **and** no usable managed administrator
+  exists. In a restored database the restored administrator usually still
+  counts as usable, so the bootstrap credential is superseded until
+  reconciliation, but not always. Any managed key it mints during quarantine
+  is refused while quarantined and revoked by reconciliation. The bootstrap
+  credential itself can act on the owner workspace in that window.
+  Reconciliation neither revokes nor rotates it. **Rotating it is therefore a
+  mandatory step of every restore** (LIFECYCLE.md, restore procedure, step 0).
+  After reconciliation it is the break-glass that re-keys the owner. The
+  restore order follows Ops' `mint-synthetic-key.sh`: the synthetic key is
+  minted while the bootstrap window is open, then `ops-admin`, which closes it.
+  The full audit of configured credentials is in
   [production.md](../../dev/production.md#credentials-after-a-restore).
 - **Staging consequence:** a staging database that V22 started quarantined
   refuses its synthetic keys until reconciled, and reconciliation revokes
@@ -163,24 +181,43 @@ node, and the start of every `/account/waitlist` request.
   nothing. Restore-quarantine authentication reads `lifecycle_restore_clearance`,
   which the API already reads, and readiness `lifecyclePrivileges` already
   probes it.
-- **Optional Ops hardening,** in the same deferred MD1/md1 grant-hardening
-  batch as V22: revoke `INSERT, UPDATE, DELETE ON account_deletion` from the
-  API role.
+- **Post-MD1 Ops hardening,** in the same deferred grant-hardening batch as
+  V22: `REVOKE ALL ON account_deletion FROM <api role>`. The V23 window's
+  contract and T5 checks are listed in LIFECYCLE.md ("Contract additions")
+  and production.md (V22 + V23 required order).
 
 ## Ops actions
 
-1. Install the **`process-deletions` timer** (every 15 minutes), append its
-   output to the lifecycle log, and alert on any non-zero exit
+1. Install the **`process-deletions` timer** (every 15 minutes,
+   `TimeoutStartSec=10min`), only after the V23 window's T5 checks. Append its
+   output to the lifecycle log. Alert on any non-zero exit (1/2/4/5/6) and on
+   staleness: no completed run (`completedAt` in the summary line) for more
+   than 1 hour. Stop it for every deploy, backup or restore window
    ([LIFECYCLE.md](LIFECYCLE.md#the-ops-timer-for-process-deletions-required)).
-   Pin it to the deployed API digest.
-2. Put `TESTINBOX_EXACT_COOLDOWN` and
-   `TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY` in the lifecycle env
-   file whenever the API overrides them.
-3. Update the restore runbook:
-   - step 0: confirm the bootstrap credential is configured;
-   - step 2: no managed key works while quarantined;
-   - step 5: re-key the owner administrator, the synthetics and monitoring;
-   - the credential audit table.
+2. Pin the operator image **independently** of the API digest, at or above
+   this change. Preflight it: `docker run --rm <digest> account-lifecycle`
+   must exit 2 and print the `account-lifecycle-cli v2 …` marker first. Use
+   the allow-listed env file (`TI_LIFECYCLE_*`, `TESTINBOX_EXACT_COOLDOWN`,
+   `TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY`,
+   `TI_LIFECYCLE_DELETION_OVERDUE_AFTER`), never the API's.
+3. Update the restore runbook to the 10-step order in LIFECYCLE.md:
+   1. rotate bootstrap;
+   2. stop the timers;
+   3. restore;
+   4. confirm the clearance count is 0;
+   5. `restore-reconcile`;
+   6. replay the log;
+   7. shred the synthetic key file;
+   8. run `mint-synthetic-key.sh`, then mint `ops-admin`, then the other owner
+      keys, then run `synthetic.sh`;
+   9. restart the timers;
+   10. re-reserve the storage pool.
+
+   `TestInboxBootstrapKeyUsed` is expected for the two mints. Fix the
+   credentials table to Ops' names (`TESTINBOX_SYNTHETIC_API_KEY` / key file;
+   monitoring uses the management port).
+3a. Alert on `testinbox_restore_quarantined == 1` for more than 5 minutes
+    outside a restore window, and on `QUARANTINED` auth outcomes outside one.
 4. Replace `erase-identity` in any runbook with `delete` / `process-deletions`.
 5. On staging, if V22 left it quarantined: reconcile, then re-key through the
    staging bootstrap credential.
@@ -243,6 +280,41 @@ Gates:
 The OpenAPI contract is unchanged. The `401` for a refused key was already
 documented, and the key `name` was already optional.
 
+## Review fixes (2026-10-30)
+
+- The record is read after the account row lock (a waiting run reported a
+  false anomaly). Test: two runs with latches, one erasing, the other
+  blocked.
+- A row-absent pending record is no longer stamped `ERASED`; it is reported
+  as an anomaly (exit 6), with a manual resolution.
+- Adoption of an unrecorded deletion is reported (exit 5).
+- `status <uuid>` reports the real stage of a non-`ERASED` record with no
+  account row (exit 6).
+- The bootstrap claims are qualified (above), and bootstrap rotation is a
+  mandatory restore step.
+- A guard-free quiesce before erasure removes the console-request deadlock.
+  Test: a raw transaction holds the claim's `FOR KEY SHARE`, then takes the
+  workspace guard while the workflow waits.
+- `QUARANTINED` auth outcome; `testinbox_restore_quarantined` gauge.
+- `process-deletions` prints a machine-readable summary line; the usage text
+  starts with a stable preflight marker.
+- Storage gate G is DEFERRED under `ALL` until a `storage-budget check` PASS
+  bound to the reviewed pool file's SHA-256 is supplied. Gate F names E1–E11
+  and checks `production-host` with `--environment production`.
+- The ADR-035 amendment cites the owner decision.
+
+Evidence for the review fixes, on the integrated branch:
+
+- `verify-test-results` (backend): 1870 tests, 0 skipped. Floors: application
+  517, persistence 504 (`AccountDeletionWorkflowTest` 9), api 326.
+- `check-storage-activation.test.sh` 191/191.
+- `check-backup-scope.test.sh` 206/206.
+- `check-storage-enforcement-off.test.sh` 20/20.
+- `check-migration-safety.test.sh` 49/49.
+- `check-roles-reference.test.sh` 34/34.
+- `deploy/synthetic` unit tests 36/36.
+- Detekt (Java 21) clean; gitleaks clean.
+
 ## Remaining
 
 - The backup retention period is still open (production.md, "HUMAN DECISION
@@ -255,3 +327,14 @@ documented, and the key `name` was already optional.
   logged at all: the `api_key.created` audit line records only `named=true|false`
   (commit "never log a key's free-text name"); lines shipped by earlier releases
   keep their names until Ops' log retention expires them.
+- **Known gap (outside the five decisions' literal scope):** an account that
+  was never admitted, and whose waitlist entry expired (or that never joined),
+  keeps its `human_account` row, with its contact email and login identities,
+  indefinitely. The waitlist expiry removes only the entry. **Proposed
+  follow-up:** an owner decision on a retention period for never-admitted,
+  inactive accounts, implemented as the same deletion workflow (`delete`,
+  queued by a sweep). No period is proposed here.
+- **Recommendation:** Ops co-own the qualification record directory
+  (`backend/storage/src/main/resources/adr035-qualification/`) in
+  `.github/CODEOWNERS`. CODEOWNERS uses no Ops team handle today, so it is
+  documented here rather than added.

@@ -538,9 +538,13 @@ erasure already made is permanent.
 **Rules.**
 
 - Run `account-lifecycle` (including the `process-deletions` timer) only
-  from a digest at or after this change. Pin the timer to the deployed API
-  digest, and move it back with an artifact rollback **only** to a digest
-  that still contains this change.
+  from a digest at or after this change. The operator image is **pinned
+  independently of the API digest**, so an artifact rollback of the API does
+  not move it. Its floor is this change: preflight every pin with
+  `docker run --rm <digest> account-lifecycle`, which must exit `2` and print
+  the `account-lifecycle-cli v2 …` marker first. An older image (e.g.
+  `d17044d`) ignores the subcommand and boots a full API on the data network.
+  Use the allow-listed operator env file, never the API's.
 - After any restore, run `restore-reconcile` from a digest at or after this
   change **before** rolling the API back below it, so every restored legacy
   key is already revoked. Revoked rows are never un-revoked by any artifact.

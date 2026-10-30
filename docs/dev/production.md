@@ -484,8 +484,19 @@ docker run --rm --network <data network> --env-file /root/testinbox-ops/<command
 ```
 
 - The env file is mode `0600`, owned by the operator, and holds only the
-  `TI_ADMISSION_*`, `TI_LIFECYCLE_*` or `TI_BUDGET_*` variables (plus, for
-  `account-lifecycle`, optionally the API's `TESTINBOX_EXACT_COOLDOWN`).
+  `TI_ADMISSION_*`, `TI_LIFECYCLE_*` or `TI_BUDGET_*` variables. For
+  `account-lifecycle` it is an allow-list: `TI_LIFECYCLE_*`, plus, only when
+  the API overrides them, `TESTINBOX_EXACT_COOLDOWN`,
+  `TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY` and
+  `TI_LIFECYCLE_DELETION_OVERDUE_AFTER`. **Never the API's env file.**
+- **The `account-lifecycle` operator image is pinned independently** of the
+  API digest, with a floor: it must contain TI-DELIVERY-002b. Preflight every
+  pin with `docker run --rm <digest> account-lifecycle`: it must exit `2`, and
+  its first line must be the marker
+  `account-lifecycle-cli v2 subcommands=suspend,resume,delete,status,process-deletions,restore-reconcile`.
+  An older image (e.g. `d17044d`) ignores the subcommand and **boots a full
+  API**. Details:
+  [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md#operator-procedure).
   Never put a password on the command line (`-e NAME=value`, a URL with
   credentials): argv is visible in `ps` and shell history.
 - Never `docker compose run api …`: that inherits the API service's
@@ -535,16 +546,23 @@ The controls:
   revoked keys' technical rows are kept. Keep every
   `event=…` line it prints in a lifecycle log outside the database. After a
   restore, `restore-reconcile` does NOT read that log: it suspends every
-  restored participant, revokes **every** restored managed key (owner and
-  monitoring included), and the operator then replays the log
+  restored participant, revokes **every** restored managed key (the owner's
+  `ops-admin` and the synthetic key included), and the operator then replays the log
   by hand and re-keys the deployment (below). Procedure:
   [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md).
 
 **Required Ops timer: `account-lifecycle process-deletions` every 15 minutes**
 (TI-DELIVERY-002b). It advances every pending deletion one step and is the
 only thing that completes deletions waiting on the retention sweep or an
-EXACT cooldown. **Alert on any non-zero exit.** `5` means a deletion has been
-unfinished for longer than the overdue threshold. The threshold is the EXACT
+EXACT cooldown. **One alert rule:** alert on **any non-zero exit** (`1`
+authority or credentials, `2` wrong image or arguments, `4` a failed step,
+`5` overdue, refused or adopted, `6` a record without its account row), **and**
+on **staleness**: no completed run for more than 1 hour. The last output
+line is a machine-readable summary
+(`event=account.deletions … exit=<code> completedAt=<epoch>`) for a textfile
+metric. Install the timer only after the V23 window's T5 checks pass. Stop it,
+with the deploy timer, for every deploy, backup or restore window. Bound the
+unit (`TimeoutStartSec=10min`). The threshold is the EXACT
 cooldown, plus the retention `T_max`, plus 24 h: **72 h** with shipped
 values, or `TI_LIFECYCLE_DELETION_OVERDUE_AFTER`. Give the timer's env file
 the API's `TESTINBOX_EXACT_COOLDOWN` and
@@ -556,34 +574,48 @@ the same list. Unit example and triage:
 **After a restore everything restored is quarantined.** The clearance row of
 `lifecycle_restore_clearance` is never in a backup (`-`). A restored
 database therefore treats every participant workspace as inactive and every
-human account as suspended, and refuses **every managed API key, owner and
-monitoring ones included**, until `account-lifecycle restore-reconcile` runs.
-That command closes admissions, suspends the restored participant accounts,
-revokes every restored managed key in every workspace, and records the
-clearance. Reconciliation only lifts the quarantine. The operator then
-replays, by hand, every lifecycle event in the external log that is newer
-than the backup, and re-keys:
+human account as suspended, and refuses **every managed API key**, including
+the owner's `ops-admin` and the synthetic key
+(`testinbox_api_key_auth_total{outcome="QUARANTINED"}`), until
+`account-lifecycle restore-reconcile` runs. The **bootstrap credential is not
+quarantine-gated**: it authenticates whenever no usable administrator exists,
+and any key it mints during quarantine is refused and then revoked by
+reconciliation. That is why rotating it is mandatory in every restore.
+`testinbox_restore_quarantined` is `1` meanwhile. It is not a readiness
+failure. **Alert** if it stays `1` for more than 5 minutes outside a declared
+restore window.
 
-1. **Before sign-in or registration is re-enabled — mandatory:** replay every
-   `delete` and `suspend` event (a pre-002b `erase-identity` replays as
-   `delete`), for participant **and non-participant** accounts alike. A
-   non-participant account deleted after the backup is not suspended by
-   reconciliation (it has no workspace), so without the replay it could sign
-   in again once the boundary reopens. The deletion workflow erases the
-   replayed deletions again.
-2. Then `resume` only the participants the log shows active at the incident;
-   they sign in again and mint new keys.
-3. **Re-key the deployment.** Mint a new owner administrator with the
-   bootstrap credential, then the new synthetic and monitoring keys with that
-   administrator. Install them, and run the synthetics before declaring the
-   restore complete ([credentials after a restore](#credentials-after-a-restore)).
+The restore sequence (Ops runbook; full text in
+[lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md#restore-procedure)):
 
-### Deploying the account-lifecycle release (V22): required order
+0. Rotate `TESTINBOX_BOOTSTRAP_API_KEY`. This is **mandatory every restore**.
+1. Stop `infinity-deploy@prod.timer` and the `process-deletions` timer.
+2. Restore the backup.
+3. Confirm `SELECT count(*) FROM lifecycle_restore_clearance;` is `0` before
+   any deployable starts.
+4. `account-lifecycle restore-reconcile`: it suspends the restored
+   participants, revokes every restored managed key and records the
+   clearance.
+5. **Replay the lifecycle log** — mandatory before sign-in or registration is
+   re-enabled. Replay every `delete` and `suspend` (a pre-002b
+   `erase-identity` replays as `delete`), for participant **and
+   non-participant** accounts alike. Then `resume` only the participants the
+   log shows active, then run `process-deletions` once.
+6. Shred the stale synthetic key file
+   (`~deploy/.local/state/infinity-deploy/testinbox-synthetic.key`).
+7. `mint-synthetic-key.sh` while the bootstrap window is open. Then mint
+   `ops-admin` with the bootstrap credential, which closes the window. Then
+   re-issue the owner's other keys, then run `synthetic.sh`.
+   `TestInboxBootstrapKeyUsed` firing for those mints is expected.
+8. Restart the timers.
+9. Re-reserve the storage pool.
+
+### Deploying the account-lifecycle release (V22 + V23): required order
 
 1. Stage the candidate `deploy/backup/scope.txt` and
    `scripts/check-backup-scope.sh` (they classify `lifecycle_restore_clearance`
-   and accept the V22 view).
-2. Run the migrator (V22).
+   and `account_deletion`, and accept the V22 view).
+2. Run the migrator (V22 + V23, which adds `account_deletion`).
 3. Re-run `deploy/database/roles.reference.sql` as the schema owner. Both
    roles need it: ingestion gets `SELECT` on `workspace_lifecycle_eligibility`,
    and the API's `ON ALL TABLES` grant is one-shot, so it does not cover the
@@ -597,6 +629,21 @@ role cannot read what they need, instead of serving with every participant
 key refused or every event answered `451`. Staging connects as the table
 owner and always passes. The V22 authority checks and triggers add nothing
 there either: the owner IS the operator authority.
+
+**T5 checks for this window:**
+
+- `max(version)` in `flyway_schema_history` is `23`, and it succeeded;
+- `account_deletion` holds `0` rows, or exactly one `DRAINING` row per
+  account that was already deletion-pending;
+- the V22 and V23 lifecycle triggers are present and enabled (list in
+  [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md#grant-delta-for-ops-coordinated-with-md1md1));
+- the API role can `SELECT` both `lifecycle_restore_clearance` and
+  `workspace_lifecycle_eligibility`.
+
+A **partial migration** (V22 applied, V23 not) is **roll forward only**:
+complete V23 with the same candidate. The deletion timer is installed only
+after T5 passes. Post-MD1 grant hardening adds
+`REVOKE ALL ON account_deletion FROM <api role>` to the V22 revoke list.
 
 ### The API environment contract (`TESTINBOX_ACCOUNTS_*`)
 
@@ -785,7 +832,13 @@ on the production host and its recreated dedicated data filesystem:
 | `enablementEligible`, `ineligibilityReasons` | `true` and `[]` only when every row above is complete |
 
 E5, E6 and E9–E11 need the application under an enforcing mode on the `v2`
-uploader. Before this record exists the only application-supported way to
+uploader. **They must run on an enforcing lab instance on the FINAL
+production filesystem**, with its own database, and the filesystem must not
+be reformatted afterwards: the record's `filesystem.uuid` must equal the
+`filesystem.uuid` in gate F's evidence on production, or gate F blocks. Ops'
+`qualification-check` tool, which captures the MinIO runtime configuration and
+feeds `--qualification-valid-metric`, **does not exist yet**. It is an Ops
+prerequisite of the record. Before this record exists the only application-supported way to
 run an enforcing mode is the isolated `lab` environment with a lab-only
 record (issue #102), which may not name the production domain or a
 production-named host; how those experiments are run against the production
@@ -806,7 +859,10 @@ invalidation rule).
 **The deployment gate under `ALL`.** Run `npm test` (deploy/synthetic) with
 `TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED` set to the deployed mode (`OFF` is
 the default when unset); `storage.test.mjs` fails if the workspace footprint
-report says `enforced` other than the declared mode. The activation script's
+report says `enforced` other than the declared mode. Ops' `synthetic.sh` should export
+`TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED` from the deployment's own
+`TESTINBOX_STORAGE_ENFORCEMENT`, so that the two cannot drift. It should also
+re-run after `storage-budget reserve`. The activation script's
 gate G names `storage-budget check` as the cohort gate. Under `ALL` it is
 DEFERRED (overall `ACTIVATION DEFERRED`, exit 3) until it is given
 `--cohort-check-output` and `--cohort-pool-file`, and then PASSes only when the
@@ -966,9 +1022,11 @@ not, stop: the dump was not the accepted form and the restore is not
 quarantined. Then start an API node against it and confirm that a managed
 key of a **legacy** (owner/monitoring) workspace that existed at backup time
 is **refused** (`401`: no managed key authenticates while quarantined,
-TI-DELIVERY-002b). Run `account-lifecycle restore-reconcile`, confirm its
-`legacyRevokedKeys=` count, mint a fresh administrator with the bootstrap
-credential, and confirm that `message` and `inbox` are empty. A drill that
+TI-DELIVERY-002b; counted `QUARANTINED`, and `testinbox_restore_quarantined`
+is `1`). Run `account-lifecycle restore-reconcile`, confirm its
+`legacyRevokedKeys=` count, run `mint-synthetic-key.sh` and then mint
+`ops-admin` with the (rotated) bootstrap credential, and confirm that
+`message` and `inbox` are empty. A drill that
 checks only "restore exited 0" is not a drill.
 
 ### Credentials after a restore
@@ -980,8 +1038,10 @@ TI-DELIVERY-002b decision 2: no restored credential is trusted.
 | credential | where it lives | after a restore | Ops action |
 |---|---|---|---|
 | participant managed keys | `api_key` (verifier) | refused while quarantined; revoked by `restore-reconcile` | none; participants mint new keys after `resume` |
-| owner administrator, production synthetic, monitoring keys (managed) | `api_key` (verifier) | refused while quarantined; **revoked** by `restore-reconcile` (`legacyRevokedKeys=`) | mint a new administrator with the bootstrap credential, then new synthetic/monitoring keys; replace `TESTINBOX_API_KEY` / `TESTINBOX_ADMIN_API_KEY` in the synthetic runner; run the synthetics |
-| `TESTINBOX_BOOTSTRAP_API_KEY` | Ops secret store; the database holds only a `kind = BOOTSTRAP` verifier row | **not** rotated or revoked by reconciliation. It authenticates only when the presented token matches the configured value, and only while no usable managed administrator exists, so after reconciliation it is the break-glass that re-keys the owner | confirm it is configured **before** reconciling (without it, the owner workspace has no way back into key management). Rotate it (change the value, restart the API) if the incident could have exposed it, then retire it again by minting the administrator |
+| owner `ops-admin` and other owner keys (managed) | `api_key` (verifier) | refused while quarantined (`QUARANTINED`); **revoked** by `restore-reconcile` (`legacyRevokedKeys=`) | mint `ops-admin` with the bootstrap credential **after** the synthetic key (that mint closes the bootstrap window), then re-issue the other owner keys with it |
+| production synthetic key (managed; `TESTINBOX_SYNTHETIC_API_KEY`, or the deploy-only key file `~deploy/.local/state/infinity-deploy/testinbox-synthetic.key`) | `api_key` (verifier) | refused while quarantined; **revoked** by `restore-reconcile` | shred the stale key file, then run `mint-synthetic-key.sh` while the bootstrap window is open; run `synthetic.sh` |
+| monitoring | the management port, not a managed key | unaffected | none |
+| `TESTINBOX_BOOTSTRAP_API_KEY` | Ops secret store (`.env.testinbox`, escrowed off-host); the database holds only a `kind = BOOTSTRAP` verifier row | **not** quarantine-gated, rotated or revoked by reconciliation. It authenticates when the presented token matches the configured value and no usable managed administrator exists; after reconciliation it is the break-glass that re-keys the owner | **rotate it in every restore** (new value, restart the API) **before** the API serves the restored database. Without one the owner workspace has no way back into key management. It retires itself again when `ops-admin` is minted; `TestInboxBootstrapKeyUsed` fires for the two mints |
 | browser sessions, sign-in codes, OAuth state | never backed up | nothing to revive | none |
 | `TESTINBOX_DB_*`, `TESTINBOX_S3_*`, `TESTINBOX_ACCOUNTS_EMAIL_VERIFICATION_KEY_BASE64`, `TESTINBOX_ACCOUNTS_OAUTH_STATE_KEY_BASE64`, `TESTINBOX_ACCOUNTS_EMAIL_SMTP_*`, OAuth client secrets, `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`, TLS, `GITLAB_TRIGGER_TOKEN` | Ops secret store / providers; never in the database | untouched by a database restore, neither revived nor rotated | rotate per the table below **if the restore follows a compromise**; otherwise nothing |
 | `TI_LIFECYCLE_*` operator credentials | Ops `0600` env file; a database role | the role and its password live in the cluster, not the dump | verify the role still holds the operator authority after the restore |
