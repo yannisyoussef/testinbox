@@ -1878,6 +1878,11 @@ Until a re-issued record carries these, the bounds are planning values.
   below level 1 stamps the monotone `storage_containment_watermark`.
 - `DeploymentSafety` refuses inconsistent declarations, refuses I-C
   violations, and refuses `ALL` in production.
+  > **Amended 2026-10-30 by owner decision (TI-DELIVERY-002b):** the
+  > production `ALL` refusal is now conditional on the existing
+  > qualification, capacity, node, observation and cohort-reservation
+  > requirements; `TENANT_LIMITS` stays refused. See "Amendment note
+  > (2026-10-30, TI-DELIVERY-002b)" below.
 - The half-open rule for an ambiguous upload is amended on 2026-10-19
   (issue #102): see "Amendments to this ADR (effective 2026-10-19)".
 
@@ -1935,7 +1940,14 @@ artifact must contain it (gate E). E1–E11 must be recorded as PASS.
 ### A2.7 Production and public activation restrictions
 
 `ALL` is refused in production by `DeploymentSafety`, and so is
-`TENANT_LIMITS` (it never contains the filesystem, §A2.5). It may not carry
+`TENANT_LIMITS` (it never contains the filesystem, §A2.5).
+
+> **Amended 2026-10-30 by owner decision (TI-DELIVERY-002b):** production
+> `ALL` is permitted only when the existing qualification, capacity, node,
+> observation and cohort-reservation requirements are satisfied (ADR-037
+> decided (A) and (B) for the bounded beta); there is no unchecked override,
+> and `TENANT_LIMITS` stays refused. See "Amendment note (2026-10-30,
+> TI-DELIVERY-002b)" below. It may not carry
 traffic beyond the synthetic suite until the owner has decided and
 implemented both of the following, as separate scoped decisions
 (`docs/security/storage-public-boundary-decisions.md`):
@@ -1992,8 +2004,15 @@ match, is unchanged and mandatory.
 
 ## Amendment note (2026-10-30, TI-DELIVERY-002b): the production `ALL` refusal becomes conditional
 
-Recorded with the code change; the consolidated TI-DELIVERY-002 release
-review accepts or rejects it. It changes what §A2.3 ("`DeploymentSafety` …
+**Authority: owner decision, TI-DELIVERY-002b instruction (2026-10-30)**,
+quoted exactly:
+
+> "Prepare the smallest reviewed change permitting production ALL enforcement only when the existing qualification, capacity, node, observation and cohort-reservation requirements are satisfied. Keep TENANT_LIMITS refused unless separately justified and authorized. Do not replace the production refusal with an unchecked override."
+
+This note implements that decision; it is not a reinterpretation of the
+earlier text, which said production `ALL` is refused, and the dated notes at
+§A2.3 and §A2.7 point here. The consolidated TI-DELIVERY-002 release review
+reviews the implementation. It changes what §A2.3 ("`DeploymentSafety` …
 refuses `ALL` in production") and §A2.7 state about **how** the refusal is
 enforced, not **whether** production may run `ALL` today: no shipped
 record satisfies it, so production still cannot start `ALL`.

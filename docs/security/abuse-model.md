@@ -183,7 +183,12 @@
   learn from its own `SERVICE_CAPACITY` record whether a foreign address
   preceding its own in an envelope exists. One of the contract's mitigations is
   mandatory before `ALL` carries real traffic; until then `DeploymentSafety`
-  refuses `ALL` in production.
+  refuses `ALL` in production. *(Amended 2026-10-30 by owner decision,
+  TI-DELIVERY-002b: ADR-037 implements the full-envelope pricing mitigation for
+  the bounded beta, and production `ALL` now starts only when the existing
+  qualification, capacity, node, observation and cohort-reservation
+  requirements are satisfied; see ADR-035, "Amendment note (2026-10-30,
+  TI-DELIVERY-002b)".)*
 - **Enumeration via limit responses**: none. Rate and quota enforcement never
   changes an SMTP reply — a syntactically valid recipient always receives the
   uniform `250` of ADR-025, whether its workspace is over quota, over its

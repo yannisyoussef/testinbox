@@ -29,10 +29,13 @@ condition is Ops evidence that does not exist yet:
    pool, observations, nodes and role separation stay runtime gates
    (admission answers `CAPACITY_UNAVAILABLE`). `TENANT_LIMITS` stays refused
    in production for good, `OFF` and staging are unchanged. ADR-035 carries a
-   dated amendment note (2026-10-30) recording this; ADR-037 already ties the
-   refusal to "every explicit mitigation and required qualification record"
-   and does not mandate an unconditional refusal, so there is no
-   contradiction. Tests: `ProductionAllSafetyTest` (17 cases),
+   dated amendment note (2026-10-30) recording this, whose authority is the
+   owner's TI-DELIVERY-002b decision (2026-10-30) to permit production `ALL`
+   only when the existing qualification, capacity, node, observation and
+   cohort-reservation requirements are satisfied, with no unchecked override;
+   ADR-035 §A2.3, §A2.7 and `storage-public-boundary-decisions.md` carry dated
+   notes pointing to it (the earlier text is amended by that decision, not
+   reinterpreted). Tests: `ProductionAllSafetyTest` (17 cases),
    `StorageEnforcementSafetyTest` — "ALL is refused in production without a
    production-qualified record, and allowed elsewhere",
    `DeploymentSafetyCheckTest` — "production ALL with every declaration and
