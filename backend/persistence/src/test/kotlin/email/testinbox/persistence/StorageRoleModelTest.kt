@@ -513,6 +513,49 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `under psql the operator admission pause refuses the API role and works for the owner`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+        db.login(api)
+        db.login(ingestion)
+        db.login(monitor)
+        db.psqlReference(api, ingestion, monitor).exitCode shouldBe 0
+
+        fun control(source: javax.sql.DataSource): email.testinbox.application.usecase.ControlBetaAdmissions {
+            val template =
+                org.springframework.transaction.support.TransactionTemplate(
+                    org.springframework.jdbc.datasource
+                        .DataSourceTransactionManager(source),
+                )
+            val runner =
+                object : email.testinbox.application.port.TransactionRunner {
+                    override fun <T> required(block: () -> T): T = checkNotNull(template.execute { block() })
+                }
+            return email.testinbox.application.usecase
+                .ControlBetaAdmissions(JdbcBetaAdmissionControls(JdbcClient.create(source)), runner)
+        }
+
+        fun open(): Boolean =
+            db.jdbc
+                .sql("SELECT admissions_open FROM beta_cohort")
+                .query(Boolean::class.javaObjectType)
+                .single()
+        val asApi = control(db.roleSource(api))
+        val asOwner = control(db.dataSource)
+        asApi.status().admissionsOpen shouldBe false // status is a read; the runtime role may observe it
+        failure { asApi.resume() } shouldContain "not authorized"
+        open() shouldBe false
+        asOwner.resume().after.admissionsOpen shouldBe true
+        failure { asApi.pause() } shouldContain "not authorized"
+        open() shouldBe true
+        asOwner.pause().after.admissionsOpen shouldBe false
+        open() shouldBe false
+        db.jdbc
+            .sql("SELECT capacity_ready FROM beta_cohort")
+            .query(Boolean::class.javaObjectType)
+            .single() shouldBe false
+    }
+
+    @Test
     fun `under psql the API locks the cohort row but can never open admissions or ready capacity`() {
         val db = LedgerTestDatabase.create(postgres, admin)
         db.login(api)

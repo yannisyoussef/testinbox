@@ -75,7 +75,11 @@ resource fairness, suspension of machine credentials/ingestion or deletion
 recovery. Those remain explicit M3/M4/M5/M6 work. A source identifier must come
 from the verified deployment peer; do not trust arbitrary forwarded headers.
 When using a BFF, shared-peer limits aggregate its traffic unless a separately
-reviewed trusted-source mechanism is configured.
+reviewed trusted-source mechanism is configured. TI-DELIVERY-002 adds that
+mechanism: an optional shared secret lets the website proxy name the client
+address. IPv6 addresses are grouped by /64. Without the secret, every request
+falls back to the shared peer budget. See
+[ADMISSION-AND-SOURCE.md](../ti-delivery-002/ADMISSION-AND-SOURCE.md).
 
 ## M3d — HTTP and delivery adapter
 
@@ -110,6 +114,7 @@ These describe setup requirements, not instructions to enable them now.
 |---|---|
 | `TESTINBOX_ACCOUNTS_ENABLED` | Human boundary, false |
 | `TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN` | Explicit canonical HTTPS origin, empty |
+| `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET` | Optional website-proxy secret for per-client source budgets (TI-DELIVERY-002), empty |
 | `TESTINBOX_ACCOUNTS_EMAIL_ENABLED` | Email sign-in, false |
 | `TESTINBOX_ACCOUNTS_EMAIL_VERIFICATION_KEY_BASE64` | Base64 of 32 random secret bytes, empty |
 | `TESTINBOX_ACCOUNTS_EMAIL_SMTP_HOST` | Approved transactional provider hostname, empty |

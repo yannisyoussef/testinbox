@@ -114,4 +114,48 @@ class HumanAccountEnvironmentTest {
             policy?.maximum shouldBe 100
         }
     }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableConfigurationProperties(HumanAccountProperties::class)
+    class ClientSourceOnly {
+        @org.springframework.context.annotation.Bean
+        fun registry(): io.micrometer.core.instrument.MeterRegistry =
+            io.micrometer.core.instrument.simple
+                .SimpleMeterRegistry()
+
+        @org.springframework.context.annotation.Bean
+        fun source(
+            properties: HumanAccountProperties,
+            registry: io.micrometer.core.instrument.MeterRegistry,
+        ): AccountClientSource = HumanAccountWiring().accountClientSource(properties, registry)
+    }
+
+    private fun clientSource(values: Map<String, Any>): ApplicationContextRunner =
+        ApplicationContextRunner().withUserConfiguration(ClientSourceOnly::class.java).withInitializer { context ->
+            val sources = context.environment.propertySources
+            sources.addFirst(SystemEnvironmentPropertySource("account-test-env", values))
+            YamlPropertySourceLoader().load("shipped-api-yaml", ClassPathResource("application.yaml")).forEach(sources::addLast)
+        }
+
+    @Test
+    fun `the client address secret is optional and a short or weak one refuses startup without echoing it`() {
+        clientSource(emptyMap()).run { context ->
+            context.startupFailure shouldBe null
+            context.getBean(HumanAccountProperties::class.java).clientAddressSecret shouldBe ""
+        }
+        val strong = "k7Qx2Lp9Vw4Zr8Tn3Hs6Jd1Fg5Mb0Yc-_e"
+        clientSource(mapOf("TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET" to strong)).run { context ->
+            context.startupFailure shouldBe null
+            context.getBean(HumanAccountProperties::class.java).clientAddressSecret shouldBe strong
+            context.getBean(HumanAccountProperties::class.java).toString().contains(strong) shouldBe false
+        }
+        listOf("too-short-for-a-secret", "x".repeat(40)).forEach { weak ->
+            clientSource(mapOf("TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET" to weak)).run { context ->
+                val failure = checkNotNull(context.startupFailure)
+                val messages = generateSequence<Throwable>(failure) { it.cause }.joinToString(" | ") { it.message.orEmpty() }
+                messages.contains("testinbox.accounts.client-address-secret") shouldBe true
+                messages.contains(weak) shouldBe false
+            }
+        }
+    }
 }

@@ -85,7 +85,11 @@ admissions, changes enforcement or clears a latch. `check` is read-only.
 After reservation, the existing capacity/admission switch still needs the
 separate release authorization. Even with both flags manually true, the
 admission use case requires the live approved, matching ALL-mode pool.
-Existing participants can log in while new admissions are paused.
+Existing participants can log in while new admissions are paused. The
+operator pause is `java -jar api.jar admission status|pause|resume`; see
+[ADMISSION-AND-SOURCE.md](../delivery/ti-delivery-002/ADMISSION-AND-SOURCE.md).
+A pause alone does not permit `storage-budget` changes, which still require
+`capacity_ready` closed as well.
 
 ## Upgrade, restore and rollback boundaries
 
