@@ -17,6 +17,18 @@ enum class QuotaDimension {
     STORED_BYTES,
     STORED_FOOTPRINT,
     CONCURRENT_WAITS,
+
+    /** Participant workspaces only: managed keys neither revoked nor expired ([ParticipantKeyInventory]). */
+    API_KEYS_USABLE,
+
+    /** Participant workspaces only: every managed key row ever minted, retained as audit history. */
+    API_KEYS_RETAINED,
+    ;
+
+    companion object {
+        /** Dimensions bounded by a fixed participant allocation, not by the configurable [QuotaPolicy]. */
+        val FIXED_BOUNDS: Set<QuotaDimension> = setOf(STORED_FOOTPRINT, API_KEYS_USABLE, API_KEYS_RETAINED)
+    }
 }
 
 /**
@@ -41,6 +53,7 @@ data class QuotaPolicy(
             QuotaDimension.STORED_BYTES -> maxStoredBytes
             QuotaDimension.CONCURRENT_WAITS -> maxConcurrentWaits
             QuotaDimension.STORED_FOOTPRINT -> error("footprint limits require a workspace storage share")
+            QuotaDimension.API_KEYS_USABLE, QuotaDimension.API_KEYS_RETAINED -> error("key inventory is a fixed participant bound")
         }
 
     /**
@@ -74,3 +87,27 @@ data class QuotaExceeded(
     val limit: Long,
     val current: Long,
 )
+
+/**
+ * The bounded-beta key inventory of a participant workspace
+ * (ACCOUNT-LIFECYCLE.md "Participant key inventory"): at most [MAX_USABLE]
+ * usable managed keys, and [MAX_RETAINED] managed key rows in all, covering
+ * keys minted by a human owner and by machine keys alike. A revocation or an
+ * expiry frees usable capacity, never retained audit history. Owner and
+ * monitoring (legacy) workspaces are not bounded by it.
+ */
+object ParticipantKeyInventory {
+    const val MAX_USABLE: Long = 20
+    const val MAX_RETAINED: Long = 1000
+
+    /** Null when one more key fits; otherwise the narrowest exhausted dimension. */
+    fun refusal(
+        usable: Long,
+        retained: Long,
+    ): QuotaExceeded? =
+        when {
+            usable >= MAX_USABLE -> QuotaExceeded(QuotaDimension.API_KEYS_USABLE, MAX_USABLE, usable)
+            retained >= MAX_RETAINED -> QuotaExceeded(QuotaDimension.API_KEYS_RETAINED, MAX_RETAINED, retained)
+            else -> null
+        }
+}

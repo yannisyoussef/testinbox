@@ -83,7 +83,10 @@ relaxed-binding override of the underlying property is refused).
 ## Readiness, and one setting the application checks live
 
 Same probes and same components as staging
-([staging.md](staging.md#health-and-readiness)), plus **`dbSession`** on the
+([staging.md](staging.md#health-and-readiness)), plus
+**`lifecyclePrivileges`** on both deployables (V22: the role can read the
+account-lifecycle view, and on the API the restore clearance; see the V22
+deployment order below), plus **`dbSession`** on the
 API: it reads `SHOW idle_in_transaction_session_timeout` on every probe. In
 production a disabled value (`0`, PostgreSQL's default) takes the node
 **OUT_OF_SERVICE** until Ops sets it; elsewhere it is reported and the node
@@ -392,6 +395,303 @@ absent or inaccessible bucket is a readiness failure
 which the storage test suite proves against MinIO. Local development and the
 rehearsal keep automatic creation because the store there is theirs.
 
+## Human accounts and the controlled beta (ADR-036, ADR-037)
+
+> **Amended by TI-DELIVERY-001/002 (ADR-036/ADR-037), 2026-10-30.** This
+> document used to assume "no self-service signup": workspaces were
+> operator-created and the only human was the owner. The accepted design is now
+> native self-service sign-in with a bounded, first-come beta of at most thirty
+> admitted participant accounts. The code ships in the artifact production runs
+> (d17044d, #116) and is **dormant**: `TESTINBOX_ACCOUNTS_ENABLED` is off,
+> `beta_cohort` has `admissions_open = capacity_ready = false`, and storage
+> enforcement is `OFF`. Nothing in this section authorizes turning any of it on;
+> that is the consolidated release decision of TI-DELIVERY-002.
+
+### What the design is
+
+- **Identity lives in the existing API and PostgreSQL** (ADR-036 §1). Google is
+  identified by its validated issuer and immutable subject, GitHub by its
+  numeric user id, email by an eight-digit code (ten minutes, five attempts,
+  bound to the requesting browser). A provider's contact address is never an
+  identity and never links two accounts.
+- **The browser talks to the public site, not to the API host.** The GitLab
+  `infinity/testinbox-web` site serves `/account/*` same-origin and forwards it
+  server-side to the API (its `TESTINBOX_API_URL`). The application hostname
+  routes only `/v1` to the API; there, `/account` reaches the Inspector, not the
+  API. The proxy strips `Authorization`, forwarding headers and unrelated
+  cookies, so until TI-DELIVERY-002's trusted client address (below) is
+  configured, the API sees the site container as the source of every sign-in.
+- **Authentication is not admission.** A signed-in, unadmitted account can read
+  its own status and join or leave the waitlist; it cannot create inboxes,
+  receive credentials or reach a workspace. Admission is one transaction
+  (`AdmitBetaParticipant`, the sole workspace provisioner): lock the cohort,
+  require `admissions_open`, require `capacity_ready` **and** the live
+  storage-pool check, claim one of thirty numbered places, create the workspace,
+  project and participant share marker. The console requests admission when an
+  authenticated, unadmitted account opens it, so places go first-come.
+- **Sessions** are opaque 32-byte values in a `__Host-ti_session` cookie
+  (Secure, HttpOnly, SameSite=Lax, Path=/, no Domain); only a SHA-256 verifier
+  is stored. Seven days absolute, 24 hours idle, at most five per account.
+  Mutations need the exact public `Origin` and a session-bound CSRF token.
+  Every account response is `Cache-Control: no-store`; the boundary enables no
+  CORS.
+- **The owner/monitoring workspaces are not participants.** They hold no seat;
+  under an enforcing pool they need explicit finite legacy shares
+  ([cohort storage](cohort-storage.md)).
+
+### Admission controls: three switches, from coarsest to finest
+
+| control | where it lives | when off / false |
+|---|---|---|
+| `TESTINBOX_ACCOUNTS_ENABLED` (API) | API environment | every `/account/*` route, including the human product aliases, answers `503` (`accounts-unavailable`) with no cookie and no side effect. `/v1`, ingestion and the synthetics are unaffected. This is the kill switch: the console stops working for every participant until it is turned back on. It revokes nothing — stored sessions resume when it returns, and participants' SDK keys keep working throughout |
+| `TESTINBOX_ACCOUNTS_ENABLED` (site) | site environment | the site's proxy answers `503` "Sign-in is unavailable" without calling the API, and the sign-in pages show the invitation-only copy. It must agree with the API's flag |
+| `beta_cohort.admissions_open` | database row `beta-30` | sign-in still works; existing participants keep their workspaces; a new admission answers `CLOSED` and the console offers the waitlist. This is the **admission pause** |
+| `beta_cohort.capacity_ready` | database row `beta-30` | a new admission answers `CAPACITY_UNAVAILABLE` |
+| the approved storage pool | `storage_cohort_plan` (V21) + every node's effective declarations | a new admission answers `CAPACITY_UNAVAILABLE` even with both flags true: `capacity_ready` is necessary, never sufficient. The live check requires an approved, matching, non-overcommitted pool reserving all thirty shares, enforced by `ALL`-mode nodes — see [STORAGE-READINESS](../delivery/ti-delivery-002/STORAGE-READINESS.md) for why that is not yet reachable in production |
+
+The thirty-place cap is a database constraint (`beta_admission.place BETWEEN 1
+AND 30`). No configuration raises it. A suspended or deleted account does not
+free its place. `beta_cohort` is retained by backups (`deploy/backup/scope.txt`),
+so a restore brings back whatever the flags were at dump time; the pool approval
+is not retained, so a restored database answers `CAPACITY_UNAVAILABLE` until
+the pool is reserved again.
+
+**Operator controls added by TI-DELIVERY-002.** ADR-036 §5 requires an
+operator control to pause admissions and to suspend or revoke an account. These
+are delivered by TI-DELIVERY-002 streams A and L as subcommands of the API
+artifact (no HTTP endpoint, no public field).
+
+**How to run an operator subcommand.** There is no `api.jar` on the host. The
+API image's entrypoint is Spring Boot's launcher
+(`java -cp . org.springframework.boot.loader.launch.JarLauncher`, see
+`deploy/docker/backend.Dockerfile`), and arguments after the image reference
+are passed straight to it. Run the subcommand as a one-off container of the
+**same reviewed API digest**, on the network where PostgreSQL is reachable,
+with its credentials in an env file:
+
+```
+docker run --rm --network <data network> --env-file /root/testinbox-ops/<command>.env \
+  <registry>/testinbox-api@sha256:<api digest> account-lifecycle status <account-uuid>
+# likewise: … <digest> admission status|pause|resume --open-beta
+#           … -v /root/testinbox-ops/pool.json:/run/pool.json:ro <digest> storage-budget check /run/pool.json
+```
+
+- The env file is mode `0600`, owned by the operator, and holds only the
+  `TI_ADMISSION_*`, `TI_LIFECYCLE_*` or `TI_BUDGET_*` variables (plus, for
+  `account-lifecycle`, optionally the API's `TESTINBOX_EXACT_COOLDOWN`).
+  Never put a password on the command line (`-e NAME=value`, a URL with
+  credentials): argv is visible in `ps` and shell history.
+- Never `docker compose run api …`: that inherits the API service's
+  definition, including its Traefik labels and runtime environment.
+- The subcommand is dispatched before Spring: no listener, scheduler, login
+  provider or migration starts, and the container exits with the command.
+
+The controls:
+
+- admission pause / resume —
+  `admission status|pause|resume --open-beta`, credentials only from
+  `TI_ADMISSION_JDBC_URL`, `TI_ADMISSION_USER`, `TI_ADMISSION_PASSWORD` (no
+  defaults; a URL carrying credentials is refused). It runs before Spring, so
+  no listener or scheduler starts, and it rechecks the role's UPDATE privilege
+  on `beta_cohort.admissions_open` inside the transaction — the runtime API
+  role is refused. Pausing stops new admissions only: participants, sessions,
+  keys, inboxes, ingestion and the waitlist continue, and a paused applicant
+  gets the same CLOSED outcome as a never-opened cohort. It never touches
+  `capacity_ready`. **Never run `resume` before the release decision:** it
+  sets `admissions_open=true` even on a cohort that was never opened, which
+  breaks Ops' T5 backstop (`admissions_open|capacity_ready = f|f`). The
+  command therefore refuses `resume` unless it is given the explicit
+  `--open-beta` flag. Details: [admission and source](../delivery/ti-delivery-002/ADMISSION-AND-SOURCE.md);
+- account lifecycle —
+  `account-lifecycle suspend|resume|delete|status|erase-identity <account-uuid>`
+  and `account-lifecycle restore-reconcile`, credentials only from
+  `TI_LIFECYCLE_JDBC_URL`, `TI_LIFECYCLE_USER`, `TI_LIFECYCLE_PASSWORD` (the
+  owner of `human_account` or a member of it; the runtime API role is refused
+  by the use case and by V22's row triggers). Exit codes: 0 done, 1 refused
+  (nothing changed), 2 usage, 3 pending (re-run later), 4 failed with the
+  outcome unknown (a timeout or lost connection: run `status` first). Every
+  operator transaction is bounded (5 s lock wait, 10 s per statement, 10 s
+  idle), so a stalled operator never holds the T1 fence. Suspension and deletion permanently delete the
+  account's sessions and revoke every managed key of its workspace; resume
+  restores the state only, so the person signs in again and issues new keys.
+  Ingestion treats the workspace as inactive from the T1 fence on (uniform
+  `250`, nothing persisted); the command reports `DRAINING` (exit 3) until
+  every reservation taken before the fence is settled. Deletion waits for the
+  drain, deletes the inboxes through the existing deleter and keeps the spent
+  place, the participant marker, pending-cleanup charges and revoked-key
+  history; identity erasure is the separate `erase-identity` step. Keep every
+  `event=…` line it prints in a lifecycle log outside the database. After a
+  restore, `restore-reconcile` does NOT read that log: it suspends and
+  revokes every restored participant, and the operator then replays the log
+  by hand (below). Procedure:
+  [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md).
+
+**After a restore every participant is quarantined.** The clearance row of
+`lifecycle_restore_clearance` is never in a backup (`-`), so a restored
+database treats every participant workspace as inactive and every human
+account as suspended until `account-lifecycle restore-reconcile` closes
+admissions, suspends the restored participant accounts, revokes all
+participant keys and records the clearance. Reconciliation only lifts the
+quarantine; the operator then replays, by hand, every lifecycle event in the
+external log that is newer than the backup:
+
+1. **Before sign-in or registration is re-enabled — mandatory:** replay every
+   `delete`, `erase-identity` and `suspend` event, for participant **and
+   non-participant** accounts alike. A non-participant account deleted after
+   the backup is not suspended by reconciliation (it has no workspace), so
+   without the replay it could sign in again once the boundary reopens.
+2. Then `resume` only the participants the log shows active at the incident;
+   they sign in again and mint new keys.
+
+
+### Deploying the account-lifecycle release (V22): required order
+
+1. Stage the candidate `deploy/backup/scope.txt` and
+   `scripts/check-backup-scope.sh` (they classify `lifecycle_restore_clearance`
+   and accept the V22 view).
+2. Run the migrator (V22).
+3. Re-run `deploy/database/roles.reference.sql` as the schema owner. Both
+   roles need it: ingestion gets `SELECT` on `workspace_lifecycle_eligibility`,
+   and the API's `ON ALL TABLES` grant is one-shot, so it does not cover the
+   new view and table until the file is re-run.
+4. Deploy the API, then ingestion, then web, then run the synthetics.
+
+Both deployables report **NOT READY** (`lifecyclePrivileges`
+`OUT_OF_SERVICE`, reason `ELIGIBILITY_VIEW_UNREADABLE` or
+`RESTORE_CLEARANCE_UNREADABLE`, and one log line on each change) when their
+role cannot read what they need, instead of serving with every participant
+key refused or every event answered `451`. Staging connects as the table
+owner and always passes. The V22 authority checks and triggers add nothing
+there either: the owner IS the operator authority.
+
+### The API environment contract (`TESTINBOX_ACCOUNTS_*`)
+
+Every name below is bound in `backend/api/src/main/resources/application.yaml`
+(`HumanAccountEnvironmentTest` binds the shipped YAML). All are **API-only**:
+never give them to ingestion or the migrator, never to the site except where
+the site column says so.
+
+| variable | default | required value when enabled | secret |
+|---|---|---|---|
+| `TESTINBOX_ACCOUNTS_ENABLED` | `false` | `true` only by the release decision | no |
+| `TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN` | empty | the site's canonical origin, exactly `https://<host>` — lowercase host, no path, no trailing slash, no query, no userinfo, no explicit `:443`. Never derived from `Host` or forwarded headers. Same value on the site | no |
+| `TESTINBOX_ACCOUNTS_WAITLIST_RETENTION` | `30d` | 1–90 days; the owner's retention decision | no |
+| `TESTINBOX_ACCOUNTS_WAITLIST_MAXIMUM` | `1000` | 1–1000 entries | no |
+| `TESTINBOX_ACCOUNTS_EMAIL_ENABLED` | `false` | `true` to offer email sign-in | no |
+| `TESTINBOX_ACCOUNTS_EMAIL_VERIFICATION_KEY_BASE64` | empty | base64 of exactly 32 random bytes; keys the code, browser and source verifiers | **yes** |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_HOST` | empty | the approved transactional provider's hostname | no |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_PORT` | `587` | `587` — nothing else is accepted | no |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_USERNAME` | empty | submission credential | **yes** |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_PASSWORD` | empty | submission credential | **yes** |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_FROM` | empty | the approved, authenticated sending address | no |
+| `TESTINBOX_ACCOUNTS_OAUTH_STATE_KEY_BASE64` | empty | base64 of exactly 32 random bytes; encrypts the PKCE/nonce state. Rotating it invalidates sign-ins in progress | **yes** |
+| `TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_ENABLED` | `false` | `true` to offer Google | no |
+| `TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_CLIENT_ID` / `_CLIENT_SECRET` | empty | the Google OAuth client | secret: **yes** |
+| `TESTINBOX_ACCOUNTS_OAUTH_GITHUB_ENABLED` | `false` | `true` to offer GitHub | no |
+| `TESTINBOX_ACCOUNTS_OAUTH_GITHUB_CLIENT_ID` / `_CLIENT_SECRET` | empty | the GitHub OAuth app | secret: **yes** |
+| `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET` | empty | **added by TI-DELIVERY-002 (stream A).** Shared with the site; lets the API trust a client address the site attests, so visitors stop sharing the site container's sign-in budget. 32–512 bytes of printable ASCII, no whitespace, at least 12 distinct characters (`openssl rand -hex 32`). **Unset:** one shared sign-in budget for every visitor. **Set but invalid:** `/account` closes like an invalid origin (`/v1` keeps serving) and one error names the setting. **Mismatched with the site:** each request falls back to the shared budget (`testinbox_account_client_address_total{outcome="unauthenticated"}`) | **yes** |
+
+The site's side of the contract (its own repository is authoritative):
+`TESTINBOX_ACCOUNTS_ENABLED`, `TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN` (same value as
+the API), `TESTINBOX_API_URL` (server-side API origin, never exposed to the
+browser), and — **added by TI-DELIVERY-002 (stream W)** —
+`TESTINBOX_TRUSTED_PROXY_CIDRS` (the addresses of the edge hops whose
+forwarded client address the site may believe) and the same
+`TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`, plus `TESTINBOX_TRUSTED_PROXY_HOPS`
+(1 behind Cloudflare → Traefik). `TESTINBOX_TRUSTED_PROXY_CIDRS` is a
+comma-separated list of IPv4/IPv6 CIDRs, each with a prefix length:
+**Cloudflare's published ranges only**, kept in sync with Ops'
+`EDGE_TRUSTED_IPS`. The Traefik → site hop is the site's TCP peer and never
+appears in `X-Forwarded-For`, so the Traefik/docker network must NOT be
+listed. Traefik's entrypoint trusts forwarded headers only from
+`EDGE_TRUSTED_IPS`; the public site router has no Cloudflare-only
+middleware, so a direct, non-Cloudflare request does reach the site, but
+with `X-Forwarded-For` holding only its own peer address. That entry is not
+in a trusted range, so the site sends no client address and the visitor
+falls back to the shared budget (safe). **Ops action before registration:**
+add the `testinbox-cf-only` middleware to the site router. The site skips exactly `HOPS`
+rightmost `X-Forwarded-For` entries, each of which must be trusted, and sends
+the next one as `X-TestInbox-Client-Address` with `X-TestInbox-Proxy-Secret`.
+If a hop is untrusted, the candidate is malformed or itself trusted, or any of
+the three settings is missing or invalid, it sends neither header and the API
+uses the shared budget ([abuse model](../security/abuse-model.md)).
+
+**Misconfiguration fails closed, not loud.** `DeploymentSafety` does not refuse
+to start over account settings: a production process must keep serving `/v1`
+whatever the human boundary's state. An invalid public origin closes every
+account route (`503`); an incomplete email configuration (bad key length,
+wrong port, missing credential or sender) closes email sign-in only; an
+incomplete provider closes that provider only, and it silently disappears from
+`GET /account/methods`. Watch:
+
+- `testinbox_email_login_configured` (`1` = syntactically ready, not proof of
+  delivery);
+- `testinbox_provider_login_configured{provider="google|github"}`;
+- `GET /account/methods` through the site;
+- `npm run test:accounts`, which compares the advertised methods with the ones
+  the environment declares (below).
+
+### OAuth callbacks
+
+Register exactly these redirect URIs with each provider, built from
+`TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN` — never the application hostname, never a
+wildcard:
+
+```
+https://<public origin>/account/oauth/callback/google
+https://<public origin>/account/oauth/callback/github
+```
+
+Scopes are fixed in code: Google `openid email`, GitHub `read:user user:email`.
+Both use the authorization-code flow with PKCE S256; Google also carries a
+nonce. The callback query carries a one-time `code` and `state`: the site and
+every edge hop in front of it must not retain callback query strings in access
+logs (an Ops acceptance item).
+
+### Sign-in email: the sending identity
+
+TestInbox is inbound-only for tenants; the sign-in code is the only mail it
+originates. It goes through a **dedicated transactional submission service**,
+never the inbound mail edge and never the forwarding aliases:
+
+- port 587 with mandatory STARTTLS, TLS 1.2/1.3, server hostname verification,
+  SMTP AUTH, five-second connect/read/write timeouts (`SmtpLoginDelivery`);
+- a fixed plain-text body: the code, its ten-minute lifetime, a do-not-share
+  line. No link, no tracking, no user-supplied text;
+- the `From` address must be one the provider is authorized to send for (SPF,
+  DKIM, DMARC alignment on its domain). The application only checks that the
+  address is well-formed: alignment and the provider's own sending budget are
+  Ops/owner evidence;
+- a failed delivery has the same public result as a sent one (no enumeration)
+  and increments `testinbox_email_login_total{outcome="delivery_failed"}`. Alert
+  on it; a successful HTTP response is not proof a code was sent.
+
+The sending budgets (global 200 per hour, 15 per source per 15 minutes, 3 per
+recipient per 15 minutes, a 60-second resend gap) are in
+[abuse-model.md](../security/abuse-model.md).
+
+### Secrets handling
+
+Every secret above goes into the Ops secret store and the API's environment
+only. Never into Git, an image, a build argument, a workflow output, the site's
+environment (except `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`), the ingestion
+or migrator environment, a chat or a ticket. The configuration classes redact
+their `toString`; `org.springframework.security.oauth2` and
+`org.springframework.web.client` log at `WARN` so token exchanges never reach a
+debug log; provider errors, codes, claims and tokens are never logged or put in
+a redirect. Rotation: change the value and restart the API. Rotating the email
+verification key invalidates outstanding codes; rotating the OAuth state key
+invalidates sign-ins in progress; neither touches sessions or API keys.
+
+### Storage prerequisites before the first admission
+
+Admission is closed by construction until the cohort storage pool is approved
+and enforced ([cohort-storage.md](cohort-storage.md), ADR-037). The full
+ordered procedure, what is already proven by tests and what only Ops can show
+is [STORAGE-READINESS](../delivery/ti-delivery-002/STORAGE-READINESS.md). Do
+not set `capacity_ready` as a substitute for it; the use case ignores it
+without the live pool.
+
 ## Promotion and handoff
 
 The full model is [ADR-034 §3](../adr/0034-production-platform-and-promotion.md).
@@ -499,13 +799,28 @@ row B is where that evidence lives — after the drill, `message`, `inbox` and
 backups and WAL archiving (`pg_basebackup`, continuous archiving) copy every
 row of every table by construction, have no table filter, and leave nothing
 for the gate to examine; they are not an option. The dump is produced with
-`pg_dump --exclude-table-data` for every `-` table (or `--table` for every
-`+` table), and object storage is excluded by the backup job's configuration,
-which row B requires Ops to show alongside a listing of the backup target.
+the full schema and `pg_dump --exclude-table-data` for every `-` table — the
+only accepted form — and object storage is excluded by the backup job's
+configuration, which row B requires Ops to show alongside a listing of the
+backup target. A `--table` dump of only the `+` tables is **not** accepted:
+it omits the DDL of every other table, including
+`lifecycle_restore_clearance`, so restoring it means re-running migrations,
+and V22 would then seed the restore clearance before the data loads,
+leaving the restored database unquarantined.
 
 | backed up | never |
 |---|---|
 | `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch`, `storage_clock_episode` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
+
+> **Amended by TI-DELIVERY-001 (ADR-036/ADR-037), recorded 2026-10-30.** The
+> table above is the TI-006 set. `deploy/backup/scope.txt` is authoritative and
+> now also retains the identity/admission control plane (`human_account`,
+> `human_identity`, `beta_cohort`, `beta_admission`, `participant_workspace`,
+> `storage_legacy_share`) and excludes the transient human-login, waitlist and
+> cohort-storage evidence tables. A restore therefore brings back accounts and
+> their admissions but no browser session, no pending code, no waitlist entry
+> and no pool approval; reconciling deletions and revocations made after the
+> dump is part of the TI-DELIVERY-002 lifecycle work (stream L).
 
 What that buys, stated plainly:
 
@@ -522,9 +837,14 @@ What that buys, stated plainly:
 
 **The restore drill** (Ops, required before dark deployment): restore the
 backup into a disposable database, run the *current* migrator (it must apply
-nothing), start an API node against it, authenticate with a managed key that
-existed at backup time, and confirm `message` and `inbox` are empty. A drill
-that checks only "restore exited 0" is not a drill.
+nothing). **Before any deployable starts**, run
+`SELECT count(*) FROM lifecycle_restore_clearance;` — it must be `0`; if it is
+not, stop: the dump was not the accepted form and the restore is not
+quarantined. Then start an API node against it, authenticate with a managed
+key of a **legacy** (owner/monitoring) workspace that existed at backup time
+(participant keys are refused while quarantined, by design), and confirm
+`message` and `inbox` are empty. A drill that checks only "restore exited 0"
+is not a drill.
 
 ### HUMAN DECISION REQUIRED
 
@@ -547,6 +867,10 @@ Not decided by this increment and not decidable by software:
 | production administrative credential (`api-keys:manage`) | Ops; **distinct** from the synthetic one, never on a runner | as above |
 | `GITLAB_TRIGGER_TOKEN` (production) | GitHub `production-handoff` environment; project-scoped in GitLab — the production ref's protection is what bounds it | rotate in GitLab, update the environment |
 | TLS / origin certificate | Ops, at the edge | not application-owned |
+| `TESTINBOX_ACCOUNTS_EMAIL_VERIFICATION_KEY_BASE64`, `TESTINBOX_ACCOUNTS_OAUTH_STATE_KEY_BASE64` | Ops; API only; 32 random bytes each, distinct | change and restart; invalidates codes / sign-ins in progress only ([accounts](#secrets-handling)) |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_USERNAME` / `_PASSWORD` | Ops; API only; the transactional provider's submission credential | rotate at the provider, then the API |
+| `TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_CLIENT_SECRET`, `TESTINBOX_ACCOUNTS_OAUTH_GITHUB_CLIENT_SECRET` | Ops; API only | rotate at the provider console, then the API |
+| `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET` (TI-DELIVERY-002) | Ops; API **and** site, the same value | set the new value on both and restart both; while they differ, sign-ins fall back to the shared budget (degraded, never spoofable) |
 
 Rules the repository enforces or proves: no secret in Git (gitleaks), none
 in an OCI label, build arg or layer (the Dockerfiles carry only source
@@ -626,6 +950,7 @@ each target. No public Postfix edge is required or exercised.
 | `npm run test:product` | on the host, with the administrative credential | credential lifecycle, idempotency |
 | `npm run test:identity` | on the host, management ports | both deployables run the approved commit and are ready; LISTEN live; DB session bound reported everywhere and, in production, **enforced and bounded** |
 | `npm run test:origin` | from outside | direct-origin isolation |
+| `npm run test:accounts` | anywhere that reaches the public site (TI-DELIVERY-002) | the account boundary answers exactly the state the environment declares: closed everywhere while `TESTINBOX_ACCOUNTS_ENABLED` is off (and the sign-in pages advertise no places); when on, the declared methods, private caching, generic refusals, Origin enforcement, OAuth redirect shape and refused non-addresses. Consumes no seat, sends no email, creates no account or session ([README](../../deploy/synthetic/README.md#account-boundary-testaccounts)) |
 
 ## Known limits of this contract
 
@@ -634,7 +959,19 @@ each target. No public Postfix edge is required or exercised.
   multi-node production.
 - A managed database must expose a session-mode endpoint; the pooled kind
   breaks LISTEN silently (ADR-030 capability 2).
-- Self-service signup invalidates the "workspaces are operator-created"
+- ~~Self-service signup invalidates the "workspaces are operator-created"
   assumption behind the idempotency-record bound (ADR-033) and changes the
-  backup-volume picture.
+  backup-volume picture.~~ **Resolved by ADR-036/ADR-037 (TI-DELIVERY-001),
+  recorded 2026-10-30.** Self-service sign-in exists (dormant), but workspace
+  creation stays bounded: at most thirty participant workspaces, one per
+  admitted account, created only by `AdmitBetaParticipant` under a database
+  constraint, plus the operator-created legacy ones. The ADR-033 flow bound
+  therefore scales by a fixed 30 + legacy workspaces, not by signups, and
+  ADR-027's "organization-level ceiling" is the cohort cap itself. The backup
+  now also retains `human_account`, `human_identity`, `beta_cohort`,
+  `beta_admission`, `participant_workspace` and `storage_legacy_share` — that
+  is personal data (contact addresses), which the backup retention decision
+  below must account for — and excludes every session, challenge, provider
+  state, waitlist, request-budget, pool-approval and cleanup-charge table
+  (`deploy/backup/scope.txt`).
 - Retention, RPO and RTO are undecided (above).

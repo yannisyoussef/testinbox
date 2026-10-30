@@ -61,6 +61,17 @@ BEGIN
         IF r = current_user THEN
             RAISE EXCEPTION 'roles.reference.sql: % is the schema owner running this file, not a deployable role; nothing was changed', r;
         END IF;
+        -- A member of the owner holds every owner privilege whatever is revoked
+        -- below, including the V22 account-lifecycle operator authority.
+        -- Both the role running this file and the actual owner of
+        -- human_account (what V22's authority check compares against), in
+        -- case a superuser runs it against an owner-owned schema.
+        IF pg_has_role(r, current_user, 'MEMBER')
+            OR pg_has_role(r, (SELECT c.relowner FROM pg_catalog.pg_class c
+                               WHERE c.oid = 'public.human_account'::pg_catalog.regclass), 'MEMBER') THEN
+            RAISE EXCEPTION 'roles.reference.sql: % is a member of the schema owner %, so it holds every owner privilege and the account-lifecycle operator authority; nothing was changed',
+                r, current_user;
+        END IF;
     END LOOP;
     IF (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = ingestion)
         OR pg_has_role(ingestion, api, 'MEMBER')
@@ -156,6 +167,10 @@ GRANT SELECT ON flyway_schema_history, inbox, message, attachment, inbox_storage
 GRANT INSERT ON message, attachment TO :"ingestion_role";
 -- The cohort snapshot counts workspaces by id; a workspace's name is not SMTP's.
 GRANT SELECT (id) ON workspace TO :"ingestion_role";
+-- Account lifecycle (V22): recipient resolution and the T1 snapshot read a
+-- workspace id and one eligibility boolean through this security-barrier
+-- view, never the human account, membership or quarantine tables behind it.
+GRANT SELECT ON workspace_lifecycle_eligibility TO :"ingestion_role";
 -- lockInboxes takes FOR SHARE, which needs UPDATE on one column; nothing updates inbox.
 GRANT UPDATE (id) ON inbox TO :"ingestion_role";
 GRANT SELECT, INSERT, UPDATE ON rate_bucket TO :"ingestion_role";

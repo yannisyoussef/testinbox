@@ -26,6 +26,7 @@ class ProviderLoginController(
     private val properties: HumanAccountProperties,
     mapper: ObjectMapper,
     private val clock: Clock,
+    private val sources: AccountClientSource,
 ) {
     private val codec = ProviderAuthorizationCodec(mapper)
 
@@ -51,7 +52,7 @@ class ProviderLoginController(
                     identityProvider,
                     authorization.state!!,
                     codec.encode(authorization),
-                    request.remoteAddr,
+                    sources.resolve(request),
                     ProviderLoginCookies.browser(request)?.value,
                 )
             when (result) {

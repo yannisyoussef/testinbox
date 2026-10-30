@@ -117,6 +117,7 @@ class FootprintT1AdmissionTest {
             when (it) {
                 is StorageAdmissionDecision.Admitted -> it.unenforcedLimit?.let { reason -> "admitted ($reason)" } ?: "admitted"
                 is StorageAdmissionDecision.Refused -> it.reason.name
+                is StorageAdmissionDecision.Inactive -> "inactive"
             }
         }
 

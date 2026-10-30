@@ -67,10 +67,17 @@ the plan, legacy shares and cleanup mirror. Never put credentials in arguments,
 a URL with userinfo, source control or a pasted transcript. Tag the JDBC
 session `ApplicationName=ops:cohort-budget` for the activation allowlist.
 
+There is no `api.jar` on the host: run a one-off container of the reviewed
+API digest (its entrypoint is Spring Boot's `JarLauncher`; arguments after the
+image pass through), with the credentials in a `0600` env file and the
+reviewed pool file mounted read-only — never `docker compose run api`:
+
 ```
-java -jar api.jar storage-budget reserve /private/reviewed-pool.json
-java -jar api.jar storage-budget check /private/reviewed-pool.json
-java -jar api.jar storage-budget revoke /private/reviewed-pool.json
+docker run --rm --network <data network> --env-file /root/testinbox-ops/budget.env \
+  -v /root/testinbox-ops/reviewed-pool.json:/run/pool.json:ro \
+  <registry>/testinbox-api@sha256:<api digest> storage-budget reserve /run/pool.json
+… storage-budget check /run/pool.json
+… storage-budget revoke /run/pool.json
 ```
 
 These commands start no HTTP server, scheduler, login provider or migration.
@@ -85,7 +92,12 @@ admissions, changes enforcement or clears a latch. `check` is read-only.
 After reservation, the existing capacity/admission switch still needs the
 separate release authorization. Even with both flags manually true, the
 admission use case requires the live approved, matching ALL-mode pool.
-Existing participants can log in while new admissions are paused.
+Existing participants can log in while new admissions are paused. The
+operator pause is the `admission status|pause|resume --open-beta` subcommand
+of the same image; see
+[ADMISSION-AND-SOURCE.md](../delivery/ti-delivery-002/ADMISSION-AND-SOURCE.md).
+A pause alone does not permit `storage-budget` changes, which still require
+`capacity_ready` closed as well.
 
 ## Upgrade, restore and rollback boundaries
 
@@ -102,6 +114,8 @@ Existing participants can log in while new admissions are paused.
    restores browser sessions, cleanup evidence or capacity approval. Reconcile
    storage, deleted accounts/revocations and external rollback floors before
    considering admission; a database restore is not authorization recovery.
+   A restored database stays account-quarantined until `account-lifecycle
+   restore-reconcile` runs ([restore procedure](../delivery/ti-delivery-002/LIFECYCLE.md#restore-procedure)).
 5. For an enforcing rollout failure, pause new admissions and ingress using
    Ops' hold-first emergency procedure. Preserve queued mail. Do not remove
    markers/shares, clear a latch or start an old unenforcing artifact as an

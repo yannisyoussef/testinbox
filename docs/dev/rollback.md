@@ -445,3 +445,67 @@ SELECT (SELECT count(*) FROM participant_workspace) AS participants,
        (SELECT count(*) FROM storage_cohort_plan)   AS pool_plans,
        (SELECT count(*) FROM beta_admission)        AS admissions;  -- all 0, or no rollback
 ```
+
+## Account lifecycle semantic floor (TI-DELIVERY-002, schema V22)
+
+V22 is expand-only. It adds one table (`lifecycle_restore_clearance`), two
+functions, three triggers and one view. An older artifact starts cleanly
+against it. Rolling back the artifact is a semantic hazard, not a schema
+one, because **an artifact older than this change ignores the new account
+state**:
+
+| Older artifact | What it ignores | Consequence |
+|---|---|---|
+| API | the restore quarantine. It reads `human_account.state` raw, not the cleared, effective state. | On a restored, unreconciled database, restored `ACTIVE` accounts could sign in again, and restored un-revoked participant keys would authenticate. |
+| API | workspace eligibility on API-key authentication | A key in an erased or missing-membership participant workspace authenticates if it was never revoked. Suspension and deletion revoke keys, so this matters after a restore or a manual SQL edit. |
+| API | the lifecycle recheck under the workspace guard when creating inboxes and keys | It does not serialize with a concurrent suspension. |
+| API | the 20/1000 participant key inventory | The bound is not enforced. |
+| Ingestion | `workspace_lifecycle_eligibility` in recipient resolution and T1 | It would store new mail for suspended or deleted participants. |
+
+What still holds under an older artifact:
+
+- The account state itself. Older APIs already refuse a `SUSPENDED` or
+  `DELETION_PENDING` account at session authentication, issuance and
+  admission.
+- The permanent revocation. Revoked sessions and keys are rows that no
+  artifact un-revokes.
+- The V22 triggers. They refuse every lifecycle write by a non-operator role
+  whatever artifact runs.
+- The V21 node fence. Once any `participant_workspace` row exists, an older
+  ingestion node registering latches storage admission (`451` for every
+  event), so it cannot silently ingest for an inactive participant.
+
+**Floor.** Treat the commit that introduced this change on `develop` as a
+rollback floor from the first moment any of these holds:
+
+```sql
+SELECT (SELECT count(*) FROM human_account WHERE state <> 'ACTIVE')      AS non_active_accounts,
+       (SELECT count(*) FROM participant_workspace)                       AS participants,
+       (SELECT count(*) = 0 FROM lifecycle_restore_clearance)              AS quarantined;
+-- rollback below the lifecycle floor only if: 0, 0, false
+```
+
+While participants exist, the TI-DELIVERY-001 section above already rules out
+rolling back to `408c3f3`. The lifecycle floor also rules out every later
+artifact older than this change.
+
+**Before the first admission**, the integrator records the integrated commit
+in `deploy/rollback-floors.txt`. It cannot be recorded earlier: the floor must
+name a SHA that every production candidate contains. Never run an older API
+against a quarantined database. Reconcile first (`account-lifecycle
+restore-reconcile`,
+[LIFECYCLE.md](../delivery/ti-delivery-002/LIFECYCLE.md#restore-procedure)).
+If a rollback is unavoidable once the floor applies, it is hold-first:
+
+1. Pause admissions.
+2. Stop ingestion, or keep it latched. Queued mail is preserved.
+3. Roll back the API only after `restore-reconcile` has run. Every restored
+   participant key is then revoked and every restored participant account
+   suspended, so no older API check is load-bearing.
+
+**Grants and backups across this rollback.** Keep the V22
+`roles.reference.sql` and the V22 `deploy/backup/scope.txt` and checker. An
+older ingestion simply never reads the eligibility view. An older scope file
+would leave `lifecycle_restore_clearance` unclassified, so the backup is
+refused, and the older checker cannot read the V22 view DDL.
+

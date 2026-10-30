@@ -15,6 +15,7 @@ import email.testinbox.application.port.SmtpMetrics
 import email.testinbox.application.port.StorageInspection
 import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.TransactionRunner
+import email.testinbox.application.port.WorkspaceEligibility
 import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.FootprintPrecheck
 import email.testinbox.application.storage.FootprintWiring
@@ -400,6 +401,7 @@ class IngestionWiring(
         parser: MimeParser,
         rateLimiter: RateLimiter,
         clock: Clock,
+        eligibility: WorkspaceEligibility,
     ): ReceiveInboundDelivery =
         ReceiveInboundDelivery(
             inboxes,
@@ -410,5 +412,6 @@ class IngestionWiring(
             clock,
             metrics = limitMetrics,
             inboundMetrics = inboundMetrics,
+            eligibility = eligibility,
         )
 }

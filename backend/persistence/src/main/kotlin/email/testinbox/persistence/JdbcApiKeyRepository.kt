@@ -2,6 +2,7 @@ package email.testinbox.persistence
 
 import email.testinbox.application.port.ApiKeyCursor
 import email.testinbox.application.port.ApiKeyRepository
+import email.testinbox.application.port.ManagedKeyInventory
 import email.testinbox.application.port.ProvisioningRepository
 import email.testinbox.application.port.RevokeApiKeyOutcome
 import email.testinbox.domain.ApiKeyId
@@ -181,6 +182,36 @@ class JdbcApiKeyRepository(
         val exists = findById(workspaceId, id) != null
         return if (exists) RevokeApiKeyOutcome.AlreadyRevoked else RevokeApiKeyOutcome.NotFound
     }
+
+    override fun revokeAllManaged(
+        workspaceId: WorkspaceId,
+        at: Instant,
+    ): Int =
+        jdbc
+            .sql(
+                """
+                UPDATE api_key SET revoked_at = :at
+                 WHERE workspace_id = :workspaceId AND kind = 'MANAGED' AND revoked_at IS NULL
+                """.trimIndent(),
+            ).param("at", Timestamps.toDb(at))
+            .param("workspaceId", workspaceId.value)
+            .update()
+
+    override fun managedInventory(
+        workspaceId: WorkspaceId,
+        at: Instant,
+    ): ManagedKeyInventory =
+        jdbc
+            .sql(
+                """
+                SELECT count(*) FILTER (WHERE revoked_at IS NULL AND (expires_at IS NULL OR expires_at >= :at)) AS usable,
+                       count(*) AS retained
+                  FROM api_key WHERE workspace_id = :workspaceId AND kind = 'MANAGED'
+                """.trimIndent(),
+            ).param("at", Timestamps.toDb(at))
+            .param("workspaceId", workspaceId.value)
+            .query { rs, _ -> ManagedKeyInventory(rs.getLong("usable"), rs.getLong("retained")) }
+            .single()
 
     override fun touchLastUsed(
         id: ApiKeyId,

@@ -103,6 +103,10 @@ class MicrometerInboundMetrics(
     override fun duplicateProviderEventNoop() {
         registry.counter("testinbox_message_duplicate_event_noop_total").increment()
     }
+
+    override fun inactiveRecipientDiscarded() {
+        registry.counter("testinbox_smtp_inactive_recipient_discard_total").increment()
+    }
 }
 
 /** Long-poll waits. */

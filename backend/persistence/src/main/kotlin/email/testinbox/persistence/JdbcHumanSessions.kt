@@ -26,8 +26,16 @@ class JdbcHumanSessions(
     override fun lockAccount(accountId: HumanAccountId): HumanAccount? {
         requireTransaction()
         return jdbc
-            .sql("SELECT contact_email, state, contact_verified_at FROM human_account WHERE id = :id FOR UPDATE")
-            .param("id", accountId.value)
+            .sql(
+                // FOR NO KEY UPDATE: every account writer (issuance, authentication,
+                // logout, lifecycle) still serializes on it, but it does not wait on the
+                // FOR KEY SHARE a foreign-key insert (an idempotency claim, a key's
+                // provenance) holds until it commits. With FOR UPDATE, the lifecycle
+                // writer revoking sessions under the workspace guard would deadlock
+                // against a human mint that claimed its key before reaching the guard.
+                "SELECT contact_email, ${LifecycleSql.EFFECTIVE_STATE} AS state, contact_verified_at FROM human_account WHERE id = :id " +
+                    "FOR NO KEY UPDATE",
+            ).param("id", accountId.value)
             .query { rs, _ ->
                 HumanAccount(
                     accountId,

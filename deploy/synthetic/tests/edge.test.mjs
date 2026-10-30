@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import https from "node:https";
 import { config } from "../src/env.mjs";
-import { classifyUnknownHostProbe } from "../src/edge.mjs";
+import { API_HOST_ACCOUNT_PROBES, classifyApiHostAccountProbe, classifyUnknownHostProbe } from "../src/edge.mjs";
 
 /**
  * The edge's own claims, asserted against the deployed ingress (§10/§12).
@@ -100,6 +100,14 @@ test("plaintext HTTP redirects to HTTPS and never serves content", async () => {
 
 /** Probes one path with a Host TestInbox does not serve. */
 async function probeUnknownHost(path) {
+  return rawProbe(path, "not-testinbox.example.com");
+}
+
+/**
+ * One raw request: the path is sent byte for byte (no URL parser collapses
+ * dot segments or percent-encodings), with the given Host.
+ */
+async function rawProbe(path, host) {
   const url = new URL(config.baseUrl);
   return new Promise((resolve) => {
     const request = https.request(
@@ -109,7 +117,7 @@ async function probeUnknownHost(path) {
         servername: url.hostname,
         path,
         method: "GET",
-        headers: { Host: "not-testinbox.example.com" },
+        headers: { Host: host },
       },
       (response) => {
         let body = "";
@@ -163,6 +171,19 @@ test("an unrecognised Host is not served by TestInbox", async () => {
       );
     }
     console.log(`unknown Host ${path}: ${verdict.reason}`);
+  }
+});
+
+test("the API host never serves the account boundary, including dot-segment paths", async () => {
+  // ADR-036: /account is served only through the public site's same-origin
+  // proxy. On the API host (the nginx reference serves the Inspector UI and
+  // the API on one host and routes / to the web container) any answer is fine
+  // except the API's account boundary itself. See src/edge.mjs.
+  const host = new URL(config.baseUrl).host;
+  for (const path of API_HOST_ACCOUNT_PROBES) {
+    const verdict = classifyApiHostAccountProbe(await rawProbe(path, host));
+    assert.equal(verdict.served, false, `the API host must not serve ${path} — ${verdict.reason}`);
+    console.log(`account path ${path} on the API host: ${verdict.reason}`);
   }
 });
 

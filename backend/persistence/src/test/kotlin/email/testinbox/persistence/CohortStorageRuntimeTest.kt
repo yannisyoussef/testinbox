@@ -310,9 +310,17 @@ class CohortStorageRuntimeTest : PersistenceIntegrationTest() {
     }
 
     @Test fun `participant payload reservations stop exactly at 128 MiB across different inboxes`() {
+        // An ACTIVE, verified member: a marker without a live membership is an
+        // inactive participant (V22) and T1 would discard its copies instead.
+        val account = UUID.randomUUID()
         db.jdbc
-            .sql("INSERT INTO beta_admission(cohort_id,place,workspace_id,project_id,admitted_at) VALUES ('beta-30',1,?,?,now())")
-            .params(ws, ws)
+            .sql("INSERT INTO human_account (id, contact_email, contact_verified_at, created_at) VALUES (?, ?, now(), now())")
+            .params(account, "$account@example.invalid")
+            .update()
+        db.jdbc
+            .sql(
+                "INSERT INTO beta_admission(cohort_id,place,account_id,workspace_id,project_id,admitted_at) VALUES ('beta-30',1,?,?,?,now())",
+            ).params(account, ws, ws)
             .update()
         db.jdbc
             .sql("INSERT INTO participant_workspace(workspace_id,cohort_id,place,allocated_at) VALUES (?,'beta-30',1,now())")

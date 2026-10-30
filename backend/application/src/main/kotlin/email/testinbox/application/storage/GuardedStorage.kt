@@ -54,6 +54,12 @@ data class GuardedIngestReport(
     val duplicates: List<MessageId>,
     /** Copies refused by an ENFORCED ceiling: stored nowhere, recorded on their inbox (§6a). */
     val refused: Map<InboxId, StorageRefusalReason>,
+    /**
+     * Copies whose participant workspace was inactive at T1 (account
+     * lifecycle): never reserved, uploaded or recorded as a refusal, and never
+     * a duplicate. Their inboxes, in envelope order.
+     */
+    val inactive: List<InboxId> = emptyList(),
 )
 
 /**
@@ -212,6 +218,7 @@ class GuardedStorage(
             val admittedIds = result.admitted.map { it.candidate.messageId }.toSet()
             val admitted = copies.filter { it.messageId in admittedIds }
             val refused = result.refused.associate { it.candidate.inboxId to it.reason }
+            val inactive = result.inactive.map { it.candidate.inboxId }
             if (admitted.isEmpty()) {
                 // §6a: nothing to commit, so the refusals get their own short transaction.
                 if (refused.isNotEmpty()) {
@@ -220,7 +227,7 @@ class GuardedStorage(
                         reservations.recordRefusals(refused)
                     }
                 }
-                return GuardedIngestReport(emptyList(), emptyList(), refused)
+                return GuardedIngestReport(emptyList(), emptyList(), refused, inactive)
             }
             uploadAll(admitted, checkNotNull(result.t0), guard, trialEvent)
             hook.afterUploads()
@@ -230,6 +237,7 @@ class GuardedStorage(
                 appended = outcomes.filterValues { it }.keys.toList(),
                 duplicates = outcomes.filterValues { !it }.keys.toList(),
                 refused = refused,
+                inactive = inactive,
             )
         } finally {
             guard.end()
@@ -414,6 +422,10 @@ class GuardedStorage(
                                     }
                                 },
                             )
+                        }
+
+                        is StorageAdmissionDecision.Inactive -> {
+                            metrics.admission(StorageAdmissionOutcome.INACTIVE_DISCARDED)
                         }
                     }
                 }

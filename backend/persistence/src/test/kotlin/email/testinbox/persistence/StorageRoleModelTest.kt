@@ -168,6 +168,9 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         val workspaceId = email.testinbox.domain.WorkspaceId(ws)
         JdbcSchemaHistory(smtp).read()
         checkNotNull(JdbcInboxRepository(smtp).findReceivableByAddress("$inbox@ledger.test"))
+        // Account lifecycle: the early eligibility read (a legacy workspace has no row).
+        JdbcWorkspaceEligibility(smtp).status(workspaceId) shouldBe email.testinbox.application.port.WorkspaceStatus.LEGACY
+        JdbcLifecyclePrivilegeProbe(smtp, "ingestion").ingestion() shouldBe null
         val delivered = checkNotNull(message(ws, inbox, rawBytes = 100, attachments = listOf(10), connection = smtp))
         JdbcMessageRepository(smtp).findEarliestIdByFingerprint(inboxId, "fingerprint-absent") shouldBe null
         JdbcRateLimiter(smtp, txManager) { _, _ ->
@@ -409,12 +412,25 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
                 "beta_waitlist",
                 "human_request_global",
                 "human_request_budget",
+                "lifecycle_restore_clearance",
             )
         tables.forEach { table ->
             failure { smtp.sql("SELECT * FROM $table").query().listOfRows() } shouldContain "permission denied"
             failure { smtp.sql("DELETE FROM $table WHERE false").update() } shouldContain "permission denied"
         }
         failure { smtp.sql("UPDATE human_account SET state='SUSPENDED' WHERE false").update() } shouldContain "permission denied"
+        // The lifecycle view gives SMTP exactly a workspace id and a boolean: no account, contact or quarantine detail.
+        smtp
+            .sql("SELECT * FROM workspace_lifecycle_eligibility WHERE workspace_id = ?")
+            .param(admission.admission.workspaceId.value)
+            .query { rs, _ -> (1..rs.metaData.columnCount).map { rs.metaData.getColumnName(it) } to rs.getBoolean("active") }
+            .single() shouldBe (listOf("workspace_id", "active") to true)
+        failure { smtp.sql("INSERT INTO lifecycle_restore_clearance (id) VALUES (1)").update() } shouldContain "permission denied"
+        // Readiness under the reference grants: both deployables pass their V22 probe.
+        JdbcLifecyclePrivilegeProbe(client, "api").api() shouldBe null
+        JdbcLifecyclePrivilegeProbe(smtp, "ingestion").ingestion() shouldBe null
+        // The SMTP role cannot read the clearance, so it would fail the API's probe: the probes differ on purpose.
+        JdbcLifecyclePrivilegeProbe(smtp, "ingestion").api() shouldBe JdbcLifecyclePrivilegeProbe.Failure.RESTORE_CLEARANCE_UNREADABLE
         failure { smtp.sql("UPDATE beta_cohort SET admissions_open=true WHERE false").update() } shouldContain "permission denied"
         client
             .sql("SELECT count(*) FROM human_account WHERE id=:id")
@@ -452,6 +468,9 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         val reader = "ti_reader_$suffix"
         db.login(reader)
         db.jdbc.sql("GRANT pg_read_all_data TO \"$reader\"").update()
+        val ownerMember = "ti_ownermember_$suffix"
+        db.login(ownerMember)
+        db.jdbc.sql("GRANT \"${postgres.username}\" TO \"$ownerMember\"").update()
 
         val refused =
             mapOf(
@@ -461,6 +480,8 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
                 "the owner running the file" to Triple(api, postgres.username, monitor),
                 "an ingestion role that can become the API role" to Triple(api, member, monitor),
                 "an ingestion role that reads all data" to Triple(api, reader, monitor),
+                "an API role that is a member of the schema owner (the lifecycle operator authority)" to
+                    Triple(ownerMember, ingestion, monitor),
             )
         refused.forEach { (case, roles) ->
             val run = db.psqlReference(roles.first, roles.second, roles.third)
@@ -510,6 +531,49 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         db.psqlReference(api, ingestion, monitor).exitCode shouldBe 0 // a re-run after a migration adds nothing either
         failure { smtp.sql("SELECT * FROM workspace_eligibility").query().listOfRows() } shouldContain "permission denied"
         db.can(api, "SELECT", "workspace_eligibility") shouldBe true
+    }
+
+    @Test
+    fun `under psql the operator admission pause refuses the API role and works for the owner`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+        db.login(api)
+        db.login(ingestion)
+        db.login(monitor)
+        db.psqlReference(api, ingestion, monitor).exitCode shouldBe 0
+
+        fun control(source: javax.sql.DataSource): email.testinbox.application.usecase.ControlBetaAdmissions {
+            val template =
+                org.springframework.transaction.support.TransactionTemplate(
+                    org.springframework.jdbc.datasource
+                        .DataSourceTransactionManager(source),
+                )
+            val runner =
+                object : email.testinbox.application.port.TransactionRunner {
+                    override fun <T> required(block: () -> T): T = checkNotNull(template.execute { block() })
+                }
+            return email.testinbox.application.usecase
+                .ControlBetaAdmissions(JdbcBetaAdmissionControls(JdbcClient.create(source)), runner)
+        }
+
+        fun open(): Boolean =
+            db.jdbc
+                .sql("SELECT admissions_open FROM beta_cohort")
+                .query(Boolean::class.javaObjectType)
+                .single()
+        val asApi = control(db.roleSource(api))
+        val asOwner = control(db.dataSource)
+        asApi.status().admissionsOpen shouldBe false // status is a read; the runtime role may observe it
+        failure { asApi.resume() } shouldContain "not authorized"
+        open() shouldBe false
+        asOwner.resume().after.admissionsOpen shouldBe true
+        failure { asApi.pause() } shouldContain "not authorized"
+        open() shouldBe true
+        asOwner.pause().after.admissionsOpen shouldBe false
+        open() shouldBe false
+        db.jdbc
+            .sql("SELECT capacity_ready FROM beta_cohort")
+            .query(Boolean::class.javaObjectType)
+            .single() shouldBe false
     }
 
     @Test
@@ -596,6 +660,7 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
                 "storage_legacy_share" to READ,
                 "workspace_deletion_charge" to READ,
                 "storage_cohort_plan" to READ,
+                "workspace_lifecycle_eligibility" to READ,
                 "storage_ambiguity_id_seq" to setOf("USAGE"),
             )
     }

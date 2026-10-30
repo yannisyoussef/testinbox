@@ -23,6 +23,7 @@ import java.util.UUID
 class EmailLoginController(
     private val runtime: EmailAccountRuntime,
     private val clock: Clock,
+    private val sources: AccountClientSource,
 ) {
     data class ChallengeView(
         val challengeId: UUID,
@@ -38,8 +39,8 @@ class EmailLoginController(
         val raw = body["email"] as? String ?: return invalid(request)
         val email = ContactEmail.parse(raw) ?: return invalid(request)
         if (body.keys != setOf("email") || EmailLoginCookies.ambiguous(request)) return invalid(request)
-        // The deployment peer is authoritative. Arbitrary X-Forwarded-For is not.
-        val result = flows.request.execute(email, request.remoteAddr, EmailLoginCookies.browser(request)?.value)
+        // The verified source: the peer, or a client the authenticated website proxy names. Never X-Forwarded-For.
+        val result = flows.request.execute(email, sources.resolve(request), EmailLoginCookies.browser(request)?.value)
         return when (result) {
             is RequestEmailLogin.Result.Accepted -> {
                 val lifetime = Duration.between(clock.instant(), result.expiresAt)

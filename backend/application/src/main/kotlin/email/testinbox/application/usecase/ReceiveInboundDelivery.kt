@@ -11,6 +11,7 @@ import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.MimeParseResult
 import email.testinbox.application.port.MimeParser
 import email.testinbox.application.port.RateLimiter
+import email.testinbox.application.port.WorkspaceEligibility
 import email.testinbox.application.storage.CopyPlan
 import email.testinbox.application.storage.GuardedStorage
 import email.testinbox.domain.AttachmentId
@@ -58,6 +59,13 @@ class ReceiveInboundDelivery(
     private val clock: Clock,
     private val metrics: LimitMetrics = LimitMetrics.NOOP,
     private val inboundMetrics: InboundMetrics = InboundMetrics.NOOP,
+    /**
+     * Account lifecycle (ACCOUNT-LIFECYCLE.md). Early recipient resolution
+     * filters inactive participants; T1 re-reads eligibility in its one
+     * snapshot under the same fence the operator's transition takes, which is
+     * what closes the prepare/T1 race. Neither changes the SMTP reply.
+     */
+    private val eligibility: WorkspaceEligibility,
 ) {
     data class Command(
         val envelopeFrom: String?,
@@ -81,6 +89,13 @@ class ReceiveInboundDelivery(
          * while enforcement is OFF. Internal: the SMTP reply never shows it.
          */
         val storageRefusedRecipients: Int = 0,
+        /**
+         * Recipients whose participant workspace is suspended, deletion-pending,
+         * erased or restore-quarantined, whether found at resolution or at T1.
+         * Discarded like unknown recipients; never a storage refusal or a
+         * duplicate. Internal: the SMTP reply never shows it.
+         */
+        val inactiveRecipients: Int = 0,
     )
 
     /** One recipient copy, planned before T1: its ids, exact keys and exact bytes. */
@@ -134,6 +149,7 @@ class ReceiveInboundDelivery(
 
         var discarded = 0
         var rateLimited = 0
+        var inactive = 0
         val prepared = mutableListOf<Prepared>()
         val envelopePositions = mutableListOf<Int>()
         for ((position, recipient) in recipients.withIndex()) {
@@ -145,6 +161,14 @@ class ReceiveInboundDelivery(
                 // volume of undeliverable mail visible at all.
                 inboundMetrics.unknownRecipientDiscarded()
                 discarded++
+                continue
+            }
+            if (!eligibility.isActive(inbox.workspaceId)) {
+                // Before the limiter: an inactive workspace spends no budget. The
+                // position still counts toward the global prefix (ADR-037 A1).
+                logDiscard(recipient, command, INACTIVE)
+                inboundMetrics.inactiveRecipientDiscarded()
+                inactive++
                 continue
             }
             // One copy per inbox per event (ADR-035 §4). Normalized addresses are
@@ -178,7 +202,7 @@ class ReceiveInboundDelivery(
             prepared += prepare(inbox, recipient, parseResult)
             envelopePositions += position
         }
-        if (prepared.isEmpty()) return Result(emptyList(), discarded, 0, rateLimited)
+        if (prepared.isEmpty()) return Result(emptyList(), discarded, 0, rateLimited, inactiveRecipients = inactive)
 
         // ADR-035 §2: every copy costs exactly its raw.eml plus every extracted
         // attachment object (attachments count twice). The size is exact and
@@ -199,12 +223,34 @@ class ReceiveInboundDelivery(
         // Reprocessed event (ADR-026): no new row. Its reservation went to
         // RELEASING in the same commit, and cleanup deletes its objects.
         repeat(report.duplicates.size) { inboundMetrics.duplicateProviderEventNoop() }
+        reportStorageDiscards(report, prepared, command)
+        return Result(
+            report.appended,
+            discarded,
+            report.duplicates.size,
+            rateLimited,
+            report.refused.size,
+            inactiveRecipients = inactive + report.inactive.size,
+        )
+    }
+
+    /** Logs and counts the copies T1 discarded; the SMTP reply never shows either kind. */
+    private fun reportStorageDiscards(
+        report: email.testinbox.application.storage.GuardedIngestReport,
+        prepared: List<Prepared>,
+        command: Command,
+    ) {
         for ((inboxId, reason) in report.refused) {
             // ADR-035 §12: a storage ceiling is a discard with the uniform 250,
             // recorded on the inbox for its tenant, never shown over SMTP.
             prepared.firstOrNull { it.inbox.id == inboxId }?.let { logDiscard(it.recipient, command, "storage_${reason.name.lowercase()}") }
         }
-        return Result(report.appended, discarded, report.duplicates.size, rateLimited, report.refused.size)
+        for (inboxId in report.inactive) {
+            // Became inactive between resolution and T1: no reservation, upload,
+            // refusal record or duplicate report, and the same uniform reply.
+            prepared.firstOrNull { it.inbox.id == inboxId }?.let { logDiscard(it.recipient, command, INACTIVE) }
+            inboundMetrics.inactiveRecipientDiscarded()
+        }
     }
 
     private fun prepare(
@@ -315,5 +361,6 @@ class ReceiveInboundDelivery(
 
     private companion object {
         val log = LoggerFactory.getLogger(ReceiveInboundDelivery::class.java)
+        const val INACTIVE = "inactive_participant"
     }
 }

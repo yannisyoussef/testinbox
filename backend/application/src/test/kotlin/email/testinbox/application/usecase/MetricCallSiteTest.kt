@@ -65,6 +65,12 @@ class RecordingInboundMetrics : InboundMetrics {
     override fun duplicateProviderEventNoop() {
         duplicates.incrementAndGet()
     }
+
+    val inactiveRecipients = AtomicInteger(0)
+
+    override fun inactiveRecipientDiscarded() {
+        inactiveRecipients.incrementAndGet()
+    }
 }
 
 class RecordingWaitMetrics : WaitMetrics {

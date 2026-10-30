@@ -146,8 +146,9 @@ management:
           # database, a schema it recognises, object storage, the
           # session-scoped LISTEN connection ADR-020 puts in readiness, and
           # whether the database bounds a hung idempotency claim (ADR-033;
-          # reported everywhere, enforced only where the profile says so).
-          include: readinessState,db,schema,objectStorage,waitNotifier,dbSession
+          # reported everywhere, enforced only where the profile says so), and
+          # the V22 account-lifecycle relations its role must be able to read.
+          include: readinessState,db,schema,objectStorage,waitNotifier,dbSession,lifecyclePrivileges
   info:
     env:
       enabled: true

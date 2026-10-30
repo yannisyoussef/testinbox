@@ -63,3 +63,17 @@ stored at all. It does not, and storing it is a liability:
 - One less data class in the legal/compliance human decision
   (`VISION.md` item 2): unknown-recipient content is out of scope by
   construction.
+
+## Amendment note (recorded 2026-10-30, TI-DELIVERY-002)
+
+> **Amended by [ADR-037](0037-bounded-cohort-storage-and-disclosure.md) §6
+> (TI-DELIVERY-001, accepted 2026-10-29).** ADR-037 records a *scoped*
+> amendment to this ADR's recipient-existence confidentiality expectation:
+> with self-service participants holding storage shares, cooperating
+> workspaces can still correlate their own private `SERVICE_CAPACITY` outcomes
+> with global stored data across separate events — a coarse capacity side
+> channel the owner accepted. Within one event, ADR-037 §5 prices unknown
+> envelope positions like known ones so the substitution channel is closed.
+> The decision of this ADR is unchanged: the uniform `250`, the in-process
+> discard and the rule that unknown-recipient content is never persisted all
+> stand.

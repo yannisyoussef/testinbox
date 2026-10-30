@@ -31,6 +31,7 @@ import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.WaitMetrics
 import email.testinbox.application.port.WaitObservations
 import email.testinbox.application.port.WaitSlots
+import email.testinbox.application.port.WorkspaceEligibility
 import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.application.query.ApiKeyQueries
 import email.testinbox.application.query.InboxQueries
@@ -278,6 +279,7 @@ class ApiWiring(
         limits: LimitsConfig,
         config: TestInboxConfig,
         idempotency: Idempotency,
+        eligibility: WorkspaceEligibility,
     ): CreateInbox =
         CreateInbox(
             inboxes,
@@ -289,6 +291,7 @@ class ApiWiring(
             limitMetrics,
             inboxMetrics,
             idempotency,
+            eligibility,
         )
 
     @Bean
@@ -415,10 +418,12 @@ class ApiWiring(
     fun authenticateApiKey(
         apiKeys: ApiKeyRepository,
         lastUsed: CoalescingLastUsedRecorder,
+        eligibility: WorkspaceEligibility,
     ): AuthenticateApiKey =
         AuthenticateApiKey(
             apiKeys,
             clock,
+            eligibility,
             // Configuration is what retires a bootstrap credential: rotate the
             // setting and the previous one stops authenticating on the next
             // request; unset it and there is genuinely no break-glass
@@ -436,7 +441,10 @@ class ApiWiring(
     fun createApiKey(
         apiKeys: ApiKeyRepository,
         idempotency: Idempotency,
-    ): CreateApiKey = CreateApiKey(apiKeys, clock, audit, apiKeyMetrics, idempotency = idempotency)
+        quotas: WorkspaceQuotaState,
+        eligibility: WorkspaceEligibility,
+    ): CreateApiKey =
+        CreateApiKey(apiKeys, clock, audit, apiKeyMetrics, idempotency = idempotency, guard = quotas, eligibility = eligibility)
 
     @Bean
     fun revokeApiKey(apiKeys: ApiKeyRepository): RevokeApiKey = RevokeApiKey(apiKeys, clock, audit, apiKeyMetrics)

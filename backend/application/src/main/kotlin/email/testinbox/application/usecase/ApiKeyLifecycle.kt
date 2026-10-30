@@ -12,8 +12,14 @@ import email.testinbox.application.port.AuditEvent
 import email.testinbox.application.port.AuditLog
 import email.testinbox.application.port.IdempotencyScope
 import email.testinbox.application.port.RevokeApiKeyOutcome
+import email.testinbox.application.port.WorkspaceEligibility
+import email.testinbox.application.port.WorkspaceInactiveException
+import email.testinbox.application.port.WorkspaceQuotaState
+import email.testinbox.application.port.WorkspaceStatus
 import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.idempotency.IdempotentOperation
+import email.testinbox.domain.limits.ParticipantKeyInventory
+import email.testinbox.domain.limits.QuotaExceeded
 import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiKeyCredential
 import email.testinbox.domain.tenant.ApiKeyFormat
@@ -42,6 +48,14 @@ class CreateApiKey(
     private val metrics: ApiKeyMetrics = ApiKeyMetrics.NOOP,
     private val random: SecureRandom = SecureRandom(),
     private val idempotency: Idempotency = Idempotency.disabled(),
+    /**
+     * The existing ADR-027 workspace admission guard. Key minting takes it,
+     * like inbox creation, so the account-lifecycle writer (which takes it
+     * first) serializes with every key writer of the workspace and the
+     * participant inventory bound is a check-then-act under one lock.
+     */
+    private val guard: WorkspaceQuotaState,
+    private val eligibility: WorkspaceEligibility,
 ) {
     data class Command(
         /** The credential performing the operation — the source of workspace, project and ceiling. */
@@ -105,6 +119,15 @@ class CreateApiKey(
         data class AlreadyCreated(
             val apiKeyId: ApiKeyId,
             val publicId: String,
+        ) : Result
+
+        /**
+         * A participant workspace reached its fixed key inventory
+         * ([email.testinbox.domain.limits.ParticipantKeyInventory]): `409
+         * quota-exceeded` with the caller's own dimension only.
+         */
+        data class InventoryExhausted(
+            val exceeded: QuotaExceeded,
         ) : Result
 
         data object IdempotencyKeyReused : Result
@@ -179,10 +202,7 @@ class CreateApiKey(
                 // caller to revoke, so it must never name one minted by a
                 // different credential in the same workspace.
                 replayBoundToActor = true,
-            ) {
-                apiKeys.insert(key)
-                Result.Created(key, credential)
-            }
+            ) { mint(key, credential, now) }
 
         // AFTER the transaction, deliberately. Emitting inside it would let a
         // rolled-back claim log that a credential was created that does not
@@ -205,6 +225,25 @@ class CreateApiKey(
             )
         }
         return result
+    }
+
+    /** Inside the claim's transaction: the workspace guard, lifecycle, the participant inventory, then the one insert. */
+    private fun mint(
+        key: ApiKey,
+        credential: ApiKeyCredential,
+        now: Instant,
+    ): Result {
+        guard.guardAdmission(key.workspaceId)
+        // Rechecked under the guard the lifecycle writer also takes: a
+        // request authenticated just before a suspension mints nothing after it.
+        val status = eligibility.status(key.workspaceId)
+        if (status == WorkspaceStatus.INACTIVE_PARTICIPANT) throw WorkspaceInactiveException()
+        if (status == WorkspaceStatus.ACTIVE_PARTICIPANT) {
+            val inventory = apiKeys.managedInventory(key.workspaceId, now)
+            ParticipantKeyInventory.refusal(inventory.usable, inventory.retained)?.let { return Result.InventoryExhausted(it) }
+        }
+        apiKeys.insert(key)
+        return Result.Created(key, credential)
     }
 
     /**
@@ -250,6 +289,23 @@ class CreateApiKey(
 }
 
 /**
+ * Proof that the current database transaction's role holds the
+ * account-lifecycle operator authority (ACCOUNT-LIFECYCLE.md "Operator
+ * authority and writes"). Only the lifecycle use cases construct one, after
+ * the store confirmed the authority INSIDE the write transaction, and they
+ * close it when that transaction ends. No HTTP adapter, API key or request
+ * field can produce one.
+ */
+class OperatorAuthorization internal constructor() {
+    internal var open: Boolean = true
+        private set
+
+    internal fun close() {
+        open = false
+    }
+}
+
+/**
  * Revokes a credential (ADR-032 §5). The row is retained: a compromised key's
  * history is the evidence, and deleting it destroys that at the moment it
  * becomes interesting.
@@ -290,5 +346,19 @@ class RevokeApiKey(
             )
         }
         return outcome
+    }
+
+    /**
+     * The explicit operator revocation of ACCOUNT-LIFECYCLE.md: every managed
+     * key of the workspace, permanently, in the caller's lifecycle
+     * transaction. Resuming the account later never un-revokes them. Returns
+     * how many keys this call revoked; the caller reports it after commit.
+     */
+    fun revokeWorkspaceForLifecycle(
+        authority: OperatorAuthorization,
+        workspaceId: email.testinbox.domain.WorkspaceId,
+    ): Int {
+        check(authority.open) { "operator authority is bound to the transaction that verified it" }
+        return apiKeys.revokeAllManaged(workspaceId, clock.instant())
     }
 }
