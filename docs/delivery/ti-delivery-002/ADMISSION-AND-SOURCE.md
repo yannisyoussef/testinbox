@@ -252,8 +252,10 @@ never by address.
      trailing newline);
    - it must contain at least 12 distinct characters.
 
-   A set but weak value **refuses startup**, and the error message never
-   contains the value. An unset value is valid.
+   A set but weak value **closes `/account`** (sign-in, admission and the
+   waitlist answer the unavailable state) exactly like an invalid public
+   origin; the Bearer API `/v1` keeps running. The API logs one error naming
+   the setting, never the value. An unset value is valid (one shared budget).
 2. **Set the same value in both environments** as
    `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`:
    - the API environment;

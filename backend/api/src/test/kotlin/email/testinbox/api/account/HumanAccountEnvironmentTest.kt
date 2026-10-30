@@ -138,23 +138,30 @@ class HumanAccountEnvironmentTest {
         }
 
     @Test
-    fun `the client address secret is optional and a short or weak one refuses startup without echoing it`() {
+    fun `the client address secret is optional and a short or weak one closes account sign-in without echoing it`() {
         clientSource(emptyMap()).run { context ->
             context.startupFailure shouldBe null
             context.getBean(HumanAccountProperties::class.java).clientAddressSecret shouldBe ""
         }
         val strong = "k7Qx2Lp9Vw4Zr8Tn3Hs6Jd1Fg5Mb0Yc-_e"
-        clientSource(mapOf("TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET" to strong)).run { context ->
+        val origin = "TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN" to "https://app.testinbox.test"
+        clientSource(mapOf("TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET" to strong, origin)).run { context ->
             context.startupFailure shouldBe null
-            context.getBean(HumanAccountProperties::class.java).clientAddressSecret shouldBe strong
-            context.getBean(HumanAccountProperties::class.java).toString().contains(strong) shouldBe false
+            val properties = context.getBean(HumanAccountProperties::class.java)
+            properties.clientAddressSecret shouldBe strong
+            properties.canonicalOrigin shouldBe "https://app.testinbox.test"
+            properties.toString().contains(strong) shouldBe false
         }
         listOf("too-short-for-a-secret", "x".repeat(40)).forEach { weak ->
-            clientSource(mapOf("TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET" to weak)).run { context ->
-                val failure = checkNotNull(context.startupFailure)
-                val messages = generateSequence<Throwable>(failure) { it.cause }.joinToString(" | ") { it.message.orEmpty() }
-                messages.contains("testinbox.accounts.client-address-secret") shouldBe true
-                messages.contains(weak) shouldBe false
+            clientSource(mapOf("TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET" to weak, origin)).run { context ->
+                // The Bearer API keeps running; only the /account boundary closes.
+                context.startupFailure shouldBe null
+                val properties = context.getBean(HumanAccountProperties::class.java)
+                properties.canonicalOrigin shouldBe null
+                val problem = checkNotNull(properties.clientAddressSecretProblem)
+                problem.contains("testinbox.accounts.client-address-secret") shouldBe true
+                problem.contains(weak) shouldBe false
+                properties.toString().contains(weak) shouldBe false
             }
         }
     }

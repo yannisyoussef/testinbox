@@ -25,10 +25,21 @@ data class HumanAccountProperties(
 ) {
     override fun toString(): String = "HumanAccountProperties(enabled=$enabled, publicOrigin=$publicOrigin, clientAddressSecret=[REDACTED])"
 
-    /** Invalid account configuration disables this boundary, without taking down the Bearer API. */
+    /** A configured client-address secret that fails [AccountClientSource.validate]; never the value. */
+    val clientAddressSecretProblem: String? =
+        clientAddressSecret.takeIf { it.isNotEmpty() }?.let { secret ->
+            runCatching { AccountClientSource.validate(secret) }.exceptionOrNull()?.message
+        }
+
+    /**
+     * Invalid account configuration disables this boundary, without taking down the Bearer API.
+     * An invalid client-address secret counts: the operator meant every visitor to get its own
+     * sign-in budget, and silently sharing one would let a single source lock everyone out.
+     */
     val canonicalOrigin: String? =
         runCatching { URI(publicOrigin) }
             .getOrNull()
+            ?.takeIf { clientAddressSecretProblem == null }
             ?.takeIf { origin ->
                 origin.scheme == "https" && !origin.host.isNullOrBlank() &&
                     origin.host == origin.host.lowercase() && origin.rawUserInfo == null && origin.rawQuery == null &&
@@ -47,12 +58,22 @@ class HumanAccountWiring {
         clock: Clock,
     ): AuthenticateHumanSession = AuthenticateHumanSession(sessions, tx, clock)
 
-    /** Refuses startup on a weak configured secret; absent means every sign-in shares the peer budget. */
+    /** Absent means every sign-in shares the peer budget; an invalid one closes /account (see [HumanAccountProperties]). */
     @Bean
     fun accountClientSource(
         properties: HumanAccountProperties,
         registry: io.micrometer.core.instrument.MeterRegistry,
-    ): AccountClientSource = AccountClientSource(properties.clientAddressSecret, registry)
+    ): AccountClientSource {
+        properties.clientAddressSecretProblem?.let {
+            org.slf4j.LoggerFactory
+                .getLogger(AccountClientSource::class.java)
+                .error("Account sign-in is disabled: {}", it)
+        }
+        return AccountClientSource(
+            properties.clientAddressSecret.takeIf { properties.clientAddressSecretProblem == null }.orEmpty(),
+            registry,
+        )
+    }
 
     @Bean
     fun chargeAccountRequest(
