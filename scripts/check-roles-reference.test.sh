@@ -101,6 +101,37 @@ check "a block comment fails rather than hiding text" 1 "$TMP/block-comment.sql"
 mutate comment-only "${BEGIN_LINE/\{\}/-- documentation may say set_config, search_path or SET ti.x}"
 check "the same words inside a -- comment are not findings" 0 "$TMP/comment-only.sql" 'keeps the reviewed shape'
 
+COMMIT_LINE="s.replace('\\nCOMMIT;', '\\n{}\\nCOMMIT;', 1)"
+mutate schema-create "${COMMIT_LINE/\{\}/GRANT CREATE ON SCHEMA public TO :\"ingestion_role\";}"
+check "GRANT CREATE ON SCHEMA fails (only USAGE on a schema is reviewed)" 1 "$TMP/schema-create.sql" 'only USAGE on a schema'
+
+mutate schema-all "${COMMIT_LINE/\{\}/GRANT USAGE, CREATE ON SCHEMA public TO :\"api_role\";}"
+check "GRANT USAGE, CREATE ON SCHEMA fails" 1 "$TMP/schema-all.sql" 'only USAGE on a schema'
+
+mutate database-temp "${COMMIT_LINE/\{\}/GRANT TEMPORARY ON DATABASE testinbox TO :\"ingestion_role\";}"
+check "GRANT TEMPORARY ON DATABASE fails" 1 "$TMP/database-temp.sql" 'GRANT ON DATABASE'
+
+mutate default-privileges "${COMMIT_LINE/\{\}/ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO :\"ingestion_role\";}"
+check "ALTER DEFAULT PRIVILEGES fails" 1 "$TMP/default-privileges.sql" 'ALTER DEFAULT PRIVILEGES'
+
+mutate membership "${COMMIT_LINE/\{\}/GRANT pg_read_all_data TO :\"ingestion_role\";}"
+check "a role-membership GRANT fails" 1 "$TMP/membership.sql" 'role-membership GRANT'
+
+mutate owner-membership "${COMMIT_LINE/\{\}/GRANT CURRENT_USER TO :\"api_role\";}"
+check "granting the owner's membership fails" 1 "$TMP/owner-membership.sql" 'role-membership GRANT'
+
+mutate do-assign "s.replace('END\n\$guard\$;', \"    r := 'x';\nEND\n\$guard\$;\", 1)"
+check "an assignment inside the DO block fails" 1 "$TMP/do-assign.sql" 'assignment \(:=\)'
+
+mutate do-initializer "s.replace(\"api       text := current_setting('testinbox.api_role');\", \"api       text := lower(current_setting('testinbox.api_role'));\", 1)"
+check "a DECLARE initializer other than current_setting fails" 1 "$TMP/do-initializer.sql" 'an initializer inside DO'
+
+mutate do-call "s.replace('END\n\$guard\$;', \"    IF format('%s', r) = '' THEN RAISE EXCEPTION 'x'; END IF;\nEND\n\$guard\$;\", 1)"
+check "a function call other than pg_has_role/current_setting in the DO block fails" 1 "$TMP/do-call.sql" 'a call to format\(\)'
+
+mutate do-qualified-call "s.replace('END\n\$guard\$;', '    IF public.evil() THEN RAISE EXCEPTION %L; END IF;\nEND\n\$guard\$;', 1)"
+check "a schema-qualified user function call in the DO block fails" 1 "$TMP/do-qualified-call.sql" 'a call to public.evil\(\)'
+
 echo
 echo "check-roles-reference: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

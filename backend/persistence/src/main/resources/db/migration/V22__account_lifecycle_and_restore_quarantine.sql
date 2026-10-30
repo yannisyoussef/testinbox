@@ -26,15 +26,21 @@ SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM beta_admission);
 -- (roles.reference.sql refuses an owner layout). Rechecked by every lifecycle
 -- write transaction AND by the triggers below, so a runtime role holding plain
 -- DML on these tables still cannot change account state or lift quarantine.
+--
+-- Both functions pin `search_path = pg_catalog, public, pg_temp` (pg_temp
+-- LAST, the V8/V10/V21 rule in docs/dev/production.md) and schema-qualify
+-- every catalog reference: PostgreSQL otherwise searches the caller's
+-- temporary schema first for relations, and a runtime role could create a
+-- temporary `pg_class` holding a forged owner row and pass as the operator.
 CREATE FUNCTION lifecycle_operator_authorized() RETURNS boolean
-    LANGUAGE sql STABLE AS
+    LANGUAGE sql STABLE SET search_path = pg_catalog, public, pg_temp AS
 $$
-    SELECT pg_has_role(current_user, c.relowner, 'MEMBER')
-      FROM pg_class c WHERE c.oid = 'public.human_account'::regclass
+    SELECT pg_catalog.pg_has_role(current_user, c.relowner, 'MEMBER')
+      FROM pg_catalog.pg_class c WHERE c.oid = 'public.human_account'::pg_catalog.regclass
 $$;
 
 CREATE FUNCTION lifecycle_require_operator() RETURNS trigger
-    LANGUAGE plpgsql AS
+    LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
     -- Nested, not one AND: PL/pgSQL does not short-circuit, and only
@@ -63,6 +69,15 @@ CREATE TRIGGER human_account_lifecycle_authority BEFORE UPDATE OF state OR DELET
 CREATE TRIGGER lifecycle_restore_clearance_authority BEFORE INSERT OR UPDATE OR DELETE ON lifecycle_restore_clearance
     FOR EACH ROW EXECUTE FUNCTION lifecycle_require_operator();
 CREATE TRIGGER lifecycle_restore_clearance_truncate BEFORE TRUNCATE ON lifecycle_restore_clearance
+    FOR EACH STATEMENT EXECUTE FUNCTION lifecycle_require_operator();
+-- Membership decides eligibility, so it is operator-only after insertion:
+-- re-pointing a suspended workspace's place at another, ACTIVE account would
+-- otherwise make that workspace eligible again. AdmitBetaParticipant only
+-- INSERTs; the erasure step's UPDATE and the account FK's ON DELETE SET NULL
+-- run inside the operator's own transaction.
+CREATE TRIGGER beta_admission_lifecycle_authority BEFORE UPDATE OR DELETE ON beta_admission
+    FOR EACH ROW EXECUTE FUNCTION lifecycle_require_operator();
+CREATE TRIGGER beta_admission_lifecycle_truncate BEFORE TRUNCATE ON beta_admission
     FOR EACH STATEMENT EXECUTE FUNCTION lifecycle_require_operator();
 
 -- Current participant eligibility, derived from the durable marker, the

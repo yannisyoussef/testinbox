@@ -27,7 +27,14 @@
 #   * any psql meta-command other than `\set ON_ERROR_STOP on` (an `\i`,
 #     `\gexec` or `\!` would run text this guard never saw);
 #   * block comments (`/* … */`), which would make the comment stripping above
-#     ambiguous.
+#     ambiguous;
+#   * privileges the Ops grant contract does not model: any `ON SCHEMA` grant
+#     other than USAGE, any `ON DATABASE` grant, `ALTER DEFAULT PRIVILEGES`, and
+#     role-membership grants (`GRANT <role> TO …`, a GRANT with no ON);
+#   * inside the DO block, any `:=` other than the three reviewed DECLARE
+#     initializers `<name> text := current_setting('testinbox.<x>_role');`, and
+#     any function call other than pg_has_role and current_setting (catalog
+#     reads such as `FROM pg_roles` are not calls).
 #
 # Usage: scripts/check-roles-reference.sh [path]   (default: the repository's)
 set -euo pipefail
@@ -109,6 +116,29 @@ else:
             f"{match.group(1).upper()} inside the DO $guard$ block (it may only read and raise)"
         )
 
+if len(do_blocks) == 1 and do_blocks[0].group(1) == "$guard$":
+    raw_body = do_blocks[0].group(2)
+    body_start = do_blocks[0].start(2)
+    split = re.search(r"\bBEGIN\b", raw_body, re.IGNORECASE)
+    declare = raw_body[: split.start()] if split else raw_body
+    statements = raw_body[split.start():] if split else ""
+    initializer = re.compile(r"^\s*[A-Za-z_][A-Za-z_0-9]*\s+text\s*:=\s*current_setting\('testinbox\.(api|ingestion|monitor)_role'\);\s*$")
+    for line in declare.split("\n"):
+        if ":=" in line and not initializer.match(line):
+            findings.append(
+                f"line {line_of(code, body_start + raw_body.index(line))}: an initializer inside DO $guard$ other than "
+                "<name> text := current_setting('testinbox.<x>_role')"
+            )
+    for match in re.finditer(r":=", strip_strings(statements)):
+        findings.append(f"line {line_of(code, body_start + (split.start() if split else 0) + match.start())}: an assignment (:=) inside the DO $guard$ block")
+    allowed_calls = {"current_setting", "pg_has_role", "exists", "if", "elsif", "and", "or", "not", "in", "any", "when", "then"}
+    for match in re.finditer(r"\b([A-Za-z_][A-Za-z_0-9.]*)\s*\(", strip_strings(raw_body)):
+        if match.group(1).lower() not in allowed_calls:
+            findings.append(
+                f"line {line_of(code, body_start + match.start())}: a call to {match.group(1)}() inside the DO $guard$ block "
+                "(only pg_has_role and current_setting are reviewed)"
+            )
+
 top = code
 for block in reversed(do_blocks):
     top = top[:block.start()] + "\n" * block.group(0).count("\n") + top[block.end():]
@@ -131,6 +161,23 @@ for number, line in enumerate(top.split("\n"), start=1):
         findings.append(f"line {number}: a psql meta-command after a statement (e.g. \\gexec) — only \\set ON_ERROR_STOP on is reviewed")
     for word in re.finditer(r"\b(SET|RESET)\b", strip_strings(line), re.IGNORECASE):
         findings.append(f"line {number}: {word.group(1).upper()} outside the three reviewed input lines")
+
+for statement in strip_strings(top).split(";"):
+    words = " ".join(statement.split())
+    upper = words.upper()
+    where = f"line {line_of(top, top.find(statement.strip()[:40])) if statement.strip() else 0}"
+    if re.search(r"\bALTER DEFAULT PRIVILEGES\b", upper):
+        findings.append(f"{where}: ALTER DEFAULT PRIVILEGES (future objects would bypass the reviewed allow-list)")
+    if not upper.startswith("GRANT "):
+        continue
+    if " ON " not in f" {upper} ":
+        findings.append(f"{where}: a role-membership GRANT (GRANT <role> TO …) — membership is not modelled by the Ops contract")
+        continue
+    if re.search(r"\bON DATABASE\b", upper):
+        findings.append(f"{where}: a GRANT ON DATABASE — database privileges are not modelled by the Ops contract")
+    schema = re.match(r"^GRANT (.*?) ON SCHEMA\b", upper)
+    if schema and schema.group(1).strip() != "USAGE":
+        findings.append(f"{where}: GRANT {schema.group(1).strip()} ON SCHEMA — only USAGE on a schema is reviewed")
 
 if seen_inputs != {"api", "ingestion", "monitor"}:
     findings.append("the three reviewed SET testinbox.*_role input lines are not all present")

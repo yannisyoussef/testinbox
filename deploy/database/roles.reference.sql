@@ -61,6 +61,12 @@ BEGIN
         IF r = current_user THEN
             RAISE EXCEPTION 'roles.reference.sql: % is the schema owner running this file, not a deployable role; nothing was changed', r;
         END IF;
+        -- A member of the owner holds every owner privilege whatever is revoked
+        -- below, including the V22 account-lifecycle operator authority.
+        IF pg_has_role(r, current_user, 'MEMBER') THEN
+            RAISE EXCEPTION 'roles.reference.sql: % is a member of the schema owner %, so it holds every owner privilege and the account-lifecycle operator authority; nothing was changed',
+                r, current_user;
+        END IF;
     END LOOP;
     IF (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = ingestion)
         OR pg_has_role(ingestion, api, 'MEMBER')

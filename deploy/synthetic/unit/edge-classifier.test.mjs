@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyUnknownHostProbe } from "../src/edge.mjs";
+import { API_HOST_ACCOUNT_PROBES, classifyApiHostAccountProbe, classifyUnknownHostProbe } from "../src/edge.mjs";
 
 /**
  * Self-tests for the unknown-Host classifier.
@@ -130,4 +130,52 @@ test("a generic edge error page mentioning neither TestInbox nor a correlation i
 
   const traefik = classifyUnknownHostProbe({ status: 404, headers: { server: "traefik" }, body: "404 page not found" });
   assert.equal(traefik.served, false);
+});
+
+
+test("the API host answering the account boundary is caught, open or closed", () => {
+  const open = classifyApiHostAccountProbe({ status: 200, headers: {}, body: '{"methods":["email"]}' });
+  assert.equal(open.served, true);
+  const closed = classifyApiHostAccountProbe({
+    status: 503,
+    headers: { "x-correlation-id": "c" },
+    body: '{"type":"https://testinbox.email/problems/accounts-unavailable","status":503}',
+  });
+  assert.equal(closed.served, true);
+  const incomplete = classifyApiHostAccountProbe({
+    status: 503,
+    headers: {},
+    body: '{"type":"https://testinbox.email/problems/signin-unavailable"}',
+  });
+  assert.equal(incomplete.served, true);
+  const cookie = classifyApiHostAccountProbe({ status: 401, headers: { "set-cookie": ["__Host-ti_login=x; Secure"] }, body: "" });
+  assert.equal(cookie.served, true);
+  assert.equal(classifyApiHostAccountProbe({ status: 204, headers: {}, body: "" }).served, true);
+});
+
+test("an edge refusal, a web 404 or the API's own /v1 401 is not the account boundary", () => {
+  assert.equal(classifyApiHostAccountProbe({ status: 404, headers: {}, body: "404 page not found" }).served, false);
+  assert.equal(classifyApiHostAccountProbe({ status: 400, headers: {}, body: "Bad Request" }).served, false);
+  assert.equal(
+    classifyApiHostAccountProbe({
+      status: 401,
+      headers: { "x-correlation-id": "c" },
+      body: '{"type":"https://testinbox.email/problems/unauthorized","status":401}',
+    }).served,
+    false,
+  );
+  assert.equal(classifyApiHostAccountProbe({ status: 404, headers: { "x-powered-by": "Next.js" }, body: "<html>404</html>" }).served, false);
+  assert.equal(classifyApiHostAccountProbe({ error: "ECONNRESET" }).served, false);
+});
+
+test("the API-host account probe fails closed on what it cannot interpret", () => {
+  for (const error of ["ETIMEDOUT", "ENOTFOUND"]) assert.equal(classifyApiHostAccountProbe({ error }).served, true);
+  assert.equal(classifyApiHostAccountProbe({}).served, true);
+  assert.equal(classifyApiHostAccountProbe({ status: 101, headers: {}, body: "" }).served, true);
+});
+
+test("the probes include the dot-segment forms an edge may route as /v1", () => {
+  assert.ok(API_HOST_ACCOUNT_PROBES.includes("/account/methods"));
+  assert.ok(API_HOST_ACCOUNT_PROBES.some((path) => path.startsWith("/v1/../")));
+  assert.ok(API_HOST_ACCOUNT_PROBES.some((path) => /^\/v1\/%2e%2e\//i.test(path)));
 });
