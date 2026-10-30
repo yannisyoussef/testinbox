@@ -374,6 +374,13 @@ cleanup evidence. Recovery is hold-first and operator-reconciled; see
 [cohort storage](cohort-storage.md). Neither a successful migration nor a
 backup restore authorizes reopening registration.
 
+**The conditional production `ALL` rule (TI-DELIVERY-002b) adds no
+migration.** An artifact from before it refuses `ALL` in production
+unconditionally, so rolling production back below it while `ALL` is set fails
+startup — closed, never open. That is not a rollback path: production under
+`ALL` already carries the semantic floor above, and the hold-first procedure
+applies ("Rolling back across TI-DELIVERY-001 in production", below).
+
 ## The workspace-scoped NOTIFY payload (TI-DELIVERY-001)
 
 Since TI-DELIVERY-001, both deployables emit `pg_notify` with the payload

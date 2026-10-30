@@ -8,51 +8,43 @@ evidence.
 
 ## Verdict
 
-**The application side of ADR-037 is implemented and tested; it cannot be
-activated in production by configuration alone.** Two engineering items stand
-between today's artifact and a first participant admission with storage
-enforcement, and both are deliberate gates rather than defects:
+**Updated 2026-10-30 (TI-DELIVERY-002b, branch `feature/ti-delivery-002b-storage`).**
+The application side of ADR-037 is implemented and tested, and the release
+paths that were proven only by the TI-DELIVERY-001 native rehearsal now have
+automated tests (below). **Production still cannot run `ALL`** — not because
+of an unconditional refusal any more, but because the one remaining
+condition is Ops evidence that does not exist yet:
 
-1. **`DeploymentSafety` refuses `TESTINBOX_STORAGE_ENFORCEMENT=ALL` in
-   production unconditionally**
-   (`backend/application/src/main/kotlin/email/testinbox/application/deployment/DeploymentSafety.kt`,
-   the `ALL`/`TENANT_LIMITS` + `ProductionPolicy.ENVIRONMENT` checks;
-   `StorageEnforcementSafetyTest` — "ALL is refused in production until the
-   envelope-order mitigation exists, and allowed elsewhere", "TENANT_LIMITS is
-   refused in production - dark staging qualification only, it does not contain
-   the filesystem"). Admission needs an `ALL`-mode pool: `ReserveCohortStorage`
-   requires `enforcement == ALL`, `CohortStorageRuntime.ready` returns `false`
-   for any other mode, and V21's node fence requires `cohort_mode = 'ALL'` once
-   a plan or participant exists. **So no participant can be admitted in
-   production while that refusal stands.** The refusal names mitigations A
-   (envelope-order oracle) and B (single-sender amplification) of ADR-035
-   Amendment 2 §A2.7; ADR-037 accepted the bounded-beta answer to both (§5
-   full-envelope pricing, implemented as M4a; §1–§2 non-overcommitted shares,
-   M4c/M4d), but ADR-037 also says "Do not remove the production ALL refusal
-   until every explicit mitigation and required qualification record is
-   independently reviewable and tested". Lifting it is therefore a reviewed
-   code change — scoped, for example, to "ALL in production only with a
-   complete cohort declaration" — made under the consolidated release decision.
-   It is not written here. `TENANT_LIMITS` stays refused in production for
-   good (ADR-037).
-2. **No shipped qualification record matches the current artifact.** The
-   binary declares upload implementation `adr035-presigned-put-v2`
-   (`StorageProtocol.UPLOAD_IMPLEMENTATION_VERSION`); both records in
-   `backend/storage/src/main/resources/adr035-qualification/` declare `v1`, and
-   the match compares the upload version (`DeploymentSafety`,
-   `QualificationMatch.compareAll`). The staging record is
-   `enablementEligible: true` but stale for v2; the laptop record is not
-   eligible (`QualificationRecordsTest` — "the artifact ships the laptop record,
-   and it is loaded, complete and NOT enablement-eligible";
-   `DeploymentSafetyCheckTest` — "declaring the laptop backend identity still
-   refuses - its record has no runtime-config hash, so no match completes"). A
-   lab record is refused outside `TESTINBOX_ENVIRONMENT=lab`, and `lab` cannot
-   wear the production profile (`StorageEnforcementSafetyTest` — "a lab record
-   is refused in production, on top of everything production refuses", "the lab
-   environment cannot wear the production profile"). So **no non-lab
-   environment can run a non-OFF mode with today's artifact**. Closing this
-   needs Ops to qualify the production backend combination (ADR-035 §18 gate 7a,
-   including `slow-W`) and an engineering pull request that ships that record.
+1. **Done in TI-DELIVERY-002b: the production `ALL` refusal is conditional.**
+   `DeploymentSafety` (`ProductionAllConditions`) refuses
+   `TESTINBOX_STORAGE_ENFORCEMENT=ALL` in production unless every
+   startup-checkable condition holds: a shipped, enablement-eligible record
+   matching the declared identity and the running upload implementation, with
+   `platformClass` `production-host`, the ADR-035 Amendment 2 `filesystem`
+   elements (the measured *O_max* and E7 figure) and E1–E11 recorded as
+   `PASS`, not contradicting itself; a declared *O_max* at least the measured
+   one; a declared node identity; declarations that hold the thirty shares,
+   the worst envelope and finalization before any legacy share; a computable
+   cohort binding. Each unmet condition is named; nothing can skip them. The
+   pool, observations, nodes and role separation stay runtime gates
+   (admission answers `CAPACITY_UNAVAILABLE`). `TENANT_LIMITS` stays refused
+   in production for good, `OFF` and staging are unchanged. ADR-035 carries a
+   dated amendment note (2026-10-30) recording this; ADR-037 already ties the
+   refusal to "every explicit mitigation and required qualification record"
+   and does not mandate an unconditional refusal, so there is no
+   contradiction. Tests: `ProductionAllSafetyTest` (17 cases),
+   `StorageEnforcementSafetyTest` — "ALL is refused in production without a
+   production-qualified record, and allowed elsewhere",
+   `DeploymentSafetyCheckTest` — "production ALL with every declaration and
+   the shipped staging identity fails startup, naming the reason".
+2. **Remaining: no shipped record satisfies it.** The binary declares
+   `adr035-presigned-put-v2`; both shipped records declare `v1`, neither is
+   `production-host`, and neither carries the Amendment 2 filesystem elements
+   (`QualificationRecordsTest` — "no record shipped in this artifact can back
+   production ALL - the Ops-evidenced v2 record does not exist yet"). No
+   record was created, relabelled or promoted. What Ops must produce, and how
+   the record is added once it exists, is in
+   [production.md, "Storage activation"](../../dev/production.md#storage-activation).
 
 Everything else on the path is either proven by tests (below) or is Ops
 evidence the application cannot produce.
@@ -177,26 +169,67 @@ and API tests against real PostgreSQL via Testcontainers).
   mapping without unknown service fields", "partial footprint is a protocol
   error rather than an invented cleanup zero".
 
-### What is proven only by the TI-DELIVERY-001 native rehearsal, not by CI
+### The release path, now proven in CI (formerly rehearsal-only)
 
-These were demonstrated once, end to end, in the M4d real native rehearsal
-(isolated `ALL` deployment with a **lab-only** startup record — explicitly not
-enablement evidence; see `ti-delivery-001/STATUS.md`, M4d). They are not
-automated tests in this repository:
+TI-DELIVERY-001's M4d native rehearsal (with a **lab-only** startup record,
+never enablement evidence) was the only proof of these paths. Each now has an
+automated test in the normal backend build, on real PostgreSQL (and the
+pinned MinIO for SMTP):
 
-- the real, unmocked `cohortStorageReadiness` bean admitting against a reserved
-  pool (API tests mock it; persistence tests drive the same predicate through a
-  helper);
-- an SMTP `250` with no message stored for a `WORKSPACE_FOOTPRINT_LIMIT`
-  refusal (no ingestion/E2E test asserts the reply for that reason);
-- the `storage-budget reserve|check|revoke` subcommand end to end
-  (`CohortBudgetCommand.run` has no test; its input parser and the use case it
-  calls do);
-- an HTTP response carrying a populated `footprint` object (API HTTP tests run
-  with storage `OFF`).
+- **Unmocked admission readiness against a reserved pool** —
+  `CohortAdmissionReadinessTest` (api module, isolated database): the
+  production factory `HumanAccountWiring.cohortStorageReadiness` — the very
+  `@Bean` method the API wires, unmocked — with a pool reserved by the real
+  `ReserveCohortStorage`, admits through the real `AdmitBetaParticipant` over
+  `JdbcBetaAdmissions` ("a reserved, matching pool and the real readiness bean
+  admit participants with fixed shares"). `CAPACITY_UNAVAILABLE`, with nothing
+  provisioned, for: no pool, a revoked pool, an overcommitted legacy share, an
+  unknown workspace, an incompatible or undeclared node (and the fence
+  latches), a node with another binding, untrusted counts, an observation of
+  a smaller filesystem, and declarations that differ from the pool (another
+  monitor, another node inventory, a non-`ALL` mode); `capacity_ready` cannot
+  be bypassed in either direction. The Spring container itself is not
+  started: cohort state is global, so the suite owns its database.
+- **`storage-budget` end to end** — `CohortBudgetCommandTest`:
+  `CohortBudgetCommand.run` with a reviewed JSON file against a real migrated
+  database: check → reserve → check → revoke; a file differing from the
+  installed pool; refusal while admissions or capacity are open (nothing
+  written); wrong declarations (`OFF`, a `G_F` that cannot hold the shares,
+  declarations the nodes were not started with — rolled back, a misspelt
+  member, negative or fractional allowances); a missing, duplicated, empty or
+  incomplete legacy inventory; credentials only from the environment; and the
+  bounded operator transaction — a held cohort row aborts `reserve` at the
+  5 s lock bound, observed waiting as `ops:cohort-budget`, with nothing
+  written. (The command now tags its own session `ops:cohort-budget` and
+  refuses credentials in the JDBC URL, as `admission` does.)
+- **Quota refusal with uniform SMTP and nothing persisted** —
+  `SmtpCohortQuotaRefusalTest` (ingestion, real SMTP gateway, real adapters,
+  a READY reserved pool): a participant exactly at its 128 MiB payload share
+  and one at its 256 MiB footprint share get byte-for-byte the unknown
+  recipient's transcript; no message or attachment row, no upload, no listed
+  object, no reservation, no ambiguity; only `inbox_storage` records
+  `WORKSPACE_LIMIT` / `WORKSPACE_FOOTPRINT_LIMIT`. A legacy workspace in the
+  same pool still receives (positive control).
+- **Private footprint and pending cleanup over HTTP** —
+  `FootprintUsageApiTest`: `GET /v1/workspace/storage` carries the six-member
+  `footprint` object for a workspace with an explicit share; after the inbox
+  is deleted and swept, the charge remains as `pendingCleanupBytes`, counted
+  once in `usedBytes`, equal to T1's own charge from `JdbcFootprintGate` /
+  `CohortSql`; no global member; another tenant sees no footprint.
+- **Failure when capacity, configuration or node identity does not match** —
+  at startup `ProductionAllSafetyTest` (missing/ineligible/mismatched/lab-only
+  record, wrong upload version, another backend, missing or contradictory
+  Amendment 2 elements, *O_max* one byte under, capacity that cannot hold the
+  cohort, unproven or unbindable declarations, no node identity, a node
+  outside the inventory); at runtime the readiness negatives above.
 
-These are coverage gaps, not known defects. Each is worth an automated test
-before activation; none blocks reading the design as correct.
+The deployment gate's `storage.test.mjs` now asserts the enforcement mode the
+environment declares (`TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED`, default
+`OFF`; unit-tested in `deploy/synthetic/unit/storage-mode.test.mjs`) instead
+of a hard-coded `OFF`, and `check-storage-activation.sh` has a gate G whose
+detail and evidence JSON (`cohortGate`) state that the cohort gate is
+`storage-budget check`; given that command's output it records PASS or
+BLOCKED (self-tested in `check-storage-activation.test.sh`).
 
 ## What only Ops can establish
 
@@ -235,8 +268,10 @@ observation:
    with trusted footprint counts and a valid watermark; the filesystem identity
    matches the declaration.
 6. **Qualification**: the production backend combination qualified with
-   `slow-W` and recorded as an enablement-eligible record for upload
-   implementation `v2` (engineering item 2 ships it).
+   `slow-W` and E1–E11 on the recreated production filesystem, recorded as an
+   enablement-eligible `production-host` record for upload implementation
+   `v2` with the Amendment 2 `filesystem` elements (item 2 ships it; the
+   evidence list is in production.md, "Storage activation").
 7. **The offline reservation**: the reviewed pool JSON (declarations, exact
    legacy list, unattributed and trash allowances) and the schema-owner
    credential through the normal secret mechanism, session tagged
@@ -250,10 +285,11 @@ consolidated TI-DELIVERY-002 release decision.
 1. **Prerequisites outside storage**: the TI-DELIVERY-002 lifecycle (stream L:
    suspension, revocation, deletion, restore quarantine) and admission controls
    (stream A) integrated, released and reviewed; Ops MD1/md1 fixed.
-2. **Engineering item 2**: Ops qualifies the production combination; a pull
-   request ships the eligible `v2` record in the artifact.
-3. **Engineering item 1**: a reviewed change permits `ALL` in production under
-   the stated conditions; `TENANT_LIMITS` stays refused.
+2. **Item 2**: Ops qualifies the production combination; a pull request
+   ships the eligible `production-host` `v2` record in the artifact.
+3. **Item 1** (done in TI-DELIVERY-002b, pending review): `ALL` in production
+   is permitted only under the stated conditions; `TENANT_LIMITS` stays
+   refused.
 4. **Promote** that artifact (release pull request, `Production handoff`), with
    `TESTINBOX_STORAGE_ENFORCEMENT=OFF` still in effect and accounts disabled.
 5. **Data plane, in this order** (cohort-storage.md): stage the candidate
@@ -262,10 +298,10 @@ consolidated TI-DELIVERY-002 release decision.
 6. **Ops evidence**: declarations, legacy inventory, monitor observations,
    node inventory and replacement model; run
    `scripts/check-storage-activation.sh` and record its JSON in
-   `production-ops-acceptance.md`. Note that the script has **no cohort gate**:
-   it does not read `storage_cohort_plan`, participant shares or legacy shares
-   (only gate F's privilege query mentions the cohort tables). The cohort proof
-   is `storage-budget check`/`reserve` in step 9.
+   `production-ops-acceptance.md`. The script does not recompute the cohort
+   proof: its gate G reports NOT REQUIRED here and names `storage-budget
+   check` as the cohort gate (the evidence JSON says so in `cohortGate`); the
+   proof is `storage-budget check`/`reserve` in step 9.
 7. **Record the semantic rollback floor**: from the first pool row or
    participant marker there is no artifact rollback below this release, only
    the hold-first procedure (rollback.md, "Rolling back across TI-DELIVERY-001").
@@ -274,29 +310,33 @@ consolidated TI-DELIVERY-002 release decision.
    deployment synthetics.
 9. **Reserve the pool offline**: `storage-budget check` with the reviewed file,
    then `reserve` (admissions and `capacity_ready` must be closed; it refuses
-   otherwise), then `check` again.
+   otherwise), then `check` again. Re-run the activation script with
+   `--cohort-check-output <that check's stdout>` so gate G records PASS in the
+   evidence.
 10. **Open, deliberately**: set `capacity_ready`, then — when someone is
     watching admissions (see the sybil note in abuse-model.md) — enable accounts
     on API and site and open `admissions_open`. Run `npm run test:accounts`
-    with `TESTINBOX_ACCOUNTS_EXPECTED=enabled` and the declared methods. The
-    deployment gate's `storage.test.mjs` still passes under `ALL` (a fresh inbox
-    records no refusal), but its name and message say enforcement is `OFF`;
-    adjust them at this step so the gate does not assert something untrue.
+    with `TESTINBOX_ACCOUNTS_EXPECTED=enabled` and the declared methods. From
+    step 8 on, run the deployment gate with
+    `TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED=ALL`: `storage.test.mjs` asserts
+    the declared mode, and fails if a workspace `footprint` report disagrees.
 
 ## The exact remaining engineering gap
 
-- **Required before any production admission:** items 1 and 2 above — the
-  conditional lifting of the production `ALL` refusal, and an eligible
-  qualification record for upload implementation `v2` (after Ops qualifies
-  the production combination).
-- **Recommended before activation** (coverage, not correctness): an automated
-  test of the unmocked readiness bean against a reserved pool; an ingestion or
-  E2E assertion that a `WORKSPACE_FOOTPRINT_LIMIT` refusal answers `250` and
-  stores nothing; an end-to-end test of `CohortBudgetCommand.run`; an HTTP test
-  with a populated `footprint`; a cohort gate in
-  `check-storage-activation.sh` (or an explicit statement in its evidence
-  format that `storage-budget check` is the cohort gate); and the
-  `storage.test.mjs` rename in step 10.
+- **Required before any production admission:** the Ops-evidenced,
+  enablement-eligible `production-host` qualification record for upload
+  implementation `adr035-presigned-put-v2`, with the Amendment 2 `filesystem`
+  elements and E1–E11 recorded as `PASS`, shipped in the artifact by a later
+  pull request — and the Ops evidence rows above (capacity, legacy inventory,
+  grants after MD1/md1, node inventory and replacement model, monitor
+  observations, the reviewed pool file). Nothing else in the application
+  stands between that record and a conditional production `ALL`; the
+  conditional rule itself awaits the consolidated release review.
+- **Closed by TI-DELIVERY-002b:** the conditional production `ALL` rule; the
+  CI tests of the unmocked readiness bean, `CohortBudgetCommand.run`, the
+  `250`/nothing-stored footprint refusal and the populated HTTP `footprint`;
+  gate G in `check-storage-activation.sh`; the declared-mode
+  `storage.test.mjs`.
 - **Added by this stream:** `scripts/check-roles-reference.sh` (and its test,
   run in CI) keeps `deploy/database/roles.reference.sql` in the reviewed shape
   until Ops fixes MD1/md1: no `set_config`, no `search_path`, no `ti.*` name,

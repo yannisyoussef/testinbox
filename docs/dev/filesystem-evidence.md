@@ -195,6 +195,10 @@ staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
    is deployed and writing.
 5. Gates A–E, Q and F all pass on one run, and Ops attach the `--json`
    record to the enablement row in `production-ops-acceptance.md`.
+   Gate G is NOT REQUIRED on that run and says why: the cohort gate is
+   `storage-budget check`, which can pass only after the switch to `ALL` and
+   the reservation (cohort-storage.md); re-run with `--cohort-check-output`
+   to record its PASS before `capacity_ready` is set.
 
 ## Running an enforcing mode in the isolated lab (issue #102)
 
