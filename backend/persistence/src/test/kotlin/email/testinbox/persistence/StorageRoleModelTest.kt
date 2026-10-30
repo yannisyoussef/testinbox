@@ -3,6 +3,7 @@ package email.testinbox.persistence
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.types.shouldBeInstanceOf
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.jdbc.core.simple.JdbcClient
@@ -607,6 +608,82 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
             .sql("SELECT admissions_open OR capacity_ready FROM beta_cohort")
             .query(Boolean::class.javaObjectType)
             .single() shouldBe false
+    }
+
+    @Test
+    fun `under psql the API cannot write lifecycle state by grant, yet still signs in, locks accounts and admits`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+        db.login(api)
+        db.login(ingestion)
+        db.login(monitor)
+        db.psqlReference(api, ingestion, monitor).exitCode shouldBe 0
+        // Grant-level barriers on top of the V22 triggers (STATUS "Required Ops changes" 10): the
+        // API keeps exactly the column privilege a row lock needs on human_account.
+        val privileges = db.effectivePrivileges(api)
+        privileges.getValue("human_account").filter { it.startsWith("UPDATE") } shouldBe listOf("UPDATE(id)")
+        privileges.getValue("beta_admission").none { it.startsWith("UPDATE") || it == "DELETE" } shouldBe true
+        privileges.getValue("lifecycle_restore_clearance") shouldBe READ
+        val account =
+            email.testinbox.domain.identity
+                .HumanAccountId(UUID.randomUUID())
+        db.jdbc
+            .sql("INSERT INTO human_account VALUES (:id,'grant-fixture@example.invalid',now(),'ACTIVE',now())")
+            .param("id", account.value)
+            .update()
+        val source = db.roleSource(api)
+        val asApi = JdbcClient.create(source)
+        val tx =
+            SpringTransactionRunner(
+                org.springframework.jdbc.datasource
+                    .DataSourceTransactionManager(source),
+            )
+        // Refused by the grant itself, not only by the trigger behind it.
+        failure { asApi.sql("UPDATE human_account SET state = 'SUSPENDED' WHERE id = ?").param(account.value).update() } shouldContain
+            "permission denied"
+        failure { asApi.sql("UPDATE human_account SET contact_email = contact_email WHERE false").update() } shouldContain
+            "permission denied"
+        failure { asApi.sql("UPDATE beta_admission SET account_id = account_id WHERE false").update() } shouldContain
+            "permission denied"
+        failure { asApi.sql("DELETE FROM beta_admission WHERE false").update() } shouldContain "permission denied"
+        failure { asApi.sql("INSERT INTO lifecycle_restore_clearance (id) VALUES (1)").update() } shouldContain
+            "permission denied"
+        failure { asApi.sql("DELETE FROM lifecycle_restore_clearance WHERE false").update() } shouldContain "permission denied"
+        // ...while every API path that touches these tables still runs under the same role:
+        // session issuance and authentication (FOR NO KEY UPDATE on the account), admission
+        // (FOR UPDATE on the account and the cohort row, INSERT into beta_admission), and the
+        // V22 readiness probe (SELECT on the clearance).
+        val sessions = JdbcHumanSessions(asApi)
+        val clock = java.time.Clock.systemUTC()
+        val issued =
+            checkNotNull(
+                email.testinbox.application.usecase
+                    .IssueHumanSession(sessions, tx, clock)
+                    .execute(account),
+            )
+        email.testinbox.application.usecase
+            .AuthenticateHumanSession(sessions, tx, clock)
+            .execute(issued.credential.value)!!
+            .account.id shouldBe account
+        db.jdbc.sql("UPDATE beta_cohort SET admissions_open = true, capacity_ready = true").update()
+        email.testinbox.application.usecase
+            .AdmitBetaParticipant(
+                JdbcBetaAdmissions(asApi),
+                tx,
+                clock,
+                email.testinbox.application.storage
+                    .CohortStorageReadiness { true },
+            ).execute(account)
+            .shouldBeInstanceOf<email.testinbox.application.usecase.AdmitBetaParticipant.Result.Admitted>()
+        JdbcLifecyclePrivilegeProbe(asApi, "api").api() shouldBe null
+        asApi
+            .sql("SELECT count(*) FROM lifecycle_restore_clearance")
+            .query(Long::class.javaObjectType)
+            .single() shouldBe 1
+        db.jdbc
+            .sql("SELECT state FROM human_account WHERE id = ?")
+            .param(account.value)
+            .query(String::class.java)
+            .single() shouldBe "ACTIVE"
     }
 
     @Test
