@@ -16,6 +16,7 @@ class JdbcBetaAdmissionControls(
 ) : BetaAdmissionControls {
     override fun lockPolicy(): BetaCohortPolicy {
         requireTransaction()
+        OperatorTransactionBounds.apply(jdbc)
         return policy("SELECT admissions_open, capacity_ready FROM beta_cohort WHERE id = :cohort FOR UPDATE")
     }
 

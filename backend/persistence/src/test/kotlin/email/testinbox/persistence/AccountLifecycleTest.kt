@@ -534,4 +534,214 @@ class AccountLifecycleTest : PersistenceIntegrationTest() {
         // A workspace without a marker is legacy and unaffected by lifecycle or quarantine.
         JdbcWorkspaceEligibility(empty.jdbc).status(WorkspaceId(empty.workspace())) shouldBe WorkspaceStatus.LEGACY
     }
+
+    /** A login role holding the runtime API's grant shape: plain DML on every table, TRUNCATE where a trigger must refuse it. */
+    private fun World.runtimeRole(): Pair<String, String> {
+        val role = "ti_rt_${UUID.randomUUID().toString().take(8)}"
+        db.jdbc.sql("CREATE ROLE $role LOGIN PASSWORD 'pw-$role'").update()
+        db.jdbc.sql("GRANT CONNECT, TEMPORARY ON DATABASE ${db.name} TO $role").update()
+        db.jdbc.sql("GRANT USAGE ON SCHEMA public TO $role").update()
+        db.jdbc.sql("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO $role").update()
+        db.jdbc.sql("GRANT TRUNCATE ON lifecycle_restore_clearance, beta_admission, participant_workspace TO $role").update()
+        return role to "pw-$role"
+    }
+
+    private fun refusal(block: () -> Unit): String =
+        generateSequence(runCatching(block).exceptionOrNull() ?: error("expected a refusal")) { it.cause }
+            .joinToString(" | ") { it.message.orEmpty() }
+
+    @Test
+    fun `a temporary pg_class with a forged owner row does not make a runtime role the operator`() {
+        val w = World()
+        val (account, _) = w.participant()
+        w.done(w.change.execute(account, AccountLifecycleAction.SUSPEND))
+        // The restore quarantine: the clearance row is absent.
+        w.db.jdbc
+            .sql("DELETE FROM lifecycle_restore_clearance")
+            .update()
+        val (role, password) = w.runtimeRole()
+        // One session throughout: a temporary table lives only in its own session.
+        java.sql.DriverManager
+            .getConnection(postgres.jdbcUrl.substringBeforeLast('/') + "/" + w.db.name, role, password)
+            .use { connection ->
+                val session =
+                    JdbcClient.create(
+                        org.springframework.jdbc.datasource
+                            .SingleConnectionDataSource(connection, true),
+                    )
+                session.sql("CREATE TEMP TABLE pg_class (oid oid, relowner oid)").update()
+                session
+                    .sql(
+                        "INSERT INTO pg_class VALUES ('public.human_account'::pg_catalog.regclass, " +
+                            "(SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user))",
+                    ).update()
+                // The unqualified name now resolves to the forgery in this session...
+                session
+                    .sql("SELECT count(*) FROM pg_class")
+                    .query(Long::class.java)
+                    .single() shouldBe 1
+                // ...but the pinned, qualified V22 functions never read it.
+                session
+                    .sql("SELECT public.lifecycle_operator_authorized()")
+                    .query(Boolean::class.java)
+                    .single() shouldBe false
+                refusal {
+                    session
+                        .sql(
+                            "UPDATE human_account SET state = 'ACTIVE' WHERE id = ?",
+                        ).param(account.value)
+                        .update()
+                } shouldContain
+                    "requires the operator authority"
+                refusal { session.sql("INSERT INTO lifecycle_restore_clearance (id) VALUES (1)").update() } shouldContain
+                    "requires the operator authority"
+            }
+        w.state(account) shouldBe "SUSPENDED"
+        w.lifecycle.quarantined() shouldBe true
+    }
+
+    @Test
+    fun `membership is operator-only after admission, so a suspended workspace cannot be re-pointed at another account`() {
+        val w = World()
+        val (account, admission) = w.participant()
+        w.done(w.change.execute(account, AccountLifecycleAction.SUSPEND))
+        val active = w.account()
+        val (role, password) = w.runtimeRole()
+        val asRuntime =
+            JdbcClient.create(
+                SimpleDriverDataSource(
+                    org.postgresql.Driver(),
+                    postgres.jdbcUrl.substringBeforeLast('/') + "/" + w.db.name,
+                    role,
+                    password,
+                ),
+            )
+        refusal {
+            asRuntime.sql("UPDATE beta_admission SET account_id = ? WHERE place = ?").params(active.value, admission.place).update()
+        } shouldContain
+            "requires the operator authority"
+        refusal { asRuntime.sql("DELETE FROM beta_admission WHERE place = ?").param(admission.place).update() } shouldContain
+            "requires the operator authority"
+        refusal { asRuntime.sql("TRUNCATE beta_admission CASCADE").update() } shouldContain "requires the operator authority"
+        w.eligibility.status(admission.workspaceId) shouldBe WorkspaceStatus.INACTIVE_PARTICIPANT
+        // Admission itself still provisions: it only inserts.
+        w.participant().second.place shouldBe admission.place + 1
+    }
+
+    @Test
+    fun `a human idempotent mint holding its claim does not deadlock with a suspension`() {
+        val w = World()
+        val (account, admission) = w.participant()
+        val claimed = CountDownLatch(1)
+        val proceed = CountDownLatch(1)
+        val real = JdbcIdempotencyRecords(w.jdbc)
+        // Pauses after the claim row (whose foreign key takes FOR KEY SHARE on the
+        // account) and before the mint reaches the workspace guard.
+        val pausing =
+            object : email.testinbox.application.port.IdempotencyRecords by real {
+                override fun claimForHuman(
+                    scope: email.testinbox.application.port.IdempotencyScope,
+                    keyHash: String,
+                    fingerprint: String,
+                    accountId: HumanAccountId,
+                    now: java.time.Instant,
+                    expiresAt: java.time.Instant,
+                    waitFor: java.time.Duration,
+                ) = real.claimForHuman(scope, keyHash, fingerprint, accountId, now, expiresAt, waitFor).also {
+                    claimed.countDown()
+                    check(proceed.await(30, TimeUnit.SECONDS))
+                }
+            }
+        val create =
+            CreateApiKey(
+                w.apiKeys,
+                clock,
+                idempotency =
+                    email.testinbox.application.idempotency
+                        .Idempotency(pausing, w.tx, clock),
+                guard = w.quotas,
+                eligibility = w.eligibility,
+            )
+        val owner = HumanWorkspaceOwner(account, admission.workspaceId, admission.projectId)
+        val request =
+            email.testinbox.application.idempotency.IdempotencyRequest(
+                requireNotNull(
+                    email.testinbox.domain.idempotency.IdempotencyKey
+                        .of("lifecycle-suspension-race-key"),
+                ),
+                null,
+                account,
+            )
+        val minting =
+            CompletableFuture.supplyAsync {
+                runCatching { create.execute(CreateApiKey.Command(owner, "race", setOf(ApiScope.INBOXES_WRITE), null), request) }
+            }
+        check(claimed.await(30, TimeUnit.SECONDS))
+        // The suspension completes while the claim is held: guard and fence are free,
+        // and FOR NO KEY UPDATE does not wait on the claim's FOR KEY SHARE.
+        w.done(w.change.execute(account, AccountLifecycleAction.SUSPEND)).to shouldBe HumanAccountState.SUSPENDED
+        proceed.countDown()
+        // The mint then reaches the guard, sees the suspension and mints nothing.
+        minting.get(30, TimeUnit.SECONDS).exceptionOrNull().shouldBeInstanceOf<WorkspaceInactiveException>()
+        w.db.jdbc
+            .sql("SELECT count(*) FROM api_key WHERE workspace_id = ?")
+            .param(admission.workspaceId.value)
+            .query(Long::class.java)
+            .single() shouldBe 0
+    }
+
+    @Test
+    fun `an operator transaction waiting on the T1 fence gives up within its bounded lock wait`() {
+        val w = World()
+        val (account, _) = w.participant()
+        w.db.openTransaction().use { holder ->
+            holder.createStatement().use { it.execute("SELECT pg_advisory_xact_lock(35, 1)") }
+            val started = System.nanoTime()
+            refusal { w.change.execute(account, AccountLifecycleAction.SUSPEND) } shouldContain "lock timeout"
+            val waitedMs =
+                java.time.Duration
+                    .ofNanos(System.nanoTime() - started)
+                    .toMillis()
+            (waitedMs < OperatorTransactionBounds.LOCK_TIMEOUT_MS + 5_000) shouldBe true
+            holder.rollback()
+        }
+        w.state(account) shouldBe "ACTIVE"
+    }
+
+    @Test
+    fun `the readiness probe reports a role missing the V22 grants instead of failing every request`() {
+        val w = World()
+        val role = "ti_probe_${UUID.randomUUID().toString().take(8)}"
+        w.db.jdbc
+            .sql("CREATE ROLE $role LOGIN PASSWORD 'pw-$role'")
+            .update()
+        w.db.jdbc
+            .sql("GRANT CONNECT ON DATABASE ${w.db.name} TO $role")
+            .update()
+        w.db.jdbc
+            .sql("GRANT USAGE ON SCHEMA public TO $role")
+            .update()
+        val asRole =
+            JdbcClient.create(
+                SimpleDriverDataSource(
+                    org.postgresql.Driver(),
+                    postgres.jdbcUrl.substringBeforeLast('/') + "/" + w.db.name,
+                    role,
+                    "pw-$role",
+                ),
+            )
+        val probe = JdbcLifecyclePrivilegeProbe(asRole, "test")
+        probe.ingestion() shouldBe JdbcLifecyclePrivilegeProbe.Failure.ELIGIBILITY_VIEW_UNREADABLE
+        w.db.jdbc
+            .sql("GRANT SELECT ON workspace_lifecycle_eligibility TO $role")
+            .update()
+        probe.ingestion() shouldBe null
+        probe.api() shouldBe JdbcLifecyclePrivilegeProbe.Failure.RESTORE_CLEARANCE_UNREADABLE
+        w.db.jdbc
+            .sql("GRANT SELECT ON lifecycle_restore_clearance TO $role")
+            .update()
+        probe.api() shouldBe null
+        // The owner (single-role staging and every local profile) always passes.
+        JdbcLifecyclePrivilegeProbe(w.db.jdbc, "owner").api() shouldBe null
+    }
 }

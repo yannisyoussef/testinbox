@@ -34,7 +34,9 @@ testinbox:
     # Optional. Shared ONLY with the website's /account proxy, which may then
     # name the client address for the sign-in source budget. Unset: every
     # sign-in shares the proxy peer's budget (fail-safe). A set value shorter
-    # than 32 bytes or obviously weak refuses startup. Never logged.
+    # than 32 bytes or obviously weak closes /account (503, like an invalid
+    # public origin) while /v1, ingestion and the synthetics keep serving; one
+    # error names the setting. Never logged.
     client-address-secret: ${TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET:}
     waitlist:
       retention: ${TESTINBOX_ACCOUNTS_WAITLIST_RETENTION:30d}

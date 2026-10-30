@@ -266,8 +266,19 @@ class AccountLifecycleOperationsTest {
         val guards = events.filter { it.startsWith("guard:") }
         guards shouldBe guards.sortedBy { UUID.fromString(it.removePrefix("guard:")) }
         events.indexOf("cohort+fence") shouldBe events.indexOfLast { it.startsWith("guard:") } + 1
+        events.indexOf("close") shouldBe events.indexOf("cohort+fence") + 1
         events.last() shouldBe "clear"
         reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.NotQuarantined
+    }
+
+    @Test
+    fun `a reconciliation that loses the race to a concurrent one is a clean no-op`() {
+        participant()
+        store.quarantined = true
+        store.clearedWhileWaiting = true
+        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.NotQuarantined
+        store.states[account] shouldBe HumanAccountState.ACTIVE
+        events.none { it == "close" || it == "clear" || it.startsWith("state:") } shouldBe true
     }
 
     @Test
@@ -397,8 +408,16 @@ class AccountLifecycleOperationsTest {
         override fun participants(): List<LifecycleMembership> =
             memberships.map { (account, ws) -> LifecycleMembership(account, ws) } + orphanMarkers.map { LifecycleMembership(null, it) }
 
-        override fun closeCohortAndLockFence() {
+        /** A reconciliation that commits while this one waits for the cohort lock. */
+        var clearedWhileWaiting = false
+
+        override fun lockCohortAndFence() {
             events += "cohort+fence"
+            if (clearedWhileWaiting) quarantined = false
+        }
+
+        override fun closeCohort() {
+            events += "close"
         }
 
         override fun clearQuarantine() {

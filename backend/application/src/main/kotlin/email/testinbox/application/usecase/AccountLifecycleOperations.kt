@@ -335,7 +335,12 @@ class ReconcileRestoredDatabase(
             // The documented order: every workspace guard (sorted, so two multi-guard
             // holders cannot cross), the cohort row and the T1 fence, then the accounts.
             participants.forEach { guard.guardAdmission(it.workspaceId) }
-            store.closeCohortAndLockFence()
+            store.lockCohortAndFence()
+            // Rechecked under the locks: a concurrent reconciliation that committed
+            // while this one waited makes this run a clean no-op (it rolls nothing back
+            // because it has written nothing yet).
+            if (!store.quarantined()) return@asOperator Result.NotQuarantined
+            store.closeCohort()
             var suspended = 0
             participants.mapNotNull { it.accountId }.distinct().forEach { account ->
                 if (store.lockAccountState(account) == HumanAccountState.ACTIVE) {

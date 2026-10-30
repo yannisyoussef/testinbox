@@ -56,6 +56,13 @@ object AccountLifecycleCommand {
     /** Applied, but in-flight reservations or inbox rows remain: re-run the same command later. */
     const val EXIT_PENDING = 3
 
+    /**
+     * Failed for another reason (a lock or statement timeout, a lost
+     * connection, a constraint): whether the transaction committed is not
+     * known to this process. Run `status` before anything else.
+     */
+    const val EXIT_FAILED = 4
+
     private const val USAGE =
         "usage: account-lifecycle suspend|resume|delete|status|erase-identity <account-uuid> | restore-reconcile; " +
             "operator credentials in TI_LIFECYCLE_JDBC_URL, TI_LIFECYCLE_USER, TI_LIFECYCLE_PASSWORD"
@@ -93,11 +100,20 @@ object AccountLifecycleCommand {
                 err.println("account-lifecycle: ${it.message}; nothing was changed")
                 return EXIT_REFUSED
             }
+        val cooldown =
+            exactCooldown(env).getOrElse {
+                err.println("account-lifecycle: ${it.message}; nothing was changed")
+                return EXIT_REFUSED
+            }
         return try {
-            execute(command, operations(credentials), out)
+            execute(command, operations(credentials, cooldown), out)
         } catch (e: OperatorAuthorityRequiredException) {
             err.println("account-lifecycle: ${e.message}")
             EXIT_REFUSED
+        } catch (e: RuntimeException) {
+            // Metadata only: the exception type, never its message (which can quote SQL or values).
+            err.println("account-lifecycle: failed (${e.javaClass.simpleName}); the outcome is unknown: run status")
+            EXIT_FAILED
         }
     }
 
@@ -146,7 +162,30 @@ object AccountLifecycleCommand {
         val status: AccountLifecycleStatus,
     )
 
-    private fun operations(credentials: Credentials): Operations {
+    /**
+     * The ADR-021 EXACT-address cooldown a deleted account's addresses re-enter.
+     * Read from the API's own `TESTINBOX_EXACT_COOLDOWN` when the operator
+     * passes the API environment file (Spring's duration syntax, e.g. `24h`);
+     * otherwise the shipped `exact-cooldown: 24h` from application.yaml.
+     */
+    internal fun exactCooldown(env: (String) -> String?): Result<java.time.Duration> =
+        runCatching {
+            val raw = env("TESTINBOX_EXACT_COOLDOWN")?.takeIf { it.isNotBlank() } ?: return@runCatching SHIPPED_EXACT_COOLDOWN
+            val parsed =
+                runCatching {
+                    org.springframework.boot.convert.DurationStyle
+                        .detectAndParse(raw.trim())
+                }.getOrElse { error("TESTINBOX_EXACT_COOLDOWN is not a duration") }
+            check(!parsed.isNegative && !parsed.isZero) { "TESTINBOX_EXACT_COOLDOWN must be positive" }
+            parsed
+        }
+
+    private val SHIPPED_EXACT_COOLDOWN: java.time.Duration = java.time.Duration.ofHours(24)
+
+    private fun operations(
+        credentials: Credentials,
+        exactCooldown: java.time.Duration,
+    ): Operations {
         val dataSource =
             DriverManagerDataSource(credentials.url, credentials.user, credentials.password).apply {
                 // Visible to Ops in pg_stat_activity and the session allowlist.
@@ -159,15 +198,14 @@ object AccountLifecycleCommand {
         val guard = JdbcWorkspaceQuotaState(jdbc)
         val sessions = RevokeAccountSessions(JdbcHumanSessions(jdbc), tx)
         val keys = RevokeApiKey(JdbcApiKeyRepository(jdbc), clock)
-        // The existing inbox deleter, with the shipped EXACT cooldown
-        // (application.yaml `exact-cooldown: 24h`, which no deployment overrides).
+        // The existing inbox deleter, with the deployment's EXACT cooldown (ADR-021).
         val deleteInbox =
             DeleteInbox(
                 JdbcInboxRepository(jdbc),
                 JdbcExactAddressReservations(jdbc),
                 tx,
                 clock,
-                TestInboxConfig(mailDomain = "operator.invalid"),
+                TestInboxConfig(mailDomain = "operator.invalid", exactCooldown = exactCooldown),
             )
         return Operations(
             ChangeAccountState(store, guard, sessions, keys, tx),

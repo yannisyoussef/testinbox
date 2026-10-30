@@ -25,7 +25,9 @@ class JdbcAccountLifecycle(
 ) : AccountLifecycleStore {
     override fun operatorAuthorized(): Boolean {
         requireTransaction()
-        return jdbc.sql("SELECT lifecycle_operator_authorized()").query(Boolean::class.javaObjectType).single()
+        // The first statement of every operator transaction: bound its holds first.
+        OperatorTransactionBounds.apply(jdbc)
+        return jdbc.sql("SELECT public.lifecycle_operator_authorized()").query(Boolean::class.javaObjectType).single()
     }
 
     override fun findWorkspace(accountId: HumanAccountId): WorkspaceId? =
@@ -49,7 +51,12 @@ class JdbcAccountLifecycle(
     override fun lockAccountState(accountId: HumanAccountId): HumanAccountState? {
         requireTransaction()
         return jdbc
-            .sql("SELECT state FROM human_account WHERE id = :id FOR UPDATE")
+            // FOR NO KEY UPDATE, not FOR UPDATE: it still serializes with sign-in,
+            // session authentication and admission (all FOR UPDATE), but it does
+            // not wait on the FOR KEY SHARE an idempotency claim's foreign key
+            // takes before that writer reaches the workspace guard this
+            // transaction already holds, which would be a deadlock.
+            .sql("SELECT state FROM human_account WHERE id = :id FOR NO KEY UPDATE")
             .param("id", accountId.value)
             .query { rs, _ -> HumanAccountState.valueOf(rs.getString("state")) }
             .optional()
@@ -119,23 +126,28 @@ class JdbcAccountLifecycle(
             }.list()
 
     /** The admission lock order: cohort row, then the T1 fence. */
-    override fun closeCohortAndLockFence() {
+    override fun lockCohortAndFence() {
         requireTransaction()
         jdbc
             .sql("SELECT id FROM beta_cohort WHERE id = :cohort FOR UPDATE")
             .param("cohort", BetaCohortPolicy.NAME)
             .query(String::class.java)
             .single()
+        lockStorageFence()
+    }
+
+    override fun closeCohort() {
+        requireTransaction()
         jdbc
             .sql("UPDATE beta_cohort SET admissions_open = false, capacity_ready = false WHERE id = :cohort")
             .param("cohort", BetaCohortPolicy.NAME)
             .update()
-        lockStorageFence()
     }
 
     override fun clearQuarantine() {
         requireTransaction()
-        jdbc.sql("INSERT INTO lifecycle_restore_clearance (id) VALUES (1)").update()
+        // A concurrent reconciliation that committed first makes this a no-op, never a failure.
+        jdbc.sql("INSERT INTO lifecycle_restore_clearance (id) VALUES (1) ON CONFLICT (id) DO NOTHING").update()
     }
 
     override fun eraseIdentity(

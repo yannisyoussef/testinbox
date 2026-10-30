@@ -43,13 +43,13 @@ class AdmissionCommandTest : ApiIntegrationTestBase() {
         run("status")
         output.last() shouldBe
             "admission status: admissions_open=false capacity_ready=false consumed_places=0/30 storage_budget_changes=allowed"
-        run("resume")
+        run("resume", AdmissionCommand.OPEN_BETA)
         open() shouldBe true
         output.contains(
             "admission resume: PASS admissions_open false->true; existing participants, sessions, keys, inboxes and waitlist untouched",
         ) shouldBe true
         output.last() shouldBe "note: capacity_ready=false, so new admissions still answer CAPACITY_UNAVAILABLE"
-        run("resume")
+        run("resume", AdmissionCommand.OPEN_BETA)
         output.any { it.contains("true->true (unchanged)") } shouldBe true
         run("pause")
         open() shouldBe false
@@ -60,7 +60,16 @@ class AdmissionCommandTest : ApiIntegrationTestBase() {
 
     @Test
     fun `usage and credentials are explicit and never taken from the URL or defaults`() {
-        listOf(arrayOf<String>(), arrayOf("open"), arrayOf("pause", "now")).forEach { args ->
+        // `resume` opens registration: without the explicit flag it is refused and changes nothing.
+        shouldThrow<IllegalArgumentException> { run("resume") }.message shouldBe AdmissionCommand.RESUME_UNCONFIRMED
+        open() shouldBe false
+        listOf(
+            arrayOf<String>(),
+            arrayOf("open"),
+            arrayOf("pause", "now"),
+            arrayOf("pause", AdmissionCommand.OPEN_BETA),
+            arrayOf("resume", "--yes"),
+        ).forEach { args ->
             shouldThrow<IllegalArgumentException> { run(*args) }.message shouldBe AdmissionCommand.USAGE
         }
         shouldThrow<IllegalStateException> { run("pause") { null } }.message shouldBe "missing TI_ADMISSION_JDBC_URL"
@@ -95,7 +104,8 @@ class AdmissionCommandTest : ApiIntegrationTestBase() {
             }
             run("status", env = env)
             output.last() shouldContain "admissions_open=false"
-            shouldThrow<IllegalStateException> { run("resume", env = env) }.message shouldContain "not authorized"
+            shouldThrow<IllegalStateException> { run("resume", AdmissionCommand.OPEN_BETA, env = env) }.message shouldContain
+                "not authorized"
             open() shouldBe false
             jdbc.sql("UPDATE beta_cohort SET admissions_open=true").update()
             shouldThrow<IllegalStateException> { run("pause", env = env) }.message shouldContain "not authorized"

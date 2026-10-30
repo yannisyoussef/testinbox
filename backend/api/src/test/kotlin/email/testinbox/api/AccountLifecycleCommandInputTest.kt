@@ -78,4 +78,39 @@ class AccountLifecycleCommandInputTest {
                 .getOrThrow()
         credentials.toString().contains("s3cret-value") shouldBe false
     }
+
+    @Test
+    fun `an infrastructure failure exits 4 with metadata only, never the password or SQL`() {
+        val env =
+            mapOf(
+                // Nothing listens on port 1: the connection fails before any statement.
+                "TI_LIFECYCLE_JDBC_URL" to "jdbc:postgresql://127.0.0.1:1/testinbox?connectTimeout=2",
+                "TI_LIFECYCLE_USER" to "owner",
+                "TI_LIFECYCLE_PASSWORD" to "s3cret-value",
+            )
+        val (code, out, err) = run("account-lifecycle", "suspend", account, env = env)
+        code shouldBe AccountLifecycleCommand.EXIT_FAILED
+        out shouldBe ""
+        err shouldContain "the outcome is unknown: run status"
+        err.contains("s3cret-value") shouldBe false
+        err.contains("127.0.0.1") shouldBe false
+    }
+
+    @Test
+    fun `the exact-address cooldown follows the API configuration and refuses a malformed one`() {
+        AccountLifecycleCommand.exactCooldown { null }.getOrThrow() shouldBe java.time.Duration.ofHours(24)
+        AccountLifecycleCommand.exactCooldown { if (it == "TESTINBOX_EXACT_COOLDOWN") "36h" else null }.getOrThrow() shouldBe
+            java.time.Duration.ofHours(36)
+        val env =
+            mapOf(
+                "TI_LIFECYCLE_JDBC_URL" to "jdbc:postgresql://127.0.0.1:1/testinbox",
+                "TI_LIFECYCLE_USER" to "owner",
+                "TI_LIFECYCLE_PASSWORD" to "s3cret-value",
+            )
+        for (bad in listOf("soon", "-1h", "0s")) {
+            val (code, _, err) = run("account-lifecycle", "delete", account, env = env + ("TESTINBOX_EXACT_COOLDOWN" to bad))
+            code shouldBe AccountLifecycleCommand.EXIT_REFUSED
+            err shouldContain "TESTINBOX_EXACT_COOLDOWN"
+        }
+    }
 }

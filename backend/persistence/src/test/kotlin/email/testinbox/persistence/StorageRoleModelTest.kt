@@ -170,6 +170,7 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         checkNotNull(JdbcInboxRepository(smtp).findReceivableByAddress("$inbox@ledger.test"))
         // Account lifecycle: the early eligibility read (a legacy workspace has no row).
         JdbcWorkspaceEligibility(smtp).status(workspaceId) shouldBe email.testinbox.application.port.WorkspaceStatus.LEGACY
+        JdbcLifecyclePrivilegeProbe(smtp, "ingestion").ingestion() shouldBe null
         val delivered = checkNotNull(message(ws, inbox, rawBytes = 100, attachments = listOf(10), connection = smtp))
         JdbcMessageRepository(smtp).findEarliestIdByFingerprint(inboxId, "fingerprint-absent") shouldBe null
         JdbcRateLimiter(smtp, txManager) { _, _ ->
@@ -425,6 +426,11 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
             .query { rs, _ -> (1..rs.metaData.columnCount).map { rs.metaData.getColumnName(it) } to rs.getBoolean("active") }
             .single() shouldBe (listOf("workspace_id", "active") to true)
         failure { smtp.sql("INSERT INTO lifecycle_restore_clearance (id) VALUES (1)").update() } shouldContain "permission denied"
+        // Readiness under the reference grants: both deployables pass their V22 probe.
+        JdbcLifecyclePrivilegeProbe(client, "api").api() shouldBe null
+        JdbcLifecyclePrivilegeProbe(smtp, "ingestion").ingestion() shouldBe null
+        // The SMTP role cannot read the clearance, so it would fail the API's probe: the probes differ on purpose.
+        JdbcLifecyclePrivilegeProbe(smtp, "ingestion").api() shouldBe JdbcLifecyclePrivilegeProbe.Failure.RESTORE_CLEARANCE_UNREADABLE
         failure { smtp.sql("UPDATE beta_cohort SET admissions_open=true WHERE false").update() } shouldContain "permission denied"
         client
             .sql("SELECT count(*) FROM human_account WHERE id=:id")
@@ -462,6 +468,9 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         val reader = "ti_reader_$suffix"
         db.login(reader)
         db.jdbc.sql("GRANT pg_read_all_data TO \"$reader\"").update()
+        val ownerMember = "ti_ownermember_$suffix"
+        db.login(ownerMember)
+        db.jdbc.sql("GRANT \"${postgres.username}\" TO \"$ownerMember\"").update()
 
         val refused =
             mapOf(
@@ -471,6 +480,8 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
                 "the owner running the file" to Triple(api, postgres.username, monitor),
                 "an ingestion role that can become the API role" to Triple(api, member, monitor),
                 "an ingestion role that reads all data" to Triple(api, reader, monitor),
+                "an API role that is a member of the schema owner (the lifecycle operator authority)" to
+                    Triple(ownerMember, ingestion, monitor),
             )
         refused.forEach { (case, roles) ->
             val run = db.psqlReference(roles.first, roles.second, roles.third)

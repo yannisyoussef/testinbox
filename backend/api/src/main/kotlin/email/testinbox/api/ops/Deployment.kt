@@ -154,6 +154,20 @@ class SchemaHealthIndicator(
 }
 
 /**
+ * Account lifecycle (V22): the API role must read the eligibility view and the
+ * restore clearance, or every participant key and every login fails while the
+ * node reports healthy. A missing grant is NOT READY with a closed reason.
+ */
+@Component("lifecyclePrivileges")
+class LifecyclePrivilegesHealthIndicator(
+    jdbc: org.springframework.jdbc.core.simple.JdbcClient,
+) : HealthIndicator {
+    private val probe = email.testinbox.persistence.JdbcLifecyclePrivilegeProbe(jdbc, "api")
+
+    override fun health(): Health = probe.api()?.let { Health.outOfService().withDetail("reason", it.name).build() } ?: Health.up().build()
+}
+
+/**
  * Object storage participates in readiness because raw MIME is written before
  * the DB row (ADR-005): a node that cannot reach the store cannot serve `/raw`
  * and cannot honour the raw-first ordering.

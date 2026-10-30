@@ -53,7 +53,7 @@ interface AccountLifecycleStore {
     /** The existing ADR-035 global admission lock `(35, 1)`: the same fence T1 decides under. */
     fun lockStorageFence()
 
-    /** The raw stored state, FOR UPDATE; null when there is no such account. */
+    /** The raw stored state, row-locked against sign-in and other state writers; null when there is no such account. */
     fun lockAccountState(accountId: HumanAccountId): HumanAccountState?
 
     fun setState(
@@ -79,8 +79,11 @@ interface AccountLifecycleStore {
     /** Every participant marker with its current membership (accountId null once the membership was cleared). */
     fun participants(): List<LifecycleMembership>
 
-    /** Locks the cohort row and closes admissions and capacity, then takes the T1 fence. */
-    fun closeCohortAndLockFence()
+    /** Locks the cohort row, then takes the T1 fence (the admission lock order). */
+    fun lockCohortAndFence()
+
+    /** Closes admissions and capacity on the locked cohort row. */
+    fun closeCohort()
 
     fun clearQuarantine()
 

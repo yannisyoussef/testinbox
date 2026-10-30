@@ -18,7 +18,14 @@ import java.util.Properties
  */
 object AdmissionCommand {
     const val USAGE: String =
-        "usage: admission status|pause|resume; credentials in TI_ADMISSION_JDBC_URL/USER/PASSWORD"
+        "usage: admission status|pause|resume --open-beta; credentials in TI_ADMISSION_JDBC_URL/USER/PASSWORD"
+
+    /** The flag that makes opening registration an explicit, typed decision. */
+    const val OPEN_BETA: String = "--open-beta"
+
+    const val RESUME_UNCONFIRMED: String =
+        "admission resume sets admissions_open=true, even on a cohort that was never opened: it opens registration " +
+            "and must only follow the release decision. Re-run as `admission resume $OPEN_BETA`; nothing was changed"
     const val APPLICATION_NAME: String = "ops:admission-control"
 
     fun run(
@@ -26,7 +33,10 @@ object AdmissionCommand {
         env: (String) -> String? = System::getenv,
         out: (String) -> Unit = ::println,
     ) {
-        require(args.size == 2 && args[1] in setOf("status", "pause", "resume")) { USAGE }
+        require(args.size in 2..3 && args[1] in setOf("status", "pause", "resume")) { USAGE }
+        require(args.size == 2 || (args[1] == "resume" && args[2] == OPEN_BETA)) { USAGE }
+        // Never an accidental opening: `resume` alone would break Ops' closed-cohort backstop.
+        require(args[1] != "resume" || args.getOrNull(2) == OPEN_BETA) { RESUME_UNCONFIRMED }
         val url = required(env, "TI_ADMISSION_JDBC_URL")
         require(
             url.startsWith("jdbc:postgresql://") && '@' !in url &&
