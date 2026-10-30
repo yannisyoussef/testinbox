@@ -105,6 +105,126 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
             .query(Boolean::class.javaObjectType)
             .single()
 
+    /** One role-bound DataSource for JDBC and transactions alike (an admin transaction would be a false proof). */
+    private fun LedgerTestDatabase.roleSource(role: String) =
+        SimpleDriverDataSource(org.postgresql.Driver(), postgres.jdbcUrl.substringBeforeLast('/') + "/" + name, role, "pw-$role")
+
+    /**
+     * Every privilege [role] holds in `public`, per relation: table-level
+     * privileges by name, column-level ones as `PRIV(col,...)`, sequences as
+     * `USAGE`/`SELECT`/`UPDATE`. Relations it holds nothing on are absent.
+     */
+    private fun LedgerTestDatabase.effectivePrivileges(role: String): Map<String, Set<String>> =
+        jdbc
+            .sql(
+                """
+                WITH rel AS (
+                    SELECT c.oid, c.relname, c.relkind FROM pg_class c
+                     WHERE c.relnamespace = 'public'::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')),
+                tab AS (
+                    SELECT relname, p AS privilege FROM rel,
+                           unnest(ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p
+                     WHERE relkind <> 'S' AND has_table_privilege(:role, oid, p)),
+                col AS (
+                    SELECT relname, p || '(' || string_agg(a.attname, ',' ORDER BY a.attname) || ')' AS privilege
+                      FROM rel JOIN pg_attribute a ON a.attrelid = rel.oid AND a.attnum > 0 AND NOT a.attisdropped,
+                           unnest(ARRAY['SELECT','INSERT','UPDATE','REFERENCES']) p
+                     WHERE relkind <> 'S' AND NOT has_table_privilege(:role, rel.oid, p)
+                       AND has_column_privilege(:role, rel.oid, a.attnum, p)
+                     GROUP BY relname, p),
+                seq AS (
+                    SELECT relname, p AS privilege FROM rel, unnest(ARRAY['USAGE','SELECT','UPDATE']) p
+                     WHERE relkind = 'S' AND has_sequence_privilege(:role, oid, p))
+                SELECT relname, privilege FROM tab UNION ALL SELECT relname, privilege FROM col
+                UNION ALL SELECT relname, privilege FROM seq
+                """.trimIndent(),
+            ).param("role", role)
+            .query { rs, _ -> rs.getString(1) to rs.getString(2) }
+            .list()
+            .groupBy({ it.first }, { it.second })
+            .mapValues { it.value.toSet() }
+
+    /**
+     * Every statement kind of SMTP delivery, as [role], through the real adapters
+     * the ingestion context builds: schema history, recipient lookup, message and
+     * attachment append, fingerprint lookup, the rate limiter, node registration,
+     * ambiguity and latch, the inbox FOR SHARE lock, refusals, clock episodes,
+     * T1 admission with the footprint and cohort snapshot, the footprint gate,
+     * observations, the activation inventory and the probe pair. Returns the
+     * role's client.
+     */
+    private fun LedgerTestDatabase.runDeliveryPathAs(role: String): JdbcClient {
+        val source = roleSource(role)
+        val smtp = JdbcClient.create(source)
+        val txManager =
+            org.springframework.jdbc.datasource
+                .DataSourceTransactionManager(source)
+        val tx =
+            org.springframework.transaction.support
+                .TransactionTemplate(txManager)
+        val ws = workspace()
+        val inbox = inbox(ws)
+        val inboxId = email.testinbox.domain.InboxId(inbox)
+        val workspaceId = email.testinbox.domain.WorkspaceId(ws)
+        JdbcSchemaHistory(smtp).read()
+        checkNotNull(JdbcInboxRepository(smtp).findReceivableByAddress("$inbox@ledger.test"))
+        val delivered = checkNotNull(message(ws, inbox, rawBytes = 100, attachments = listOf(10), connection = smtp))
+        JdbcMessageRepository(smtp).findEarliestIdByFingerprint(inboxId, "fingerprint-absent") shouldBe null
+        JdbcRateLimiter(smtp, txManager) { _, _ ->
+            email.testinbox.domain.limits
+                .RatePolicy(capacity = 5, refillPerSecond = 1.0)
+        }.tryConsume(workspaceId, email.testinbox.domain.limits.RateCategory.INGEST, inboxId)
+            .allowed shouldBe true
+        val ambiguity = JdbcStorageAmbiguity(smtp, tx)
+        val generation = UUID.randomUUID()
+        ambiguity.registerGeneration("ing-1", generation, "storage-v1")
+        ambiguity.heartbeat("ing-1", generation, "storage-v1") shouldBe true
+        ambiguity.record("ing-1", "$ws/$inbox/late/raw.eml", 10, java.time.Duration.ofSeconds(1))
+        ambiguity.unresolvedTotal() shouldBe 1
+        ambiguity.latched() shouldBe null
+        val reservations = JdbcStorageReservations(smtp, tx)
+        // FOR SHARE: the reason ingestion holds UPDATE (id) on inbox.
+        tx.execute { reservations.lockInboxes(listOf(inboxId)) }!!.keys shouldBe setOf(inboxId)
+        reservations.committedKeys(listOf(email.testinbox.domain.MessageId(delivered)))
+        tx.executeWithoutResult {
+            reservations.recordRefusals(mapOf(inboxId to email.testinbox.domain.storage.StorageRefusalReason.INBOX_LIMIT))
+        }
+        reservations.recordClockEpisode(java.time.Duration.ofSeconds(3))
+        reservations.applyClockEpisode(java.time.Duration.ofSeconds(1))
+        val reserved = email.testinbox.domain.MessageId(UUID.randomUUID())
+        val now = java.time.Instant.now()
+        JdbcStorageAdmission(smtp, tx, readsFootprint = true).admit(
+            email.testinbox.application.port
+                .StorageAdmissionScope(setOf(workspaceId), setOf(inboxId)),
+        ) {
+            email.testinbox.application.port.StorageAdmissionPlan(
+                listOf(
+                    email.testinbox.application.port.StorageReservationDraft(
+                        reserved,
+                        workspaceId,
+                        inboxId,
+                        listOf("$ws/$inbox/$reserved/raw.eml"),
+                        10,
+                        now,
+                        now.plusSeconds(60),
+                        "ing-1",
+                        generation,
+                    ),
+                ),
+                true,
+            )
+        } shouldBe true
+        reservations.reservationExists(reserved) shouldBe true
+        reservations.countsByState().values.sum() shouldBe 1
+        reservations.expireOverdue(java.time.Duration.ofSeconds(1))
+        JdbcFootprintGate(smtp).observe()
+        JdbcFilesystemObservations(smtp).snapshot()
+        JdbcActivationInventory(smtp).nodes().any { it.nodeId == "ing-1" } shouldBe true
+        smtp.sql("SELECT storage_record_probe_debt('_probe/ing-1/1')").query().listOfRows()
+        smtp.sql("SELECT storage_resolve_probe_debt('_probe/ing-1/1')").query().listOfRows()
+        return smtp
+    }
+
     /** Gate F's state statement, read from the script itself, for the given application roles. */
     private fun LedgerTestDatabase.gateFState(appRoles: String): String {
         val script = repoFile("scripts/check-storage-activation.sh").readText()
@@ -356,6 +476,76 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
     }
 
     @Test
+    fun `under psql ingestion holds exactly its delivery allow-list, runs the delivery path, reaches no new relation`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+        db.login(api)
+        db.login(ingestion)
+        db.login(monitor)
+        db.psqlReference(api, ingestion, monitor).exitCode shouldBe 0
+
+        val smtp = db.runDeliveryPathAs(ingestion)
+
+        // Exactly the allow-list: nothing else in public, no view, no other sequence.
+        db.effectivePrivileges(ingestion) shouldBe INGESTION_ALLOW_LIST
+        // Of the definer functions, the probe pair only.
+        db.jdbc
+            .sql(
+                "SELECT p.oid::regprocedure::text FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace " +
+                    "AND p.prosecdef AND has_function_privilege(?, p.oid, 'EXECUTE') ORDER BY 1",
+            ).param(ingestion)
+            .query(String::class.java)
+            .list() shouldBe listOf("storage_record_probe_debt(text)", "storage_resolve_probe_debt(text)")
+
+        // A relation created later - here a view over identity data, as the owner
+        // with the API's default privileges - never reaches ingestion.
+        db.jdbc.sql("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO $api").update()
+        db.jdbc
+            .sql(
+                "CREATE VIEW workspace_eligibility AS SELECT a.contact_email, b.workspace_id " +
+                    "FROM human_account a JOIN beta_admission b ON b.account_id = a.id",
+            ).update()
+        db.jdbc.sql("CREATE TABLE later_table (id integer)").update()
+        failure { smtp.sql("SELECT * FROM workspace_eligibility").query().listOfRows() } shouldContain "permission denied"
+        failure { smtp.sql("SELECT * FROM later_table").query().listOfRows() } shouldContain "permission denied"
+        db.psqlReference(api, ingestion, monitor).exitCode shouldBe 0 // a re-run after a migration adds nothing either
+        failure { smtp.sql("SELECT * FROM workspace_eligibility").query().listOfRows() } shouldContain "permission denied"
+        db.can(api, "SELECT", "workspace_eligibility") shouldBe true
+    }
+
+    @Test
+    fun `under psql the API locks the cohort row but can never open admissions or ready capacity`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+        db.login(api)
+        db.login(ingestion)
+        db.login(monitor)
+        db.psqlReference(api, ingestion, monitor).exitCode shouldBe 0
+        val source = db.roleSource(api)
+        val asApi = JdbcClient.create(source)
+        val tx =
+            org.springframework.transaction.support.TransactionTemplate(
+                org.springframework.jdbc.datasource
+                    .DataSourceTransactionManager(source),
+            )
+        // The one statement the API runs on beta_cohort (JdbcBetaAdmissions).
+        tx.execute {
+            asApi
+                .sql("SELECT admissions_open, capacity_ready FROM beta_cohort WHERE id = 'beta-30' FOR UPDATE")
+                .query { rs, _ -> rs.getBoolean(1) to rs.getBoolean(2) }
+                .single()
+        } shouldBe (false to false)
+        for (column in listOf("admissions_open", "capacity_ready")) {
+            failure { asApi.sql("UPDATE beta_cohort SET $column = true").update() } shouldContain "permission denied"
+        }
+        failure { asApi.sql("INSERT INTO beta_cohort (id) VALUES ('beta-30')").update() } shouldContain "permission denied"
+        failure { asApi.sql("DELETE FROM beta_cohort").update() } shouldContain "permission denied"
+        db.effectivePrivileges(api)["beta_cohort"] shouldBe setOf("SELECT", "UPDATE(id)")
+        db.jdbc
+            .sql("SELECT admissions_open OR capacity_ready FROM beta_cohort")
+            .query(Boolean::class.javaObjectType)
+            .single() shouldBe false
+    }
+
+    @Test
     fun `a blanket DML grant on every table - the earlier Ops role script - is exactly what gate F refuses`() {
         val db = LedgerTestDatabase.create(postgres, admin)
         db.login(api)
@@ -370,5 +560,43 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         state shouldContain "$api:UPDATEonstorage_cohort_plan"
         state shouldContain "$api:DELETEonstorage_legacy_share"
         state shouldContain "$api:DELETEonparticipant_workspace"
+    }
+
+    private companion object {
+        private val READ = setOf("SELECT")
+        private val PROTOCOL = setOf("SELECT", "INSERT", "UPDATE", "DELETE")
+
+        /** The ingestion role's complete privileges in `public` (app STATUS §G); anything else is a regression. */
+        val INGESTION_ALLOW_LIST: Map<String, Set<String>> =
+            mapOf(
+                "flyway_schema_history" to READ,
+                "workspace" to READ,
+                "inbox" to setOf("SELECT", "UPDATE(id)"),
+                "message" to setOf("SELECT", "INSERT"),
+                "attachment" to setOf("SELECT", "INSERT"),
+                "inbox_storage" to
+                    setOf(
+                        "SELECT",
+                        "INSERT(inbox_id,last_refusal_at,last_refusal_reason,refusal_count,workspace_id)",
+                        "UPDATE(last_refusal_at,last_refusal_reason,refusal_count)",
+                    ),
+                "rate_bucket" to setOf("SELECT", "INSERT", "UPDATE"),
+                "storage_reservation" to PROTOCOL,
+                "storage_ambiguity" to PROTOCOL,
+                "storage_node" to PROTOCOL,
+                "storage_clock_episode" to PROTOCOL,
+                "storage_admission_latch" to setOf("SELECT", "INSERT"),
+                "workspace_storage_account" to READ,
+                "storage_delta" to READ,
+                "storage_deletion_debt" to READ,
+                "storage_debt_watermark" to READ,
+                "storage_footprint_trust" to READ,
+                "storage_filesystem_observation" to READ,
+                "participant_workspace" to READ,
+                "storage_legacy_share" to READ,
+                "workspace_deletion_charge" to READ,
+                "storage_cohort_plan" to READ,
+                "storage_ambiguity_id_seq" to setOf("USAGE"),
+            )
     }
 }

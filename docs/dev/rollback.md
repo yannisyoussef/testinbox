@@ -417,8 +417,12 @@ The schema stays at V21. So, on rollback:
 - **Grants:** keep the newest `roles.reference.sql` (the V21 one). Do **not**
   re-run `408c3f3`'s reference: it grants every table to both roles, which
   hands the SMTP process API keys and identity data again. The old API and old
-  ingestion run correctly under the new reference with separate roles: their
-  privileges are unchanged except on tables they never use.
+  ingestion run correctly under the new reference with separate roles. The
+  ingestion allow-list covers every statement of `408c3f3`'s ingestion path:
+  that path is a subset of this release's, which only adds reads of
+  `workspace` and the four cohort-storage tables. The API's privileges are
+  unchanged except on tables the old API never uses, and `beta_cohort`, which it
+  only locks.
 - **Backups:** keep the V21 `deploy/backup/scope.txt` and checker. `408c3f3`'s
   scope does not classify the V12–V21 tables, so every backup would be refused
   as `UNCLASSIFIED`. The scope describes the schema, not the artifact.
