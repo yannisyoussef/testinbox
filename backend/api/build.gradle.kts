@@ -35,6 +35,8 @@ dependencies {
     testImplementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     testImplementation(libs.kotest.assertions)
     testImplementation(libs.testcontainers.postgresql)
+    // The cohort-storage acceptance tests migrate their own isolated database (no Spring context).
+    testImplementation("org.flywaydb:flyway-core")
     testImplementation(libs.testcontainers.minio)
     testImplementation(libs.testcontainers.junit)
     testImplementation(libs.awaitility)

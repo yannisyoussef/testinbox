@@ -298,12 +298,15 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   flags, runtime admin-config hash, kernel release, filesystem type, mount
   options, storage-class defaults, direct path, proxy), which must EXACTLY
   match a qualification record shipped in the artifact that is
-  enablement-eligible (ADR-035 §9a). The only shipped record today is the
-  laptop one, and it is not eligible, so no artifact can currently enforce
-  anywhere: that is the intended state until the production combination is
-  qualified with `slow-W` (§18 gate 7a). OFF keeps starting with any of these
-  absent, stale or changed — it is the requalification mode of the MinIO
-  change rule.
+  enablement-eligible (ADR-035 §9a). The shipped records today are the
+  laptop one (not eligible) and the staging one (eligible, but qualified on
+  `adr035-presigned-put-v1` while the binary is `v2`), so no artifact can
+  currently enforce outside the isolated lab: that is the intended state until
+  the production combination is qualified with `slow-W` and E1–E11 (§18 gate
+  7a). In production, `TENANT_LIMITS` is always refused and `ALL` only starts
+  under the conditions of [Storage activation](#storage-activation). OFF keeps
+  starting with any of these absent, stale or changed — it is the
+  requalification mode of the MinIO change rule.
 - **Node identity, both deployables.** The API registers in `storage_node`
   too (it runs cleanup and the orphan sweep, so it is a protocol participant)
   and claims its `TESTINBOX_STORAGE_NODE_ID` with the same session lock as the
@@ -714,14 +717,98 @@ a redirect. Rotation: change the value and restart the API. Rotating the email
 verification key invalidates outstanding codes; rotating the OAuth state key
 invalidates sign-ins in progress; neither touches sessions or API keys.
 
-### Storage prerequisites before the first admission
+### Storage activation
 
 Admission is closed by construction until the cohort storage pool is approved
 and enforced ([cohort-storage.md](cohort-storage.md), ADR-037). The full
 ordered procedure, what is already proven by tests and what only Ops can show
 is [STORAGE-READINESS](../delivery/ti-delivery-002/STORAGE-READINESS.md). Do
 not set `capacity_ready` as a substitute for it; the use case ignores it
-without the live pool.
+without the live pool. Nothing here authorizes activation; every step needs
+the consolidated TI-DELIVERY-002 release decision.
+
+**When production may start `ALL` (TI-DELIVERY-002b; ADR-035 amendment note
+2026-10-30).** `TESTINBOX_STORAGE_ENFORCEMENT=TENANT_LIMITS` is refused in
+production, always. `ALL` is refused unless, on top of every non-`OFF`
+requirement above, ALL of these hold at startup — each unmet one is named in
+the refusal, and no setting skips any of them:
+
+1. a qualification record **shipped in the artifact** (the lab-record path
+   never counts) matches `testinbox.storage.backend-identity.*` and the
+   binary's upload implementation (`adr035-presigned-put-v2` today) element
+   by element, is enablement-eligible, has `platformClass: "production-host"`,
+   carries the `filesystem` object (uuid, type, mount options, mount source,
+   `objectOverheadMaxBytes`, `metadataInodesMeasured`, `experiments` with
+   `E1`…`E11` all `"PASS"`), and its `filesystem.type`/`mountOptions` equal its
+   own `host.filesystemType`/`host.mountOptions`;
+2. `TESTINBOX_STORAGE_FS_OBJECT_OVERHEAD_MAX_BYTES` is at least the record's
+   `objectOverheadMaxBytes`;
+3. `TESTINBOX_STORAGE_NODE_ID` is set, and (as for every non-`OFF` node) is
+   in the declared inventory;
+4. the declarations hold all thirty participant shares (30 × 128 MiB payload,
+   30 × 256 MiB footprint), the worst full envelope and finalization within
+   *G*, *G_F* and *C_fs* before any legacy share or allowance, and the cohort
+   binding is computable.
+
+Startup cannot know, and so does not check, the reserved pool and its legacy
+inventory, trusted counts, the monitor observation, live node compatibility
+or role separation: admission answers `CAPACITY_UNAVAILABLE` until the
+readiness collaborator sees all of them, `storage-budget check` proves the
+pool, and gate F proves the rest. **Today no shipped record satisfies
+condition 1**, so production cannot start `ALL` with this artifact.
+
+#### The production qualification record Ops must evidence (`adr035-presigned-put-v2`)
+
+No record is created, relabelled or promoted by engineering. The existing
+records stay as they are (the laptop record ineligible, the staging record
+`v1`). A `production-host` record is added only from committed Ops evidence,
+in a later pull request, with every value copied from that evidence (a value
+the evidence does not contain is `null` and the record is then not eligible).
+The record has the shipped shape (`schemaVersion` 1,
+`backend/storage/src/main/resources/adr035-qualification/`); Ops must produce,
+on the production host and its recreated dedicated data filesystem:
+
+| Record member | Evidence Ops produce |
+|---|---|
+| `minio.imageIndexDigest`, `platformMemberDigest`, `platform`, `release`, `commitId`, `binarySha256`, `mode`, `driveCount` | the running production MinIO: the mirror index digest and the **amd64** member actually running, `ServerInfo` (release, commit id, mode `single-node-single-drive`, one drive), the binary's sha256 |
+| `minio.timeoutEnvironment`, `timeoutCliFlags` | the container's `MINIO_*` timeout variables and `minio server` flags (empty = release defaults) |
+| `minio.runtimeConfig.{normalized,hash}`, `storageClassInlineDefaults` | the Ops `qualification-check` capture of `mc admin config get` for `api`, `drive`, `storage_class`, `scanner`, normalized and hashed; a null hash is never eligible |
+| `host.kernelRelease`, `architecture`, `filesystemType`, `mountOptions`, `device` | `uname -r` / `uname -m` on the production host; `/proc/mounts` for the dedicated data filesystem |
+| `network.directPath`, `proxy`, `tls` | ingestion → MinIO with no retrying proxy, load balancer or TLS terminator in between |
+| `uploadImplementationVersion` | `adr035-presigned-put-v2`, and the digest of the artifact the experiments ran |
+| `qualification.platformClass` | exactly `production-host` |
+| `qualification.scenarios`, `trials`, `lateCommits`, `slowWExecuted`, `slowWMechanism`, `slowWMaxCommitLagAfterCompletedWitnessS`, `cMaxSeconds`, `procedure`, `evidenceReference` | the §9a sweep on the production combination, **including `slow-W`** (dm-delay or cgroup `io.max`), `lateCommits` 0, with the raw evidence committed under `docs/adr/0035-benchmark/qualification/production-<date>/` |
+| `filesystem.uuid`, `type`, `mountOptions`, `mountSource` | the recreated dedicated filesystem (preallocated, `mkfs -i 4096`, isolated; filesystem-evidence.md, "Before `ALL` can pass") |
+| `filesystem.objectOverheadMaxBytes` | the measured *O_max* from E1–E3 |
+| `filesystem.metadataInodesMeasured` | the E7 metadata inode measurement |
+| `filesystem.experiments` | `E1`…`E11` (annex §10: amplification, directory growth, fragmentation, inode ratio, trash accounting, debt release, `.minio.sys` growth, ENOSPC corpus, zero-byte PUT/`STORAGE_FULL` trial incl. case C, monitor latches, restart/deletes/recovery at full), each `"PASS"` with its run output in the evidence directory |
+| `enablementEligible`, `ineligibilityReasons` | `true` and `[]` only when every row above is complete |
+
+E5, E6 and E9–E11 need the application under an enforcing mode on the `v2`
+uploader. Before this record exists the only application-supported way to
+run an enforcing mode is the isolated `lab` environment with a lab-only
+record (issue #102), which may not name the production domain or a
+production-named host; how those experiments are run against the production
+combination is an Ops procedure to state in the evidence, not something this
+repository decides.
+
+**Adding the record (a later pull request, once the evidence exists):** add
+the JSON file and its line in `adr035-qualification/index.txt`; commit the
+evidence directory it cites; update `QualificationRecordsTest` ("no record
+shipped in this artifact can back production ALL") deliberately, to name the
+new record as the one that does; keep `scripts/check-minio-mirror-pin.sh`
+green (every MinIO pin must be a record's digest); run gate Q and gate F of
+`check-storage-activation.sh` against the new record. Review is by the
+storage CODEOWNERS and the consolidated release review; a record is never
+reused for another host, filesystem or upload implementation (§9a
+invalidation rule).
+
+**The deployment gate under `ALL`.** Run `npm test` (deploy/synthetic) with
+`TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED` set to the deployed mode (`OFF` is
+the default when unset); `storage.test.mjs` fails if the workspace footprint
+report says `enforced` other than the declared mode. The activation script's
+gate G names `storage-budget check` as the cohort gate and records its PASS
+when given `--cohort-check-output`.
 
 ## Promotion and handoff
 
