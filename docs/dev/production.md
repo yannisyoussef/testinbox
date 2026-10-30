@@ -429,6 +429,10 @@ rehearsal keep automatic creation because the store there is theirs.
   storage-pool check, claim one of thirty numbered places, create the workspace,
   project and participant share marker. The console requests admission when an
   authenticated, unadmitted account opens it, so places go first-come.
+  The cap of thirty counts **accounts, not people**: one person can hold
+  several accounts and so several places. The owner accepted this as a beta
+  limitation (TI-DELIVERY-002b decision 4); nothing in the code tries to
+  detect it ([abuse model](../security/abuse-model.md#sybil-limitation-accepted)).
 - **Sessions** are opaque 32-byte values in a `__Host-ti_session` cookie
   (Secure, HttpOnly, SameSite=Lax, Path=/, no Domain); only a SHA-256 verifier
   is stored. Seven days absolute, 24 hours idle, at most five per account.
@@ -503,46 +507,73 @@ The controls:
   command therefore refuses `resume` unless it is given the explicit
   `--open-beta` flag. Details: [admission and source](../delivery/ti-delivery-002/ADMISSION-AND-SOURCE.md);
 - account lifecycle —
-  `account-lifecycle suspend|resume|delete|status|erase-identity <account-uuid>`
-  and `account-lifecycle restore-reconcile`, credentials only from
+  `account-lifecycle suspend|resume|delete|status <account-uuid>`,
+  `account-lifecycle status`, `account-lifecycle process-deletions` and
+  `account-lifecycle restore-reconcile`, credentials only from
   `TI_LIFECYCLE_JDBC_URL`, `TI_LIFECYCLE_USER`, `TI_LIFECYCLE_PASSWORD` (the
   owner of `human_account` or a member of it; the runtime API role is refused
-  by the use case and by V22's row triggers). Exit codes: 0 done, 1 refused
-  (nothing changed), 2 usage, 3 pending (re-run later), 4 failed with the
-  outcome unknown (a timeout or lost connection: run `status` first). Every
+  by the use case and by the V22/V23 row triggers). Exit codes: 0 done, 1 refused
+  (nothing changed), 2 usage, 3 pending (the timer or a re-run continues it),
+  4 failed with the outcome unknown (a timeout or lost connection: run
+  `status` first), 5 a deletion is overdue (alert). Every
   operator transaction is bounded (5 s lock wait, 10 s per statement, 10 s
   idle), so a stalled operator never holds the T1 fence. Suspension and deletion permanently delete the
   account's sessions and revoke every managed key of its workspace; resume
   restores the state only, so the person signs in again and issues new keys.
   Ingestion treats the workspace as inactive from the T1 fence on (uniform
-  `250`, nothing persisted); the command reports `DRAINING` (exit 3) until
-  every reservation taken before the fence is settled. Deletion waits for the
-  drain, deletes the inboxes through the existing deleter and keeps the spent
-  place, the participant marker, pending-cleanup charges and revoked-key
-  history; identity erasure is the separate `erase-identity` step. Keep every
+  `250`, nothing persisted). **Deletion is a resumable workflow**
+  (TI-DELIVERY-002b): `DRAINING` (reservations from before the fence settle),
+  `CONTENT_DELETING` (inboxes deleted through the existing deleter; the
+  retention sweep removes rows and objects; EXACT cooldowns elapse), then
+  `ERASED`: the contact email, login identities, sessions, waitlist entry,
+  sign-in codes, key labels, idempotency records and chosen addresses are
+  erased automatically in one transaction, once the content gate passes.
+  The spent place, the participant marker, pending-cleanup charges and the
+  revoked keys' technical rows are kept. Keep every
   `event=…` line it prints in a lifecycle log outside the database. After a
-  restore, `restore-reconcile` does NOT read that log: it suspends and
-  revokes every restored participant, and the operator then replays the log
-  by hand (below). Procedure:
+  restore, `restore-reconcile` does NOT read that log: it suspends every
+  restored participant, revokes **every** restored managed key (owner and
+  monitoring included), and the operator then replays the log
+  by hand and re-keys the deployment (below). Procedure:
   [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md).
 
-**After a restore every participant is quarantined.** The clearance row of
-`lifecycle_restore_clearance` is never in a backup (`-`), so a restored
-database treats every participant workspace as inactive and every human
-account as suspended until `account-lifecycle restore-reconcile` closes
-admissions, suspends the restored participant accounts, revokes all
-participant keys and records the clearance. Reconciliation only lifts the
-quarantine; the operator then replays, by hand, every lifecycle event in the
-external log that is newer than the backup:
+**Required Ops timer: `account-lifecycle process-deletions` every 15 minutes**
+(TI-DELIVERY-002b). It advances every pending deletion one step and is the
+only thing that completes deletions waiting on the retention sweep or an
+EXACT cooldown. **Alert on any non-zero exit.** `5` means a deletion has been
+unfinished for longer than the overdue threshold. The threshold is the EXACT
+cooldown, plus the retention `T_max`, plus 24 h: **72 h** with shipped
+values, or `TI_LIFECYCLE_DELETION_OVERDUE_AFTER`. Give the timer's env file
+the API's `TESTINBOX_EXACT_COOLDOWN` and
+`TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY` whenever they are
+overridden. `account-lifecycle status` (no account) is the read-only view of
+the same list. Unit example and triage:
+[lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md#the-ops-timer-for-process-deletions-required).
+
+**After a restore everything restored is quarantined.** The clearance row of
+`lifecycle_restore_clearance` is never in a backup (`-`). A restored
+database therefore treats every participant workspace as inactive and every
+human account as suspended, and refuses **every managed API key, owner and
+monitoring ones included**, until `account-lifecycle restore-reconcile` runs.
+That command closes admissions, suspends the restored participant accounts,
+revokes every restored managed key in every workspace, and records the
+clearance. Reconciliation only lifts the quarantine. The operator then
+replays, by hand, every lifecycle event in the external log that is newer
+than the backup, and re-keys:
 
 1. **Before sign-in or registration is re-enabled — mandatory:** replay every
-   `delete`, `erase-identity` and `suspend` event, for participant **and
-   non-participant** accounts alike. A non-participant account deleted after
-   the backup is not suspended by reconciliation (it has no workspace), so
-   without the replay it could sign in again once the boundary reopens.
+   `delete` and `suspend` event (a pre-002b `erase-identity` replays as
+   `delete`), for participant **and non-participant** accounts alike. A
+   non-participant account deleted after the backup is not suspended by
+   reconciliation (it has no workspace), so without the replay it could sign
+   in again once the boundary reopens. The deletion workflow erases the
+   replayed deletions again.
 2. Then `resume` only the participants the log shows active at the incident;
    they sign in again and mint new keys.
-
+3. **Re-key the deployment.** Mint a new owner administrator with the
+   bootstrap credential, then the new synthetic and monitoring keys with that
+   administrator. Install them, and run the synthetics before declaring the
+   restore complete ([credentials after a restore](#credentials-after-a-restore)).
 
 ### Deploying the account-lifecycle release (V22): required order
 
@@ -840,11 +871,34 @@ backup into a disposable database, run the *current* migrator (it must apply
 nothing). **Before any deployable starts**, run
 `SELECT count(*) FROM lifecycle_restore_clearance;` — it must be `0`; if it is
 not, stop: the dump was not the accepted form and the restore is not
-quarantined. Then start an API node against it, authenticate with a managed
+quarantined. Then start an API node against it and confirm that a managed
 key of a **legacy** (owner/monitoring) workspace that existed at backup time
-(participant keys are refused while quarantined, by design), and confirm
-`message` and `inbox` are empty. A drill that checks only "restore exited 0"
-is not a drill.
+is **refused** (`401`: no managed key authenticates while quarantined,
+TI-DELIVERY-002b). Run `account-lifecycle restore-reconcile`, confirm its
+`legacyRevokedKeys=` count, mint a fresh administrator with the bootstrap
+credential, and confirm that `message` and `inbox` are empty. A drill that
+checks only "restore exited 0" is not a drill.
+
+### Credentials after a restore
+
+A database restore brings back credential **verifiers**, never plaintext
+(ADR-032 §4). It also brings back their revocation state as of the backup.
+TI-DELIVERY-002b decision 2: no restored credential is trusted.
+
+| credential | where it lives | after a restore | Ops action |
+|---|---|---|---|
+| participant managed keys | `api_key` (verifier) | refused while quarantined; revoked by `restore-reconcile` | none; participants mint new keys after `resume` |
+| owner administrator, production synthetic, monitoring keys (managed) | `api_key` (verifier) | refused while quarantined; **revoked** by `restore-reconcile` (`legacyRevokedKeys=`) | mint a new administrator with the bootstrap credential, then new synthetic/monitoring keys; replace `TESTINBOX_API_KEY` / `TESTINBOX_ADMIN_API_KEY` in the synthetic runner; run the synthetics |
+| `TESTINBOX_BOOTSTRAP_API_KEY` | Ops secret store; the database holds only a `kind = BOOTSTRAP` verifier row | **not** rotated or revoked by reconciliation. It authenticates only when the presented token matches the configured value, and only while no usable managed administrator exists, so after reconciliation it is the break-glass that re-keys the owner | confirm it is configured **before** reconciling (without it, the owner workspace has no way back into key management). Rotate it (change the value, restart the API) if the incident could have exposed it, then retire it again by minting the administrator |
+| browser sessions, sign-in codes, OAuth state | never backed up | nothing to revive | none |
+| `TESTINBOX_DB_*`, `TESTINBOX_S3_*`, `TESTINBOX_ACCOUNTS_EMAIL_VERIFICATION_KEY_BASE64`, `TESTINBOX_ACCOUNTS_OAUTH_STATE_KEY_BASE64`, `TESTINBOX_ACCOUNTS_EMAIL_SMTP_*`, OAuth client secrets, `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`, TLS, `GITLAB_TRIGGER_TOKEN` | Ops secret store / providers; never in the database | untouched by a database restore, neither revived nor rotated | rotate per the table below **if the restore follows a compromise**; otherwise nothing |
+| `TI_LIFECYCLE_*` operator credentials | Ops `0600` env file; a database role | the role and its password live in the cluster, not the dump | verify the role still holds the operator authority after the restore |
+
+Erasure and backups: an account erased after a backup was taken is still in
+that backup (contact email, login identities, key labels, EXACT local parts)
+until the backup ages out under the retention period chosen below. Replaying
+the lifecycle log after a restore erases it again; nothing erases it from the
+backup itself.
 
 ### HUMAN DECISION REQUIRED
 

@@ -168,45 +168,85 @@ A key request beyond either bound gets `409 quota-exceeded` with:
 Owner and monitoring workspaces are not bounded by it. SDKs already treat
 `quota` as an open string.
 
-### Deletion
+### Deletion (resumable workflow, TI-DELIVERY-002b)
 
-`account-lifecycle delete` runs these steps:
+Owner decision 1 ([POLICY-002b](POLICY-002b.md)): the contact and login
+identity is erased **after** content deletion completes, by the deletion
+workflow itself, never by an open-ended manual follow-up. Deletion is a
+resumable, idempotent workflow with explicit stages, recorded per account in
+`account_deletion` (V23: account UUID, stage, `requested_at`,
+`stage_changed_at`, `erased_at`; no contact or login identity):
 
-1. Move the account to `DELETION_PENDING` and revoke its access, as above.
-2. Wait until the workspace has drained.
-3. Mark every `ACTIVE`/`EXPIRING` inbox `DELETED` through the existing
-   `DeleteInbox` use case. A deleted account's EXACT addresses re-enter the
-   normal ADR-021 cooldown. The command uses the deployment's own value: the
-   API's `TESTINBOX_EXACT_COOLDOWN` when the operator's env file carries it,
-   otherwise the shipped `exact-cooldown: 24h`. A malformed value is refused
-   before anything changes. If a deployment ever overrides the cooldown
-   without passing it here, the deleted addresses get 24 h instead. That
-   drift is visible in `exact_address_reservation.available_at`.
-4. The existing retention sweep then removes rows and objects, as for any
-   deleted inbox. It is paced under `ALL`.
+| Stage | Meaning | Leaves when |
+|---|---|---|
+| `DRAINING` | `delete` moved the account to `DELETION_PENDING` and revoked every session and key, in the same transaction that opened the record. Copies reserved before the fence may still finish. Nothing is deleted. | no `storage_reservation` of the workspace remains |
+| `CONTENT_DELETING` | Every `ACTIVE`/`EXPIRING` inbox is marked `DELETED` through the existing `DeleteInbox` (EXACT addresses enter the ADR-021 cooldown with the deployment's `TESTINBOX_EXACT_COOLDOWN`, shipped 24 h). The existing retention sweep removes rows and objects, objects proven deleted first, paced under `ALL` within `T_max`. | no inbox row, no reservation, and no EXACT reservation `ACTIVE` or still cooling down |
+| `ERASED` | Identity erased (below). Terminal. | — |
 
-Re-run the command until it reports `phase=CONTENT_REMOVED`, with no inbox
-rows and no reservations left.
+The final step runs in ONE operator transaction under the lifecycle lock
+order (workspace guard, `(35,1)`, account row). It re-reads the content gate
+under those locks and erases only if nothing remains. Otherwise it records
+`CONTENT_DELETING` and changes nothing else. A crash at any point leaves a
+state the next run continues from. The erasure is one transaction, so a crash
+inside it rolls all of it back. After `ERASED`, re-running reports `ERASED`
+and touches nothing.
 
-These are retained:
+**Erased** in that transaction:
 
-- the spent `beta_admission` place;
-- the `participant_workspace` marker and its fixed share;
+- `human_account`: the contact email, and through the existing cascades every
+  `human_identity` (provider issuer and subject, including the EMAIL identity),
+  `human_session`, `beta_waitlist` entry and `human_request_budget`;
+- `email_login_challenge` rows addressed to the account's contact email (they
+  are keyed by address, not by account);
+- the free-text `name` of every key of the workspace (set to null);
+  `created_by_human_account_id` becomes null through the existing foreign key;
+- the workspace's `idempotency_record` rows (request fingerprints and
+  projections that can name keys or addresses);
+- the workspace's `exact_address_reservation` rows (the chosen local parts).
+  By then the gate has proved every one released or past its cooldown, so
+  nothing is released early;
+- the membership's account, workspace and project references.
+
+**Retained**, never released or erased:
+
+- the spent `beta_admission` place, as a non-identifying tombstone. Deletion
+  never releases a seat; the next admission gets the next place;
+- the `participant_workspace` marker and its fixed share, so the workspace
+  stays an **inactive participant**, never legacy;
 - every `workspace_deletion_charge`. A charge is freed only by the existing
   proven zero-trash observation;
-- revoked key metadata, as audit history (ADR-032 §5);
-- the workspace and project rows.
+- the keys' technical rows: id, public id, verifier, scopes, timestamps,
+  `last_used_at`, revocation and creating key. ADR-032 §5 audit history and the
+  20 usable / 1000 retained inventory still count them;
+- the workspace and project rows (fixed names `My workspace`/`Default`);
+- the `account_deletion` record itself.
 
-Deletion never releases a place. The next admission gets the next place.
+Not reached by erasure, and why:
 
-Erasing identity is a separate, explicit step, `erase-identity`. It requires
-`DELETION_PENDING`, no reservation and no inbox row. It deletes the account
-row, which cascades its login identities, sessions, waitlist entry and
-request budget, and sets key and idempotency provenance to null. It then
-clears the membership's account and workspace references, leaving a
-non-identifying tombstone of the spent place. The marker keeps the workspace
-an **inactive participant**, never a legacy workspace. **When to run it is an
-open owner decision (below). The delete procedure stops before it.**
+- `provider_login_state` is keyed by browser, not account. It expires within
+  ten minutes and the existing lifecycle purges it.
+- Row-free object residue under a deleted inbox's prefix (a late or held
+  object, paced teardown) is deleted by the orphan sweep, charged by rule (P).
+  It carries no contact identity.
+- Application logs and the Ops lifecycle log keep account UUIDs, and key-name
+  audit lines, for their own retention. Backups keep everything they held
+  until they age out (below).
+
+**Backups.** Erasure does not reach a backup taken before it. `human_account`,
+`human_identity`, `api_key` (with names), `exact_address_reservation` and
+`beta_admission` are `+` in `deploy/backup/scope.txt`, so each earlier backup
+keeps that identity until it ages out under the ADR-034 backup retention Ops
+operates (production.md, "HUMAN DECISION REQUIRED"). Nothing promises
+immediate erasure from backups. A restore replays the deletion (restore
+procedure, step 4), which erases it again.
+
+**Overdue.** A deletion is overdue when it is not `ERASED` this long after
+`requested_at`. The threshold is the longest the existing machinery may
+legitimately take: the EXACT cooldown, plus the paced-retention `T_max`
+(`TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY`, shipped 24 h), plus 24 h of
+slack for draining and the timer period. With shipped values it is **72 h**.
+`TI_LIFECYCLE_DELETION_OVERDUE_AFTER` overrides it. Both are Spring durations.
+A malformed or non-positive value is refused before anything runs.
 
 ### Restore quarantine
 
@@ -223,10 +263,16 @@ absent:
   its mail is discarded with the uniform reply;
 - every human account reads as `SUSPENDED` for login, session
   authentication and admission;
-- `resume` is refused.
+- `resume` is refused;
+- **no managed key authenticates, owner and monitoring keys included**
+  (TI-DELIVERY-002b decision 2). API-key authentication reads the clearance per
+  request (`RestoreQuarantine`) and answers `401` (`WORKSPACE_INACTIVE` in the
+  auth metric). A legacy key revoked after the backup was taken therefore
+  never works again, not even in the window before reconciliation.
 
-Owner and monitoring workspaces keep working. The stored states are not
-changed.
+Mail to a legacy workspace is unaffected in principle, but no inbox exists
+after a restore (`inbox` is never backed up), so there is nothing to deliver
+to. The stored states are not changed.
 
 `account-lifecycle restore-reconcile` is allowed only while the database is
 quarantined. In one transaction it:
@@ -237,10 +283,25 @@ quarantined. In one transaction it:
 3. suspends every restored `ACTIVE` participant account;
 4. deletes their sessions;
 5. permanently revokes every managed key of every participant workspace;
-6. records the clearance.
+6. permanently revokes every other still-usable managed key, in every
+   workspace: the owner's administrator, the synthetic and monitoring keys
+   (`legacyRevokedKeys=` in its output);
+7. records the clearance.
 
 From then on the operator resumes individual accounts from Ops' external
-lifecycle record. Those users sign in again and mint new keys.
+lifecycle record. Those users sign in again and mint new keys. Ops issues
+replacement owner and synthetic credentials through the bootstrap
+break-glass, which works again exactly because no usable managed
+administrator is left (restore procedure, step 5).
+
+Bootstrap credentials are **not** rows a restore brings back as authority:
+the bootstrap key authenticates only when the presented token matches the
+value the API process is currently configured with
+(`TESTINBOX_BOOTSTRAP_API_KEY`), so reconciliation neither revokes nor
+rotates it. Configured secrets (database, object store, OAuth, email,
+client-address and edge secrets) live outside the database and are not
+touched by a database restore at all. See the credential audit in
+[production.md](../../dev/production.md#credentials-after-a-restore).
 
 Two other things are already excluded from backups, so a restore never
 revives them: sessions and login state, and storage-pool approval
@@ -265,6 +326,12 @@ and both start quarantined:
 | ingestion | `SmtpAccountLifecycleTest` (4) |
 | api | `AccountLifecycleApiTest` (3), `AccountLifecycleCommandInputTest` (3), `AccountLifecycleCommandProcessTest` (3) |
 | backup scope suite | 205 cases (was 197) |
+
+TI-DELIVERY-002b replaced the content and erase tests with the deletion
+workflow suites (`AccountDeletionWorkflowTest`, `AccountDeletionCommandTest`,
+`BetaWaitlistExpiryApiTest` and the extended unit suites). The persistence
+deletion test listed below moved there. Counts are in
+[POLICY-002b](POLICY-002b.md#evidence).
 
 The persistence `AccountLifecycleTest` runs on real PostgreSQL and covers:
 
@@ -349,11 +416,12 @@ The CLI takes account UUIDs only, never emails. To find an account, the
 operator runs a read-only query with the same credentials:
 `SELECT id, state FROM human_account WHERE contact_email = '<address>';`
 
-Every command prints metadata-only lines (ids, states, counts; never contact
-data or credentials):
+Every command prints metadata-only lines (ids, states, stages, timestamps,
+counts; never contact data, key names or credentials):
 
 - `event=account.lifecycle ...`
-- `event=account.content ...`
+- `event=account.deletion ...` (one per deletion advanced or listed) and
+  `event=account.deletions ...` (the summary)
 - `event=account.status ...`
 - `event=restore.reconcile ...`
 
@@ -366,11 +434,12 @@ Exit codes:
 
 | Code | Meaning |
 |---|---|
-| `0` | done |
+| `0` | done. For `process-deletions` and `status` without an account: nothing is overdue (deletions still within the threshold are normal) |
 | `1` | refused, unknown account, or missing authority; nothing changed |
-| `2` | usage |
-| `3` | applied, but draining or content pending; re-run the same command later |
-| `4` | failed for another reason (a lock or statement timeout, a lost connection). Whether it committed is unknown, so run `status` first. The message names only the exception type. |
+| `2` | usage (including the removed `erase-identity`) |
+| `3` | applied, but draining or content pending; the timer (or a re-run) continues it |
+| `4` | failed for another reason (a lock or statement timeout, a lost connection). Whether it committed is unknown, so run `status` first. The message names only the exception type. For `process-deletions`: at least one deletion's step failed (`outcome=FAILED`); the others were still advanced |
+| `5` | `process-deletions`, `status` (with or without an account): at least one deletion is **overdue**, or a deletion record exists for an account that is not `DELETION_PENDING`, or a `DELETION_PENDING` account has no record. **Alert.** |
 
 ```
 # Suspend: sessions and keys revoked at once; new mail discarded.
@@ -380,24 +449,86 @@ lifecycle status <account-uuid>   # repeat until phase=SETTLED (exit 0)
 # Resume a suspension: the user signs in again and mints new keys.
 lifecycle resume <account-uuid>
 
-# Delete: revoke, drain, then remove content via the inbox lifecycle.
-lifecycle delete <account-uuid>   # repeat until phase=CONTENT_REMOVED (exit 0)
+# Delete: revoke, then the workflow advances as far as it can right now.
+# Exit 0 = ERASED; exit 3 = DRAINING/CONTENT_DELETING, the timer finishes it.
+lifecycle delete <account-uuid>
 
-# Identity erasure: ONLY after the owner decides the retention period (open decision 1).
-lifecycle erase-identity <account-uuid>
+# The Ops timer's command: advance EVERY pending deletion one step.
+lifecycle process-deletions
+
+# Read-only: every pending deletion with its stage, age and overdue verdict.
+lifecycle status
 
 # After a database restore only (refused on a live, cleared database).
 lifecycle restore-reconcile
 ```
 
-How long each step takes:
+`erase-identity` no longer exists. It is refused with exit `2` and a message
+naming its replacement. Identity is erased automatically by `delete` or
+`process-deletions` once the content gate passes, and never while content
+remains. No override erases earlier: erasing would release EXACT addresses
+inside their cooldown and orphan the content's accounting.
+
+Re-running `delete` for an account that is already `ERASED` prints
+`state=ERASED` and exits `0`. That makes the restore replay idempotent.
+`status <account-uuid>` of an erased account prints `state=ERASED` with its
+`erasedAt`.
+
+### The Ops timer for `process-deletions` (required)
+
+Run `lifecycle process-deletions` from an Ops timer every **15 minutes**,
+appending its output to the lifecycle log. Alert on any non-zero exit:
+
+- `5`: a deletion is overdue. Inspect its line. `reservationsHeld>0` long after
+  the 120 s write window means a stuck ambiguous upload. `inboxRows>0` means
+  the retention sweep is not tearing the inboxes down (check
+  `testinbox_storage_retention_backlog_seconds`). `exactCooldowns>0` beyond
+  the cooldown means a reservation row was not moved to `COOLDOWN`.
+  `stage=UNRECORDED` or a `REFUSED` line means the database was restored or
+  edited outside this workflow.
+- `4`: a step failed; the next run retries it. Two consecutive `4`s need a
+  look.
+
+The command is safe to run concurrently with itself and with the running
+deployables. Every step is a bounded operator transaction (5 s lock wait,
+10 s per statement) under the documented lock order. Example systemd units
+(Ops owns the real ones):
+
+```
+# /etc/systemd/system/testinbox-deletions.service
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'docker run --rm --network <data network> --env-file /root/testinbox-ops/lifecycle.env \
+  <registry>/testinbox-api@sha256:<api digest> account-lifecycle process-deletions >> /var/log/testinbox/lifecycle.log 2>&1'
+
+# /etc/systemd/system/testinbox-deletions.timer
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+[Install]
+WantedBy=timers.target
+```
+
+Pin the timer to the same reviewed API digest as the deployment, and update
+it with every promotion. If the API's `TESTINBOX_EXACT_COOLDOWN` or
+`TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY` is overridden, put the same
+values in `lifecycle.env`, so both the cooldown applied to deleted addresses
+and the overdue threshold follow the deployment.
+
+How long each stage takes:
 
 - **Draining.** Reservations are consumed or released by T2 and cleanup.
   Normally this is within the 120 s write window. An ambiguous upload can
   hold its reservation until the existing verification proves its keys
   absent.
-- **Content removal.** This waits for the retention sweep to hard-delete the
-  `DELETED` inboxes.
+- **Content deleting.** Marking inboxes `DELETED` is immediate. The retention
+  sweep then hard-deletes them (5 s sweep interval; paced under `ALL`, but
+  never beyond `T_max`, shipped 24 h). An EXACT inbox's address cooldown (24 h
+  shipped) also has to elapse.
+- **Erasure.** One transaction, on the first timer run after both. So a
+  deletion with an EXACT address normally erases about 24 h after the
+  request, one without in minutes, and every deletion within the 72 h overdue
+  threshold.
 
 To pause admissions, use stream A's admission control. This command does not
 change `admissions_open`, except that `restore-reconcile` closes it.
@@ -407,6 +538,11 @@ change `admissions_open`, except that `restore-reconcile` closes it.
 Run this after Ops restores a control-plane backup by their documented
 procedure (`docs/dev/production.md`, owned by Ops and stream D):
 
+0. **Before the restore,** confirm the API is configured with a bootstrap
+   credential (`TESTINBOX_BOOTSTRAP_API_KEY`), and rotate it if there is any
+   doubt about it. Step 3 revokes every managed key, so bootstrap is then the
+   only way back into key management for the owner workspace. An API with no
+   bootstrap credential has no way back.
 1. **Leave the quarantine in place.** After the restore, and before any
    deployable starts, confirm
    `SELECT count(*) FROM lifecycle_restore_clearance;` returns `0`. If it
@@ -415,28 +551,41 @@ procedure (`docs/dev/production.md`, owned by Ops and stream D):
    not accepted, because re-running V22 on it seeds the clearance before the
    data loads. The scope checker refuses a dump carrying the row.
 2. The deployables may start, because quarantine makes it safe:
-   - owner and monitoring traffic works;
-   - participant keys, logins and mail are refused, and mail still gets the
-     uniform `250`.
+   - **no managed key authenticates**, participant or legacy; logins are
+     refused; mail to participants is discarded with the uniform `250`;
+   - the synthetics fail until step 5. That is expected.
 3. Run `lifecycle restore-reconcile` and record its
-   `event=restore.reconcile` line. It suspends and revokes every restored
-   participant, closes admissions and records the clearance. It does **not**
-   read the lifecycle log. A second, concurrent run is a clean no-op.
+   `event=restore.reconcile` line. It suspends every restored participant,
+   revokes **every** restored managed key (`revokedKeys=` participant,
+   `legacyRevokedKeys=` owner and monitoring), closes admissions and records
+   the clearance. It does **not** read the lifecycle log. A second,
+   concurrent run is a clean no-op.
 4. Replay, by hand, from Ops' external lifecycle log, every transition
-   recorded after the backup was taken. Replay every `delete`,
-   `erase-identity` and `suspend` event, for participant and
-   **non-participant** accounts alike, **before sign-in or registration is
-   re-enabled**. This step is mandatory: a non-participant account has no
-   workspace, so reconciliation does not suspend it, and without the replay
-   an account deleted after the backup could sign in again.
-   - Accounts deleted since the backup: `delete`, then `erase-identity` if it
-     had been run.
+   recorded after the backup was taken. Replay every `delete` and `suspend`
+   event (and any `erase-identity` from before TI-DELIVERY-002b as a
+   `delete`), for participant and **non-participant** accounts alike,
+   **before sign-in or registration is re-enabled**. This step is mandatory:
+   a non-participant account has no workspace, so reconciliation does not
+   suspend it, and without the replay an account deleted after the backup
+   could sign in again.
+   - Accounts deleted since the backup: `delete`. The workflow then erases
+     them again; `process-deletions` finishes what `delete` cannot do at once.
    - Accounts suspended since the backup: leave participants suspended, and
      `suspend` non-participants again.
    - Only participants the log shows ACTIVE at the incident: `resume`.
-5. The owner re-revokes any owner or monitoring key revoked after the
-   backup. Legacy keys are outside the participant reconciliation (open
-   decision 2).
+   - Then run `lifecycle process-deletions` once and confirm that no pending
+     deletion is refused (exit `5` with a `REFUSED` line means the restored
+     record disagrees with the account; investigate).
+5. **Re-key the deployment** (TI-DELIVERY-002b decision 2):
+   - authenticate with the bootstrap credential and mint a new owner
+     administrator (`api-keys:manage`). The bootstrap credential stops
+     working the moment it exists;
+   - with the new administrator, mint the new synthetic credential
+     (`inboxes:write`, `messages:read` only) and any monitoring key;
+   - put them in the Ops secret store and the synthetic runner, and run the
+     synthetics. They must pass before the restore is declared complete;
+   - follow the configured-credential audit in
+     [production.md](../../dev/production.md#credentials-after-a-restore).
 6. Re-reserve the storage pool (`storage-budget reserve`,
    [cohort storage](../../dev/cohort-storage.md)). Approval is never
    restored.
@@ -510,28 +659,21 @@ self-test proves each refusal:
 - inside the guard block, any assignment or call other than `pg_has_role`
   and `current_setting`.
 
-## Open owner decisions
+## Owner decisions (decided, TI-DELIVERY-002b)
 
-1. **Identity and contact retention after deletion.** No accepted retention
-   period exists for `human_account`/`human_identity` rows after content
-   removal. ADR-036 says not to retain identity merely to count admissions;
-   the timing is undecided.
-   - **Conservative choice implemented:** the account stays
-     `DELETION_PENDING`, blocked from login, admission and resume, until an
-     operator runs `erase-identity`. Nothing erases it automatically.
-   - The owner must decide the period. Backups taken before an erasure keep
-     that identity until those backups age out under the ADR-034 backup
-     retention, which this stream does not change.
-2. **Legacy key revocations across a restore.** `restore-reconcile` revokes
-   every participant key, but not owner or monitoring keys. A legacy key
-   revoked after the backup comes back un-revoked.
-   - **Current state:** documented manual re-revocation (restore step 5).
-   - **Alternative:** have reconciliation revoke every managed key, which
-     would break owner synthetics until they are re-keyed.
-3. **Retention of revoked key labels.** The `name` of revoked participant
-   keys is kept as audit history after deletion, per the existing ADR-032
-   rule. If the owner considers labels personal data, they need their own
-   retention rule.
+The three decisions this stream left open were decided by the owner and are
+implemented ([POLICY-002b](POLICY-002b.md)):
+
+1. **Identity after deletion:** erased automatically by the deletion workflow
+   once content deletion is verifiably complete (above). Backups age out
+   under the existing backup retention; nothing promises immediate erasure
+   from them.
+2. **Legacy keys across a restore:** `restore-reconcile` revokes every
+   restored managed key, legacy ones included, and no managed key
+   authenticates while quarantined. Ops re-keys the owner and the synthetics
+   through the bootstrap break-glass (restore procedure, step 5).
+3. **Revoked key labels:** treated as potentially identifying. Erasure sets
+   them to null and keeps the technical audit rows and the inventory counts.
 
 ## Remaining / not in this stream
 
@@ -545,8 +687,12 @@ self-test proves each refusal:
   `deploy/rollback-floors.txt` once it exists on `develop`. The SHA must be
   the integrated one; see [rollback](../../dev/rollback.md).
 - **Ops actions:** the grant installation above, MD1/md1 first. Adding the
-  lifecycle log to the Ops runbook, and `restore-reconcile` to the Ops
-  restore runbook.
+  lifecycle log to the Ops runbook, `restore-reconcile` and the re-keying
+  step to the Ops restore runbook, and the `process-deletions` timer with
+  its alert (TI-DELIVERY-002b).
 - **Staging:** if staging already holds admissions, V22 starts it
-  quarantined. Ops runs `restore-reconcile` once after migrating, then
-  resumes the rehearsal accounts.
+  quarantined. While it is quarantined, no managed key authenticates, so the
+  staging synthetics fail. Ops runs `restore-reconcile` once after
+  migrating. That now also revokes the staging owner and synthetic keys, so
+  Ops then re-keys through the staging bootstrap credential (restore
+  procedure, step 5) and resumes the rehearsal accounts.
