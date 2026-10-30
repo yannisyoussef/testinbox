@@ -48,6 +48,9 @@ class AuthenticateApiKeyTest {
             }
         }
 
+    /** True while the "database" carries no restore clearance. */
+    private var quarantined = false
+
     private val auth =
         AuthenticateApiKey(
             apiKeys,
@@ -56,6 +59,7 @@ class AuthenticateApiKeyTest {
             configuredBootstrapKeyHash = Sha256.hex(bootstrapSecret),
             metrics = metrics,
             audit = audit,
+            quarantine = { quarantined },
         )
 
     private fun managed(
@@ -295,6 +299,41 @@ class AuthenticateApiKeyTest {
         inactive += key.workspaceId
         auth.authenticate(bootstrapSecret).shouldBeNull()
         metrics.auth.last() shouldBe AuthOutcome.WORKSPACE_INACTIVE
+    }
+
+    @Test
+    fun `while the database is restore-quarantined no managed key authenticates, legacy owner and monitoring keys included`() {
+        val (admin, _) = managed(scopes = setOf(ApiScope.API_KEYS_MANAGE, ApiScope.INBOXES_WRITE))
+        val (synthetic, _) = managed(scopes = setOf(ApiScope.INBOXES_WRITE, ApiScope.MESSAGES_READ))
+        auth.authenticate(synthetic.render()).shouldNotBeNull()
+        quarantined = true
+        auth.authenticate(admin.render()).shouldBeNull()
+        auth.authenticate(synthetic.render()).shouldBeNull()
+        // Still verified first: a wrong secret is reported as such, quarantine is no oracle.
+        auth.authenticate(ApiKeyFormat.render(synthetic.publicId, ApiKeyFormat.generate(random).secret)).shouldBeNull()
+        metrics.auth shouldContainExactly
+            listOf(AuthOutcome.SUCCESS, AuthOutcome.RESTORE_QUARANTINED, AuthOutcome.RESTORE_QUARANTINED, AuthOutcome.BAD_SECRET)
+    }
+
+    @Test
+    fun `a participant key in a quarantined database is still reported as an inactive workspace`() {
+        val (credential, key) = managed()
+        inactive += key.workspaceId
+        quarantined = true
+        auth.authenticate(credential.render()).shouldBeNull()
+        metrics.auth shouldContainExactly listOf(AuthOutcome.WORKSPACE_INACTIVE)
+    }
+
+    @Test
+    fun `quarantine does not touch the bootstrap credential, which keeps its own window`() {
+        bootstrap(bootstrapSecret)
+        quarantined = true
+        // No usable managed administrator: the configured bootstrap credential is the owner's way in.
+        auth.authenticate(bootstrapSecret).shouldNotBeNull()
+        // A restored administrator is unrevoked until reconciliation, so the window stays shut meanwhile.
+        managed(scopes = setOf(ApiScope.API_KEYS_MANAGE))
+        auth.authenticate(bootstrapSecret).shouldBeNull()
+        metrics.auth shouldContainExactly listOf(AuthOutcome.BOOTSTRAP, AuthOutcome.BOOTSTRAP_SUPERSEDED)
     }
 
     @Test

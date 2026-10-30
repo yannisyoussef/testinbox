@@ -277,9 +277,9 @@ class MetricCardinalityTest {
         registry.meters.size shouldBe before
         // A generous ceiling that still fails loudly if a per-caller label
         // is ever introduced. ADR-035 §16 (TI-STORAGE-003) added about 45
-        // enum-bounded series; TI-DELIVERY-002 account lifecycle added five
-        // (one inbound counter, one admission outcome, one auth outcome and two
-        // quota dimensions), every one from a closed enum: 163 series today.
+        // enum-bounded series; TI-DELIVERY-002 account lifecycle added six
+        // (one inbound counter, one admission outcome, two auth outcomes and two
+        // quota dimensions), every one from a closed enum: 164 series today.
         io.kotest.assertions.withClue("series=$before") { (before < 170) shouldBe true }
     }
 

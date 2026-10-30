@@ -306,10 +306,15 @@ class EraseAccountIdentity(
  * clearance, i.e. after a restore or an upgrade that found participants.
  * In one transaction it closes admissions and capacity, suspends every
  * restored ACTIVE participant account, removes their sessions, permanently
- * revokes every managed key of every participant workspace and only then
- * records the clearance. Accounts the operator's external lifecycle record
- * shows as active are resumed individually afterwards; they sign in again and
- * issue new keys. Deletions recorded after the backup are re-run.
+ * revokes every managed key of every participant workspace and then, under a
+ * lock on all credential writes, every other managed key (owner and
+ * monitoring: owner decision 2026-10-30), and only then records the
+ * clearance, which V22 refuses while any managed key is unrevoked. Accounts
+ * the operator's external lifecycle record shows as active are resumed
+ * individually afterwards; they sign in again and issue new keys. The owner
+ * mints a new administrator with the configured bootstrap credential, which
+ * reopens because no usable managed administrator remains (ADR-032 §8), and
+ * re-keys monitoring with it. Deletions recorded after the backup are re-run.
  */
 class ReconcileRestoredDatabase(
     private val store: AccountLifecycleStore,
@@ -322,7 +327,10 @@ class ReconcileRestoredDatabase(
         data class Reconciled(
             val participantWorkspaces: Int,
             val suspendedAccounts: Int,
+            /** Managed keys of participant workspaces revoked by this run. */
             val revokedKeys: Int,
+            /** Every other managed key revoked by this run: owner and monitoring (legacy) workspaces. */
+            val revokedLegacyKeys: Int,
         ) : Result
 
         data object NotQuarantined : Result
@@ -336,6 +344,7 @@ class ReconcileRestoredDatabase(
             // holders cannot cross), the cohort row and the T1 fence, then the accounts.
             participants.forEach { guard.guardAdmission(it.workspaceId) }
             store.lockCohortAndFence()
+            store.lockCredentials()
             // Rechecked under the locks: a concurrent reconciliation that committed
             // while this one waited makes this run a clean no-op (it rolls nothing back
             // because it has written nothing yet).
@@ -350,8 +359,10 @@ class ReconcileRestoredDatabase(
                 sessions.execute(account)
             }
             val revoked = participants.sumOf { keys.revokeWorkspaceForLifecycle(authority, it.workspaceId) }
+            // Whatever is left is not a participant's: owner and monitoring keys.
+            val legacy = keys.revokeEveryManagedForRestore(authority)
             store.clearQuarantine()
-            Result.Reconciled(participants.size, suspended, revoked)
+            Result.Reconciled(participants.size, suspended, revoked, legacy)
         }
 }
 

@@ -7,6 +7,7 @@ import email.testinbox.application.port.AuditEvent
 import email.testinbox.application.port.AuditLog
 import email.testinbox.application.port.AuthOutcome
 import email.testinbox.application.port.LastUsedRecorder
+import email.testinbox.application.port.RestoreQuarantine
 import email.testinbox.application.port.WorkspaceEligibility
 import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiKeyFormat
@@ -65,6 +66,14 @@ class AuthenticateApiKey(
     private val metrics: ApiKeyMetrics = ApiKeyMetrics.NOOP,
     private val lastUsed: LastUsedRecorder = LastUsedRecorder.NOOP,
     private val audit: AuditLog = AuditLog.NOOP,
+    /**
+     * A backup is never current authorization (owner decision 2026-10-30):
+     * while the database is restore-quarantined no MANAGED key authenticates,
+     * whatever its workspace. `restore-reconcile` then revokes every one of
+     * them. The bootstrap credential is configuration, not restored data, and
+     * keeps its own §8 rule.
+     */
+    private val quarantine: RestoreQuarantine = RestoreQuarantine.NONE,
 ) {
     fun authenticate(presentedKey: String): ApiKey? {
         val result = verify(presentedKey)
@@ -115,6 +124,7 @@ class AuthenticateApiKey(
         if (stored.isRevoked()) return Verification(null, AuthOutcome.REVOKED)
         if (stored.isExpired(now)) return Verification(null, AuthOutcome.EXPIRED)
         if (!eligibility.isActive(stored.workspaceId)) return Verification(null, AuthOutcome.WORKSPACE_INACTIVE)
+        if (quarantine.quarantined()) return Verification(null, AuthOutcome.RESTORE_QUARANTINED)
 
         lastUsed.record(stored, now)
         return Verification(stored, AuthOutcome.SUCCESS)

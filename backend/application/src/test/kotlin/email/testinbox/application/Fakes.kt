@@ -567,6 +567,19 @@ class InMemoryApiKeyRepository : email.testinbox.application.port.ApiKeyReposito
         return revoked
     }
 
+    override fun revokeEveryManaged(at: Instant): Int {
+        var revoked = 0
+        keys.replaceAll { _, existing ->
+            if (existing.kind == email.testinbox.domain.tenant.ApiKeyKind.MANAGED && !existing.isRevoked()) {
+                revoked++
+                existing.copy(revokedAt = at)
+            } else {
+                existing
+            }
+        }
+        return revoked
+    }
+
     override fun managedInventory(
         workspaceId: WorkspaceId,
         at: Instant,

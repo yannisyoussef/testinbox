@@ -2,6 +2,7 @@ package email.testinbox.persistence
 
 import email.testinbox.application.Clocks
 import email.testinbox.application.ObjectKeys
+import email.testinbox.application.Sha256
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.WorkspaceInactiveException
 import email.testinbox.application.port.WorkspaceStatus
@@ -26,6 +27,7 @@ import email.testinbox.application.usecase.StorageAdmission
 import email.testinbox.application.usecase.StorageAdmissionCandidate
 import email.testinbox.application.usecase.StorageAdmissionDecision
 import email.testinbox.application.usecase.StorageAdmissionRequest
+import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.ProjectId
@@ -36,6 +38,8 @@ import email.testinbox.domain.identity.HumanAccountId
 import email.testinbox.domain.identity.HumanAccountState
 import email.testinbox.domain.storage.StorageCapacityPolicy
 import email.testinbox.domain.storage.StorageEnforcement
+import email.testinbox.domain.tenant.ApiKey
+import email.testinbox.domain.tenant.ApiKeyKind
 import email.testinbox.domain.tenant.ApiScope
 import email.testinbox.domain.tenant.HumanWorkspaceOwner
 import io.kotest.assertions.throwables.shouldThrow
@@ -493,7 +497,7 @@ class AccountLifecycleTest : PersistenceIntegrationTest() {
             .shouldBeInstanceOf<StorageAdmissionDecision.Inactive>()
 
         val reconcile = ReconcileRestoredDatabase(w.lifecycle, w.quotas, w.revokeSessions, w.revokeKeys, w.tx)
-        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.Reconciled(1, 1, 1)
+        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.Reconciled(1, 1, 1, 0)
         w.state(account) shouldBe "SUSPENDED"
         w.db.jdbc
             .sql("SELECT admissions_open OR capacity_ready FROM beta_cohort")
@@ -505,6 +509,93 @@ class AccountLifecycleTest : PersistenceIntegrationTest() {
         w.done(w.change.execute(account, AccountLifecycleAction.RESUME)).to shouldBe HumanAccountState.ACTIVE
         w.authenticateKey.authenticate(key).shouldBeNull()
         w.authenticateSession.execute(w.session(account)).shouldNotBeNull()
+    }
+
+    @Test
+    fun `a restore revokes every restored managed key, owner and monitoring included, and the bootstrap credential is the way back`() {
+        val w = World()
+        val (_, admission) = w.participant()
+        val participantKey = w.key(admission)
+        // The owner/monitoring (legacy) workspace, provisioned the production way: a
+        // configured bootstrap credential mints the synthetic key, then the owner's administrator.
+        val owner = WorkspaceId(w.db.workspace())
+        val bootstrapSecret = "restore-bootstrap-${UUID.randomUUID()}"
+        w.apiKeys.ensureApiKey(
+            ApiKey(
+                id = ApiKeyId(UUID.randomUUID()),
+                workspaceId = owner,
+                projectId = ProjectId(owner.value),
+                keyHash = Sha256.hex(bootstrapSecret),
+                scopes = ApiScope.entries.toSet(),
+                createdAt = clock.instant(),
+                revokedAt = null,
+                kind = ApiKeyKind.BOOTSTRAP,
+            ),
+        )
+        val auth =
+            AuthenticateApiKey(
+                w.apiKeys,
+                clock,
+                w.eligibility,
+                configuredBootstrapKeyHash = Sha256.hex(bootstrapSecret),
+                quarantine = JdbcRestoreQuarantine(w.jdbc),
+            )
+
+        fun mint(
+            actor: ApiKey,
+            scopes: Set<ApiScope>,
+        ): String =
+            w.tx
+                .required { w.createKey.execute(CreateApiKey.Command(actor, "restore-test", scopes, null)) }
+                .shouldBeInstanceOf<CreateApiKey.Result.Created>()
+                .credential
+                .render()
+
+        fun unrevokedManaged(): Long =
+            w.db.jdbc
+                .sql("SELECT count(*) FROM api_key WHERE kind = 'MANAGED' AND revoked_at IS NULL")
+                .query(Long::class.java)
+                .single()
+        val bootstrap = auth.authenticate(bootstrapSecret).shouldNotBeNull()
+        val synthetic = mint(bootstrap, setOf(ApiScope.INBOXES_WRITE, ApiScope.MESSAGES_READ))
+        val admin = mint(bootstrap, ApiScope.entries.toSet())
+        auth.authenticate(bootstrapSecret).shouldBeNull()
+        listOf(admin, synthetic, participantKey).forEach { auth.authenticate(it).shouldNotBeNull() }
+
+        // The restore: the clearance row is never in a backup.
+        w.db.jdbc
+            .sql("DELETE FROM lifecycle_restore_clearance")
+            .update()
+        // While quarantined no restored key authenticates, legacy or participant.
+        listOf(admin, synthetic, participantKey).forEach { auth.authenticate(it).shouldBeNull() }
+        auth.authenticate(bootstrapSecret).shouldBeNull()
+        // Not even the operator can record the clearance while a restored key is unrevoked.
+        refusal { w.jdbc.sql("INSERT INTO lifecycle_restore_clearance (id) VALUES (1)").update() } shouldContain
+            "a managed API key is still unrevoked"
+        w.lifecycle.quarantined() shouldBe true
+
+        val reconcile = ReconcileRestoredDatabase(w.lifecycle, w.quotas, w.revokeSessions, w.revokeKeys, w.tx)
+        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.Reconciled(1, 1, 1, 2)
+        unrevokedManaged() shouldBe 0
+        listOf(admin, synthetic, participantKey).forEach { auth.authenticate(it).shouldBeNull() }
+        // Idempotent and single-shot: a second run is refused and revokes nothing more.
+        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.NotQuarantined
+
+        // The way back: no usable managed administrator remains, so the configured
+        // bootstrap credential reopens (ADR-032 §8). Monitoring is re-keyed first, then
+        // the owner's new administrator closes the window again.
+        val reopened = auth.authenticate(bootstrapSecret).shouldNotBeNull()
+        val newSynthetic = mint(reopened, setOf(ApiScope.INBOXES_WRITE, ApiScope.MESSAGES_READ))
+        val newAdmin = mint(reopened, ApiScope.entries.toSet())
+        auth.authenticate(newSynthetic).shouldNotBeNull()
+        auth.authenticate(newAdmin).shouldNotBeNull()
+        auth.authenticate(bootstrapSecret).shouldBeNull()
+        listOf(admin, synthetic, participantKey).forEach { auth.authenticate(it).shouldBeNull() }
+        // Revoked rows are kept as history (ADR-032 §5): three revoked, two new.
+        w.db.jdbc
+            .sql("SELECT count(*) FILTER (WHERE revoked_at IS NOT NULL) || '/' || count(*) FROM api_key WHERE kind = 'MANAGED'")
+            .query(String::class.java)
+            .single() shouldBe "3/5"
     }
 
     @Test
