@@ -51,6 +51,58 @@ The origin classifier (`src/origin.mjs`) is the deliberate mirror of the
 unknown-Host one: there a timeout proves nothing, here a timeout is exactly
 what a DROPping firewall produces and is the proof. Both have unit tests.
 
+## Account boundary (`test:accounts`)
+
+`accounts/accounts.test.mjs` asserts the human account boundary (ADR-036,
+TI-DELIVERY-002) from where a browser reaches it: the **public site** origin,
+whose same-origin `/account/*` routes forward to the API. It is a separate
+target, like `test:identity`: it needs none of the gate's credentials, the
+gate must not require its variables, and it fails loudly — never skips — when
+they are absent.
+
+| variable | meaning |
+|---|---|
+| `TESTINBOX_ACCOUNTS_ORIGIN` | the public site origin, exactly `https://<host>` (the API's `TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN` when accounts are on) |
+| `TESTINBOX_ACCOUNTS_EXPECTED` | `disabled` or `enabled` — the environment's **declared** state. Never inferred from what the environment answers: a suite that learned "disabled" from a `503` would pass on a deployment whose accounts were meant to be on and broke |
+| `TESTINBOX_ACCOUNTS_EXPECTED_METHODS` | required when `enabled`: `none`, or a comma-separated subset of `email,google,github`. An incomplete method configuration does not stop the API; the method silently disappears, so the declaration is what catches it |
+| `TESTINBOX_MAIL_DOMAIN` | the deployment's receive domain (`inbox.testinbox.email` in production) |
+| `TESTINBOX_ACCOUNTS_TIMEOUT_MS` | optional, default 15000 |
+
+What it proves, adapting every assertion to the declared state:
+
+| test | `disabled` (production today) | `enabled` |
+|---|---|---|
+| methods | `/account/methods` answers the closed state | exactly the declared methods, `{methods}` and nothing else, `no-store`, no cookie |
+| every route | all fourteen proxied routes answer the closed state: `503`, `no-store`, no cookie, no authority-bearing member — from either layer (the site's own `Sign-in is unavailable` / `Console unavailable`, or the API's `accounts-unavailable`) | every route is `no-store` and none answers a server error |
+| unauthenticated read | closed | `401`, and a forged session cookie is refused exactly like none |
+| CSRF | closed | logout, code request and waitlist join without/with a foreign `Origin` are `403`; the same logout from the public origin is `204` (positive control) |
+| Google / GitHub start | closed | a declared provider redirects `302` to its fixed endpoint with `response_type=code`, PKCE `S256`, opaque state, a Google nonce, the fixed scopes and **exactly** `<origin>/account/oauth/callback/<provider>`, plus one private `__Host-ti_oauth` cookie; an undeclared one is `503` with no cookie |
+| code request | closed | a malformed address and an address in the receive domain are refused identically (`400`, or `503` when email is not declared), with no challenge started |
+| sign-in pages | `/login` and `/signup` are the TestInbox site and advertise no places | both are served |
+
+**Safe in production, and repeatable.** It sends no email (both code requests
+carry addresses the API refuses before charging a budget or writing a row),
+creates no account, session, admission, waitlist entry, participant workspace
+or storage pool — so it consumes no seat and never crosses the TI-DELIVERY-001
+rollback floor — and never completes a provider sign-in. When accounts are
+enabled it spends one provider start per declared provider (a transient,
+ten-minute attempt row, counted against the 200/hour global and 15/15-minute
+per-source start budgets) and one session-less logout. Until the site attests
+the client address (TI-DELIVERY-002 stream A/W), that per-source budget is the
+site container's, shared with every visitor: do not run it in a loop.
+
+```bash
+TESTINBOX_ACCOUNTS_ORIGIN=https://testinbox.email \
+TESTINBOX_ACCOUNTS_EXPECTED=disabled \
+TESTINBOX_MAIL_DOMAIN=inbox.testinbox.email \
+npm run test:accounts
+```
+
+The classifiers live in `src/accounts.mjs` with their own unit tests
+(`unit/accounts-classifier.test.mjs`, part of `npm run test:unit`). The local
+rehearsal does not run this target: it deploys the Inspector, not the public
+site, so nothing there serves `/account`.
+
 ## Running it
 
 ```bash

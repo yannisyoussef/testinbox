@@ -307,3 +307,11 @@ answerable from the audit log.
   `docs/security/abuse-model.md` rather than half-built here.
 - Human login, workspace membership and the issuing UI remain out of scope
   (ADR-010): key management is API-first.
+
+  > **Amended by [ADR-036](0036-human-identity-and-beta-admission.md) §6
+  > (TI-DELIVERY-001), recorded 2026-10-30.** Human login, workspace
+  > membership and a console that issues keys now exist (dormant in
+  > production). They did not add a second minter: the existing credential use
+  > case gained an explicit authorized-workspace-owner actor with provenance,
+  > and issued keys keep this ADR's format, verifier-only storage, show-once
+  > response and immediate revocation. Everything else here is unchanged.
