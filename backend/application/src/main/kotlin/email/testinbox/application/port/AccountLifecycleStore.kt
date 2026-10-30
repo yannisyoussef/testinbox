@@ -94,6 +94,9 @@ interface AccountLifecycleStore {
     /** The raw stored state, row-locked against sign-in and other state writers; null when there is no such account. */
     fun lockAccountState(accountId: HumanAccountId): HumanAccountState?
 
+    /** The raw stored state, read WITHOUT a lock (read-only reporting); null when there is no such account. */
+    fun accountState(accountId: HumanAccountId): HumanAccountState?
+
     fun setState(
         accountId: HumanAccountId,
         state: HumanAccountState,

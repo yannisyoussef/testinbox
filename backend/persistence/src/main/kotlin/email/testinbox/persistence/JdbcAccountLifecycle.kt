@@ -68,6 +68,14 @@ class JdbcAccountLifecycle(
             .orElse(null)
     }
 
+    override fun accountState(accountId: HumanAccountId): HumanAccountState? =
+        jdbc
+            .sql("SELECT state FROM human_account WHERE id = :id")
+            .param("id", accountId.value)
+            .query { rs, _ -> HumanAccountState.valueOf(rs.getString("state")) }
+            .optional()
+            .orElse(null)
+
     override fun setState(
         accountId: HumanAccountId,
         state: HumanAccountState,

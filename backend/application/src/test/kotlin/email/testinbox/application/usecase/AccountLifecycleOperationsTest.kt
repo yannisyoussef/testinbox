@@ -343,6 +343,36 @@ class AccountLifecycleOperationsTest {
         store.deletions.getValue(account).stage shouldBe AccountDeletionStage.DRAINING
     }
 
+    @Test
+    fun `the deletion report is a plain read - no row lock, an overtaking erasure skipped, a wrong state REFUSED`() {
+        participant()
+        done(change.execute(account, AccountLifecycleAction.DELETE))
+        val report = AccountDeletionReport(store, NoopTx, clock, AccountDeletionPolicy(Duration.ofHours(72)))
+        events.clear()
+        report.execute().entries.single().let {
+            it.accountRowAbsent shouldBe false
+            it.refusedState shouldBe null
+        }
+        events.none { it.startsWith("lock:") } shouldBe true
+
+        // Listed while pending, erased (committed) before the existence read: skipped, never an anomaly.
+        val listed = store.deletions.getValue(account)
+        store.states.remove(account)
+        store.deletions[account] = listed.copy(stage = AccountDeletionStage.ERASED, erasedAt = clock.now)
+        store.staleListing = listOf(listed)
+        report.execute().entries shouldBe emptyList()
+
+        // A record whose account is not DELETION_PENDING (restored or edited data) is reported REFUSED.
+        val other = HumanAccountId(UUID.randomUUID())
+        store.states[other] = HumanAccountState.SUSPENDED
+        store.deletions[other] = AccountDeletionRecord(other, AccountDeletionStage.DRAINING, clock.now, clock.now, null)
+        report
+            .execute()
+            .entries
+            .single { it.record.accountId == other }
+            .refusedState shouldBe HumanAccountState.SUSPENDED
+    }
+
     private val reconcile = ReconcileRestoredDatabase(store, guard, revokeSessions, revokeKeys, NoopTx, clock)
 
     @Test
@@ -487,6 +517,14 @@ class AccountLifecycleOperationsTest {
             events += "fence"
         }
 
+        override fun accountState(accountId: HumanAccountId): HumanAccountState? {
+            events += "read:$accountId"
+            return states[accountId]
+        }
+
+        /** What the next pendingDeletions() returns instead of the live records (a listing an erasure then overtakes). */
+        var staleListing: List<AccountDeletionRecord>? = null
+
         override fun lockAccountState(accountId: HumanAccountId): HumanAccountState? {
             events += "lock:$accountId"
             admitOnLock?.takeIf { it.first == accountId }?.let {
@@ -583,7 +621,8 @@ class AccountLifecycleOperationsTest {
         }
 
         override fun pendingDeletions(): List<AccountDeletionRecord> =
-            deletions.values.filter { it.stage != AccountDeletionStage.ERASED }.sortedBy { it.requestedAt }
+            staleListing?.also { staleListing = null }
+                ?: deletions.values.filter { it.stage != AccountDeletionStage.ERASED }.sortedBy { it.requestedAt }
 
         override fun unrecordedDeletions(): List<HumanAccountId> =
             states.filter { (id, state) -> state == HumanAccountState.DELETION_PENDING && id !in deletions }.keys.toList()

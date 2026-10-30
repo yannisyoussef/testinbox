@@ -487,6 +487,8 @@ class AccountDeletionReport(
         val overdue: Boolean,
         /** The record is not ERASED but the account row is gone: an anomaly, never reported as erased. */
         val accountRowAbsent: Boolean = false,
+        /** The account's stored state when it is not DELETION_PENDING (a restored or edited row): reported REFUSED. */
+        val refusedState: HumanAccountState? = null,
     )
 
     data class Report(
@@ -500,9 +502,20 @@ class AccountDeletionReport(
     fun execute(): Report =
         tx.asOperator(store) {
             val now = clock.instant()
+            // A plain read: no row lock, so this read-only command never waits on (or blocks) a
+            // concurrent erasure. Each statement reads committed data, so a record whose account
+            // vanished is re-read: an erasure that committed in between leaves it ERASED, and it is
+            // skipped rather than reported as an anomaly.
             val entries =
-                store.pendingDeletions().map { record ->
-                    val rowAbsent = store.lockAccountState(record.accountId) == null
+                store.pendingDeletions().mapNotNull { listed ->
+                    val state = store.accountState(listed.accountId)
+                    val record =
+                        if (state != null) {
+                            listed
+                        } else {
+                            store.deletion(listed.accountId)?.takeIf { it.stage != AccountDeletionStage.ERASED } ?: return@mapNotNull null
+                        }
+                    val rowAbsent = state == null
                     val workspace = store.findWorkspace(record.accountId)
                     val remaining =
                         workspace?.let {
@@ -515,6 +528,7 @@ class AccountDeletionReport(
                         java.time.Duration.between(record.requestedAt, now),
                         policy.overdue(record.stage, record.requestedAt, now),
                         rowAbsent,
+                        state?.takeIf { it != HumanAccountState.DELETION_PENDING },
                     )
                 }
             Report(entries, store.unrecordedDeletions())

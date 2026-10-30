@@ -487,20 +487,25 @@ object AccountLifecycleCommand {
                     "stage=${e.record.stage} requestedAt=${e.record.requestedAt} ageSeconds=${maxOf(0L, e.age.seconds)} " +
                     "stageChangedAt=${e.record.stageChangedAt} reservationsHeld=${e.remaining.reservationsHeld} " +
                     "inboxRows=${e.remaining.inboxRows} exactCooldowns=${e.remaining.exactCooldowns} overdue=${e.overdue}" +
-                    if (e.accountRowAbsent) " state=ABSENT anomaly=ACCOUNT_ROW_ABSENT" else "",
+                    when {
+                        e.accountRowAbsent -> " state=ABSENT anomaly=ACCOUNT_ROW_ABSENT"
+                        e.refusedState != null -> " state=${e.refusedState} anomaly=REFUSED"
+                        else -> ""
+                    },
             )
         }
         report.unrecorded.forEach {
             out.println("event=account.deletion account=${it.value} stage=UNRECORDED overdue=true anomaly=UNRECORDED")
         }
         val anomalies = report.entries.count { it.accountRowAbsent }
+        val refused = report.entries.count { it.refusedState != null }
         out.println(
             "event=account.deletions pending=${report.entries.size + report.unrecorded.size} overdue=${report.overdue} " +
-                "unrecorded=${report.unrecorded.size} anomalies=$anomalies",
+                "unrecorded=${report.unrecorded.size} refused=$refused anomalies=$anomalies",
         )
         return when {
             anomalies > 0 -> EXIT_ANOMALY
-            report.overdue > 0 -> EXIT_OVERDUE
+            report.overdue > 0 || refused > 0 -> EXIT_OVERDUE
             else -> EXIT_DONE
         }
     }

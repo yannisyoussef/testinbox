@@ -213,4 +213,26 @@ class AccountDeletionCommandTest : ApiIntegrationTestBase() {
                 .update()
         }
     }
+
+    @Test
+    fun `status reports a record whose account is not deletion-pending as REFUSED with exit 5`() {
+        val active = account()
+        jdbc
+            .sql("INSERT INTO account_deletion (account_id, stage, requested_at, stage_changed_at) VALUES (?, 'DRAINING', now(), now())")
+            .param(active)
+            .update()
+        try {
+            cli("status").let {
+                it.code shouldBe AccountLifecycleCommand.EXIT_OVERDUE
+                it.out shouldContain "account=$active"
+                it.out shouldContain "state=ACTIVE anomaly=REFUSED"
+                it.out shouldContain "refused=1"
+            }
+        } finally {
+            jdbc
+                .sql("UPDATE account_deletion SET stage = 'ERASED', stage_changed_at = now(), erased_at = now() WHERE account_id = ?")
+                .param(active)
+                .update()
+        }
+    }
 }
