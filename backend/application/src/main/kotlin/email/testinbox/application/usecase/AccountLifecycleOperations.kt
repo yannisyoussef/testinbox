@@ -203,8 +203,6 @@ class ProcessAccountDeletion(
         val inboxesMarkedDeleted: Int = 0,
         /** Set only by the run that performed the erasure. */
         val erasure: IdentityErasure? = null,
-        /** The record was pending but the account row was already gone (removed outside this workflow). */
-        val accountRowAbsent: Boolean = false,
     )
 
     sealed interface Result {
@@ -217,18 +215,38 @@ class ProcessAccountDeletion(
         data class NotDeletionPending(
             val state: HumanAccountState,
         ) : Result
+
+        /**
+         * The record is not ERASED but the account row is gone: it was removed
+         * outside this workflow. The row's cascades are gone with it, but the
+         * workflow can no longer tie the workspace (key labels, idempotency
+         * records, EXACT local parts, sign-in codes) to this account safely, so
+         * it erases nothing more, leaves the record at its stage and reports
+         * the anomaly for an operator to resolve (LIFECYCLE.md).
+         */
+        data class AccountRowAbsent(
+            val record: AccountDeletionRecord,
+        ) : Result
     }
 
-    /**
-     * The deletions the timer should advance: every unfinished record, after
-     * adopting any DELETION_PENDING account that has none (a database restored
-     * or edited outside this workflow), so no deletion is silently forgotten.
-     */
-    fun pending(): List<AccountDeletionRecord> =
+    /** What the timer advances: every unfinished record, and the accounts it had to adopt. */
+    data class Pending(
+        val records: List<AccountDeletionRecord>,
+        /**
+         * DELETION_PENDING accounts that had no record (a database restored or
+         * edited outside this workflow). Adopted now, with their age counted
+         * from now, so the run reports them as an anomaly: the true request
+         * time is unknown and the overdue signal would otherwise be reset.
+         */
+        val adopted: List<HumanAccountId>,
+    )
+
+    fun pending(): Pending =
         tx.asOperator(store) {
             val now = clock.instant()
-            store.unrecordedDeletions().forEach { store.openDeletion(it, now) }
-            store.pendingDeletions()
+            val adopted = store.unrecordedDeletions()
+            adopted.forEach { store.openDeletion(it, now) }
+            Pending(store.pendingDeletions(), adopted)
         }
 
     fun execute(accountId: HumanAccountId): Result {
@@ -238,7 +256,14 @@ class ProcessAccountDeletion(
                 is Start.Proceed -> start.workspace
             }
         val marked = workspace?.let(::markInboxesDeleted) ?: 0
-        return tx.asOperator(store) { authority -> eraseWhenComplete(accountId, workspace, marked, authority) }
+        // Quiesce before the erasing transaction: wait, holding no guard, for any request that
+        // already holds a foreign-key share lock on the account (an idempotent console request
+        // between its claim and the workspace guard). Its sessions were revoked when the deletion
+        // began, so no new one can start; erasing while it waits on the guard we hold would deadlock.
+        if (tx.asOperator(store) { store.quiesceAccount(accountId) }) {
+            return tx.asOperator(store) { authority -> eraseWhenComplete(accountId, workspace, marked, authority) }
+        }
+        return tx.asOperator(store) { absent(accountId) }
     }
 
     private sealed interface Start {
@@ -253,10 +278,11 @@ class ProcessAccountDeletion(
 
     private fun begin(accountId: HumanAccountId): Start {
         val now = clock.instant()
-        val record = store.deletion(accountId)
-        val state = store.lockAccountState(accountId) ?: return Start.Finished(absent(accountId, record, now))
+        // The account lock FIRST, then the record: a run that waited here behind a concurrent
+        // erasure reads the record that erasure committed, never a stale pending one.
+        val state = store.lockAccountState(accountId) ?: return Start.Finished(absent(accountId))
         if (state != HumanAccountState.DELETION_PENDING) return Start.Finished(Result.NotDeletionPending(state))
-        if (record == null) store.openDeletion(accountId, now)
+        if (store.deletion(accountId) == null) store.openDeletion(accountId, now)
         val workspace = store.findWorkspace(accountId)
         if (workspace != null) {
             val held = store.reservationsHeld(workspace)
@@ -269,25 +295,12 @@ class ProcessAccountDeletion(
         return Start.Proceed(workspace)
     }
 
-    /** No account row: never deleted (not found), already ERASED, or removed outside the workflow (closed now). */
-    private fun absent(
-        accountId: HumanAccountId,
-        record: AccountDeletionRecord?,
-        now: Instant,
-    ): Result {
-        record ?: return Result.AccountNotFound
-        val rowAbsent = record.stage != AccountDeletionStage.ERASED
-        // The login identities, sessions, waitlist entry and budget cascaded with the row.
-        if (rowAbsent) store.advanceDeletion(accountId, AccountDeletionStage.ERASED, now)
+    /** No account row (read after the row lock): never deleted, already ERASED, or removed outside the workflow. */
+    private fun absent(accountId: HumanAccountId): Result {
+        val record = store.deletion(accountId) ?: return Result.AccountNotFound
+        if (record.stage != AccountDeletionStage.ERASED) return Result.AccountRowAbsent(record)
         return Result.Advanced(
-            Progress(
-                accountId,
-                null,
-                AccountDeletionStage.ERASED,
-                AccountContentRemaining.NONE,
-                record.requestedAt,
-                accountRowAbsent = rowAbsent,
-            ),
+            Progress(accountId, null, AccountDeletionStage.ERASED, AccountContentRemaining.NONE, record.requestedAt),
         )
     }
 
@@ -311,7 +324,7 @@ class ProcessAccountDeletion(
         val now = clock.instant()
         workspace?.let(guard::guardAdmission)
         store.lockStorageFence()
-        val state = store.lockAccountState(accountId) ?: return absent(accountId, store.deletion(accountId), now)
+        val state = store.lockAccountState(accountId) ?: return absent(accountId)
         if (state != HumanAccountState.DELETION_PENDING) return Result.NotDeletionPending(state)
         // A deletion-pending account cannot be admitted, so its membership cannot change under these locks.
         check(store.findWorkspace(accountId) == workspace) { "membership changed under the lifecycle locks" }
@@ -472,6 +485,8 @@ class AccountDeletionReport(
         val remaining: AccountContentRemaining,
         val age: java.time.Duration,
         val overdue: Boolean,
+        /** The record is not ERASED but the account row is gone: an anomaly, never reported as erased. */
+        val accountRowAbsent: Boolean = false,
     )
 
     data class Report(
@@ -487,6 +502,7 @@ class AccountDeletionReport(
             val now = clock.instant()
             val entries =
                 store.pendingDeletions().map { record ->
+                    val rowAbsent = store.lockAccountState(record.accountId) == null
                     val workspace = store.findWorkspace(record.accountId)
                     val remaining =
                         workspace?.let {
@@ -498,6 +514,7 @@ class AccountDeletionReport(
                         remaining,
                         java.time.Duration.between(record.requestedAt, now),
                         policy.overdue(record.stage, record.requestedAt, now),
+                        rowAbsent,
                     )
                 }
             Report(entries, store.unrecordedDeletions())

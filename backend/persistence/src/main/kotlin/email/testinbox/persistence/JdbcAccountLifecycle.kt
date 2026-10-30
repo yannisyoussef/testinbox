@@ -296,6 +296,16 @@ class JdbcAccountLifecycle(
             ).query { rs, _ -> HumanAccountId(rs.getObject("id", UUID::class.java)) }
             .list()
 
+    override fun quiesceAccount(accountId: HumanAccountId): Boolean {
+        requireTransaction()
+        return jdbc
+            .sql("SELECT 1 FROM human_account WHERE id = :account FOR UPDATE")
+            .param("account", accountId.value)
+            .query()
+            .listOfRows()
+            .isNotEmpty()
+    }
+
     override fun revokeEveryManagedKey(at: Instant): Int {
         requireTransaction()
         return jdbc

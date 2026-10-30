@@ -128,6 +128,33 @@ class AccountLifecycleApiTest : ApiIntegrationTestBase() {
         return json.readTree(response.body())["key"].asText()
     }
 
+    @Autowired lateinit var registry: io.micrometer.core.instrument.MeterRegistry
+
+    @Test
+    fun `while restore-quarantined a legacy key gets 401 counted QUARANTINED, and the gauge reports it`() {
+        fun gauge() = registry.get(email.testinbox.api.ops.RestoreQuarantineGauge.NAME).gauge().value()
+
+        fun quarantined() =
+            registry
+                .get("testinbox_api_key_auth_total")
+                .tag("outcome", "QUARANTINED")
+                .counter()
+                .count()
+        get("/v1/workspace").statusCode.value() shouldBe 200
+        gauge() shouldBe 0.0
+        val before = quarantined()
+        jdbc.sql("DELETE FROM lifecycle_restore_clearance").update()
+        try {
+            gauge() shouldBe 1.0
+            get("/v1/workspace").statusCode.value() shouldBe 401
+            quarantined() shouldBe before + 1
+        } finally {
+            jdbc.sql("INSERT INTO lifecycle_restore_clearance (id) VALUES (1) ON CONFLICT DO NOTHING").update()
+        }
+        gauge() shouldBe 0.0
+        get("/v1/workspace").statusCode.value() shouldBe 200
+    }
+
     @Test
     fun `a suspended account's session and keys get 401, resume revives neither, a fresh login and key work`() {
         val id = account()

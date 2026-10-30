@@ -126,7 +126,7 @@ class AuthenticateApiKey(
         if (stored.isExpired(now)) return Verification(null, AuthOutcome.EXPIRED)
         when (eligibility.status(stored.workspaceId)) {
             WorkspaceStatus.INACTIVE_PARTICIPANT -> return Verification(null, AuthOutcome.WORKSPACE_INACTIVE)
-            WorkspaceStatus.LEGACY -> if (restoreQuarantine.active()) return Verification(null, AuthOutcome.WORKSPACE_INACTIVE)
+            WorkspaceStatus.LEGACY -> if (restoreQuarantine.active()) return Verification(null, AuthOutcome.QUARANTINED)
             WorkspaceStatus.ACTIVE_PARTICIPANT -> Unit
         }
 

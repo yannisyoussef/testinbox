@@ -169,6 +169,13 @@ interface AccountLifecycleStore {
     /** DELETION_PENDING accounts with no record (restored or hand-edited data): the timer adopts them. */
     fun unrecordedDeletions(): List<HumanAccountId>
 
+    /**
+     * Takes and releases (at commit) the strongest row lock on the account, so the
+     * caller waits, holding no other lock, for every transaction that holds a
+     * foreign-key share lock on it. False when there is no such account.
+     */
+    fun quiesceAccount(accountId: HumanAccountId): Boolean
+
     /** Restore reconciliation: permanently revokes every still-usable managed key of EVERY workspace. */
     fun revokeEveryManagedKey(at: Instant): Int
 }

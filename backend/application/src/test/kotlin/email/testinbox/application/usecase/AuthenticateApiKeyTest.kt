@@ -306,7 +306,8 @@ class AuthenticateApiKeyTest {
         guarded.authenticate(credential.render()).shouldBeNull()
         // Still verified first: a wrong secret is not told apart by the quarantine.
         guarded.authenticate(ApiKeyFormat.render(credential.publicId, ApiKeyFormat.generate(random).secret)).shouldBeNull()
-        metrics.auth shouldContainExactly listOf(AuthOutcome.SUCCESS, AuthOutcome.WORKSPACE_INACTIVE, AuthOutcome.BAD_SECRET)
+        // Counted as its own closed outcome, so an alert can tell a restore window from a suspension.
+        metrics.auth shouldContainExactly listOf(AuthOutcome.SUCCESS, AuthOutcome.QUARANTINED, AuthOutcome.BAD_SECRET)
         // Read per request: once reconciliation records the clearance the (newly minted) keys work.
         quarantined = false
         guarded.authenticate(credential.render()).shouldNotBeNull()

@@ -52,6 +52,9 @@ import java.security.SecureRandom
 import java.time.Clock
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * The TI-DELIVERY-002b deletion workflow and restore-credential policy on real
@@ -455,11 +458,10 @@ class AccountDeletionWorkflowTest : PersistenceIntegrationTest() {
         now.unrecorded shouldBe listOf(orphan)
         now.overdue shouldBe 1
 
-        w
-            .process()
-            .pending()
-            .map { it.accountId }
-            .toSet() shouldBe setOf(account, orphan)
+        w.process().pending().let {
+            it.records.map { r -> r.accountId }.toSet() shouldBe setOf(account, orphan)
+            it.adopted shouldBe listOf(orphan)
+        }
         w.stage(orphan) shouldBe "DRAINING"
         val later = AccountDeletionReport(w.lifecycle, w.tx, Clock.offset(clock, Duration.ofHours(73)), policy).execute()
         later.unrecorded shouldBe emptyList()
@@ -552,5 +554,108 @@ class AccountDeletionWorkflowTest : PersistenceIntegrationTest() {
         credentials.forEach { authenticate.authenticate(it.render()).shouldBeNull() }
         w.lifecycle.quarantined() shouldBe false
         w.count("SELECT count(*) FROM human_account WHERE id = ? AND state = 'SUSPENDED'", account.value) shouldBe 1
+    }
+
+    @Test
+    fun `a run that waited behind a concurrent erasure reads the committed record and reports ERASED, not an anomaly`() {
+        val w = World()
+        val (account, _) = w.participant()
+        w.change.execute(account, AccountLifecycleAction.DELETE)
+        val erasing = CountDownLatch(1)
+        val commit = CountDownLatch(1)
+        val holding =
+            object : AccountLifecycleStore by w.lifecycle {
+                override fun eraseIdentity(
+                    accountId: HumanAccountId,
+                    workspaceId: WorkspaceId?,
+                    at: java.time.Instant,
+                ): IdentityErasure =
+                    w.lifecycle.eraseIdentity(accountId, workspaceId, at).also {
+                        erasing.countDown()
+                        check(commit.await(30, TimeUnit.SECONDS))
+                    }
+            }
+        val first = CompletableFuture.supplyAsync { w.process(store = holding).execute(account) }
+        check(erasing.await(30, TimeUnit.SECONDS))
+        // The second run blocks on the account row the first one is deleting.
+        val second = CompletableFuture.supplyAsync { w.process().execute(account) }
+        w.db.awaitBlockedSessions()
+        commit.countDown()
+        first
+            .get(30, TimeUnit.SECONDS)
+            .shouldBeInstanceOf<ProcessAccountDeletion.Result.Advanced>()
+            .progress.erasure
+            .shouldNotBeNull()
+        second.get(30, TimeUnit.SECONDS).shouldBeInstanceOf<ProcessAccountDeletion.Result.Advanced>().progress.let {
+            it.stage shouldBe AccountDeletionStage.ERASED
+            it.erasure.shouldBeNull()
+        }
+    }
+
+    @Test
+    fun `a record whose account row was removed outside the workflow stays pending and is reported as an anomaly`() {
+        val w = World()
+        val (account, admission) = w.participant()
+        w.key(admission, "Jane Doe's laptop")
+        w.inbox(admission)
+        w.change.execute(account, AccountLifecycleAction.DELETE)
+        w.advance(account).stage shouldBe AccountDeletionStage.CONTENT_DELETING
+        // Removed by hand (the schema owner), outside the workflow.
+        w.db.jdbc
+            .sql("DELETE FROM human_account WHERE id = ?")
+            .param(account.value)
+            .update()
+
+        val result = w.process().execute(account).shouldBeInstanceOf<ProcessAccountDeletion.Result.AccountRowAbsent>()
+        result.record.stage shouldBe AccountDeletionStage.CONTENT_DELETING
+        w.stage(account) shouldBe "CONTENT_DELETING"
+        // Nothing is stamped erased, and the label it can no longer attribute safely is left for the operator.
+        w.count("SELECT count(*) FROM account_deletion WHERE account_id = ? AND erased_at IS NULL", account.value) shouldBe 1
+        w.count("SELECT count(*) FROM api_key WHERE workspace_id = ? AND name IS NOT NULL", admission.workspaceId.value) shouldBe 1
+        val report = AccountDeletionReport(w.lifecycle, w.tx, clock, AccountDeletionPolicy(Duration.ofHours(72))).execute()
+        report.entries.single().accountRowAbsent shouldBe true
+    }
+
+    @Test
+    fun `erasure waits, holding no guard, for a request that holds a foreign-key lock on the account - no deadlock`() {
+        val w = World()
+        val (account, admission) = w.participant()
+        w.change.execute(account, AccountLifecycleAction.DELETE)
+        val workspace = admission.workspaceId.value
+        // An idempotent console request authenticated before the deletion: its claim row's foreign
+        // key holds FOR KEY SHARE on the account, and it has not reached the workspace guard yet.
+        w.db.openTransaction().use { request ->
+            request
+                .prepareStatement(
+                    """
+                    INSERT INTO idempotency_record (id, workspace_id, project_id, operation, key_hash, fingerprint, snapshot_version,
+                                                    snapshot, created_at, expires_at, created_by_human_account_id)
+                    VALUES (?, ?, ?, 'CREATE_INBOX', 'k', 'f', 1, '{}', now(), now() + interval '1 day', ?)
+                    """.trimIndent(),
+                ).use {
+                    it.setObject(1, UUID.randomUUID())
+                    it.setObject(2, workspace)
+                    it.setObject(3, admission.projectId.value)
+                    it.setObject(4, account.value)
+                    it.executeUpdate()
+                }
+            val erasing = CompletableFuture.supplyAsync { w.process().execute(account) }
+            // The workflow waits for the request in its quiesce step...
+            w.db.awaitBlockedSessions()
+            // ...holding no guard, so the request reaches the guard at once instead of deadlocking.
+            request
+                .prepareStatement("SELECT pg_advisory_xact_lock(?)")
+                .use {
+                    it.setLong(1, workspace.mostSignificantBits xor workspace.leastSignificantBits)
+                    it.executeQuery().use { rs -> rs.next() shouldBe true }
+                }
+            request.rollback()
+            erasing
+                .get(30, TimeUnit.SECONDS)
+                .shouldBeInstanceOf<ProcessAccountDeletion.Result.Advanced>()
+                .progress.stage shouldBe
+                AccountDeletionStage.ERASED
+        }
+        w.count("SELECT count(*) FROM human_account WHERE id = ?", account.value) shouldBe 0
     }
 }

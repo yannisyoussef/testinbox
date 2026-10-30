@@ -164,4 +164,53 @@ class AccountDeletionCommandTest : ApiIntegrationTestBase() {
             jdbc.sql("DELETE FROM beta_admission WHERE place = ?").param(place).update()
         }
     }
+
+    @Test
+    fun `an adopted deletion and a record without its account row are anomalies with their own exit codes`() {
+        // DELETION_PENDING with no record: a hand-edited or restored database.
+        val unrecorded = account()
+        jdbc.sql("UPDATE human_account SET state = 'DELETION_PENDING' WHERE id = ?").param(unrecorded).update()
+        cli("status").let {
+            it.code shouldBe AccountLifecycleCommand.EXIT_OVERDUE
+            it.out shouldContain "account=$unrecorded stage=UNRECORDED"
+        }
+        cli("process-deletions").let {
+            // Adopting resets the age, so the adopting run itself raises the signal.
+            it.code shouldBe AccountLifecycleCommand.EXIT_OVERDUE
+            it.out shouldContain "account=$unrecorded stage=DRAINING anomaly=ADOPTED_UNRECORDED"
+            it.out shouldContain "adopted=1"
+            it.out shouldContain "exit=5"
+        }
+        // Adopted and then erased in that same run (it had no content).
+        count("SELECT count(*) FROM human_account WHERE id = ?", unrecorded) shouldBe 0
+
+        // A pending record whose account row was deleted by hand.
+        val gone = account()
+        cli("delete", gone.toString()).code shouldBe AccountLifecycleCommand.EXIT_DONE
+        jdbc
+            .sql("UPDATE account_deletion SET stage = 'CONTENT_DELETING', erased_at = NULL WHERE account_id = ?")
+            .param(gone)
+            .update()
+        try {
+            cli("status", gone.toString()).let {
+                it.code shouldBe AccountLifecycleCommand.EXIT_ANOMALY
+                it.out shouldContain "state=ABSENT stage=CONTENT_DELETING"
+                it.out shouldContain "anomaly=ACCOUNT_ROW_ABSENT"
+                it.out shouldNotContain "state=ERASED"
+            }
+            cli("delete", gone.toString()).code shouldBe AccountLifecycleCommand.EXIT_ANOMALY
+            cli("status").code shouldBe AccountLifecycleCommand.EXIT_ANOMALY
+            cli("process-deletions").let {
+                it.code shouldBe AccountLifecycleCommand.EXIT_ANOMALY
+                it.out shouldContain "anomalies=1"
+            }
+            count("SELECT count(*) FROM account_deletion WHERE account_id = ? AND stage = 'CONTENT_DELETING'", gone) shouldBe 1
+        } finally {
+            // The operator's documented resolution, so later suites see a clean worklist.
+            jdbc
+                .sql("UPDATE account_deletion SET stage = 'ERASED', stage_changed_at = now(), erased_at = now() WHERE account_id = ?")
+                .param(gone)
+                .update()
+        }
+    }
 }

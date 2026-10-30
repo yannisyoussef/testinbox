@@ -39,6 +39,9 @@ class AccountLifecycleCommandInputTest {
             code shouldBe AccountLifecycleCommand.EXIT_USAGE
             out shouldBe ""
             err shouldContain "usage: account-lifecycle"
+            // The first line is the stable marker an Ops image preflight greps for.
+            err.lines().first() shouldBe AccountLifecycleCommand.USAGE_MARKER
+            err shouldContain "process-deletions"
         }
     }
 

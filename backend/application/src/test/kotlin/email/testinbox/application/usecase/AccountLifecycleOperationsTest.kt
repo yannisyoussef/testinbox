@@ -245,7 +245,6 @@ class AccountLifecycleOperationsTest {
         val again = advance()
         again.stage shouldBe AccountDeletionStage.ERASED
         again.erasure shouldBe null
-        again.accountRowAbsent shouldBe false
         store.erased.size shouldBe 1
     }
 
@@ -283,23 +282,37 @@ class AccountLifecycleOperationsTest {
     @Test
     fun `an unadmitted account is erased in one run, and a missing record is adopted by the timer`() {
         store.states[account] = HumanAccountState.DELETION_PENDING
-        // Deletion-pending with no record: a restored or hand-edited database.
-        deletion.pending().map { it.accountId } shouldBe listOf(account)
+        // Deletion-pending with no record: a restored or hand-edited database. Adopted, and reported as such.
+        deletion.pending().let {
+            it.records.map { r -> r.accountId } shouldBe listOf(account)
+            it.adopted shouldBe listOf(account)
+        }
         val erased = advance()
         erased.stage shouldBe AccountDeletionStage.ERASED
         erased.workspaceId shouldBe null
         store.erased shouldBe listOf(account to null)
-        deletion.pending() shouldBe emptyList()
+        deletion.pending() shouldBe ProcessAccountDeletion.Pending(emptyList(), emptyList())
     }
 
     @Test
-    fun `a pending record whose account row is already gone is closed as ERASED, an unknown account is not found`() {
-        store.deletions[account] = AccountDeletionRecord(account, AccountDeletionStage.CONTENT_DELETING, clock.now, clock.now, null)
-        val closed = advance()
-        closed.stage shouldBe AccountDeletionStage.ERASED
-        closed.accountRowAbsent shouldBe true
-        store.deletions.getValue(account).stage shouldBe AccountDeletionStage.ERASED
+    fun `a pending record whose account row is gone is an anomaly - never stamped ERASED, nothing more erased`() {
+        val record = AccountDeletionRecord(account, AccountDeletionStage.CONTENT_DELETING, clock.now, clock.now, null)
+        store.deletions[account] = record
+        deletion.execute(account) shouldBe ProcessAccountDeletion.Result.AccountRowAbsent(record)
+        store.deletions.getValue(account) shouldBe record
+        store.erased shouldBe emptyList()
         deletion.execute(HumanAccountId(UUID.randomUUID())) shouldBe ProcessAccountDeletion.Result.AccountNotFound
+    }
+
+    @Test
+    fun `the erasing transaction is preceded by a quiesce that holds no guard`() {
+        participant()
+        done(change.execute(account, AccountLifecycleAction.DELETE))
+        events.clear()
+        advance().stage shouldBe AccountDeletionStage.ERASED
+        val quiesce = events.indexOf("quiesce:$account")
+        events.subList(quiesce - 1, quiesce + 2) shouldBe listOf("authority", "quiesce:$account", "authority")
+        events.indexOf("guard:$workspace") shouldBe quiesce + 2
     }
 
     @Test
@@ -574,6 +587,11 @@ class AccountLifecycleOperationsTest {
 
         override fun unrecordedDeletions(): List<HumanAccountId> =
             states.filter { (id, state) -> state == HumanAccountState.DELETION_PENDING && id !in deletions }.keys.toList()
+
+        override fun quiesceAccount(accountId: HumanAccountId): Boolean {
+            events += "quiesce:$accountId"
+            return accountId in states
+        }
 
         override fun revokeEveryManagedKey(at: Instant): Int {
             events += "revoke-every-managed-key"

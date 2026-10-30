@@ -77,8 +77,25 @@ object AccountLifecycleCommand {
      */
     const val EXIT_OVERDUE = 5
 
+    /**
+     * `process-deletions`, `status`, `delete`: a deletion record is not ERASED
+     * but its account row is gone (removed outside the workflow). Nothing more
+     * is erased automatically and the record keeps its stage; an operator
+     * resolves it by hand (LIFECYCLE.md, "Anomalies"). Alert.
+     */
+    const val EXIT_ANOMALY = 6
+
+    /**
+     * The first line of the usage text: a stable marker an Ops preflight
+     * greps for to prove an image contains the deletion workflow (an older
+     * image ignores the subcommand and boots the whole API instead).
+     */
+    const val USAGE_MARKER =
+        "account-lifecycle-cli v2 subcommands=suspend,resume,delete,status,process-deletions,restore-reconcile"
+
     private const val USAGE =
-        "usage: account-lifecycle suspend|resume|delete|status <account-uuid> | status | process-deletions | restore-reconcile; " +
+        "$USAGE_MARKER\n" +
+            "usage: account-lifecycle suspend|resume|delete|status <account-uuid> | status | process-deletions | restore-reconcile; " +
             "operator credentials in TI_LIFECYCLE_JDBC_URL, TI_LIFECYCLE_USER, TI_LIFECYCLE_PASSWORD"
 
     private const val ERASE_REPLACED =
@@ -305,12 +322,11 @@ object AccountLifecycleCommand {
             when (val result = ops.change.execute(command.account, command.action)) {
                 ChangeAccountState.Result.AccountNotFound -> {
                     // Re-running `delete` for an account already ERASED (e.g. a restore replay) is a success.
-                    val erased = ops.status.deletionRecord(command.account)?.takeIf { it.stage == AccountDeletionStage.ERASED }
-                    if (command.action == AccountLifecycleAction.DELETE && erased != null) {
-                        out.println(erasedLine(erased))
-                        return EXIT_DONE
-                    }
-                    return notFound(command.account, out)
+                    val record = ops.status.deletionRecord(command.account) ?: return notFound(command.account, out)
+                    if (record.stage != AccountDeletionStage.ERASED) return rowAbsent(record, "account.lifecycle", out)
+                    if (command.action != AccountLifecycleAction.DELETE) return notFound(command.account, out)
+                    out.println(erasedLine(record))
+                    return EXIT_DONE
                 }
 
                 is ChangeAccountState.Result.Refused -> {
@@ -336,10 +352,24 @@ object AccountLifecycleCommand {
             Advance.ERASED -> EXIT_DONE
             Advance.PENDING, Advance.OVERDUE -> EXIT_PENDING
             Advance.REFUSED -> EXIT_REFUSED
+            Advance.ANOMALY -> EXIT_ANOMALY
         }
     }
 
-    private enum class Advance { ERASED, PENDING, OVERDUE, REFUSED }
+    private enum class Advance { ERASED, PENDING, OVERDUE, REFUSED, ANOMALY }
+
+    /** A record that is not ERASED for an account whose row is gone: reported with its real stage, never as erased. */
+    private fun rowAbsent(
+        record: AccountDeletionRecord,
+        event: String,
+        out: PrintStream,
+    ): Int {
+        out.println(
+            "event=$event account=${record.accountId.value} state=ABSENT stage=${record.stage} requestedAt=${record.requestedAt} " +
+                "anomaly=ACCOUNT_ROW_ABSENT",
+        )
+        return EXIT_ANOMALY
+    }
 
     /** One workflow step for one account, printed as one metadata line. */
     private fun advance(
@@ -358,6 +388,11 @@ object AccountLifecycleCommand {
                 Advance.REFUSED
             }
 
+            is ProcessAccountDeletion.Result.AccountRowAbsent -> {
+                rowAbsent(result.record, "account.deletion", out)
+                Advance.ANOMALY
+            }
+
             is ProcessAccountDeletion.Result.Advanced -> {
                 val p = result.progress
                 val now = ops.clock.instant()
@@ -366,7 +401,7 @@ object AccountLifecycleCommand {
                     p.erasure?.let {
                         " erasedNow=true anonymizedKeyLabels=${it.anonymizedKeyLabels} loginChallenges=${it.loginChallenges} " +
                             "idempotencyRecords=${it.idempotencyRecords} addressReservations=${it.addressReservations}"
-                    } ?: if (p.accountRowAbsent) " anomaly=ACCOUNT_ROW_ABSENT" else ""
+                    } ?: ""
                 out.println(
                     "event=account.deletion account=${account.value} workspace=${p.workspaceId?.value ?: "-"} stage=${p.stage} " +
                         "requestedAt=${p.requestedAt ?: "-"} ageSeconds=${p.requestedAt?.let { age(it, now) } ?: "-"} " +
@@ -394,27 +429,25 @@ object AccountLifecycleCommand {
 
     /**
      * The Ops timer's command: advances EVERY pending deletion one step. One
-     * account's failure does not stop the others. Exit 4 when any step failed,
-     * otherwise 5 when any deletion is overdue, otherwise 0 (pending deletions
-     * that are within the threshold are normal).
+     * account's failure does not stop the others. The exit code, in order of
+     * precedence: 4 when any step failed, 6 when any record's account row is
+     * gone, 5 when any deletion is overdue, refused or had to be adopted,
+     * otherwise 0 (deletions still within the threshold are normal). The last
+     * line is a stable, machine-readable summary for a textfile metric.
      */
     private fun process(
         ops: Operations,
         out: PrintStream,
     ): Int {
         val pending = ops.deletion.pending()
-        var erased = 0
-        var overdue = 0
+        pending.adopted.forEach {
+            out.println("event=account.deletion account=${it.value} stage=DRAINING anomaly=ADOPTED_UNRECORDED")
+        }
+        val counts = IntArray(Advance.entries.size)
         var failed = 0
-        var refused = 0
-        for (record in pending) {
+        for (record in pending.records) {
             try {
-                when (advance(record.accountId, ops, out)) {
-                    Advance.ERASED -> erased++
-                    Advance.OVERDUE -> overdue++
-                    Advance.PENDING -> Unit
-                    Advance.REFUSED -> refused++
-                }
+                counts[advance(record.accountId, ops, out).ordinal]++
             } catch (e: OperatorAuthorityRequiredException) {
                 throw e
             } catch (e: RuntimeException) {
@@ -424,15 +457,22 @@ object AccountLifecycleCommand {
                 )
             }
         }
+        val anomalies = counts[Advance.ANOMALY.ordinal]
+        val overdue = counts[Advance.OVERDUE.ordinal]
+        val refused = counts[Advance.REFUSED.ordinal]
+        val code =
+            when {
+                failed > 0 -> EXIT_FAILED
+                anomalies > 0 -> EXIT_ANOMALY
+                overdue > 0 || refused > 0 || pending.adopted.isNotEmpty() -> EXIT_OVERDUE
+                else -> EXIT_DONE
+            }
         out.println(
-            "event=account.deletions processed=${pending.size} erased=$erased pending=${pending.size - erased - failed - refused} " +
-                "overdue=$overdue refused=$refused failed=$failed",
+            "event=account.deletions processed=${pending.records.size} erased=${counts[Advance.ERASED.ordinal]} " +
+                "pending=${counts[Advance.PENDING.ordinal] + overdue} overdue=$overdue adopted=${pending.adopted.size} " +
+                "anomalies=$anomalies refused=$refused failed=$failed exit=$code completedAt=${ops.clock.instant().epochSecond}",
         )
-        return when {
-            failed > 0 -> EXIT_FAILED
-            overdue > 0 || refused > 0 -> EXIT_OVERDUE
-            else -> EXIT_DONE
-        }
+        return code
     }
 
     /** Read-only: each unfinished deletion's stage and age, and the overdue verdict. */
@@ -446,12 +486,23 @@ object AccountLifecycleCommand {
                 "event=account.deletion account=${e.record.accountId.value} workspace=${e.workspaceId?.value ?: "-"} " +
                     "stage=${e.record.stage} requestedAt=${e.record.requestedAt} ageSeconds=${maxOf(0L, e.age.seconds)} " +
                     "stageChangedAt=${e.record.stageChangedAt} reservationsHeld=${e.remaining.reservationsHeld} " +
-                    "inboxRows=${e.remaining.inboxRows} exactCooldowns=${e.remaining.exactCooldowns} overdue=${e.overdue}",
+                    "inboxRows=${e.remaining.inboxRows} exactCooldowns=${e.remaining.exactCooldowns} overdue=${e.overdue}" +
+                    if (e.accountRowAbsent) " state=ABSENT anomaly=ACCOUNT_ROW_ABSENT" else "",
             )
         }
-        report.unrecorded.forEach { out.println("event=account.deletion account=${it.value} stage=UNRECORDED overdue=true") }
-        out.println("event=account.deletions pending=${report.entries.size + report.unrecorded.size} overdue=${report.overdue}")
-        return if (report.overdue > 0) EXIT_OVERDUE else EXIT_DONE
+        report.unrecorded.forEach {
+            out.println("event=account.deletion account=${it.value} stage=UNRECORDED overdue=true anomaly=UNRECORDED")
+        }
+        val anomalies = report.entries.count { it.accountRowAbsent }
+        out.println(
+            "event=account.deletions pending=${report.entries.size + report.unrecorded.size} overdue=${report.overdue} " +
+                "unrecorded=${report.unrecorded.size} anomalies=$anomalies",
+        )
+        return when {
+            anomalies > 0 -> EXIT_ANOMALY
+            report.overdue > 0 -> EXIT_OVERDUE
+            else -> EXIT_DONE
+        }
     }
 
     private fun status(
@@ -461,8 +512,9 @@ object AccountLifecycleCommand {
     ): Int {
         val status =
             ops.status.execute(account) ?: run {
-                val erased = ops.status.deletionRecord(account) ?: return notFound(account, out)
-                out.println(erasedLine(erased, "account.status"))
+                val record = ops.status.deletionRecord(account) ?: return notFound(account, out)
+                if (record.stage != AccountDeletionStage.ERASED) return rowAbsent(record, "account.status", out)
+                out.println(erasedLine(record, "account.status"))
                 return EXIT_DONE
             }
         val deletion =
