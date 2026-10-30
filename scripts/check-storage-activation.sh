@@ -53,7 +53,7 @@
 #                                      (never passing): this script never recomputes the ADR-037 proof.
 #   --cohort-pool-file <file>          gate G: the reviewed pool file that check ran against; its SHA-256 must equal
 #                                      the `reviewed-file sha256=` line the command printed (binds the output to it)
-#   --environment <name>               gate F: with `production`, the matched qualification record must carry
+#   --environment production|staging|lab  gate F: with `production`, the matched qualification record must carry
 #                                      platformClass production-host (the evidence itself does not name the environment)
 #   --json <file>                      write the evidence record
 # Env:
@@ -154,6 +154,8 @@ case "$MODE" in
     "") echo "error: --mode TENANT_LIMITS|ALL is required" >&2; usage ;;
     *) echo "error: --mode must be TENANT_LIMITS or ALL, not '$MODE'" >&2; usage ;;
 esac
+# Exact, lowercase, from a closed set: a typo must never silently skip the production-host check.
+case "$ENVIRONMENT" in ""|production|staging|lab) ;; *) echo "error: --environment must be exactly production, staging or lab, not '$ENVIRONMENT'" >&2; usage ;; esac
 case "$QUAL_METRIC" in ""|0|1) ;; *) echo "error: --qualification-valid-metric must be 0 or 1" >&2; usage ;; esac
 case "$MAX_OFFSET" in ''|*[!0-9.]*) echo "error: --max-clock-offset-seconds must be a number" >&2; usage ;; esac
 for f in "$SESSIONS_FILE" "$NODES_FILE" "$IDENTITY" "$BENCH" "$FLOORS_FILE" "$FS_EVIDENCE" "$FOOTPRINT_STATE" "$COHORT_CHECK" "$COHORT_POOL"; do

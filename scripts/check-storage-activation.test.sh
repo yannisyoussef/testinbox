@@ -548,6 +548,11 @@ case_ "usage: an unknown mode is a usage error" 2 'must be TENANT_LIMITS or ALL'
 case_ "usage: an unknown argument is a usage error" 2 'unknown argument' "$TMP/empty-args" --mode ALL --bogus
 case_ "usage: a missing input file is a usage error, not a verdict" 2 'input file not found' "$TMP/empty-args" --mode ALL --sessions-file "$TMP/does-not-exist.tsv"
 case_ "usage: a missing cohort check output is a usage error, not a verdict" 2 'input file not found' "$TMP/empty-args" --mode ALL --cohort-check-output "$TMP/does-not-exist.txt"
+for env in Production PRODUCTION prod "production " " production" staging-host ""; do
+    [ -n "$env" ] || continue
+    case_ "usage: --environment '$env' is not an allowed value (exact lowercase production|staging|lab)" 2 'must be exactly production, staging or lab' "$TMP/empty-args" --mode ALL --environment "$env"
+done
+case_ "usage: an empty --environment value is a usage error" 2 '' "$TMP/empty-args" --mode ALL --environment ""
 case_ "usage: a missing cohort pool file is a usage error, not a verdict" 2 'input file not found' "$TMP/empty-args" --mode ALL --cohort-pool-file "$TMP/does-not-exist.json"
 
 # ---------------------------------------------------------------------------
