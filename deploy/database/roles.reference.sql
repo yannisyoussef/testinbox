@@ -148,12 +148,14 @@ GRANT EXECUTE ON FUNCTION
 -- project, any human/beta/login table, or any relation not named here.
 -- Adding a statement to the ingestion path means adding its privilege here;
 -- StorageRoleModelTest pins this set exactly.
-GRANT SELECT ON flyway_schema_history, workspace, inbox, message, attachment, inbox_storage,
+GRANT SELECT ON flyway_schema_history, inbox, message, attachment, inbox_storage,
     workspace_storage_account, storage_delta, storage_deletion_debt, storage_debt_watermark,
     storage_footprint_trust, storage_filesystem_observation,
     participant_workspace, storage_legacy_share, workspace_deletion_charge, storage_cohort_plan
     TO :"ingestion_role";
 GRANT INSERT ON message, attachment TO :"ingestion_role";
+-- The cohort snapshot counts workspaces by id; a workspace's name is not SMTP's.
+GRANT SELECT (id) ON workspace TO :"ingestion_role";
 -- lockInboxes takes FOR SHARE, which needs UPDATE on one column; nothing updates inbox.
 GRANT UPDATE (id) ON inbox TO :"ingestion_role";
 GRANT SELECT, INSERT, UPDATE ON rate_bucket TO :"ingestion_role";

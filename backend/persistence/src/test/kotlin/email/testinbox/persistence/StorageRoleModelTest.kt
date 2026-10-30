@@ -570,7 +570,7 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         val INGESTION_ALLOW_LIST: Map<String, Set<String>> =
             mapOf(
                 "flyway_schema_history" to READ,
-                "workspace" to READ,
+                "workspace" to setOf("SELECT(id)"),
                 "inbox" to setOf("SELECT", "UPDATE(id)"),
                 "message" to setOf("SELECT", "INSERT"),
                 "attachment" to setOf("SELECT", "INSERT"),
