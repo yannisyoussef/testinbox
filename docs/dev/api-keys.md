@@ -217,6 +217,10 @@ credential, the `Authorization` header or the stored verifier — the audit even
 type has no field to put one in, and `DependencyRuleTest` fails the build if
 one is added.
 
+The key's free-text name is not logged either, only `named=true|false`
+(TI-DELIVERY-002b): a label may identify a person, and identity erasure clears
+the stored name but could not reach a shipped log line.
+
 ## Metrics
 
 On the private management port only (`/actuator/prometheus`, never routed by

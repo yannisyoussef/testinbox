@@ -28,11 +28,14 @@ class Slf4jAuditLog : AuditLog {
         when (event) {
             is AuditEvent.ApiKeyCreated -> {
                 log.info(
-                    "event=api_key.created {} apiKeyId={} publicId={} name={} scopes={} expiresAt={}",
+                    // The free-text label is never logged (TI-DELIVERY-002b): it may identify a
+                    // person, and identity erasure cannot reach a shipped log line. The key id
+                    // correlates the line with the stored key while the label exists.
+                    "event=api_key.created {} apiKeyId={} publicId={} named={} scopes={} expiresAt={}",
                     common,
                     event.apiKeyId.value,
                     event.publicId,
-                    field(event.name),
+                    !event.name.isNullOrEmpty(),
                     event.scopes
                         .map { it.wire }
                         .sorted()
