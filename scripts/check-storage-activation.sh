@@ -12,6 +12,15 @@
 # deployed MinIO combination has a committed qualification record. This script
 # evaluates each of those from inputs Ops hand it and writes the verdict down.
 #
+# THE COHORT GATE IS `storage-budget check`, NOT THIS SCRIPT (ADR-037). The
+# thirty-share pool can only be reserved after the deployables run ALL, so it
+# cannot exist when this barrier is first evaluated; the proof itself (every
+# share, legacy share, envelope, finalization and reserve against the declared
+# figures, the exact legacy inventory, nodes and observations) is computed by the
+# API artifact's offline `storage-budget check`. Gate G records that command's
+# verdict when its output is supplied, and otherwise reports NOT REQUIRED with
+# this statement; the evidence JSON names it in `cohortGate`.
+#
 # What it is NOT: it is not a deployment, not a health check, and a green
 # Staging workflow is not evidence for any gate here (the GitHub handoff proves
 # that Ops ACCEPTED a request, not the deployed state). Every gate that has no
@@ -39,6 +48,9 @@
 #   --max-clock-offset-seconds <n>     ε_max, default 30
 #   --filesystem-evidence <json>       gate F: the Ops filesystem evidence (docs/dev/filesystem-evidence.md)
 #   --footprint-state <json>           gate F: the database state, for an offline evaluation; replaces the query
+#   --cohort-check-output <file>       gate G (--mode ALL): the captured stdout of `storage-budget check <reviewed pool
+#                                      file>` (docs/dev/cohort-storage.md). Without it gate G is NOT REQUIRED and says
+#                                      where the cohort gate lives: this script never recomputes the ADR-037 proof.
 #   --json <file>                      write the evidence record
 # Env:
 #   TESTINBOX_ACTIVATION_DB_URL        psql conninfo/URL; replaces --sessions-file / --nodes-file. With it set,
@@ -71,6 +83,7 @@ FLOORS_FILE=""
 FETCH=false
 FS_EVIDENCE=""
 FOOTPRINT_STATE=""
+COHORT_CHECK=""
 JSON_OUT=""
 MAX_OFFSET=30
 HEARTBEAT_MAX_AGE=300
@@ -118,6 +131,7 @@ while [ $# -gt 0 ]; do
         --max-clock-offset-seconds) need_value "$@"; MAX_OFFSET="$2"; shift 2 ;;
         --filesystem-evidence) need_value "$@"; FS_EVIDENCE="$2"; shift 2 ;;
         --footprint-state) need_value "$@"; FOOTPRINT_STATE="$2"; shift 2 ;;
+        --cohort-check-output) need_value "$@"; COHORT_CHECK="$2"; shift 2 ;;
         --json) need_value "$@"; JSON_OUT="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) echo "error: unknown argument '$1'" >&2; usage ;;
@@ -131,7 +145,7 @@ case "$MODE" in
 esac
 case "$QUAL_METRIC" in ""|0|1) ;; *) echo "error: --qualification-valid-metric must be 0 or 1" >&2; usage ;; esac
 case "$MAX_OFFSET" in ''|*[!0-9.]*) echo "error: --max-clock-offset-seconds must be a number" >&2; usage ;; esac
-for f in "$SESSIONS_FILE" "$NODES_FILE" "$IDENTITY" "$BENCH" "$FLOORS_FILE" "$FS_EVIDENCE" "$FOOTPRINT_STATE"; do
+for f in "$SESSIONS_FILE" "$NODES_FILE" "$IDENTITY" "$BENCH" "$FLOORS_FILE" "$FS_EVIDENCE" "$FOOTPRINT_STATE" "$COHORT_CHECK"; do
     [ -z "$f" ] || [ -f "$f" ] || { echo "error: input file not found: $f" >&2; usage; }
 done
 [ -d "$REPO" ] || { echo "error: --repo $REPO is not a directory" >&2; usage; }
@@ -1171,6 +1185,37 @@ gate_filesystem() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Gate G (ADR-037): the cohort pool. Its proof is the API artifact's offline
+# `storage-budget check`, run against the reviewed pool file after the switch to
+# ALL and the reservation; it must PASS before capacity_ready is set
+# (docs/dev/cohort-storage.md). This gate records that verdict and never
+# recomputes it. The command prints exactly the PASS line below as its last
+# line on success, and throws (no PASS line) on any failure.
+# ---------------------------------------------------------------------------
+COHORT_PASS_LINE="cohort storage check: PASS; admissions unchanged"
+gate_cohort() {
+    local gate="G-cohort" last cause
+    if [ "$MODE" != ALL ]; then
+        record "$gate" NOT_REQUIRED "NOT REQUIRED FOR $MODE: the ADR-037 cohort pool exists only under ALL"
+        return
+    fi
+    if [ -z "$COHORT_CHECK" ]; then
+        record "$gate" NOT_REQUIRED "not evaluated by this script: the cohort gate is \`storage-budget check <reviewed pool file>\` (docs/dev/cohort-storage.md), which can pass only after the switch to ALL and the offline reservation, and must PASS before capacity_ready is set; supply its output with --cohort-check-output to record it here"
+        return
+    fi
+    last="$(grep -v '^[[:space:]]*$' "$COHORT_CHECK" | tail -n 1)"
+    if [ "$last" = "$COHORT_PASS_LINE" ]; then
+        record "$gate" PASS "storage-budget check reported PASS: the installed pool equals the reviewed file and is ready (every share and reserve fits, exact inventory, compatible nodes, valid observation)"
+    elif [ -z "$last" ]; then
+        record "$gate" BLOCKED "the storage-budget check output is empty; the command did not report PASS"
+    else
+        # A failed run ends in a stack trace: name its exception line, not only the last frame.
+        cause="$(grep -m 1 -E '(Exception|Error)([:[:space:]]|$)' "$COHORT_CHECK" | tr -d '\t' | head -c 200)"
+        record "$gate" BLOCKED "storage-budget check did not report PASS;${cause:+ error '$cause';} its last line is '$(printf '%s' "$last" | tr -d '\t' | head -c 200)'"
+    fi
+}
+
 gate_sessions
 gate_inventory
 gate_physical
@@ -1180,6 +1225,7 @@ gate_floors_staging
 gate_floors_production
 gate_qualification
 gate_filesystem
+gate_cohort
 
 # ---------------------------------------------------------------------------
 # Verdict and output.
@@ -1203,7 +1249,8 @@ echo "ACTIVATION $OVERALL"
 if [ -n "$JSON_OUT" ]; then
     printf '%s' "$RESULTS" | jq -R -s --arg mode "$MODE" --arg at "$EVALUATED_AT" --arg verdict "$OVERALL" '
         split("\n") | map(select(length > 0) | split("\t") | { gate: .[0], verdict: .[1], detail: .[2] })
-        | { mode: $mode, evaluatedAt: $at, gates: ., verdict: $verdict }' > "$JSON_OUT" ||
+        | { mode: $mode, evaluatedAt: $at, gates: ., verdict: $verdict,
+            cohortGate: "storage-budget check (docs/dev/cohort-storage.md); recorded by gate G only when its output is supplied" }' > "$JSON_OUT" ||
         { echo "error: could not write $JSON_OUT" >&2; exit 2; }
 fi
 

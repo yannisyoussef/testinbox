@@ -74,7 +74,8 @@ good() {
         --sessions-file "$FIX/sessions/healthy.tsv" --nodes-file "$FIX/nodes/healthy.tsv" \
         --qualification-dir "$FIX/qualification" --backend-identity "$FIX/identity/match.json" \
         --benchmark-evidence "$TMP/bench-pass.json" \
-        --filesystem-evidence "$FIX/filesystem/evidence-good.json" --footprint-state "$FIX/filesystem/state-good.json"
+        --filesystem-evidence "$FIX/filesystem/evidence-good.json" --footprint-state "$FIX/filesystem/state-good.json" \
+        --cohort-check-output "$FIX/cohort/check-pass.txt"
 }
 # with <flag> <value>: the good inputs with one flag's value replaced (removed when
 # value is ""), or the flag appended when the good inputs do not carry it.
@@ -126,8 +127,9 @@ only() {
 good > "$TMP/args-good"
 case_ "all gates satisfied → ACTIVATION READY" 0 '^ACTIVATION READY$' "$TMP/args-good" --json "$TMP/evidence.json"
 if [ -f "$TMP/evidence.json" ] && jq -e '.mode == "ALL" and .evaluatedAt == "2026-10-07T00:00:00Z" and .verdict == "READY"
-        and (.gates | length) == 9 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)' "$TMP/evidence.json" >/dev/null 2>&1; then
-    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict} with 9 gates"
+        and (.gates | length) == 10 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
+        and (.cohortGate | startswith("storage-budget check"))' "$TMP/evidence.json" >/dev/null 2>&1; then
+    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 10 gates"
 else
     bad "the evidence JSON shape is wrong" "$(cat "$TMP/evidence.json" 2>/dev/null)"
 fi
@@ -489,6 +491,30 @@ only "F: a record without a qualified O_max blocks" F-filesystem "carries no qua
 fe declared-only '.declared.capacityBytes = 137438953472' "declaring more capacity than statvfs observes blocks" "capacity: f_blocks × f_frsize 68719476736 < declared C_fs 137438953472"
 
 # ---------------------------------------------------------------------------
+# Gate G (ADR-037): the cohort gate is `storage-budget check`; this script only
+# records its verdict, and says so when it has none.
+# ---------------------------------------------------------------------------
+with --cohort-check-output "" > "$TMP/g-none"
+case_ "G-cohort: without the check output the gate is NOT REQUIRED and names storage-budget check as the cohort gate" 0 \
+    '^G-cohort[[:space:]]+NOT REQUIRED[[:space:]]+not evaluated by this script: the cohort gate is `storage-budget check' "$TMP/g-none" --json "$TMP/g-none.json"
+jq -e '.cohortGate | startswith("storage-budget check")' "$TMP/g-none.json" >/dev/null 2>&1 \
+    && ok "G-cohort: the evidence JSON states the cohort gate even when it was not recorded" \
+    || bad "G-cohort: cohortGate missing from the evidence JSON" "$(cat "$TMP/g-none.json" 2>/dev/null)"
+with --cohort-check-output "$FIX/cohort/check-not-ready.txt" > "$TMP/g-fail"
+only "G-cohort: a failed storage-budget check blocks, naming its error" G-cohort "did not report PASS; error '.*IllegalStateException: cohort storage is not ready'" "$TMP/g-fail"
+with --cohort-check-output "$FIX/cohort/reserve-pass.txt" > "$TMP/g-reserve"
+only "G-cohort: a reserve PASS is not a check PASS" G-cohort "did not report PASS.*cohort storage reserve: PASS" "$TMP/g-reserve"
+with --cohort-check-output "$FIX/cohort/pass-then-failure.txt" > "$TMP/g-later"
+only "G-cohort: a PASS followed by a failure blocks (the last line decides)" G-cohort "operator file differs from installed pool" "$TMP/g-later"
+with --cohort-check-output "$FIX/cohort/empty.txt" > "$TMP/g-empty"
+only "G-cohort: an empty output blocks" G-cohort "output is empty" "$TMP/g-empty"
+with --mode TENANT_LIMITS > "$TMP/g-tl"
+run_args "$TMP/g-tl"
+printf '%s\n' "$OUT" | grep -qE '^G-cohort[[:space:]]+NOT REQUIRED[[:space:]]+NOT REQUIRED FOR TENANT_LIMITS' \
+    && ok "G-cohort: TENANT_LIMITS has no cohort pool, so the gate is NOT REQUIRED there even with an output" \
+    || bad "G-cohort: TENANT_LIMITS should not evaluate the cohort gate" "$OUT"
+
+# ---------------------------------------------------------------------------
 # Usage.
 # ---------------------------------------------------------------------------
 : > "$TMP/empty-args"
@@ -496,6 +522,7 @@ case_ "usage: --mode is required (exit 2)" 2 'mode TENANT_LIMITS\|ALL is require
 case_ "usage: an unknown mode is a usage error" 2 'must be TENANT_LIMITS or ALL' "$TMP/empty-args" --mode ON
 case_ "usage: an unknown argument is a usage error" 2 'unknown argument' "$TMP/empty-args" --mode ALL --bogus
 case_ "usage: a missing input file is a usage error, not a verdict" 2 'input file not found' "$TMP/empty-args" --mode ALL --sessions-file "$TMP/does-not-exist.tsv"
+case_ "usage: a missing cohort check output is a usage error, not a verdict" 2 'input file not found' "$TMP/empty-args" --mode ALL --cohort-check-output "$TMP/does-not-exist.txt"
 
 # ---------------------------------------------------------------------------
 # THIS repository's floors (deploy/rollback-floors.txt) against origin/master.
