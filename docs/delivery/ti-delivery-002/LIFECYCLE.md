@@ -454,8 +454,9 @@ GRANT SELECT ON workspace_lifecycle_eligibility TO :"ingestion_role";
 The change adds no `DO`, `SET`, `set_config` or `search_path`. The API role
 needs nothing new: it already receives `SELECT/INSERT/UPDATE/DELETE ON ALL
 TABLES`, which now also covers the view and `lifecycle_restore_clearance`.
-The V22 triggers, not grants, stop the API role from writing state, erasing
-accounts or lifting quarantine.
+The V22 triggers stop the API role from writing state, erasing accounts or
+lifting quarantine, and the grant-level hardening below narrows the same
+writes by grant.
 
 `StorageRoleModelTest` pins the ingestion allow-list exactly, now including
 the view. It also proves:
@@ -485,17 +486,25 @@ always passes, and the V22 authority functions and triggers add nothing,
 because the owner is the operator authority. Only production's separate roles
 get the protection.
 
-**Required Ops action once MD1/md1 are fixed: grant-level hardening.** Add
-grant-level barriers on top of the V22 triggers by revoking these from the
-API role:
+**Grant-level hardening (STATUS item 10, now in `roles.reference.sql`).**
+On top of the V22 triggers, the reference revokes these from the API role:
 
-- `INSERT, UPDATE, DELETE ON lifecycle_restore_clearance`;
-- `UPDATE (state) ON human_account`;
+- `INSERT, UPDATE, DELETE ON lifecycle_restore_clearance` (it keeps `SELECT`
+  for the readiness probe);
+- `UPDATE ON human_account`, re-granting only `UPDATE (id)`. The API locks
+  account rows (`FOR UPDATE` in admission, `FOR NO KEY UPDATE` in session
+  issuance and authentication), and a row lock needs `UPDATE` on at least one
+  column. Every foreign key to `human_account(id)` is `ON UPDATE NO ACTION`,
+  so a referenced account cannot be re-keyed;
 - `UPDATE, DELETE ON beta_admission`.
 
-These are kept out of `roles.reference.sql` for now because of the MD1
-constraint. The triggers, which a real-PostgreSQL test proves, enforce the
-same rule in the meantime.
+The API never updates an account column or a membership, and never writes
+the clearance, so nothing it runs is refused. `StorageRoleModelTest` proves it
+under psql with the shipped file: the effective privileges, the refusals by
+grant, and session issuance, authentication, admission and the readiness
+probe still working under the API role. Ops asserts the same through its
+contract's `api-denied-privileges.txt`. Those assertions are enabled in the
+infinity-core change that pins a candidate carrying this reference.
 
 **Also added to `roles.reference.sql`'s read-only guard block.** It refuses an
 API, ingestion or monitor role that is a member of the schema owner, because

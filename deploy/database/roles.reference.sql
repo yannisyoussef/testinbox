@@ -102,6 +102,19 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO :"api_role";
 -- workspace-only classification, never its underlying human membership.
 REVOKE UPDATE, DELETE ON participant_workspace FROM :"api_role";
 
+-- Account lifecycle (V22) is operator-only: account state, membership and the
+-- restore quarantine are written under the operator authority, never by the
+-- API (the V22 triggers refuse it too; these grants say the same). The API
+-- only inserts accounts and admissions, reads the clearance, and locks
+-- account rows (FOR UPDATE / FOR NO KEY UPDATE), which needs UPDATE on one
+-- column: id (every foreign key to it is ON UPDATE NO ACTION, so a referenced
+-- account cannot be re-keyed). Ops asserts these through its contract's
+-- api-denied-privileges.txt (TI-DELIVERY-002 STATUS "Required Ops changes" 10).
+REVOKE UPDATE ON human_account FROM :"api_role";
+GRANT UPDATE (id) ON human_account TO :"api_role";
+REVOKE UPDATE, DELETE ON beta_admission FROM :"api_role";
+REVOKE INSERT, UPDATE, DELETE ON lifecycle_restore_clearance FROM :"api_role";
+
 -- The cohort switches (admissions_open, capacity_ready) are operator actions.
 -- The API only locks the row (JdbcBetaAdmissions: SELECT ... FOR UPDATE), which
 -- needs UPDATE on one column; id is CHECK-pinned to 'beta-30', so UPDATE (id)
