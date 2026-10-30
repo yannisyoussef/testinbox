@@ -220,6 +220,8 @@ class SmtpCohortQuotaRefusalTest {
 
     private fun transcript(recipients: List<String>): List<String> =
         Socket("127.0.0.1", port).use { socket ->
+            // Fail, never hang the build, if no reply comes (see SmtpAccountLifecycleTest).
+            socket.soTimeout = 30_000
             val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.US_ASCII))
             val out = socket.getOutputStream()
             val lines = mutableListOf<String>()
