@@ -28,7 +28,10 @@ callback setting, host or public access was created or changed.
   limit can retain over the 24-hour window (4,800), so sustained legitimate use
   never reaches it; it only fails closed on an anomaly.
   Consumed/replaced attempts remain charged; switching browser/provider does
-  not reset the shared source/global inventory.
+  not reset the shared source/global inventory. The source is the API's peer,
+  or, since TI-DELIVERY-002, a client address that the authenticated website
+  proxy names. IPv6 addresses are grouped by /64. See
+  [ADMISSION-AND-SOURCE.md](../ti-delivery-002/ADMISSION-AND-SOURCE.md).
 - Clear expired payloads on request and with a minute scheduler. Retain only
   bounded rate metadata for up to 24 hours; cleanup remains active when the
   future login feature is disabled. It skips incompatible schemas and exposes
