@@ -21,6 +21,7 @@ import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.NotifierMetrics
 import email.testinbox.application.port.RateLimiter
+import email.testinbox.application.port.RestoreQuarantine
 import email.testinbox.application.port.StorageAccountingMetrics
 import email.testinbox.application.port.StorageAmbiguity
 import email.testinbox.application.port.StorageInspection
@@ -419,6 +420,7 @@ class ApiWiring(
         apiKeys: ApiKeyRepository,
         lastUsed: CoalescingLastUsedRecorder,
         eligibility: WorkspaceEligibility,
+        quarantine: RestoreQuarantine,
     ): AuthenticateApiKey =
         AuthenticateApiKey(
             apiKeys,
@@ -435,6 +437,7 @@ class ApiWiring(
             metrics = apiKeyMetrics,
             lastUsed = lastUsed.asRecorder(),
             audit = audit,
+            quarantine = quarantine,
         )
 
     @Bean

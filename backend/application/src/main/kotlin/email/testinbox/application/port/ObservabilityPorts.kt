@@ -264,6 +264,14 @@ enum class AuthOutcome {
      * restore-quarantined (ACCOUNT-LIFECYCLE.md).
      */
     WORKSPACE_INACTIVE,
+
+    /**
+     * The managed key verified, but the database is restore-quarantined: no
+     * restored credential authenticates, owner and monitoring keys included,
+     * and `restore-reconcile` then revokes them all (owner decision
+     * 2026-10-30, LIFECYCLE.md "Restore quarantine").
+     */
+    RESTORE_QUARANTINED,
 }
 
 /** Lifecycle operations on a credential. */

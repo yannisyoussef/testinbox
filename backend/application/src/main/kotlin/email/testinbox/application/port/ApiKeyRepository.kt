@@ -35,6 +35,7 @@ data class ManagedKeyInventory(
     val retained: Long,
 )
 
+@Suppress("TooManyFunctions") // one statement per credential operation, including the operator-only revocations
 interface ApiKeyRepository {
     /**
      * Resolves a managed credential by its non-secret handle. Returns the row
@@ -114,6 +115,16 @@ interface ApiKeyRepository {
         workspaceId: WorkspaceId,
         at: Instant,
     ): Int
+
+    /**
+     * Revokes every not-yet-revoked MANAGED key of EVERY workspace in one
+     * statement and returns how many it revoked. Only restore reconciliation
+     * calls this, with a verified operator authority
+     * ([email.testinbox.application.usecase.RevokeApiKey.revokeEveryManagedForRestore]):
+     * after a restore no restored credential may authenticate again, owner
+     * and monitoring keys included. Rows are retained as audit history.
+     */
+    fun revokeEveryManaged(at: Instant): Int
 
     /** The workspace's managed-key inventory: usable (not revoked, not expired at [at]) and retained (every managed row). */
     fun managedInventory(

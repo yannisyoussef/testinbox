@@ -526,14 +526,33 @@ The controls:
   by hand (below). Procedure:
   [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md).
 
-**After a restore every participant is quarantined.** The clearance row of
-`lifecycle_restore_clearance` is never in a backup (`-`), so a restored
-database treats every participant workspace as inactive and every human
-account as suspended until `account-lifecycle restore-reconcile` closes
-admissions, suspends the restored participant accounts, revokes all
-participant keys and records the clearance. Reconciliation only lifts the
-quarantine; the operator then replays, by hand, every lifecycle event in the
-external log that is newer than the backup:
+**After a restore every participant is quarantined, and no restored key
+works.** The clearance row of `lifecycle_restore_clearance` is never in a
+backup (`-`). A restored database therefore treats every participant
+workspace as inactive and every human account as suspended. It also refuses
+**every managed API key, owner and monitoring keys included**
+(`RESTORE_QUARANTINED`; owner decision 2026-10-30).
+
+This lasts until `account-lifecycle restore-reconcile` runs. In one
+transaction it:
+
+- closes admissions;
+- suspends the restored participant accounts;
+- revokes every managed key: participant, owner and monitoring;
+- records the clearance. V22 refuses the clearance while any managed key is
+  unrevoked.
+
+The owner and monitoring credentials are then reissued through the bootstrap
+credential, which reopens because no administrator remains (ADR-032 §8):
+
+1. the synthetic key first;
+2. then the owner's new `api-keys:manage` key, which closes the window.
+
+See [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md) restore step 5 and
+the Ops re-key procedure. `TESTINBOX_BOOTSTRAP_API_KEY` must therefore stay
+configured on the API. Reconciliation only lifts the quarantine; the operator
+then replays, by hand, every lifecycle event in the external log that is
+newer than the backup:
 
 1. **Before sign-in or registration is re-enabled — mandatory:** replay every
    `delete`, `erase-identity` and `suspend` event, for participant **and
@@ -824,9 +843,12 @@ leaving the restored database unquarantined.
 
 What that buys, stated plainly:
 
-- **Disaster recovery keeps identity.** Workspaces, projects and every
-  credential verifier survive; a tenant's CI keeps authenticating after a
-  restore. No plaintext credential is recoverable from a backup (ADR-032 §4).
+- **Disaster recovery keeps identity, not authorization.** Workspaces,
+  projects and every credential verifier survive. Since V22, though, no
+  restored managed key authenticates again: `restore-reconcile` revokes them
+  all and keys are reissued (owner decision 2026-10-30). The rows stay as
+  revoked history. No plaintext credential is recoverable from a backup
+  (ADR-032 §4).
 - **Retention cannot silently widen.** Nothing a sender or tenant was
   promised would be deleted exists in a backup.
 - **A restore cannot dangle.** No message row is restored, so none can point
@@ -840,11 +862,22 @@ backup into a disposable database, run the *current* migrator (it must apply
 nothing). **Before any deployable starts**, run
 `SELECT count(*) FROM lifecycle_restore_clearance;` — it must be `0`; if it is
 not, stop: the dump was not the accepted form and the restore is not
-quarantined. Then start an API node against it, authenticate with a managed
-key of a **legacy** (owner/monitoring) workspace that existed at backup time
-(participant keys are refused while quarantined, by design), and confirm
-`message` and `inbox` are empty. A drill that checks only "restore exited 0"
-is not a drill.
+quarantined. Then start an API node against it and run these steps in order:
+
+1. A managed key of a **legacy** (owner/monitoring) workspace that existed at
+   backup time gets `401` (`RESTORE_QUARANTINED`). Participant keys are
+   refused too.
+2. Run `account-lifecycle restore-reconcile`. Its line must show
+   `revokedLegacyKeys` equal to the number of unrevoked legacy keys in the
+   dump. Afterwards
+   `SELECT count(*) FROM api_key WHERE kind = 'MANAGED' AND revoked_at IS NULL`
+   must return `0`, and the old key still gets `401`.
+3. The configured bootstrap credential now authenticates. Mint a
+   replacement with it, check that the replacement authenticates, and check
+   that the bootstrap credential is then `BOOTSTRAP_SUPERSEDED`.
+4. Confirm `message` and `inbox` are empty.
+
+A drill that checks only "restore exited 0" is not a drill.
 
 ### HUMAN DECISION REQUIRED
 

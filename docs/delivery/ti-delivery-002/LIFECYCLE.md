@@ -223,10 +223,17 @@ absent:
   its mail is discarded with the uniform reply;
 - every human account reads as `SUSPENDED` for login, session
   authentication and admission;
+- **no managed API key authenticates, whatever its workspace** — owner and
+  monitoring keys included (`AuthOutcome.RESTORE_QUARANTINED`; a
+  participant's key still reports `WORKSPACE_INACTIVE`). A backup is never
+  current authorization (owner decision 2026-10-30);
 - `resume` is refused.
 
-Owner and monitoring workspaces keep working. The stored states are not
-changed.
+Owner and monitoring workspaces keep receiving mail, but none of their
+restored keys works, so the synthetics fail until they are re-keyed. That is
+expected. The bootstrap credential is configuration, not restored data, and
+keeps its own ADR-032 §8 rule: while a restored administrator is unrevoked it
+is superseded. The stored states are not changed.
 
 `account-lifecycle restore-reconcile` is allowed only while the database is
 quarantined. In one transaction it:
@@ -237,10 +244,33 @@ quarantined. In one transaction it:
 3. suspends every restored `ACTIVE` participant account;
 4. deletes their sessions;
 5. permanently revokes every managed key of every participant workspace;
-6. records the clearance.
+6. locks every credential write (`LOCK TABLE api_key IN SHARE ROW EXCLUSIVE
+   MODE`; reads are not blocked) and permanently revokes **every other
+   managed key**: owner and monitoring keys, restored or minted during the
+   quarantine. The rows are kept as revoked history;
+7. records the clearance.
 
-From then on the operator resumes individual accounts from Ops' external
-lifecycle record. Those users sign in again and mint new keys.
+V22 refuses to record the clearance while any managed key is unrevoked
+(trigger `lifecycle_restore_clearance_credentials`, after the authority
+trigger). The order therefore cannot be skipped, not even by an operator
+inserting the row by hand. The table lock means no key can be committed
+between step 6 and step 7.
+
+The revocation boundary is "every managed key that exists when
+reconciliation commits". It contains every key restored from the backup,
+plus anything minted from the bootstrap credential during the quarantine.
+The revocation is idempotent: rows that are already revoked keep their own
+`revoked_at`, and a second run is refused (`outcome=REFUSED`, nothing
+changed). It is auditable by count, never key material:
+`event=restore.reconcile outcome=CLEARED participantWorkspaces=… suspendedAccounts=… revokedKeys=<participant keys> revokedLegacyKeys=<owner and monitoring keys> admissions=CLOSED`.
+
+From then on:
+
+- The operator resumes individual accounts from Ops' external lifecycle
+  record. Those users sign in again and mint new keys.
+- No usable managed administrator remains, so the configured bootstrap
+  credential authenticates again (ADR-032 §8). That is how the owner gets a
+  new key; see restore step 5.
 
 Two other things are already excluded from backups, so a restore never
 revives them: sessions and login state, and storage-pool approval
@@ -263,6 +293,7 @@ and both start quarantined:
 | application | `AccountLifecycleOperationsTest` (14); inactive and race cases in `ReceiveInboundDeliveryTest` (+3, plus two new A1 kinds); `AuthenticateApiKeyTest` (+2); `ApiKeyLifecycleTest` (+5); `CreateInboxTest` (+1) |
 | persistence | `AccountLifecycleTest` (9) |
 | ingestion | `SmtpAccountLifecycleTest` (4) |
+| restore re-key (owner decision 2026-10-30) | application `AuthenticateApiKeyTest` (+3: quarantine refuses legacy keys, a participant key is still `WORKSPACE_INACTIVE`, bootstrap keeps its own window); `AccountLifecycleOperationsTest` (+2: owner and monitoring keys revoked with history kept and bootstrap untouched; a refused run revokes nothing); persistence `AccountLifecycleTest` (+1, real PostgreSQL: the restore path end to end, below) |
 | api | `AccountLifecycleApiTest` (3), `AccountLifecycleCommandInputTest` (3), `AccountLifecycleCommandProcessTest` (3) |
 | backup scope suite | 205 cases (was 197) |
 
@@ -276,6 +307,16 @@ The persistence `AccountLifecycleTest` runs on real PostgreSQL and covers:
   then revoked;
 - deletion with tombstones and an unreleased place;
 - restore quarantine and reconciliation;
+- the restore re-key path:
+  - a bootstrap-provisioned owner workspace (synthetic key, then
+    administrator) and a participant key are all refused while quarantined;
+  - the operator cannot insert the clearance while a key is unrevoked;
+  - `restore-reconcile` reports `(1, 1, 1, 2)` and leaves no unrevoked
+    managed key;
+  - the old keys stay refused;
+  - the bootstrap credential reopens, re-keys the synthetic, mints a new
+    administrator and is then superseded again;
+  - revoked rows are kept (`3/5`);
 - V22 quarantine on upgrade.
 
 `SmtpAccountLifecycleTest` uses real SMTP, PostgreSQL and MinIO. It drives
@@ -415,13 +456,15 @@ procedure (`docs/dev/production.md`, owned by Ops and stream D):
    not accepted, because re-running V22 on it seeds the clearance before the
    data loads. The scope checker refuses a dump carrying the row.
 2. The deployables may start, because quarantine makes it safe:
-   - owner and monitoring traffic works;
-   - participant keys, logins and mail are refused, and mail still gets the
-     uniform `250`.
+   - no restored managed key authenticates (owner, monitoring or
+     participant), so the synthetics are red until step 5;
+   - participant logins and mail are refused, and mail still gets the
+     uniform `250`; owner and monitoring mail is received.
 3. Run `lifecycle restore-reconcile` and record its
    `event=restore.reconcile` line. It suspends and revokes every restored
-   participant, closes admissions and records the clearance. It does **not**
-   read the lifecycle log. A second, concurrent run is a clean no-op.
+   participant, revokes every owner and monitoring key, closes admissions
+   and records the clearance. It does **not** read the lifecycle log. A
+   second, concurrent run is a clean no-op.
 4. Replay, by hand, from Ops' external lifecycle log, every transition
    recorded after the backup was taken. Replay every `delete`,
    `erase-identity` and `suspend` event, for participant and
@@ -434,9 +477,23 @@ procedure (`docs/dev/production.md`, owned by Ops and stream D):
    - Accounts suspended since the backup: leave participants suspended, and
      `suspend` non-participants again.
    - Only participants the log shows ACTIVE at the incident: `resume`.
-5. The owner re-revokes any owner or monitoring key revoked after the
-   backup. Legacy keys are outside the participant reconciliation (open
-   decision 2).
+5. **Reissue owner and monitoring credentials** (Ops procedure: infinity-core
+   `infra/testinbox/PRODUCTION.md`, "After a database restore: re-key"). The
+   API must be configured with `TESTINBOX_BOOTSTRAP_API_KEY`; without it
+   there is no way back in (`docs/dev/api-keys.md`).
+   1. Monitoring first. Mint the synthetic key (`inboxes:write`,
+      `messages:read`) with the bootstrap credential, into the key file that
+      the deploy reads.
+   2. The owner's new administrator. Mint it with the bootstrap credential,
+      for example
+      `curl -sS -X POST "$BASE/v1/api-keys" -H @<0600 header file with "Authorization: Bearer <bootstrap>"> -H 'Content-Type: application/json' -d '{"name":"ops-admin","scopes":["api-keys:manage","inboxes:write","messages:read"]}'`,
+      with the token read from a file, never from argv. Store the returned
+      key off-host. This closes the bootstrap window again
+      (`BOOTSTRAP_SUPERSEDED`).
+   3. Prove the old keys are refused: the previous synthetic key and the
+      previous administrator each get `401`, and the bootstrap credential
+      gets `401` too.
+   `TestInboxBootstrapKeyUsed` fires for these mints; that is expected.
 6. Re-reserve the storage pool (`storage-budget reserve`,
    [cohort storage](../../dev/cohort-storage.md)). Approval is never
    restored.
@@ -522,12 +579,14 @@ self-test proves each refusal:
    - The owner must decide the period. Backups taken before an erasure keep
      that identity until those backups age out under the ADR-034 backup
      retention, which this stream does not change.
-2. **Legacy key revocations across a restore.** `restore-reconcile` revokes
-   every participant key, but not owner or monitoring keys. A legacy key
-   revoked after the backup comes back un-revoked.
-   - **Current state:** documented manual re-revocation (restore step 5).
-   - **Alternative:** have reconciliation revoke every managed key, which
-     would break owner synthetics until they are re-keyed.
+2. ~~**Legacy key revocations across a restore.**~~ **Decided by the owner,
+   2026-10-30.** After a restore, every restored managed API key is revoked,
+   and owner and monitoring credentials are reissued before access reopens.
+   Implemented as follows:
+   - quarantine refuses every managed key;
+   - `restore-reconcile` revokes them all;
+   - V22 refuses the clearance while any key is unrevoked;
+   - re-keying uses the bootstrap credential (restore step 5).
 3. **Retention of revoked key labels.** The `name` of revoked participant
    keys is kept as audit history after deletion, per the existing ADR-032
    rule. If the owner considers labels personal data, they need their own

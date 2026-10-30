@@ -197,6 +197,12 @@ class JdbcApiKeyRepository(
             .param("workspaceId", workspaceId.value)
             .update()
 
+    override fun revokeEveryManaged(at: Instant): Int =
+        jdbc
+            .sql("UPDATE api_key SET revoked_at = :at WHERE kind = 'MANAGED' AND revoked_at IS NULL")
+            .param("at", Timestamps.toDb(at))
+            .update()
+
     override fun managedInventory(
         workspaceId: WorkspaceId,
         at: Instant,

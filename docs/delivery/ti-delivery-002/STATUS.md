@@ -209,9 +209,10 @@ and site (redeploy; `/v1` unaffected).
    for this change.
 2. Identity/contact retention after account deletion (today: blocked until an
    operator runs `erase-identity`; no automatic period).
-3. Owner/monitoring keys revoked after a backup come back after a restore:
-   accept manual re-revocation, or revoke all managed keys on reconcile
-   (breaks synthetics until re-keyed).
+3. ~~Owner/monitoring keys revoked after a backup come back after a restore.~~
+   **Answered 2026-10-30:** revoke every restored managed key and reissue
+   owner/monitoring credentials before access reopens (stacked PR; see
+   LIFECYCLE.md "Restore quarantine" and restore step 5).
 4. Whether revoked key labels are personal data needing their own retention.
 5. Acceptance of the sybil limitation (one person may hold several of the 30
    accounts), and the waitlist retention period (default 30 days).

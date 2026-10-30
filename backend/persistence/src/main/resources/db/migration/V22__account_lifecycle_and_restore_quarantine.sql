@@ -1,6 +1,6 @@
 -- ADR-036 account lifecycle (TI-DELIVERY-002 stream L; design in
 -- docs/delivery/ti-delivery-001/ACCOUNT-LIFECYCLE.md). Expand-only: one new
--- transient table, two functions, two triggers and one view. No existing row,
+-- transient table, three functions, their triggers and one view. No existing row,
 -- column or constraint changes. No account state is changed by this migration.
 
 -- Restore quarantine. This one-row table is NEVER backed up (deploy/backup/
@@ -8,8 +8,9 @@
 -- therefore has no row, and while it has none every participant workspace is
 -- inactive and no human account is eligible to sign in: a backup is never
 -- current authorization. Only the operator's `account-lifecycle
--- restore-reconcile` inserts the row, after revoking every restored
--- participant credential and suspending every restored participant account.
+-- restore-reconcile` inserts the row, after revoking every restored managed
+-- credential (participant, owner and monitoring alike) and suspending every
+-- restored participant account.
 CREATE TABLE lifecycle_restore_clearance (
     id         integer PRIMARY KEY CHECK (id = 1),
     cleared_at timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -94,3 +95,25 @@ SELECT p.workspace_id,
   FROM participant_workspace p
   LEFT JOIN beta_admission a ON a.cohort_id = p.cohort_id AND a.place = p.place
   LEFT JOIN human_account h ON h.id = a.account_id;
+
+-- Owner decision (2026-10-30): after a restore EVERY restored managed API key
+-- is revoked, owner and monitoring keys included, before access reopens. The
+-- clearance is the boundary, so it cannot be recorded while any managed key is
+-- still unrevoked: `restore-reconcile` revokes them all in the same
+-- transaction first. Created after the seed above on purpose: an upgrade of a
+-- database without admissions is not a restore and keeps its keys. Named so it
+-- fires after `lifecycle_restore_clearance_authority` (triggers fire in name
+-- order): a runtime role is still refused for its missing authority first.
+CREATE FUNCTION lifecycle_require_revoked_credentials() RETURNS trigger
+    LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS
+$$
+BEGIN
+    IF EXISTS (SELECT 1 FROM public.api_key WHERE kind = 'MANAGED' AND revoked_at IS NULL) THEN
+        RAISE EXCEPTION 'restore clearance refused: a managed API key is still unrevoked; run restore-reconcile'
+            USING ERRCODE = 'object_not_in_prerequisite_state';
+    END IF;
+    RETURN NEW;
+END
+$$;
+CREATE TRIGGER lifecycle_restore_clearance_credentials BEFORE INSERT ON lifecycle_restore_clearance
+    FOR EACH ROW EXECUTE FUNCTION lifecycle_require_revoked_credentials();
