@@ -830,7 +830,7 @@ each target. No public Postfix edge is required or exercised.
 | `npm run test:product` | on the host, with the administrative credential | credential lifecycle, idempotency |
 | `npm run test:identity` | on the host, management ports | both deployables run the approved commit and are ready; LISTEN live; DB session bound reported everywhere and, in production, **enforced and bounded** |
 | `npm run test:origin` | from outside | direct-origin isolation |
-| `npm run test:accounts` | anywhere that reaches the public site (TI-DELIVERY-002) | the account boundary answers exactly the state the environment declares: closed everywhere while `TESTINBOX_ACCOUNTS_ENABLED` is off (and the sign-in pages advertise no places); when on, the declared methods, private caching, generic refusals, Origin enforcement, OAuth redirect shape and refused non-addresses. Consumes no seat, sends no email, creates no account or session ([README](../../deploy/synthetic/README.md#account-boundary-test-accounts)) |
+| `npm run test:accounts` | anywhere that reaches the public site (TI-DELIVERY-002) | the account boundary answers exactly the state the environment declares: closed everywhere while `TESTINBOX_ACCOUNTS_ENABLED` is off (and the sign-in pages advertise no places); when on, the declared methods, private caching, generic refusals, Origin enforcement, OAuth redirect shape and refused non-addresses. Consumes no seat, sends no email, creates no account or session ([README](../../deploy/synthetic/README.md#account-boundary-testaccounts)) |
 
 ## Known limits of this contract
 

@@ -167,3 +167,66 @@ export function identityConfig() {
     expectedEnvironment: required("TESTINBOX_EXPECTED_ENVIRONMENT"),
   });
 }
+
+/**
+ * The human account boundary (ADR-036, TI-DELIVERY-002), reached where a
+ * browser reaches it: the PUBLIC SITE origin, whose same-origin `/account/*`
+ * routes forward to the API. On the application hostname `/account` is not
+ * routed to the API at all, so `TESTINBOX_BASE_URL` is the wrong target.
+ *
+ * The expected state is DECLARED by whoever runs the suite, never inferred
+ * from what the environment happens to answer: a suite that learns "disabled"
+ * from a 503 passes on a deployment whose accounts were meant to be on and
+ * silently broke. Loud failure when absent, never a skip.
+ */
+export const ACCOUNT_METHODS = Object.freeze(["email", "google", "github"]);
+
+export function accountsConfig() {
+  const raw = required("TESTINBOX_ACCOUNTS_ORIGIN");
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`TESTINBOX_ACCOUNTS_ORIGIN must be an https:// origin, got ${raw}`);
+  }
+  // An origin, exactly: the API compares the browser's Origin header with its
+  // configured public origin byte for byte, so a trailing slash or a path here
+  // would make every mutation look like cross-site and every check meaningless.
+  if (url.protocol !== "https:" || raw.replace(/\/$/, "") !== url.origin) {
+    throw new Error(
+      `TESTINBOX_ACCOUNTS_ORIGIN must be an https:// origin with no path (e.g. https://testinbox.email), got ${raw}. ` +
+        `For a private CA, set NODE_EXTRA_CA_CERTS instead.`,
+    );
+  }
+  const expected = required("TESTINBOX_ACCOUNTS_EXPECTED");
+  if (!["disabled", "enabled"].includes(expected)) {
+    throw new Error(`TESTINBOX_ACCOUNTS_EXPECTED must be "disabled" or "enabled", got ${expected}`);
+  }
+  let methods = [];
+  if (expected === "enabled") {
+    const declared = required("TESTINBOX_ACCOUNTS_EXPECTED_METHODS");
+    methods = declared === "none" ? [] : declared.split(",").map((m) => m.trim());
+    const unknown = methods.filter((m) => !ACCOUNT_METHODS.includes(m));
+    if (unknown.length > 0 || new Set(methods).size !== methods.length || (declared !== "none" && methods.length === 0)) {
+      throw new Error(
+        `TESTINBOX_ACCOUNTS_EXPECTED_METHODS must be "none" or a comma-separated subset of ` +
+          `${ACCOUNT_METHODS.join(",")} without repeats, got ${declared}`,
+      );
+    }
+  }
+  const mailDomain = required("TESTINBOX_MAIL_DOMAIN").toLowerCase();
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(mailDomain)) {
+    throw new Error(`TESTINBOX_MAIL_DOMAIN must be the deployment's receive domain, got ${mailDomain}`);
+  }
+  return Object.freeze({
+    /** The public site origin == the API's TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN when accounts are on. */
+    origin: url.origin,
+    /** "disabled" | "enabled" — the environment's declared state. */
+    expected,
+    /** The exact set of sign-in methods the environment declares ready (enabled only). */
+    methods: Object.freeze([...methods].sort()),
+    /** The deployment's own receive domain; an address in it must be refused as an identity. */
+    mailDomain,
+    timeoutMs: optionalInt("TESTINBOX_ACCOUNTS_TIMEOUT_MS", 15_000),
+  });
+}
