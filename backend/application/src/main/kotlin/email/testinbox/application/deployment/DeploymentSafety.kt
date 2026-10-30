@@ -7,6 +7,7 @@ import email.testinbox.application.storage.QualificationMatch
 import email.testinbox.application.storage.QualificationRecordSource
 import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.application.storage.StorageProtocol
+import email.testinbox.domain.storage.CohortStorageBudget
 import email.testinbox.domain.storage.FilesystemContainment
 import email.testinbox.domain.storage.FootprintModel
 import email.testinbox.domain.storage.InboxShare
@@ -721,22 +722,26 @@ object StorageEnforcementSafety {
                     ),
                 )
             }
-            // TI-STORAGE-006E (ADR-035 Amendment 2 §A2.7): ALL may not carry traffic beyond the
-            // synthetic suite until both public-boundary decisions are made and built:
-            // (A) the envelope-order recipient-existence oracle, and (B) single-sender
-            // amplification (docs/security/storage-public-boundary-decisions.md). Until then,
-            // production may not run ALL at all.
+            // ADR-035 Amendment 2 §A2.7 and ADR-037 (amendment note 2026-10-30, TI-DELIVERY-002b):
+            // production refuses ALL unless every startup-checkable release condition holds.
+            // Mitigations (A) and (B) are decided (ADR-037) and built into this artifact
+            // (full-envelope pricing, non-overcommitted shares), so what remains checkable here
+            // is the evidence ADR-037 ties the refusal to: an Ops-qualified record for the
+            // production host, shipped in this artifact, and a declaration that can hold the
+            // cohort at all. The pool, observations and nodes are runtime gates (readiness).
             if (storage.enforcement == email.testinbox.domain.storage.StorageEnforcement.ALL &&
                 settings.environment == ProductionPolicy.ENVIRONMENT
             ) {
-                add(
-                    DeploymentViolation(
-                        ENFORCEMENT,
-                        "is ALL in production, but the public-boundary mitigations of ADR-035 Amendment 2 §A2.7 " +
-                            "(A: the envelope-order oracle, B: single-sender amplification) are not built; " +
-                            "ALL stays dark-staging only",
-                    ),
-                )
+                val gaps = ProductionAllConditions.gaps(storage)
+                if (gaps.isNotEmpty()) {
+                    add(
+                        DeploymentViolation(
+                            ENFORCEMENT,
+                            "is ALL in production, which needs every release condition of ADR-037 and ADR-035 " +
+                                "Amendment 2 §A2.7 to hold at startup; unmet: " + gaps.joinToString("; "),
+                        ),
+                    )
+                }
             }
             // ADR-035 Amendment 2 §A2.5: TENANT_LIMITS leaves the global footprint ceiling
             // observational, so the containment theorem does not hold and filesystem
@@ -1090,4 +1095,101 @@ object StorageEnforcementSafety {
     private fun shareProblem(share: String): String? =
         runCatching { InboxShare.of(share) }
             .fold(onSuccess = { null }, onFailure = { "is '$share'; the inbox share must be a decimal in (0, 1] (ADR-035 §3)" })
+}
+
+/**
+ * The startup-checkable conditions under which production may run `ALL`
+ * (TI-DELIVERY-002b; ADR-035 amendment note 2026-10-30). Each is a reason the
+ * refusal stays, named so the operator sees the whole gap at once. They are
+ * IN ADDITION to everything [StorageEnforcementSafety] already requires of any
+ * non-OFF deployment (declarations, I-C, node inventory, an eligible matching
+ * record), which keeps reporting its own violations.
+ *
+ * Deliberately NOT here, because they are runtime facts a starting process
+ * cannot know: the reserved cohort pool and its legacy inventory, the monitor
+ * observations, live node compatibility and role separation. Admission reads
+ * those through the readiness collaborator and answers `CAPACITY_UNAVAILABLE`
+ * while any is missing; gate F and `storage-budget check` prove them.
+ *
+ * There is no override: no flag or variable skips any of these.
+ */
+object ProductionAllConditions {
+    fun gaps(storage: StorageDeclarations): List<String> =
+        buildList {
+            if (storage.node == null) {
+                add("this process declares no storage node identity (testinbox.storage.node-id), so it cannot be fenced as a declared node")
+            }
+            addAll(record(storage))
+            addAll(cohortCapacity(storage))
+        }
+
+    /**
+     * ADR-035 §18 gate 7a and Amendment 2 §A2.4/§A2.6: a SHIPPED record, matching the
+     * declared identity and this binary's upload implementation element by element,
+     * enablement-eligible, qualified on the production host, carrying the filesystem
+     * elements and E1–E11 as PASS, whose measured O_max the declaration covers.
+     */
+    private fun record(storage: StorageDeclarations): List<String> {
+        val identity = storage.backendIdentity ?: return listOf("no backend identity is declared, so no qualification record can match")
+        val shipped = storage.qualificationRecords.filter { it.source == QualificationRecordSource.SHIPPED }
+        val matching = shipped.filter { QualificationMatch.compare(identity, storage.uploadImplementationVersion, it).matches }
+        val eligible = matching.filter { it.eligibility().eligible }
+        if (eligible.isEmpty()) {
+            return listOf(
+                "no enablement-eligible qualification record shipped in this artifact matches the declared backend identity " +
+                    "and this binary's upload implementation '${storage.uploadImplementationVersion}' (an Ops-qualified " +
+                    "production record must ship first; a lab record never counts)",
+            )
+        }
+        val qualified = eligible.filter { it.productionGaps().isEmpty() }
+        if (qualified.isEmpty()) {
+            return eligible.map { "record '${it.recordId}' cannot back production ALL: " + it.productionGaps().joinToString(", ") }
+        }
+        val declared = storage.filesystem.objectOverheadMaxBytes
+        val covered = qualified.filter { declared != null && declared >= checkNotNull(it.filesystem?.objectOverheadMaxBytes) }
+        if (covered.isEmpty()) {
+            val record = qualified.first()
+            return listOf(
+                "testinbox.storage.filesystem.object-overhead-max-bytes is $declared, below the O_max " +
+                    "${record.filesystem?.objectOverheadMaxBytes} measured by record '${record.recordId}'",
+            )
+        }
+        return emptyList()
+    }
+
+    /**
+     * A necessary condition of ADR-037 §1–§2 and §6, on declarations alone: all thirty
+     * participant shares, the worst full envelope and finalization must fit G, G_F and
+     * C_fs with NO legacy share and NO debt or trash allowance. Legacy shares and
+     * allowances only add, so a failure here means no pool could ever be reserved; a
+     * pass proves nothing about the real inventory, which `storage-budget` and the
+     * readiness collaborator decide.
+     */
+    private fun cohortCapacity(storage: StorageDeclarations): List<String> {
+        val result =
+            runCatching { EffectiveStoragePolicy.cohortBudget(storage, emptyMap(), 0, 0) }
+                .getOrDefault(CohortStorageBudget.Result.Unproven)
+        val binding = runCatching { EffectiveStoragePolicy.footprint(storage)?.cohort?.binding }.getOrNull()
+        return buildList {
+            when (result) {
+                is CohortStorageBudget.Result.Fits -> {}
+
+                is CohortStorageBudget.Result.Insufficient -> {
+                    val d = result.demand
+                    add(
+                        "the declared capacity cannot hold the thirty participant shares, the worst-case envelope and " +
+                            "finalization even before any legacy share (exceeded: " +
+                            result.boundaries.sorted().joinToString(", ") { it.name.lowercase() } +
+                            "; needs payload ${d.requiredGlobalPayloadBytes} within G, footprint ${d.requiredGlobalFootprintBytes} " +
+                            "within G_F, filesystem ${d.requiredFilesystemBytes} within C_fs)",
+                    )
+                }
+
+                CohortStorageBudget.Result.Unproven -> {
+                    add("the cohort capacity proof cannot be evaluated from the declarations (missing or overflowing figures)")
+                }
+            }
+            if (binding == null) add("the cohort binding cannot be computed from the declarations")
+        }
+    }
 }
