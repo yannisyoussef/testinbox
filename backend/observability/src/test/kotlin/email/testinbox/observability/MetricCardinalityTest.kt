@@ -279,7 +279,8 @@ class MetricCardinalityTest {
         // is ever introduced. ADR-035 §16 (TI-STORAGE-003) added about 45
         // enum-bounded series; TI-DELIVERY-002 account lifecycle added five
         // (one inbound counter, one admission outcome, one auth outcome and two
-        // quota dimensions), every one from a closed enum: 163 series today.
+        // quota dimensions), every one from a closed enum; TI-DELIVERY-002b one
+        // more auth outcome (QUARANTINED): 164 series today.
         io.kotest.assertions.withClue("series=$before") { (before < 170) shouldBe true }
     }
 

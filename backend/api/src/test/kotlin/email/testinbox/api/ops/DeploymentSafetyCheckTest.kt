@@ -350,4 +350,64 @@ class DeploymentSafetyCheckTest {
             context.startupFailure!!.stackTraceToString() shouldContain "testinbox.storage.inbox-share"
         }
     }
+
+    /**
+     * TI-DELIVERY-002b, with the REAL shipped records: production ALL, every
+     * declaration complete and the staging record's exact identity declared,
+     * still fails startup. That record is v1 while this binary is v2, and it is a
+     * staging-host record without filesystem elements; no shipped record can
+     * back production ALL until the Ops-evidenced production record ships.
+     */
+    @Test
+    fun `production ALL with every declaration and the shipped staging identity fails startup, naming the reason`() {
+        val staging =
+            email.testinbox.storage.QualificationRecords
+                .load()
+                .single { it.recordId == "staging-amd64-vmi2932906-2026-10-08" }
+                .identity
+        runner
+            .withPropertyValues(
+                *production,
+                "testinbox.storage.enforcement=ALL",
+                "testinbox.storage.node-id=api-1",
+                "testinbox.storage.global-limit-bytes=42949672960",
+                "testinbox.storage.declared-max-ingestion-processes=2",
+                "testinbox.storage.inbox-share=0.25",
+                "testinbox.storage.activation.expected-api-nodes=api-1",
+                "testinbox.storage.activation.expected-ingestion-nodes=ingest-1,ingest-2",
+                "testinbox.storage.backend-identity.image-index-digest=${staging.imageIndexDigest}",
+                "testinbox.storage.backend-identity.platform-member-digest=${staging.platformMemberDigest}",
+                "testinbox.storage.backend-identity.release=${staging.release}",
+                "testinbox.storage.backend-identity.commit-id=${staging.commitId}",
+                "testinbox.storage.backend-identity.mode=${staging.mode}",
+                "testinbox.storage.backend-identity.drive-count=${staging.driveCount}",
+                "testinbox.storage.backend-identity.runtime-config-hash=${staging.runtimeConfigHash}",
+                "testinbox.storage.backend-identity.kernel-release=${staging.kernelRelease}",
+                "testinbox.storage.backend-identity.filesystem-type=${staging.filesystemType}",
+                "testinbox.storage.backend-identity.mount-options=${staging.mountOptions}",
+                "testinbox.storage.backend-identity.storage-class-inline-defaults=${staging.storageClassInlineDefaults}",
+                "testinbox.storage.backend-identity.direct-path=${staging.directPath}",
+                "testinbox.storage.backend-identity.proxy=${staging.proxy}",
+                "testinbox.storage.filesystem.block-size-bytes=4096",
+                "testinbox.storage.filesystem.object-overhead-max-bytes=24576",
+                "testinbox.storage.filesystem.global-footprint-limit-bytes=21474836480",
+                "testinbox.storage.filesystem.deletion-debt-budget-bytes=8589934592",
+                "testinbox.storage.filesystem.metadata-budget-bytes=268435456",
+                "testinbox.storage.filesystem.operational-reserve-bytes=3221225472",
+                "testinbox.storage.filesystem.capacity-bytes=51539607552",
+                "testinbox.storage.filesystem.inodes=12582912",
+                "testinbox.storage.filesystem.observation-max-age=15m",
+                "testinbox.storage.filesystem.probe-budget-bytes=67108864",
+                "testinbox.storage.filesystem.monitor-role=testinbox_monitor",
+            ).run { context ->
+                assertThat(context).hasFailed()
+                val message = context.startupFailure!!.stackTraceToString()
+                message shouldContain "testinbox.storage.enforcement is ALL in production"
+                message shouldContain "no enablement-eligible qualification record shipped in this artifact"
+                // The closest record differs ONLY in the upload implementation: the v1 -> v2 gap, named.
+                message shouldContain "testinbox.storage.backend-identity.upload-implementation-version"
+                message shouldNotContain "fixture-not-a-real-db-password--1"
+                message shouldNotContain "fixture-not-a-real-s3-secret----1"
+            }
+    }
 }

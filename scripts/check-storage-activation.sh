@@ -12,6 +12,15 @@
 # deployed MinIO combination has a committed qualification record. This script
 # evaluates each of those from inputs Ops hand it and writes the verdict down.
 #
+# THE COHORT GATE IS `storage-budget check`, NOT THIS SCRIPT (ADR-037). The
+# thirty-share pool can only be reserved after the deployables run ALL, so it
+# cannot exist when this barrier is first evaluated; the proof itself (every
+# share, legacy share, envelope, finalization and reserve against the declared
+# figures, the exact legacy inventory, nodes and observations) is computed by the
+# API artifact's offline `storage-budget check`. Gate G records that command's
+# verdict when its output is supplied, and otherwise reports NOT REQUIRED with
+# this statement; the evidence JSON names it in `cohortGate`.
+#
 # What it is NOT: it is not a deployment, not a health check, and a green
 # Staging workflow is not evidence for any gate here (the GitHub handoff proves
 # that Ops ACCEPTED a request, not the deployed state). Every gate that has no
@@ -39,13 +48,23 @@
 #   --max-clock-offset-seconds <n>     ε_max, default 30
 #   --filesystem-evidence <json>       gate F: the Ops filesystem evidence (docs/dev/filesystem-evidence.md)
 #   --footprint-state <json>           gate F: the database state, for an offline evaluation; replaces the query
+#   --cohort-check-output <file>       gate G (--mode ALL): the captured stdout of `storage-budget check <reviewed pool
+#                                      file>` (docs/dev/cohort-storage.md). Without it gate G is DEFERRED under ALL
+#                                      (never passing): this script never recomputes the ADR-037 proof.
+#   --cohort-pool-file <file>          gate G: the reviewed pool file that check ran against; its SHA-256 must equal
+#                                      the `reviewed-file sha256=` line the command printed (binds the output to it)
+#   --environment production|staging|lab  gate F: with `production`, the matched qualification record must carry
+#                                      platformClass production-host (the evidence itself does not name the environment)
 #   --json <file>                      write the evidence record
 # Env:
 #   TESTINBOX_ACTIVATION_DB_URL        psql conninfo/URL; replaces --sessions-file / --nodes-file. With it set,
 #                                      --footprint-state is refused (gate F NOT RUN): the live database wins.
 #                                      Only ever read from the environment so it never shows in `ps`.
 #   TESTINBOX_ACTIVATION_EVALUATED_AT  overrides the evaluatedAt timestamp (tests)
-# Exit: 0 ACTIVATION READY, 1 ACTIVATION BLOCKED, 2 usage
+# Exit: 0 ACTIVATION READY, 1 ACTIVATION BLOCKED, 2 usage,
+#       3 ACTIVATION DEFERRED: every gate passed except gate G, which can only pass after the switch to ALL
+#         and the offline reservation. Switching to ALL and reserving may proceed; capacity_ready may NOT be
+#         set until a rerun with the storage-budget check output reports ACTIVATION READY.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,6 +72,8 @@ TAB="$(printf '\t')"
 US="$(printf '\037')"   # TSV rows are read with this separator: empty fields must survive, and tab is collapsing whitespace in IFS
 
 MODE=""
+COHORT_POOL=""
+ENVIRONMENT=""
 API_SOURCES=""
 ING_SOURCES=""
 EXPECTED_API=""
@@ -71,6 +92,7 @@ FLOORS_FILE=""
 FETCH=false
 FS_EVIDENCE=""
 FOOTPRINT_STATE=""
+COHORT_CHECK=""
 JSON_OUT=""
 MAX_OFFSET=30
 HEARTBEAT_MAX_AGE=300
@@ -118,6 +140,9 @@ while [ $# -gt 0 ]; do
         --max-clock-offset-seconds) need_value "$@"; MAX_OFFSET="$2"; shift 2 ;;
         --filesystem-evidence) need_value "$@"; FS_EVIDENCE="$2"; shift 2 ;;
         --footprint-state) need_value "$@"; FOOTPRINT_STATE="$2"; shift 2 ;;
+        --cohort-check-output) need_value "$@"; COHORT_CHECK="$2"; shift 2 ;;
+        --cohort-pool-file) need_value "$@"; COHORT_POOL="$2"; shift 2 ;;
+        --environment) need_value "$@"; ENVIRONMENT="$2"; shift 2 ;;
         --json) need_value "$@"; JSON_OUT="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) echo "error: unknown argument '$1'" >&2; usage ;;
@@ -129,9 +154,11 @@ case "$MODE" in
     "") echo "error: --mode TENANT_LIMITS|ALL is required" >&2; usage ;;
     *) echo "error: --mode must be TENANT_LIMITS or ALL, not '$MODE'" >&2; usage ;;
 esac
+# Exact, lowercase, from a closed set: a typo must never silently skip the production-host check.
+case "$ENVIRONMENT" in ""|production|staging|lab) ;; *) echo "error: --environment must be exactly production, staging or lab, not '$ENVIRONMENT'" >&2; usage ;; esac
 case "$QUAL_METRIC" in ""|0|1) ;; *) echo "error: --qualification-valid-metric must be 0 or 1" >&2; usage ;; esac
 case "$MAX_OFFSET" in ''|*[!0-9.]*) echo "error: --max-clock-offset-seconds must be a number" >&2; usage ;; esac
-for f in "$SESSIONS_FILE" "$NODES_FILE" "$IDENTITY" "$BENCH" "$FLOORS_FILE" "$FS_EVIDENCE" "$FOOTPRINT_STATE"; do
+for f in "$SESSIONS_FILE" "$NODES_FILE" "$IDENTITY" "$BENCH" "$FLOORS_FILE" "$FS_EVIDENCE" "$FOOTPRINT_STATE" "$COHORT_CHECK" "$COHORT_POOL"; do
     [ -z "$f" ] || [ -f "$f" ] || { echo "error: input file not found: $f" >&2; usage; }
 done
 [ -d "$REPO" ] || { echo "error: --repo $REPO is not a directory" >&2; usage; }
@@ -1034,7 +1061,7 @@ gate_filesystem() {
         --arg qmatch "${QUAL_MATCH:-}" --arg qfile "$(basename "${record_file:-}")" \
         --arg floor "$(containment_floor)" \
         --argjson expectedIng "$(jq -cn --arg v "$EXPECTED_ING" '$v | split(",") | map(select(length > 0))')" \
-        --argjson now "$now_s" --arg mode "$MODE" '
+        --argjson now "$now_s" --arg mode "$MODE" --arg environment "$ENVIRONMENT" '
         $e[0] as $e | $s[0] as $s | $r[0] as $rec | $e.declared as $d | $s.observation as $o
         | ($d.blockSizeBytes) as $B | ($d.objectOverheadBytes) as $O
         # ε and H_F are DERIVED exactly as FootprintModel does, never taken from the evidence:
@@ -1050,11 +1077,14 @@ gate_filesystem() {
         | ($d.procs * 16 * F(15728640; 1)) as $hf
         | [
             ( if $rec == null then "identity: qualification record \($e.qualificationRecordId) is not in the qualification index"
-              elif $rec.filesystem == null then "identity: record \($e.qualificationRecordId) carries no filesystem elements (contract §9: re-issue it after E1–E8 on this filesystem)"
+              elif $rec.filesystem == null then "identity: record \($e.qualificationRecordId) carries no filesystem elements (contract §9: re-issue it after E1–E11 on this filesystem)"
               else ( [ "uuid", "type", "mountOptions", "mountSource" ]
                      | map(select($rec.filesystem[.] != $e.filesystem[.]))
                      | if length > 0 then "identity: filesystem \(join(", ")) differ from record \($e.qualificationRecordId)" else empty end )
               end ),
+            ( if $environment == "production" and $rec != null and ($rec.qualification.platformClass // "") != "production-host"
+                then "identity: record \($e.qualificationRecordId) has platformClass \($rec.qualification.platformClass // "null"), production requires production-host"
+              else empty end ),
             ( if $e.mount.mountsOfSource != 1 then "dedicated mount: /proc/mounts lists \($e.mount.mountsOfSource) mounts of the source, not exactly 1" else empty end ),
             ( if $e.mount.minioDataDirOnMount != true then "dedicated mount: MinIO data directory is not on the mount" else empty end ),
             ( if $e.mount.otherDataOnMount != false then "dedicated mount: something other than MinIO data is on the mount" else empty end ),
@@ -1171,6 +1201,58 @@ gate_filesystem() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Gate G (ADR-037): the cohort pool. Its proof is the API artifact's offline
+# `storage-budget check`, run against the reviewed pool file after the switch to
+# ALL and the reservation; it must PASS before capacity_ready is set
+# (docs/dev/cohort-storage.md). This gate records that verdict and never
+# recomputes it. The command prints exactly the PASS line below as its last
+# line on success, and throws (no PASS line) on any failure.
+# ---------------------------------------------------------------------------
+COHORT_PASS_LINE="cohort storage check: PASS; admissions unchanged"
+COHORT_DIGEST_PREFIX="cohort storage check: reviewed-file sha256="
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+    else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+gate_cohort() {
+    local gate="G-cohort" last cause printed expected
+    if [ "$MODE" != ALL ]; then
+        record "$gate" NOT_REQUIRED "NOT REQUIRED FOR $MODE: the ADR-037 cohort pool exists only under ALL"
+        return
+    fi
+    if [ -z "$COHORT_CHECK" ]; then
+        record "$gate" DEFERRED "not yet evidenced: the cohort gate is \`storage-budget check <reviewed pool file>\` (docs/dev/cohort-storage.md), which can pass only after the switch to ALL and the offline reservation; rerun with --cohort-check-output and --cohort-pool-file: that run, with gate G PASS, is the required evidence before capacity_ready is set"
+        return
+    fi
+    last="$(grep -v '^[[:space:]]*$' "$COHORT_CHECK" | tail -n 1)"
+    if [ -z "$last" ]; then
+        record "$gate" BLOCKED "the storage-budget check output is empty; the command did not report PASS"
+        return
+    fi
+    if [ "$last" != "$COHORT_PASS_LINE" ]; then
+        # A failed run ends in a stack trace: name its exception line, not only the last frame.
+        cause="$(grep -m 1 -E '(Exception|Error)([:[:space:]]|$)' "$COHORT_CHECK" | tr -d '\t' | head -c 200)"
+        record "$gate" BLOCKED "storage-budget check did not report PASS;${cause:+ error '$cause';} its last line is '$(printf '%s' "$last" | tr -d '\t' | head -c 200)'"
+        return
+    fi
+    # Bind the PASS to the reviewed pool file it was run against.
+    printed="$(grep -F "$COHORT_DIGEST_PREFIX" "$COHORT_CHECK" | tail -n 1)"
+    printed="${printed#"$COHORT_DIGEST_PREFIX"}"
+    if [ -z "$printed" ]; then
+        record "$gate" BLOCKED "the storage-budget check output names no reviewed-file digest (an image older than TI-DELIVERY-002b, or a hand-made file): it cannot be bound to the reviewed pool file"
+    elif [ -z "$COHORT_POOL" ]; then
+        record "$gate" BLOCKED "no --cohort-pool-file: the PASS cannot be bound to the reviewed pool file (printed sha256 $printed)"
+    else
+        expected="$(sha256_of "$COHORT_POOL")"
+        if [ "$printed" != "$expected" ]; then
+            record "$gate" BLOCKED "the storage-budget check ran against a different file: printed sha256 $printed, $(basename "$COHORT_POOL") is $expected"
+        else
+            record "$gate" PASS "storage-budget check reported PASS against the reviewed pool file $(basename "$COHORT_POOL") (sha256 $expected): the installed pool equals it and is ready (every share and reserve fits, exact inventory, compatible nodes, valid observation)"
+        fi
+    fi
+}
+
 gate_sessions
 gate_inventory
 gate_physical
@@ -1180,6 +1262,7 @@ gate_floors_staging
 gate_floors_production
 gate_qualification
 gate_filesystem
+gate_cohort
 
 # ---------------------------------------------------------------------------
 # Verdict and output.
@@ -1187,7 +1270,12 @@ gate_filesystem
 OVERALL=READY
 while IFS="$TAB" read -r gate verdict detail; do
     [ -n "$gate" ] || continue
-    case "$verdict" in PASS|NOT_REQUIRED) ;; *) OVERALL=BLOCKED ;; esac
+    case "$verdict" in
+        PASS|NOT_REQUIRED) ;;
+        # Never passing: deferred only while nothing else blocks.
+        DEFERRED) [ "$OVERALL" = BLOCKED ] || OVERALL=DEFERRED ;;
+        *) OVERALL=BLOCKED ;;
+    esac
 done <<EOF
 $RESULTS
 EOF
@@ -1203,8 +1291,9 @@ echo "ACTIVATION $OVERALL"
 if [ -n "$JSON_OUT" ]; then
     printf '%s' "$RESULTS" | jq -R -s --arg mode "$MODE" --arg at "$EVALUATED_AT" --arg verdict "$OVERALL" '
         split("\n") | map(select(length > 0) | split("\t") | { gate: .[0], verdict: .[1], detail: .[2] })
-        | { mode: $mode, evaluatedAt: $at, gates: ., verdict: $verdict }' > "$JSON_OUT" ||
+        | { mode: $mode, evaluatedAt: $at, gates: ., verdict: $verdict,
+            cohortGate: "storage-budget check (docs/dev/cohort-storage.md); DEFERRED under ALL until its output and the reviewed pool file are supplied" }' > "$JSON_OUT" ||
         { echo "error: could not write $JSON_OUT" >&2; exit 2; }
 fi
 
-[ "$OVERALL" = READY ]
+case "$OVERALL" in READY) exit 0 ;; DEFERRED) exit 3 ;; *) exit 1 ;; esac

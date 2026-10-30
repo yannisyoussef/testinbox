@@ -289,6 +289,31 @@ class AuthenticateApiKeyTest {
     }
 
     @Test
+    fun `while the database is restore-quarantined no managed key authenticates, legacy ones included`() {
+        var quarantined = false
+        val guarded =
+            AuthenticateApiKey(
+                apiKeys,
+                clock,
+                eligibility,
+                configuredBootstrapKeyHash = Sha256.hex(bootstrapSecret),
+                metrics = metrics,
+                restoreQuarantine = { quarantined },
+            )
+        val (credential, _) = managed()
+        guarded.authenticate(credential.render()).shouldNotBeNull()
+        quarantined = true
+        guarded.authenticate(credential.render()).shouldBeNull()
+        // Still verified first: a wrong secret is not told apart by the quarantine.
+        guarded.authenticate(ApiKeyFormat.render(credential.publicId, ApiKeyFormat.generate(random).secret)).shouldBeNull()
+        // Counted as its own closed outcome, so an alert can tell a restore window from a suspension.
+        metrics.auth shouldContainExactly listOf(AuthOutcome.SUCCESS, AuthOutcome.QUARANTINED, AuthOutcome.BAD_SECRET)
+        // Read per request: once reconciliation records the clearance the (newly minted) keys work.
+        quarantined = false
+        guarded.authenticate(credential.render()).shouldNotBeNull()
+    }
+
+    @Test
     fun `the bootstrap credential of an inactive workspace is refused as well`() {
         val key = bootstrap(bootstrapSecret)
         auth.authenticate(bootstrapSecret).shouldNotBeNull()

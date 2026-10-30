@@ -47,4 +47,28 @@ object QualificationFixtures {
             enablementEligible = false,
             ineligibilityReasons = listOf("platformClass is laptop", "slow-W was not executed"),
         )
+
+    /**
+     * TEST FIXTURE ONLY - never shipped in the artifact, never evidence of anything.
+     * The SHAPE an Ops-qualified production record must have before production may
+     * run ALL (TI-DELIVERY-002b): platformClass production-host, the Amendment 2
+     * filesystem elements, the measured O_max and E7 figure, and E1-E11 as PASS.
+     * Every value is synthetic; the identity is the synthetic [identity] above.
+     */
+    val productionQualified =
+        eligible.copy(
+            recordId = "TEST-FIXTURE-production-host-not-evidence",
+            platformClass = QualificationRecord.PRODUCTION_PLATFORM_CLASS,
+            evidenceReference = "TEST FIXTURE - not evidence of anything",
+            filesystem =
+                QualifiedFilesystem(
+                    uuid = "00000000-0000-4000-8000-000000000000",
+                    type = identity.filesystemType,
+                    mountOptions = identity.mountOptions,
+                    mountSource = "/dev/test-fixture-not-a-device",
+                    objectOverheadMaxBytes = 24L * 1024,
+                    metadataInodesMeasured = 50_000,
+                    experiments = QualificationRecord.REQUIRED_EXPERIMENTS.associateWith { QualificationRecord.PASS },
+                ),
+        )
 }

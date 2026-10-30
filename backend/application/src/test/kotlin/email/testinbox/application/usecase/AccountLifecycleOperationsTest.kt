@@ -6,14 +6,19 @@ import email.testinbox.application.InMemoryReservations
 import email.testinbox.application.MutableClock
 import email.testinbox.application.NoopTx
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.port.AccountDeletionRecord
 import email.testinbox.application.port.AccountLifecycleStore
 import email.testinbox.application.port.HumanSessions
+import email.testinbox.application.port.IdentityErasure
 import email.testinbox.application.port.LifecycleMembership
 import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.identity.AccountContentRemaining
+import email.testinbox.domain.identity.AccountDeletionPolicy
+import email.testinbox.domain.identity.AccountDeletionStage
 import email.testinbox.domain.identity.AccountLifecycleAction
 import email.testinbox.domain.identity.HumanAccount
 import email.testinbox.domain.identity.HumanAccountId
@@ -29,6 +34,7 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import org.junit.jupiter.api.Test
+import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
@@ -37,13 +43,13 @@ class AccountLifecycleOperationsTest {
     private val clock = MutableClock(Instant.parse("2026-10-30T12:00:00Z"))
     private val events = mutableListOf<String>()
     private val inboxes = InMemoryInboxRepository()
-    private val store = FakeLifecycleStore(events, inboxes)
+    private val apiKeys = InMemoryApiKeyRepository()
+    private val store = FakeLifecycleStore(events, inboxes, apiKeys)
     private val guard = RecordingGuard(events)
     private val sessions = FakeSessions(events)
-    private val apiKeys = InMemoryApiKeyRepository()
     private val revokeKeys = RevokeApiKey(apiKeys, clock)
     private val revokeSessions = RevokeAccountSessions(sessions, NoopTx)
-    private val change = ChangeAccountState(store, guard, revokeSessions, revokeKeys, NoopTx)
+    private val change = ChangeAccountState(store, guard, revokeSessions, revokeKeys, NoopTx, clock)
 
     private val account = HumanAccountId(UUID.randomUUID())
     private val workspace = WorkspaceId(UUID.randomUUID())
@@ -56,11 +62,14 @@ class AccountLifecycleOperationsTest {
         sessions.add(account)
     }
 
-    private fun key(revoked: Boolean = false): ApiKey =
+    private fun key(
+        revoked: Boolean = false,
+        ws: WorkspaceId = workspace,
+    ): ApiKey =
         apiKeys.put(
             ApiKey(
                 id = ApiKeyId(UUID.randomUUID()),
-                workspaceId = workspace,
+                workspaceId = ws,
                 projectId = project,
                 keyHash = "0".repeat(64),
                 scopes = setOf(ApiScope.INBOXES_WRITE),
@@ -188,54 +197,183 @@ class AccountLifecycleOperationsTest {
 
     private val deleteInbox =
         DeleteInbox(inboxes, InMemoryReservations(), NoopTx, clock, TestInboxConfig(mailDomain = "testinbox.local"))
-    private val removeContent = RemoveAccountContent(store, deleteInbox, NoopTx)
+    private val deletion = ProcessAccountDeletion(store, guard, revokeSessions, revokeKeys, deleteInbox, NoopTx, clock)
+
+    private fun advance() = deletion.execute(account).shouldBeInstanceOf<ProcessAccountDeletion.Result.Advanced>().progress
 
     @Test
-    fun `content removal waits for the drain, then deletes through the existing inbox lifecycle`() {
+    fun `deletion opens its record with the state change and walks DRAINING, CONTENT_DELETING, ERASED`() {
         participant()
         val live = listOf(inbox(), inbox(InboxState.EXPIRING))
         val expired = inbox(InboxState.EXPIRED)
-        removeContent.execute(account) shouldBe RemoveAccountContent.Result.NotDeletionPending(HumanAccountState.ACTIVE)
-        done(change.execute(account, AccountLifecycleAction.DELETE)).to shouldBe HumanAccountState.DELETION_PENDING
-
+        deletion.execute(account) shouldBe ProcessAccountDeletion.Result.NotDeletionPending(HumanAccountState.ACTIVE)
         store.reservations[workspace] = 1
-        val draining = removeContent.execute(account).shouldBeInstanceOf<RemoveAccountContent.Result.Done>()
-        draining.phase shouldBe RemoveAccountContent.Phase.DRAINING
+        done(change.execute(account, AccountLifecycleAction.DELETE)).to shouldBe HumanAccountState.DELETION_PENDING
+        store.deletions.getValue(account).stage shouldBe AccountDeletionStage.DRAINING
+        store.deletions.getValue(account).requestedAt shouldBe clock.now
+
+        // DRAINING: nothing is deleted while a reservation from before the fence is in flight.
+        val draining = advance()
+        draining.stage shouldBe AccountDeletionStage.DRAINING
+        draining.remaining shouldBe AccountContentRemaining(1, 3, 0)
         live.all { inboxes.inboxes.getValue(it.id).state != InboxState.DELETED } shouldBe true
 
+        // CONTENT_DELETING: every live inbox through the existing deleter; the sweep has not run yet.
         store.reservations[workspace] = 0
-        val pending = removeContent.execute(account).shouldBeInstanceOf<RemoveAccountContent.Result.Done>()
-        pending.phase shouldBe RemoveAccountContent.Phase.CONTENT_PENDING
-        pending.inboxesMarkedDeleted shouldBe 2
+        clock.advanceSeconds(60)
+        val deleting = advance()
+        deleting.stage shouldBe AccountDeletionStage.CONTENT_DELETING
+        deleting.inboxesMarkedDeleted shouldBe 2
+        deleting.remaining.inboxRows shouldBe 3
         live.all { inboxes.inboxes.getValue(it.id).state == InboxState.DELETED } shouldBe true
         inboxes.inboxes.getValue(expired.id).state shouldBe InboxState.EXPIRED
-
-        // The existing retention sweep removes the rows (and objects) later.
-        inboxes.findHardDeletable(10).forEach { inboxes.hardDelete(it.id) }
-        val removed = removeContent.execute(account).shouldBeInstanceOf<RemoveAccountContent.Result.Done>()
-        removed.phase shouldBe RemoveAccountContent.Phase.CONTENT_REMOVED
-        removed.inboxesMarkedDeleted shouldBe 0
-        // Deletion never touches the place, the marker or the account row itself.
+        store.deletions.getValue(account).stage shouldBe AccountDeletionStage.CONTENT_DELETING
         store.erased shouldBe emptyList()
-        store.states[account] shouldBe HumanAccountState.DELETION_PENDING
+
+        // The existing retention sweep removes the rows (objects first); the next run erases.
+        inboxes.findHardDeletable(10).forEach { inboxes.hardDelete(it.id) }
+        val erased = advance()
+        erased.stage shouldBe AccountDeletionStage.ERASED
+        erased.erasure shouldBe IdentityErasure(0, 0, 0, 0)
+        store.erased shouldBe listOf(account to workspace)
+        store.deletions.getValue(account).stage shouldBe AccountDeletionStage.ERASED
+        // Lock order of the erasing transaction: guard, fence, account.
+        val erasing = events.lastIndexOf("authority")
+        events.subList(erasing, erasing + 4) shouldBe listOf("authority", "guard:$workspace", "fence", "lock:$account")
+
+        // Idempotent after the end: reports ERASED and touches nothing.
+        val again = advance()
+        again.stage shouldBe AccountDeletionStage.ERASED
+        again.erasure shouldBe null
+        store.erased.size shouldBe 1
     }
 
-    private val erase = EraseAccountIdentity(store, guard, revokeSessions, revokeKeys, NoopTx)
+    @Test
+    fun `identity is not erased while content remains, including a live EXACT cooldown`() {
+        participant()
+        done(change.execute(account, AccountLifecycleAction.DELETE))
+        store.cooldownUntil[workspace] = clock.now.plusSeconds(3600)
+        val held = advance()
+        held.stage shouldBe AccountDeletionStage.CONTENT_DELETING
+        held.remaining shouldBe AccountContentRemaining(0, 0, 1)
+        store.erased shouldBe emptyList()
+        clock.advanceSeconds(3601)
+        advance().stage shouldBe AccountDeletionStage.ERASED
+    }
 
     @Test
-    fun `identity erasure requires deletion pending and no remaining content, then keeps the workspace marker`() {
+    fun `a run that dies between stages resumes from where it stopped`() {
         participant()
         inbox()
-        erase.execute(account) shouldBe EraseAccountIdentity.Result.NotDeletionPending(HumanAccountState.ACTIVE)
         done(change.execute(account, AccountLifecycleAction.DELETE))
-        erase.execute(account) shouldBe EraseAccountIdentity.Result.ContentRemains(0, 1)
-        removeContent.execute(account)
+        inboxes.findHardDeletable(10).size shouldBe 0
+        // Crash inside the erasing transaction: nothing of the erasure survives (the real one is one transaction).
+        store.failNextErase = true
+        advance().stage shouldBe AccountDeletionStage.CONTENT_DELETING
         inboxes.findHardDeletable(10).forEach { inboxes.hardDelete(it.id) }
-        erase.execute(account) shouldBe EraseAccountIdentity.Result.Erased(workspace)
+        shouldThrow<IllegalStateException> { deletion.execute(account) }
+        store.erased shouldBe emptyList()
+        store.deletions.getValue(account).stage shouldBe AccountDeletionStage.CONTENT_DELETING
+        // The next run (the timer's) completes it.
+        advance().stage shouldBe AccountDeletionStage.ERASED
         store.erased shouldBe listOf(account to workspace)
     }
 
-    private val reconcile = ReconcileRestoredDatabase(store, guard, revokeSessions, revokeKeys, NoopTx)
+    @Test
+    fun `an unadmitted account is erased in one run, and a missing record is adopted by the timer`() {
+        store.states[account] = HumanAccountState.DELETION_PENDING
+        // Deletion-pending with no record: a restored or hand-edited database. Adopted, and reported as such.
+        deletion.pending().let {
+            it.records.map { r -> r.accountId } shouldBe listOf(account)
+            it.adopted shouldBe listOf(account)
+        }
+        val erased = advance()
+        erased.stage shouldBe AccountDeletionStage.ERASED
+        erased.workspaceId shouldBe null
+        store.erased shouldBe listOf(account to null)
+        deletion.pending() shouldBe ProcessAccountDeletion.Pending(emptyList(), emptyList())
+    }
+
+    @Test
+    fun `a pending record whose account row is gone is an anomaly - never stamped ERASED, nothing more erased`() {
+        val record = AccountDeletionRecord(account, AccountDeletionStage.CONTENT_DELETING, clock.now, clock.now, null)
+        store.deletions[account] = record
+        deletion.execute(account) shouldBe ProcessAccountDeletion.Result.AccountRowAbsent(record)
+        store.deletions.getValue(account) shouldBe record
+        store.erased shouldBe emptyList()
+        deletion.execute(HumanAccountId(UUID.randomUUID())) shouldBe ProcessAccountDeletion.Result.AccountNotFound
+    }
+
+    @Test
+    fun `the erasing transaction is preceded by a quiesce that holds no guard`() {
+        participant()
+        done(change.execute(account, AccountLifecycleAction.DELETE))
+        events.clear()
+        advance().stage shouldBe AccountDeletionStage.ERASED
+        val quiesce = events.indexOf("quiesce:$account")
+        events.subList(quiesce - 1, quiesce + 2) shouldBe listOf("authority", "quiesce:$account", "authority")
+        events.indexOf("guard:$workspace") shouldBe quiesce + 2
+    }
+
+    @Test
+    fun `the deletion report gives every pending deletion its live figures and the overdue verdict`() {
+        participant()
+        inbox()
+        done(change.execute(account, AccountLifecycleAction.DELETE))
+        val unrecorded = HumanAccountId(UUID.randomUUID())
+        store.states[unrecorded] = HumanAccountState.DELETION_PENDING
+        val report = AccountDeletionReport(store, NoopTx, clock, AccountDeletionPolicy(Duration.ofHours(72)))
+        report.execute().let {
+            it.entries.single().overdue shouldBe false
+            it.entries
+                .single()
+                .remaining.inboxRows shouldBe 1
+            it.unrecorded shouldBe listOf(unrecorded)
+            it.overdue shouldBe 1
+        }
+        store.states.remove(unrecorded)
+        clock.advanceSeconds(Duration.ofHours(72).seconds + 1)
+        report.execute().let {
+            it.entries.single().overdue shouldBe true
+            it.entries.single().age shouldBe Duration.ofHours(72).plusSeconds(1)
+            it.overdue shouldBe 1
+        }
+        // Read-only: nothing was adopted or advanced.
+        store.deletions.keys shouldBe setOf(account)
+        store.deletions.getValue(account).stage shouldBe AccountDeletionStage.DRAINING
+    }
+
+    @Test
+    fun `the deletion report is a plain read - no row lock, an overtaking erasure skipped, a wrong state REFUSED`() {
+        participant()
+        done(change.execute(account, AccountLifecycleAction.DELETE))
+        val report = AccountDeletionReport(store, NoopTx, clock, AccountDeletionPolicy(Duration.ofHours(72)))
+        events.clear()
+        report.execute().entries.single().let {
+            it.accountRowAbsent shouldBe false
+            it.refusedState shouldBe null
+        }
+        events.none { it.startsWith("lock:") } shouldBe true
+
+        // Listed while pending, erased (committed) before the existence read: skipped, never an anomaly.
+        val listed = store.deletions.getValue(account)
+        store.states.remove(account)
+        store.deletions[account] = listed.copy(stage = AccountDeletionStage.ERASED, erasedAt = clock.now)
+        store.staleListing = listOf(listed)
+        report.execute().entries shouldBe emptyList()
+
+        // A record whose account is not DELETION_PENDING (restored or edited data) is reported REFUSED.
+        val other = HumanAccountId(UUID.randomUUID())
+        store.states[other] = HumanAccountState.SUSPENDED
+        store.deletions[other] = AccountDeletionRecord(other, AccountDeletionStage.DRAINING, clock.now, clock.now, null)
+        report
+            .execute()
+            .entries
+            .single { it.record.accountId == other }
+            .refusedState shouldBe HumanAccountState.SUSPENDED
+    }
+
+    private val reconcile = ReconcileRestoredDatabase(store, guard, revokeSessions, revokeKeys, NoopTx, clock)
 
     @Test
     fun `restore reconciliation refuses a database that is not quarantined`() {
@@ -254,12 +392,16 @@ class AccountLifecycleOperationsTest {
         val erasedWorkspace = WorkspaceId(UUID.randomUUID())
         store.orphanMarkers += erasedWorkspace
         val k = key()
+        // An owner/monitoring (legacy) workspace's managed keys, one already revoked.
+        val legacy = WorkspaceId(UUID.randomUUID())
+        val legacyKeys = listOf(key(ws = legacy), key(ws = legacy), key(revoked = true, ws = legacy))
         store.quarantined = true
 
-        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.Reconciled(3, 1, 1)
+        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.Reconciled(3, 1, 1, 2)
         store.states[account] shouldBe HumanAccountState.SUSPENDED
         store.states[other] shouldBe HumanAccountState.SUSPENDED
         apiKeys.keys.getValue(k.id).isRevoked() shouldBe true
+        legacyKeys.all { apiKeys.keys.getValue(it.id).isRevoked() } shouldBe true
         sessions.count(account) shouldBe 0
         store.quarantined shouldBe false
         // Guards (sorted), then the cohort row and fence, then accounts; clearance last.
@@ -267,7 +409,7 @@ class AccountLifecycleOperationsTest {
         guards shouldBe guards.sortedBy { UUID.fromString(it.removePrefix("guard:")) }
         events.indexOf("cohort+fence") shouldBe events.indexOfLast { it.startsWith("guard:") } + 1
         events.indexOf("close") shouldBe events.indexOf("cohort+fence") + 1
-        events.last() shouldBe "clear"
+        events.takeLast(2) shouldBe listOf("revoke-every-managed-key", "clear")
         reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.NotQuarantined
     }
 
@@ -349,7 +491,12 @@ class AccountLifecycleOperationsTest {
     private class FakeLifecycleStore(
         private val events: MutableList<String>,
         private val inboxes: InMemoryInboxRepository,
+        private val apiKeys: InMemoryApiKeyRepository,
     ) : AccountLifecycleStore {
+        val deletions = LinkedHashMap<HumanAccountId, AccountDeletionRecord>()
+        val cooldownUntil = HashMap<WorkspaceId, Instant>()
+        var failNextErase = false
+
         var authorized = true
         var quarantined = false
         val states = HashMap<HumanAccountId, HumanAccountState>()
@@ -369,6 +516,14 @@ class AccountLifecycleOperationsTest {
         override fun lockStorageFence() {
             events += "fence"
         }
+
+        override fun accountState(accountId: HumanAccountId): HumanAccountState? {
+            events += "read:$accountId"
+            return states[accountId]
+        }
+
+        /** What the next pendingDeletions() returns instead of the live records (a listing an erasure then overtakes). */
+        var staleListing: List<AccountDeletionRecord>? = null
 
         override fun lockAccountState(accountId: HumanAccountId): HumanAccountState? {
             events += "lock:$accountId"
@@ -428,10 +583,61 @@ class AccountLifecycleOperationsTest {
         override fun eraseIdentity(
             accountId: HumanAccountId,
             workspaceId: WorkspaceId?,
-        ) {
+            at: Instant,
+        ): IdentityErasure {
+            check(!failNextErase.also { failNextErase = false }) { "simulated crash inside the erasing transaction" }
+            val labels = workspaceId?.let { ws -> apiKeys.keys.values.count { it.workspaceId == ws && it.name != null } } ?: 0
             erased += accountId to workspaceId
             states.remove(accountId)
             memberships.remove(accountId)
+            openDeletion(accountId, at)
+            advanceDeletion(accountId, AccountDeletionStage.ERASED, at)
+            return IdentityErasure(labels, 0, 0, 0)
+        }
+
+        override fun exactCooldowns(
+            workspaceId: WorkspaceId,
+            now: Instant,
+        ): Long = if (cooldownUntil[workspaceId]?.isAfter(now) == true) 1 else 0
+
+        override fun deletion(accountId: HumanAccountId): AccountDeletionRecord? = deletions[accountId]
+
+        override fun openDeletion(
+            accountId: HumanAccountId,
+            at: Instant,
+        ) {
+            deletions.putIfAbsent(accountId, AccountDeletionRecord(accountId, AccountDeletionStage.DRAINING, at, at, null))
+        }
+
+        override fun advanceDeletion(
+            accountId: HumanAccountId,
+            stage: AccountDeletionStage,
+            at: Instant,
+        ) {
+            val record = deletions[accountId] ?: return
+            if (stage.ordinal <= record.stage.ordinal) return
+            deletions[accountId] =
+                record.copy(stage = stage, stageChangedAt = at, erasedAt = at.takeIf { stage == AccountDeletionStage.ERASED })
+        }
+
+        override fun pendingDeletions(): List<AccountDeletionRecord> =
+            staleListing?.also { staleListing = null }
+                ?: deletions.values.filter { it.stage != AccountDeletionStage.ERASED }.sortedBy { it.requestedAt }
+
+        override fun unrecordedDeletions(): List<HumanAccountId> =
+            states.filter { (id, state) -> state == HumanAccountState.DELETION_PENDING && id !in deletions }.keys.toList()
+
+        override fun quiesceAccount(accountId: HumanAccountId): Boolean {
+            events += "quiesce:$accountId"
+            return accountId in states
+        }
+
+        override fun revokeEveryManagedKey(at: Instant): Int {
+            events += "revoke-every-managed-key"
+            return apiKeys.keys.values
+                .map { it.workspaceId }
+                .distinct()
+                .sumOf { apiKeys.revokeAllManaged(it, at) }
         }
     }
 }

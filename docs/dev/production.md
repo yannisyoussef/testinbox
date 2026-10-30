@@ -298,12 +298,15 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   flags, runtime admin-config hash, kernel release, filesystem type, mount
   options, storage-class defaults, direct path, proxy), which must EXACTLY
   match a qualification record shipped in the artifact that is
-  enablement-eligible (ADR-035 §9a). The only shipped record today is the
-  laptop one, and it is not eligible, so no artifact can currently enforce
-  anywhere: that is the intended state until the production combination is
-  qualified with `slow-W` (§18 gate 7a). OFF keeps starting with any of these
-  absent, stale or changed — it is the requalification mode of the MinIO
-  change rule.
+  enablement-eligible (ADR-035 §9a). The shipped records today are the
+  laptop one (not eligible) and the staging one (eligible, but qualified on
+  `adr035-presigned-put-v1` while the binary is `v2`), so no artifact can
+  currently enforce outside the isolated lab: that is the intended state until
+  the production combination is qualified with `slow-W` and E1–E11 (§18 gate
+  7a). In production, `TENANT_LIMITS` is always refused and `ALL` only starts
+  under the conditions of [Storage activation](#storage-activation). OFF keeps
+  starting with any of these absent, stale or changed — it is the
+  requalification mode of the MinIO change rule.
 - **Node identity, both deployables.** The API registers in `storage_node`
   too (it runs cleanup and the orphan sweep, so it is a protocol participant)
   and claims its `TESTINBOX_STORAGE_NODE_ID` with the same session lock as the
@@ -429,6 +432,10 @@ rehearsal keep automatic creation because the store there is theirs.
   storage-pool check, claim one of thirty numbered places, create the workspace,
   project and participant share marker. The console requests admission when an
   authenticated, unadmitted account opens it, so places go first-come.
+  The cap of thirty counts **accounts, not people**: one person can hold
+  several accounts and so several places. The owner accepted this as a beta
+  limitation (TI-DELIVERY-002b decision 4); nothing in the code tries to
+  detect it ([abuse model](../security/abuse-model.md#sybil-limitation-accepted)).
 - **Sessions** are opaque 32-byte values in a `__Host-ti_session` cookie
   (Secure, HttpOnly, SameSite=Lax, Path=/, no Domain); only a SHA-256 verifier
   is stored. Seven days absolute, 24 hours idle, at most five per account.
@@ -477,8 +484,21 @@ docker run --rm --network <data network> --env-file /root/testinbox-ops/<command
 ```
 
 - The env file is mode `0600`, owned by the operator, and holds only the
-  `TI_ADMISSION_*`, `TI_LIFECYCLE_*` or `TI_BUDGET_*` variables (plus, for
-  `account-lifecycle`, optionally the API's `TESTINBOX_EXACT_COOLDOWN`).
+  `TI_ADMISSION_*`, `TI_LIFECYCLE_*` or `TI_BUDGET_*` variables. For
+  `account-lifecycle` it is an allow-list: `TI_LIFECYCLE_*`, plus, only when
+  the API overrides them, `TESTINBOX_EXACT_COOLDOWN`,
+  `TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY` and
+  `TI_LIFECYCLE_DELETION_OVERDUE_AFTER`. **Never the API's env file.**
+- **The `account-lifecycle` operator image is pinned independently** of the
+  API digest, with a floor: it must contain TI-DELIVERY-002b. Preflight every
+  pin with `scripts/check-lifecycle-image.sh <digest>`, which runs
+  `docker run --rm --network none -e JAVA_TOOL_OPTIONS= <digest> account-lifecycle`
+  (the image sets `JAVA_TOOL_OPTIONS`, whose JVM notice would precede the
+  marker). It must exit `2` and print, as a whole line, the marker
+  `account-lifecycle-cli v2 subcommands=suspend,resume,delete,status,process-deletions,restore-reconcile`.
+  An older image (e.g. `d17044d`) ignores the subcommand and **boots a full
+  API**. Details:
+  [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md#operator-procedure).
   Never put a password on the command line (`-e NAME=value`, a URL with
   credentials): argv is visible in `ps` and shell history.
 - Never `docker compose run api …`: that inherits the API service's
@@ -503,53 +523,102 @@ The controls:
   command therefore refuses `resume` unless it is given the explicit
   `--open-beta` flag. Details: [admission and source](../delivery/ti-delivery-002/ADMISSION-AND-SOURCE.md);
 - account lifecycle —
-  `account-lifecycle suspend|resume|delete|status|erase-identity <account-uuid>`
-  and `account-lifecycle restore-reconcile`, credentials only from
+  `account-lifecycle suspend|resume|delete|status <account-uuid>`,
+  `account-lifecycle status`, `account-lifecycle process-deletions` and
+  `account-lifecycle restore-reconcile`, credentials only from
   `TI_LIFECYCLE_JDBC_URL`, `TI_LIFECYCLE_USER`, `TI_LIFECYCLE_PASSWORD` (the
   owner of `human_account` or a member of it; the runtime API role is refused
-  by the use case and by V22's row triggers). Exit codes: 0 done, 1 refused
-  (nothing changed), 2 usage, 3 pending (re-run later), 4 failed with the
-  outcome unknown (a timeout or lost connection: run `status` first). Every
+  by the use case and by the V22/V23 row triggers). Exit codes: 0 done, 1 refused
+  (nothing changed), 2 usage, 3 pending (the timer or a re-run continues it),
+  4 failed with the outcome unknown (a timeout or lost connection: run
+  `status` first), 5 a deletion is overdue, refused or adopted (alert), 6 a
+  deletion record without its account row (alert; resolved by hand). Every
   operator transaction is bounded (5 s lock wait, 10 s per statement, 10 s
   idle), so a stalled operator never holds the T1 fence. Suspension and deletion permanently delete the
   account's sessions and revoke every managed key of its workspace; resume
   restores the state only, so the person signs in again and issues new keys.
   Ingestion treats the workspace as inactive from the T1 fence on (uniform
-  `250`, nothing persisted); the command reports `DRAINING` (exit 3) until
-  every reservation taken before the fence is settled. Deletion waits for the
-  drain, deletes the inboxes through the existing deleter and keeps the spent
-  place, the participant marker, pending-cleanup charges and revoked-key
-  history; identity erasure is the separate `erase-identity` step. Keep every
+  `250`, nothing persisted). **Deletion is a resumable workflow**
+  (TI-DELIVERY-002b): `DRAINING` (reservations from before the fence settle),
+  `CONTENT_DELETING` (inboxes deleted through the existing deleter; the
+  retention sweep removes rows and objects; EXACT cooldowns elapse), then
+  `ERASED`: the contact email, login identities, sessions, waitlist entry,
+  sign-in codes, key labels, idempotency records and chosen addresses are
+  erased automatically in one transaction, once the content gate passes.
+  The spent place, the participant marker, pending-cleanup charges and the
+  revoked keys' technical rows are kept. Keep every
   `event=…` line it prints in a lifecycle log outside the database. After a
-  restore, `restore-reconcile` does NOT read that log: it suspends and
-  revokes every restored participant, and the operator then replays the log
-  by hand (below). Procedure:
+  restore, `restore-reconcile` does NOT read that log: it suspends every
+  restored participant, revokes **every** restored managed key (the owner's
+  `ops-admin` and the synthetic key included), and the operator then replays the log
+  by hand and re-keys the deployment (below). Procedure:
   [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md).
 
-**After a restore every participant is quarantined.** The clearance row of
-`lifecycle_restore_clearance` is never in a backup (`-`), so a restored
-database treats every participant workspace as inactive and every human
-account as suspended until `account-lifecycle restore-reconcile` closes
-admissions, suspends the restored participant accounts, revokes all
-participant keys and records the clearance. Reconciliation only lifts the
-quarantine; the operator then replays, by hand, every lifecycle event in the
-external log that is newer than the backup:
+**Required Ops timer: `account-lifecycle process-deletions` every 15 minutes**
+(TI-DELIVERY-002b). It advances every pending deletion one step and is the
+only thing that completes deletions waiting on the retention sweep or an
+EXACT cooldown. **One alert rule:** alert on **any non-zero exit** (`1`
+authority or credentials, `2` wrong image or arguments, `4` a failed step,
+`5` overdue, refused or adopted, `6` a record without its account row), **and**
+on **staleness**: no completed run for more than 1 hour. The last output
+line is a machine-readable summary
+(`event=account.deletions … exit=<code> completedAt=<epoch>`) for a textfile
+metric. Install the timer only after the V23 window's T5 checks pass. Stop it,
+with the deploy timer, for every deploy, backup or restore window. Bound the
+unit (`TimeoutStartSec=10min`). The threshold is the EXACT
+cooldown, plus the retention `T_max`, plus 24 h: **72 h** with shipped
+values, or `TI_LIFECYCLE_DELETION_OVERDUE_AFTER`. Give the timer's env file
+the API's `TESTINBOX_EXACT_COOLDOWN` and
+`TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY` whenever they are
+overridden. `account-lifecycle status` (no account) is the read-only view of
+the same list. Unit example and triage:
+[lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md#the-ops-timer-for-process-deletions-required).
 
-1. **Before sign-in or registration is re-enabled — mandatory:** replay every
-   `delete`, `erase-identity` and `suspend` event, for participant **and
-   non-participant** accounts alike. A non-participant account deleted after
-   the backup is not suspended by reconciliation (it has no workspace), so
-   without the replay it could sign in again once the boundary reopens.
-2. Then `resume` only the participants the log shows active at the incident;
-   they sign in again and mint new keys.
+**After a restore everything restored is quarantined.** The clearance row of
+`lifecycle_restore_clearance` is never in a backup (`-`). A restored
+database therefore treats every participant workspace as inactive and every
+human account as suspended, and refuses **every managed API key**, including
+the owner's `ops-admin` and the synthetic key
+(`testinbox_api_key_auth_total{outcome="QUARANTINED"}`), until
+`account-lifecycle restore-reconcile` runs. The **bootstrap credential is not
+quarantine-gated**: it authenticates whenever no usable administrator exists,
+and any key it mints during quarantine is refused and then revoked by
+reconciliation. That is why rotating it is mandatory in every restore.
+`testinbox_restore_quarantined` is `1` meanwhile. It is not a readiness
+failure. **Alert** if it stays `1` for more than 5 minutes outside a declared
+restore window.
 
+The restore sequence (Ops runbook; full text in
+[lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md#restore-procedure)):
 
-### Deploying the account-lifecycle release (V22): required order
+0. Rotate `TESTINBOX_BOOTSTRAP_API_KEY`. This is **mandatory every restore**.
+1. Stop `infinity-deploy@prod.timer` and the `process-deletions` timer.
+2. Restore the backup.
+3. Confirm `SELECT count(*) FROM lifecycle_restore_clearance;` is `0` before
+   any deployable starts.
+4. `account-lifecycle restore-reconcile`: it suspends the restored
+   participants, revokes every restored managed key and records the
+   clearance.
+5. **Replay the lifecycle log** — mandatory before sign-in or registration is
+   re-enabled. Replay every `delete` and `suspend` (a pre-002b
+   `erase-identity` replays as `delete`), for participant **and
+   non-participant** accounts alike. Then `resume` only the participants the
+   log shows active, then run `process-deletions` once.
+6. Shred the stale synthetic key file
+   (`~deploy/.local/state/infinity-deploy/testinbox-synthetic.key`).
+7. `mint-synthetic-key.sh` while the bootstrap window is open. Then mint
+   `ops-admin` with the bootstrap credential, which closes the window. Then
+   re-issue the owner's other keys, then run `synthetic.sh`.
+   `TestInboxBootstrapKeyUsed` firing for those mints is expected.
+8. Restart the timers.
+9. Re-reserve the storage pool.
+
+### Deploying the account-lifecycle release (V22 + V23): required order
 
 1. Stage the candidate `deploy/backup/scope.txt` and
    `scripts/check-backup-scope.sh` (they classify `lifecycle_restore_clearance`
-   and accept the V22 view).
-2. Run the migrator (V22).
+   and `account_deletion`, and accept the V22 view).
+2. Run the migrator (V22 + V23, which adds `account_deletion`).
 3. Re-run `deploy/database/roles.reference.sql` as the schema owner. Both
    roles need it: ingestion gets `SELECT` on `workspace_lifecycle_eligibility`,
    and the API's `ON ALL TABLES` grant is one-shot, so it does not cover the
@@ -563,6 +632,21 @@ role cannot read what they need, instead of serving with every participant
 key refused or every event answered `451`. Staging connects as the table
 owner and always passes. The V22 authority checks and triggers add nothing
 there either: the owner IS the operator authority.
+
+**T5 checks for this window:**
+
+- `max(version)` in `flyway_schema_history` is `23`, and it succeeded;
+- `account_deletion` holds `0` rows, or exactly one `DRAINING` row per
+  account that was already deletion-pending;
+- the V22 and V23 lifecycle triggers are present and enabled (list in
+  [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md#grant-delta-for-ops-coordinated-with-md1md1));
+- the API role can `SELECT` both `lifecycle_restore_clearance` and
+  `workspace_lifecycle_eligibility`.
+
+A **partial migration** (V22 applied, V23 not) is **roll forward only**:
+complete V23 with the same candidate. The deletion timer is installed only
+after T5 passes. Post-MD1 grant hardening adds
+`REVOKE ALL ON account_deletion FROM <api role>` to the V22 revoke list.
 
 ### The API environment contract (`TESTINBOX_ACCOUNTS_*`)
 
@@ -683,14 +767,112 @@ a redirect. Rotation: change the value and restart the API. Rotating the email
 verification key invalidates outstanding codes; rotating the OAuth state key
 invalidates sign-ins in progress; neither touches sessions or API keys.
 
-### Storage prerequisites before the first admission
+### Storage activation
 
 Admission is closed by construction until the cohort storage pool is approved
 and enforced ([cohort-storage.md](cohort-storage.md), ADR-037). The full
 ordered procedure, what is already proven by tests and what only Ops can show
 is [STORAGE-READINESS](../delivery/ti-delivery-002/STORAGE-READINESS.md). Do
 not set `capacity_ready` as a substitute for it; the use case ignores it
-without the live pool.
+without the live pool. Nothing here authorizes activation; every step needs
+the consolidated TI-DELIVERY-002 release decision.
+
+**When production may start `ALL` (TI-DELIVERY-002b; ADR-035 amendment note
+2026-10-30).** `TESTINBOX_STORAGE_ENFORCEMENT=TENANT_LIMITS` is refused in
+production, always. `ALL` is refused unless, on top of every non-`OFF`
+requirement above, ALL of these hold at startup — each unmet one is named in
+the refusal, and no setting skips any of them:
+
+1. a qualification record **shipped in the artifact** (the lab-record path
+   never counts) matches `testinbox.storage.backend-identity.*` and the
+   binary's upload implementation (`adr035-presigned-put-v2` today) element
+   by element, is enablement-eligible, has `platformClass: "production-host"`,
+   carries the `filesystem` object (uuid, type, mount options, mount source,
+   `objectOverheadMaxBytes`, `metadataInodesMeasured`, `experiments` with
+   `E1`…`E11` all `"PASS"`), and its `filesystem.type`/`mountOptions` equal its
+   own `host.filesystemType`/`host.mountOptions`;
+2. `TESTINBOX_STORAGE_FS_OBJECT_OVERHEAD_MAX_BYTES` is at least the record's
+   `objectOverheadMaxBytes`;
+3. `TESTINBOX_STORAGE_NODE_ID` is set, and (as for every non-`OFF` node) is
+   in the declared inventory;
+4. the declarations hold all thirty participant shares (30 × 128 MiB payload,
+   30 × 256 MiB footprint), the worst full envelope and finalization within
+   *G*, *G_F* and *C_fs* before any legacy share or allowance, and the cohort
+   binding is computable.
+
+Startup cannot know, and so does not check, the reserved pool and its legacy
+inventory, trusted counts, the monitor observation, live node compatibility
+or role separation: admission answers `CAPACITY_UNAVAILABLE` until the
+readiness collaborator sees all of them, `storage-budget check` proves the
+pool, and gate F proves the rest. **Today no shipped record satisfies
+condition 1**, so production cannot start `ALL` with this artifact.
+
+#### The production qualification record Ops must evidence (`adr035-presigned-put-v2`)
+
+No record is created, relabelled or promoted by engineering. The existing
+records stay as they are (the laptop record ineligible, the staging record
+`v1`). A `production-host` record is added only from committed Ops evidence,
+in a later pull request, with every value copied from that evidence (a value
+the evidence does not contain is `null` and the record is then not eligible).
+The record has the shipped shape (`schemaVersion` 1,
+`backend/storage/src/main/resources/adr035-qualification/`); Ops must produce,
+on the production host and its recreated dedicated data filesystem:
+
+| Record member | Evidence Ops produce |
+|---|---|
+| `minio.imageIndexDigest`, `platformMemberDigest`, `platform`, `release`, `commitId`, `binarySha256`, `mode`, `driveCount` | the running production MinIO: the mirror index digest and the **amd64** member actually running, `ServerInfo` (release, commit id, mode `single-node-single-drive`, one drive), the binary's sha256 |
+| `minio.timeoutEnvironment`, `timeoutCliFlags` | the container's `MINIO_*` timeout variables and `minio server` flags (empty = release defaults) |
+| `minio.runtimeConfig.{normalized,hash}`, `storageClassInlineDefaults` | the Ops `qualification-check` capture of `mc admin config get` for `api`, `drive`, `storage_class`, `scanner`, normalized and hashed; a null hash is never eligible |
+| `host.kernelRelease`, `architecture`, `filesystemType`, `mountOptions`, `device` | `uname -r` / `uname -m` on the production host; `/proc/mounts` for the dedicated data filesystem |
+| `network.directPath`, `proxy`, `tls` | ingestion → MinIO with no retrying proxy, load balancer or TLS terminator in between |
+| `uploadImplementationVersion` | `adr035-presigned-put-v2`, and the digest of the artifact the experiments ran |
+| `qualification.platformClass` | exactly `production-host` |
+| `qualification.scenarios`, `trials`, `lateCommits`, `slowWExecuted`, `slowWMechanism`, `slowWMaxCommitLagAfterCompletedWitnessS`, `cMaxSeconds`, `procedure`, `evidenceReference` | the §9a sweep on the production combination, **including `slow-W`** (dm-delay or cgroup `io.max`), `lateCommits` 0, with the raw evidence committed under `docs/adr/0035-benchmark/qualification/production-<date>/` |
+| `filesystem.uuid`, `type`, `mountOptions`, `mountSource` | the recreated dedicated filesystem (preallocated, `mkfs -i 4096`, isolated; filesystem-evidence.md, "Before `ALL` can pass") |
+| `filesystem.objectOverheadMaxBytes` | the measured *O_max* from E1–E3 |
+| `filesystem.metadataInodesMeasured` | the E7 metadata inode measurement |
+| `filesystem.experiments` | `E1`…`E11` (annex §10: amplification, directory growth, fragmentation, inode ratio, trash accounting, debt release, `.minio.sys` growth, ENOSPC corpus, zero-byte PUT/`STORAGE_FULL` trial incl. case C, monitor latches, restart/deletes/recovery at full), each `"PASS"` with its run output in the evidence directory |
+| `enablementEligible`, `ineligibilityReasons` | `true` and `[]` only when every row above is complete |
+
+E5, E6 and E9–E11 need the application under an enforcing mode on the `v2`
+uploader. **They must run on an enforcing lab instance on the FINAL
+production filesystem**, with its own database, and the filesystem must not
+be reformatted afterwards: the record's `filesystem.uuid` must equal the
+`filesystem.uuid` in gate F's evidence on production, or gate F blocks. Ops'
+`qualification-check` tool, which captures the MinIO runtime configuration and
+feeds `--qualification-valid-metric`, **does not exist yet**. It is an Ops
+prerequisite of the record. Before this record exists the only application-supported way to
+run an enforcing mode is the isolated `lab` environment with a lab-only
+record (issue #102), which may not name the production domain or a
+production-named host; how those experiments are run against the production
+combination is an Ops procedure to state in the evidence, not something this
+repository decides.
+
+**Adding the record (a later pull request, once the evidence exists):** add
+the JSON file and its line in `adr035-qualification/index.txt`; commit the
+evidence directory it cites; update `QualificationRecordsTest` ("no record
+shipped in this artifact can back production ALL") deliberately, to name the
+new record as the one that does; keep `scripts/check-minio-mirror-pin.sh`
+green (every MinIO pin must be a record's digest); run gate Q and gate F of
+`check-storage-activation.sh` against the new record. Review is by the
+storage CODEOWNERS and the consolidated release review; a record is never
+reused for another host, filesystem or upload implementation (§9a
+invalidation rule).
+
+**The deployment gate under `ALL`.** Run `npm test` (deploy/synthetic) with
+`TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED` set to the deployed mode (`OFF` is
+the default when unset); `storage.test.mjs` fails if the workspace footprint
+report says `enforced` other than the declared mode. Ops' `synthetic.sh` should export
+`TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED` from the deployment's own
+`TESTINBOX_STORAGE_ENFORCEMENT`, so that the two cannot drift. It should also
+re-run after `storage-budget reserve`. The activation script's
+gate G names `storage-budget check` as the cohort gate. Under `ALL` it is
+DEFERRED (overall `ACTIVATION DEFERRED`, exit 3) until it is given
+`--cohort-check-output` and `--cohort-pool-file`, and then PASSes only when the
+check's printed `reviewed-file sha256=` equals that file's digest. The run with
+gate G PASS is required evidence before `capacity_ready`. Pass
+`--environment production` on production: gate F then also requires the
+matched record's `platformClass` to be `production-host`.
 
 ## Promotion and handoff
 
@@ -840,11 +1022,38 @@ backup into a disposable database, run the *current* migrator (it must apply
 nothing). **Before any deployable starts**, run
 `SELECT count(*) FROM lifecycle_restore_clearance;` — it must be `0`; if it is
 not, stop: the dump was not the accepted form and the restore is not
-quarantined. Then start an API node against it, authenticate with a managed
+quarantined. Then start an API node against it and confirm that a managed
 key of a **legacy** (owner/monitoring) workspace that existed at backup time
-(participant keys are refused while quarantined, by design), and confirm
-`message` and `inbox` are empty. A drill that checks only "restore exited 0"
-is not a drill.
+is **refused** (`401`: no managed key authenticates while quarantined,
+TI-DELIVERY-002b; counted `QUARANTINED`, and `testinbox_restore_quarantined`
+is `1`). Run `account-lifecycle restore-reconcile`, confirm its
+`legacyRevokedKeys=` count, run `mint-synthetic-key.sh` and then mint
+`ops-admin` with the (rotated) bootstrap credential, and confirm that
+`message` and `inbox` are empty. A drill that
+checks only "restore exited 0" is not a drill.
+
+### Credentials after a restore
+
+A database restore brings back credential **verifiers**, never plaintext
+(ADR-032 §4). It also brings back their revocation state as of the backup.
+TI-DELIVERY-002b decision 2: no restored credential is trusted.
+
+| credential | where it lives | after a restore | Ops action |
+|---|---|---|---|
+| participant managed keys | `api_key` (verifier) | refused while quarantined; revoked by `restore-reconcile` | none; participants mint new keys after `resume` |
+| owner `ops-admin` and other owner keys (managed) | `api_key` (verifier) | refused while quarantined (`QUARANTINED`); **revoked** by `restore-reconcile` (`legacyRevokedKeys=`) | mint `ops-admin` with the bootstrap credential **after** the synthetic key (that mint closes the bootstrap window), then re-issue the other owner keys with it |
+| production synthetic key (managed; `TESTINBOX_SYNTHETIC_API_KEY`, or the deploy-only key file `~deploy/.local/state/infinity-deploy/testinbox-synthetic.key`) | `api_key` (verifier) | refused while quarantined; **revoked** by `restore-reconcile` | shred the stale key file, then run `mint-synthetic-key.sh` while the bootstrap window is open; run `synthetic.sh` |
+| monitoring | the management port, not a managed key | unaffected | none |
+| `TESTINBOX_BOOTSTRAP_API_KEY` | Ops secret store (`.env.testinbox`, escrowed off-host); the database holds only a `kind = BOOTSTRAP` verifier row | **not** quarantine-gated, rotated or revoked by reconciliation. It authenticates when the presented token matches the configured value and no usable managed administrator exists; after reconciliation it is the break-glass that re-keys the owner | **rotate it in every restore** (new value, restart the API) **before** the API serves the restored database. Without one the owner workspace has no way back into key management. It retires itself again when `ops-admin` is minted; `TestInboxBootstrapKeyUsed` fires for the two mints |
+| browser sessions, sign-in codes, OAuth state | never backed up | nothing to revive | none |
+| `TESTINBOX_DB_*`, `TESTINBOX_S3_*`, `TESTINBOX_ACCOUNTS_EMAIL_VERIFICATION_KEY_BASE64`, `TESTINBOX_ACCOUNTS_OAUTH_STATE_KEY_BASE64`, `TESTINBOX_ACCOUNTS_EMAIL_SMTP_*`, OAuth client secrets, `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`, TLS, `GITLAB_TRIGGER_TOKEN` | Ops secret store / providers; never in the database | untouched by a database restore, neither revived nor rotated | rotate per the table below **if the restore follows a compromise**; otherwise nothing |
+| `TI_LIFECYCLE_*` operator credentials | Ops `0600` env file; a database role | the role and its password live in the cluster, not the dump | verify the role still holds the operator authority after the restore |
+
+Erasure and backups: an account erased after a backup was taken is still in
+that backup (contact email, login identities, key labels, EXACT local parts)
+until the backup ages out under the retention period chosen below. Replaying
+the lifecycle log after a restore erases it again; nothing erases it from the
+backup itself.
 
 ### HUMAN DECISION REQUIRED
 

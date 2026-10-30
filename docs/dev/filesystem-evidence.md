@@ -195,6 +195,17 @@ staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
    is deployed and writing.
 5. Gates A–E, Q and F all pass on one run, and Ops attach the `--json`
    record to the enablement row in `production-ops-acceptance.md`.
+   On that pre-switch run gate G is DEFERRED and the verdict is
+   `ACTIVATION DEFERRED` (exit 3), which permits the switch to `ALL` and the
+   reservation but never `capacity_ready`: the cohort gate is
+   `storage-budget check`, which can pass only after both (cohort-storage.md).
+   Re-run with `--cohort-check-output` and `--cohort-pool-file`; that run must
+   report `ACTIVATION READY` before `capacity_ready` is set. Gate G binds the
+   supplied output to the reviewed pool file's digest; it does not prove the
+   command ran. Capture `storage-budget check`'s stdout from the actual run
+   into the evidence directory, alongside the run log. On production add
+   `--environment production` (gate F then requires `platformClass:
+   production-host`).
 
 ## Running an enforcing mode in the isolated lab (issue #102)
 

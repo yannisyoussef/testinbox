@@ -1,9 +1,14 @@
 # Thirty-account storage runtime (ADR-037)
 
 This is application implementation and a release procedure, not permission to
-activate it. Production's existing ALL/TENANT_LIMITS startup refusals remain.
-No committed environment enables those modes. Registration stays closed until
-the separate release, lifecycle/restore and Ops gates are resolved.
+activate it. Production refuses `TENANT_LIMITS` always, and refuses `ALL`
+unless every startup-checkable release condition holds (a shipped
+`production-host` qualification record for the running upload implementation
+with the Amendment 2 filesystem elements and E1–E11, a covering *O_max*, a
+node identity, and declarations that can hold the cohort; production.md,
+"Storage activation"). No shipped record satisfies that today. No committed
+environment enables either mode. Registration stays closed until the separate
+release, lifecycle/restore and Ops gates are resolved.
 
 ## Limits and accounting
 
@@ -64,8 +69,10 @@ Set `TI_BUDGET_JDBC_URL`, `TI_BUDGET_USER`, `TI_BUDGET_PASSWORD` through the
 operator's normal secret mechanism. The credential is the schema owner or an
 explicitly reviewed equivalent; runtime API/SMTP roles have SELECT only on
 the plan, legacy shares and cleanup mirror. Never put credentials in arguments,
-a URL with userinfo, source control or a pasted transcript. Tag the JDBC
-session `ApplicationName=ops:cohort-budget` for the activation allowlist.
+a URL with userinfo, source control or a pasted transcript: the command refuses
+a `TI_BUDGET_JDBC_URL` that carries a user, a password or `@`. It tags its own
+JDBC session `ApplicationName=ops:cohort-budget` (the activation allowlist's
+named `ops:*` exclusion).
 
 There is no `api.jar` on the host: run a one-off container of the reviewed
 API digest (its entrypoint is Spring Boot's `JarLauncher`; arguments after the
@@ -88,6 +95,32 @@ inventory, capacity, nodes or observations do not match. Existing shares may
 only remain or increase within the complete capacity proof. No command opens
 admissions, changes enforcement or clears a latch. `check` is read-only.
 `revoke` invalidates approval, retaining reservations and the node fence.
+`reserve` and `revoke` hold the cohort row and the T1 lock under the operator
+bounds (5 s lock wait, 10 s statement, 10 s idle in transaction): a held row
+aborts the command with nothing written.
+
+**`storage-budget check` is the cohort gate.** `scripts/check-storage-activation.sh`
+does not recompute the ADR-037 proof; its gate G names this command. Under
+`ALL` without the command's output it is **DEFERRED** (the run reports
+`ACTIVATION DEFERRED`, exit 3, never READY). Given the captured output
+(`--cohort-check-output`) and the reviewed pool file (`--cohort-pool-file`), it
+records PASS only when the last line is exactly
+`cohort storage check: PASS; admissions unchanged` **and** the preceding
+`cohort storage check: reviewed-file sha256=<hex>` line equals the SHA-256 of
+that pool file (TI-DELIVERY-002b). That binds the supplied output to the
+reviewed pool file's digest. It does **not** prove the command ran: a
+transcript is text. Ops must capture the output from the actual run (stdout
+straight to a file in the evidence directory, next to the run log with its
+timestamp and the image digest used). Run `check` after `reserve`; **the
+activation run with gate G PASS (`ACTIVATION READY`) is required evidence
+before `capacity_ready` is set**.
+
+These paths are proven in CI against real PostgreSQL: `CohortBudgetCommandTest`
+(the command end to end), `CohortAdmissionReadinessTest` (the unmocked
+readiness bean and admission against a reserved pool, and every
+`CAPACITY_UNAVAILABLE` case), `SmtpCohortQuotaRefusalTest` (uniform SMTP and
+nothing persisted at a share) and `FootprintUsageApiTest` (the private
+footprint and pending cleanup over HTTP).
 
 After reservation, the existing capacity/admission switch still needs the
 separate release authorization. Even with both flags manually true, the

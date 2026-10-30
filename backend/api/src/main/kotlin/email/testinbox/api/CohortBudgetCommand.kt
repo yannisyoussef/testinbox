@@ -17,6 +17,7 @@ import tools.jackson.databind.json.JsonMapper
 import tools.jackson.module.kotlin.KotlinModule
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Properties
 import java.util.UUID
 
 /** Offline owner-credential command; never starts Spring, HTTP or scheduled work. */
@@ -34,7 +35,14 @@ object CohortBudgetCommand {
         val trashAllowance: Long,
     )
 
-    fun run(args: Array<String>) {
+    /** The session tag the storage-activation session gate treats as a named `ops:*` exclusion (cohort-storage.md). */
+    const val APPLICATION_NAME: String = "ops:cohort-budget"
+
+    fun run(
+        args: Array<String>,
+        env: (String) -> String? = System::getenv,
+        out: (String) -> Unit = ::println,
+    ) {
         require(args.size == 3 && args[1] in setOf("check", "reserve", "revoke")) {
             "usage: storage-budget check|reserve|revoke <reviewed-config.json>; credentials in TI_BUDGET_JDBC_URL/USER/PASSWORD"
         }
@@ -65,7 +73,15 @@ object CohortBudgetCommand {
                 .size == input.legacy.size,
         ) { "duplicate legacy workspace" }
         val legacy = input.legacy.associate { WorkspaceId(it.workspaceId) to LegacyStorageShare(it.payloadBytes, it.footprintBytes) }
-        val dataSource = DriverManagerDataSource(env("TI_BUDGET_JDBC_URL"), env("TI_BUDGET_USER"), env("TI_BUDGET_PASSWORD"))
+        val url = required(env, "TI_BUDGET_JDBC_URL")
+        require(
+            url.startsWith("jdbc:postgresql://") && '@' !in url &&
+                listOf("password", "user=").none { url.contains(it, ignoreCase = true) },
+        ) { "TI_BUDGET_JDBC_URL must be a jdbc:postgresql URL without credentials" }
+        val dataSource =
+            DriverManagerDataSource(url, required(env, "TI_BUDGET_USER"), required(env, "TI_BUDGET_PASSWORD")).apply {
+                connectionProperties = Properties().apply { setProperty("ApplicationName", APPLICATION_NAME) }
+            }
         val jdbc = JdbcClient.create(dataSource)
         val template = TransactionTemplate(DataSourceTransactionManager(dataSource))
         val tx =
@@ -96,8 +112,19 @@ object CohortBudgetCommand {
                 ) { "operator file differs from installed pool" }
             }
         }
-        println("cohort storage ${args[1]}: PASS; admissions unchanged")
+        // Binds the PASS to the exact reviewed file (check-storage-activation.sh gate G compares it).
+        out("cohort storage ${args[1]}: reviewed-file sha256=${sha256(Files.readAllBytes(path))}")
+        out("cohort storage ${args[1]}: PASS; admissions unchanged")
     }
 
-    private fun env(name: String): String = checkNotNull(System.getenv(name)?.takeIf { it.isNotBlank() }) { "missing $name" }
+    private fun sha256(bytes: ByteArray): String =
+        java.security.MessageDigest
+            .getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+
+    private fun required(
+        env: (String) -> String?,
+        name: String,
+    ): String = checkNotNull(env(name)?.takeIf { it.isNotBlank() }) { "missing $name" }
 }

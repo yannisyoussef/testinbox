@@ -13,12 +13,10 @@ import email.testinbox.application.usecase.AuthenticateHumanSession
 import email.testinbox.application.usecase.ChangeAccountState
 import email.testinbox.application.usecase.CreateApiKey
 import email.testinbox.application.usecase.DeleteInbox
-import email.testinbox.application.usecase.EraseAccountIdentity
 import email.testinbox.application.usecase.IssueHumanSession
 import email.testinbox.application.usecase.LifecyclePhase
 import email.testinbox.application.usecase.OperatorAuthorityRequiredException
 import email.testinbox.application.usecase.ReconcileRestoredDatabase
-import email.testinbox.application.usecase.RemoveAccountContent
 import email.testinbox.application.usecase.ResolveHumanWorkspace
 import email.testinbox.application.usecase.RevokeAccountSessions
 import email.testinbox.application.usecase.RevokeApiKey
@@ -81,7 +79,7 @@ class AccountLifecycleTest : PersistenceIntegrationTest() {
         val lifecycle = JdbcAccountLifecycle(jdbc)
         val revokeSessions = RevokeAccountSessions(sessions, tx)
         val revokeKeys = RevokeApiKey(apiKeys, clock)
-        val change = ChangeAccountState(lifecycle, quotas, revokeSessions, revokeKeys, tx)
+        val change = ChangeAccountState(lifecycle, quotas, revokeSessions, revokeKeys, tx, clock)
         val authenticateSession = AuthenticateHumanSession(sessions, tx, clock)
         val authenticateKey = AuthenticateApiKey(apiKeys, clock, eligibility)
         val createKey = CreateApiKey(apiKeys, clock, guard = quotas, eligibility = eligibility)
@@ -403,70 +401,6 @@ class AccountLifecycleTest : PersistenceIntegrationTest() {
     }
 
     @Test
-    fun `deletion drains, removes content through the inbox lifecycle and keeps the spent place and marker`() {
-        val w = World()
-        val (account, admission) = w.participant()
-        val inboxes = listOf(w.inbox(admission.workspaceId, admission.projectId), w.inbox(admission.workspaceId, admission.projectId))
-        w.db.message(admission.workspaceId.value, inboxes[0].value, rawBytes = 100, attachments = listOf(10))
-        w.key(admission)
-        val remove = RemoveAccountContent(w.lifecycle, w.deleteInbox, w.tx)
-
-        w.t1(admission.workspaceId, inboxes[1]).shouldBeInstanceOf<StorageAdmissionDecision.Admitted>()
-        val pending = w.done(w.change.execute(account, AccountLifecycleAction.DELETE))
-        pending.to shouldBe HumanAccountState.DELETION_PENDING
-        pending.revokedKeys shouldBe 1
-        pending.phase shouldBe LifecyclePhase.DRAINING
-        remove.execute(account).shouldBeInstanceOf<RemoveAccountContent.Result.Done>().phase shouldBe RemoveAccountContent.Phase.DRAINING
-        w.db.jdbc
-            .sql("DELETE FROM storage_reservation")
-            .update()
-
-        val marked = remove.execute(account).shouldBeInstanceOf<RemoveAccountContent.Result.Done>()
-        marked.phase shouldBe RemoveAccountContent.Phase.CONTENT_PENDING
-        marked.inboxesMarkedDeleted shouldBe 2
-        // The existing retention sweep then hard-deletes rows (objects are proven deleted first).
-        w.inboxes.findHardDeletable(10).forEach { w.inboxes.hardDelete(it.id) }
-        remove.execute(account).shouldBeInstanceOf<RemoveAccountContent.Result.Done>().phase shouldBe
-            RemoveAccountContent.Phase.CONTENT_REMOVED
-        w.db.jdbc
-            .sql("SELECT count(*) FROM message WHERE workspace_id = ?")
-            .param(admission.workspaceId.value)
-            .query(Long::class.java)
-            .single() shouldBe 0
-        // Deletion-pending is not erasure: the account stays, blocked, until the owner-decided erase step.
-        w.state(account) shouldBe "DELETION_PENDING"
-        w.change.execute(account, AccountLifecycleAction.RESUME).shouldBeInstanceOf<ChangeAccountState.Result.Refused>()
-
-        val erase = EraseAccountIdentity(w.lifecycle, w.quotas, w.revokeSessions, w.revokeKeys, w.tx)
-        erase.execute(account) shouldBe EraseAccountIdentity.Result.Erased(admission.workspaceId)
-        w.state(account).shouldBeNull()
-        w.db.jdbc
-            .sql("SELECT count(*) FROM human_identity WHERE account_id = ?")
-            .param(account.value)
-            .query(Long::class.java)
-            .single() shouldBe 0
-        // The spent place, the marker and the revoked key history remain; the workspace is inactive, never legacy.
-        w.db.jdbc
-            .sql("SELECT account_id IS NULL AND workspace_id IS NULL FROM beta_admission WHERE place = ?")
-            .param(admission.place)
-            .query(Boolean::class.java)
-            .single() shouldBe true
-        w.db.jdbc
-            .sql("SELECT count(*) FROM participant_workspace WHERE workspace_id = ?")
-            .param(admission.workspaceId.value)
-            .query(Long::class.java)
-            .single() shouldBe 1
-        w.eligibility.status(admission.workspaceId) shouldBe WorkspaceStatus.INACTIVE_PARTICIPANT
-        w.db.jdbc
-            .sql("SELECT count(*) FROM api_key WHERE workspace_id = ? AND revoked_at IS NOT NULL")
-            .param(admission.workspaceId.value)
-            .query(Long::class.java)
-            .single() shouldBe 1
-        // Deletion never releases the place: the next participant gets a new one.
-        w.participant().second.place shouldBe admission.place + 1
-    }
-
-    @Test
     fun `a restored database is quarantined until reconciled, and reconciliation revokes what the backup restored`() {
         val w = World()
         val (account, admission) = w.participant()
@@ -492,8 +426,8 @@ class AccountLifecycleTest : PersistenceIntegrationTest() {
             .t1(admission.workspaceId, w.inbox(admission.workspaceId, admission.projectId))
             .shouldBeInstanceOf<StorageAdmissionDecision.Inactive>()
 
-        val reconcile = ReconcileRestoredDatabase(w.lifecycle, w.quotas, w.revokeSessions, w.revokeKeys, w.tx)
-        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.Reconciled(1, 1, 1)
+        val reconcile = ReconcileRestoredDatabase(w.lifecycle, w.quotas, w.revokeSessions, w.revokeKeys, w.tx, clock)
+        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.Reconciled(1, 1, 1, 0)
         w.state(account) shouldBe "SUSPENDED"
         w.db.jdbc
             .sql("SELECT admissions_open OR capacity_ready FROM beta_cohort")

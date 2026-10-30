@@ -264,6 +264,14 @@ enum class AuthOutcome {
      * restore-quarantined (ACCOUNT-LIFECYCLE.md).
      */
     WORKSPACE_INACTIVE,
+
+    /**
+     * The key verified and belongs to a legacy (owner/monitoring) workspace,
+     * but the database is restore-quarantined: no managed key authenticates
+     * until `restore-reconcile` (TI-DELIVERY-002b). Expected during a restore;
+     * anywhere else it means the clearance row is missing.
+     */
+    QUARANTINED,
 }
 
 /** Lifecycle operations on a credential. */

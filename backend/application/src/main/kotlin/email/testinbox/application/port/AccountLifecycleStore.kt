@@ -2,8 +2,10 @@ package email.testinbox.application.port
 
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.identity.AccountDeletionStage
 import email.testinbox.domain.identity.HumanAccountId
 import email.testinbox.domain.identity.HumanAccountState
+import java.time.Instant
 
 /**
  * Whether a workspace may currently act: authenticate API keys, create
@@ -28,6 +30,42 @@ enum class WorkspaceStatus {
 
 /** Thrown when a write discovers, under its workspace guard, that the workspace became inactive after authentication. */
 class WorkspaceInactiveException : RuntimeException("the workspace is no longer active")
+
+/**
+ * Whether the database is restore-quarantined (V22: it carries no restore
+ * clearance). Read per request by API-key authentication, so that NO restored
+ * managed credential, participant or legacy, authenticates before the
+ * operator's `restore-reconcile` has revoked it (TI-DELIVERY-002b decision 2).
+ */
+fun interface RestoreQuarantine {
+    fun active(): Boolean
+
+    companion object {
+        /** For contexts with no lifecycle schema (unit tests of unrelated use cases). */
+        val NONE = RestoreQuarantine { false }
+    }
+}
+
+/** A deletion's durable, non-identifying record (V23): the account UUID, its stage and when. */
+data class AccountDeletionRecord(
+    val accountId: HumanAccountId,
+    val stage: AccountDeletionStage,
+    val requestedAt: Instant,
+    val stageChangedAt: Instant,
+    val erasedAt: Instant?,
+)
+
+/** What one identity erasure removed or anonymized, as counts for the operator's metadata line. */
+data class IdentityErasure(
+    /** Free-text names of the workspace's keys (revoked, retained for audit) set to null. */
+    val anonymizedKeyLabels: Int,
+    /** Sign-in codes issued to the account's contact address. */
+    val loginChallenges: Int,
+    /** The workspace's idempotency records: request fingerprints and projections that may name keys or addresses. */
+    val idempotencyRecords: Int,
+    /** The workspace's EXACT address reservations, all released by then: the chosen local parts. */
+    val addressReservations: Int,
+)
 
 /** A participant's membership as the lifecycle writer sees it. No contact data. */
 data class LifecycleMembership(
@@ -56,6 +94,9 @@ interface AccountLifecycleStore {
     /** The raw stored state, row-locked against sign-in and other state writers; null when there is no such account. */
     fun lockAccountState(accountId: HumanAccountId): HumanAccountState?
 
+    /** The raw stored state, read WITHOUT a lock (read-only reporting); null when there is no such account. */
+    fun accountState(accountId: HumanAccountId): HumanAccountState?
+
     fun setState(
         accountId: HumanAccountId,
         state: HumanAccountState,
@@ -66,6 +107,12 @@ interface AccountLifecycleStore {
 
     /** Inbox rows of every state still present (DELETED/EXPIRED rows remain until the retention sweep removes them). */
     fun inboxRows(workspaceId: WorkspaceId): Long
+
+    /** EXACT reservations of the workspace still ACTIVE, or in COOLDOWN with `available_at` after [now]. */
+    fun exactCooldowns(
+        workspaceId: WorkspaceId,
+        now: Instant,
+    ): Long
 
     /** Inboxes not yet DELETED, at most [limit]. */
     fun undeletedInboxes(
@@ -88,12 +135,50 @@ interface AccountLifecycleStore {
     fun clearQuarantine()
 
     /**
-     * Erases the account's identity rows (the account, its login identities
-     * and sessions cascade) and clears the membership's workspace reference.
-     * The spent place and the durable participant marker remain.
+     * Erases the account's identity (TI-DELIVERY-002b decision 1): the
+     * account row, and through its existing cascades every login identity,
+     * session, waitlist entry and request budget; the sign-in codes sent to its
+     * contact address; the free-text labels of its workspace's keys (the
+     * technical rows stay for audit and the inventory); the workspace's
+     * idempotency records and released EXACT reservations. Clears the
+     * membership's workspace reference and marks the deletion ERASED. The spent
+     * place, the participant marker and every cleanup charge remain.
      */
     fun eraseIdentity(
         accountId: HumanAccountId,
         workspaceId: WorkspaceId?,
+        at: Instant,
+    ): IdentityErasure
+
+    /** The deletion record of [accountId], whatever its stage; null when the account was never deleted. */
+    fun deletion(accountId: HumanAccountId): AccountDeletionRecord?
+
+    /** Starts the record at DRAINING if the account has none. Idempotent. */
+    fun openDeletion(
+        accountId: HumanAccountId,
+        at: Instant,
     )
+
+    /** Moves the record FORWARD to [stage] (never back, never out of ERASED); stamps `erased_at` for ERASED. */
+    fun advanceDeletion(
+        accountId: HumanAccountId,
+        stage: AccountDeletionStage,
+        at: Instant,
+    )
+
+    /** Every unfinished deletion, oldest request first. */
+    fun pendingDeletions(): List<AccountDeletionRecord>
+
+    /** DELETION_PENDING accounts with no record (restored or hand-edited data): the timer adopts them. */
+    fun unrecordedDeletions(): List<HumanAccountId>
+
+    /**
+     * Takes and releases (at commit) the strongest row lock on the account, so the
+     * caller waits, holding no other lock, for every transaction that holds a
+     * foreign-key share lock on it. False when there is no such account.
+     */
+    fun quiesceAccount(accountId: HumanAccountId): Boolean
+
+    /** Restore reconciliation: permanently revokes every still-usable managed key of EVERY workspace. */
+    fun revokeEveryManagedKey(at: Instant): Int
 }
