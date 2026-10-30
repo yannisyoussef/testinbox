@@ -134,8 +134,10 @@ class CohortBudgetCommandTest {
         val digest =
             java.security.MessageDigest
                 .getInstance("SHA-256")
-                .digest(java.nio.file.Files.readAllBytes(reviewed))
-                .joinToString("") { "%02x".format(it) }
+                .digest(
+                    java.nio.file.Files
+                        .readAllBytes(reviewed),
+                ).joinToString("") { "%02x".format(it) }
         output[output.size - 2] shouldBe "cohort storage check: reviewed-file sha256=$digest"
 
         run("revoke", reviewed)
