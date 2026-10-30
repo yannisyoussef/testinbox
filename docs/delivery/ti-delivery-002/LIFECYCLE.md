@@ -228,8 +228,9 @@ Not reached by erasure, and why:
 - Row-free object residue under a deleted inbox's prefix (a late or held
   object, paced teardown) is deleted by the orphan sweep, charged by rule (P).
   It carries no contact identity.
-- Application logs and the Ops lifecycle log keep account UUIDs, and key-name
-  audit lines, for their own retention. Backups keep everything they held
+- Application logs and the Ops lifecycle log keep account UUIDs for their own
+  retention. Key names are not logged (`named=true|false` only); audit lines
+  shipped by earlier releases keep theirs until log retention expires them. Backups keep everything they held
   until they age out (below).
 
 **Backups.** Erasure does not reach a backup taken before it. `human_account`,

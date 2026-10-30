@@ -251,5 +251,7 @@ documented, and the key `name` was already optional.
 - Ops-side implementation of the timer, the alert and the re-keying runbook
   (above) is not in this repository.
 - Erasure removes nothing from application logs or the Ops lifecycle log,
-  which keep account UUIDs, and key names in key-creation audit lines. Their
-  retention is Ops' log retention.
+  which keep account UUIDs (never contact data). Key names are no longer
+  logged at all: the `api_key.created` audit line records only `named=true|false`
+  (commit "never log a key's free-text name"); lines shipped by earlier releases
+  keep their names until Ops' log retention expires them.
