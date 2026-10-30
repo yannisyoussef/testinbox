@@ -200,7 +200,10 @@ staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
    reservation but never `capacity_ready`: the cohort gate is
    `storage-budget check`, which can pass only after both (cohort-storage.md).
    Re-run with `--cohort-check-output` and `--cohort-pool-file`; that run must
-   report `ACTIVATION READY` before `capacity_ready` is set. On production add
+   report `ACTIVATION READY` before `capacity_ready` is set. Gate G binds the
+   supplied output to the reviewed pool file's digest; it does not prove the
+   command ran. Capture `storage-budget check`'s stdout from the actual run
+   into the evidence directory, alongside the run log. On production add
    `--environment production` (gate F then requires `platformClass:
    production-host`).
 

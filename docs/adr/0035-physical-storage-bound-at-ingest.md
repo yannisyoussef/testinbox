@@ -1940,19 +1940,19 @@ artifact must contain it (gate E). E1–E11 must be recorded as PASS.
 ### A2.7 Production and public activation restrictions
 
 `ALL` is refused in production by `DeploymentSafety`, and so is
-`TENANT_LIMITS` (it never contains the filesystem, §A2.5).
+`TENANT_LIMITS` (it never contains the filesystem, §A2.5). It may not carry
+traffic beyond the synthetic suite until the owner has decided and
+implemented both of the following, as separate scoped decisions
+(`docs/security/storage-public-boundary-decisions.md`):
+- **(A)** the envelope-order oracle mitigation;
+- **(B)** the single-sender amplification bound.
 
 > **Amended 2026-10-30 by owner decision (TI-DELIVERY-002b):** production
 > `ALL` is permitted only when the existing qualification, capacity, node,
 > observation and cohort-reservation requirements are satisfied (ADR-037
 > decided (A) and (B) for the bounded beta); there is no unchecked override,
 > and `TENANT_LIMITS` stays refused. See "Amendment note (2026-10-30,
-> TI-DELIVERY-002b)" below. It may not carry
-traffic beyond the synthetic suite until the owner has decided and
-implemented both of the following, as separate scoped decisions
-(`docs/security/storage-public-boundary-decisions.md`):
-- **(A)** the envelope-order oracle mitigation;
-- **(B)** the single-sender amplification bound.
+> TI-DELIVERY-002b)" below.
 
 A dedicated production MinIO, and production role separation, are also
 prerequisites.

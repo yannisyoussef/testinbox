@@ -484,13 +484,22 @@ on the data network, with the operator's credentials. Before pinning a digest,
 and on every change of it, run the preflight:
 
 ```
-docker run --rm <registry>/testinbox-api@sha256:<operator digest> account-lifecycle
-# must exit 2, and its first line must be exactly:
-# account-lifecycle-cli v2 subcommands=suspend,resume,delete,status,process-deletions,restore-reconcile
+scripts/check-lifecycle-image.sh <registry>/testinbox-api@sha256:<operator digest>
+# equivalent by hand:
+out=$(docker run --rm --network none -e JAVA_TOOL_OPTIONS= \
+        <registry>/testinbox-api@sha256:<operator digest> account-lifecycle 2>&1); rc=$?
+[ "$rc" -eq 2 ] && printf '%s\n' "$out" | grep -qxF 'account-lifecycle-cli v2 subcommands=suspend,resume,delete,status,process-deletions,restore-reconcile'
 ```
 
-Anything else (a running server, exit 0, no marker line) means the image is
-below the floor: do not use it. The pin may lag the deployed API digest, but
+It must exit `2` **and** print the marker as a whole line. Two details matter.
+`--network none` means an image below the floor, which boots a full API
+instead, reaches nothing. `JAVA_TOOL_OPTIONS=` is cleared because the image
+sets `JAVA_TOOL_OPTIONS`, and the JVM would otherwise print
+`Picked up JAVA_TOOL_OPTIONS: …` before the marker. Anything else (a running
+server, exit 0, no marker line) means the image is below the floor: do not
+use it. The helper also bounds the run with `timeout`, and its self-test
+(`check-lifecycle-image.test.sh`, in CI) pins the marker to the command's
+constant. The pin may lag the deployed API digest, but
 never below the floor. Move it forward deliberately, after the preflight,
 when a later release changes the command.
 

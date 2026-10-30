@@ -491,8 +491,10 @@ docker run --rm --network <data network> --env-file /root/testinbox-ops/<command
   `TI_LIFECYCLE_DELETION_OVERDUE_AFTER`. **Never the API's env file.**
 - **The `account-lifecycle` operator image is pinned independently** of the
   API digest, with a floor: it must contain TI-DELIVERY-002b. Preflight every
-  pin with `docker run --rm <digest> account-lifecycle`: it must exit `2`, and
-  its first line must be the marker
+  pin with `scripts/check-lifecycle-image.sh <digest>`, which runs
+  `docker run --rm --network none -e JAVA_TOOL_OPTIONS= <digest> account-lifecycle`
+  (the image sets `JAVA_TOOL_OPTIONS`, whose JVM notice would precede the
+  marker). It must exit `2` and print, as a whole line, the marker
   `account-lifecycle-cli v2 subcommands=suspend,resume,delete,status,process-deletions,restore-reconcile`.
   An older image (e.g. `d17044d`) ignores the subcommand and **boots a full
   API**. Details:
@@ -529,7 +531,8 @@ The controls:
   by the use case and by the V22/V23 row triggers). Exit codes: 0 done, 1 refused
   (nothing changed), 2 usage, 3 pending (the timer or a re-run continues it),
   4 failed with the outcome unknown (a timeout or lost connection: run
-  `status` first), 5 a deletion is overdue (alert). Every
+  `status` first), 5 a deletion is overdue, refused or adopted (alert), 6 a
+  deletion record without its account row (alert; resolved by hand). Every
   operator transaction is bounded (5 s lock wait, 10 s per statement, 10 s
   idle), so a stalled operator never holds the T1 fence. Suspension and deletion permanently delete the
   account's sessions and revoke every managed key of its workspace; resume

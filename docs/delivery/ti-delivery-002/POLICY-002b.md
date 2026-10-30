@@ -195,8 +195,9 @@ node, and the start of every `/account/waitlist` request.
    than 1 hour. Stop it for every deploy, backup or restore window
    ([LIFECYCLE.md](LIFECYCLE.md#the-ops-timer-for-process-deletions-required)).
 2. Pin the operator image **independently** of the API digest, at or above
-   this change. Preflight it: `docker run --rm <digest> account-lifecycle`
-   must exit 2 and print the `account-lifecycle-cli v2 …` marker first. Use
+   this change. Preflight it with `scripts/check-lifecycle-image.sh <digest>`
+   (`--network none -e JAVA_TOOL_OPTIONS=`; exit 2 and the
+   `account-lifecycle-cli v2 …` marker as a whole line). Use
    the allow-listed env file (`TI_LIFECYCLE_*`, `TESTINBOX_EXACT_COOLDOWN`,
    `TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY`,
    `TI_LIFECYCLE_DELETION_OVERDUE_AFTER`), never the API's.
@@ -299,7 +300,9 @@ documented, and the key `name` was already optional.
 - `process-deletions` prints a machine-readable summary line; the usage text
   starts with a stable preflight marker.
 - Storage gate G is DEFERRED under `ALL` until a `storage-budget check` PASS
-  bound to the reviewed pool file's SHA-256 is supplied. Gate F names E1–E11
+  bound to the reviewed pool file's SHA-256 is supplied (the binding ties the
+  output to the file; it does not prove the run, so Ops capture the output
+  from the actual run). Gate F names E1–E11
   and checks `production-host` with `--environment production`.
 - The ADR-035 amendment cites the owner decision.
 
@@ -314,6 +317,24 @@ Evidence for the review fixes, on the integrated branch:
 - `check-roles-reference.test.sh` 34/34.
 - `deploy/synthetic` unit tests 36/36.
 - Detekt (Java 21) clean; gitleaks clean.
+
+## Final-verification fixes (2026-10-30)
+
+- **Image preflight (P2):** `scripts/check-lifecycle-image.sh <digest>` (CI
+  self-test `check-lifecycle-image.test.sh`, 10 cases). It runs with
+  `--network none -e JAVA_TOOL_OPTIONS=`. The image's `JAVA_TOOL_OPTIONS`
+  notice otherwise preceded the marker, so the documented preflight always
+  failed. It requires exit 2 and the marker as a whole line.
+- ADR-035 §A2.7: the amendment note now follows the original paragraph
+  unchanged.
+- `status` without an account is a plain read: no row locks. A record an
+  erasure overtakes between the two reads is skipped, and a record whose
+  account is not `DELETION_PENDING` is reported `REFUSED` (exit 5), as
+  documented.
+- `check-storage-activation.sh --environment` accepts exactly
+  `production|staging|lab`.
+- The gate G binding is described accurately; production.md's exit list
+  includes 6.
 
 ## Remaining
 

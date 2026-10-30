@@ -107,8 +107,11 @@ does not recompute the ADR-037 proof; its gate G names this command. Under
 records PASS only when the last line is exactly
 `cohort storage check: PASS; admissions unchanged` **and** the preceding
 `cohort storage check: reviewed-file sha256=<hex>` line equals the SHA-256 of
-that pool file (TI-DELIVERY-002b), so a PASS cannot be borrowed from another
-file or a hand-written transcript. Run `check` after `reserve`; **the
+that pool file (TI-DELIVERY-002b). That binds the supplied output to the
+reviewed pool file's digest. It does **not** prove the command ran: a
+transcript is text. Ops must capture the output from the actual run (stdout
+straight to a file in the evidence directory, next to the run log with its
+timestamp and the image digest used). Run `check` after `reserve`; **the
 activation run with gate G PASS (`ACTIVATION READY`) is required evidence
 before `capacity_ready` is set**.
 
