@@ -91,6 +91,13 @@ class GuardedRefusals(
                     Triple(StorageCapacityPolicy(100, InboxShare.of("1"), 1L shl 40, 0), StorageEnforcement.TENANT_LIMITS, 60L)
                 }
 
+                // This legacy OFF fixture has no filesystem declaration or cohort pool.
+                // Real footprint refusals and their HTTP 409 are exercised by the
+                // ALL-mode native SMTP/browser rehearsal and CohortStorageRuntimeTest.
+                StorageRefusalReason.WORKSPACE_FOOTPRINT_LIMIT -> {
+                    error("use the ALL cohort fixture for footprint refusals")
+                }
+
                 // Generous tenant ceilings, a 100-byte admission cap: only the global scope refuses a 150-byte copy.
                 StorageRefusalReason.SERVICE_CAPACITY -> {
                     Triple(StorageCapacityPolicy(1L shl 30, InboxShare.of("1"), 100, 0), StorageEnforcement.ALL, 150L)

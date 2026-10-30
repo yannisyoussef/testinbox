@@ -194,7 +194,8 @@ class SchemaUpgradeTest : PersistenceIntegrationTest() {
     fun `every bundled migration is discoverable from the artifact`() {
         // If this scan silently found nothing, the compatibility policy would
         // read "no migrations bundled" and wave every schema through.
-        BundledMigrations.versions().map { it.raw } shouldBe listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "10")
+        BundledMigrations.versions().map { it.raw } shouldBe
+            listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21")
     }
 
     @Test
@@ -271,5 +272,43 @@ class SchemaUpgradeTest : PersistenceIntegrationTest() {
             .sql("SELECT count(*) FROM api_key WHERE key_hash = 'old-artifact-hash' AND kind = 'BOOTSTRAP'")
             .query(Int::class.java)
             .single() shouldBe 1
+    }
+
+    @Test
+    fun `V19 backfills admitted participant shares without reclassifying the legacy owner`() {
+        val source = freshDatabase()
+        val jdbc = JdbcClient.create(source)
+        flyway(source, target = "18").migrate()
+        val (participant, _, _) = seedV1Data(jdbc)
+        val owner = UUID.randomUUID()
+        val account = UUID.randomUUID()
+        jdbc.sql("INSERT INTO workspace (id,name,created_at) VALUES (?,'owner',now())").param(owner).update()
+        jdbc.sql("INSERT INTO human_account VALUES (?,'upgrade@example.invalid',now(),'ACTIVE',now())").param(account).update()
+        jdbc
+            .sql(
+                """
+                INSERT INTO beta_admission (cohort_id,place,account_id,workspace_id,project_id,admitted_at)
+                VALUES ('beta-30',1,?,?,(SELECT id FROM project WHERE workspace_id=? LIMIT 1),now())
+                """.trimIndent(),
+            ).params(account, participant, participant)
+            .update()
+        flyway(source).migrate()
+        jdbc.sql("SELECT workspace_id FROM participant_workspace").query(UUID::class.java).single() shouldBe participant
+        jdbc.sql("SELECT payload_limit_bytes FROM participant_workspace").query(Long::class.java).single() shouldBe
+            email.testinbox.domain.storage.ParticipantStorageShare.PAYLOAD_BYTES
+        jdbc.sql("SELECT footprint_limit_bytes FROM participant_workspace").query(Long::class.java).single() shouldBe
+            email.testinbox.domain.storage.ParticipantStorageShare.FOOTPRINT_BYTES
+    }
+
+    @Test
+    fun `V19 refuses unidentified prior tombstones rather than losing participant classification`() {
+        val source = freshDatabase()
+        val jdbc = JdbcClient.create(source)
+        flyway(source, target = "18").migrate()
+        jdbc.sql("INSERT INTO beta_admission (cohort_id,place,admitted_at) VALUES ('beta-30',1,now())").update()
+        val failure = runCatching { flyway(source).migrate() }.exceptionOrNull() ?: error("unidentified participant must block upgrade")
+        generateSequence(failure) { it.cause }.joinToString { it.message.orEmpty() } shouldContain "requires reconciliation"
+        jdbc.sql("SELECT count(*) FROM beta_admission").query(Long::class.java).single() shouldBe 1
+        jdbc.sql("SELECT count(*) FROM flyway_schema_history WHERE version='19' AND success").query(Long::class.java).single() shouldBe 0
     }
 }

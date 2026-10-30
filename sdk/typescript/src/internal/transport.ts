@@ -62,6 +62,7 @@ export interface CreateInboxRequestDto {
 
 /** The wire shape of ADR-035 §13's `StorageUsage`. Validated, never spread, into the public type. */
 export interface StorageUsageDto {
+  footprint?: unknown;
   limitBytes?: unknown;
   storedBytes?: unknown;
   reservedBytes?: unknown;

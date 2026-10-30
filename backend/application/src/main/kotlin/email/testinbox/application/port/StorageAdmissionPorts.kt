@@ -59,6 +59,7 @@ data class StorageUsageSnapshot(
      * the trust marker. Null when the store does not read them.
      */
     val footprint: ObservedFootprint? = null,
+    val budgets: Map<WorkspaceId, email.testinbox.application.storage.WorkspaceStorageBudget> = emptyMap(),
 )
 
 /**
@@ -82,6 +83,7 @@ data class ObservedFootprint(
     val writtenBy: String?,
     /** The order of the last distrust event (V9): the newest observation must have begun after it (contract §4.5). */
     val distrustedSeq: Long = 0,
+    val cohort: email.testinbox.application.storage.CohortPoolState? = null,
 )
 
 /**

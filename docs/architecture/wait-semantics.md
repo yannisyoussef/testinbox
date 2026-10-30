@@ -87,8 +87,13 @@ documentation must not describe behavior beyond what is specified here.
    so: *if any listener receives a notification for inbox I, a subsequent
    query observes the triggering message as `Visible`.* A woken waiter
    that re-queries and finds no match has provably not missed that
-   message. The notification payload is a wake-up hint (inbox ID) only —
-   matching correctness derives exclusively from the re-query.
+   message. The notification payload is a wake-up hint only —
+   `<workspaceId>/<inboxId>` — so a listener can wake the inbox's waiters
+   *and* the workspace's event streams, and nothing else: a stream woken by
+   another tenant's activity would expose that activity as timing (the
+   recipient-existence oracle ADR-025 closes at SMTP). Matching correctness
+   derives exclusively from the re-query; a bare inbox id (the pre-stream
+   payload) is still decoded and wakes that inbox's waiters only.
 2. **`LISTEN` connection loss recovery**: notifications are ephemeral and
    delivered only to connections listening at commit time. Each API node
    must (a) park a waiter only after its `LISTEN` subscription is

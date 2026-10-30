@@ -188,15 +188,18 @@ class ConcurrentWaitLimitApiTest : ApiIntegrationTestBase() {
     @org.springframework.beans.factory.annotation.Autowired
     lateinit var jdbc: org.springframework.jdbc.core.simple.JdbcClient
 
-    private fun heldWaitSlots(): Long =
+    /** This workspace's leases only: the suite shares one database, and another class's stream may still be parked. */
+    private fun heldWaitSlots(workspaceId: email.testinbox.domain.WorkspaceId): Long =
         jdbc
-            .sql("SELECT count(*) AS c FROM wait_lease")
+            .sql("SELECT count(*) AS c FROM wait_lease WHERE workspace_id = :workspaceId")
+            .param("workspaceId", workspaceId.value)
             .query { rs, _ -> rs.getLong("c") }
             .single()
 
     @Test
     fun `a second concurrent waiter is refused with 429 while the first parks`() {
-        val key = provisionIsolatedWorkspace("wait-limit").apiKey
+        val tenant = provisionIsolatedWorkspace("wait-limit")
+        val key = tenant.apiKey
         val id = json.readTree(post("/v1/inboxes", """{}""", key = key).body)["id"].asText()
         val executor = Executors.newSingleThreadExecutor()
         try {
@@ -212,7 +215,7 @@ class ConcurrentWaitLimitApiTest : ApiIntegrationTestBase() {
             org.awaitility.Awaitility
                 .await()
                 .atMost(java.time.Duration.ofSeconds(10))
-                .until { heldWaitSlots() == 1L }
+                .until { heldWaitSlots(tenant.workspaceId) == 1L }
             val refused = post("/v1/inboxes/$id/messages/wait", """{"timeoutSeconds":2}""", key = key)
             refused.statusCode.value() shouldBe 429
             val problem = json.readTree(refused.body)

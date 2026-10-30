@@ -28,12 +28,39 @@ spring:
     enabled: true
 
 testinbox:
+  accounts:
+    enabled: ${TESTINBOX_ACCOUNTS_ENABLED:false}
+    public-origin: ${TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN:}
+    waitlist:
+      retention: ${TESTINBOX_ACCOUNTS_WAITLIST_RETENTION:30d}
+      maximum: ${TESTINBOX_ACCOUNTS_WAITLIST_MAXIMUM:1000}
+    oauth:
+      state-key-base64: ${TESTINBOX_ACCOUNTS_OAUTH_STATE_KEY_BASE64:}
+      google:
+        enabled: ${TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_ENABLED:false}
+        client-id: ${TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_CLIENT_ID:}
+        client-secret: ${TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_CLIENT_SECRET:}
+      github:
+        enabled: ${TESTINBOX_ACCOUNTS_OAUTH_GITHUB_ENABLED:false}
+        client-id: ${TESTINBOX_ACCOUNTS_OAUTH_GITHUB_CLIENT_ID:}
+        client-secret: ${TESTINBOX_ACCOUNTS_OAUTH_GITHUB_CLIENT_SECRET:}
+    email:
+      enabled: ${TESTINBOX_ACCOUNTS_EMAIL_ENABLED:false}
+      verification-key-base64: ${TESTINBOX_ACCOUNTS_EMAIL_VERIFICATION_KEY_BASE64:}
+      smtp:
+        host: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_HOST:}
+        port: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_PORT:587}
+        username: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_USERNAME:}
+        password: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_PASSWORD:}
+        from: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_FROM:}
   mail-domain: ${TESTINBOX_MAIL_DOMAIN:testinbox.local}
   default-ttl: 15m
   max-ttl: 24h
   expiry-grace: 30s
   exact-cooldown: 24h
   wait-window-cap: 60s
+  events:
+    visibility-lag: 90s
   sweep-interval: 5s
   orphan-sweep-interval: 30m
   orphan-min-age: 1h
@@ -55,3 +82,9 @@ management:
   endpoint:
     health:
       show-details: always
+
+# Token exchanges and mail protocols must not emit secrets at debug level.
+logging:
+  level:
+    org.springframework.web.client: WARN
+    org.springframework.security.oauth2: WARN

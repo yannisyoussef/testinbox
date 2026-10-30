@@ -212,7 +212,7 @@ export class TestInboxStorageLimitExceededError extends TestInboxError {
   readonly lastStorageRefusalAt: Date;
   // `declare`d, so an absent member is genuinely absent on the instance
   // (`"quota" in error` is false), not a property holding `undefined`.
-  /** `STORED_BYTES` for a tenant scope; absent for `SERVICE_CAPACITY`. */
+  /** `STORED_BYTES` or `STORED_FOOTPRINT` for a tenant scope; absent for `SERVICE_CAPACITY`. */
   declare readonly quota?: string;
   /** The refusing scope's limit; absent for `SERVICE_CAPACITY`. */
   declare readonly limit?: number;

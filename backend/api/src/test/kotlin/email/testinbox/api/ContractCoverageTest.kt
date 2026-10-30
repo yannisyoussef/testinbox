@@ -12,7 +12,7 @@ import java.io.File
 /**
  * ADR-022 conformance: the committed, hand-authored OpenAPI 3.1 contract is
  * the source of truth. This test fails when a contract operation has no
- * matching Spring handler, or when a /v1 handler exists that the contract
+ * matching Spring handler, or when a /v1 or /account handler exists that the contract
  * does not document (implementation-only drift).
  */
 class ContractCoverageTest : ApiIntegrationTestBase() {
@@ -31,13 +31,45 @@ class ContractCoverageTest : ApiIntegrationTestBase() {
     }
 
     @Test
-    fun `every contract operation is implemented and every v1 handler is documented`() {
+    fun `all human product aliases explicitly declare cookie authority and mutation proofs`() {
+        val api = OpenAPIV3Parser().readLocation(contract.absolutePath, null, null).openAPI
+        val aliases = api.paths.filterKeys { it.startsWith("/account/product/") }
+        aliases.size shouldBe 15
+        aliases.forEach { (_, item) ->
+            item.servers.map { it.url } shouldBe listOf("/")
+            item.readOperationsMap().forEach { (method, operation) ->
+                operation.security.flatMap { it.keys }.toSet() shouldBe setOf("humanSession")
+                if (method.name in setOf("POST", "DELETE")) {
+                    operation.parameters.mapNotNull { it.`$ref` }.containsAll(
+                        listOf(
+                            "#/components/parameters/humanOrigin",
+                            "#/components/parameters/humanCsrf",
+                        ),
+                    ) shouldBe true
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `every contract operation is implemented and every product handler is documented`() {
         val openApi = OpenAPIV3Parser().readLocation(contract.absolutePath, null, null).openAPI
         val contractOperations =
             openApi.paths
                 .flatMap { (path, item) ->
-                    item.readOperationsMap().keys.map { method ->
-                        "${method.name} /v1${path.replace(Regex("\\{[^}]+}"), "{}")}"
+                    item.readOperationsMap().flatMap { (method, operation) ->
+                        val servers =
+                            operation.servers?.takeIf { it.isNotEmpty() }
+                                ?: item.servers?.takeIf { it.isNotEmpty() } ?: openApi.servers
+                        check(!servers.isNullOrEmpty()) { "contract operation has no server: $method $path" }
+                        servers.map { server ->
+                            val prefix =
+                                java.net
+                                    .URI(server.url)
+                                    .path
+                                    .trimEnd('/')
+                            "${method.name} $prefix${path.replace(Regex("\\{[^}]+}"), "{}")}"
+                        }
                     }
                 }.toSet()
 
@@ -49,7 +81,7 @@ class ContractCoverageTest : ApiIntegrationTestBase() {
                     val paths = info.pathPatternsCondition?.patternValues ?: emptySet()
                     info.methodsCondition.methods.flatMap { method ->
                         paths
-                            .filter { it.startsWith("/v1/") }
+                            .filter { it.startsWith("/v1/") || it.startsWith("/account/") }
                             .map { "${method.name} ${it.replace(Regex("\\{[^}]+}"), "{}")}" }
                     }
                 }.toSet()

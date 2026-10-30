@@ -51,7 +51,7 @@ class QuotaPolicyTest {
         policy.limitFor(QuotaDimension.STORED_BYTES) shouldBe 1_000L
         policy.limitFor(QuotaDimension.CONCURRENT_WAITS) shouldBe 3L
         // Every dimension must be covered — a new one cannot be silently unlimited.
-        QuotaDimension.entries.forEach { (policy.limitFor(it) > 0) shouldBe true }
+        QuotaDimension.entries.filter { it != QuotaDimension.STORED_FOOTPRINT }.forEach { (policy.limitFor(it) > 0) shouldBe true }
     }
 
     @Test
@@ -67,7 +67,7 @@ class QuotaPolicyTest {
     fun `property - admits is never true for a projected total above the limit`() {
         runBlocking {
             checkAll(Arb.long(), Arb.long()) { current, amount ->
-                QuotaDimension.entries.forEach { dimension ->
+                QuotaDimension.entries.filter { it != QuotaDimension.STORED_FOOTPRINT }.forEach { dimension ->
                     val admitted = policy.admits(dimension, current, amount)
                     if (admitted) {
                         // Whenever it says yes, the arithmetic must genuinely fit —

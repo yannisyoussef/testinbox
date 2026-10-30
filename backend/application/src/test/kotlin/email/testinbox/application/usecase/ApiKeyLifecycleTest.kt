@@ -304,4 +304,49 @@ class ApiKeyLifecycleTest {
         val created = create.execute(command()).shouldBeInstanceOf<CreateApiKey.Result.Created>()
         ApiKeyFormat.parse(created.credential.render()).shouldBeInstanceOf<email.testinbox.domain.tenant.ParsedCredential.Valid>()
     }
+
+    @Test
+    fun `a human owner mints through the same use case with distinct provenance and independent key lifetime`() {
+        val owner =
+            email.testinbox.domain.tenant.HumanWorkspaceOwner(
+                email.testinbox.domain.identity
+                    .HumanAccountId(UUID.randomUUID()),
+                admin.workspaceId,
+                admin.projectId,
+            )
+        val result =
+            create
+                .execute(CreateApiKey.Command(owner, "SDK", setOf(ApiScope.MESSAGES_READ), Duration.ofDays(30)))
+                .shouldBeInstanceOf<CreateApiKey.Result.Created>()
+        result.apiKey.createdByApiKeyId shouldBe null
+        result.apiKey.createdByHumanAccountId shouldBe owner.accountId
+        result.apiKey.expiresAt shouldBe clock.now.plus(Duration.ofDays(30))
+        result.apiKey.scopes shouldBe setOf(ApiScope.MESSAGES_READ)
+        val event = audit.events.filterIsInstance<AuditEvent.ApiKeyCreated>().single()
+        event.actorApiKeyId shouldBe null
+        event.actorHumanAccountId shouldBe owner.accountId
+        event.toString().contains(result.credential.secret) shouldBe false
+    }
+
+    @Test
+    fun `revocation without management scope is refused in the application not only HTTP`() {
+        val result = create.execute(command()).shouldBeInstanceOf<CreateApiKey.Result.Created>()
+        val unprivileged = admin.copy(scopes = setOf(ApiScope.MESSAGES_READ))
+        revoke.execute(unprivileged, result.apiKey.id) shouldBe RevokeApiKeyOutcome.NotPermitted
+        apiKeys.findById(admin.workspaceId, result.apiKey.id)?.revokedAt shouldBe null
+        audit.events.filterIsInstance<AuditEvent.ApiKeyRevoked>().size shouldBe 0
+    }
+
+    @Test
+    fun `credential creation cannot claim idempotency under an actor selected by its caller`() {
+        val other = email.testinbox.domain.ApiKeyId(UUID.randomUUID())
+        val request =
+            email.testinbox.application.idempotency.IdempotencyRequest(
+                email.testinbox.domain.idempotency.IdempotencyKey
+                    .of("other-actors-claim")!!,
+                other,
+            )
+        create.execute(command(), request) shouldBe CreateApiKey.Result.NotPermitted
+        audit.events.size shouldBe 0
+    }
 }

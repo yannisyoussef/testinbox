@@ -178,6 +178,19 @@ class StorageAdmissionDecisionTest : PersistenceIntegrationTest() {
         result.admitted.single().unenforcedLimit shouldBe null
     }
 
+    @Test
+    fun `an unknown envelope position receives no row but still prices the later known copy`() {
+        val ws = fx.db.workspace()
+        val candidate = fx.candidate(ws, fx.db.inbox(ws))
+        val result =
+            fx
+                .admission(policy(workspace = 1000, global = F))
+                .admit(fx.request(F, listOf(candidate)).copy(envelopePositions = listOf(1)))
+        result.shape() shouldBe listOf("SERVICE_CAPACITY")
+        fx.reservationCount() shouldBe 0
+        fx.reservedBytes() shouldBe 0
+    }
+
     companion object {
         @JvmStatic
         fun boundaries(): Stream<Arguments> =

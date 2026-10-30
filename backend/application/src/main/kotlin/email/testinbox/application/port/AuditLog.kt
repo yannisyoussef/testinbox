@@ -2,6 +2,7 @@ package email.testinbox.application.port
 
 import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.identity.HumanAccountId
 import email.testinbox.domain.tenant.ApiScope
 import java.time.Instant
 
@@ -26,6 +27,8 @@ sealed interface AuditEvent {
     val workspaceId: WorkspaceId
 
     /** The credential that performed the action, when one did. */
+    val actorHumanAccountId: HumanAccountId? get() = null
+
     val actorApiKeyId: ApiKeyId?
 
     data class ApiKeyCreated(
@@ -37,6 +40,7 @@ sealed interface AuditEvent {
         val name: String?,
         val scopes: Set<ApiScope>,
         val expiresAt: Instant?,
+        override val actorHumanAccountId: HumanAccountId? = null,
     ) : AuditEvent
 
     data class ApiKeyRevoked(
@@ -46,6 +50,7 @@ sealed interface AuditEvent {
         val apiKeyId: ApiKeyId,
         /** True when the key was already revoked — a retry rather than a new revocation. */
         val alreadyRevoked: Boolean,
+        override val actorHumanAccountId: HumanAccountId? = null,
     ) : AuditEvent
 
     /**

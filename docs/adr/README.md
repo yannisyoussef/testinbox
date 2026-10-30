@@ -21,7 +21,7 @@
 | [0017](0017-maven-npm-distribution.md) | Maven/npm distribution | Proposed |
 | [0018](0018-framework-integration-strategy.md) | Framework integration strategy | Proposed |
 | [0019](0019-inbound-deduplication-semantics.md) | Inbound deduplication semantics | Accepted (amended by 0026) |
-| [0020](0020-wait-reliability-and-timeout-semantics.md) | Wait reliability and timeout semantics | Accepted (§3 amended by 0035) |
+| [0020](0020-wait-reliability-and-timeout-semantics.md) | Wait reliability and timeout semantics | Accepted (§1 clarified and amended 2026-10-20; §3 amended by 0035) |
 | [0021](0021-exact-address-reservation.md) | Inbox addressing — generated and exact modes | Accepted (amended by 0033) |
 | [0022](0022-openapi-contract-first.md) | Contract-first OpenAPI | Accepted |
 | [0023](0023-sdk-runtime-baselines.md) | Public SDK runtime baselines | Accepted |
@@ -37,6 +37,8 @@
 | [0033](0033-idempotent-mutations.md) | Idempotent mutations | Accepted (deployment-requirement gap closed by 0034) |
 | [0034](0034-production-platform-and-promotion.md) | Production platform, promotion contract and data lifecycle | Accepted |
 | [0035](0035-physical-storage-bound-at-ingest.md) | Physical storage bound at ingest | Accepted |
+| [0036](0036-human-identity-and-beta-admission.md) | Human identity, sessions and bounded beta admission | Accepted for implementation (2026-10-29, TI-DELIVERY-001; activation separately gated) |
+| [0037](0037-bounded-cohort-storage-and-disclosure.md) | Bounded cohort storage and capacity disclosure | Accepted for implementation |
 
 `Proposed` ADRs require a human decision (see `VISION.md` §Human Decisions
 Required Before Implementation) before they can move to `Accepted`.

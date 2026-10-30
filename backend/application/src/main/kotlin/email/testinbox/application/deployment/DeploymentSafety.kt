@@ -6,6 +6,7 @@ import email.testinbox.application.storage.NodeRole
 import email.testinbox.application.storage.QualificationMatch
 import email.testinbox.application.storage.QualificationRecordSource
 import email.testinbox.application.storage.StorageDeclarations
+import email.testinbox.application.storage.StorageProtocol
 import email.testinbox.domain.storage.FilesystemContainment
 import email.testinbox.domain.storage.FootprintModel
 import email.testinbox.domain.storage.InboxShare
@@ -77,6 +78,14 @@ data class DeploymentSettings(
      * deployment must carry. OFF with nothing declared is Phase 2 as it ships.
      */
     val storage: StorageDeclarations = StorageDeclarations.OFF,
+    /**
+     * The workspace event stream's visibility horizon (ADR-020 clarification
+     * of 2026-10-20), where the deployable serves one; null for the gateway.
+     * Must cover ingestion's receipt-to-commit latency, or a message that
+     * commits late is skipped by every stream and the contract's "never
+     * missed" is false.
+     */
+    val eventsVisibilityLag: Duration? = null,
 )
 
 /**
@@ -160,6 +169,9 @@ object DeploymentSafety {
      */
     val PROXY_TIMEOUT_MARGIN: Duration = Duration.ofSeconds(30)
 
+    /** The visibility horizon `GET /v1/workspace/events` promises in the contract; the deployment must match it. */
+    val CONTRACT_VISIBILITY_HORIZON: Duration = Duration.ofSeconds(90)
+
     /**
      * Split into one function per concern rather than one long sequence: the
      * checks are independent, and a single method accumulating all of them is
@@ -175,6 +187,7 @@ object DeploymentSafety {
             addAll(checkBootstrapKey(settings))
             addAll(checkProxyTimeout(settings))
             addAll(checkEdgeCeiling(settings))
+            addAll(checkVisibilityHorizon(settings))
             addAll(checkLimits(settings))
             addAll(checkProduction(settings))
             addAll(StorageEnforcementSafety.check(settings))
@@ -317,6 +330,41 @@ object DeploymentSafety {
                     "(need at least ${required.toSeconds()}s)",
             ),
         )
+    }
+
+    /**
+     * The horizon's floor is the storage protocol's own bound on one upload:
+     * `T_PUT` for the put plus `EPSILON_MAX` of clock tolerance. Below it the
+     * stream would skip a message whose raw upload merely took as long as the
+     * protocol allows.
+     */
+    private fun checkVisibilityHorizon(settings: DeploymentSettings): List<DeploymentViolation> {
+        val horizon = settings.eventsVisibilityLag ?: return emptyList()
+        val floor = StorageProtocol.T_PUT.plus(StorageProtocol.EPSILON_MAX)
+        if (horizon < floor) {
+            return listOf(
+                DeploymentViolation(
+                    "testinbox.events.visibility-lag",
+                    "is ${horizon.toSeconds()}s but the storage protocol allows one upload ${StorageProtocol.T_PUT.toSeconds()}s " +
+                        "plus ${StorageProtocol.EPSILON_MAX.toSeconds()}s of clock tolerance; a stream would skip a message that " +
+                        "committed within the protocol's own bound. Needs at least ${floor.toSeconds()}s",
+                ),
+            )
+        }
+        // The contract states the horizon, and clients prune their deduplication
+        // on it: a deployment that silently widened it would make a late
+        // delivery droppable by a contract-following client. Changing it is a
+        // contract change, made here and in openapi.yaml together.
+        if (horizon != CONTRACT_VISIBILITY_HORIZON) {
+            return listOf(
+                DeploymentViolation(
+                    "testinbox.events.visibility-lag",
+                    "is ${horizon.toSeconds()}s but the API contract promises ${CONTRACT_VISIBILITY_HORIZON.toSeconds()}s " +
+                        "(streamWorkspaceEvents); the two change together or clients deduplicate on a false bound",
+                ),
+            )
+        }
+        return emptyList()
     }
 
     /**

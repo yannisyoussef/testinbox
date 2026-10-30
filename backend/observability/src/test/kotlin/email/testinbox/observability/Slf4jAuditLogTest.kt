@@ -117,4 +117,46 @@ class Slf4jAuditLogTest {
             }
         }
     }
+
+    @Test
+    fun `human provenance is distinct from a machine key in the audit record`() {
+        val human =
+            email.testinbox.domain.identity
+                .HumanAccountId(UUID.randomUUID())
+        Slf4jAuditLog().record(
+            AuditEvent.ApiKeyCreated(
+                at,
+                workspaceId,
+                null,
+                keyId,
+                "abcdefghijklmnop",
+                "SDK",
+                setOf(ApiScope.MESSAGES_READ),
+                null,
+                actorHumanAccountId = human,
+            ),
+        )
+        val line = messages().single()
+        line shouldContain "actorApiKeyId=-"
+        line shouldContain "actorHumanAccountId=${human.value}"
+    }
+
+    @Test
+    fun `untrusted key labels cannot introduce audit lines or unquoted log fields`() {
+        Slf4jAuditLog().record(
+            AuditEvent.ApiKeyCreated(
+                at,
+                workspaceId,
+                actorId,
+                keyId,
+                "abcdefghijklmnop",
+                "SDK\nevent=api_key.revoked apiKeyId=forged",
+                emptySet(),
+                null,
+            ),
+        )
+        val line = messages().single()
+        line.contains('\n') shouldBe false
+        line shouldContain "name=\"SDK\\nevent=api_key.revoked apiKeyId=forged\""
+    }
 }

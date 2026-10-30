@@ -99,15 +99,27 @@ class Idempotency(
                 tx.required {
                     when (
                         val outcome =
-                            records.claim(
-                                scope = resolvedScope,
-                                keyHash = keyHash,
-                                fingerprint = print,
-                                claimedByApiKeyId = request.actorApiKeyId,
-                                now = now,
-                                expiresAt = now.plus(retention),
-                                waitFor = claimWait,
-                            )
+                            if (request.actorHumanAccountId != null) {
+                                records.claimForHuman(
+                                    resolvedScope,
+                                    keyHash,
+                                    print,
+                                    request.actorHumanAccountId,
+                                    now,
+                                    now.plus(retention),
+                                    claimWait,
+                                )
+                            } else {
+                                records.claim(
+                                    scope = resolvedScope,
+                                    keyHash = keyHash,
+                                    fingerprint = print,
+                                    claimedByApiKeyId = request.actorApiKeyId,
+                                    now = now,
+                                    expiresAt = now.plus(retention),
+                                    waitFor = claimWait,
+                                )
+                            }
                     ) {
                         ClaimOutcome.Claimed -> {
                             val executed = mutation()
@@ -122,7 +134,12 @@ class Idempotency(
                         }
 
                         is ClaimOutcome.Replay -> {
-                            if (replayBoundToActor && outcome.claimedByApiKeyId != request.actorApiKeyId) {
+                            if (replayBoundToActor &&
+                                (
+                                    outcome.claimedByApiKeyId != request.actorApiKeyId ||
+                                        outcome.claimedByHumanAccountId != request.actorHumanAccountId
+                                )
+                            ) {
                                 // Reported as a reuse rather than a replay, and
                                 // counted as one: the key is bound to a request
                                 // this caller did not make, and the correct

@@ -25,6 +25,8 @@ import java.util.UUID
 class JdbcStorageAmbiguity(
     private val jdbc: JdbcClient,
     private val transactions: TransactionTemplate,
+    private val cohortMode: email.testinbox.domain.storage.StorageEnforcement = email.testinbox.domain.storage.StorageEnforcement.OFF,
+    private val cohortBinding: String? = null,
 ) : StorageAmbiguity,
     StorageLatch {
     /**
@@ -181,11 +183,14 @@ class JdbcStorageAmbiguity(
     ) {
         jdbc
             .sql(
-                "INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown, containment) " +
-                    "VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT)",
+                "INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown, containment, " +
+                    "cohort_capability, cohort_mode, cohort_binding) " +
+                    "VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT, 'cohort-storage-v1', :cohortMode, :cohortBinding)",
             ).param("node", nodeId)
             .param("generation", generation)
             .param("capability", capability)
+            .param("cohortMode", cohortMode.name)
+            .param("cohortBinding", cohortBinding)
             .update()
     }
 
@@ -200,14 +205,17 @@ class JdbcStorageAmbiguity(
         jdbc
             .sql(
                 """
-                INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown, containment)
-                VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT)
-                ON CONFLICT (node_id, generation) DO UPDATE SET heartbeat_at = now()
+                INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown, containment, cohort_capability, cohort_mode, cohort_binding)
+                VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT, 'cohort-storage-v1', :cohortMode, :cohortBinding)
+                ON CONFLICT (node_id, generation) DO UPDATE SET heartbeat_at = now(), cohort_capability=EXCLUDED.cohort_capability,
+                    cohort_mode=EXCLUDED.cohort_mode,cohort_binding=EXCLUDED.cohort_binding
                 RETURNING xmax <> 0
                 """.trimIndent(),
             ).param("node", nodeId)
             .param("generation", generation)
             .param("capability", capability)
+            .param("cohortMode", cohortMode.name)
+            .param("cohortBinding", cohortBinding)
             .query(Boolean::class.java)
             .single()
 

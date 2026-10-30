@@ -56,6 +56,11 @@ logging:
 testinbox:
   mail-domain: ${TESTINBOX_MAIL_DOMAIN}
   wait-window-cap: ${TESTINBOX_WAIT_WINDOW_CAP:60s}
+  events:
+    # The event stream's visibility horizon (ADR-020 clarification of
+    # 2026-10-20). Promised by the API contract, so DeploymentSafety refuses
+    # any other value: not an environment knob, declared for visibility.
+    visibility-lag: 90s
   storage:
     endpoint: ${TESTINBOX_S3_ENDPOINT}
     region: ${TESTINBOX_S3_REGION:us-east-1}

@@ -3,6 +3,7 @@ package email.testinbox.domain.tenant
 import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.identity.HumanAccountId
 import java.time.Instant
 
 data class Workspace(
@@ -72,10 +73,10 @@ enum class ApiKeyKind {
 @Suppress("LongParameterList")
 data class ApiKey(
     val id: ApiKeyId,
-    val workspaceId: WorkspaceId,
-    val projectId: ProjectId,
+    override val workspaceId: WorkspaceId,
+    override val projectId: ProjectId,
     val keyHash: String,
-    val scopes: Set<ApiScope>,
+    override val scopes: Set<ApiScope>,
     val createdAt: Instant,
     val revokedAt: Instant?,
     val kind: ApiKeyKind = ApiKeyKind.MANAGED,
@@ -87,7 +88,12 @@ data class ApiKey(
     val lastUsedAt: Instant? = null,
     /** The credential that minted this one; absent for a bootstrap key or a workspace's first. */
     val createdByApiKeyId: ApiKeyId? = null,
-) {
+    val createdByHumanAccountId: HumanAccountId? = null,
+) : WorkspaceActor {
+    init {
+        require(createdByApiKeyId == null || createdByHumanAccountId == null)
+    }
+
     fun isRevoked(): Boolean = revokedAt != null
 
     fun isExpired(at: Instant): Boolean = expiresAt?.isBefore(at) == true
@@ -100,7 +106,7 @@ data class ApiKey(
      */
     fun isUsableAt(at: Instant): Boolean = !isRevoked() && !isExpired(at)
 
-    fun hasScope(scope: ApiScope): Boolean = scope in scopes
+    override fun hasScope(scope: ApiScope): Boolean = scope in scopes
 
     /**
      * The verifier is not secret-derived-but-harmless: it is the one field

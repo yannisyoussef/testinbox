@@ -493,3 +493,20 @@ describe("source compatibility", () => {
     expect(message.id).toBeTruthy();
   });
 });
+
+describe("workspace physical-space usage", () => {
+  const footprint = { limitBytes: 268435456, usedBytes: 200000000, pendingCleanupBytes: 50000000,
+    availableBytes: 68435456, overLimit: false, enforced: true };
+  it("keeps only own-workspace footprint and cleanup fields", async () => {
+    fetchMock.mockResolvedValueOnce(json(200, {...usage, footprint: {...footprint, globalLimitBytes: 1}}));
+    const result = await client().getWorkspaceStorage();
+    expect(result.footprint).toEqual(footprint);
+    expect(Object.isFrozen(result.footprint)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("globalLimitBytes");
+  });
+  it.each([null, {}, {...footprint, pendingCleanupBytes: -1}, {...footprint, enforced: "true"},
+    {...footprint, usedBytes: Number.MAX_SAFE_INTEGER + 1}])("refuses malformed physical-space accounting", async (bad) => {
+    fetchMock.mockResolvedValueOnce(json(200, {...usage, footprint: bad}));
+    await expect(client().getWorkspaceStorage()).rejects.toBeInstanceOf(TestInboxProtocolError);
+  });
+});

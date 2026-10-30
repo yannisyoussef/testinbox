@@ -14,14 +14,53 @@ import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 import java.util.UUID
 
 @RestController
-@RequestMapping("/v1/messages")
+@RequestMapping("/v1/messages", "/account/product/messages")
 class MessageController(
     private val messageQueries: MessageQueries,
 ) {
+    /**
+     * Messages across every serving inbox of the workspace. Newest first by
+     * default (a feed); `order=asc` walks forward from a cursor, which is how
+     * a client catches up after a gap.
+     */
+    @GetMapping
+    fun listWorkspace(
+        @RequestParam(required = false) cursor: String?,
+        @RequestParam(required = false, defaultValue = "50") limit: Int,
+        @RequestParam(required = false, defaultValue = "desc") order: String,
+        request: HttpServletRequest,
+    ): ResponseEntity<*> {
+        val key = AuthAttributes.principal(request)
+        key.requireScope(ApiScope.MESSAGES_READ)
+        val descending =
+            when (order.lowercase()) {
+                "desc" -> true
+
+                "asc" -> false
+
+                else -> return Problems.respond(
+                    Problems.of(HttpStatus.BAD_REQUEST, "invalid-request", "Invalid request", "order must be asc or desc", request),
+                )
+            }
+        val boundedLimit = limit.coerceIn(1, 200)
+        val position =
+            cursor?.let {
+                Cursors.decode(it)
+                    ?: return Problems.respond(
+                        Problems.of(HttpStatus.BAD_REQUEST, "invalid-request", "Invalid request", "Malformed cursor", request),
+                    )
+            }
+        val page = messageQueries.listWorkspacePage(key.workspaceId, position, boundedLimit, descending)
+        val nextCursor =
+            page.lastOrNull()?.takeIf { page.size == boundedLimit }?.let { Cursors.encode(it.receivedAt, it.id.value) }
+        return ResponseEntity.ok(MessagePageDto(page.map(MessageDto::from), nextCursor))
+    }
+
     @GetMapping("/{id}")
     fun get(
         @PathVariable id: UUID,

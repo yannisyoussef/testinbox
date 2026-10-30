@@ -31,6 +31,7 @@ class DeploymentSafetyTest {
             activeProfiles = setOf("staging"),
             publicSurface = true,
             createBucket = true,
+            eventsVisibilityLag = Duration.ofSeconds(90),
         )
 
     /** A correctly configured production API node — every ADR-034 invariant satisfied at once. */
@@ -149,6 +150,26 @@ class DeploymentSafetyTest {
         settingsOf(DeploymentSafety.validate(safe.copy(proxyReadTimeout = Duration.ofSeconds(89)))) shouldBe
             listOf("testinbox.proxy-read-timeout")
         DeploymentSafety.validate(safe.copy(proxyReadTimeout = Duration.ofSeconds(90))).shouldBeEmpty()
+    }
+
+    @Test
+    fun `an event-stream horizon below the storage protocol's upload bound is refused`() {
+        // T_PUT (30 s) + EPSILON_MAX (30 s): one upload may legitimately take this long.
+        settingsOf(DeploymentSafety.validate(safe.copy(eventsVisibilityLag = Duration.ofSeconds(59)))) shouldBe
+            listOf("testinbox.events.visibility-lag")
+        // The gateway streams nothing and declares no horizon.
+        DeploymentSafety.validate(safe.copy(eventsVisibilityLag = null)).shouldBeEmpty()
+    }
+
+    @Test
+    fun `an event-stream horizon that differs from the contract's promise is refused either way`() {
+        // Clients prune their deduplication on the contract's figure; a wider
+        // or narrower deployment makes that pruning wrong.
+        for (seconds in listOf(60L, 89L, 91L, 120L)) {
+            settingsOf(DeploymentSafety.validate(safe.copy(eventsVisibilityLag = Duration.ofSeconds(seconds)))) shouldBe
+                listOf("testinbox.events.visibility-lag")
+        }
+        DeploymentSafety.validate(safe.copy(eventsVisibilityLag = DeploymentSafety.CONTRACT_VISIBILITY_HORIZON)).shouldBeEmpty()
     }
 
     @Test

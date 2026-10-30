@@ -58,13 +58,19 @@ class JdbcStorageVisibility(
                     WITH ib AS (SELECT DISTINCT unnest(ARRAY[:inboxes]::uuid[]) AS id),
                          -- Each sum is aggregated once over the involved rows: the
                          -- cost must not grow with the inbox count times the backlog.
-                         ws_delta AS (SELECT sum(bytes) AS bytes FROM storage_delta WHERE workspace_id = :workspace),
-                         ws_reserved AS (SELECT sum(bytes) AS bytes FROM storage_reservation WHERE workspace_id = :workspace),
+                         ws_delta AS (SELECT sum(bytes) AS bytes,sum(objects) AS objects FROM storage_delta WHERE workspace_id = :workspace),
+                         ws_reserved AS (SELECT sum(bytes) AS bytes,sum(cardinality(object_keys)) AS objects FROM storage_reservation WHERE workspace_id = :workspace),
                          ib_delta AS (SELECT inbox_id AS id, sum(bytes) AS bytes FROM storage_delta
                                        WHERE workspace_id = :workspace AND inbox_id IN (SELECT id FROM ib) GROUP BY inbox_id),
                          ib_reserved AS (SELECT inbox_id AS id, sum(bytes) AS bytes FROM storage_reservation
                                           WHERE workspace_id = :workspace AND inbox_id IN (SELECT id FROM ib) GROUP BY inbox_id)
                     SELECT 'WORKSPACE' AS scope, NULL::uuid AS id,
+                           coalesce(a.base_objects,0)+coalesce(d.objects,0) AS committed_objects,
+                           coalesce(r.objects,0) AS reserved_objects,
+                           coalesce(p.payload_limit_bytes,l.payload_limit_bytes) AS payload_limit,
+                           coalesce(p.footprint_limit_bytes,l.footprint_limit_bytes) AS footprint_limit,
+                           (SELECT coalesce(sum(bytes),0) FROM workspace_deletion_charge WHERE workspace_id=:workspace) AS cleanup_bytes,
+                           (SELECT coalesce(sum(objects),0) FROM workspace_deletion_charge WHERE workspace_id=:workspace) AS cleanup_objects,
                            coalesce(a.base_bytes, 0) + coalesce(d.bytes, 0) AS committed,
                            coalesce(r.bytes, 0) AS reserved,
                            0::bigint AS refusal_count, NULL::timestamptz AS last_refusal_at, NULL::text AS last_refusal_reason
@@ -72,8 +78,10 @@ class JdbcStorageVisibility(
                       LEFT JOIN workspace_storage_account a ON a.workspace_id = :workspace
                       CROSS JOIN ws_delta d
                       CROSS JOIN ws_reserved r
+                      LEFT JOIN participant_workspace p ON p.workspace_id=:workspace
+                      LEFT JOIN storage_legacy_share l ON l.workspace_id=:workspace
                     UNION ALL
-                    SELECT 'INBOX', ib.id,
+                    SELECT 'INBOX', ib.id,0::bigint,0::bigint,NULL::bigint,NULL::bigint,0::bigint,0::bigint,
                            coalesce(s.base_bytes, 0) + coalesce(d.bytes, 0),
                            coalesce(r.bytes, 0),
                            coalesce(s.refusal_count, 0), s.last_refusal_at, s.last_refusal_reason
@@ -91,7 +99,7 @@ class JdbcStorageVisibility(
             rows
                 .filter { it.scope == "INBOX" }
                 .associate { InboxId(checkNotNull(it.id)) to InboxStorageFigures(it.usage, it.refusals()) }
-        return WorkspaceStorageFigures(workspace, inboxes)
+        return WorkspaceStorageFigures(workspace, inboxes, rows.single { it.scope == "WORKSPACE" }.budget)
     }
 
     /** The refusal record alone, for a wait evaluation that has no need of the byte figures. */
@@ -116,7 +124,24 @@ class JdbcStorageVisibility(
     ) {
         val scope: String = rs.getString("scope")
         val id: UUID? = rs.getObject("id", UUID::class.java)
-        val usage = StorageUsage(exactLong(rs.getBigDecimal("committed")), exactLong(rs.getBigDecimal("reserved")))
+        val usage =
+            StorageUsage(
+                exactLong(rs.getBigDecimal("committed")),
+                exactLong(rs.getBigDecimal("reserved")),
+                exactLong(rs.getBigDecimal("committed_objects")),
+                exactLong(rs.getBigDecimal("reserved_objects")),
+            )
+        val budget =
+            rs.getBigDecimal("payload_limit")?.let { payload ->
+                email.testinbox.application.storage.WorkspaceStorageBudget(
+                    exactLong(payload),
+                    exactLong(rs.getBigDecimal("footprint_limit")),
+                    email.testinbox.domain.storage.FootprintAdmission.Load(
+                        exactLong(rs.getBigDecimal("cleanup_bytes")),
+                        exactLong(rs.getBigDecimal("cleanup_objects")),
+                    ),
+                )
+            }
         private val refusalCount = rs.getLong("refusal_count")
         private val lastAt = Timestamps.fromDb(rs, "last_refusal_at")
         private val lastReason: String? = rs.getString("last_refusal_reason")

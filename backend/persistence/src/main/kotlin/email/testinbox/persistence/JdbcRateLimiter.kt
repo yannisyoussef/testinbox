@@ -66,6 +66,36 @@ class JdbcRateLimiter(
         return ownTransaction.execute { consume(workspaceId, category, inboxId, policy) }!!
     }
 
+    /**
+     * Read-only: no row is created, locked or updated. A bucket never seen is
+     * full, so the policy's capacity is the honest answer for it.
+     */
+    override fun peek(
+        workspaceId: WorkspaceId,
+        category: RateCategory,
+    ): Long? {
+        val policy = policies(category, false)
+        val snapshot =
+            jdbc
+                .sql(
+                    """
+                    SELECT tokens, updated_at, now() AS server_now
+                      FROM rate_bucket
+                     WHERE workspace_id = :workspaceId AND category = :category AND inbox_id IS NULL
+                    """.trimIndent(),
+                ).param("workspaceId", workspaceId.value)
+                .param("category", category.name)
+                .query { rs, _ ->
+                    Snapshot(
+                        tokens = rs.getDouble("tokens"),
+                        updatedAt = Timestamps.fromDb(rs, "updated_at")!!,
+                        serverNow = Timestamps.fromDb(rs, "server_now")!!,
+                    )
+                }.optional()
+                .orElse(null) ?: return policy.capacity
+        return TokenBucket.available(TokenBucket.State(snapshot.tokens, snapshot.updatedAt), policy, snapshot.serverNow)
+    }
+
     private fun consume(
         workspaceId: WorkspaceId,
         category: RateCategory,

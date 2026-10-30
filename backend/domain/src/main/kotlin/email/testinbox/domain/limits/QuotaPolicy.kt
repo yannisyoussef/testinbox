@@ -15,6 +15,7 @@ enum class QuotaDimension {
      * both objects physically exist.
      */
     STORED_BYTES,
+    STORED_FOOTPRINT,
     CONCURRENT_WAITS,
 }
 
@@ -39,6 +40,7 @@ data class QuotaPolicy(
             QuotaDimension.ACTIVE_INBOXES -> maxActiveInboxes
             QuotaDimension.STORED_BYTES -> maxStoredBytes
             QuotaDimension.CONCURRENT_WAITS -> maxConcurrentWaits
+            QuotaDimension.STORED_FOOTPRINT -> error("footprint limits require a workspace storage share")
         }
 
     /**

@@ -132,7 +132,7 @@ class TestInboxStorageLimitExceededException(
     /** The inbox's refusal count in the deciding snapshot — what the cursor advanced to. */
     val storageRefusalCount: Long,
     val lastStorageRefusalAt: java.time.Instant,
-    /** `STORED_BYTES` for a tenant scope; null for `SERVICE_CAPACITY`. */
+    /** `STORED_BYTES` or `STORED_FOOTPRINT` for a tenant scope; null for `SERVICE_CAPACITY`. */
     val quota: String? = null,
     val limit: Long? = null,
     val current: Long? = null,

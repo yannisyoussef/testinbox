@@ -103,7 +103,9 @@ class IngestionWiring(
     private val blobStoreMetrics: BlobStoreMetrics,
 ) {
     @Bean
-    fun clock(): Clock = Clock.systemUTC()
+    fun clock(): Clock =
+        email.testinbox.application.Clocks
+            .utcMicros()
 
     @Bean
     fun testInboxConfig(properties: IngestionProperties): TestInboxConfig = properties.toConfig()
@@ -197,7 +199,17 @@ class IngestionWiring(
     fun storageAmbiguity(
         jdbc: JdbcClient,
         transactionManager: PlatformTransactionManager,
-    ): JdbcStorageAmbiguity = JdbcStorageAmbiguity(jdbc, template(transactionManager))
+        declarations: email.testinbox.application.storage.StorageDeclarations,
+    ): JdbcStorageAmbiguity =
+        JdbcStorageAmbiguity(
+            jdbc,
+            template(transactionManager),
+            declarations.enforcement,
+            email.testinbox.application.storage.EffectiveStoragePolicy
+                .footprint(declarations)
+                ?.cohort
+                ?.binding,
+        )
 
     @Bean
     fun storageNode(properties: IngestionProperties): StorageNode = StorageNode(properties.storage.nodeId, UUID.randomUUID())

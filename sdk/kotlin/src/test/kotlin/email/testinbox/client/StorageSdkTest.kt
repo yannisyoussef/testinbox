@@ -44,7 +44,7 @@ class StorageSdkTest {
 
     @BeforeEach
     fun setUp() {
-        server = HttpServer.create(InetSocketAddress(0), 0)
+        server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.executor = Executors.newCachedThreadPool()
         server.createContext("/") { exchange: HttpExchange ->
             val body = exchange.requestBody.readAllBytes().toString(Charsets.UTF_8)
@@ -60,7 +60,7 @@ class StorageSdkTest {
             exchange.close()
         }
         server.start()
-        client = TestInboxClient("tk_unit", "http://localhost:${server.address.port}", Duration.ofSeconds(60))
+        client = TestInboxClient("tk_unit", "http://127.0.0.1:${server.address.port}", Duration.ofSeconds(60))
     }
 
     @AfterEach
@@ -257,7 +257,7 @@ class StorageSdkTest {
     @Test
     fun `observeStorageRefusals = false sends no boundary on any window and never surfaces a refusal`() {
         // A 1 s server window and a 2.1 s budget: at least two chained windows, each echoing a higher count.
-        val short = TestInboxClient("tk_unit", "http://localhost:${server.address.port}", Duration.ofSeconds(1))
+        val short = TestInboxClient("tk_unit", "http://127.0.0.1:${server.address.port}", Duration.ofSeconds(1))
         script(200, inboxJson(count = 3, lastAt = "2026-10-07T11:59:00Z", reason = "INBOX_LIMIT"))
         val inbox = short.getInboxBlocking("x")
         // One spare answer, so an unscripted 500 can never stand in for a window.
@@ -286,7 +286,7 @@ class StorageSdkTest {
 
     @Test
     fun `TIMEOUT echoes above the cursor are not adopted across chained windows`() {
-        val short = TestInboxClient("tk_unit", "http://localhost:${server.address.port}", Duration.ofSeconds(1))
+        val short = TestInboxClient("tk_unit", "http://127.0.0.1:${server.address.port}", Duration.ofSeconds(1))
         script(200, inboxJson(count = 4, lastAt = "2026-10-07T11:59:00Z", reason = "INBOX_LIMIT"))
         val inbox = short.getInboxBlocking("x")
         repeat(4) { script(200, timeout(6), delayMillis = 1_000) }
@@ -500,4 +500,19 @@ class StorageSdkTest {
         assertNotNull(TestInboxClient::class.java.getMethod("getWorkspaceStorageBlocking"))
         assertNotNull(TestInboxClient::class.java.getMethod("getInboxBlocking", String::class.java))
     }
+    @Test
+    fun `workspace physical charge and cleanup survive mapping without unknown service fields`() {
+        script(200, usage.dropLast(1) + ""","footprint":{"limitBytes":268435456,"usedBytes":200000000,"pendingCleanupBytes":50000000,"availableBytes":68435456,"overLimit":false,"enforced":true,"globalLimitBytes":1}}""")
+        val actual = client.getWorkspaceStorageBlocking()
+        assertEquals(WorkspaceFootprintUsage(268435456,200000000,50000000,68435456,false,true),actual.footprint)
+        assertEquals(402653184,actual.storedBytes)
+        assertFalse(actual.toString().contains("globalLimit"))
+    }
+
+    @Test
+    fun `partial footprint is a protocol error rather than an invented cleanup zero`() {
+        script(200, usage.dropLast(1) + ""","footprint":{"limitBytes":268435456}}""")
+        assertThrows(TestInboxProtocolException::class.java) { client.getWorkspaceStorageBlocking() }
+    }
+
 }

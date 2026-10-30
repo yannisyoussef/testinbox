@@ -274,7 +274,7 @@ class StorageProtocolPersistenceTest : PersistenceIntegrationTest() {
                     .getNotifications(5_000)
                     ?.toList()
                     .orEmpty()
-            notifications.map { it.parameter } shouldBe listOf(inbox.toString(), inbox.toString())
+            notifications.map { it.parameter.substringAfter('/') } shouldBe listOf(inbox.toString(), inbox.toString())
         } finally {
             listener.close()
         }

@@ -174,11 +174,17 @@ enum class StorageRefusalReason(
 ) {
     INBOX_LIMIT(StorageScope.INBOX),
     WORKSPACE_LIMIT(StorageScope.WORKSPACE),
+    WORKSPACE_FOOTPRINT_LIMIT(StorageScope.WORKSPACE),
     SERVICE_CAPACITY(StorageScope.GLOBAL),
     ;
 
     companion object {
-        fun of(scope: StorageScope): StorageRefusalReason = entries.single { it.scope == scope }
+        fun of(scope: StorageScope): StorageRefusalReason =
+            when (scope) {
+                StorageScope.INBOX -> INBOX_LIMIT
+                StorageScope.WORKSPACE -> WORKSPACE_LIMIT
+                StorageScope.GLOBAL -> SERVICE_CAPACITY
+            }
     }
 }
 

@@ -83,9 +83,14 @@ abstract class ApiIntegrationTestBase {
     companion object {
         const val BOOTSTRAP_KEY = "tk_test_bootstrap_key"
 
+        // Every distinct property set in this suite is a cached Spring context,
+        // and each holds a pool of ten plus the LISTEN session; Postgres's
+        // default ceiling of 100 is reached at nine of them, and the next
+        // context fails with "too many clients" for whichever class is unlucky.
         @JvmStatic
         @ServiceConnection
-        val postgres: PostgreSQLContainer<*> = PostgreSQLContainer("postgres:16-alpine").also { it.start() }
+        val postgres: PostgreSQLContainer<*> =
+            PostgreSQLContainer("postgres:16-alpine").withCommand("postgres", "-c", "max_connections=250").also { it.start() }
 
         @JvmStatic
         val minio: MinIOContainer =

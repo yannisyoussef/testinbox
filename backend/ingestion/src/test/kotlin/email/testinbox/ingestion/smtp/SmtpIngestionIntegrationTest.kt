@@ -185,9 +185,16 @@ class SmtpIngestionIntegrationTest {
 
     @Autowired lateinit var inboundMetrics: RecordingInboundMetrics
 
+    @Autowired lateinit var clock: java.time.Clock
+
     @AfterEach
     fun clearFaultInjection() {
         faults.failForRecipient = null
+    }
+
+    @Test
+    fun `the wired application clock ticks in whole microseconds, as PostgreSQL stores time`() {
+        repeat(10_000) { (clock.instant().nano % 1_000) shouldBe 0 }
     }
 
     private fun corpus(name: String): ByteArray = checkNotNull(javaClass.getResourceAsStream("/mime-corpus/$name")).readAllBytes()

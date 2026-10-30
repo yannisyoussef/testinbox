@@ -41,7 +41,14 @@ internal data class CreateInboxRequestDto(
  * protocol error, rather than defaulted to zero by the decoder.
  */
 @Serializable
+internal data class FootprintUsageDto(
+    val limitBytes: Long? = null, val usedBytes: Long? = null, val pendingCleanupBytes: Long? = null,
+    val availableBytes: Long? = null, val overLimit: Boolean? = null, val enforced: Boolean? = null,
+)
+
+@kotlinx.serialization.Serializable
 internal data class StorageUsageDto(
+    val footprint: FootprintUsageDto? = null,
     val limitBytes: Long? = null,
     val storedBytes: Long? = null,
     val reservedBytes: Long? = null,

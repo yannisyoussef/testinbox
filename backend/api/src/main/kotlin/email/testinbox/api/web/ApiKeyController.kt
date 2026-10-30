@@ -29,7 +29,7 @@ import java.util.UUID
  * field a client could use to create a key somewhere else.
  */
 @RestController
-@RequestMapping("/v1/api-keys")
+@RequestMapping("/v1/api-keys", "/account/product/api-keys")
 class ApiKeyController(
     private val createApiKey: CreateApiKey,
     private val revokeApiKey: RevokeApiKey,
@@ -43,7 +43,7 @@ class ApiKeyController(
         val actor = AuthAttributes.principal(request)
         actor.requireScope(ApiScope.API_KEYS_MANAGE)
         val idempotency =
-            when (val header = IdempotencyHeader.read(request, actor.id)) {
+            when (val header = IdempotencyHeader.read(request, actor)) {
                 is IdempotencyHeader.Outcome.Invalid -> return badRequest(request, header.reason)
                 IdempotencyHeader.Outcome.Absent -> null
                 is IdempotencyHeader.Outcome.Present -> header.request
@@ -207,6 +207,10 @@ class ApiKeyController(
         return when (revokeApiKey.execute(actor, ApiKeyId(id))) {
             RevokeApiKeyOutcome.Revoked, RevokeApiKeyOutcome.AlreadyRevoked -> {
                 ResponseEntity.noContent().build<Void>()
+            }
+
+            RevokeApiKeyOutcome.NotPermitted -> {
+                Problems.respond(Problems.of(HttpStatus.FORBIDDEN, "missing-scope", "Missing scope", null, request))
             }
 
             RevokeApiKeyOutcome.NotFound -> {

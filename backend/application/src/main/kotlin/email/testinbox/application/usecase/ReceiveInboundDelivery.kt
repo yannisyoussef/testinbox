@@ -117,6 +117,7 @@ class ReceiveInboundDelivery(
         storage.unavailable()?.let { throw it }
         val now = clock.instant()
         val recipients = command.recipients.map { it.trim().lowercase() }.distinct()
+        require(recipients.size <= StorageAdmissionRequest.MAX_CANDIDATES) { "an event has at most 50 distinct envelope recipients" }
         // Transport-insensitive by ADR-019 §4 as amended: the gateway (and any
         // relay ahead of it) stamps a Received: field whose timestamp and queue
         // id would otherwise make two identical sends fingerprint differently.
@@ -134,7 +135,8 @@ class ReceiveInboundDelivery(
         var discarded = 0
         var rateLimited = 0
         val prepared = mutableListOf<Prepared>()
-        for (recipient in recipients) {
+        val envelopePositions = mutableListOf<Int>()
+        for ((position, recipient) in recipients.withIndex()) {
             val inbox = inboxes.findReceivableByAddress(recipient)
             if (inbox == null || !inbox.canReceiveAt(now)) {
                 logDiscard(recipient, command, "unknown_recipient")
@@ -174,6 +176,7 @@ class ReceiveInboundDelivery(
                 continue
             }
             prepared += prepare(inbox, recipient, parseResult)
+            envelopePositions += position
         }
         if (prepared.isEmpty()) return Result(emptyList(), discarded, 0, rateLimited)
 
@@ -183,7 +186,7 @@ class ReceiveInboundDelivery(
         val plans = prepared.map { it.plan(command.raw) }
         val byMessage = prepared.associateBy { it.messageId }
         val report =
-            storage.ingest(plans.first().bytes, plans) { admitted ->
+            storage.ingest(plans.first().bytes, plans, envelopePositions) { admitted ->
                 // Inside T2, after the reservation fence and the inbox locks: all
                 // of this event's rows and notifications commit together (ADR-026).
                 admitted.associate { plan ->

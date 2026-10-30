@@ -1,6 +1,7 @@
 # Storage public-boundary decisions (TI-STORAGE-006E) — OWNER DECISIONS REQUIRED
 
-**Status: two open owner decisions. Neither is implemented.** Each would
+**Status: decisions accepted for the bounded beta in ADR-037 (2026-10-29);
+implementation and activation evidence remain required.** Each would
 change product semantics, so each is prepared here as its own scoped
 decision rather than slipped into the containment PRs (owner review b, §5).
 Both are **mandatory before `ALL` carries any traffic beyond the synthetic
@@ -72,7 +73,7 @@ problem (B).
    taken before the event, plus a slack of `(maxRecipients − 1) ·
    F(P_copy_max, N_copy_max)`.
    - Order-independent.
-   - But the slack is large: 99 × F(15 MiB raw plus extracted parts, up to
+   - But the slack is large: 49 × F(15 MiB raw plus extracted parts, up to
      501 objects). That is ≥ 1.5 GiB of global headroom permanently reserved.
 
 **The cross-event channel is not closed by either option.** Closing it
@@ -83,9 +84,10 @@ which a global ceiling cannot be. The options are:
   headroom at the cliff. Decision B's per-workspace share makes holding it
   there impossible for a single workspace. This needs an explicit ADR-025
   amendment.
-- **(ii) Report `SERVICE_CAPACITY` only in aggregate.** Report it
-  delayed, or not per inbox, so a tenant cannot attribute a refusal to one
-  event.
+- **(ii) Report `SERVICE_CAPACITY` only in aggregate.** Delaying or removing
+  individual diagnostics obscures the reason but does not remove the channel:
+  a sender can still inspect whether its own copy was stored. This is not
+  accepted as a privacy fix.
 - **(iii) Rely on decision B.** If Σ shares ≤ *G_F*, no workspace can reach
   the cliff on its own, and the oracle needs several cooperating
   workspaces.
@@ -150,3 +152,11 @@ share.**
 2. Whether shares may be overcommitted. If yes, the edge per-source limit is
    mandatory and Ops-owned.
 3. The `SERVICE_CAPACITY` alerting and runbook thresholds (annex §13).
+
+## Accepted bounded-beta implementation
+
+ADR-037 accepts envelope option 1 and cross-event (iii) with (i): immediate
+own-workspace diagnostics remain, and residual recipient inference under
+globally constrained conditions is explicit. Reservation proof also needs
+worst-case transient envelope and finalization headroom, not merely Σ shares
+≤ G_F. Accepted decisions do not lift production ALL/TENANT_LIMITS refusals.
