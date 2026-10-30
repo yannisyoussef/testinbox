@@ -116,7 +116,9 @@ registration):
 10. After MD1/md1: revoke API `INSERT/UPDATE/DELETE` on
     `lifecycle_restore_clearance`, `UPDATE(state)` on `human_account`,
     `UPDATE/DELETE` on `beta_admission`; revoke `TEMPORARY` on the database
-    from the runtime roles.
+    from the runtime roles. *App side carried in `roles.reference.sql`
+    (`UPDATE (id)` only on `human_account`); the `TEMPORARY` revocation is
+    Ops-owned (`roles.sql.inc`).*
 
 Before opening registration:
 
