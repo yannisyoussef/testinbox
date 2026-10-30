@@ -302,12 +302,27 @@ class StorageVerifiedTrustTest : PersistenceIntegrationTest() {
     fun `the upgrade to V10 revokes trust marked before it, so a roll-forward fails closed until a verification`() {
         val db = LedgerTestDatabase.create(postgres, admin, target = "9")
         db.jdbc.sql("UPDATE storage_footprint_trust SET trusted_epoch = distrust_epoch WHERE id = 1").update() shouldBe 1
-        db.countsTrusted() shouldBe true
+        db.jdbc
+            .sql(
+                "SELECT trusted_epoch IS NOT DISTINCT FROM distrust_epoch FROM storage_footprint_trust WHERE id=1",
+            ).query(Boolean::class.java)
+            .single() shouldBe
+            true
 
         LedgerTestDatabase.flyway(db.dataSource, target = "10").migrate()
-        db.countsTrusted() shouldBe false
+        db.jdbc
+            .sql(
+                "SELECT trusted_epoch IS NOT DISTINCT FROM distrust_epoch FROM storage_footprint_trust WHERE id=1",
+            ).query(Boolean::class.java)
+            .single() shouldBe
+            false
         db.confirm() shouldBe true
-        db.countsTrusted() shouldBe true
+        db.jdbc
+            .sql(
+                "SELECT trusted_epoch IS NOT DISTINCT FROM distrust_epoch FROM storage_footprint_trust WHERE id=1",
+            ).query(Boolean::class.java)
+            .single() shouldBe
+            true
     }
 
     @Test

@@ -8,6 +8,7 @@ import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.idempotency.IdempotencyKey
+import email.testinbox.domain.identity.HumanAccountId
 import email.testinbox.domain.inbox.AddressMode
 import email.testinbox.domain.inbox.Inbox
 import email.testinbox.domain.inbox.InboxState
@@ -19,7 +20,12 @@ data class IdempotencyRequest(
     val key: IdempotencyKey,
     /** The credential presenting the request; binds key-creation replay (ADR-033 §4a). */
     val actorApiKeyId: ApiKeyId?,
-)
+    val actorHumanAccountId: HumanAccountId? = null,
+) {
+    init {
+        require(actorApiKeyId == null || actorHumanAccountId == null)
+    }
+}
 
 object IdempotencyKeys {
     /**

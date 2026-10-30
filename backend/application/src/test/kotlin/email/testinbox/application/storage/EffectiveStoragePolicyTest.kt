@@ -79,4 +79,42 @@ class EffectiveStoragePolicyTest {
         policy.globalLimitBytes shouldBe StorageCapacityPolicy.ADR_035_REFERENCE.globalLimitBytes
         policy.finalizeBudgetBytes shouldBe StorageCapacityPolicy.ADR_035_REFERENCE.finalizeBudgetBytes
     }
+
+    @Test
+    fun `cohort proof never reuses undeclared OFF defaults or missing allowances`() {
+        val unproven = email.testinbox.domain.storage.CohortStorageBudget.Result.Unproven
+        EffectiveStoragePolicy.cohortBudget(StorageDeclarations.OFF, emptyMap(), 0, 0) shouldBe unproven
+        val declared =
+            StorageDeclarations(
+                globalLimitBytes = 20L shl 30,
+                declaredMaxIngestionProcesses = 1,
+                filesystem =
+                    FilesystemDeclarations(
+                        blockSizeBytes = 4096,
+                        objectOverheadMaxBytes = 24576,
+                        globalFootprintLimitBytes = 20L shl 30,
+                        metadataBudgetBytes = 1L shl 30,
+                        operationalReserveBytes = 3L shl 30,
+                        capacityBytes = 44L shl 30,
+                        probeBudgetBytes = 1L shl 30,
+                        monitorRole = "monitor",
+                    ),
+            )
+        val result = EffectiveStoragePolicy.cohortBudget(declared, emptyMap(), 1L shl 30, 1L shl 30)
+        val proof = result as email.testinbox.domain.storage.CohortStorageBudget.Result.Fits
+        val fp = checkNotNull(EffectiveStoragePolicy.footprint(declared))
+        proof.demand.envelopeFootprintBytes shouldBe fp.model.bound(2L * 15 * 1024 * 1024 * 50, 501L * 50)
+        proof.demand.requiredGlobalPayloadBytes shouldBe (3840L + 1500 + 240) * 1024 * 1024
+        EffectiveStoragePolicy.cohortBudget(declared.copy(globalLimitBytes = null), emptyMap(), 0, 0) shouldBe unproven
+        EffectiveStoragePolicy.cohortBudget(declared.copy(declaredMaxIngestionProcesses = null), emptyMap(), 0, 0) shouldBe unproven
+        EffectiveStoragePolicy.cohortBudget(declared, emptyMap(), null, 0) shouldBe unproven
+        EffectiveStoragePolicy.cohortBudget(declared, emptyMap(), 0, null) shouldBe unproven
+        EffectiveStoragePolicy.cohortBudget(
+            declared.copy(filesystem = declared.filesystem.copy(probeBudgetBytes = null)),
+            emptyMap(),
+            0,
+            0,
+        ) shouldBe
+            unproven
+    }
 }

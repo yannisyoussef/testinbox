@@ -81,7 +81,7 @@ object Problems {
             it.setProperty("storageRefusalCount", result.refusals.count)
             it.setProperty("lastStorageRefusalAt", result.refusals.lastAt)
             result.tenantScope?.let { scope ->
-                it.setProperty("quota", QuotaDimension.STORED_BYTES.name)
+                it.setProperty("quota", scope.dimension.name)
                 it.setProperty("limit", scope.limitBytes)
                 it.setProperty("current", scope.currentBytes)
             }

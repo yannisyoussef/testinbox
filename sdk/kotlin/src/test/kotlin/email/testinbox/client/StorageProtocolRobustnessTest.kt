@@ -25,7 +25,7 @@ class StorageProtocolRobustnessTest {
 
     @BeforeEach
     fun setUp() {
-        server = HttpServer.create(InetSocketAddress(0), 0)
+        server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/") { exchange ->
             exchange.requestBody.readAllBytes()
             val (status, body) = responses.poll() ?: (500 to """{"title":"unscripted"}""")
@@ -36,7 +36,7 @@ class StorageProtocolRobustnessTest {
             exchange.close()
         }
         server.start()
-        client = TestInboxClient("tk_unit", "http://localhost:${server.address.port}", Duration.ofSeconds(60))
+        client = TestInboxClient("tk_unit", "http://127.0.0.1:${server.address.port}", Duration.ofSeconds(60))
     }
 
     @AfterEach

@@ -659,7 +659,7 @@ class DependencyRuleTest {
         // `deleteExpired` is deliberately NOT covered: it writes no invariant,
         // and the retention sweep drives it from the API adapter the same way
         // it drives `WaitSlots.reapExpired`.
-        val guarded = setOf("claim", "complete")
+        val guarded = setOf("claim", "claimForHuman", "complete")
         val writers =
             allClasses
                 .flatMap { it.methods + it.constructors }

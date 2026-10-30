@@ -9,7 +9,7 @@ import tools.jackson.databind.ObjectMapper
 /**
  * A client's typo must not look like a server fault.
  *
- * Reported from staging: `GET /v1/inboxes` — a real route, wrong method —
+ * Reported from staging: `POST /v1/workspace/storage` — a real route, wrong method —
  * answered `500` with "An unexpected error occurred" and logged a full ERROR
  * stack trace. Three separate problems in one: the contract says these are
  * `4xx`, every mistyped URL became log noise, and genuine `500`s were no
@@ -25,14 +25,23 @@ class UnmatchedRouteTest : ApiIntegrationTestBase() {
 
     private fun problem(response: org.springframework.http.ResponseEntity<String>) = json.readTree(response.body!!)
 
+    /** A real route with a method it does not take (`/v1/inboxes` takes GET and POST since the console reads). */
+    private fun wrongMethod() =
+        rest.exchange(
+            url("/v1/workspace/storage"),
+            org.springframework.http.HttpMethod.POST,
+            org.springframework.http.HttpEntity("{}", headers()),
+            String::class.java,
+        )
+
     @Test
     fun `a wrong method on a real route is 405, not 500`() {
-        val response = get("/v1/inboxes")
+        val response = wrongMethod()
         response.statusCode shouldBe HttpStatus.METHOD_NOT_ALLOWED
         response.headers.contentType.toString() shouldContain "application/problem+json"
         problem(response)["type"].asString() shouldContain "method-not-allowed"
         // RFC 9110 requires it, and it is what tells the client what to do next.
-        response.headers.getFirst("Allow")!! shouldContain "POST"
+        response.headers.getFirst("Allow")!! shouldContain "GET"
     }
 
     @Test
@@ -63,7 +72,7 @@ class UnmatchedRouteTest : ApiIntegrationTestBase() {
 
     @Test
     fun `every refusal still carries a correlation id and never leaks internals`() {
-        listOf(get("/v1/inboxes"), get("/v1/inboxen")).forEach { response ->
+        listOf(wrongMethod(), get("/v1/inboxen")).forEach { response ->
             val body = problem(response)
             body["correlationId"].asString().isNotBlank() shouldBe true
             // No exception class names, no stack frames, no Spring internals.

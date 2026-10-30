@@ -19,6 +19,8 @@ import email.testinbox.domain.tenant.ApiKeyCredential
 import email.testinbox.domain.tenant.ApiKeyFormat
 import email.testinbox.domain.tenant.ApiKeyKind
 import email.testinbox.domain.tenant.ApiScope
+import email.testinbox.domain.tenant.HumanWorkspaceOwner
+import email.testinbox.domain.tenant.WorkspaceActor
 import java.security.SecureRandom
 import java.time.Clock
 import java.time.Duration
@@ -43,7 +45,7 @@ class CreateApiKey(
 ) {
     data class Command(
         /** The credential performing the operation — the source of workspace, project and ceiling. */
-        val actor: ApiKey,
+        val actor: WorkspaceActor,
         val name: String?,
         val scopes: Set<ApiScope>,
         val expiresIn: Duration?,
@@ -118,6 +120,14 @@ class CreateApiKey(
         request: IdempotencyRequest? = null,
     ): Result {
         if (!command.actor.hasScope(ApiScope.API_KEYS_MANAGE)) return Result.NotPermitted
+        if (request != null &&
+            (
+                request.actorApiKeyId != (command.actor as? ApiKey)?.id ||
+                    request.actorHumanAccountId != (command.actor as? HumanWorkspaceOwner)?.accountId
+            )
+        ) {
+            return Result.NotPermitted
+        }
         if (command.scopes.isEmpty()) return Result.NoScopesRequested
         val missing = command.scopes - command.actor.scopes
         if (missing.isNotEmpty()) return Result.ScopeEscalation(missing)
@@ -142,7 +152,8 @@ class CreateApiKey(
                 name = command.name?.takeIf { it.isNotBlank() },
                 expiresAt = expiryFor(command, now),
                 lastUsedAt = null,
-                createdByApiKeyId = command.actor.id,
+                createdByApiKeyId = (command.actor as? ApiKey)?.id,
+                createdByHumanAccountId = (command.actor as? HumanWorkspaceOwner)?.accountId,
             )
         val scope =
             IdempotencyScope(key.workspaceId, key.projectId, IdempotentOperation.CREATE_API_KEY)
@@ -183,7 +194,8 @@ class CreateApiKey(
                 AuditEvent.ApiKeyCreated(
                     at = now,
                     workspaceId = key.workspaceId,
-                    actorApiKeyId = command.actor.id,
+                    actorApiKeyId = (command.actor as? ApiKey)?.id,
+                    actorHumanAccountId = (command.actor as? HumanWorkspaceOwner)?.accountId,
                     apiKeyId = key.id,
                     publicId = credential.publicId,
                     name = key.name,
@@ -208,7 +220,7 @@ class CreateApiKey(
         now: Instant,
     ): Instant? {
         val requested = command.expiresIn?.let(now::plus)
-        val actorExpiry = command.actor.expiresAt
+        val actorExpiry = (command.actor as? ApiKey)?.expiresAt
         return when {
             requested == null -> actorExpiry
             actorExpiry == null -> requested
@@ -254,22 +266,24 @@ class RevokeApiKey(
     private val metrics: ApiKeyMetrics = ApiKeyMetrics.NOOP,
 ) {
     fun execute(
-        actor: ApiKey,
+        actor: WorkspaceActor,
         id: ApiKeyId,
     ): RevokeApiKeyOutcome {
+        if (!actor.hasScope(ApiScope.API_KEYS_MANAGE)) return RevokeApiKeyOutcome.NotPermitted
         val now = clock.instant()
         val outcome = apiKeys.revoke(actor.workspaceId, id, now)
         when (outcome) {
             RevokeApiKeyOutcome.Revoked -> metrics.lifecycle(ApiKeyOperation.REVOKED)
             RevokeApiKeyOutcome.AlreadyRevoked -> metrics.lifecycle(ApiKeyOperation.REVOKE_NOOP)
-            RevokeApiKeyOutcome.NotFound -> Unit
+            RevokeApiKeyOutcome.NotFound, RevokeApiKeyOutcome.NotPermitted -> Unit
         }
-        if (outcome != RevokeApiKeyOutcome.NotFound) {
+        if (outcome == RevokeApiKeyOutcome.Revoked || outcome == RevokeApiKeyOutcome.AlreadyRevoked) {
             audit.record(
                 AuditEvent.ApiKeyRevoked(
                     at = now,
                     workspaceId = actor.workspaceId,
-                    actorApiKeyId = actor.id,
+                    actorApiKeyId = (actor as? ApiKey)?.id,
+                    actorHumanAccountId = (actor as? HumanWorkspaceOwner)?.accountId,
                     apiKeyId = id,
                     alreadyRevoked = outcome == RevokeApiKeyOutcome.AlreadyRevoked,
                 ),

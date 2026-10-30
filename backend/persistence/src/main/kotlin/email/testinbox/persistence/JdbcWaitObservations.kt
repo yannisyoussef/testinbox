@@ -105,7 +105,7 @@ open class JdbcWaitObservations(
                 "storage figures are read inside the evaluation only"
             }
             val figures = visibility.read(workspaceId, setOf(inboxId))
-            return TenantStorageFigures(inbox = figures.inbox(inboxId).usage, workspace = figures.workspace)
+            return TenantStorageFigures(inbox = figures.inbox(inboxId).usage, workspace = figures.workspace, budget = figures.budget)
         }
     }
 }

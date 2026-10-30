@@ -10,6 +10,7 @@ import email.testinbox.application.usecase.DeleteInbox
 import email.testinbox.application.usecase.WaitForMessage
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.inbox.AddressMode
+import email.testinbox.domain.inbox.InboxState
 import email.testinbox.domain.limits.QuotaExceeded
 import email.testinbox.domain.message.HeaderMatcher
 import email.testinbox.domain.message.MessageMatcher
@@ -32,7 +33,7 @@ import java.util.UUID
 private val CONCURRENT_WAIT_RETRY_AFTER: java.time.Duration = java.time.Duration.ofSeconds(1)
 
 @RestController
-@RequestMapping("/v1/inboxes")
+@RequestMapping("/v1/inboxes", "/account/product/inboxes")
 class InboxController(
     private val createInbox: CreateInbox,
     private val deleteInbox: DeleteInbox,
@@ -49,7 +50,7 @@ class InboxController(
         val key = AuthAttributes.principal(request)
         key.requireScope(ApiScope.INBOXES_WRITE)
         val idempotency =
-            when (val header = IdempotencyHeader.read(request, key.id)) {
+            when (val header = IdempotencyHeader.read(request, key)) {
                 is IdempotencyHeader.Outcome.Invalid -> {
                     return Problems.respond(
                         Problems.of(HttpStatus.BAD_REQUEST, "invalid-request", "Invalid request", header.reason, request),
@@ -163,6 +164,46 @@ class InboxController(
                 Problems.respond(problem)
             }
         }
+    }
+
+    /**
+     * The workspace's inboxes, newest first. Every state still present is
+     * listed unless `state` narrows it; `storage` is read for the whole page
+     * in one set-based read (ADR-035 §13b).
+     */
+    @GetMapping
+    fun list(
+        @RequestParam(required = false) state: String?,
+        @RequestParam(required = false) cursor: String?,
+        @RequestParam(required = false, defaultValue = "50") limit: Int,
+        request: HttpServletRequest,
+    ): ResponseEntity<*> {
+        val key = AuthAttributes.principal(request)
+        key.requireScope(ApiScope.MESSAGES_READ)
+        val states =
+            if (state.isNullOrBlank()) {
+                emptySet()
+            } else {
+                setOf(
+                    runCatching { InboxState.valueOf(state.uppercase()) }.getOrNull()
+                        ?: return Problems.respond(
+                            Problems.of(HttpStatus.BAD_REQUEST, "invalid-request", "Invalid request", "Unknown state '$state'", request),
+                        ),
+                )
+            }
+        val boundedLimit = limit.coerceIn(1, 200)
+        val before =
+            cursor?.let {
+                Cursors.decodeInbox(it)
+                    ?: return Problems.respond(
+                        Problems.of(HttpStatus.BAD_REQUEST, "invalid-request", "Invalid request", "Malformed cursor", request),
+                    )
+            }
+        val page = inboxQueries.listPage(key.workspaceId, states, before, boundedLimit)
+        val storage = storageQueries.inboxes(key.workspaceId, page.map { it.id }.toSet())
+        val nextCursor =
+            page.lastOrNull()?.takeIf { page.size == boundedLimit }?.let { Cursors.encode(it.createdAt, it.id.value) }
+        return ResponseEntity.ok(InboxPageDto(page.map { InboxDto.from(it, storage.getValue(it.id)) }, nextCursor))
     }
 
     @GetMapping("/{id}")

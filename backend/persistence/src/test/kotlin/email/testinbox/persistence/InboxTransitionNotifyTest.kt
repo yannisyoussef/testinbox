@@ -55,7 +55,7 @@ class InboxTransitionNotifyTest : PersistenceIntegrationTest() {
                 // Inside the transaction nothing has been delivered yet: notify is atomic with the commit.
                 payloads(pg).shouldBeEmpty()
             }
-            payloads(pg) shouldBe listOf(inbox.toString())
+            payloads(pg) shouldBe listOf("$ws/$inbox")
             // Already EXPIRED: no transition, no notification.
             tx.execute { repo.transitionToExpired(InboxId(inbox)) shouldBe false }
             payloads(pg).shouldBeEmpty()
@@ -75,7 +75,7 @@ class InboxTransitionNotifyTest : PersistenceIntegrationTest() {
                 checkNotNull(repo.markDeleted(WorkspaceId(ws), InboxId(inbox), Instant.now()))
                 payloads(pg).shouldBeEmpty()
             }
-            payloads(pg) shouldBe listOf(inbox.toString())
+            payloads(pg) shouldBe listOf("$ws/$inbox")
             // The wrong workspace deletes nothing and notifies nothing.
             tx.execute { repo.markDeleted(WorkspaceId(java.util.UUID.randomUUID()), InboxId(inbox), Instant.now()) shouldBe null }
             payloads(pg).shouldBeEmpty()

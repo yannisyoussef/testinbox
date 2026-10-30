@@ -85,7 +85,26 @@ class SchemaGateFilterTest {
     }
 
     @Test
-    fun `non-v1 paths are never gated - the readiness probe must stay reachable`() {
+    fun `account routes are refused against an older schema too`() {
+        val response = MockHttpServletResponse()
+        var reached = false
+        gate(listOf("1")).doFilter(request("/account/session"), response, FilterChain { _, _ -> reached = true })
+        reached shouldBe false
+        response.status shouldBe 503
+    }
+
+    @Test
+    fun `normalized account paths do not bypass schema readiness`() {
+        val response = MockHttpServletResponse()
+        val encoded = request("/%61ccount/session").apply { servletPath = "/account/session" }
+        var reached = false
+        gate(listOf("1")).doFilter(encoded, response, FilterChain { _, _ -> reached = true })
+        reached shouldBe false
+        response.status shouldBe 503
+    }
+
+    @Test
+    fun `management paths are never gated - the readiness probe must stay reachable`() {
         var reached = false
         val response = MockHttpServletResponse()
         gate(listOf("1")).doFilter(request("/actuator/health"), response, FilterChain { _, _ -> reached = true })

@@ -13,14 +13,14 @@ import java.sql.ResultSet
  * the two can never read different definitions.
  */
 internal object FootprintSql {
-    const val CTES = """fp_newest AS (SELECT started_seq, trash_bytes, block_size_bytes, capacity_bytes, written_by
+    val CTES = """fp_newest AS (SELECT observed_at, started_seq, trash_bytes, block_size_bytes, capacity_bytes, written_by
                                        FROM storage_filesystem_observation ORDER BY started_seq DESC, id DESC LIMIT 1),
                          fp_debt AS (SELECT coalesce(sum(d.bytes), 0) AS bytes, coalesce(sum(d.objects), 0) AS objects
                                        FROM storage_deletion_debt d
                                       WHERE d.incurred_at = 'infinity'::timestamptz
-                                         OR d.seq >= coalesce((SELECT started_seq FROM fp_newest), 0))"""
+                                         OR d.seq >= coalesce((SELECT started_seq FROM fp_newest), 0)), ${CohortSql.CTES}"""
 
-    const val COLUMNS = """(SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
+    val COLUMNS = """(SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
                          + (SELECT coalesce(sum(bytes), 0) FROM storage_delta)
                          + (SELECT coalesce(sum(bytes), 0) FROM storage_reservation) AS fp_live_bytes,
                            (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)
@@ -36,11 +36,11 @@ internal object FootprintSql {
                            (SELECT trash_bytes FROM fp_newest) AS fp_trash_bytes,
                            (SELECT block_size_bytes FROM fp_newest) AS fp_block_size,
                            (SELECT capacity_bytes FROM fp_newest) AS fp_capacity,
-                           (SELECT written_by::text FROM fp_newest) AS fp_written_by"""
+                           (SELECT written_by::text FROM fp_newest) AS fp_written_by, ${CohortSql.COLUMN}"""
 
     /** The same columns, typed, for the rows that do not carry them. */
     const val NONE = """NULL::numeric, NULL::numeric, NULL::numeric, NULL::numeric, NULL::boolean, NULL::bigint,
-                           NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text"""
+                           NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text, NULL::jsonb"""
 
     /** The figures of a row carrying [COLUMNS]; null when a sum does not fit a signed 64-bit figure (corrupt totals). */
     fun read(rs: ResultSet): ObservedFootprint? {
@@ -61,6 +61,7 @@ internal object FootprintSql {
             capacityBytes = nullableLong("fp_capacity"),
             writtenBy = rs.getString("fp_written_by"),
             distrustedSeq = rs.getLong("fp_distrusted_seq"),
+            cohort = CohortSql.read(rs),
         )
     }
 }

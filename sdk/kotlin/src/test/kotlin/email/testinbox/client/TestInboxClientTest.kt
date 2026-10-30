@@ -40,7 +40,7 @@ class TestInboxClientTest {
 
     @BeforeEach
     fun setUp() {
-        server = HttpServer.create(InetSocketAddress(0), 0)
+        server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
         server.createContext("/") { exchange: HttpExchange ->
             val body = exchange.requestBody.readAllBytes().toString(Charsets.UTF_8)
             requests +=
@@ -65,7 +65,7 @@ class TestInboxClientTest {
         client =
             TestInboxClient(
                 apiKey = "tk_unit",
-                baseUrl = "http://localhost:${server.address.port}",
+                baseUrl = "http://127.0.0.1:${server.address.port}",
                 serverWaitCap = Duration.ofSeconds(60),
             )
     }

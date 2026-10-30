@@ -19,11 +19,15 @@ export type ParseStatus = "OK" | "FAILED" | (string & {});
 
 /**
  * Why a storage ceiling refused a copy of a message (ADR-035 §4): the inbox's
- * own limit, its workspace's limit, or service capacity. `SERVICE_CAPACITY` is
+ * own limit, its workspace's limit, or service capacity. Under global enforcement,
+ * unknown/refused envelope positions are conservatively priced too (ADR-037).
+ * Across emails, own delivery outcomes may still expose recipient existence
+ * under globally constrained conditions; delaying diagnostics cannot remove it.
+ * `SERVICE_CAPACITY` is
  * one bit — no global figure ever accompanies it. Unknown future values are
  * passed through as the exact wire string.
  */
-export type StorageRefusalReason = "INBOX_LIMIT" | "WORKSPACE_LIMIT" | "SERVICE_CAPACITY" | (string & {});
+export type StorageRefusalReason = "INBOX_LIMIT" | "WORKSPACE_LIMIT" | "WORKSPACE_FOOTPRINT_LIMIT" | "SERVICE_CAPACITY" | (string & {});
 
 /**
  * Physical storage accounting for ONE scope of your own tenancy (ADR-035
@@ -31,7 +35,18 @@ export type StorageRefusalReason = "INBOX_LIMIT" | "WORKSPACE_LIMIT" | "SERVICE_
  * caller's own scope only; nothing here describes another workspace or the
  * service as a whole.
  */
+export interface WorkspaceFootprintUsage {
+  readonly limitBytes: number;
+  readonly usedBytes: number;
+  readonly pendingCleanupBytes: number;
+  readonly availableBytes: number;
+  readonly overLimit: boolean;
+  readonly enforced: boolean;
+}
+
 export interface StorageUsage {
+  /** Own workspace only. Deleted objects stay charged until a later valid cleanup proof. */
+  readonly footprint?: WorkspaceFootprintUsage;
   /** The effective limit of this scope — a policy value, not a constant. */
   readonly limitBytes: number;
   /** Committed bytes: raw MIME plus every extracted attachment. */

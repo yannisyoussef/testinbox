@@ -210,7 +210,7 @@ class StorageAdmissionTest {
     }
 
     @Test
-    fun `a copy that fails narrower ceilings is refused for the narrowest, and does not consume global room`() {
+    fun `a copy that fails narrower ceilings still prices its envelope position globally`() {
         val store =
             FakeStore(
                 global = StorageUsage(990, 0),
@@ -218,10 +218,10 @@ class StorageAdmissionTest {
                 inboxes = mapOf(a1 to owned(ws1, used = 99), b1 to owned(ws2)),
             )
 
-        // a1 fails all three: INBOX_LIMIT. b1 then fits globally only because
-        // nothing was admitted before it.
+        // a1 fails all three: INBOX_LIMIT. Its transient global price remains,
+        // so b1 cannot learn the foreign tenant's admission from its own result.
         admission(store).admit(request(10, candidate(ws1, a1), candidate(ws2, b1))).shape() shouldBe
-            listOf("INBOX_LIMIT", "admitted")
+            listOf("INBOX_LIMIT", "SERVICE_CAPACITY")
     }
 
     @Test

@@ -71,6 +71,7 @@ class DeploymentSafetyCheck(
                         createBucket = properties.storage.createBucket,
                         requireDatabaseSessionTimeout = properties.deployment.requireDatabaseSessionTimeout,
                         storage = storage,
+                        eventsVisibilityLag = properties.events.visibilityLag,
                     ),
                 )
             check(violations.isEmpty()) { DeploymentSafety.describe(violations) }

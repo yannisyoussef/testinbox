@@ -4,6 +4,7 @@ import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.idempotency.IdempotentOperation
+import email.testinbox.domain.identity.HumanAccountId
 import java.time.Duration
 import java.time.Instant
 
@@ -33,6 +34,7 @@ sealed interface ClaimOutcome {
     data class Replay(
         val snapshot: IdempotencySnapshot,
         val claimedByApiKeyId: ApiKeyId?,
+        val claimedByHumanAccountId: HumanAccountId? = null,
     ) : ClaimOutcome
 
     /** The key is bound to a different logical request. Terminal — retrying with it can never succeed. */
@@ -78,6 +80,17 @@ interface IdempotencyRecords {
         expiresAt: Instant,
         waitFor: Duration,
     ): ClaimOutcome
+
+    /** A distinct actor namespace; an older adapter fails closed rather than pretending it is an anonymous key. */
+    fun claimForHuman(
+        scope: IdempotencyScope,
+        keyHash: String,
+        fingerprint: String,
+        accountId: HumanAccountId,
+        now: Instant,
+        expiresAt: Instant,
+        waitFor: Duration,
+    ): ClaimOutcome = throw UnsupportedOperationException("human idempotency requires a capable adapter")
 
     /** Records what the mutation produced. Same transaction as [claim] and the mutation. */
     fun complete(

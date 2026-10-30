@@ -15,9 +15,30 @@
 # by another route, and it expires in hours.
 + workspace
 + project
+# V17 adds a nullable human creator UUID beside verifier-only key metadata.
+# This is control-plane provenance; claim/snapshot rows remain transient.
 + api_key
 + exact_address_reservation
 + flyway_schema_history
+# ADR-036 (V12): durable identity and participant allocation. This adds
+# contact personal data to control-plane backups; notices/retention and the
+# deletion/restore procedure must be completed before participant activation.
++ human_account
++ human_identity
++ beta_cohort
++ beta_admission
+# ADR-037 (V19): retain fixed share and participant classification even after
+# membership is cleared. No contact or content; restore must not erase it.
++ participant_workspace
+# ADR-036 (V13): restoring a backup must never restore a browser login.
+- human_session
+# ADR-036 (V14): codes are verifier-only but login state and source hashes
+# remain transient; no login state may be resurrected by a restore.
+- human_auth_gate
+- email_login_challenge
+- provider_login_state
+# ADR-036 (V16): optional expiring waitlist; restore never re-enrolls a withdrawn applicant.
+- beta_waitlist
 - inbox
 - message
 - attachment
@@ -60,3 +81,12 @@
 # the next trust verification recreates it at the current order, so gate F
 # then needs a fresh sweep.
 - storage_containment_watermark
+
+# Short-lived request counts, not identity or authority.
+- human_request_global
+- human_request_budget
+
+# ADR-037: preserve legacy allocations; restore never restores pool approval or cleanup evidence.
++ storage_legacy_share
+- storage_cohort_plan
+- workspace_deletion_charge

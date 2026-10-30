@@ -14,6 +14,8 @@ data class ApiKeyCursor(
 )
 
 sealed interface RevokeApiKeyOutcome {
+    data object NotPermitted : RevokeApiKeyOutcome
+
     /** The key was usable and is now revoked. */
     data object Revoked : RevokeApiKeyOutcome
 

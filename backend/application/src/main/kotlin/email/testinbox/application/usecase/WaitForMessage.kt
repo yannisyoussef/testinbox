@@ -86,6 +86,7 @@ class WaitForMessage(
     private val policy: StorageCapacityPolicy,
     private val hook: WaitSyncHook = WaitSyncHook.NOOP,
     private val metrics: WaitMetrics = WaitMetrics.NOOP,
+    private val footprintModel: email.testinbox.domain.storage.FootprintModel? = null,
 ) {
     data class Command(
         val workspaceId: WorkspaceId,
@@ -106,6 +107,7 @@ class WaitForMessage(
         val limitBytes: Long,
         /** `stored + reserved` for the named scope. */
         val currentBytes: Long,
+        val dimension: email.testinbox.domain.limits.QuotaDimension = email.testinbox.domain.limits.QuotaDimension.STORED_BYTES,
     )
 
     sealed interface Result {
@@ -276,11 +278,34 @@ class WaitForMessage(
                 try {
                     when (reason) {
                         StorageRefusalReason.INBOX_LIMIT -> {
-                            TenantScopeFigures(policy.inboxLimitBytes, observed.storage().inbox.usedBytes)
+                            val figures = observed.storage()
+                            TenantScopeFigures(
+                                policy.inboxShare.floorOf(
+                                    minOf(
+                                        policy.workspaceLimitBytes,
+                                        figures.budget?.payloadBytes ?: policy.workspaceLimitBytes,
+                                    ),
+                                ),
+                                figures.inbox.usedBytes,
+                            )
                         }
 
                         StorageRefusalReason.WORKSPACE_LIMIT -> {
-                            TenantScopeFigures(policy.workspaceLimitBytes, observed.storage().workspace.usedBytes)
+                            val figures = observed.storage()
+                            TenantScopeFigures(
+                                minOf(policy.workspaceLimitBytes, figures.budget?.payloadBytes ?: policy.workspaceLimitBytes),
+                                figures.workspace.usedBytes,
+                            )
+                        }
+
+                        StorageRefusalReason.WORKSPACE_FOOTPRINT_LIMIT -> {
+                            val figures = observed.storage()
+                            val budget = checkNotNull(figures.budget) { "footprint refusal without a workspace share" }
+                            TenantScopeFigures(
+                                budget.footprintBytes,
+                                budget.charged(figures.workspace, checkNotNull(footprintModel)),
+                                email.testinbox.domain.limits.QuotaDimension.STORED_FOOTPRINT,
+                            )
                         }
 
                         // One bit (ADR-035 §13d): no limit, no current, no global figure of any kind.

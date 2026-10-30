@@ -334,4 +334,69 @@ class ReceiveInboundDeliveryTest {
         // ...and nothing was stored for it.
         metrics.received shouldBe listOf(ParseStatus.OK)
     }
+
+    @Test
+    fun `unknown rate-limited and tenant-refused positions retain their global price without storage`() {
+        val foreign = provisionInbox("foreign@testinbox.local", WorkspaceId(UUID.randomUUID()))
+        // Room for exactly one copy globally: own copy at position 1 must
+        // refuse whichever way the foreign recipient is discarded.
+        for (kind in listOf("unknown", "rate", "tenant")) {
+            storage = InMemoryStorage(inboxes, messages, clock)
+            if (kind == "rate") rateLimiter.exhaustedInboxes += foreign.id
+            if (kind == "tenant") storage.committed[foreign.workspaceId] = 100
+            val policy =
+                email.testinbox.domain.storage.StorageCapacityPolicy(
+                    100,
+                    email.testinbox.domain.storage.InboxShare
+                        .of("1"),
+                    if (kind == "tenant") 104 else 4,
+                    0,
+                )
+            val receive =
+                ReceiveInboundDelivery(
+                    inboxes,
+                    messages,
+                    storage.guarded(RollbackTx(messages), email.testinbox.domain.storage.StorageEnforcement.ALL, policy),
+                    parser,
+                    rateLimiter,
+                    clock,
+                )
+            val target = if (kind == "unknown") "unknown@testinbox.local" else foreign.address
+            val result = receive.execute(command(listOf(target, inbox.address)))
+            result.accepted.shouldBeEmpty()
+            result.storageRefusedRecipients shouldBe if (kind == "tenant") 2 else 1
+            storage.reservations.rows.shouldBeEmpty()
+            storage.blobs.blobs.shouldBeEmpty()
+            messages.messages.shouldBeEmpty()
+            rateLimiter.exhaustedInboxes.clear()
+        }
+    }
+
+    @Test
+    fun `normalization deduplicates before envelope pricing and provider retry remains a no-op`() {
+        val receive =
+            ReceiveInboundDelivery(
+                inboxes,
+                messages,
+                storage.guarded(
+                    RollbackTx(messages),
+                    email.testinbox.domain.storage.StorageEnforcement.ALL,
+                    email.testinbox.domain.storage
+                        .StorageCapacityPolicy(
+                            100,
+                            email.testinbox.domain.storage.InboxShare
+                                .of("1"),
+                            100,
+                            0,
+                        ),
+                ),
+                parser,
+                rateLimiter,
+                clock,
+            )
+        val cmd = command(listOf(" TEST@testinbox.local ", "test@testinbox.local"), providerMessageId = "event-37")
+        receive.execute(cmd).accepted.size shouldBe 1
+        receive.execute(cmd).duplicateRecipients shouldBe 1
+        messages.messages.size shouldBe 1
+    }
 }

@@ -25,6 +25,7 @@ data class TestInboxProperties(
     val orphanSweepInterval: Duration = Duration.ofMinutes(30),
     val orphanMinAge: Duration = Duration.ofHours(1),
     val limits: LimitsProperties = LimitsProperties(),
+    val events: Events = Events(),
     val idempotency: Idempotency = Idempotency(),
     val storage: Storage = Storage(),
     val bootstrap: Bootstrap = Bootstrap(),
@@ -180,6 +181,12 @@ data class TestInboxProperties(
         val projectId: UUID = UUID.fromString("00000000-0000-0000-0000-000000000001"),
     )
 
+    /** The workspace event stream (`GET /v1/workspace/events`). */
+    data class Events(
+        /** The visibility horizon the stream re-reads behind its newest position; see [TestInboxConfig.eventsVisibilityLag]. */
+        val visibilityLag: Duration = Duration.ofSeconds(90),
+    )
+
     fun toConfig(): TestInboxConfig =
         TestInboxConfig(
             mailDomain = mailDomain,
@@ -189,5 +196,6 @@ data class TestInboxProperties(
             exactCooldown = exactCooldown,
             waitWindowCap = waitWindowCap,
             maxRawSizeBytes = maxRawSizeBytes,
+            eventsVisibilityLag = events.visibilityLag,
         )
 }

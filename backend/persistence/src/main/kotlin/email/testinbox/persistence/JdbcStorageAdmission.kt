@@ -163,6 +163,8 @@ open class JdbcStorageAdmission(
                          ws_reserved AS (SELECT r.workspace_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
                                            FROM storage_reservation r
                                           WHERE r.workspace_id IN (SELECT id FROM ws) GROUP BY r.workspace_id),
+                         ws_charge AS (SELECT workspace_id AS id,sum(bytes) AS bytes,sum(objects) AS objects
+                                          FROM workspace_deletion_charge WHERE workspace_id IN (SELECT id FROM ws) GROUP BY workspace_id),
                          ib_delta AS (SELECT d.inbox_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d
                                        WHERE d.inbox_id IN (SELECT id FROM ib) GROUP BY d.inbox_id),
                          ib_reserved AS (SELECT r.inbox_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
@@ -177,6 +179,8 @@ open class JdbcStorageAdmission(
                            (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)
                          + (SELECT coalesce(sum(objects), 0) FROM storage_delta) AS committed_objects,
                            (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation) AS reserved_objects,
+                           NULL::bigint AS payload_limit, NULL::bigint AS footprint_limit,
+                           NULL::numeric AS cleanup_bytes,NULL::numeric AS cleanup_objects,
                            $footprintColumns
                     UNION ALL
                     SELECT 'WORKSPACE', ws.id, ws.id, now(),
@@ -184,17 +188,23 @@ open class JdbcStorageAdmission(
                            coalesce(r.bytes, 0),
                            coalesce(a.base_objects, 0) + coalesce(d.objects, 0),
                            coalesce(r.objects, 0),
+                           coalesce(p.payload_limit_bytes,l.payload_limit_bytes),coalesce(p.footprint_limit_bytes,l.footprint_limit_bytes),
+                           coalesce(c.bytes,0),coalesce(c.objects,0),
                            ${FootprintSql.NONE}
                       FROM ws
                       LEFT JOIN workspace_storage_account a ON a.workspace_id = ws.id
                       LEFT JOIN ws_delta d ON d.id = ws.id
                       LEFT JOIN ws_reserved r ON r.id = ws.id
+                      LEFT JOIN ws_charge c ON c.id=ws.id
+                      LEFT JOIN participant_workspace p ON p.workspace_id=ws.id
+                      LEFT JOIN storage_legacy_share l ON l.workspace_id=ws.id
                     UNION ALL
                     SELECT 'INBOX', ib.id, x.workspace_id, now(),
                            coalesce(s.base_bytes, 0) + coalesce(d.bytes, 0),
                            coalesce(r.bytes, 0),
                            coalesce(s.base_objects, 0) + coalesce(d.objects, 0),
                            coalesce(r.objects, 0),
+                           NULL::bigint,NULL::bigint,NULL::numeric,NULL::numeric,
                            ${FootprintSql.NONE}
                       FROM ib
                       LEFT JOIN inbox x ON x.id = ib.id
@@ -208,6 +218,21 @@ open class JdbcStorageAdmission(
                     SnapshotRow(
                         footprint = if (readsFootprint && rs.getString("scope") == "GLOBAL") FootprintSql.read(rs) else null,
                         scope = rs.getString("scope"),
+                        budget =
+                            if (rs.getObject("payload_limit") ==
+                                null
+                            ) {
+                                null
+                            } else {
+                                email.testinbox.application.storage.WorkspaceStorageBudget(
+                                    rs.getLong("payload_limit"),
+                                    rs.getLong("footprint_limit"),
+                                    email.testinbox.domain.storage.FootprintAdmission.Load(
+                                        exactLong(rs.getBigDecimal("cleanup_bytes")),
+                                        exactLong(rs.getBigDecimal("cleanup_objects")),
+                                    ),
+                                )
+                            },
                         id = rs.getObject("id", UUID::class.java),
                         owner = rs.getObject("owner", UUID::class.java),
                         t0 = checkNotNull(Timestamps.fromDb(rs, "t0")),
@@ -231,6 +256,12 @@ open class JdbcStorageAdmission(
                     .filter { it.scope == "INBOX" }
                     .associate { InboxId(it.id!!) to InboxStorageUsage(it.owner?.let(::WorkspaceId), it.usage) },
             footprint = global.footprint,
+            budgets =
+                rows.filter { it.scope == "WORKSPACE" && it.budget != null }.associate {
+                    WorkspaceId(
+                        it.id!!,
+                    ) to checkNotNull(it.budget)
+                },
         )
     }
 
@@ -287,6 +318,7 @@ open class JdbcStorageAdmission(
 
     private data class SnapshotRow(
         val footprint: email.testinbox.application.port.ObservedFootprint?,
+        val budget: email.testinbox.application.storage.WorkspaceStorageBudget?,
         val scope: String,
         val id: UUID?,
         val owner: UUID?,

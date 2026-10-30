@@ -75,8 +75,17 @@ data class StorageAdmissionRequest(
     val candidates: List<StorageAdmissionCandidate>,
     val nodeId: String,
     val generation: UUID,
+    /** Zero-based positions in the normalized distinct envelope, before resolution/rate filtering (ADR-037 A1). */
+    val envelopePositions: List<Int> = candidates.indices.toList(),
 ) {
     init {
+        require(envelopePositions.size == candidates.size) { "one envelope position per candidate" }
+        require(
+            envelopePositions.all { it in 0 until MAX_CANDIDATES } &&
+                envelopePositions.zipWithNext().all { (before, after) -> before < after },
+        ) {
+            "envelope positions must be bounded and strictly increasing"
+        }
         require(bytesPerCopy in 1..MAX_BYTES_PER_COPY) { "bytesPerCopy must be in 1..$MAX_BYTES_PER_COPY, was $bytesPerCopy" }
         require(candidates.size <= MAX_CANDIDATES) { "an event has at most $MAX_CANDIDATES recipients, was ${candidates.size}" }
         require(candidates.map { it.messageId }.toSet().size == candidates.size) { "every copy has its own message id" }
@@ -148,8 +157,9 @@ data class StorageAdmissionResult(
  * that it can be proven exhaustively.
  *
  * Candidates are evaluated in envelope order against running totals: every
- * copy admitted earlier in the same event already counts against its inbox,
- * its workspace and the global cap. A copy fits a scope when
+ * admitted copy counts against its inbox and workspace. Every normalized
+ * distinct envelope position counts against global prefix totals, whether
+ * it resolves or is refused (ADR-037 A1). A copy fits a scope when
  * `used + bytesPerCopy ≤ limit`, so a scope already at or above its limit
  * admits nothing more (I11: no grandfathered growth).
  */
@@ -181,9 +191,10 @@ object StorageAdmissionRules {
      * The payload ceilings, and with a [footprint] policy the global footprint
      * rules (G) and (C) of the filesystem-containment contract (§2.1), in ONE
      * envelope-order pass: a copy is checked against the exact
-     * post-admission aggregate `F(L + D + A + c)`, where *A* is the copies of
-     * this event admitted before it, so a copy refused by ANY ceiling adds
-     * nothing. A footprint refusal is `SERVICE_CAPACITY`.
+     * projected aggregate `F(L + D + prefix)`. The prefix prices EVERY
+     * normalized distinct envelope position through this copy, including
+     * unknown/rate-limited/tenant-refused positions (ADR-037 A1). It does not
+     * persist those virtual copies. A footprint refusal is `SERVICE_CAPACITY`.
      *
      * Under `ALL`, footprint rules that cannot be evaluated — untrusted
      * counts, no or an invalid observation, negative or overflowing totals —
@@ -200,16 +211,28 @@ object StorageAdmissionRules {
         placements: List<Placement>,
         snapshot: StorageUsageSnapshot,
         footprint: FootprintPolicy?,
+        envelopePositions: List<Int> = placements.indices.toList(),
     ): List<Verdict> {
+        require(envelopePositions.size == placements.size)
+        require(
+            envelopePositions.all { it in 0 until StorageAdmissionRequest.MAX_CANDIDATES } &&
+                envelopePositions.zipWithNext().all { (a, b) -> a < b },
+        )
         val enforcesGlobal = enforcement.enforces(StorageScope.GLOBAL)
         val footprintInputs = footprint?.let { fp -> footprintInputs(fp, snapshot, enforcesGlobal) }
         return checked {
-            var footprintAdded = FootprintAdmission.Load.ZERO
             val inboxUsed = snapshot.inboxes.mapValuesTo(HashMap()) { it.value.usage.usedBytes }
             val workspaceUsed = snapshot.workspaces.mapValuesTo(HashMap()) { it.value.usedBytes }
-            var globalUsed = snapshot.global.usedBytes
-
-            placements.map { placement ->
+            val workspaceObjects =
+                snapshot.workspaces.mapValuesTo(
+                    HashMap(),
+                ) { Math.addExact(it.value.committedObjects, it.value.reservedObjects) }
+            placements.mapIndexed { index, placement ->
+                // Only the public envelope shape affects global prefix cost. Unknown,
+                // rate-limited and tenant-refused positions cost the same as known ones.
+                // These virtual charges never create objects, rows or reservations.
+                val positionsBefore = envelopePositions[index].toLong()
+                val globalUsed = Math.addExact(snapshot.global.usedBytes, Math.multiplyExact(bytesPerCopy, positionsBefore))
                 val used =
                     mapOf(
                         StorageScope.INBOX to inboxUsed.getValue(placement.inboxId),
@@ -220,10 +243,11 @@ object StorageAdmissionRules {
                 // which figure the database happened to return first. Only an
                 // enforced scope refuses, so a disabled narrower scope never
                 // masks an enforced wider one.
-                val copy = FootprintAdmission.Load(bytesPerCopy, objectsPerCopy)
+                val prefix = envelopePositions[index].toLong() + 1
+                val priced = FootprintAdmission.Load(Math.multiplyExact(bytesPerCopy, prefix), Math.multiplyExact(objectsPerCopy, prefix))
                 val footprintExceeded =
                     footprintInputs?.let { (fp, inputs) ->
-                        when (FootprintAdmission.check(fp.model, fp.limits, inputs, footprintAdded + copy)) {
+                        when (FootprintAdmission.check(fp.model, fp.limits, inputs, priced)) {
                             FootprintAdmission.Verdict.ADMITTED -> {
                                 false
                             }
@@ -253,19 +277,56 @@ object StorageAdmissionRules {
                             }
                         }
                     } ?: false
+                val budget = snapshot.budgets[placement.workspaceId]
+                val workspaceLimit = minOf(policy.workspaceLimitBytes, budget?.payloadBytes ?: policy.workspaceLimitBytes)
+                val inboxLimit = policy.inboxShare.floorOf(workspaceLimit)
+                val workspaceFootprintExceeded =
+                    if (budget == null || footprint == null) {
+                        false
+                    } else {
+                        val bytes =
+                            Math.addExact(
+                                Math.addExact(workspaceUsed.getValue(placement.workspaceId), bytesPerCopy),
+                                budget.cleanup.bytes,
+                            )
+                        val objects =
+                            Math.addExact(
+                                Math.addExact(workspaceObjects.getValue(placement.workspaceId), objectsPerCopy),
+                                budget.cleanup.objects,
+                            )
+                        footprint.model.bound(bytes, objects) > budget.footprintBytes
+                    }
+                if (budget != null && footprint == null && enforcement.enforces(StorageScope.WORKSPACE)) {
+                    throw StorageFootprintUnavailableException(FootprintUnavailability.UNREADABLE)
+                }
                 val exceeded =
                     StorageScope.entries.filter { scope ->
-                        Math.addExact(used.getValue(scope), bytesPerCopy) > policy.limitOf(scope) ||
+                        Math.addExact(used.getValue(scope), bytesPerCopy) >
+                            when (scope) {
+                                StorageScope.INBOX -> inboxLimit
+                                StorageScope.WORKSPACE -> workspaceLimit
+                                StorageScope.GLOBAL -> policy.limitOf(scope)
+                            } ||
                             (scope == StorageScope.GLOBAL && footprintExceeded)
                     }
-                val refusing = exceeded.firstOrNull(enforcement::enforces)
+                val ordered =
+                    buildList {
+                        if (StorageScope.INBOX in exceeded) add(StorageRefusalReason.INBOX_LIMIT)
+                        if (StorageScope.WORKSPACE in exceeded) add(StorageRefusalReason.WORKSPACE_LIMIT)
+                        if (workspaceFootprintExceeded) add(StorageRefusalReason.WORKSPACE_FOOTPRINT_LIMIT)
+                        if (StorageScope.GLOBAL in exceeded) add(StorageRefusalReason.SERVICE_CAPACITY)
+                    }
+                val refusing = ordered.firstOrNull { enforcement.enforces(it.scope) }
                 val admitted = refusing == null
-                val ceiling = (refusing ?: exceeded.firstOrNull())?.let(StorageRefusalReason::of)
+                val ceiling = refusing ?: ordered.firstOrNull()
                 if (admitted) {
                     inboxUsed[placement.inboxId] = Math.addExact(used.getValue(StorageScope.INBOX), bytesPerCopy)
                     workspaceUsed[placement.workspaceId] = Math.addExact(used.getValue(StorageScope.WORKSPACE), bytesPerCopy)
-                    globalUsed = Math.addExact(globalUsed, bytesPerCopy)
-                    footprintAdded += copy
+                    workspaceObjects[placement.workspaceId] =
+                        Math.addExact(
+                            workspaceObjects.getValue(placement.workspaceId),
+                            objectsPerCopy,
+                        )
                 }
                 Verdict(admitted, ceiling)
             }
@@ -352,7 +413,7 @@ class StorageAdmission(
             verifyOwnership(request, snapshot)
             val placements = request.candidates.map { StorageAdmissionRules.Placement(it.workspaceId, it.inboxId) }
             val verdicts =
-                if (footprint == null) {
+                if (footprint == null && snapshot.budgets.isEmpty() && request.envelopePositions == placements.indices.toList()) {
                     rules(policy, enforcement, request.bytesPerCopy, placements, snapshot)
                 } else {
                     StorageAdmissionRules.decide(
@@ -366,6 +427,7 @@ class StorageAdmission(
                         placements,
                         snapshot,
                         footprint,
+                        request.envelopePositions,
                     )
                 }
             check(verdicts.size == request.candidates.size) { "one verdict per candidate" }

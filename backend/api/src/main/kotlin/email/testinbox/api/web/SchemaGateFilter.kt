@@ -18,7 +18,7 @@ import java.time.Duration
 import java.time.Instant
 
 /**
- * ADR-029 §4 at request time: this node does not serve `/v1` traffic against a
+ * ADR-029 §4 at request time: this node does not serve `/v1` or human-account traffic against a
  * schema older than the one its own artifact was built against.
  *
  * The readiness probe reports the same fact, and in an orchestrated
@@ -51,7 +51,10 @@ class SchemaGateFilter(
 
     @Volatile private var cached: Cached? = null
 
-    override fun shouldNotFilter(request: HttpServletRequest): Boolean = !request.requestURI.startsWith("/v1/")
+    override fun shouldNotFilter(request: HttpServletRequest): Boolean =
+        listOf(request.servletPath, request.requestURI.removePrefix(request.contextPath)).none { path ->
+            path.startsWith("/v1/") || path.startsWith("/account/") || path.startsWith("/account;")
+        }
 
     override fun doFilterInternal(
         request: HttpServletRequest,
@@ -63,7 +66,7 @@ class SchemaGateFilter(
             filterChain.doFilter(request, response)
             return
         }
-        log.warn("refusing /v1 traffic: {}", status.detail)
+        log.warn("refusing product traffic: {}", status.detail)
         writeUnavailable(request, response, status)
     }
 

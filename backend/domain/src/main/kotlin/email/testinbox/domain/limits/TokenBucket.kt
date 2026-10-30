@@ -120,6 +120,16 @@ object TokenBucket {
         )
     }
 
+    /**
+     * Whole tokens available at [now] without spending one: what a usage
+     * read reports. Pure, so it can never move the bucket.
+     */
+    fun available(
+        state: State,
+        policy: RatePolicy,
+        now: Instant,
+    ): Long = Math.floor(refill(state, policy, now).tokens).toLong()
+
     /** A full bucket for a scope seen for the first time. */
     fun initial(
         policy: RatePolicy,

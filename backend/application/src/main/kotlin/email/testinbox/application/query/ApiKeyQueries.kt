@@ -4,6 +4,7 @@ import email.testinbox.application.port.ApiKeyCursor
 import email.testinbox.application.port.ApiKeyRepository
 import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.tenant.ApiKey
+import email.testinbox.domain.tenant.WorkspaceActor
 
 /**
  * Read side of the management API. Every query is workspace-scoped from the
@@ -14,12 +15,12 @@ class ApiKeyQueries(
     private val apiKeys: ApiKeyRepository,
 ) {
     fun get(
-        actor: ApiKey,
+        actor: WorkspaceActor,
         id: ApiKeyId,
     ): ApiKey? = apiKeys.findById(actor.workspaceId, id)
 
     fun list(
-        actor: ApiKey,
+        actor: WorkspaceActor,
         after: ApiKeyCursor?,
         limit: Int,
     ): List<ApiKey> = apiKeys.listPage(actor.workspaceId, after, limit)

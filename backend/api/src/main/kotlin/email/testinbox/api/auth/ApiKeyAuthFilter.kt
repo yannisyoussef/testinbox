@@ -4,6 +4,7 @@ import email.testinbox.api.web.Correlation
 import email.testinbox.application.usecase.AuthenticateApiKey
 import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiScope
+import email.testinbox.domain.tenant.WorkspaceActor
 import jakarta.servlet.FilterChain
 import jakarta.servlet.http.HttpServletRequest
 import jakarta.servlet.http.HttpServletResponse
@@ -15,9 +16,12 @@ import org.springframework.web.filter.OncePerRequestFilter
 object AuthAttributes {
     const val API_KEY = "testinbox.apiKey"
 
-    fun principal(request: HttpServletRequest): ApiKey =
-        request.getAttribute(API_KEY) as? ApiKey
-            ?: error("request reached a controller without an authenticated API key")
+    const val WORKSPACE_ACTOR = "testinbox.workspaceActor"
+
+    fun principal(request: HttpServletRequest): WorkspaceActor =
+        request.getAttribute(WORKSPACE_ACTOR) as? WorkspaceActor
+            ?: request.getAttribute(API_KEY) as? ApiKey
+            ?: error("request reached a controller without authenticated workspace authority")
 }
 
 /**
@@ -36,9 +40,7 @@ class ApiKeyAuthFilter(
         response: HttpServletResponse,
         filterChain: FilterChain,
     ) {
-        val header = request.getHeader("Authorization")
-        val token = header?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }?.substring(7)?.trim()
-        val apiKey = token?.let(authenticate::authenticate)
+        val apiKey = bearerToken(request)?.let(authenticate::authenticate)
         if (apiKey == null) {
             writeProblem(request, response)
             return
@@ -70,6 +72,6 @@ class MissingScopeException(
     val scope: ApiScope,
 ) : RuntimeException("missing scope ${scope.wire}")
 
-fun ApiKey.requireScope(scope: ApiScope) {
+fun WorkspaceActor.requireScope(scope: ApiScope) {
     if (!hasScope(scope)) throw MissingScopeException(scope)
 }

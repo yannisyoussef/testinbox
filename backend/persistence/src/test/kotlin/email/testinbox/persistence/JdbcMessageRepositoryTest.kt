@@ -3,6 +3,7 @@ package email.testinbox.persistence
 import email.testinbox.application.port.AppendOutcome
 import email.testinbox.application.port.MessageCursor
 import email.testinbox.application.port.NOTIFICATION_CHANNEL
+import email.testinbox.application.port.NotificationPayload
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.domain.WorkspaceId
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -104,7 +105,7 @@ class JdbcMessageRepositoryTest : PersistenceIntegrationTest() {
             await().atMost(java.time.Duration.ofSeconds(5)).untilAsserted {
                 val delivered = pg.getNotifications(200) ?: emptyArray()
                 delivered.count {
-                    it.name == NOTIFICATION_CHANNEL && it.parameter == inbox.id.value.toString()
+                    it.name == NOTIFICATION_CHANNEL && it.parameter == NotificationPayload.encode(inbox.workspaceId, inbox.id)
                 } shouldBe 1
             }
         }

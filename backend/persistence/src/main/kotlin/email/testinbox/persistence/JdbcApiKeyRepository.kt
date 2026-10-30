@@ -7,6 +7,7 @@ import email.testinbox.application.port.RevokeApiKeyOutcome
 import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.identity.HumanAccountId
 import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiKeyKind
 import email.testinbox.domain.tenant.ApiScope
@@ -20,7 +21,7 @@ import java.util.UUID
 
 private const val COLUMNS =
     "id, workspace_id, project_id, key_hash, scopes, created_at, revoked_at, " +
-        "kind, public_id, name, expires_at, last_used_at, created_by_api_key_id"
+        "kind, public_id, name, expires_at, last_used_at, created_by_api_key_id, created_by_human_account_id"
 
 @Repository
 class JdbcApiKeyRepository(
@@ -82,7 +83,7 @@ class JdbcApiKeyRepository(
                 """
                 INSERT INTO api_key ($COLUMNS)
                 VALUES (:id, :workspaceId, :projectId, :keyHash, :scopes, :createdAt, :revokedAt,
-                        :kind, :publicId, :name, :expiresAt, :lastUsedAt, :createdBy)
+                        :kind, :publicId, :name, :expiresAt, :lastUsedAt, :createdBy, :createdByHuman)
                 """.trimIndent(),
             ).param("id", apiKey.id.value)
             .param("workspaceId", apiKey.workspaceId.value)
@@ -97,6 +98,7 @@ class JdbcApiKeyRepository(
             .param("expiresAt", apiKey.expiresAt?.let(Timestamps::toDb))
             .param("lastUsedAt", apiKey.lastUsedAt?.let(Timestamps::toDb))
             .param("createdBy", apiKey.createdByApiKeyId?.value)
+            .param("createdByHuman", apiKey.createdByHumanAccountId?.value)
             .update()
     }
 
@@ -239,7 +241,7 @@ class JdbcApiKeyRepository(
                 """
                 INSERT INTO api_key ($COLUMNS)
                 VALUES (:id, :workspaceId, :projectId, :keyHash, :scopes, :createdAt, :revokedAt,
-                        :kind, :publicId, :name, :expiresAt, :lastUsedAt, :createdBy)
+                        :kind, :publicId, :name, :expiresAt, :lastUsedAt, :createdBy, :createdByHuman)
                 ON CONFLICT (key_hash) DO UPDATE SET scopes = EXCLUDED.scopes
                 """.trimIndent(),
             ).param("id", apiKey.id.value)
@@ -255,6 +257,7 @@ class JdbcApiKeyRepository(
             .param("expiresAt", apiKey.expiresAt?.let(Timestamps::toDb))
             .param("lastUsedAt", apiKey.lastUsedAt?.let(Timestamps::toDb))
             .param("createdBy", apiKey.createdByApiKeyId?.value)
+            .param("createdByHuman", apiKey.createdByHumanAccountId?.value)
             .update()
     }
 
@@ -275,6 +278,7 @@ class JdbcApiKeyRepository(
             expiresAt = Timestamps.fromDb(rs, "expires_at"),
             lastUsedAt = Timestamps.fromDb(rs, "last_used_at"),
             createdByApiKeyId = rs.getObject("created_by_api_key_id", UUID::class.java)?.let(::ApiKeyId),
+            createdByHumanAccountId = rs.getObject("created_by_human_account_id", UUID::class.java)?.let(::HumanAccountId),
         )
     }
 }

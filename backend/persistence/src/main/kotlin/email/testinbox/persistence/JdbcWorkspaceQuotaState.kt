@@ -37,6 +37,12 @@ class JdbcWorkspaceQuotaState(
             .listOfRows()
     }
 
+    override fun storageQuota(workspaceId: WorkspaceId): email.testinbox.application.port.WorkspaceStorageQuota {
+        val figures = JdbcStorageVisibility(jdbc).read(workspaceId, emptySet())
+        return email.testinbox.application.port
+            .WorkspaceStorageQuota(figures.workspace.usedBytes, figures.budget?.payloadBytes)
+    }
+
     override fun activeInboxCount(workspaceId: WorkspaceId): Long =
         jdbc
             .sql(

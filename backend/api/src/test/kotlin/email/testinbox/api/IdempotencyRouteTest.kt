@@ -33,7 +33,8 @@ class IdempotencyRouteTest {
             }
             Regex("^    (get|post|put|patch|delete):").find(line)?.let { currentMethod = it.groupValues[1] }
             if (line.contains("#/components/parameters/idempotencyKey")) {
-                declared += "${currentMethod!!.uppercase()} /v1${currentPath!!}"
+                val prefix = if (currentPath!!.startsWith("/account/")) "" else "/v1"
+                declared += "${currentMethod!!.uppercase()} $prefix${currentPath!!}"
             }
         }
         return declared
@@ -67,7 +68,8 @@ class IdempotencyRouteTest {
     }
 
     @Test
-    fun `the declared set is the two mutations ADR-033 names`() {
-        declaredInContract() shouldBe setOf("POST /v1/inboxes", "POST /v1/api-keys")
+    fun `the declared set is the two mutations and their human aliases`() {
+        declaredInContract() shouldBe
+            setOf("POST /v1/inboxes", "POST /v1/api-keys", "POST /account/product/inboxes", "POST /account/product/api-keys")
     }
 }

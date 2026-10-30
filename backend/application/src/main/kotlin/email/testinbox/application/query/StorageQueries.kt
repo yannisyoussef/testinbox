@@ -28,6 +28,7 @@ data class StorageUsageView(
     val reservedBytes: Long,
     val availableBytes: Long,
     val overLimit: Boolean,
+    val footprint: WorkspaceFootprintView? = null,
 ) {
     companion object {
         /** §13a: `availableBytes = max(0, limit − stored − reserved)`. */
@@ -95,13 +96,46 @@ data class InboxStorageView(
  * effective [policy] T1 admits against, so what a tenant sees as a limit is
  * what admission applies.
  */
+data class WorkspaceFootprintView(
+    val limitBytes: Long,
+    val usedBytes: Long,
+    val pendingCleanupBytes: Long,
+    val availableBytes: Long,
+    val overLimit: Boolean,
+    val enforced: Boolean,
+)
+
 class StorageQueries(
     private val visibility: StorageVisibility,
     private val policy: StorageCapacityPolicy,
+    private val footprintPolicy: email.testinbox.application.storage.FootprintPolicy? = null,
+    private val enforcement: email.testinbox.domain.storage.StorageEnforcement = email.testinbox.domain.storage.StorageEnforcement.OFF,
 ) {
     /** `GET /v1/workspace/storage`: the authenticated key's own workspace, nothing else (§13a). */
-    fun workspace(workspaceId: WorkspaceId): StorageUsageView =
-        StorageUsageView.workspace(policy, visibility.read(workspaceId, emptySet()).workspace)
+    fun workspace(workspaceId: WorkspaceId): StorageUsageView {
+        val figures = visibility.read(workspaceId, emptySet())
+        val effective = effectivePolicy(figures.budget)
+        return StorageUsageView.workspace(effective, figures.workspace).copy(footprint = footprint(figures))
+    }
+
+    private fun effectivePolicy(budget: email.testinbox.application.storage.WorkspaceStorageBudget?): StorageCapacityPolicy =
+        email.testinbox.application.storage.EffectiveStoragePolicy
+            .forWorkspace(policy, budget)
+
+    private fun footprint(figures: email.testinbox.application.port.WorkspaceStorageFigures): WorkspaceFootprintView? {
+        val budget = figures.budget ?: return null
+        val fp = footprintPolicy ?: return null
+        val used = budget.charged(figures.workspace, fp.model)
+        val pending = fp.model.bound(budget.cleanup.bytes, budget.cleanup.objects)
+        return WorkspaceFootprintView(
+            budget.footprintBytes,
+            used,
+            pending,
+            maxOf(0L, Math.subtractExact(budget.footprintBytes, used)),
+            used > budget.footprintBytes,
+            enforcement.enforces(email.testinbox.domain.storage.StorageScope.WORKSPACE),
+        )
+    }
 
     /** The live storage members of one inbox representation (§13b). */
     fun inbox(
@@ -118,7 +152,7 @@ class StorageQueries(
         val figures = visibility.read(workspaceId, inboxIds)
         return inboxIds.associateWith { id ->
             val inbox = figures.inbox(id)
-            InboxStorageView(StorageUsageView.inbox(policy, inbox.usage, figures.workspace), inbox.refusals)
+            InboxStorageView(StorageUsageView.inbox(effectivePolicy(figures.budget), inbox.usage, figures.workspace), inbox.refusals)
         }
     }
 }

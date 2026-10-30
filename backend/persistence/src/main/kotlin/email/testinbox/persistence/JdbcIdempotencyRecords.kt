@@ -5,6 +5,7 @@ import email.testinbox.application.port.IdempotencyRecords
 import email.testinbox.application.port.IdempotencyScope
 import email.testinbox.application.port.IdempotencySnapshot
 import email.testinbox.domain.ApiKeyId
+import email.testinbox.domain.identity.HumanAccountId
 import org.springframework.dao.CannotAcquireLockException
 import org.springframework.dao.QueryTimeoutException
 import org.springframework.jdbc.core.simple.JdbcClient
@@ -53,6 +54,26 @@ class JdbcIdempotencyRecords(
         now: Instant,
         expiresAt: Instant,
         waitFor: Duration,
+    ): ClaimOutcome = claimOwned(scope, keyHash, fingerprint, ClaimActor(claimedByApiKeyId, null), now, expiresAt, waitFor)
+
+    override fun claimForHuman(
+        scope: IdempotencyScope,
+        keyHash: String,
+        fingerprint: String,
+        accountId: HumanAccountId,
+        now: Instant,
+        expiresAt: Instant,
+        waitFor: Duration,
+    ): ClaimOutcome = claimOwned(scope, keyHash, fingerprint, ClaimActor(null, accountId), now, expiresAt, waitFor)
+
+    private fun claimOwned(
+        scope: IdempotencyScope,
+        keyHash: String,
+        fingerprint: String,
+        actor: ClaimActor,
+        now: Instant,
+        expiresAt: Instant,
+        waitFor: Duration,
     ): ClaimOutcome {
         val claimId = UUID.randomUUID()
         // Bounds THIS statement and is reset immediately below. `lock_timeout`
@@ -69,15 +90,15 @@ class JdbcIdempotencyRecords(
                         """
                         INSERT INTO idempotency_record (
                             id, workspace_id, project_id, operation, key_hash, fingerprint,
-                            created_by_api_key_id, snapshot_version, snapshot, created_at, expires_at
+                            created_by_api_key_id, created_by_human_account_id, snapshot_version, snapshot, created_at, expires_at
                         ) VALUES (
                             :id, :workspaceId, :projectId, :operation, :keyHash, :fingerprint,
-                            :claimedBy, 0, '{}'::jsonb, :createdAt, :expiresAt
+                            :claimedBy, :claimedByHuman, 0, '{}'::jsonb, :createdAt, :expiresAt
                         )
                         ON CONFLICT (workspace_id, operation, key_hash)
                           DO UPDATE SET key_hash = idempotency_record.key_hash
                         RETURNING id, fingerprint, snapshot_version,
-                                  snapshot::text AS snapshot_text, created_by_api_key_id
+                                  snapshot::text AS snapshot_text, created_by_api_key_id, created_by_human_account_id
                         """.trimIndent(),
                     ).param("id", claimId)
                     .param("workspaceId", scope.workspaceId.value)
@@ -85,7 +106,8 @@ class JdbcIdempotencyRecords(
                     .param("operation", scope.operation.wire)
                     .param("keyHash", keyHash)
                     .param("fingerprint", fingerprint)
-                    .param("claimedBy", claimedByApiKeyId?.value)
+                    .param("claimedBy", actor.apiKeyId?.value)
+                    .param("claimedByHuman", actor.humanAccountId?.value)
                     .param("createdAt", Timestamps.toDb(now))
                     .param("expiresAt", Timestamps.toDb(expiresAt))
                     .query { rs, _ ->
@@ -95,6 +117,7 @@ class JdbcIdempotencyRecords(
                             snapshotVersion = rs.getInt("snapshot_version"),
                             snapshotJson = rs.getString("snapshot_text"),
                             claimedBy = rs.getObject("created_by_api_key_id", UUID::class.java)?.let(::ApiKeyId),
+                            claimedByHuman = rs.getObject("created_by_human_account_id", UUID::class.java)?.let(::HumanAccountId),
                         )
                     }.single()
             } catch (e: RuntimeException) {
@@ -121,6 +144,7 @@ class JdbcIdempotencyRecords(
                 ClaimOutcome.Replay(
                     IdempotencySnapshot(claimed.snapshotVersion, decode(claimed.snapshotJson)),
                     claimed.claimedBy,
+                    claimed.claimedByHuman,
                 )
             }
         }
@@ -213,12 +237,22 @@ class JdbcIdempotencyRecords(
     private fun decode(raw: String): Map<String, String?> =
         if (raw.isBlank()) emptyMap() else json.readValue(raw, Map::class.java) as Map<String, String?>
 
+    private data class ClaimActor(
+        val apiKeyId: ApiKeyId?,
+        val humanAccountId: HumanAccountId?,
+    ) {
+        init {
+            require(apiKeyId == null || humanAccountId == null)
+        }
+    }
+
     private data class Claim(
         val claimed: Boolean,
         val fingerprint: String,
         val snapshotVersion: Int,
         val snapshotJson: String,
         val claimedBy: ApiKeyId?,
+        val claimedByHuman: HumanAccountId?,
     )
 
     private companion object {
