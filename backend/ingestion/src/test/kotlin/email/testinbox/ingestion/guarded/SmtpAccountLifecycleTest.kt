@@ -137,6 +137,9 @@ class SmtpAccountLifecycleTest {
         recipients: List<String>,
     ): List<String> =
         Socket("127.0.0.1", port).use { socket ->
+            // Fail, never hang the build, if no reply comes (e.g. the probed port was taken by
+            // another process between the probe and the gateway's bind under a parallel build).
+            socket.soTimeout = 30_000
             val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.US_ASCII))
             val out = socket.getOutputStream()
             val lines = mutableListOf<String>()
