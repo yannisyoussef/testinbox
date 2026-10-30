@@ -1,11 +1,13 @@
 package email.testinbox.persistence
 
+import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.jdbc.datasource.SimpleDriverDataSource
+import org.testcontainers.utility.MountableFile
 import java.io.File
 import java.util.UUID
 
@@ -53,8 +55,55 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
                 .replace(":\"api_role\"", "\"$api\"")
                 .replace(":\"ingestion_role\"", "\"$ingestion\"")
                 .replace(":\"monitor_role\"", "\"$monitor\"")
+                .replace(":'api_role'", "'$api'")
+                .replace(":'ingestion_role'", "'$ingestion'")
+                .replace(":'monitor_role'", "'$monitor'")
         dataSource.connection.use { c -> c.createStatement().use { it.execute(sql) } }
     }
+
+    /**
+     * Runs the reference file exactly as Ops does: psql, `-v` role variables,
+     * ON_ERROR_STOP, as the schema owner. The JDBC path above strips psql meta
+     * commands; this one proves the shipped file, guard included.
+     */
+    private fun LedgerTestDatabase.psqlReference(
+        apiRole: String,
+        ingestionRole: String,
+        monitorRole: String,
+    ): org.testcontainers.containers.Container.ExecResult {
+        val inContainer = "/tmp/roles.reference.$suffix.sql"
+        postgres.copyFileToContainer(MountableFile.forHostPath(repoFile("deploy/database/roles.reference.sql").path), inContainer)
+        return postgres.execInContainer(
+            "psql",
+            "-X",
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-U",
+            postgres.username,
+            "-d",
+            name,
+            "-v",
+            "api_role=$apiRole",
+            "-v",
+            "ingestion_role=$ingestionRole",
+            "-v",
+            "monitor_role=$monitorRole",
+            "-f",
+            inContainer,
+        )
+    }
+
+    private fun LedgerTestDatabase.can(
+        role: String,
+        privilege: String,
+        table: String,
+    ): Boolean =
+        jdbc
+            .sql("SELECT has_table_privilege(?, ?, ?)")
+            .params(role, "public.$table", privilege)
+            .query(Boolean::class.javaObjectType)
+            .single()
 
     /** Gate F's state statement, read from the script itself, for the given application roles. */
     private fun LedgerTestDatabase.gateFState(appRoles: String): String {
@@ -252,6 +301,58 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
             .param("id", account.value)
             .query(Long::class.javaObjectType)
             .single() shouldBe 1
+    }
+
+    @Test
+    fun `under psql the shipped file isolates a distinct ingestion role and keeps the API's access`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+        db.login(api)
+        db.login(ingestion)
+        db.login(monitor)
+        val run = db.psqlReference(api, ingestion, monitor)
+        run.exitCode shouldBe 0
+        db.can(api, "SELECT", "api_key") shouldBe true
+        db.can(api, "INSERT", "idempotency_record") shouldBe true
+        db.can(api, "SELECT", "human_account") shouldBe true
+        db.can(ingestion, "SELECT", "api_key") shouldBe false
+        db.can(ingestion, "SELECT", "human_session") shouldBe false
+        db.can(ingestion, "INSERT", "message") shouldBe true
+    }
+
+    @Test
+    fun `a role layout the file cannot express is refused before any grant changes`() {
+        val db = LedgerTestDatabase.create(postgres, admin)
+        db.login(api)
+        db.login(ingestion)
+        db.login(monitor)
+        db.psqlReference(api, ingestion, monitor).exitCode shouldBe 0
+        val member = "ti_member_$suffix"
+        db.login(member)
+        db.jdbc.sql("GRANT \"$api\" TO \"$member\"").update()
+        val reader = "ti_reader_$suffix"
+        db.login(reader)
+        db.jdbc.sql("GRANT pg_read_all_data TO \"$reader\"").update()
+
+        val refused =
+            mapOf(
+                "identical API and ingestion (the shared production role)" to Triple(api, api, monitor),
+                "identical ingestion and monitor" to Triple(api, ingestion, ingestion),
+                "a role that does not exist" to Triple(api, "ti_absent_$suffix", monitor),
+                "the owner running the file" to Triple(api, postgres.username, monitor),
+                "an ingestion role that can become the API role" to Triple(api, member, monitor),
+                "an ingestion role that reads all data" to Triple(api, reader, monitor),
+            )
+        refused.forEach { (case, roles) ->
+            val run = db.psqlReference(roles.first, roles.second, roles.third)
+            withClue(case) {
+                (run.exitCode != 0) shouldBe true
+                run.stderr shouldContain "nothing was changed"
+                // The clean slate never ran: the grants of the last good run are intact.
+                db.can(api, "SELECT", "api_key") shouldBe true
+                db.can(ingestion, "INSERT", "message") shouldBe true
+                db.can(ingestion, "SELECT", "api_key") shouldBe false
+            }
+        }
     }
 
     @Test

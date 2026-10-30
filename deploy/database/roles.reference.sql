@@ -5,6 +5,8 @@
 -- Run AFTER every migration, as the schema owner, in ONE transaction (the file
 -- opens and commits its own; never run it statement by statement):
 --   psql -v api_role=<api> -v ingestion_role=<ingestion> -v monitor_role=<monitor> -f roles.reference.sql
+-- The three roles must be distinct, and none may be the owner running the file:
+-- the file refuses, before changing anything, a layout it cannot express.
 -- (It starts from a clean slate, so re-running it also removes any privilege an
 -- earlier role script left behind. A blanket "DML on all tables" or an
 -- ALTER DEFAULT PRIVILEGES that grants it would hand the deployables the
@@ -26,6 +28,45 @@
 -- gate F's own privilege query, which must report no violation.
 
 \set ON_ERROR_STOP on
+
+-- Refuse a role layout this file cannot express, BEFORE anything is granted
+-- or revoked. With api_role = ingestion_role every REVOKE aimed at the SMTP
+-- process lands on the API too (it loses api_key, so every request fails), and
+-- the isolation below silently does not exist. A role that is the owner
+-- running this file would revoke its own privileges; an ingestion role that
+-- can become the API role, or reads all data, keeps the API's access whatever
+-- is revoked here.
+SET testinbox.api_role = :'api_role';
+SET testinbox.ingestion_role = :'ingestion_role';
+SET testinbox.monitor_role = :'monitor_role';
+DO $guard$
+DECLARE
+    api       text := current_setting('testinbox.api_role');
+    ingestion text := current_setting('testinbox.ingestion_role');
+    monitor   text := current_setting('testinbox.monitor_role');
+    r         text;
+BEGIN
+    IF api = ingestion OR api = monitor OR ingestion = monitor THEN
+        RAISE EXCEPTION 'roles.reference.sql: api_role, ingestion_role and monitor_role must be three distinct roles (api=%, ingestion=%, monitor=%); nothing was changed',
+            api, ingestion, monitor;
+    END IF;
+    FOREACH r IN ARRAY ARRAY[api, ingestion, monitor] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+            RAISE EXCEPTION 'roles.reference.sql: role % does not exist; nothing was changed', r;
+        END IF;
+        IF r = current_user THEN
+            RAISE EXCEPTION 'roles.reference.sql: % is the schema owner running this file, not a deployable role; nothing was changed', r;
+        END IF;
+    END LOOP;
+    IF (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = ingestion)
+        OR pg_has_role(ingestion, api, 'MEMBER')
+        OR pg_has_role(ingestion, 'pg_read_all_data', 'MEMBER')
+        OR pg_has_role(ingestion, 'pg_write_all_data', 'MEMBER') THEN
+        RAISE EXCEPTION 'roles.reference.sql: ingestion role % has access this file cannot revoke (superuser, bypassrls, member of %, pg_read_all_data or pg_write_all_data); nothing was changed',
+            ingestion, api;
+    END IF;
+END
+$guard$;
 
 BEGIN;
 
