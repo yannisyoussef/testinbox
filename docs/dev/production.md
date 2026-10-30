@@ -469,11 +469,32 @@ artifact (no HTTP endpoint, no public field):
   keys, inboxes, ingestion and the waitlist continue, and a paused applicant
   gets the same CLOSED outcome as a never-opened cohort. It never touches
   `capacity_ready`. Details: [admission and source](../delivery/ti-delivery-002/ADMISSION-AND-SOURCE.md);
-- account suspend / resume / delete — TODO(integrator): exact subcommands,
-  their effect on sessions, managed API keys and ingestion eligibility, the
-  DRAINING report and the deletion/restore procedure, from stream L
-  (design: [ACCOUNT-LIFECYCLE](../delivery/ti-delivery-001/ACCOUNT-LIFECYCLE.md)).
+- account lifecycle —
+  `java -jar api.jar account-lifecycle suspend|resume|delete|status|erase-identity <account-uuid>`
+  and `account-lifecycle restore-reconcile`, credentials only from
+  `TI_LIFECYCLE_JDBC_URL`, `TI_LIFECYCLE_USER`, `TI_LIFECYCLE_PASSWORD` (the
+  owner of `human_account` or a member of it; the runtime API role is refused
+  by the use case and by V22's row triggers). Exit codes: 0 done, 1 refused,
+  2 usage, 3 pending. Suspension and deletion permanently delete the
+  account's sessions and revoke every managed key of its workspace; resume
+  restores the state only, so the person signs in again and issues new keys.
+  Ingestion treats the workspace as inactive from the T1 fence on (uniform
+  `250`, nothing persisted); the command reports `DRAINING` (exit 3) until
+  every reservation taken before the fence is settled. Deletion waits for the
+  drain, deletes the inboxes through the existing deleter and keeps the spent
+  place, the participant marker, pending-cleanup charges and revoked-key
+  history; identity erasure is the separate `erase-identity` step. Keep every
+  `event=…` line it prints in a lifecycle log outside the database:
+  `restore-reconcile` (run after any restore, before reopening anything)
+  replays from it. Procedure:
+  [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md).
 
+**After a restore every participant is quarantined.** The clearance row of
+`lifecycle_restore_clearance` is never in a backup (`-`), so a restored
+database treats every participant workspace as inactive and every human
+account as suspended until `account-lifecycle restore-reconcile` closes
+admissions, suspends the restored participant accounts, revokes all
+participant keys and records the clearance.
 
 
 ### The API environment contract (`TESTINBOX_ACCOUNTS_*`)

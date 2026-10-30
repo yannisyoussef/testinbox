@@ -386,9 +386,13 @@ refusals are identical.
 
 No account, admission, waitlist or quota state changes a valid recipient's SMTP
 reply. A suspended or deletion-pending participant's addresses must behave like
-unknown recipients — `250`, discard, nothing persisted — which is part of the
-TI-DELIVERY-002 lifecycle work (stream L). TODO(integrator): confirm against the
-integrated lifecycle tests.
+unknown recipients — `250`, discard, nothing persisted. TI-DELIVERY-002 makes
+it so: recipient resolution filters inactive participants, and a copy that
+becomes inactive between preparation and the T1 snapshot is a distinct
+`Inactive` outcome (no reservation, upload, refusal record or duplicate
+report). `SmtpAccountLifecycleTest` proves over real SMTP that the transcript
+is byte-identical to an unknown recipient's
+([lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md)).
 
 ### Disabled is closed, never a fallback
 
