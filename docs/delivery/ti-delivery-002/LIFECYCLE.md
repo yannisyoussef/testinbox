@@ -262,7 +262,9 @@ plus anything minted from the bootstrap credential during the quarantine.
 The revocation is idempotent: rows that are already revoked keep their own
 `revoked_at`, and a second run is refused (`outcome=REFUSED`, nothing
 changed). It is auditable by count, never key material:
-`event=restore.reconcile outcome=CLEARED participantWorkspaces=… suspendedAccounts=… revokedKeys=<participant keys> revokedLegacyKeys=<owner and monitoring keys> admissions=CLOSED`.
+the `event=restore.reconcile outcome=CLEARED` line carries `revokedKeys`
+(participant keys) and `revokedLegacyKeys` (owner and monitoring keys) as
+counts.
 
 From then on:
 
