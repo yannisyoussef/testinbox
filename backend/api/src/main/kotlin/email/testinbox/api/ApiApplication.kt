@@ -12,9 +12,10 @@ import org.springframework.scheduling.annotation.EnableScheduling
 class ApiApplication
 
 fun main(args: Array<String>) {
-    if (args.firstOrNull() == "storage-budget") {
-        CohortBudgetCommand.run(args)
-        return
+    // Offline operator commands: dispatched before Spring, so no listener or scheduler starts.
+    when (args.firstOrNull()) {
+        "storage-budget" -> return CohortBudgetCommand.run(args)
+        "admission" -> return AdmissionCommand.run(args)
     }
     runApplication<ApiApplication>(*args)
 }
