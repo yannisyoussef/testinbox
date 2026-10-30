@@ -20,7 +20,11 @@ import java.time.Clock
 data class HumanAccountProperties(
     val enabled: Boolean = false,
     val publicOrigin: String = "",
+    /** Shared with the website's /account proxy only; see AccountClientSource. Optional. */
+    val clientAddressSecret: String = "",
 ) {
+    override fun toString(): String = "HumanAccountProperties(enabled=$enabled, publicOrigin=$publicOrigin, clientAddressSecret=[REDACTED])"
+
     /** Invalid account configuration disables this boundary, without taking down the Bearer API. */
     val canonicalOrigin: String? =
         runCatching { URI(publicOrigin) }
@@ -42,6 +46,13 @@ class HumanAccountWiring {
         tx: TransactionRunner,
         clock: Clock,
     ): AuthenticateHumanSession = AuthenticateHumanSession(sessions, tx, clock)
+
+    /** Refuses startup on a weak configured secret; absent means every sign-in shares the peer budget. */
+    @Bean
+    fun accountClientSource(
+        properties: HumanAccountProperties,
+        registry: io.micrometer.core.instrument.MeterRegistry,
+    ): AccountClientSource = AccountClientSource(properties.clientAddressSecret, registry)
 
     @Bean
     fun chargeAccountRequest(
