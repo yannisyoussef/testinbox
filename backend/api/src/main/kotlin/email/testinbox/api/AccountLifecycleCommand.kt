@@ -342,7 +342,8 @@ object AccountLifecycleCommand {
             is ReconcileRestoredDatabase.Result.Reconciled -> {
                 out.println(
                     "event=restore.reconcile outcome=CLEARED participantWorkspaces=${result.participantWorkspaces} " +
-                        "suspendedAccounts=${result.suspendedAccounts} revokedKeys=${result.revokedKeys} admissions=CLOSED",
+                        "suspendedAccounts=${result.suspendedAccounts} revokedKeys=${result.revokedKeys} " +
+                        "revokedLegacyKeys=${result.revokedLegacyKeys} admissions=CLOSED",
                 )
                 EXIT_DONE
             }

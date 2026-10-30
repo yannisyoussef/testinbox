@@ -26,6 +26,20 @@ enum class WorkspaceStatus {
     INACTIVE_PARTICIPANT,
 }
 
+/**
+ * Whether the database is restore-quarantined: it carries no
+ * `lifecycle_restore_clearance` row (V22). Read per request, like every other
+ * authorization fact; nothing is cached.
+ */
+fun interface RestoreQuarantine {
+    fun quarantined(): Boolean
+
+    companion object {
+        /** For compositions without a lifecycle schema (unit tests). */
+        val NONE = RestoreQuarantine { false }
+    }
+}
+
 /** Thrown when a write discovers, under its workspace guard, that the workspace became inactive after authentication. */
 class WorkspaceInactiveException : RuntimeException("the workspace is no longer active")
 
@@ -85,6 +99,15 @@ interface AccountLifecycleStore {
     /** Closes admissions and capacity on the locked cohort row. */
     fun closeCohort()
 
+    /**
+     * Blocks every other credential write (a mint, a revocation, a
+     * `last_used_at` refresh) until this transaction ends, so no managed key
+     * can be committed between restore reconciliation's revocation and its
+     * clearance. Taken before the first credential row is touched.
+     */
+    fun lockCredentials()
+
+    /** Records the clearance. V22 refuses it while any managed key is still unrevoked. */
     fun clearQuarantine()
 
     /**

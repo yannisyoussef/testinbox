@@ -448,15 +448,15 @@ SELECT (SELECT count(*) FROM participant_workspace) AS participants,
 
 ## Account lifecycle semantic floor (TI-DELIVERY-002, schema V22)
 
-V22 is expand-only. It adds one table (`lifecycle_restore_clearance`), two
-functions, three triggers and one view. An older artifact starts cleanly
+V22 is expand-only. It adds one table (`lifecycle_restore_clearance`), three
+functions, their triggers and one view. An older artifact starts cleanly
 against it. Rolling back the artifact is a semantic hazard, not a schema
 one, because **an artifact older than this change ignores the new account
 state**:
 
 | Older artifact | What it ignores | Consequence |
 |---|---|---|
-| API | the restore quarantine. It reads `human_account.state` raw, not the cleared, effective state. | On a restored, unreconciled database, restored `ACTIVE` accounts could sign in again, and restored un-revoked participant keys would authenticate. |
+| API | the restore quarantine. It reads `human_account.state` raw, not the cleared, effective state. | On a restored, unreconciled database, restored `ACTIVE` accounts could sign in again, and every restored un-revoked key would authenticate (participant, owner and monitoring alike). After `restore-reconcile` every managed key is revoked, whatever the artifact. |
 | API | workspace eligibility on API-key authentication | A key in an erased or missing-membership participant workspace authenticates if it was never revoked. Suspension and deletion revoke keys, so this matters after a restore or a manual SQL edit. |
 | API | the lifecycle recheck under the workspace guard when creating inboxes and keys | It does not serialize with a concurrent suspension. |
 | API | the 20/1000 participant key inventory | The bound is not enforced. |
@@ -470,7 +470,8 @@ What still holds under an older artifact:
 - The permanent revocation. Revoked sessions and keys are rows that no
   artifact un-revokes.
 - The V22 triggers. They refuse every lifecycle write by a non-operator role
-  whatever artifact runs.
+  whatever artifact runs. They also refuse the restore clearance while any
+  managed key is unrevoked.
 - The V21 node fence. Once any `participant_workspace` row exists, an older
   ingestion node registering latches storage admission (`451` for every
   event), so it cannot silently ingest for an inactive participant.

@@ -144,6 +144,13 @@ class JdbcAccountLifecycle(
             .update()
     }
 
+    override fun lockCredentials() {
+        requireTransaction()
+        // SHARE ROW EXCLUSIVE: conflicts with every row write of others and with
+        // itself, never with plain reads, so authentication keeps reading keys.
+        jdbc.sql("LOCK TABLE api_key IN SHARE ROW EXCLUSIVE MODE").update()
+    }
+
     override fun clearQuarantine() {
         requireTransaction()
         // A concurrent reconciliation that committed first makes this a no-op, never a failure.
