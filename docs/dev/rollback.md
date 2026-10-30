@@ -378,13 +378,66 @@ backup restore authorizes reopening registration.
 
 Since TI-DELIVERY-001, both deployables emit `pg_notify` with the payload
 `<workspaceId>/<inboxId>` (`NotificationPayload`) instead of the bare inbox id.
-A new listener decodes both shapes; an **older listener looks waiters up by the
-raw payload, so a new payload wakes nobody**. Its waits then sleep to the
-deadline past a persisted match, and nothing goes red: LISTEN stays healthy and
-`testinbox_wait_listen_degraded_polling` stays 0. Only wait latency shows it.
+Only the API LISTENs (`PgListenNotifier` is wired in the API alone), so what
+matters is the version of the API's listener against every emitter:
 
-- **Roll out reader-first**: the API before (or with) ingestion, never after it.
-- **Roll back API and ingestion together** across this change. Never roll the
-  API back below it while any ingestion node still runs it; roll ingestion back
-  first, or both in one step.
+| API (listener) | emitters | wait on a matching message |
+|---|---|---|
+| new | new or old | woken at once; a bare payload decodes as legacy (`PgListenNotifierTest`) |
+| old | old | woken at once (today) |
+| old | **new** | **never woken**: the old listener looks waiters up by the raw payload |
+
+In the last row the old `WaitForMessage` parks to its deadline, re-evaluates
+once and returns the persisted match there: `MATCHED`, not a false `TIMEOUT`,
+but after the full wait window (up to the 60 s cap). A client whose own timeout
+is not longer than the window can time out first. Nothing goes red: LISTEN
+stays healthy and `testinbox_wait_listen_degraded_polling` stays 0.
+
+A legacy payload names no workspace, so with a new API and an old emitter the
+new workspace event stream is not woken for that mail; it shows it on its next
+evaluation, within the stream's 90 s visibility horizon. Latency only.
+
+- **Roll out reader-first, in order**: start the new API, prove it READY, and
+  only then replace ingestion. Not "with": two containers recreated by one
+  command can start in either order.
+- **Roll back ingestion first**: stop or revert ingestion, then revert the API.
+  Never run an old API while any ingestion node still runs this release.
 - The payload is application code, not schema, so the database needs nothing.
+
+## Rolling back across TI-DELIVERY-001 in production (V11–V21)
+
+Supported rollback target: **the previous production release, `408c3f3`**
+(schema V10 artifacts) on the **V21 schema**. V11–V21 are expand-only: the old
+artifacts accept a schema ahead of them, ignore the new tables and columns, and
+neither touches a table the new grants deny to ingestion. Nothing older than
+`408c3f3` is a supported target for this change.
+
+The schema stays at V21. So, on rollback:
+
+- **Grants:** keep the newest `roles.reference.sql` (the V21 one). Do **not**
+  re-run `408c3f3`'s reference: it grants every table to both roles, which
+  hands the SMTP process API keys and identity data again. The old API and old
+  ingestion run correctly under the new reference with separate roles: their
+  privileges are unchanged except on tables they never use.
+- **Backups:** keep the V21 `deploy/backup/scope.txt` and checker. `408c3f3`'s
+  scope does not classify the V12–V21 tables, so every backup would be refused
+  as `UNCLASSIFIED`. The scope describes the schema, not the artifact.
+- **Order:** ingestion first, then the API (see the NOTIFY payload above).
+- **Roles:** API and ingestion stay distinct database roles in every direction.
+  The reference refuses identical roles before changing anything.
+
+**Rollback floor.** Rolling back to `408c3f3` is supported only while
+`participant_workspace` and `storage_cohort_plan` are both empty, which holds
+while registration and admission stay disabled and no pool is reserved. Once
+either has a row, V21's node fence latches storage admission as soon as an old
+(non-`cohort-storage-v1`) ingestion node registers or heartbeats: mail is
+refused until an operator clears the latch. From then on there is no artifact
+rollback below this release, only the hold-first procedure in
+[cohort storage](cohort-storage.md#upgrade-restore-and-rollback-boundaries).
+Check before any rollback:
+
+```sql
+SELECT (SELECT count(*) FROM participant_workspace) AS participants,
+       (SELECT count(*) FROM storage_cohort_plan)   AS pool_plans,
+       (SELECT count(*) FROM beta_admission)        AS admissions;  -- all 0, or no rollback
+```
