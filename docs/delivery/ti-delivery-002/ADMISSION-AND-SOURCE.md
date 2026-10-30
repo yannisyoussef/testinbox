@@ -101,18 +101,25 @@ The pause is distinct from these two controls:
 These run from the reviewed API artifact. They are dispatched before Spring
 starts, so no HTTP listener, scheduler, login provider or migration runs.
 
-```
-export TI_ADMISSION_JDBC_URL='jdbc:postgresql://<db-host>:5432/<db-name>'
-export TI_ADMISSION_USER='<operator role>'
-export TI_ADMISSION_PASSWORD='<operator secret>'
+There is no `api.jar` on the host: the API image's entrypoint is Spring Boot's
+`JarLauncher`, and arguments after the image reference reach the command. Put
+`TI_ADMISSION_JDBC_URL`, `TI_ADMISSION_USER` and `TI_ADMISSION_PASSWORD` in a
+`0600` env file (never a password on the command line), and run a one-off
+container of the reviewed API digest on the database network — never
+`docker compose run api`, which inherits the service's Traefik labels:
 
-java -jar api.jar admission status
-java -jar api.jar admission pause
-java -jar api.jar admission resume
+```
+docker run --rm --network <data network> --env-file /root/testinbox-ops/admission.env \
+  <registry>/testinbox-api@sha256:<api digest> admission status
+… admission pause
+… admission resume --open-beta
 ```
 
-In the API container image, append the same arguments to the entrypoint:
-`docker run --rm -e TI_ADMISSION_JDBC_URL -e TI_ADMISSION_USER -e TI_ADMISSION_PASSWORD <api-image>@sha256:<digest> admission status`.
+**`resume` opens registration.** It sets `admissions_open=true` even on a
+cohort that was never opened, which breaks Ops' T5 backstop
+(`admissions_open|capacity_ready = f|f`). Never run it before the release
+decision. The command refuses a bare `resume` and changes nothing unless the
+explicit `--open-beta` flag is given.
 
 Sample output:
 
@@ -264,9 +271,15 @@ never by address.
    Store it as host secret material. Keep it out of Git, the browser bundle,
    the ingestion environment and chat.
 3. **On the website,** set the trusted proxy CIDRs to the Cloudflare ranges
-   (https://www.cloudflare.com/ips/). The edge is Cloudflare, then Traefik
-   with an origin lock to Cloudflare ranges, then the website. A forwarded
-   address is believed only from those hops.
+   only (https://www.cloudflare.com/ips/), kept in sync with Ops'
+   `EDGE_TRUSTED_IPS`. Do not add the Traefik or docker network: the
+   Traefik → site hop is the TCP peer and never appears in `X-Forwarded-For`.
+   The edge is Cloudflare, then Traefik, whose entrypoint trusts forwarded
+   headers only from `EDGE_TRUSTED_IPS`, then the website. The site router has
+   no Cloudflare-only middleware yet, so a direct request reaches the site
+   with `X-Forwarded-For` = its own peer only; that is untrusted, so no client
+   address is attested and it uses the shared budget (safe). Ops action
+   before registration: add `testinbox-cf-only` to the site router.
 4. **Rotation:** set the new value on both sides, API first. While the two
    differ, requests fall back to the shared budget. That is degraded but safe.
 5. **Leaving it unset** keeps today's behaviour: one shared budget, and no

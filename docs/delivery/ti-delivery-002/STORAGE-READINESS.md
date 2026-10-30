@@ -189,7 +189,7 @@ automated tests in this repository:
   helper);
 - an SMTP `250` with no message stored for a `WORKSPACE_FOOTPRINT_LIMIT`
   refusal (no ingestion/E2E test asserts the reply for that reason);
-- `java -jar api.jar storage-budget reserve|check|revoke` end to end
+- the `storage-budget reserve|check|revoke` subcommand end to end
   (`CohortBudgetCommand.run` has no test; its input parser and the use case it
   calls do);
 - an HTTP response carrying a populated `footprint` object (API HTTP tests run

@@ -304,9 +304,18 @@ of the window. Stream A/W replace the shared source with a client address the
 site attests to the API (`TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`,
 `TESTINBOX_TRUSTED_PROXY_CIDRS`, `TESTINBOX_TRUSTED_PROXY_HOPS`). The chain:
 
-- **Edge → site.** Traefik admits only Cloudflare edge addresses at the TCP
-  peer and trusts forwarded headers only from Cloudflare, so the site receives
-  `X-Forwarded-For: [anything the client sent…,] <client>, <Cloudflare edge>`.
+- **Edge → site.** Traefik's entrypoint trusts forwarded headers only from
+  Cloudflare (Ops' `EDGE_TRUSTED_IPS`), so through Cloudflare the site
+  receives `X-Forwarded-For: [anything the client sent…,] <client>, <Cloudflare edge>`.
+  The public site router has **no** Cloudflare-only middleware today: a
+  direct, non-Cloudflare request does reach the site, with
+  `X-Forwarded-For: <its own peer>` only. That single entry is not in a
+  trusted range, so the site attests no client address and the request uses
+  the shared budget — safe, never a chosen budget. Ops action before
+  registration: add `testinbox-cf-only` to the site router.
+  `TESTINBOX_TRUSTED_PROXY_CIDRS` is Cloudflare's published ranges only, in
+  sync with `EDGE_TRUSTED_IPS`; the Traefik → site hop is the TCP peer, never
+  an `X-Forwarded-For` entry, and must not be listed.
   The site skips exactly `HOPS` entries from the right (1 on the deployed
   edge), each of which must lie in a trusted CIDR, and takes the next entry as
   the client — only if it is a literal IP outside every trusted range.

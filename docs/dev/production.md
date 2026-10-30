@@ -83,7 +83,10 @@ relaxed-binding override of the underlying property is refused).
 ## Readiness, and one setting the application checks live
 
 Same probes and same components as staging
-([staging.md](staging.md#health-and-readiness)), plus **`dbSession`** on the
+([staging.md](staging.md#health-and-readiness)), plus
+**`lifecyclePrivileges`** on both deployables (V22: the role can read the
+account-lifecycle view, and on the API the restore clearance; see the V22
+deployment order below), plus **`dbSession`** on the
 API: it reads `SHOW idle_in_transaction_session_timeout` on every probe. In
 production a disabled value (`0`, PostgreSQL's default) takes the node
 **OUT_OF_SERVICE** until Ops sets it; elsewhere it is reported and the node
@@ -456,11 +459,37 @@ the pool is reserved again.
 **Operator controls added by TI-DELIVERY-002.** ADR-036 §5 requires an
 operator control to pause admissions and to suspend or revoke an account. These
 are delivered by TI-DELIVERY-002 streams A and L as subcommands of the API
-artifact (no HTTP endpoint, no public field):
+artifact (no HTTP endpoint, no public field).
+
+**How to run an operator subcommand.** There is no `api.jar` on the host. The
+API image's entrypoint is Spring Boot's launcher
+(`java -cp . org.springframework.boot.loader.launch.JarLauncher`, see
+`deploy/docker/backend.Dockerfile`), and arguments after the image reference
+are passed straight to it. Run the subcommand as a one-off container of the
+**same reviewed API digest**, on the network where PostgreSQL is reachable,
+with its credentials in an env file:
+
+```
+docker run --rm --network <data network> --env-file /root/testinbox-ops/<command>.env \
+  <registry>/testinbox-api@sha256:<api digest> account-lifecycle status <account-uuid>
+# likewise: … <digest> admission status|pause|resume --open-beta
+#           … -v /root/testinbox-ops/pool.json:/run/pool.json:ro <digest> storage-budget check /run/pool.json
+```
+
+- The env file is mode `0600`, owned by the operator, and holds only the
+  `TI_ADMISSION_*`, `TI_LIFECYCLE_*` or `TI_BUDGET_*` variables (plus, for
+  `account-lifecycle`, optionally the API's `TESTINBOX_EXACT_COOLDOWN`).
+  Never put a password on the command line (`-e NAME=value`, a URL with
+  credentials): argv is visible in `ps` and shell history.
+- Never `docker compose run api …`: that inherits the API service's
+  definition, including its Traefik labels and runtime environment.
+- The subcommand is dispatched before Spring: no listener, scheduler, login
+  provider or migration starts, and the container exits with the command.
+
+The controls:
 
 - admission pause / resume —
-  `java -jar api.jar admission status|pause|resume` (or the same arguments
-  after the API image entrypoint), credentials only from
+  `admission status|pause|resume --open-beta`, credentials only from
   `TI_ADMISSION_JDBC_URL`, `TI_ADMISSION_USER`, `TI_ADMISSION_PASSWORD` (no
   defaults; a URL carrying credentials is refused). It runs before Spring, so
   no listener or scheduler starts, and it rechecks the role's UPDATE privilege
@@ -468,14 +497,21 @@ artifact (no HTTP endpoint, no public field):
   role is refused. Pausing stops new admissions only: participants, sessions,
   keys, inboxes, ingestion and the waitlist continue, and a paused applicant
   gets the same CLOSED outcome as a never-opened cohort. It never touches
-  `capacity_ready`. Details: [admission and source](../delivery/ti-delivery-002/ADMISSION-AND-SOURCE.md);
+  `capacity_ready`. **Never run `resume` before the release decision:** it
+  sets `admissions_open=true` even on a cohort that was never opened, which
+  breaks Ops' T5 backstop (`admissions_open|capacity_ready = f|f`). The
+  command therefore refuses `resume` unless it is given the explicit
+  `--open-beta` flag. Details: [admission and source](../delivery/ti-delivery-002/ADMISSION-AND-SOURCE.md);
 - account lifecycle —
-  `java -jar api.jar account-lifecycle suspend|resume|delete|status|erase-identity <account-uuid>`
+  `account-lifecycle suspend|resume|delete|status|erase-identity <account-uuid>`
   and `account-lifecycle restore-reconcile`, credentials only from
   `TI_LIFECYCLE_JDBC_URL`, `TI_LIFECYCLE_USER`, `TI_LIFECYCLE_PASSWORD` (the
   owner of `human_account` or a member of it; the runtime API role is refused
-  by the use case and by V22's row triggers). Exit codes: 0 done, 1 refused,
-  2 usage, 3 pending. Suspension and deletion permanently delete the
+  by the use case and by V22's row triggers). Exit codes: 0 done, 1 refused
+  (nothing changed), 2 usage, 3 pending (re-run later), 4 failed with the
+  outcome unknown (a timeout or lost connection: run `status` first). Every
+  operator transaction is bounded (5 s lock wait, 10 s per statement, 10 s
+  idle), so a stalled operator never holds the T1 fence. Suspension and deletion permanently delete the
   account's sessions and revoke every managed key of its workspace; resume
   restores the state only, so the person signs in again and issues new keys.
   Ingestion treats the workspace as inactive from the T1 fence on (uniform
@@ -484,9 +520,10 @@ artifact (no HTTP endpoint, no public field):
   drain, deletes the inboxes through the existing deleter and keeps the spent
   place, the participant marker, pending-cleanup charges and revoked-key
   history; identity erasure is the separate `erase-identity` step. Keep every
-  `event=…` line it prints in a lifecycle log outside the database:
-  `restore-reconcile` (run after any restore, before reopening anything)
-  replays from it. Procedure:
+  `event=…` line it prints in a lifecycle log outside the database. After a
+  restore, `restore-reconcile` does NOT read that log: it suspends and
+  revokes every restored participant, and the operator then replays the log
+  by hand (below). Procedure:
   [lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md).
 
 **After a restore every participant is quarantined.** The clearance row of
@@ -494,8 +531,38 @@ artifact (no HTTP endpoint, no public field):
 database treats every participant workspace as inactive and every human
 account as suspended until `account-lifecycle restore-reconcile` closes
 admissions, suspends the restored participant accounts, revokes all
-participant keys and records the clearance.
+participant keys and records the clearance. Reconciliation only lifts the
+quarantine; the operator then replays, by hand, every lifecycle event in the
+external log that is newer than the backup:
 
+1. **Before sign-in or registration is re-enabled — mandatory:** replay every
+   `delete`, `erase-identity` and `suspend` event, for participant **and
+   non-participant** accounts alike. A non-participant account deleted after
+   the backup is not suspended by reconciliation (it has no workspace), so
+   without the replay it could sign in again once the boundary reopens.
+2. Then `resume` only the participants the log shows active at the incident;
+   they sign in again and mint new keys.
+
+
+### Deploying the account-lifecycle release (V22): required order
+
+1. Stage the candidate `deploy/backup/scope.txt` and
+   `scripts/check-backup-scope.sh` (they classify `lifecycle_restore_clearance`
+   and accept the V22 view).
+2. Run the migrator (V22).
+3. Re-run `deploy/database/roles.reference.sql` as the schema owner. Both
+   roles need it: ingestion gets `SELECT` on `workspace_lifecycle_eligibility`,
+   and the API's `ON ALL TABLES` grant is one-shot, so it does not cover the
+   new view and table until the file is re-run.
+4. Deploy the API, then ingestion, then web, then run the synthetics.
+
+Both deployables report **NOT READY** (`lifecyclePrivileges`
+`OUT_OF_SERVICE`, reason `ELIGIBILITY_VIEW_UNREADABLE` or
+`RESTORE_CLEARANCE_UNREADABLE`, and one log line on each change) when their
+role cannot read what they need, instead of serving with every participant
+key refused or every event answered `451`. Staging connects as the table
+owner and always passes. The V22 authority checks and triggers add nothing
+there either: the owner IS the operator authority.
 
 ### The API environment contract (`TESTINBOX_ACCOUNTS_*`)
 
@@ -532,8 +599,17 @@ browser), and — **added by TI-DELIVERY-002 (stream W)** —
 forwarded client address the site may believe) and the same
 `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`, plus `TESTINBOX_TRUSTED_PROXY_HOPS`
 (1 behind Cloudflare → Traefik). `TESTINBOX_TRUSTED_PROXY_CIDRS` is a
-comma-separated list of IPv4/IPv6 CIDRs, each with a prefix length (Cloudflare's
-published ranges plus the Traefik network). The site skips exactly `HOPS`
+comma-separated list of IPv4/IPv6 CIDRs, each with a prefix length:
+**Cloudflare's published ranges only**, kept in sync with Ops'
+`EDGE_TRUSTED_IPS`. The Traefik → site hop is the site's TCP peer and never
+appears in `X-Forwarded-For`, so the Traefik/docker network must NOT be
+listed. Traefik's entrypoint trusts forwarded headers only from
+`EDGE_TRUSTED_IPS`; the public site router has no Cloudflare-only
+middleware, so a direct, non-Cloudflare request does reach the site, but
+with `X-Forwarded-For` holding only its own peer address. That entry is not
+in a trusted range, so the site sends no client address and the visitor
+falls back to the shared budget (safe). **Ops action before registration:**
+add the `testinbox-cf-only` middleware to the site router. The site skips exactly `HOPS`
 rightmost `X-Forwarded-For` entries, each of which must be trusted, and sends
 the next one as `X-TestInbox-Client-Address` with `X-TestInbox-Proxy-Secret`.
 If a hop is untrusted, the candidate is malformed or itself trusted, or any of
@@ -723,9 +799,14 @@ row B is where that evidence lives — after the drill, `message`, `inbox` and
 backups and WAL archiving (`pg_basebackup`, continuous archiving) copy every
 row of every table by construction, have no table filter, and leave nothing
 for the gate to examine; they are not an option. The dump is produced with
-`pg_dump --exclude-table-data` for every `-` table (or `--table` for every
-`+` table), and object storage is excluded by the backup job's configuration,
-which row B requires Ops to show alongside a listing of the backup target.
+the full schema and `pg_dump --exclude-table-data` for every `-` table — the
+only accepted form — and object storage is excluded by the backup job's
+configuration, which row B requires Ops to show alongside a listing of the
+backup target. A `--table` dump of only the `+` tables is **not** accepted:
+it omits the DDL of every other table, including
+`lifecycle_restore_clearance`, so restoring it means re-running migrations,
+and V22 would then seed the restore clearance before the data loads,
+leaving the restored database unquarantined.
 
 | backed up | never |
 |---|---|
@@ -756,9 +837,14 @@ What that buys, stated plainly:
 
 **The restore drill** (Ops, required before dark deployment): restore the
 backup into a disposable database, run the *current* migrator (it must apply
-nothing), start an API node against it, authenticate with a managed key that
-existed at backup time, and confirm `message` and `inbox` are empty. A drill
-that checks only "restore exited 0" is not a drill.
+nothing). **Before any deployable starts**, run
+`SELECT count(*) FROM lifecycle_restore_clearance;` — it must be `0`; if it is
+not, stop: the dump was not the accepted form and the restore is not
+quarantined. Then start an API node against it, authenticate with a managed
+key of a **legacy** (owner/monitoring) workspace that existed at backup time
+(participant keys are refused while quarantined, by design), and confirm
+`message` and `inbox` are empty. A drill that checks only "restore exited 0"
+is not a drill.
 
 ### HUMAN DECISION REQUIRED
 
