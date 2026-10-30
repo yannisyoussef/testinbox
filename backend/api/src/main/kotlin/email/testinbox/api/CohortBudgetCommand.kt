@@ -112,8 +112,16 @@ object CohortBudgetCommand {
                 ) { "operator file differs from installed pool" }
             }
         }
+        // Binds the PASS to the exact reviewed file (check-storage-activation.sh gate G compares it).
+        out("cohort storage ${args[1]}: reviewed-file sha256=${sha256(Files.readAllBytes(path))}")
         out("cohort storage ${args[1]}: PASS; admissions unchanged")
     }
+
+    private fun sha256(bytes: ByteArray): String =
+        java.security.MessageDigest
+            .getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it) }
 
     private fun required(
         env: (String) -> String?,

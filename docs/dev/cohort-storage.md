@@ -100,10 +100,17 @@ bounds (5 s lock wait, 10 s statement, 10 s idle in transaction): a held row
 aborts the command with nothing written.
 
 **`storage-budget check` is the cohort gate.** `scripts/check-storage-activation.sh`
-does not recompute the ADR-037 proof; its gate G names this command and, given
-its captured output (`--cohort-check-output`), records PASS only when the last
-line is exactly `cohort storage check: PASS; admissions unchanged`. Run `check`
-after `reserve` and before setting `capacity_ready`.
+does not recompute the ADR-037 proof; its gate G names this command. Under
+`ALL` without the command's output it is **DEFERRED** (the run reports
+`ACTIVATION DEFERRED`, exit 3, never READY). Given the captured output
+(`--cohort-check-output`) and the reviewed pool file (`--cohort-pool-file`), it
+records PASS only when the last line is exactly
+`cohort storage check: PASS; admissions unchanged` **and** the preceding
+`cohort storage check: reviewed-file sha256=<hex>` line equals the SHA-256 of
+that pool file (TI-DELIVERY-002b), so a PASS cannot be borrowed from another
+file or a hand-written transcript. Run `check` after `reserve`; **the
+activation run with gate G PASS (`ACTIVATION READY`) is required evidence
+before `capacity_ready` is set**.
 
 These paths are proven in CI against real PostgreSQL: `CohortBudgetCommandTest`
 (the command end to end), `CohortAdmissionReadinessTest` (the unmocked

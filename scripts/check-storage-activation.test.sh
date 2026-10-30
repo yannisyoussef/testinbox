@@ -75,7 +75,7 @@ good() {
         --qualification-dir "$FIX/qualification" --backend-identity "$FIX/identity/match.json" \
         --benchmark-evidence "$TMP/bench-pass.json" \
         --filesystem-evidence "$FIX/filesystem/evidence-good.json" --footprint-state "$FIX/filesystem/state-good.json" \
-        --cohort-check-output "$FIX/cohort/check-pass.txt"
+        --cohort-check-output "$FIX/cohort/check-pass.txt" --cohort-pool-file "$FIX/cohort/pool.json"
 }
 # with <flag> <value>: the good inputs with one flag's value replaced (removed when
 # value is ""), or the flag appended when the good inputs do not carry it.
@@ -487,6 +487,17 @@ mkdir -p "$TMP/qual-noomax"; cp "$FIX/qualification/"*.json "$FIX/qualification/
 with --qualification-dir "$TMP/qual-noomax" > "$TMP/f-noomax"
 only "F: a record without a qualified O_max blocks" F-filesystem "carries no qualified objectOverheadMaxBytes" "$TMP/f-noomax"
 
+# --environment production: the matched record must be a production-host record.
+with --environment production > "$TMP/f-env-prod"
+only "F: --environment production with a staging-host record blocks" F-filesystem "identity: record .* has platformClass staging-host, production requires production-host" "$TMP/f-env-prod"
+jq '.qualification.platformClass = "production-host"' "$FIX/qualification/laptop-arm64-reference.json" > "$TMP/rec-prodhost.json"
+mkdir -p "$TMP/qual-prodhost"; cp "$FIX/qualification/"*.json "$FIX/qualification/index.txt" "$TMP/qual-prodhost/"; cp "$TMP/rec-prodhost.json" "$TMP/qual-prodhost/laptop-arm64-reference.json"
+with --qualification-dir "$TMP/qual-prodhost" > "$TMP/f-env-prodhost"
+case_ "F: --environment production with a production-host record is READY" 0 '^ACTIVATION READY$' "$TMP/f-env-prodhost" --environment production
+with --environment staging > "$TMP/f-env-staging"
+case_ "F: --environment staging does not require production-host" 0 '^ACTIVATION READY$' "$TMP/f-env-staging"
+printf '%s\n' "$OUT" | grep -q 'E1–E8' && bad "F: a message still names E1–E8" "$OUT" || ok "F: no message names the stale E1–E8 range"
+
 # A declared value is never an observation: raising the declaration alone cannot pass.
 fe declared-only '.declared.capacityBytes = 137438953472' "declaring more capacity than statvfs observes blocks" "capacity: f_blocks × f_frsize 68719476736 < declared C_fs 137438953472"
 
@@ -495,11 +506,25 @@ fe declared-only '.declared.capacityBytes = 137438953472' "declaring more capaci
 # records its verdict, and says so when it has none.
 # ---------------------------------------------------------------------------
 with --cohort-check-output "" > "$TMP/g-none"
-case_ "G-cohort: without the check output the gate is NOT REQUIRED and names storage-budget check as the cohort gate" 0 \
-    '^G-cohort[[:space:]]+NOT REQUIRED[[:space:]]+not evaluated by this script: the cohort gate is `storage-budget check' "$TMP/g-none" --json "$TMP/g-none.json"
-jq -e '.cohortGate | startswith("storage-budget check")' "$TMP/g-none.json" >/dev/null 2>&1 \
-    && ok "G-cohort: the evidence JSON states the cohort gate even when it was not recorded" \
-    || bad "G-cohort: cohortGate missing from the evidence JSON" "$(cat "$TMP/g-none.json" 2>/dev/null)"
+case_ "G-cohort: under ALL, without the check output the gate is DEFERRED (exit 3), never passing, and names storage-budget check" 3 \
+    '^G-cohort[[:space:]]+DEFERRED[[:space:]]+not yet evidenced: the cohort gate is `storage-budget check' "$TMP/g-none" --json "$TMP/g-none.json"
+printf '%s\n' "$OUT" | grep -q '^ACTIVATION DEFERRED$' \
+    && ok "G-cohort: a deferred gate G makes the overall verdict DEFERRED, never READY" \
+    || bad "G-cohort: overall verdict is not ACTIVATION DEFERRED" "$OUT"
+jq -e '.verdict == "DEFERRED" and (.cohortGate | startswith("storage-budget check"))' "$TMP/g-none.json" >/dev/null 2>&1 \
+    && ok "G-cohort: the evidence JSON records DEFERRED and states the cohort gate" \
+    || bad "G-cohort: evidence JSON verdict/cohortGate wrong" "$(cat "$TMP/g-none.json" 2>/dev/null)"
+# A deferred G never hides another failure: with gate A also failing the run is BLOCKED.
+with --cohort-check-output "" | sed "s#$FIX/sessions/healthy.tsv#$FIX/sessions/empty-name.tsv#" > "$TMP/g-none-blocked"
+case_ "G-cohort: DEFERRED plus another failing gate is ACTIVATION BLOCKED (exit 1)" 1 '^ACTIVATION BLOCKED$' "$TMP/g-none-blocked"
+printf 'cohort storage check: PASS; admissions unchanged\n' > "$TMP/check-no-digest.txt"
+with --cohort-check-output "$TMP/check-no-digest.txt" > "$TMP/g-nodigest"
+only "G-cohort: a PASS without the reviewed-file digest cannot be bound and blocks" G-cohort "names no reviewed-file digest" "$TMP/g-nodigest"
+with --cohort-pool-file "" > "$TMP/g-nopool"
+only "G-cohort: a PASS without --cohort-pool-file cannot be bound and blocks" G-cohort "no --cohort-pool-file" "$TMP/g-nopool"
+{ cat "$FIX/cohort/pool.json"; printf ' '; } > "$TMP/other-pool.json"
+with --cohort-pool-file "$TMP/other-pool.json" > "$TMP/g-otherpool"
+only "G-cohort: a PASS for a different pool file blocks, naming both digests" G-cohort "ran against a different file: printed sha256 [0-9a-f]{64}, other-pool.json is [0-9a-f]{64}" "$TMP/g-otherpool"
 with --cohort-check-output "$FIX/cohort/check-not-ready.txt" > "$TMP/g-fail"
 only "G-cohort: a failed storage-budget check blocks, naming its error" G-cohort "did not report PASS; error '.*IllegalStateException: cohort storage is not ready'" "$TMP/g-fail"
 with --cohort-check-output "$FIX/cohort/reserve-pass.txt" > "$TMP/g-reserve"
@@ -523,6 +548,7 @@ case_ "usage: an unknown mode is a usage error" 2 'must be TENANT_LIMITS or ALL'
 case_ "usage: an unknown argument is a usage error" 2 'unknown argument' "$TMP/empty-args" --mode ALL --bogus
 case_ "usage: a missing input file is a usage error, not a verdict" 2 'input file not found' "$TMP/empty-args" --mode ALL --sessions-file "$TMP/does-not-exist.tsv"
 case_ "usage: a missing cohort check output is a usage error, not a verdict" 2 'input file not found' "$TMP/empty-args" --mode ALL --cohort-check-output "$TMP/does-not-exist.txt"
+case_ "usage: a missing cohort pool file is a usage error, not a verdict" 2 'input file not found' "$TMP/empty-args" --mode ALL --cohort-pool-file "$TMP/does-not-exist.json"
 
 # ---------------------------------------------------------------------------
 # THIS repository's floors (deploy/rollback-floors.txt) against origin/master.

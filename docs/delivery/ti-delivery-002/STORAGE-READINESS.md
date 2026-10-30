@@ -229,7 +229,10 @@ environment declares (`TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED`, default
 of a hard-coded `OFF`, and `check-storage-activation.sh` has a gate G whose
 detail and evidence JSON (`cohortGate`) state that the cohort gate is
 `storage-budget check`; given that command's output it records PASS or
-BLOCKED (self-tested in `check-storage-activation.test.sh`).
+BLOCKED (self-tested in `check-storage-activation.test.sh`). Review fix: under
+`ALL` without that output gate G is DEFERRED (overall `ACTIVATION DEFERRED`,
+exit 3, never READY), and a PASS must be bound to the reviewed pool file by
+the `reviewed-file sha256=` line the command now prints.
 
 ## What only Ops can establish
 
@@ -299,9 +302,11 @@ consolidated TI-DELIVERY-002 release decision.
    node inventory and replacement model; run
    `scripts/check-storage-activation.sh` and record its JSON in
    `production-ops-acceptance.md`. The script does not recompute the cohort
-   proof: its gate G reports NOT REQUIRED here and names `storage-budget
-   check` as the cohort gate (the evidence JSON says so in `cohortGate`); the
-   proof is `storage-budget check`/`reserve` in step 9.
+   proof: its gate G reports DEFERRED here (overall `ACTIVATION DEFERRED`,
+   exit 3: every other gate passed) and names `storage-budget check` as the
+   cohort gate (the evidence JSON says so in `cohortGate`); the proof is
+   `storage-budget check`/`reserve` in step 9. Pass `--environment
+   production`.
 7. **Record the semantic rollback floor**: from the first pool row or
    participant marker there is no artifact rollback below this release, only
    the hold-first procedure (rollback.md, "Rolling back across TI-DELIVERY-001").
@@ -311,8 +316,9 @@ consolidated TI-DELIVERY-002 release decision.
 9. **Reserve the pool offline**: `storage-budget check` with the reviewed file,
    then `reserve` (admissions and `capacity_ready` must be closed; it refuses
    otherwise), then `check` again. Re-run the activation script with
-   `--cohort-check-output <that check's stdout>` so gate G records PASS in the
-   evidence.
+   `--cohort-check-output <that check's stdout> --cohort-pool-file <the
+   reviewed file>`; it must report `ACTIVATION READY` (gate G PASS, bound to
+   the file's SHA-256) before step 10.
 10. **Open, deliberately**: set `capacity_ready`, then — when someone is
     watching admissions (see the sybil note in abuse-model.md) — enable accounts
     on API and site and open `admissions_open`. Run `npm run test:accounts`

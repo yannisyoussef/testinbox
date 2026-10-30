@@ -807,8 +807,13 @@ invalidation rule).
 `TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED` set to the deployed mode (`OFF` is
 the default when unset); `storage.test.mjs` fails if the workspace footprint
 report says `enforced` other than the declared mode. The activation script's
-gate G names `storage-budget check` as the cohort gate and records its PASS
-when given `--cohort-check-output`.
+gate G names `storage-budget check` as the cohort gate. Under `ALL` it is
+DEFERRED (overall `ACTIVATION DEFERRED`, exit 3) until it is given
+`--cohort-check-output` and `--cohort-pool-file`, and then PASSes only when the
+check's printed `reviewed-file sha256=` equals that file's digest. The run with
+gate G PASS is required evidence before `capacity_ready`. Pass
+`--environment production` on production: gate F then also requires the
+matched record's `platformClass` to be `production-host`.
 
 ## Promotion and handoff
 

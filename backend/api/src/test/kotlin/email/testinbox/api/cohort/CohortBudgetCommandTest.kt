@@ -130,6 +130,13 @@ class CohortBudgetCommandTest {
 
         run("check", reviewed)
         output.last() shouldBe "cohort storage check: PASS; admissions unchanged"
+        // The line before the PASS binds it to the exact reviewed file (activation gate G).
+        val digest =
+            java.security.MessageDigest
+                .getInstance("SHA-256")
+                .digest(java.nio.file.Files.readAllBytes(reviewed))
+                .joinToString("") { "%02x".format(it) }
+        output[output.size - 2] shouldBe "cohort storage check: reviewed-file sha256=$digest"
 
         run("revoke", reviewed)
         output.last() shouldBe "cohort storage revoke: PASS; admissions unchanged"
