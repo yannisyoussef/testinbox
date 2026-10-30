@@ -1237,6 +1237,14 @@ type: https://testinbox.email/problems/storage-limit-exceeded
   - Quantizing the admission cap or adding hysteresis are named follow-ups,
     not built here.
 
+  > **Amended by [ADR-037](0037-bounded-cohort-storage-and-disclosure.md)
+  > (TI-DELIVERY-001), recorded 2026-10-30.** "Workspaces are provisioned by
+  > operators" no longer holds for the beta: up to thirty self-service
+  > participants each hold a workspace. ADR-037 §5 (full-envelope pricing) and
+  > §6 (non-overcommitted shares, residual cross-event channel explicitly
+  > accepted) are the answer; this section's residual analysis is otherwise
+  > unchanged.
+
 ### 14. Migration V6, backfill, activation
 
 **V6 is expand-only**, with no `rollback-unsafe` declaration. It creates:

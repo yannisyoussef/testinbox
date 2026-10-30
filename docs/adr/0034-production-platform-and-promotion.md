@@ -307,3 +307,17 @@ review).
   (content volume), the LISTEN constraint (pooled endpoints), and the
   readiness cascade ADR-030 already flags. None is silent; each is named in
   `docs/dev/production.md`.
+
+  > **Amended by [ADR-036](0036-human-identity-and-beta-admission.md) /
+  > [ADR-037](0037-bounded-cohort-storage-and-disclosure.md) (TI-DELIVERY-001),
+  > recorded 2026-10-30.** The self-service signup case is now designed: a
+  > bounded beta of at most thirty admitted accounts, dormant in production
+  > behind `TESTINBOX_ACCOUNTS_ENABLED`. Its effect on §5 is that the backup
+  > retains the identity/admission control plane (contact addresses — personal
+  > data — in `human_account` and `human_identity`, plus `beta_cohort`,
+  > `beta_admission`, `participant_workspace`, `storage_legacy_share`) and
+  > excludes every session, sign-in challenge, provider state, waitlist and
+  > storage-evidence table; `deploy/backup/scope.txt` is authoritative and
+  > `docs/dev/production.md` names the consequences. Content volume is bounded
+  > by the per-participant storage shares, and message content stays out of
+  > every backup. The rest of this ADR is unchanged.

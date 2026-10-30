@@ -173,6 +173,17 @@ That is safe only because workspaces are operator-created — there is no
 self-service signup — so the multiplier is controlled. **A future signup
 feature invalidates this analysis and must revisit it.**
 
+> **Amended by [ADR-036](0036-human-identity-and-beta-admission.md) /
+> [ADR-037](0037-bounded-cohort-storage-and-disclosure.md) (TI-DELIVERY-001),
+> recorded 2026-10-30 — the revisit.** Self-service *sign-in* now exists, but
+> workspaces are still not created per signup: only an admitted account gets
+> one, through `AdmitBetaParticipant`, and admissions are capped at thirty by a
+> database constraint. The multiplier stays controlled — thirty participant
+> workspaces plus the operator-created legacy ones — so the per-workspace
+> bound above holds and the fleet bound is (30 + legacy) times it. A signed-in,
+> unadmitted account has no workspace and cannot create a record. Raising the
+> cap re-opens this analysis. The decision above is unchanged.
+
 ### 4a. Scope
 
 Uniqueness is `workspace_id + operation + sha256(workspace ‖ operation ‖ key)`.
