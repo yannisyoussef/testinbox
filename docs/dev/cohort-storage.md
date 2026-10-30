@@ -106,6 +106,8 @@ A pause alone does not permit `storage-budget` changes, which still require
    restores browser sessions, cleanup evidence or capacity approval. Reconcile
    storage, deleted accounts/revocations and external rollback floors before
    considering admission; a database restore is not authorization recovery.
+   A restored database stays account-quarantined until `account-lifecycle
+   restore-reconcile` runs ([restore procedure](../delivery/ti-delivery-002/LIFECYCLE.md#restore-procedure)).
 5. For an enforcing rollout failure, pause new admissions and ingress using
    Ops' hold-first emergency procedure. Preserve queued mail. Do not remove
    markers/shares, clear a latch or start an old unenforcing artifact as an

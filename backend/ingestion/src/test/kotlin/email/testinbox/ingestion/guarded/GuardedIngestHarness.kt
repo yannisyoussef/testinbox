@@ -221,6 +221,7 @@ class GuardedIngestHarness(
             JakartaMimeParser(),
             ALLOW_ALL,
             Clock.systemUTC(),
+            eligibility = email.testinbox.persistence.JdbcWorkspaceEligibility(jdbc),
         )
 
     /**

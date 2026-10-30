@@ -1,5 +1,10 @@
 # Account lifecycle — next implementation design (M3j)
 
+> **Implemented in TI-DELIVERY-002 stream L.** See
+> [ti-delivery-002/LIFECYCLE.md](../ti-delivery-002/LIFECYCLE.md) for what
+> was built, the operator and restore procedures, the grant delta and the open
+> owner decisions. The design below is the unchanged record it implements.
+
 This is the recorded design before implementation, under accepted ADR-036.
 It is not an installed operator tool or a participant-activation approval.
 The native identity/console foundation is locally verified. ADR-037 was

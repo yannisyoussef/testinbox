@@ -242,6 +242,8 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
         db.createRole(ingestion)
         db.preV8Grants(ingestion)
         db.grant(ingestion, "GRANT SELECT ON workspace_storage_account, inbox_storage, storage_delta, storage_reservation")
+        // V22: T1's one snapshot also reads account-lifecycle eligibility (roles.reference.sql grants it).
+        db.grant(ingestion, "GRANT SELECT ON workspace_lifecycle_eligibility")
         val ws = db.workspace()
         val inbox = db.inbox(ws)
         val asIngestion = db.connectAs(ingestion)

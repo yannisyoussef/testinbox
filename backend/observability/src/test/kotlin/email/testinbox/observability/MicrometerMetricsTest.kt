@@ -55,6 +55,8 @@ class MicrometerMetricsTest {
         metrics.messageReceived(ParseStatus.FAILED)
         metrics.unknownRecipientDiscarded()
         metrics.duplicateProviderEventNoop()
+        metrics.inactiveRecipientDiscarded()
+        metrics.inactiveRecipientDiscarded()
         metrics.parseCompleted(Duration.ofMillis(12), ParseStatus.OK)
 
         registry.counter("testinbox_message_received_total", "parse_status", "OK").count() shouldBe 1.0
@@ -62,6 +64,8 @@ class MicrometerMetricsTest {
         // ADR-025 keeps the SMTP reply uniform, so this is the only signal.
         registry.counter("testinbox_smtp_unknown_recipient_discard_total").count() shouldBe 1.0
         registry.counter("testinbox_message_duplicate_event_noop_total").count() shouldBe 1.0
+        // Account lifecycle: its own counter, never folded into unknown recipients or duplicates.
+        registry.counter("testinbox_smtp_inactive_recipient_discard_total").count() shouldBe 2.0
 
         val timer = registry.timer("testinbox_message_parse_duration_seconds", "parse_status", "OK")
         timer.count() shouldBe 1L

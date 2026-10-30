@@ -68,6 +68,13 @@ interface InboundMetrics {
     /** A reprocessed provider event that appended nothing (ADR-019/026). */
     fun duplicateProviderEventNoop() {}
 
+    /**
+     * A recipient whose participant workspace is suspended, deletion-pending,
+     * erased or restore-quarantined: discarded with the uniform reply, never
+     * stored. Distinct from unknown recipients, storage refusals and duplicates.
+     */
+    fun inactiveRecipientDiscarded() {}
+
     companion object {
         val NOOP: InboundMetrics = object : InboundMetrics {}
     }
@@ -250,6 +257,13 @@ enum class AuthOutcome {
 
     REVOKED,
     EXPIRED,
+
+    /**
+     * The key verified, but its participant workspace is not active: the
+     * account is suspended, deletion-pending or erased, or the database is
+     * restore-quarantined (ACCOUNT-LIFECYCLE.md).
+     */
+    WORKSPACE_INACTIVE,
 }
 
 /** Lifecycle operations on a credential. */
@@ -390,7 +404,15 @@ interface StorageAccountingMetrics {
 }
 
 /** ADR-035 §16 `storage_admission_total{outcome}`. */
-enum class StorageAdmissionOutcome { ADMITTED, REFUSED_INBOX, REFUSED_WORKSPACE, REFUSED_GLOBAL }
+enum class StorageAdmissionOutcome {
+    ADMITTED,
+    REFUSED_INBOX,
+    REFUSED_WORKSPACE,
+    REFUSED_GLOBAL,
+
+    /** The participant workspace was inactive at T1 (account lifecycle): a discard, never a capacity refusal. */
+    INACTIVE_DISCARDED,
+}
 
 /** The closed `kind` vocabulary of `testinbox_storage_footprint_bytes` (contract §12). */
 enum class FootprintKind { COMMITTED, RESERVED, DELETION_DEBT }

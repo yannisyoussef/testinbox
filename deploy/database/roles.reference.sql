@@ -156,6 +156,10 @@ GRANT SELECT ON flyway_schema_history, inbox, message, attachment, inbox_storage
 GRANT INSERT ON message, attachment TO :"ingestion_role";
 -- The cohort snapshot counts workspaces by id; a workspace's name is not SMTP's.
 GRANT SELECT (id) ON workspace TO :"ingestion_role";
+-- Account lifecycle (V22): recipient resolution and the T1 snapshot read a
+-- workspace id and one eligibility boolean through this security-barrier
+-- view, never the human account, membership or quarantine tables behind it.
+GRANT SELECT ON workspace_lifecycle_eligibility TO :"ingestion_role";
 -- lockInboxes takes FOR SHARE, which needs UPDATE on one column; nothing updates inbox.
 GRANT UPDATE (id) ON inbox TO :"ingestion_role";
 GRANT SELECT, INSERT, UPDATE ON rate_bucket TO :"ingestion_role";

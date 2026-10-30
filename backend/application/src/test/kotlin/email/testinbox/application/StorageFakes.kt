@@ -57,6 +57,9 @@ class InMemoryStorage(
     /** Committed usage that the admission snapshot adds to reservations, per workspace (inboxes 0). */
     val committed = HashMap<WorkspaceId, Long>()
 
+    /** Participant workspaces T1's snapshot reads as inactive (a suspension that committed before this T1). */
+    val inactiveAtT1 = HashSet<WorkspaceId>()
+
     val admissionStore =
         object : StorageAdmissionStore {
             override fun <R : Any> admit(
@@ -79,6 +82,7 @@ class InMemoryStorage(
                                     StorageUsage(0, rows.filter { it.inboxId == ib }.sumOf { it.bytes }),
                                 )
                             },
+                        inactiveWorkspaces = scope.workspaceIds.filterTo(HashSet()) { it in inactiveAtT1 },
                     )
                 val plan = decide(snapshot)
                 plan.reservations.forEach { draft ->
