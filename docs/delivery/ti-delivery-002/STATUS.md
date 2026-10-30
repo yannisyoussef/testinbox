@@ -129,8 +129,8 @@ Before the production deploy:
    `roles.reference.sql` (both roles) → API → ingestion → web → synthetics →
    verified backup.
 8. RECOVERY.md V22/V23 section and a restore drill (bootstrap rotation first,
-   clearance 0 after restore, legacy key refused, `legacyRevokedKeys=`,
-   re-key per `mint-synthetic-key.sh`, synthetics).
+   clearance 0 after restore, legacy key refused, the reconcile output's
+   legacy revoked-key count, re-key per `mint-synthetic-key.sh`, synthetics).
 9. `testinbox_restore_quarantined` gauge alert.
 
 Before the first lifecycle or admission command:
