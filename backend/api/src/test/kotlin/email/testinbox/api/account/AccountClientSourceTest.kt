@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test
 import org.springframework.mock.web.MockHttpServletRequest
 
 class AccountClientSourceTest {
-    private val secret = "k7Qx2Lp9Vw4Zr8Tn3Hs6Jd1Fg5Mb0Yc-_e"
+    private val secret = "fixture-only-not-a-real-secret-9876543210"
     private val registry = SimpleMeterRegistry()
     private val source = AccountClientSource(secret, registry)
 
@@ -109,9 +109,9 @@ class AccountClientSourceTest {
             "short-secret",
             "a".repeat(64),
             "abababababababababababababababab",
-            "k7Qx2Lp9Vw4Zr8Tn3Hs6Jd1Fg5Mb0Yc e",
-            "k7Qx2Lp9Vw4Zr8Tn3Hs6Jd1Fg5Mb0Yc-_e\n",
-            "k7Qx2Lp9Vw4Zr8Tn3Hs6Jd1Fg5Mb0Yc-_é",
+            "fixture-only-not-a-real secret-9876543210",
+            "fixture-only-not-a-real-secret-9876543210\n",
+            "fixture-only-not-a-real-secret-987654321é",
             "k".repeat(300) + "7Qx2Lp9Vw4Zr8Tn3Hs6Jd1Fg5Mb0Yc".repeat(10),
         ).forEach { weak ->
             val failure = shouldThrow<IllegalStateException> { AccountClientSource(weak, SimpleMeterRegistry()) }

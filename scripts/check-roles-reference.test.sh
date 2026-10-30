@@ -102,6 +102,24 @@ mutate comment-only "${BEGIN_LINE/\{\}/-- documentation may say set_config, sear
 check "the same words inside a -- comment are not findings" 0 "$TMP/comment-only.sql" 'keeps the reviewed shape'
 
 COMMIT_LINE="s.replace('\\nCOMMIT;', '\\n{}\\nCOMMIT;', 1)"
+mutate owner-to "${COMMIT_LINE/\{\}/ALTER TABLE human_account OWNER TO :\"api_role\";}"
+check "ALTER TABLE ... OWNER TO fails (ownership is operator authority)" 1 "$TMP/owner-to.sql" 'OWNER TO'
+
+mutate alter-group "${COMMIT_LINE/\{\}/ALTER GROUP testinbox_owner ADD USER api;}"
+check "ALTER GROUP ... ADD USER fails (membership without GRANT)" 1 "$TMP/alter-group.sql" 'role definition or membership'
+
+mutate create-role "${COMMIT_LINE/\{\}/CREATE ROLE sneaky IN ROLE testinbox_owner;}"
+check "CREATE ROLE ... IN ROLE fails" 1 "$TMP/create-role.sql" 'role definition or membership'
+
+mutate grant-option "${COMMIT_LINE/\{\}/GRANT SELECT ON inbox TO :\"api_role\" WITH GRANT OPTION;}"
+check "WITH GRANT OPTION fails" 1 "$TMP/grant-option.sql" 'GRANT\/ADMIN OPTION'
+
+mutate grant-trigger "${COMMIT_LINE/\{\}/GRANT TRIGGER, TRUNCATE ON human_account TO :\"api_role\";}"
+check "GRANT TRIGGER/TRUNCATE fails" 1 "$TMP/grant-trigger.sql" 'TRIGGER\/TRUNCATE'
+
+mutate grant-tablespace "${COMMIT_LINE/\{\}/GRANT CREATE ON TABLESPACE pg_default TO :\"api_role\";}"
+check "GRANT ON TABLESPACE fails" 1 "$TMP/grant-tablespace.sql" 'object class'
+
 mutate schema-create "${COMMIT_LINE/\{\}/GRANT CREATE ON SCHEMA public TO :\"ingestion_role\";}"
 check "GRANT CREATE ON SCHEMA fails (only USAGE on a schema is reviewed)" 1 "$TMP/schema-create.sql" 'only USAGE on a schema'
 

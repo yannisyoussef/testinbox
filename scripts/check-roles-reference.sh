@@ -168,6 +168,16 @@ for statement in strip_strings(top).split(";"):
     where = f"line {line_of(top, top.find(statement.strip()[:40])) if statement.strip() else 0}"
     if re.search(r"\bALTER DEFAULT PRIVILEGES\b", upper):
         findings.append(f"{where}: ALTER DEFAULT PRIVILEGES (future objects would bypass the reviewed allow-list)")
+    if re.search(r"\bOWNER\s+TO\b", upper):
+        findings.append(f"{where}: an OWNER TO change — ownership is the lifecycle operator authority (V22)")
+    if re.search(r"\bALTER\s+(GROUP|ROLE|USER)\b", upper) or re.search(r"\bCREATE\s+(ROLE|USER|GROUP)\b", upper):
+        findings.append(f"{where}: a role definition or membership change — membership is not modelled by the Ops contract")
+    if upper.startswith("GRANT ") and re.search(r"\bWITH\s+(GRANT|ADMIN)\s+OPTION\b", upper):
+        findings.append(f"{where}: WITH GRANT/ADMIN OPTION — a deployable must not re-grant")
+    if upper.startswith("GRANT ") and re.search(r"\b(TRIGGER|TRUNCATE|REFERENCES|ALL)\b", upper.split(" ON ")[0]):
+        findings.append(f"{where}: GRANT of TRIGGER/TRUNCATE/REFERENCES/ALL — the deployables hold none of these")
+    if upper.startswith("GRANT ") and re.search(r"\bON\s+(TABLESPACE|PARAMETER|FOREIGN|LANGUAGE|LARGE)\b", upper):
+        findings.append(f"{where}: a GRANT on an object class the Ops contract does not model")
     if not upper.startswith("GRANT "):
         continue
     if " ON " not in f" {upper} ":

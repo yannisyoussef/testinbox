@@ -63,7 +63,12 @@ BEGIN
         END IF;
         -- A member of the owner holds every owner privilege whatever is revoked
         -- below, including the V22 account-lifecycle operator authority.
-        IF pg_has_role(r, current_user, 'MEMBER') THEN
+        -- Both the role running this file and the actual owner of
+        -- human_account (what V22's authority check compares against), in
+        -- case a superuser runs it against an owner-owned schema.
+        IF pg_has_role(r, current_user, 'MEMBER')
+            OR pg_has_role(r, (SELECT c.relowner FROM pg_catalog.pg_class c
+                               WHERE c.oid = 'public.human_account'::pg_catalog.regclass), 'MEMBER') THEN
             RAISE EXCEPTION 'roles.reference.sql: % is a member of the schema owner %, so it holds every owner privilege and the account-lifecycle operator authority; nothing was changed',
                 r, current_user;
         END IF;

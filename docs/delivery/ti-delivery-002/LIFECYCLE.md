@@ -50,7 +50,7 @@ The writer then reaches the guard after the suspension commits and is
 refused (`AccountLifecycleTest`). Session revocation inside the transaction
 uses the same lock mode for the same reason.
 
-Every operator transaction is bounded the way T1 is: `lock_timeout` 5 s,
+Every operator transaction (including the per-inbox deletions, through the session `options`) is bounded the way T1 is: `lock_timeout` 5 s,
 `statement_timeout` 10 s, `idle_in_transaction_session_timeout` 10 s. This
 applies to `account-lifecycle`, `admission` and `storage-budget`. A stalled or
 abandoned operator therefore cannot hold the `(35,1)` fence or the cohort

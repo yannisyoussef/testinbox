@@ -48,7 +48,7 @@ import java.util.concurrent.atomic.AtomicInteger
 @Import(ClientAddressBudgetApiTest.Fixture::class)
 class ClientAddressBudgetApiTest : ApiIntegrationTestBase() {
     companion object {
-        const val SECRET = "Zt4q9Lx2Wm7Rk1Pv8Hn3Bc6Yd0Sf5Gj-_Ae"
+        const val SECRET = "fixture-only-client-address-secret-0123456789"
     }
 
     @Autowired lateinit var jdbc: JdbcClient

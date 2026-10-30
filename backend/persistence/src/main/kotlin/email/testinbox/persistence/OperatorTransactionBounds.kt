@@ -17,6 +17,11 @@ object OperatorTransactionBounds {
     const val STATEMENT_TIMEOUT_MS: Long = 10_000
     const val IDLE_IN_TRANSACTION_MS: Long = 10_000
 
+    /** The same bounds as PostgreSQL connection `options`, for every transaction of an operator session. */
+    fun sessionOptions(): String =
+        "-c lock_timeout=$LOCK_TIMEOUT_MS -c statement_timeout=$STATEMENT_TIMEOUT_MS " +
+            "-c idle_in_transaction_session_timeout=$IDLE_IN_TRANSACTION_MS"
+
     /** Must run inside the operator's transaction, before its first lock. */
     fun apply(jdbc: JdbcClient) {
         check(TransactionSynchronizationManager.isActualTransactionActive()) { "operator bounds apply to a transaction" }

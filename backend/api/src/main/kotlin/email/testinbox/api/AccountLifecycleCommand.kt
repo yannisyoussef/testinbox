@@ -20,6 +20,7 @@ import email.testinbox.persistence.JdbcExactAddressReservations
 import email.testinbox.persistence.JdbcHumanSessions
 import email.testinbox.persistence.JdbcInboxRepository
 import email.testinbox.persistence.JdbcWorkspaceQuotaState
+import email.testinbox.persistence.OperatorTransactionBounds
 import email.testinbox.persistence.SpringTransactionRunner
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.jdbc.datasource.DataSourceTransactionManager
@@ -189,7 +190,13 @@ object AccountLifecycleCommand {
         val dataSource =
             DriverManagerDataSource(credentials.url, credentials.user, credentials.password).apply {
                 // Visible to Ops in pg_stat_activity and the session allowlist.
-                connectionProperties = Properties().apply { setProperty("ApplicationName", "ops:account-lifecycle") }
+                connectionProperties =
+                    Properties().apply {
+                        setProperty("ApplicationName", "ops:account-lifecycle")
+                        // Session defaults, so the per-inbox deletion transactions are bounded too, not
+                        // only the ones that call OperatorTransactionBounds.apply (which SET LOCAL the same values).
+                        setProperty("options", OperatorTransactionBounds.sessionOptions())
+                    }
             }
         val jdbc = JdbcClient.create(dataSource)
         val tx: TransactionRunner = SpringTransactionRunner(DataSourceTransactionManager(dataSource))

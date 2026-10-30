@@ -143,7 +143,7 @@ class HumanAccountEnvironmentTest {
             context.startupFailure shouldBe null
             context.getBean(HumanAccountProperties::class.java).clientAddressSecret shouldBe ""
         }
-        val strong = "k7Qx2Lp9Vw4Zr8Tn3Hs6Jd1Fg5Mb0Yc-_e"
+        val strong = "fixture-only-not-a-real-secret-9876543210"
         val origin = "TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN" to "https://app.testinbox.test"
         clientSource(mapOf("TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET" to strong, origin)).run { context ->
             context.startupFailure shouldBe null
