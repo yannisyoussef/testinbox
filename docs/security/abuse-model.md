@@ -257,6 +257,10 @@ come, into one private workspace each. The code is deployed and dormant
 
 ### Sybil limitation (accepted)
 
+> **Owner decision, TI-DELIVERY-002b (decision 4):** the first-come cap of 30
+> stays, and one person holding several accounts is an acknowledged
+> limitation of this beta. Behaviour is unchanged.
+
 **Thirty admitted accounts does not mean thirty distinct people.** Identity is
 a provider subject or a verified mailbox, nothing more:
 

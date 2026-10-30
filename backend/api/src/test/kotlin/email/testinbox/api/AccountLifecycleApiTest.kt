@@ -77,6 +77,7 @@ class AccountLifecycleApiTest : ApiIntegrationTestBase() {
             RevokeAccountSessions(sessions, transactions),
             RevokeApiKey(JdbcApiKeyRepository(jdbc), Clock.systemUTC()),
             transactions,
+            Clock.systemUTC(),
         )
     }
 

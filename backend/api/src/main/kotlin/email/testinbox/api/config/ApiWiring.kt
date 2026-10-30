@@ -70,6 +70,7 @@ import email.testinbox.observability.Slf4jAuditLog
 import email.testinbox.persistence.BundledMigrations
 import email.testinbox.persistence.JdbcDatabaseSessionSettings
 import email.testinbox.persistence.JdbcRateLimiter
+import email.testinbox.persistence.JdbcRestoreQuarantine
 import email.testinbox.persistence.JdbcSchemaHistory
 import email.testinbox.persistence.JdbcStorageAmbiguity
 import email.testinbox.persistence.JdbcStorageReservations
@@ -419,6 +420,7 @@ class ApiWiring(
         apiKeys: ApiKeyRepository,
         lastUsed: CoalescingLastUsedRecorder,
         eligibility: WorkspaceEligibility,
+        jdbc: JdbcClient,
     ): AuthenticateApiKey =
         AuthenticateApiKey(
             apiKeys,
@@ -435,6 +437,8 @@ class ApiWiring(
             metrics = apiKeyMetrics,
             lastUsed = lastUsed.asRecorder(),
             audit = audit,
+            // No restored managed key, legacy or participant, authenticates before restore-reconcile.
+            restoreQuarantine = JdbcRestoreQuarantine(jdbc),
         )
 
     @Bean

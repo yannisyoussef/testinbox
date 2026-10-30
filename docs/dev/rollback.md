@@ -509,3 +509,39 @@ older ingestion simply never reads the eligibility view. An older scope file
 would leave `lifecycle_restore_clearance` unclassified, so the backup is
 refused, and the older checker cannot read the V22 view DDL.
 
+
+## Deletion workflow and restore credentials (TI-DELIVERY-002b, schema V23)
+
+V23 is expand-only. It adds one table (`account_deletion`, backed up `+`) and
+two triggers that reuse V22's operator check, and it backfills a record for
+every account already `DELETION_PENDING`. An older artifact starts cleanly
+against it. It never reads the table.
+
+What an older artifact ignores:
+
+| Older artifact | What it ignores | Consequence |
+|---|---|---|
+| API (runtime) | the restore quarantine for **legacy** keys | On a restored, unreconciled database, owner and monitoring keys authenticate again, including one revoked after the backup was taken. Participant keys stay refused (V22). |
+| operator command (`account-lifecycle` of an older digest) | the deletion record and the automatic erasure | Its `delete` opens no record; the current timer adopts the account (`stage=UNRECORDED` until then, reported overdue). Its `erase-identity` deletes the account row but leaves key labels, idempotency records, sign-in codes and EXACT local parts, and leaves the record pending; the current timer closes it (`anomaly=ACCOUNT_ROW_ABSENT`) but cannot erase what the old command left. Its `restore-reconcile` does not revoke legacy keys. |
+
+What still holds: the V22 and V23 triggers refuse every lifecycle and
+deletion-record write by a non-operator role, whatever artifact runs. Every
+erasure already made is permanent.
+
+**Rules.**
+
+- Run `account-lifecycle` (including the `process-deletions` timer) only
+  from a digest at or after this change. Pin the timer to the deployed API
+  digest, and move it back with an artifact rollback **only** to a digest
+  that still contains this change.
+- After any restore, run `restore-reconcile` from a digest at or after this
+  change **before** rolling the API back below it, so every restored legacy
+  key is already revoked. Revoked rows are never un-revoked by any artifact.
+- Rolling the API back below this change outside a restore has no effect on
+  a cleared database: the legacy-key quarantine check only matters while
+  `lifecycle_restore_clearance` is empty.
+
+No new floor in `deploy/rollback-floors.txt` is needed beyond the V22
+lifecycle floor above. This change adds no state that an older artifact
+could corrupt. It only adds protections that an older artifact lacks during
+the restore window.

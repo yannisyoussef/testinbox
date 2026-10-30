@@ -1,14 +1,19 @@
 package email.testinbox.persistence
 
+import email.testinbox.application.port.AccountDeletionRecord
 import email.testinbox.application.port.AccountLifecycleStore
+import email.testinbox.application.port.IdentityErasure
 import email.testinbox.application.port.LifecycleMembership
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.identity.AccountDeletionStage
 import email.testinbox.domain.identity.BetaCohortPolicy
 import email.testinbox.domain.identity.HumanAccountId
 import email.testinbox.domain.identity.HumanAccountState
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.transaction.support.TransactionSynchronizationManager
+import java.sql.ResultSet
+import java.time.Instant
 import java.util.UUID
 
 /**
@@ -150,11 +155,69 @@ class JdbcAccountLifecycle(
         jdbc.sql("INSERT INTO lifecycle_restore_clearance (id) VALUES (1) ON CONFLICT (id) DO NOTHING").update()
     }
 
+    override fun exactCooldowns(
+        workspaceId: WorkspaceId,
+        now: Instant,
+    ): Long =
+        jdbc
+            .sql(
+                """
+                SELECT count(*) FROM exact_address_reservation
+                 WHERE workspace_id = :workspace
+                   AND (status = 'ACTIVE' OR (status = 'COOLDOWN' AND available_at > :now))
+                """.trimIndent(),
+            ).param("workspace", workspaceId.value)
+            .param("now", Timestamps.toDb(now))
+            .query(Long::class.javaObjectType)
+            .single()
+
     override fun eraseIdentity(
         accountId: HumanAccountId,
         workspaceId: WorkspaceId?,
-    ) {
+        at: Instant,
+    ): IdentityErasure {
         requireTransaction()
+        // Sign-in codes sent to the contact address are not keyed by account: match the address
+        // (stored lower-cased by ContactEmail) while the account row still names it.
+        val challenges =
+            jdbc
+                .sql(
+                    """
+                    DELETE FROM email_login_challenge
+                     WHERE lower(email) = (SELECT lower(contact_email) FROM human_account WHERE id = :account)
+                    """.trimIndent(),
+                ).param("account", accountId.value)
+                .update()
+        var labels = 0
+        var idempotency = 0
+        var reservations = 0
+        if (workspaceId != null) {
+            // Free text a person chose. The rows themselves (ids, verifier, scopes, timestamps,
+            // revocation, creator key) stay: audit history (ADR-032 §5) and the 20/1000 inventory.
+            labels =
+                jdbc
+                    .sql("UPDATE api_key SET name = NULL WHERE workspace_id = :workspace AND name IS NOT NULL")
+                    .param("workspace", workspaceId.value)
+                    .update()
+            // Request fingerprints and projections (key names, addresses); transient by design.
+            idempotency =
+                jdbc
+                    .sql("DELETE FROM idempotency_record WHERE workspace_id = :workspace")
+                    .param("workspace", workspaceId.value)
+                    .update()
+            // Chosen EXACT local parts. The content gate proved none is ACTIVE or still cooling
+            // down, so deleting them releases nothing early (ADR-021).
+            reservations =
+                jdbc
+                    .sql(
+                        """
+                        DELETE FROM exact_address_reservation
+                         WHERE workspace_id = :workspace AND (status = 'RELEASED' OR (status = 'COOLDOWN' AND available_at <= :at))
+                        """.trimIndent(),
+                    ).param("workspace", workspaceId.value)
+                    .param("at", Timestamps.toDb(at))
+                    .update()
+        }
         // The place stays spent; the marker keeps the workspace classified.
         jdbc
             .sql("UPDATE beta_admission SET workspace_id = NULL, project_id = NULL WHERE account_id = :account")
@@ -164,9 +227,98 @@ class JdbcAccountLifecycle(
         // idempotency provenance is set to NULL; the membership loses its account.
         val deleted = jdbc.sql("DELETE FROM human_account WHERE id = :account").param("account", accountId.value).update()
         check(deleted == 1) { "the locked account row was not erased" }
+        openDeletion(accountId, at)
+        advanceDeletion(accountId, AccountDeletionStage.ERASED, at)
+        return IdentityErasure(labels, challenges, idempotency, reservations)
     }
+
+    override fun deletion(accountId: HumanAccountId): AccountDeletionRecord? =
+        jdbc
+            .sql("SELECT $DELETION_COLUMNS FROM account_deletion WHERE account_id = :account")
+            .param("account", accountId.value)
+            .query { rs, _ -> deletionRecord(rs) }
+            .optional()
+            .orElse(null)
+
+    override fun openDeletion(
+        accountId: HumanAccountId,
+        at: Instant,
+    ) {
+        requireTransaction()
+        jdbc
+            .sql(
+                """
+                INSERT INTO account_deletion (account_id, stage, requested_at, stage_changed_at)
+                VALUES (:account, 'DRAINING', :at, :at) ON CONFLICT (account_id) DO NOTHING
+                """.trimIndent(),
+            ).param("account", accountId.value)
+            .param("at", Timestamps.toDb(at))
+            .update()
+    }
+
+    override fun advanceDeletion(
+        accountId: HumanAccountId,
+        stage: AccountDeletionStage,
+        at: Instant,
+    ) {
+        requireTransaction()
+        // Forward only: the stage order is the CASE below. ERASED is terminal.
+        jdbc
+            .sql(
+                """
+                UPDATE account_deletion
+                   SET stage = :stage,
+                       stage_changed_at = greatest(:at, requested_at),
+                       erased_at = CASE WHEN :stage = 'ERASED' THEN greatest(:at, requested_at) END
+                 WHERE account_id = :account
+                   AND $STAGE_ORDER < (CASE :stage WHEN 'DRAINING' THEN 0 WHEN 'CONTENT_DELETING' THEN 1 ELSE 2 END)
+                """.trimIndent(),
+            ).param("stage", stage.name)
+            .param("at", Timestamps.toDb(at))
+            .param("account", accountId.value)
+            .update()
+    }
+
+    override fun pendingDeletions(): List<AccountDeletionRecord> =
+        jdbc
+            .sql("SELECT $DELETION_COLUMNS FROM account_deletion WHERE stage <> 'ERASED' ORDER BY requested_at, account_id")
+            .query { rs, _ -> deletionRecord(rs) }
+            .list()
+
+    override fun unrecordedDeletions(): List<HumanAccountId> =
+        jdbc
+            .sql(
+                """
+                SELECT h.id FROM human_account h
+                 WHERE h.state = 'DELETION_PENDING' AND NOT EXISTS (SELECT 1 FROM account_deletion d WHERE d.account_id = h.id)
+                 ORDER BY h.id
+                """.trimIndent(),
+            ).query { rs, _ -> HumanAccountId(rs.getObject("id", UUID::class.java)) }
+            .list()
+
+    override fun revokeEveryManagedKey(at: Instant): Int {
+        requireTransaction()
+        return jdbc
+            .sql("UPDATE api_key SET revoked_at = :at WHERE kind = 'MANAGED' AND revoked_at IS NULL")
+            .param("at", Timestamps.toDb(at))
+            .update()
+    }
+
+    private fun deletionRecord(rs: ResultSet) =
+        AccountDeletionRecord(
+            HumanAccountId(rs.getObject("account_id", UUID::class.java)),
+            AccountDeletionStage.valueOf(rs.getString("stage")),
+            checkNotNull(Timestamps.fromDb(rs, "requested_at")),
+            checkNotNull(Timestamps.fromDb(rs, "stage_changed_at")),
+            Timestamps.fromDb(rs, "erased_at"),
+        )
 
     private fun requireTransaction() {
         check(TransactionSynchronizationManager.isActualTransactionActive()) { "account lifecycle requires a database transaction" }
+    }
+
+    private companion object {
+        const val DELETION_COLUMNS = "account_id, stage, requested_at, stage_changed_at, erased_at"
+        const val STAGE_ORDER = "(CASE stage WHEN 'DRAINING' THEN 0 WHEN 'CONTENT_DELETING' THEN 1 ELSE 2 END)"
     }
 }

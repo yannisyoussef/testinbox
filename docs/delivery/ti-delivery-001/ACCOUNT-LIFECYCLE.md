@@ -96,7 +96,10 @@ workspaces retain their existing behavior. These bounds do not substitute for AD
   expose no credentials/contact content and leave legacy traffic operational.
 - Deletion must remove retained content through existing lifecycle/deleter
   paths; contact/identity retention and backup deletion/restore decisions must
-  be explicit. Deletion-pending alone is not completed erasure.
+  be explicit. Deletion-pending alone is not completed erasure. *(Decided and
+  implemented in TI-DELIVERY-002b: the deletion workflow erases identity
+  automatically once content is gone; see
+  [POLICY-002b](../ti-delivery-002/POLICY-002b.md).)*
 - Before admitting participants, enforce the semantic rollback floor outside
   the old artifact: an old binary ignores the new human state. Restore stays
   quarantined until deleted/revoked access is reconciled; a backup is never
