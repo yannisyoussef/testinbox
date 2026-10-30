@@ -75,13 +75,13 @@ class AdmissionAcrossSignInMethodsApiTest : ApiIntegrationTestBase() {
     private val origin = "https://console.example.invalid"
 
     class Codes : EmailLoginDelivery {
-        val codes = ConcurrentHashMap<String, String>()
+        val byAddress = ConcurrentHashMap<String, String>()
 
         override fun send(
             email: ContactEmail,
             code: EmailLoginCode,
         ) {
-            codes[email.value] = code.value
+            byAddress[email.value] = code.value
         }
     }
 
@@ -151,7 +151,7 @@ class AdmissionAcrossSignInMethodsApiTest : ApiIntegrationTestBase() {
                 .single()
                 .substringBefore(';')
         val id = json.readTree(challenge.body())["challengeId"].asText()
-        val verified = send("/account/email/verify", browser, """{"challengeId":"$id","code":"${mail.codes.getValue(address)}"}""")
+        val verified = send("/account/email/verify", browser, """{"challengeId":"$id","code":"${mail.byAddress.getValue(address)}"}""")
         verified.statusCode() shouldBe 204
         return sessionCookie(verified)
     }
