@@ -30,6 +30,8 @@ class AccountLifecycleCommandInputTest {
             arrayOf("account-lifecycle", "suspend", account, "extra"),
             arrayOf("account-lifecycle", "approve", account),
             arrayOf("account-lifecycle", "restore-reconcile", account),
+            arrayOf("account-lifecycle", "process-deletions", account),
+            arrayOf("account-lifecycle", "process-deletions", "now"),
             // A short-form UUID that java.util.UUID would silently widen.
             arrayOf("account-lifecycle", "suspend", "1-1-1-1-1"),
         ).forEach { args ->
@@ -111,6 +113,52 @@ class AccountLifecycleCommandInputTest {
             val (code, _, err) = run("account-lifecycle", "delete", account, env = env + ("TESTINBOX_EXACT_COOLDOWN" to bad))
             code shouldBe AccountLifecycleCommand.EXIT_REFUSED
             err shouldContain "TESTINBOX_EXACT_COOLDOWN"
+        }
+    }
+
+    @Test
+    fun `erase-identity is replaced by the deletion workflow and refused before any connection`() {
+        val (code, out, err) = run("account-lifecycle", "erase-identity", account)
+        code shouldBe AccountLifecycleCommand.EXIT_USAGE
+        out shouldBe ""
+        err shouldContain "replaced by the deletion workflow"
+        err shouldContain "nothing was changed"
+    }
+
+    @Test
+    fun `status without an account and process-deletions are valid commands that still need explicit credentials`() {
+        for (args in listOf(arrayOf("account-lifecycle", "status"), arrayOf("account-lifecycle", "process-deletions"))) {
+            val (code, _, err) = run(*args)
+            code shouldBe AccountLifecycleCommand.EXIT_REFUSED
+            err shouldContain "missing TI_LIFECYCLE_JDBC_URL"
+        }
+    }
+
+    @Test
+    fun `the overdue threshold derives from the deployment's cooldown and retention T_max, or is set explicitly`() {
+        fun policy(vararg env: Pair<String, String>) =
+            AccountLifecycleCommand
+                .deletionPolicy(mapOf(*env)::get, AccountLifecycleCommand.exactCooldown(mapOf(*env)::get).getOrThrow())
+                .getOrThrow()
+                .overdueAfter
+        policy() shouldBe java.time.Duration.ofHours(72)
+        policy("TESTINBOX_EXACT_COOLDOWN" to "36h", "TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY" to "48h") shouldBe
+            java.time.Duration.ofHours(108)
+        policy("TI_LIFECYCLE_DELETION_OVERDUE_AFTER" to "12h", "TESTINBOX_EXACT_COOLDOWN" to "36h") shouldBe java.time.Duration.ofHours(12)
+        val env =
+            mapOf(
+                "TI_LIFECYCLE_JDBC_URL" to "jdbc:postgresql://127.0.0.1:1/testinbox",
+                "TI_LIFECYCLE_USER" to "owner",
+                "TI_LIFECYCLE_PASSWORD" to "s3cret-value",
+            )
+        for ((name, bad) in listOf(
+            "TI_LIFECYCLE_DELETION_OVERDUE_AFTER" to "soon",
+            "TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY" to "0s",
+        )) {
+            val (code, out, err) = run("account-lifecycle", "process-deletions", env = env + (name to bad))
+            code shouldBe AccountLifecycleCommand.EXIT_REFUSED
+            out shouldBe ""
+            err shouldContain name
         }
     }
 }

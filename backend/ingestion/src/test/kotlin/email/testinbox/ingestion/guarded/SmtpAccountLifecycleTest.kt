@@ -70,6 +70,7 @@ class SmtpAccountLifecycleTest {
                     RevokeAccountSessions(JdbcHumanSessions(harness.jdbc), tx),
                     RevokeApiKey(JdbcApiKeyRepository(harness.jdbc), Clock.systemUTC()),
                     tx,
+                    Clock.systemUTC(),
                 )
             }
 

@@ -30,6 +30,11 @@
 # ADR-037 (V19): retain fixed share and participant classification even after
 # membership is cleared. No contact or content; restore must not erase it.
 + participant_workspace
+# TI-DELIVERY-002b (V23): the deletion workflow's record (account UUID, stage,
+# timestamps; no contact or login identity). Backed up with human_account so a
+# restore keeps the two consistent: a deletion pending at backup time resumes,
+# and one already ERASED stays erased.
++ account_deletion
 # ADR-036 (V13): restoring a backup must never restore a browser login.
 - human_session
 # ADR-036 (V14): codes are verifier-only but login state and source hashes

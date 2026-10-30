@@ -7,7 +7,9 @@ import email.testinbox.application.port.AuditEvent
 import email.testinbox.application.port.AuditLog
 import email.testinbox.application.port.AuthOutcome
 import email.testinbox.application.port.LastUsedRecorder
+import email.testinbox.application.port.RestoreQuarantine
 import email.testinbox.application.port.WorkspaceEligibility
+import email.testinbox.application.port.WorkspaceStatus
 import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiKeyFormat
 import email.testinbox.domain.tenant.ApiKeyKind
@@ -65,6 +67,14 @@ class AuthenticateApiKey(
     private val metrics: ApiKeyMetrics = ApiKeyMetrics.NOOP,
     private val lastUsed: LastUsedRecorder = LastUsedRecorder.NOOP,
     private val audit: AuditLog = AuditLog.NOOP,
+    /**
+     * TI-DELIVERY-002b decision 2: while the database is restore-quarantined,
+     * no managed key authenticates, legacy (owner/monitoring) ones included.
+     * Participant keys are already refused by [eligibility]; this closes the
+     * window in which a legacy key revoked after the backup was taken would
+     * work again until `restore-reconcile` revokes every restored key.
+     */
+    private val restoreQuarantine: RestoreQuarantine = RestoreQuarantine.NONE,
 ) {
     fun authenticate(presentedKey: String): ApiKey? {
         val result = verify(presentedKey)
@@ -114,7 +124,11 @@ class AuthenticateApiKey(
         val now = clock.instant()
         if (stored.isRevoked()) return Verification(null, AuthOutcome.REVOKED)
         if (stored.isExpired(now)) return Verification(null, AuthOutcome.EXPIRED)
-        if (!eligibility.isActive(stored.workspaceId)) return Verification(null, AuthOutcome.WORKSPACE_INACTIVE)
+        when (eligibility.status(stored.workspaceId)) {
+            WorkspaceStatus.INACTIVE_PARTICIPANT -> return Verification(null, AuthOutcome.WORKSPACE_INACTIVE)
+            WorkspaceStatus.LEGACY -> if (restoreQuarantine.active()) return Verification(null, AuthOutcome.WORKSPACE_INACTIVE)
+            WorkspaceStatus.ACTIVE_PARTICIPANT -> Unit
+        }
 
         lastUsed.record(stored, now)
         return Verification(stored, AuthOutcome.SUCCESS)
