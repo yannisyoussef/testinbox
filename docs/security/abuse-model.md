@@ -302,9 +302,30 @@ the site container as the source of every visitor. Fifteen code requests in
 fifteen minutes from anyone then block code requests for everyone for the rest
 of the window. Stream A/W replace the shared source with a client address the
 site attests to the API (`TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`,
-`TESTINBOX_TRUSTED_PROXY_CIDRS`). TODO(integrator): describe the trust chain
-(edge → site → API), what an unattested or forged address falls back to, and
-that a raw `X-Forwarded-For` from the Internet is never believed.
+`TESTINBOX_TRUSTED_PROXY_CIDRS`, `TESTINBOX_TRUSTED_PROXY_HOPS`). The chain:
+
+- **Edge → site.** Traefik admits only Cloudflare edge addresses at the TCP
+  peer and trusts forwarded headers only from Cloudflare, so the site receives
+  `X-Forwarded-For: [anything the client sent…,] <client>, <Cloudflare edge>`.
+  The site skips exactly `HOPS` entries from the right (1 on the deployed
+  edge), each of which must lie in a trusted CIDR, and takes the next entry as
+  the client — only if it is a literal IP outside every trusted range.
+  Anything further left is never read. A visitor whose own address is inside a
+  trusted range (for example Cloudflare Worker egress) gets no address.
+- **Site → API.** The site sends `X-TestInbox-Client-Address` together with
+  `X-TestInbox-Proxy-Secret`. The API believes the address only with exactly
+  one matching secret (constant-time comparison) and one literal IP; IPv6 is
+  grouped by its /64. Browser-supplied `X-TestInbox-*` headers never pass the
+  site's allow-list, and the API's `/account` routes are not publicly routed.
+- **Fallback.** No secret, a wrong or missing one, or a malformed address all
+  fall back to the TCP peer — the shared budget. A client can lose its own
+  budget but can never choose one. A raw `X-Forwarded-For` or `Forwarded` from
+  the Internet is never believed for this.
+
+Residual: clients behind one NAT or one IPv6 /64 share a budget; an attacker
+holding many IPv4 addresses or /64s gets many per-source budgets, still bounded
+by the global 200 per hour; a leaked secret lets a caller who can reach the
+API's internal `/account` directly choose sources.
 
 Authenticated metadata requests (`/account/session`, `/account/admission`,
 `/account/waitlist`) share a 60-per-minute budget per account and 3,600 per

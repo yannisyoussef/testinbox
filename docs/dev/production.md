@@ -458,16 +458,23 @@ operator control to pause admissions and to suspend or revoke an account. These
 are delivered by TI-DELIVERY-002 streams A and L as subcommands of the API
 artifact (no HTTP endpoint, no public field):
 
-- admission pause / resume — TODO(integrator): exact subcommand, its
-  credentials and its audit output, from stream A;
+- admission pause / resume —
+  `java -jar api.jar admission status|pause|resume` (or the same arguments
+  after the API image entrypoint), credentials only from
+  `TI_ADMISSION_JDBC_URL`, `TI_ADMISSION_USER`, `TI_ADMISSION_PASSWORD` (no
+  defaults; a URL carrying credentials is refused). It runs before Spring, so
+  no listener or scheduler starts, and it rechecks the role's UPDATE privilege
+  on `beta_cohort.admissions_open` inside the transaction — the runtime API
+  role is refused. Pausing stops new admissions only: participants, sessions,
+  keys, inboxes, ingestion and the waitlist continue, and a paused applicant
+  gets the same CLOSED outcome as a never-opened cohort. It never touches
+  `capacity_ready`. Details: [admission and source](../delivery/ti-delivery-002/ADMISSION-AND-SOURCE.md);
 - account suspend / resume / delete — TODO(integrator): exact subcommands,
   their effect on sessions, managed API keys and ingestion eligibility, the
   DRAINING report and the deletion/restore procedure, from stream L
   (design: [ACCOUNT-LIFECYCLE](../delivery/ti-delivery-001/ACCOUNT-LIFECYCLE.md)).
 
-Until they are integrated, the only admission pause is a reviewed
-`UPDATE beta_cohort SET admissions_open = false WHERE id = 'beta-30'` by the
-schema owner, and there is no account suspension short of the API kill switch.
+
 
 ### The API environment contract (`TESTINBOX_ACCOUNTS_*`)
 
@@ -494,7 +501,7 @@ the site column says so.
 | `TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_CLIENT_ID` / `_CLIENT_SECRET` | empty | the Google OAuth client | secret: **yes** |
 | `TESTINBOX_ACCOUNTS_OAUTH_GITHUB_ENABLED` | `false` | `true` to offer GitHub | no |
 | `TESTINBOX_ACCOUNTS_OAUTH_GITHUB_CLIENT_ID` / `_CLIENT_SECRET` | empty | the GitHub OAuth app | secret: **yes** |
-| `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET` | empty | **added by TI-DELIVERY-002 (stream A).** Shared with the site; lets the API trust a client address the site attests, so visitors stop sharing the site container's sign-in budget. TODO(integrator): exact format, length rule and the behaviour when unset or mismatched | **yes** |
+| `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET` | empty | **added by TI-DELIVERY-002 (stream A).** Shared with the site; lets the API trust a client address the site attests, so visitors stop sharing the site container's sign-in budget. 32–512 bytes of printable ASCII, no whitespace, at least 12 distinct characters (`openssl rand -hex 32`). **Unset:** one shared sign-in budget for every visitor. **Set but invalid:** `/account` closes like an invalid origin (`/v1` keeps serving) and one error names the setting. **Mismatched with the site:** each request falls back to the shared budget (`testinbox_account_client_address_total{outcome="unauthenticated"}`) | **yes** |
 
 The site's side of the contract (its own repository is authoritative):
 `TESTINBOX_ACCOUNTS_ENABLED`, `TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN` (same value as
@@ -502,9 +509,15 @@ the API), `TESTINBOX_API_URL` (server-side API origin, never exposed to the
 browser), and — **added by TI-DELIVERY-002 (stream W)** —
 `TESTINBOX_TRUSTED_PROXY_CIDRS` (the addresses of the edge hops whose
 forwarded client address the site may believe) and the same
-`TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`. TODO(integrator): the exact
-header contract, the CIDR syntax and what the site does when the edge hop is
-not in the list.
+`TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`, plus `TESTINBOX_TRUSTED_PROXY_HOPS`
+(1 behind Cloudflare → Traefik). `TESTINBOX_TRUSTED_PROXY_CIDRS` is a
+comma-separated list of IPv4/IPv6 CIDRs, each with a prefix length (Cloudflare's
+published ranges plus the Traefik network). The site skips exactly `HOPS`
+rightmost `X-Forwarded-For` entries, each of which must be trusted, and sends
+the next one as `X-TestInbox-Client-Address` with `X-TestInbox-Proxy-Secret`.
+If a hop is untrusted, the candidate is malformed or itself trusted, or any of
+the three settings is missing or invalid, it sends neither header and the API
+uses the shared budget ([abuse model](../security/abuse-model.md)).
 
 **Misconfiguration fails closed, not loud.** `DeploymentSafety` does not refuse
 to start over account settings: a production process must keep serving `/v1`
@@ -750,7 +763,7 @@ Not decided by this increment and not decidable by software:
 | `TESTINBOX_ACCOUNTS_EMAIL_VERIFICATION_KEY_BASE64`, `TESTINBOX_ACCOUNTS_OAUTH_STATE_KEY_BASE64` | Ops; API only; 32 random bytes each, distinct | change and restart; invalidates codes / sign-ins in progress only ([accounts](#secrets-handling)) |
 | `TESTINBOX_ACCOUNTS_EMAIL_SMTP_USERNAME` / `_PASSWORD` | Ops; API only; the transactional provider's submission credential | rotate at the provider, then the API |
 | `TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_CLIENT_SECRET`, `TESTINBOX_ACCOUNTS_OAUTH_GITHUB_CLIENT_SECRET` | Ops; API only | rotate at the provider console, then the API |
-| `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET` (TI-DELIVERY-002) | Ops; API **and** site | TODO(integrator): rotation order between the two |
+| `TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET` (TI-DELIVERY-002) | Ops; API **and** site, the same value | set the new value on both and restart both; while they differ, sign-ins fall back to the shared budget (degraded, never spoofable) |
 
 Rules the repository enforces or proves: no secret in Git (gitleaks), none
 in an OCI label, build arg or layer (the Dockerfiles carry only source
