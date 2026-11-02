@@ -93,7 +93,14 @@ class HumanWorkspaceActorTest : PersistenceIntegrationTest() {
     }
 
     private fun create(repository: email.testinbox.application.port.ApiKeyRepository = keys) =
-        CreateApiKey(repository, clock, audit, idempotency = Idempotency(records, tx, clock))
+        CreateApiKey(
+            repository,
+            clock,
+            audit,
+            idempotency = Idempotency(records, tx, clock),
+            guard = JdbcWorkspaceQuotaState(jdbc),
+            eligibility = JdbcWorkspaceEligibility(jdbc),
+        )
 
     private fun command(owner: HumanWorkspaceOwner) = CreateApiKey.Command(owner, "SDK", setOf(ApiScope.MESSAGES_READ), Duration.ofDays(30))
 

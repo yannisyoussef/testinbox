@@ -241,6 +241,12 @@ class EmailLoginApiTest : ApiIntegrationTestBase() {
             """{"email":"${email()}"}""",
             extra = mapOf("X-Forwarded-For" to "203.0.113.99"),
         ).statusCode() shouldBe 429
+        // No client-address secret is configured here: the proxy headers are ignored, whatever they claim.
+        call(
+            "/account/email/request",
+            """{"email":"${email()}"}""",
+            extra = mapOf("X-TestInbox-Client-Address" to "203.0.113.98", "X-TestInbox-Proxy-Secret" to "x".repeat(40)),
+        ).statusCode() shouldBe 429
         mail.codes.size shouldBe RequestEmailLogin.MAX_PER_SOURCE
     }
 

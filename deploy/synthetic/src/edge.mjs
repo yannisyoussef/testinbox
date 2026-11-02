@@ -133,3 +133,64 @@ function testInboxEvidence(headers, body) {
   }
   return found;
 }
+
+/**
+ * The account boundary (ADR-036) is served ONLY through the public site's
+ * same-origin `/account/*` proxy. The API host must never answer it: a browser
+ * credential, CSRF token or provider redirect served from the API origin
+ * would bypass the site's exact-origin and cookie model. The probes include
+ * dot-segment forms (`/v1/../account/...`, `/v1/%2e%2e/account/...`), which an
+ * edge may route as `/v1/` and the application may then normalise to
+ * `/account/...`.
+ *
+ * Like the unknown-Host classifier this asserts the invariant, not a
+ * mechanism: an edge 404, an edge reset, the web container's 404 (the nginx
+ * reference routes `/` there) or the API's own `/v1` 401 all pass; what fails
+ * is the account boundary's answer itself, open or closed, or a success.
+ *
+ * @param {{error?: string, status?: number, headers?: Record<string,string|string[]>, body?: string}} probe
+ * @returns {{served: boolean, reason: string}} `served` is the failure condition.
+ */
+export function classifyApiHostAccountProbe(probe) {
+  if (probe.error !== undefined) {
+    if (REFUSAL_ERRORS.has(probe.error)) return { served: false, reason: `connection refused by the edge (${probe.error})` };
+    return { served: true, reason: `the probe failed with ${probe.error}, which demonstrates nothing` };
+  }
+  if (typeof probe.status !== "number") {
+    return { served: true, reason: `no interpretable status in the response (${JSON.stringify(probe.status)})` };
+  }
+  const headers = normalizeHeaders(probe.headers);
+  const cookies = [].concat(probe.headers?.["set-cookie"] ?? probe.headers?.["Set-Cookie"] ?? []);
+  if (cookies.some((cookie) => /__Host-ti_/i.test(String(cookie)))) {
+    return { served: true, reason: "the response set an account cookie" };
+  }
+  let body;
+  try {
+    body = JSON.parse(probe.body ?? "");
+  } catch {
+    body = undefined;
+  }
+  if (body !== null && typeof body === "object" && !Array.isArray(body)) {
+    if ("methods" in body) return { served: true, reason: "the API answered the account sign-in methods" };
+    const type = typeof body.type === "string" ? body.type : "";
+    if (/\/(accounts-unavailable|signin-unavailable)$/.test(type)) {
+      return { served: true, reason: `the API's account boundary answered (${type}); it is reachable on the API host` };
+    }
+  }
+  if (probe.status >= 200 && probe.status < 300) {
+    return { served: true, reason: `the API host answered ${probe.status} for an account path` };
+  }
+  if (probe.status < 200) return { served: true, reason: `informational ${probe.status} is not a refusal` };
+  return {
+    served: false,
+    reason: `answered ${probe.status} without the account boundary's response${headers["x-correlation-id"] ? " (an API /v1 refusal)" : ""}`,
+  };
+}
+
+/** The account-path probes the API host must refuse, raw (never normalised by a URL parser). */
+export const API_HOST_ACCOUNT_PROBES = Object.freeze([
+  "/account/methods",
+  "/v1/../account/methods",
+  "/v1/%2e%2e/account/methods",
+  "/v1/%2E%2E/account/session",
+]);

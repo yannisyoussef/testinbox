@@ -90,3 +90,10 @@
 + storage_legacy_share
 - storage_cohort_plan
 - workspace_deletion_charge
+
+# ADR-036 account lifecycle (V22): the restore-quarantine clearance. NEVER
+# backed up, and check-backup-scope.sh refuses '+': a restored database must
+# come back WITHOUT it, so every participant workspace and every human login
+# stays inactive until `account-lifecycle restore-reconcile` revokes what the
+# backup restored (docs/delivery/ti-delivery-002/LIFECYCLE.md).
+- lifecycle_restore_clearance

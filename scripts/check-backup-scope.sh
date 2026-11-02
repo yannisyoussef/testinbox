@@ -52,15 +52,16 @@ while IFS= read -r line; do
 done < "$SCOPE"
 (( ${#KEEP[@]} > 0 && ${#DENY[@]} > 0 )) || { echo "scope must classify both kept and denied tables" >&2; exit 2; }
 
-# Tables whose classification is not a choice: content (ADR-009) and the
+# Tables whose classification is not a choice: content (ADR-009), the
 # ADR-035 accounting and admission state, which is derived or transient and
-# rebuilt after a restore. Classifying any of them `+` would put content, or
-# state that describes an object store that is not backed up, into a backup,
-# so the scope file itself is refused.
+# rebuilt after a restore, and the account-lifecycle restore clearance, whose
+# absence after a restore IS the quarantine. Classifying any of them `+` would
+# put content, state that describes an object store that is not backed up, or
+# a reactivated authorization into a backup, so the scope file itself is refused.
 REQUIRED_DENY=(inbox message attachment human_session email_login_challenge human_auth_gate provider_login_state beta_waitlist human_request_global human_request_budget
                workspace_storage_account inbox_storage storage_delta
                storage_reservation storage_ambiguity storage_node storage_admission_latch storage_cohort_plan workspace_deletion_charge
-               storage_clock_episode storage_deletion_debt storage_filesystem_observation)
+               storage_clock_episode storage_deletion_debt storage_filesystem_observation lifecycle_restore_clearance)
 for required in "${REQUIRED_DENY[@]}"; do
   for kept in "${KEEP[@]}"; do
     [[ "$kept" == "$required" ]] && { echo "SCOPE MISCLASSIFIED: $required is content or derived state and must be '-' in $SCOPE" >&2; exit 1; }
@@ -260,7 +261,13 @@ read_sql_dump() {
       }
       if (ls ~ /^create (sequence|schema|extension|database) /) { if (user_call(ls, 0)) { ambiguous("DDL that calls a user function at restore: " substr(s, 1, 80)); return } return }
       if (ls ~ /^create type [a-z0-9_".]+ as (enum )?\( /) return
-      if (ls ~ /^create /) { ambiguous("a CREATE outside the kinds a plain dump of this schema contains (table, function, trigger, index, sequence, enum/composite type, schema, extension, database): " substr(s, 1, 80)); return }
+      # A plain (never materialized) view: its query runs when it is selected,
+      # never at restore, and it holds no rows (the V22 lifecycle eligibility view).
+      if (ls ~ /^create (or replace )?view /) {
+        if (user_call(ls, 0)) { ambiguous("a view that calls a user function: " substr(s, 1, 80)); return }
+        return
+      }
+      if (ls ~ /^create /) { ambiguous("a CREATE outside the kinds a plain dump of this schema contains (table, function, trigger, index, sequence, enum/composite type, view, schema, extension, database): " substr(s, 1, 80)); return }
       if (ls ~ /^select /) {
         # The only SELECTs a plain dump contains set the session or a sequence,
         # with literal arguments (the lexer keeps a literal as 'S' or '').

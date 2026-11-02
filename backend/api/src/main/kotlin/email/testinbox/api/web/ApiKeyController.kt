@@ -142,6 +142,26 @@ class ApiKeyController(
                 )
             }
 
+            is CreateApiKey.Result.InventoryExhausted -> {
+                // ADR-027: a quota refusal is 409 without Retry-After; only the
+                // caller's own workspace dimension is disclosed.
+                Problems.respond(
+                    Problems
+                        .of(
+                            HttpStatus.CONFLICT,
+                            "quota-exceeded",
+                            "Quota exceeded",
+                            "Workspace quota ${result.exceeded.dimension.name} exhausted " +
+                                "(${result.exceeded.current}/${result.exceeded.limit})",
+                            request,
+                        ).also {
+                            it.setProperty("quota", result.exceeded.dimension.name)
+                            it.setProperty("limit", result.exceeded.limit)
+                            it.setProperty("current", result.exceeded.current)
+                        },
+                )
+            }
+
             is CreateApiKey.Result.ScopeEscalation -> {
                 Problems.respond(
                     Problems.of(

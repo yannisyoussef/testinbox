@@ -135,6 +135,17 @@ sealed interface StorageAdmissionDecision {
         override val candidate: StorageAdmissionCandidate,
         val reason: StorageRefusalReason,
     ) : StorageAdmissionDecision
+
+    /**
+     * The copy's participant workspace became inactive before this T1
+     * (ACCOUNT-LIFECYCLE.md "Ingestion and in-flight mail"). A distinct
+     * discard: no reservation, no upload, no storage-refusal record or
+     * attribution, and never reported as a provider duplicate. Its envelope
+     * position still prices the global prefix like any other (ADR-037 A1).
+     */
+    data class Inactive(
+        override val candidate: StorageAdmissionCandidate,
+    ) : StorageAdmissionDecision
 }
 
 data class StorageAdmissionResult(
@@ -145,6 +156,7 @@ data class StorageAdmissionResult(
 ) {
     val admitted: List<StorageAdmissionDecision.Admitted> get() = decisions.filterIsInstance<StorageAdmissionDecision.Admitted>()
     val refused: List<StorageAdmissionDecision.Refused> get() = decisions.filterIsInstance<StorageAdmissionDecision.Refused>()
+    val inactive: List<StorageAdmissionDecision.Inactive> get() = decisions.filterIsInstance<StorageAdmissionDecision.Inactive>()
 
     companion object {
         /** No candidate survived, so there was no lock, no read, no write (ADR-035 §4, step 4). */
@@ -411,9 +423,16 @@ class StorageAdmission(
             )
         return store.admit(scope) { snapshot ->
             verifyOwnership(request, snapshot)
-            val placements = request.candidates.map { StorageAdmissionRules.Placement(it.workspaceId, it.inboxId) }
+            // Lifecycle first, from the same snapshot: an inactive participant's copy
+            // is never priced against its own scopes and never reserved.
+            val eligible = request.candidates.indices.filter { request.candidates[it].workspaceId !in snapshot.inactiveWorkspaces }
+            val candidates = eligible.map { request.candidates[it] }
+            val positions = eligible.map { request.envelopePositions[it] }
+            val placements = candidates.map { StorageAdmissionRules.Placement(it.workspaceId, it.inboxId) }
             val verdicts =
-                if (footprint == null && snapshot.budgets.isEmpty() && request.envelopePositions == placements.indices.toList()) {
+                if (placements.isEmpty()) {
+                    emptyList()
+                } else if (footprint == null && snapshot.budgets.isEmpty() && positions == placements.indices.toList()) {
                     rules(policy, enforcement, request.bytesPerCopy, placements, snapshot)
                 } else {
                     StorageAdmissionRules.decide(
@@ -427,34 +446,38 @@ class StorageAdmission(
                         placements,
                         snapshot,
                         footprint,
-                        request.envelopePositions,
+                        positions,
                     )
                 }
-            check(verdicts.size == request.candidates.size) { "one verdict per candidate" }
+            check(verdicts.size == candidates.size) { "one verdict per candidate" }
             val deadline = snapshot.t0.plus(WRITE_WINDOW)
+            val decided =
+                candidates
+                    .zip(verdicts) { candidate, verdict ->
+                        if (verdict.admitted) {
+                            StorageAdmissionDecision.Admitted(
+                                candidate = candidate,
+                                reservation =
+                                    StorageReservationDraft(
+                                        messageId = candidate.messageId,
+                                        workspaceId = candidate.workspaceId,
+                                        inboxId = candidate.inboxId,
+                                        objectKeys = candidate.objectKeys,
+                                        bytes = request.bytesPerCopy,
+                                        createdAt = snapshot.t0,
+                                        writeDeadlineAt = deadline,
+                                        nodeId = request.nodeId,
+                                        generation = request.generation,
+                                    ),
+                                unenforcedLimit = verdict.ceiling,
+                            )
+                        } else {
+                            StorageAdmissionDecision.Refused(candidate, checkNotNull(verdict.ceiling))
+                        }
+                    }.associateBy { it.candidate.messageId }
+            // Envelope order, as before; inactive copies keep their place in it.
             val decisions =
-                request.candidates.zip(verdicts) { candidate, verdict ->
-                    if (verdict.admitted) {
-                        StorageAdmissionDecision.Admitted(
-                            candidate = candidate,
-                            reservation =
-                                StorageReservationDraft(
-                                    messageId = candidate.messageId,
-                                    workspaceId = candidate.workspaceId,
-                                    inboxId = candidate.inboxId,
-                                    objectKeys = candidate.objectKeys,
-                                    bytes = request.bytesPerCopy,
-                                    createdAt = snapshot.t0,
-                                    writeDeadlineAt = deadline,
-                                    nodeId = request.nodeId,
-                                    generation = request.generation,
-                                ),
-                            unenforcedLimit = verdict.ceiling,
-                        )
-                    } else {
-                        StorageAdmissionDecision.Refused(candidate, checkNotNull(verdict.ceiling))
-                    }
-                }
+                request.candidates.map { candidate -> decided[candidate.messageId] ?: StorageAdmissionDecision.Inactive(candidate) }
             StorageAdmissionPlan(
                 reservations = decisions.filterIsInstance<StorageAdmissionDecision.Admitted>().map { it.reservation },
                 outcome = StorageAdmissionResult(decisions, snapshot.t0),

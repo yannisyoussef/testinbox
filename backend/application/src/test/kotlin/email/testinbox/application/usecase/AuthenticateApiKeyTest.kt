@@ -37,13 +37,29 @@ class AuthenticateApiKeyTest {
     /** The bootstrap credential this "process" is configured with. */
     private val bootstrapSecret = "a-configured-bootstrap-secret-value-with-entropy"
 
+    /** Workspaces whose participant account is suspended/deleted/erased; everything else is legacy. */
+    private val inactive = mutableSetOf<WorkspaceId>()
+    private val eligibility =
+        email.testinbox.application.port.WorkspaceEligibility { ws ->
+            if (ws in inactive) {
+                email.testinbox.application.port.WorkspaceStatus.INACTIVE_PARTICIPANT
+            } else {
+                email.testinbox.application.port.WorkspaceStatus.LEGACY
+            }
+        }
+
+    /** True while the "database" carries no restore clearance. */
+    private var quarantined = false
+
     private val auth =
         AuthenticateApiKey(
             apiKeys,
             clock,
+            eligibility,
             configuredBootstrapKeyHash = Sha256.hex(bootstrapSecret),
             metrics = metrics,
             audit = audit,
+            quarantine = { quarantined },
         )
 
     private fun managed(
@@ -263,9 +279,67 @@ class AuthenticateApiKeyTest {
     }
 
     @Test
+    fun `a verified key of an inactive participant workspace is refused, and only after the secret verified`() {
+        val (credential, key) = managed()
+        auth.authenticate(credential.render()).shouldNotBeNull()
+        inactive += key.workspaceId
+        auth.authenticate(credential.render()).shouldBeNull()
+        // A wrong secret is still reported as such: lifecycle state is no oracle over a public id.
+        auth.authenticate(ApiKeyFormat.render(credential.publicId, ApiKeyFormat.generate(random).secret)).shouldBeNull()
+        metrics.auth shouldContainExactly listOf(AuthOutcome.SUCCESS, AuthOutcome.WORKSPACE_INACTIVE, AuthOutcome.BAD_SECRET)
+        // Eligibility is read per request, never cached in either direction.
+        inactive -= key.workspaceId
+        auth.authenticate(credential.render()).shouldNotBeNull()
+    }
+
+    @Test
+    fun `the bootstrap credential of an inactive workspace is refused as well`() {
+        val key = bootstrap(bootstrapSecret)
+        auth.authenticate(bootstrapSecret).shouldNotBeNull()
+        inactive += key.workspaceId
+        auth.authenticate(bootstrapSecret).shouldBeNull()
+        metrics.auth.last() shouldBe AuthOutcome.WORKSPACE_INACTIVE
+    }
+
+    @Test
+    fun `while the database is restore-quarantined no managed key authenticates, legacy owner and monitoring keys included`() {
+        val (admin, _) = managed(scopes = setOf(ApiScope.API_KEYS_MANAGE, ApiScope.INBOXES_WRITE))
+        val (synthetic, _) = managed(scopes = setOf(ApiScope.INBOXES_WRITE, ApiScope.MESSAGES_READ))
+        auth.authenticate(synthetic.render()).shouldNotBeNull()
+        quarantined = true
+        auth.authenticate(admin.render()).shouldBeNull()
+        auth.authenticate(synthetic.render()).shouldBeNull()
+        // Still verified first: a wrong secret is reported as such, quarantine is no oracle.
+        auth.authenticate(ApiKeyFormat.render(synthetic.publicId, ApiKeyFormat.generate(random).secret)).shouldBeNull()
+        metrics.auth shouldContainExactly
+            listOf(AuthOutcome.SUCCESS, AuthOutcome.RESTORE_QUARANTINED, AuthOutcome.RESTORE_QUARANTINED, AuthOutcome.BAD_SECRET)
+    }
+
+    @Test
+    fun `a participant key in a quarantined database is still reported as an inactive workspace`() {
+        val (credential, key) = managed()
+        inactive += key.workspaceId
+        quarantined = true
+        auth.authenticate(credential.render()).shouldBeNull()
+        metrics.auth shouldContainExactly listOf(AuthOutcome.WORKSPACE_INACTIVE)
+    }
+
+    @Test
+    fun `quarantine does not touch the bootstrap credential, which keeps its own window`() {
+        bootstrap(bootstrapSecret)
+        quarantined = true
+        // No usable managed administrator: the configured bootstrap credential is the owner's way in.
+        auth.authenticate(bootstrapSecret).shouldNotBeNull()
+        // A restored administrator is unrevoked until reconciliation, so the window stays shut meanwhile.
+        managed(scopes = setOf(ApiScope.API_KEYS_MANAGE))
+        auth.authenticate(bootstrapSecret).shouldBeNull()
+        metrics.auth shouldContainExactly listOf(AuthOutcome.BOOTSTRAP, AuthOutcome.BOOTSTRAP_SUPERSEDED)
+    }
+
+    @Test
     fun `with no bootstrap credential configured there is genuinely no break-glass`() {
         bootstrap(bootstrapSecret)
-        val unconfigured = AuthenticateApiKey(apiKeys, clock, configuredBootstrapKeyHash = null, metrics = metrics)
+        val unconfigured = AuthenticateApiKey(apiKeys, clock, eligibility, configuredBootstrapKeyHash = null, metrics = metrics)
         // `docs/dev/api-keys.md` promises exactly this, and it has to be true
         // of the row that already exists, not only of one never provisioned.
         unconfigured.authenticate(bootstrapSecret).shouldBeNull()

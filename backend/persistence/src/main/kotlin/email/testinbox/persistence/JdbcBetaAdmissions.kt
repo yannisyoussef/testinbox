@@ -35,7 +35,7 @@ class JdbcBetaAdmissions(
     override fun lockApplicant(id: HumanAccountId): AdmissionApplicant? {
         requireTransaction()
         return jdbc
-            .sql("SELECT state, contact_verified_at FROM human_account WHERE id = :id FOR UPDATE")
+            .sql("SELECT ${LifecycleSql.EFFECTIVE_STATE} AS state, contact_verified_at FROM human_account WHERE id = :id FOR UPDATE")
             .param("id", id.value)
             .query { rs, _ ->
                 AdmissionApplicant(

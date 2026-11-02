@@ -52,7 +52,7 @@ class LimitsConfigTest {
         // Every category still resolves — the enforcement path runs unchanged,
         // so a disabled deployment cannot diverge from an enforcing one.
         RateCategory.entries.forEach { (disabled.rateFor(it).capacity > 0) shouldBe true }
-        QuotaDimension.entries.filter { it != QuotaDimension.STORED_FOOTPRINT }.forEach {
+        QuotaDimension.entries.filter { it !in QuotaDimension.FIXED_BOUNDS }.forEach {
             disabled.quotas.admits(it, current = 100_000) shouldBe true
         }
         // "Unlimited" must stay finite: the wait-slot allocator enumerates

@@ -337,3 +337,16 @@ a silently disabled limiter is indistinguishable from a working one.
   That is acceptable while workspace provisioning is manual; if workspace
   creation ever becomes self-serve, an organization-level ceiling is required
   before it does.
+
+  > **Amended by [ADR-036](0036-human-identity-and-beta-admission.md) /
+  > [ADR-037](0037-bounded-cohort-storage-and-disclosure.md) (TI-DELIVERY-001),
+  > recorded 2026-10-30.** Human sign-in is now self-service, but workspace
+  > creation is not open-ended: `AdmitBetaParticipant` is the only participant
+  > provisioner, one workspace per admitted account, and the database caps
+  > admissions at thirty places that are never recycled. That fixed cohort cap
+  > is the organization-level ceiling this consequence asks for; ADR-037 adds a
+  > per-participant storage share (128 MiB payload / 256 MiB footprint) reserved
+  > without overcommit, so a person holding several accounts gains capacity
+  > linearly and never at another participant's expense. Raising the cap or
+  > opening workspace creation further needs a new decision. The decision text
+  > above is unchanged.

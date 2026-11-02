@@ -61,6 +61,17 @@ class ReceiveInboundDeliveryTest {
     private lateinit var inbox: Inbox
     private val rateLimiter = FakeRateLimiter()
 
+    /** Participant workspaces already inactive when recipients resolve. */
+    private val inactiveAtResolution = mutableSetOf<WorkspaceId>()
+    private val eligibility =
+        email.testinbox.application.port.WorkspaceEligibility { ws ->
+            if (ws in inactiveAtResolution) {
+                email.testinbox.application.port.WorkspaceStatus.INACTIVE_PARTICIPANT
+            } else {
+                email.testinbox.application.port.WorkspaceStatus.ACTIVE_PARTICIPANT
+            }
+        }
+
     @BeforeEach
     fun setUp() {
         inboxes = InMemoryInboxRepository()
@@ -77,6 +88,7 @@ class ReceiveInboundDeliveryTest {
                 rateLimiter,
                 clock,
                 inboundMetrics = metrics,
+                eligibility = eligibility,
             )
         inbox = provisionInbox("test@testinbox.local")
     }
@@ -336,13 +348,61 @@ class ReceiveInboundDeliveryTest {
     }
 
     @Test
+    fun `an inactive participant recipient is discarded at resolution without spending its rate budget`() {
+        val other = provisionInbox("other@testinbox.local", WorkspaceId(UUID.randomUUID()))
+        inactiveAtResolution += workspaceId
+        val result = useCase.execute(command(recipients = listOf(inbox.address, other.address)))
+        result.inactiveRecipients shouldBe 1
+        result.accepted.size shouldBe 1
+        result.discardedRecipients shouldBe 0
+        result.duplicateRecipients shouldBe 0
+        result.storageRefusedRecipients shouldBe 0
+        messages.messages.map { it.inboxId } shouldBe listOf(other.id)
+        rateLimiter.calls.none { it.second == inbox.id } shouldBe true
+        metrics.inactiveRecipients.get() shouldBe 1
+        metrics.unknownRecipients.get() shouldBe 0
+    }
+
+    @Test
+    fun `a suspension between preparation and T1 is a distinct discard - no reservation, upload, refusal or duplicate`() {
+        val other = provisionInbox("other@testinbox.local", WorkspaceId(UUID.randomUUID()))
+        // Eligible when recipients resolved; the operator's transition committed
+        // before T1 took the fence, so T1's one snapshot reads it inactive.
+        storage.inactiveAtT1 += workspaceId
+        val result = useCase.execute(command(recipients = listOf(inbox.address, other.address)))
+        result.inactiveRecipients shouldBe 1
+        result.duplicateRecipients shouldBe 0
+        result.storageRefusedRecipients shouldBe 0
+        result.accepted.size shouldBe 1
+        messages.messages.map { it.inboxId } shouldBe listOf(other.id)
+        storage.reservations.rows.shouldBeEmpty()
+        storage.reservations.refusals.keys shouldBe emptySet()
+        storage.blobs.blobs.keys
+            .none { it.startsWith("${inbox.workspaceId}/") } shouldBe true
+        metrics.inactiveRecipients.get() shouldBe 1
+        metrics.duplicates.get() shouldBe 0
+    }
+
+    @Test
+    fun `an event whose only recipient became inactive at T1 commits nothing`() {
+        storage.inactiveAtT1 += workspaceId
+        val result = useCase.execute(command())
+        result shouldBe ReceiveInboundDelivery.Result(emptyList(), 0, 0, inactiveRecipients = 1)
+        storage.reservations.rows.shouldBeEmpty()
+        storage.blobs.blobs.shouldBeEmpty()
+        messages.messages.shouldBeEmpty()
+    }
+
+    @Test
     fun `unknown rate-limited and tenant-refused positions retain their global price without storage`() {
         val foreign = provisionInbox("foreign@testinbox.local", WorkspaceId(UUID.randomUUID()))
         // Room for exactly one copy globally: own copy at position 1 must
         // refuse whichever way the foreign recipient is discarded.
-        for (kind in listOf("unknown", "rate", "tenant")) {
+        for (kind in listOf("unknown", "rate", "tenant", "inactive", "inactive-at-t1")) {
             storage = InMemoryStorage(inboxes, messages, clock)
             if (kind == "rate") rateLimiter.exhaustedInboxes += foreign.id
+            if (kind == "inactive") inactiveAtResolution += foreign.workspaceId
+            if (kind == "inactive-at-t1") storage.inactiveAtT1 += foreign.workspaceId
             if (kind == "tenant") storage.committed[foreign.workspaceId] = 100
             val policy =
                 email.testinbox.domain.storage.StorageCapacityPolicy(
@@ -360,15 +420,18 @@ class ReceiveInboundDeliveryTest {
                     parser,
                     rateLimiter,
                     clock,
+                    eligibility = eligibility,
                 )
             val target = if (kind == "unknown") "unknown@testinbox.local" else foreign.address
             val result = receive.execute(command(listOf(target, inbox.address)))
             result.accepted.shouldBeEmpty()
             result.storageRefusedRecipients shouldBe if (kind == "tenant") 2 else 1
+            result.inactiveRecipients shouldBe if (kind.startsWith("inactive")) 1 else 0
             storage.reservations.rows.shouldBeEmpty()
             storage.blobs.blobs.shouldBeEmpty()
             messages.messages.shouldBeEmpty()
             rateLimiter.exhaustedInboxes.clear()
+            inactiveAtResolution.clear()
         }
     }
 
@@ -393,6 +456,7 @@ class ReceiveInboundDeliveryTest {
                 parser,
                 rateLimiter,
                 clock,
+                eligibility = eligibility,
             )
         val cmd = command(listOf(" TEST@testinbox.local ", "test@testinbox.local"), providerMessageId = "event-37")
         receive.execute(cmd).accepted.size shouldBe 1

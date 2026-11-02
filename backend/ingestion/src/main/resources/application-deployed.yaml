@@ -106,8 +106,9 @@ management:
           include: livenessState
         readiness:
           # The listener socket is this deployable's entire purpose; a context
-          # that came up without it must not be called ready.
-          include: readinessState,db,schema,objectStorage,smtpListener
+          # that came up without it must not be called ready. The V22 eligibility
+          # view is read by every T1: without its grant all mail would get 451.
+          include: readinessState,db,schema,objectStorage,smtpListener,lifecyclePrivileges
   info:
     env:
       enabled: true

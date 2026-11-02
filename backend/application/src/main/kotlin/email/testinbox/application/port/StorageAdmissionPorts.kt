@@ -60,6 +60,13 @@ data class StorageUsageSnapshot(
      */
     val footprint: ObservedFootprint? = null,
     val budgets: Map<WorkspaceId, email.testinbox.application.storage.WorkspaceStorageBudget> = emptyMap(),
+    /**
+     * Participant workspaces that are NOT currently eligible (suspended,
+     * deletion-pending, erased, missing membership or restore-quarantined),
+     * read from `workspace_lifecycle_eligibility` in the SAME statement
+     * (ACCOUNT-LIFECYCLE.md: one decision snapshot under the T1 fence).
+     */
+    val inactiveWorkspaces: Set<WorkspaceId> = emptySet(),
 )
 
 /**
