@@ -1,0 +1,16 @@
+# Reviewed allow-list for scripts/check-migration-data-movement.sh (TI-DELIVERY-002).
+#
+# One line per reviewed false positive:
+#     <migration file>  <statement hash>  <justification>
+# The hash is printed by the lint ("statement <hash>"). It covers the statement
+# with comments removed and whitespace collapsed: editing the statement makes
+# the entry stop matching, and the statement needs a new review.
+#
+# The justification must say why the statement does not expose identity,
+# session or key data to the ingestion role. An entry is a reviewer's
+# judgement, not a proof; migration review (CODEOWNERS) is the trust boundary.
+# GRANT findings to the ingestion role or PUBLIC cannot be listed here: grants
+# belong in deploy/database/roles.reference.sql.
+#
+# Empty: the released V1–V22 are pinned in released-migrations.sha256 and are
+# not re-linted, and no unreleased migration exists yet.

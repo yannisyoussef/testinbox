@@ -24,6 +24,23 @@ verified candidate to Ops, which deploys and owns the verdict
      synthetic workflow through a real TLS ingress.
 3. If the PR contains a migration, say in the description whether artifact
    rollback across it stays safe — see [rollback.md](rollback.md).
+   CI also runs the **migration data-movement lint**
+   (`scripts/check-migration-data-movement.sh`, TI-DELIVERY-002). It flags,
+   for human review, any statement that moves data out of an identity,
+   session or key table (`INSERT … SELECT`, `CREATE TABLE … AS`,
+   `SELECT … INTO`, `COPY`, `UPDATE … FROM`, `MERGE`, views, rules,
+   publications, routine bodies, triggers on those tables, dynamic SQL) and
+   any `GRANT` to the ingestion role or `PUBLIC` (grants belong in
+   `deploy/database/roles.reference.sql`). **It is defense in depth only:**
+   the Ops grant contract cannot detect a migration that copies identity data
+   into an ingestion-readable table, and neither can a lexical lint prove the
+   absence of one. Migration review is the trust boundary; a green lint means
+   "nothing obvious", not "safe". A reviewed false positive goes into
+   `scripts/migration-lint/allowlist.txt` with a justification. Pin the new
+   migration by appending its `sha256sum` line to
+   `scripts/migration-lint/released-migrations.sha256` (in this PR or the
+   next): released migrations are immutable, and the lint fails if one is
+   edited, removed, or re-hashed.
 4. Merge. The `Staging` workflow then does:
 
 ```
