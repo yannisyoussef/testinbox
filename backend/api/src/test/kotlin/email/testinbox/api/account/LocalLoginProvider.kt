@@ -38,6 +38,8 @@ class LocalLoginProvider : AutoCloseable {
     var challenge = ""
     var email = "private@example.invalid"
     var githubId = 123456L
+    var googleSubject = "google-subject"
+    var googleEmail = "fixture@gmail.com"
     var pkceValid = false
 
     init {
@@ -142,7 +144,7 @@ class LocalLoginProvider : AutoCloseable {
             JWTClaimsSet
                 .Builder()
                 .issuer(issuer)
-                .subject("google-subject")
+                .subject(googleSubject)
                 .audience(if (mode == "audience") "another-client" else "fixture-client")
                 .issueTime(Date.from(now.minusSeconds(10)))
                 .expirationTime(Date.from(expiry))
@@ -155,7 +157,7 @@ class LocalLoginProvider : AutoCloseable {
                     } else {
                         nonce
                     },
-                ).claim("email", if (mode in setOf("external", "hosted")) "user@example.invalid" else "fixture@gmail.com")
+                ).claim("email", if (mode in setOf("external", "hosted")) "user@example.invalid" else googleEmail)
                 .claim("email_verified", mode != "unverified")
         if (mode == "hosted") claims.claim("hd", "example.invalid")
         val jwt = SignedJWT(JWSHeader.Builder(JWSAlgorithm.RS256).keyID("fixture").build(), claims.build())

@@ -6,9 +6,24 @@
    anonymous or public inbox-creation endpoint. This alone rules out the
    "casual anonymous throwaway inbox" use case that YOPmail-style products
    serve, and most low-effort abuse depends on that being free/anonymous.
+
+   > **Amended by TI-DELIVERY-001/002 (ADR-036/ADR-037), 2026-10-30.** Human
+   > sign-in is now self-service (Google, GitHub or an emailed code), but
+   > signing in is not admission: inboxes are still created only inside a
+   > workspace, by an API key or by an *admitted* participant's session, and
+   > at most thirty participant workspaces can ever exist. See
+   > [Self-service sign-in and the bounded beta](#self-service-sign-in-and-the-bounded-beta).
 2. **Inbound-only.** TestInbox never sends mail. It cannot be used as an
    open relay or to originate spam/phishing, because there is no send
    capability in the product at all.
+
+   > **Amended by TI-DELIVERY-001 (ADR-036), 2026-10-30.** TestInbox now
+   > originates exactly one kind of message: the sign-in code, to an address a
+   > visitor typed. It is still impossible to send *tenant-chosen* content to a
+   > *tenant-chosen* recipient — the body is a fixed template with no link and
+   > no user-supplied text — but the login mail is a bounded spam/harassment
+   > vector of its own, analysed under
+   > [login mail as a spam vector](#login-mail-as-a-spam-vector).
 3. **Ephemeral, TTL-bounded, capped.** Inboxes have a maximum allowed TTL
    (proposed cap, e.g. 24h) and a default short TTL (e.g., 10–30 min); this
    prevents the product being used for long-lived persistent addresses,
@@ -67,6 +82,18 @@
    multiplier is controlled. A future signup feature invalidates this analysis
    and must revisit it.
 
+   > **Amended by TI-DELIVERY-001/002 (ADR-036/ADR-037), 2026-10-30 — the
+   > revisit.** Self-service sign-in now exists, but self-service *workspace
+   > creation* does not grow without bound: a workspace is created only by
+   > `AdmitBetaParticipant`, once per admitted account, and
+   > `beta_admission.place` is constrained to 1–30 in the database. The
+   > multiplier is therefore a fixed thirty participant workspaces plus the
+   > operator-created legacy ones (the owner and monitoring workspaces), not the
+   > number of people who sign in. The per-workspace bound above stands; the
+   > fleet bound is at most (30 + legacy) × 21,600 rows. A signed-in but
+   > unadmitted account owns no workspace and can create no idempotency record.
+   > Raising the cap is a separate owner decision and re-opens this analysis.
+
    Keys are stored hashed and salted with their scope. The salt is the
    workspace id in the adjacent column, so it is not secret: what it buys is
    resistance to *precomputation* and to *cross-workspace correlation* of the
@@ -115,6 +142,20 @@
   other tenants' aggregate usage near the cap. Workspaces are operator
   provisioned; quantising the admission cap or adding hysteresis are named
   follow-ups. While live enforcement is OFF, no refusal is recorded at all.
+
+  > **Amended by ADR-037 (TI-DELIVERY-001), 2026-10-30.** "Workspaces are
+  > operator provisioned" no longer holds for participants: up to thirty
+  > strangers can each hold a workspace. ADR-037 §5–§6 accept the consequence
+  > explicitly: every syntactically valid envelope position is priced against
+  > both global prefix totals (so substituting an unknown recipient for a
+  > foreign one cannot change another copy's outcome *within* an event), and
+  > all thirty 256 MiB footprint shares are reserved up front, so one
+  > participant cannot drive the service to its cliff on its own. The
+  > *cross-event* channel remains: cooperating workspaces can still correlate
+  > their own `SERVICE_CAPACITY` outcomes with changes in global stored data.
+  > It is a coarse capacity side channel, not content access, and the owner
+  > accepted it rather than hiding the diagnostic (which would not close it:
+  > the sender can still see whether its own message was stored).
 - **Short post-resolution `451` windows of the guarded protocol**
   (TI-STORAGE-006E PR D, filesystem-containment contract §4.5, §8). Every
   *stable* infrastructure state that refuses mail — the latch, an open breaker,
@@ -153,6 +194,16 @@
   distinguishable from unknown ones, handing an attacker who can drive a
   workspace over quota a workspace-membership oracle
   ([ADR-027](../adr/0027-rate-limiting-and-resource-quotas.md) §1).
+
+  > **Amended by ADR-035 and ADR-037, recorded 2026-10-30.** Storage is now
+  > also enforced *at delivery*, under the same rule: a copy refused for its
+  > inbox payload, its workspace payload, its workspace footprint share or
+  > service capacity still gets the uniform `250` and is discarded in-process
+  > — no bounce, no DSN, no `4xx`. The refusal is visible only to the owning
+  > workspace (its inbox refusal record, a wait that opted in, and the
+  > console's usage panel). A participant whose share is full therefore
+  > *silently loses mail* from the sender's point of view; that is the price
+  > of not building an oracle, and the console must say so.
 - **Address guessing/enumeration**: generated tokens use enough entropy
   that guessing an active address is infeasible; SMTP-level responses are
   designed not to distinguish "unknown recipient" from "known recipient,
@@ -167,3 +218,196 @@
 - **Storage-cost abuse via large attachments**: per-message and per-attachment
   size caps, plus per-workspace storage quotas, bound worst-case cost even
   under a compromised/malicious API key, until revoked.
+
+## Self-service sign-in and the bounded beta
+
+*Added by TI-DELIVERY-002, 2026-10-30, for the design accepted in
+[ADR-036](../adr/0036-human-identity-and-beta-admission.md) and
+[ADR-037](../adr/0037-bounded-cohort-storage-and-disclosure.md). The sections
+above keep their original text; where this section contradicts them, they carry
+an explicit amendment note.*
+
+Until TI-DELIVERY-001 every workspace was operator-created and the only human
+was the owner. The accepted design lets anyone sign in with Google, GitHub or an
+emailed eight-digit code, and admits at most thirty of those accounts, first
+come, into one private workspace each. The code is deployed and dormant
+(`TESTINBOX_ACCOUNTS_ENABLED` off, admissions closed, storage enforcement
+`OFF`); this section is the threat model it will run under.
+
+### What a stranger can and cannot do
+
+| state | can | cannot |
+|---|---|---|
+| anonymous | read which sign-in methods are configured (`GET /account/methods`: method names only — no count, no capacity); start a sign-in | learn whether an address has an account (the code request answers the same `202` whether or not one exists, and whether or not the mail was delivered); read anything else |
+| signed in, not admitted | read its own admission and waitlist status; join or leave the waitlist; log out | create an inbox, see a workspace, mint a key, learn its queue position, the number of admitted accounts or the remaining capacity |
+| admitted participant | everything a workspace owner can do through the console and its own API keys, inside ADR-027 budgets and its ADR-037 storage share | reach another workspace (cross-tenant ids are `404`), raise its own limits, create a second workspace |
+
+### The thirty-place cap and the waitlist
+
+- The cap is a database constraint (`beta_admission.place BETWEEN 1 AND 30`)
+  inside the one admission transaction; concurrent applicants for the last
+  place are serialized on the cohort row. No configuration value raises it.
+- A place is spent for good: suspension or deletion does not reopen it, and a
+  replacement admission is an explicit, reviewed owner action.
+- The waitlist is explicit (signing in does not enrol), holds at most 1,000
+  entries (configurable lower), expires entries after its retention (30 days by
+  default, at most 90), and grants nothing. Joining sends no mail.
+- The verified-account inventory (admitted or not) is capped at 1,030. When it
+  is full, new sign-ups answer "unavailable"; existing accounts still sign in.
+
+### Sybil limitation (accepted)
+
+**Thirty admitted accounts does not mean thirty distinct people.** Identity is
+a provider subject or a verified mailbox, nothing more:
+
+- contact addresses are deliberately not canonicalized (ADR-036 §2: Gmail dots
+  and `+suffix` are preserved), so one mailbox owner can verify many distinct
+  addresses, and one person can also hold several Google or GitHub identities;
+- admission is first come, triggered when an unadmitted account opens the
+  console, so one determined person can claim several places — in principle
+  all of them — as fast as the sign-in budgets below allow;
+- the same lever can fill the 1,000-entry waitlist and the 1,030-account
+  inventory, denying the beta (or new sign-ups) to everyone else. At the global
+  code budget of 200 per hour that takes hours, not minutes, and it is visible
+  in `testinbox_email_login_total` and the admission count.
+
+What bounds it: the per-source, per-recipient and global sign-in budgets; one
+workspace per account and the fixed per-workspace storage share, so a
+multi-account holder gains capacity linearly and can never take another
+participant's share; the operator's admission pause (`beta_cohort.admissions_open`,
+and the TI-DELIVERY-002 operator command); and the owner's review of who was
+admitted. What would close it — invitation codes, payment, phone or document
+verification — is out of scope for this beta. A controlled beta should open
+admissions only while someone is watching, and pause them when the cohort is
+full of people it intended to admit.
+
+### Sign-in and email budgets
+
+All are enforced in the application layer, in PostgreSQL, across API nodes.
+Pending, failed and consumed attempts all count.
+
+| budget | email codes | provider (Google/GitHub) starts |
+|---|---|---|
+| global | 200 per hour | 200 per hour |
+| per verified source | 15 per 15 minutes | 15 per 15 minutes |
+| per recipient address | 3 per 15 minutes, and a 60-second resend gap | — |
+| retained rows | 5,000 challenges, purged after 24 hours | 5,000 state rows, purged after 24 hours |
+| per challenge | 10-minute lifetime, 5 failed attempts, single use, bound to the requesting browser | 10-minute state, single use, bound to browser and provider |
+
+The per-source hourly equivalent (60) stays below the global hour, so one source
+can never consume everyone's budget on its own. **Until TI-DELIVERY-002's
+trusted client address is configured, it does exactly that:** the public site
+proxies `/account/*` and strips forwarding headers by design, so the API sees
+the site container as the source of every visitor. Fifteen code requests in
+fifteen minutes from anyone then block code requests for everyone for the rest
+of the window. Stream A/W replace the shared source with a client address the
+site attests to the API (`TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET`,
+`TESTINBOX_TRUSTED_PROXY_CIDRS`, `TESTINBOX_TRUSTED_PROXY_HOPS`). The chain:
+
+- **Edge → site.** Traefik's entrypoint trusts forwarded headers only from
+  Cloudflare (Ops' `EDGE_TRUSTED_IPS`), so through Cloudflare the site
+  receives `X-Forwarded-For: [anything the client sent…,] <client>, <Cloudflare edge>`.
+  The public site router has **no** Cloudflare-only middleware today: a
+  direct, non-Cloudflare request does reach the site, with
+  `X-Forwarded-For: <its own peer>` only. That single entry is not in a
+  trusted range, so the site attests no client address and the request uses
+  the shared budget — safe, never a chosen budget. Ops action before
+  registration: add `testinbox-cf-only` to the site router.
+  `TESTINBOX_TRUSTED_PROXY_CIDRS` is Cloudflare's published ranges only, in
+  sync with `EDGE_TRUSTED_IPS`; the Traefik → site hop is the TCP peer, never
+  an `X-Forwarded-For` entry, and must not be listed.
+  The site skips exactly `HOPS` entries from the right (1 on the deployed
+  edge), each of which must lie in a trusted CIDR, and takes the next entry as
+  the client — only if it is a literal IP outside every trusted range.
+  Anything further left is never read. A visitor whose own address is inside a
+  trusted range (for example Cloudflare Worker egress) gets no address.
+- **Site → API.** The site sends `X-TestInbox-Client-Address` together with
+  `X-TestInbox-Proxy-Secret`. The API believes the address only with exactly
+  one matching secret (constant-time comparison) and one literal IP; IPv6 is
+  grouped by its /64. Browser-supplied `X-TestInbox-*` headers never pass the
+  site's allow-list, and the API's `/account` routes are not publicly routed.
+- **Fallback.** No secret, a wrong or missing one, or a malformed address all
+  fall back to the TCP peer — the shared budget. A client can lose its own
+  budget but can never choose one. A raw `X-Forwarded-For` or `Forwarded` from
+  the Internet is never believed for this.
+
+Residual: clients behind one NAT or one IPv6 /64 share a budget; an attacker
+holding many IPv4 addresses or /64s gets many per-source budgets, still bounded
+by the global 200 per hour; a leaked secret lets a caller who can reach the
+API's internal `/account` directly choose sources.
+
+Authenticated metadata requests (`/account/session`, `/account/admission`,
+`/account/waitlist`) share a 60-per-minute budget per account and 3,600 per
+minute globally; logout is always allowed. The human product aliases
+(`/account/product/*`) are charged to the workspace's ADR-027 budgets exactly
+like `/v1`. An account holds at most five sessions; a sixth evicts the oldest.
+
+### Login mail as a spam vector
+
+Anyone can type someone else's address and make TestInbox mail it a code. The
+bound on that harassment, per victim address: 3 messages per 15 minutes and at
+least 60 seconds apart (at most 288 a day, from any number of sources), within
+the 200-per-hour global ceiling the attacker also spends. The content is a fixed
+plain-text template — the code, its lifetime and "if you did not request it,
+ignore this message" — with no link and no attacker-controlled text, so it
+cannot carry a phishing payload or a URL. The residual risks are annoyance, spam
+complaints against the sending domain, and the provider's own budget being
+spent; the global ceiling caps all three. `testinbox_email_login_total{outcome}`
+is the signal to alert on.
+
+**TestInbox receive-domain addresses are refused as identities.** A code request
+for an address in the deployment's own mail domain (`inbox.testinbox.email` or
+any subdomain) answers `400 invalid-request` — the same status, problem type
+and title a malformed address gets (only the per-request correlation id
+differs) — before any budget is charged or any row written, and no
+mail is sent. Otherwise a participant could mint unlimited throwaway identities
+from its own inboxes (sybil amplification), and the service would mail itself.
+The refusal is a property of the address alone, so it reveals nothing about any
+account. The deployment synthetic (`npm run test:accounts`) asserts both
+refusals are identical.
+
+### Storage shares (ADR-037)
+
+- Each participant workspace has a fixed **128 MiB payload** and **256 MiB
+  conservative physical-footprint** ceiling; both apply. Thirty shares total
+  7.5 GiB of footprint and are all reserved, with the legacy workspaces' explicit
+  shares, before the first admission: no overcommit, so one participant cannot
+  consume another's share.
+- **Delayed cleanup.** Deleting messages or inboxes does not immediately free
+  footprint: the physical charge stays on the workspace as *pending cleanup*
+  until a later, fresh filesystem observation from the approved monitor shows
+  the trash empty. A participant who fills and deletes in a loop hurts only its
+  own share; it cannot launder deletion debt onto the service or another
+  participant.
+- **Quota refusals are silent discards.** A copy refused for inbox payload,
+  workspace payload, workspace footprint or service capacity still gets the
+  uniform SMTP `250` and is discarded in-process (no DSN). Only the owning
+  workspace sees the refusal (refusal record, opted-in wait, console). This is
+  the ADR-025/ADR-027 rule — no limit may change an SMTP reply — carried over
+  unchanged; infrastructure failures still answer a uniform `451` before
+  recipient resolution.
+- Unknown and refused envelope positions are priced against the global totals
+  (ADR-037 §5) so that, within one event, an unknown recipient is
+  indistinguishable from a foreign one. The cross-event capacity side channel
+  described above is accepted, not closed.
+
+### Uniform SMTP regardless of account state
+
+No account, admission, waitlist or quota state changes a valid recipient's SMTP
+reply. A suspended or deletion-pending participant's addresses must behave like
+unknown recipients — `250`, discard, nothing persisted. TI-DELIVERY-002 makes
+it so: recipient resolution filters inactive participants, and a copy that
+becomes inactive between preparation and the T1 snapshot is a distinct
+`Inactive` outcome (no reservation, upload, refusal record or duplicate
+report). `SmtpAccountLifecycleTest` proves over real SMTP that the transcript
+is byte-identical to an unknown recipient's
+([lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md)).
+
+### Disabled is closed, never a fallback
+
+With `TESTINBOX_ACCOUNTS_ENABLED` off — production today — every `/account/*`
+route answers `503` with no cookie and no side effect, the site shows no
+places, and no mock login, test code, fixture account or privileged user is
+substituted. An incomplete configuration closes only the affected method. The
+`/v1` API, ingestion and the deployment synthetics are unaffected either way.
+`npm run test:accounts` asserts the declared state from outside.

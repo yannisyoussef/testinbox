@@ -254,7 +254,10 @@ components:
           description: Rate category that refused the request (ADR-027).
         quota:
           type: string
-          description: Quota dimension that is exhausted, on quota-exceeded.
+          description: >
+            Quota dimension that is exhausted, on quota-exceeded. Clients must
+            tolerate values they do not know; `API_KEYS_USABLE` and
+            `API_KEYS_RETAINED` are the participant key inventory.
         limit:
           type: integer
           format: int64
@@ -1423,6 +1426,15 @@ paths:
             Also possible: `idempotency-key-reused`,
             `idempotency-request-in-progress` and
             `idempotency-replay-unavailable`, as for inbox creation.
+
+            `type: https://testinbox.email/problems/quota-exceeded` — a beta
+            participant workspace holds its fixed key inventory: at most 20
+            usable keys (`quota: API_KEYS_USABLE`; revoking or expiring a key
+            frees one) and at most 1000 key records ever minted, retained as
+            audit history (`quota: API_KEYS_RETAINED`; never freed). `limit`
+            and `current` describe the caller's own workspace only. No
+            `Retry-After`: waiting does not help. Owner and monitoring
+            workspaces are not bounded by this inventory.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }
@@ -2610,6 +2622,15 @@ paths:
             Also possible: `idempotency-key-reused`,
             `idempotency-request-in-progress` and
             `idempotency-replay-unavailable`, as for inbox creation.
+
+            `type: https://testinbox.email/problems/quota-exceeded` — a beta
+            participant workspace holds its fixed key inventory: at most 20
+            usable keys (`quota: API_KEYS_USABLE`; revoking or expiring a key
+            frees one) and at most 1000 key records ever minted, retained as
+            audit history (`quota: API_KEYS_RETAINED`; never freed). `limit`
+            and `current` describe the caller's own workspace only. No
+            `Retry-After`: waiting does not help. Owner and monitoring
+            workspaces are not bounded by this inventory.
           content:
             application/problem+json:
               schema: { $ref: "#/components/schemas/Problem" }

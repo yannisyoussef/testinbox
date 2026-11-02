@@ -12,6 +12,8 @@ import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.InsertInboxOutcome
 import email.testinbox.application.port.LimitMetrics
 import email.testinbox.application.port.ReserveOutcome
+import email.testinbox.application.port.WorkspaceEligibility
+import email.testinbox.application.port.WorkspaceInactiveException
 import email.testinbox.application.port.WorkspaceQuotaState
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
@@ -37,6 +39,7 @@ import java.util.UUID
  * EXACT-mode concurrency is decided solely by the Postgres unique
  * constraint on the reservation table; the loser observes Conflict.
  */
+@Suppress("LongParameterList") // one collaborator per admission rule: inboxes, reservations, quota, policy, lifecycle
 class CreateInbox(
     private val inboxes: InboxRepository,
     private val reservations: ExactAddressReservations,
@@ -54,6 +57,12 @@ class CreateInbox(
      * rather than by every call site remembering (ADR-033 §2).
      */
     private val idempotency: Idempotency,
+    /**
+     * Rechecked under the workspace guard, which the account-lifecycle writer
+     * also takes first: a request authenticated just before a suspension
+     * cannot add an inbox after it (ACCOUNT-LIFECYCLE.md).
+     */
+    private val eligibility: WorkspaceEligibility,
 ) {
     data class Command(
         val workspaceId: WorkspaceId,
@@ -156,6 +165,7 @@ class CreateInbox(
                 ),
         ) {
             quotas.guardAdmission(command.workspaceId)
+            if (!eligibility.isActive(command.workspaceId)) throw WorkspaceInactiveException()
             admit(command.workspaceId)?.let {
                 metrics.quotaRejected(it.dimension)
                 return@around Result.QuotaRejected(it)

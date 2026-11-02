@@ -13,6 +13,7 @@ class JdbcCohortBudgets(
 ) : CohortBudgets {
     override fun lockClosed() {
         check(TransactionSynchronizationManager.isActualTransactionActive())
+        OperatorTransactionBounds.apply(jdbc)
         val closed =
             jdbc
                 .sql("SELECT NOT admissions_open AND NOT capacity_ready FROM beta_cohort WHERE id='beta-30' FOR UPDATE")

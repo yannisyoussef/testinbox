@@ -7,6 +7,8 @@ import email.testinbox.application.port.AuditEvent
 import email.testinbox.application.port.AuditLog
 import email.testinbox.application.port.AuthOutcome
 import email.testinbox.application.port.LastUsedRecorder
+import email.testinbox.application.port.RestoreQuarantine
+import email.testinbox.application.port.WorkspaceEligibility
 import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiKeyFormat
 import email.testinbox.domain.tenant.ApiKeyKind
@@ -36,6 +38,13 @@ class AuthenticateApiKey(
     private val apiKeys: ApiKeyRepository,
     private val clock: Clock,
     /**
+     * Account lifecycle (ACCOUNT-LIFECYCLE.md), read per request like every
+     * other authorization fact. Suspension also revokes the keys, so this is
+     * the second, independent barrier: a key restored un-revoked from a
+     * backup, or one in a workspace whose membership is gone, still refuses.
+     */
+    private val eligibility: WorkspaceEligibility,
+    /**
      * `SHA-256` of the bootstrap credential this process is **currently
      * configured** with, or null when none is.
      *
@@ -57,6 +66,14 @@ class AuthenticateApiKey(
     private val metrics: ApiKeyMetrics = ApiKeyMetrics.NOOP,
     private val lastUsed: LastUsedRecorder = LastUsedRecorder.NOOP,
     private val audit: AuditLog = AuditLog.NOOP,
+    /**
+     * A backup is never current authorization (owner decision 2026-10-30):
+     * while the database is restore-quarantined no MANAGED key authenticates,
+     * whatever its workspace. `restore-reconcile` then revokes every one of
+     * them. The bootstrap credential is configuration, not restored data, and
+     * keeps its own §8 rule.
+     */
+    private val quarantine: RestoreQuarantine = RestoreQuarantine.NONE,
 ) {
     fun authenticate(presentedKey: String): ApiKey? {
         val result = verify(presentedKey)
@@ -106,6 +123,8 @@ class AuthenticateApiKey(
         val now = clock.instant()
         if (stored.isRevoked()) return Verification(null, AuthOutcome.REVOKED)
         if (stored.isExpired(now)) return Verification(null, AuthOutcome.EXPIRED)
+        if (!eligibility.isActive(stored.workspaceId)) return Verification(null, AuthOutcome.WORKSPACE_INACTIVE)
+        if (quarantine.quarantined()) return Verification(null, AuthOutcome.RESTORE_QUARANTINED)
 
         lastUsed.record(stored, now)
         return Verification(stored, AuthOutcome.SUCCESS)
@@ -132,6 +151,7 @@ class AuthenticateApiKey(
         val now = clock.instant()
         if (stored.isRevoked()) return Verification(null, AuthOutcome.REVOKED)
         if (stored.isExpired(now)) return Verification(null, AuthOutcome.EXPIRED)
+        if (!eligibility.isActive(stored.workspaceId)) return Verification(null, AuthOutcome.WORKSPACE_INACTIVE)
         if (apiKeys.hasUsableManagedAdmin(stored.workspaceId, now)) {
             // The observable moment of the §8 transition. A run of these after
             // a cutover means something is still shipping the old secret.

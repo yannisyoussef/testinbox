@@ -153,6 +153,19 @@ why revoking a compromised last administrator is allowed. It follows that:
   Revoking its last administrative key locks the workspace out of key
   management permanently, and there is no server-side path back in.
 
+**After a database restore** (V22, owner decision 2026-10-30) this is the
+normal way back in, not an emergency:
+
+- no restored managed key authenticates while the database is quarantined;
+- `account-lifecycle restore-reconcile` revokes every managed key of every
+  workspace;
+- the bootstrap credential then reopens. Mint the monitoring key first, then
+  the owner's new administrator, which closes the window again.
+
+Pass the bootstrap token in a header file (`curl -H @file`), never on the
+command line. See
+[lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md#restore-procedure).
+
 ### Retiring or rotating the bootstrap credential
 
 A bootstrap credential authenticates only when the presented token matches the
@@ -224,7 +237,7 @@ the edge):
 
 | Metric | Labels |
 |---|---|
-| `testinbox_api_key_auth_total` | `outcome` — `SUCCESS`, `BOOTSTRAP`, `BOOTSTRAP_SUPERSEDED`, `REVOKED`, `EXPIRED`, `BAD_SECRET`, `UNKNOWN_KEY`, `MALFORMED`, `CHECKSUM_MISMATCH`, `UNSUPPORTED_VERSION` |
+| `testinbox_api_key_auth_total` | `outcome` — `SUCCESS`, `BOOTSTRAP`, `BOOTSTRAP_SUPERSEDED`, `REVOKED`, `EXPIRED`, `BAD_SECRET`, `UNKNOWN_KEY`, `MALFORMED`, `CHECKSUM_MISMATCH`, `UNSUPPORTED_VERSION`, `WORKSPACE_INACTIVE`, `RESTORE_QUARANTINED` |
 | `testinbox_api_key_lifecycle_total` | `operation` — `CREATED`, `REVOKED`, `REVOKE_NOOP` |
 | `testinbox_api_key_last_used_writes_total` | — |
 

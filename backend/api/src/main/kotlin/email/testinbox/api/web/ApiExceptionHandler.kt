@@ -1,6 +1,7 @@
 package email.testinbox.api.web
 
 import email.testinbox.api.auth.MissingScopeException
+import email.testinbox.application.port.WorkspaceInactiveException
 import jakarta.servlet.http.HttpServletRequest
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
@@ -34,6 +35,17 @@ class ApiExceptionHandler {
                 request,
             ),
         )
+
+    /**
+     * The credential authenticated, but the account was suspended or deleted
+     * before the write took its workspace guard (ACCOUNT-LIFECYCLE.md). The
+     * same `401` the next request gets: the credential is no longer valid.
+     */
+    @ExceptionHandler(WorkspaceInactiveException::class)
+    fun inactive(
+        ignored: WorkspaceInactiveException,
+        request: HttpServletRequest,
+    ): ResponseEntity<ProblemDetail> = Problems.respond(Problems.of(HttpStatus.UNAUTHORIZED, "unauthorized", "Unauthorized", null, request))
 
     @ExceptionHandler(HttpMessageNotReadableException::class)
     fun unreadable(

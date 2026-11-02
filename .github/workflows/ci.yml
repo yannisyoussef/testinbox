@@ -88,6 +88,10 @@ jobs:
           # are evaluated against origin/master inside the suite.
           ./scripts/check-storage-activation.test.sh
           ./scripts/check-storage-enforcement-off.test.sh
+          # TI-DELIVERY-002: keep roles.reference.sql in the shape Ops reviewed
+          # until their grant-contract weaknesses MD1/md1 are fixed. The suite
+          # runs the guard on the real file first, then on mutated copies.
+          ./scripts/check-roles-reference.test.sh
       # TI-005. Separate step because the 220-banner mutation needs Docker: its
       # whole point is that static validation cannot see a configuration which
       # passes `postfix check` and then leaves smtpd answering nothing. The

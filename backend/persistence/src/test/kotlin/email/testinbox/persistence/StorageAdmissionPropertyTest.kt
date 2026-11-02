@@ -159,6 +159,7 @@ class StorageAdmissionPropertyTest : PersistenceIntegrationTest() {
                     when (it) {
                         is StorageAdmissionDecision.Admitted -> "admitted"
                         is StorageAdmissionDecision.Refused -> it.reason.name
+                        is StorageAdmissionDecision.Inactive -> "inactive"
                     }
                 } shouldBe expected
                 fx.reservedBytes() - reservationsBefore shouldBe expected.count { it == "admitted" } * f

@@ -9,11 +9,14 @@ import email.testinbox.application.NoIdempotencyRecords
 import email.testinbox.application.NoopTx
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.idempotency.Idempotency
+import email.testinbox.application.port.WorkspaceInactiveException
+import email.testinbox.application.port.WorkspaceStatus
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.inbox.AddressMode
 import email.testinbox.domain.inbox.InboxState
 import email.testinbox.domain.limits.QuotaPolicy
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldEndWith
 import io.kotest.matchers.string.shouldStartWith
@@ -63,7 +66,18 @@ class CreateInboxTest {
                 // without a key, so the fake runner goes here rather than into
                 // the use case.
                 idempotency = Idempotency(NoIdempotencyRecords, NoopTx, clock),
+                eligibility = { if (it in inactive) WorkspaceStatus.INACTIVE_PARTICIPANT else WorkspaceStatus.ACTIVE_PARTICIPANT },
             )
+    }
+
+    private val inactive = mutableSetOf<WorkspaceId>()
+
+    @Test
+    fun `an inactive workspace creates no inbox, checked under the workspace guard`() {
+        inactive += workspaceId
+        shouldThrow<WorkspaceInactiveException> { useCase.execute(command()) }
+        quotas.guardedWorkspaces shouldBe listOf(workspaceId)
+        inboxes.inboxes.size shouldBe 0
     }
 
     private fun command(

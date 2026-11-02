@@ -8,15 +8,20 @@ import email.testinbox.application.Sha256
 import email.testinbox.application.port.ApiKeyOperation
 import email.testinbox.application.port.AuditEvent
 import email.testinbox.application.port.RevokeApiKeyOutcome
+import email.testinbox.application.port.WorkspaceInactiveException
+import email.testinbox.application.port.WorkspaceStatus
 import email.testinbox.application.query.ApiKeyPaging
 import email.testinbox.application.query.ApiKeyQueries
 import email.testinbox.domain.ApiKeyId
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.limits.QuotaDimension
+import email.testinbox.domain.limits.QuotaExceeded
 import email.testinbox.domain.tenant.ApiKey
 import email.testinbox.domain.tenant.ApiKeyFormat
 import email.testinbox.domain.tenant.ApiKeyKind
 import email.testinbox.domain.tenant.ApiScope
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldBeNull
@@ -40,7 +45,16 @@ class ApiKeyLifecycleTest {
     private val audit = RecordingAuditLog()
     private val random = SecureRandom.getInstance("SHA1PRNG").apply { setSeed(99L) }
 
-    private val create = CreateApiKey(apiKeys, clock, audit, metrics, random)
+    private val quotas =
+        email.testinbox.application.InMemoryQuotaState(
+            email.testinbox.application.InMemoryInboxRepository(),
+            email.testinbox.application.InMemoryMessageRepository(),
+        )
+
+    /** Legacy unless a test makes the workspace a participant. */
+    private var status = WorkspaceStatus.LEGACY
+    private val create =
+        CreateApiKey(apiKeys, clock, audit, metrics, random, guard = quotas, eligibility = { status })
     private val revoke = RevokeApiKey(apiKeys, clock, audit, metrics)
     private val queries = ApiKeyQueries(apiKeys)
 
@@ -82,6 +96,63 @@ class ApiKeyLifecycleTest {
         // And nothing that is read back afterwards can reproduce it.
         val fetched = queries.get(admin, created.apiKey.id).shouldNotBeNull()
         fetched.toString().contains(created.credential.secret) shouldBe false
+    }
+
+    @Test
+    fun `minting takes the workspace guard and an inactive workspace mints nothing`() {
+        create.execute(command()).shouldBeInstanceOf<CreateApiKey.Result.Created>()
+        quotas.guardedWorkspaces shouldBe listOf(workspaceId)
+        status = WorkspaceStatus.INACTIVE_PARTICIPANT
+        val before = apiKeys.keys.size
+        shouldThrow<WorkspaceInactiveException> { create.execute(command()) }
+        apiKeys.keys.size shouldBe before
+    }
+
+    @Test
+    fun `a participant workspace holds at most twenty usable keys, and a revocation frees one`() {
+        status = WorkspaceStatus.ACTIVE_PARTICIPANT
+        // The admin fixture is the first usable key.
+        val minted = (1..19).map { create.execute(command()).shouldBeInstanceOf<CreateApiKey.Result.Created>().apiKey }
+        val refused = create.execute(command()).shouldBeInstanceOf<CreateApiKey.Result.InventoryExhausted>()
+        refused.exceeded shouldBe QuotaExceeded(QuotaDimension.API_KEYS_USABLE, 20, 20)
+        apiKeys.keys.size shouldBe 20
+        revoke.execute(admin, minted.first().id) shouldBe RevokeApiKeyOutcome.Revoked
+        create.execute(command()).shouldBeInstanceOf<CreateApiKey.Result.Created>()
+        create.execute(command()).shouldBeInstanceOf<CreateApiKey.Result.InventoryExhausted>()
+    }
+
+    @Test
+    fun `retained key history is bounded at one thousand rows and revocation does not free it`() {
+        status = WorkspaceStatus.ACTIVE_PARTICIPANT
+        repeat(999) {
+            val key = create.execute(command()).shouldBeInstanceOf<CreateApiKey.Result.Created>().apiKey
+            revoke.execute(admin, key.id)
+        }
+        apiKeys.keys.size shouldBe 1000
+        create.execute(command()).shouldBeInstanceOf<CreateApiKey.Result.InventoryExhausted>().exceeded shouldBe
+            QuotaExceeded(QuotaDimension.API_KEYS_RETAINED, 1000, 1000)
+    }
+
+    @Test
+    fun `legacy owner and monitoring workspaces keep their unbounded inventory`() {
+        repeat(25) { create.execute(command()).shouldBeInstanceOf<CreateApiKey.Result.Created>() }
+    }
+
+    @Test
+    fun `the operator revocation revokes every managed key of the workspace, only inside its authorization`() {
+        val other = WorkspaceId(UUID.randomUUID())
+        val foreign = apiKeys.put(admin.copy(id = ApiKeyId(UUID.randomUUID()), workspaceId = other, publicId = "bbbbbbbbbbbbbbbb"))
+        repeat(2) { create.execute(command()) }
+        val authority = OperatorAuthorization()
+        revoke.revokeWorkspaceForLifecycle(authority, workspaceId) shouldBe 3
+        revoke.revokeWorkspaceForLifecycle(authority, workspaceId) shouldBe 0
+        apiKeys.keys.values
+            .filter { it.workspaceId == workspaceId }
+            .all { it.isRevoked() } shouldBe true
+        apiKeys.keys.getValue(foreign.id).isRevoked() shouldBe false
+        authority.close()
+        shouldThrow<IllegalStateException> { revoke.revokeWorkspaceForLifecycle(authority, other) }
+        apiKeys.keys.getValue(foreign.id).isRevoked() shouldBe false
     }
 
     @Test

@@ -114,4 +114,55 @@ class HumanAccountEnvironmentTest {
             policy?.maximum shouldBe 100
         }
     }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableConfigurationProperties(HumanAccountProperties::class)
+    class ClientSourceOnly {
+        @org.springframework.context.annotation.Bean
+        fun registry(): io.micrometer.core.instrument.MeterRegistry =
+            io.micrometer.core.instrument.simple
+                .SimpleMeterRegistry()
+
+        @org.springframework.context.annotation.Bean
+        fun source(
+            properties: HumanAccountProperties,
+            registry: io.micrometer.core.instrument.MeterRegistry,
+        ): AccountClientSource = HumanAccountWiring().accountClientSource(properties, registry)
+    }
+
+    private fun clientSource(values: Map<String, Any>): ApplicationContextRunner =
+        ApplicationContextRunner().withUserConfiguration(ClientSourceOnly::class.java).withInitializer { context ->
+            val sources = context.environment.propertySources
+            sources.addFirst(SystemEnvironmentPropertySource("account-test-env", values))
+            YamlPropertySourceLoader().load("shipped-api-yaml", ClassPathResource("application.yaml")).forEach(sources::addLast)
+        }
+
+    @Test
+    fun `the client address secret is optional and a short or weak one closes account sign-in without echoing it`() {
+        clientSource(emptyMap()).run { context ->
+            context.startupFailure shouldBe null
+            context.getBean(HumanAccountProperties::class.java).clientAddressSecret shouldBe ""
+        }
+        val strong = "fixture-only-not-a-real-secret-9876543210"
+        val origin = "TESTINBOX_ACCOUNTS_PUBLIC_ORIGIN" to "https://app.testinbox.test"
+        clientSource(mapOf("TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET" to strong, origin)).run { context ->
+            context.startupFailure shouldBe null
+            val properties = context.getBean(HumanAccountProperties::class.java)
+            properties.clientAddressSecret shouldBe strong
+            properties.canonicalOrigin shouldBe "https://app.testinbox.test"
+            properties.toString().contains(strong) shouldBe false
+        }
+        listOf("too-short-for-a-secret", "x".repeat(40)).forEach { weak ->
+            clientSource(mapOf("TESTINBOX_ACCOUNTS_CLIENT_ADDRESS_SECRET" to weak, origin)).run { context ->
+                // The Bearer API keeps running; only the /account boundary closes.
+                context.startupFailure shouldBe null
+                val properties = context.getBean(HumanAccountProperties::class.java)
+                properties.canonicalOrigin shouldBe null
+                val problem = checkNotNull(properties.clientAddressSecretProblem)
+                problem.contains("testinbox.accounts.client-address-secret") shouldBe true
+                problem.contains(weak) shouldBe false
+                properties.toString().contains(weak) shouldBe false
+            }
+        }
+    }
 }

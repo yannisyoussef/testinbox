@@ -181,6 +181,7 @@ open class JdbcStorageAdmission(
                            (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation) AS reserved_objects,
                            NULL::bigint AS payload_limit, NULL::bigint AS footprint_limit,
                            NULL::numeric AS cleanup_bytes,NULL::numeric AS cleanup_objects,
+                           NULL::boolean AS inactive,
                            $footprintColumns
                     UNION ALL
                     SELECT 'WORKSPACE', ws.id, ws.id, now(),
@@ -190,6 +191,9 @@ open class JdbcStorageAdmission(
                            coalesce(r.objects, 0),
                            coalesce(p.payload_limit_bytes,l.payload_limit_bytes),coalesce(p.footprint_limit_bytes,l.footprint_limit_bytes),
                            coalesce(c.bytes,0),coalesce(c.objects,0),
+                           -- Account lifecycle (V22), in the SAME statement under (35, 1):
+                           -- a participant marker without an active membership is inactive.
+                           coalesce(NOT e.active, false),
                            ${FootprintSql.NONE}
                       FROM ws
                       LEFT JOIN workspace_storage_account a ON a.workspace_id = ws.id
@@ -198,13 +202,14 @@ open class JdbcStorageAdmission(
                       LEFT JOIN ws_charge c ON c.id=ws.id
                       LEFT JOIN participant_workspace p ON p.workspace_id=ws.id
                       LEFT JOIN storage_legacy_share l ON l.workspace_id=ws.id
+                      LEFT JOIN workspace_lifecycle_eligibility e ON e.workspace_id = ws.id
                     UNION ALL
                     SELECT 'INBOX', ib.id, x.workspace_id, now(),
                            coalesce(s.base_bytes, 0) + coalesce(d.bytes, 0),
                            coalesce(r.bytes, 0),
                            coalesce(s.base_objects, 0) + coalesce(d.objects, 0),
                            coalesce(r.objects, 0),
-                           NULL::bigint,NULL::bigint,NULL::numeric,NULL::numeric,
+                           NULL::bigint,NULL::bigint,NULL::numeric,NULL::numeric,NULL::boolean,
                            ${FootprintSql.NONE}
                       FROM ib
                       LEFT JOIN inbox x ON x.id = ib.id
@@ -214,38 +219,8 @@ open class JdbcStorageAdmission(
                     """.trimIndent(),
                 ).param("workspaces", scope.workspaceIds.map { it.value })
                 .param("inboxes", scope.inboxIds.map { it.value })
-                .query { rs, _ ->
-                    SnapshotRow(
-                        footprint = if (readsFootprint && rs.getString("scope") == "GLOBAL") FootprintSql.read(rs) else null,
-                        scope = rs.getString("scope"),
-                        budget =
-                            if (rs.getObject("payload_limit") ==
-                                null
-                            ) {
-                                null
-                            } else {
-                                email.testinbox.application.storage.WorkspaceStorageBudget(
-                                    rs.getLong("payload_limit"),
-                                    rs.getLong("footprint_limit"),
-                                    email.testinbox.domain.storage.FootprintAdmission.Load(
-                                        exactLong(rs.getBigDecimal("cleanup_bytes")),
-                                        exactLong(rs.getBigDecimal("cleanup_objects")),
-                                    ),
-                                )
-                            },
-                        id = rs.getObject("id", UUID::class.java),
-                        owner = rs.getObject("owner", UUID::class.java),
-                        t0 = checkNotNull(Timestamps.fromDb(rs, "t0")),
-                        usage =
-                            StorageUsage(
-                                exactLong(rs.getBigDecimal("committed")),
-                                exactLong(rs.getBigDecimal("reserved")),
-                                // Counts can only drift negative through corruption; a bound cannot carry that.
-                                maxOf(0L, exactLong(rs.getBigDecimal("committed_objects"))),
-                                maxOf(0L, exactLong(rs.getBigDecimal("reserved_objects"))),
-                            ),
-                    )
-                }.list()
+                .query { rs, _ -> snapshotRow(rs) }
+                .list()
         val global = rows.single { it.scope == "GLOBAL" }
         return StorageUsageSnapshot(
             t0 = global.t0,
@@ -262,8 +237,42 @@ open class JdbcStorageAdmission(
                         it.id!!,
                     ) to checkNotNull(it.budget)
                 },
+            inactiveWorkspaces = rows.filter { it.scope == "WORKSPACE" && it.inactive }.mapTo(HashSet()) { WorkspaceId(it.id!!) },
         )
     }
+
+    private fun snapshotRow(rs: java.sql.ResultSet): SnapshotRow =
+        SnapshotRow(
+            footprint = if (readsFootprint && rs.getString("scope") == "GLOBAL") FootprintSql.read(rs) else null,
+            scope = rs.getString("scope"),
+            inactive = rs.getBoolean("inactive"),
+            budget =
+                if (rs.getObject("payload_limit") ==
+                    null
+                ) {
+                    null
+                } else {
+                    email.testinbox.application.storage.WorkspaceStorageBudget(
+                        rs.getLong("payload_limit"),
+                        rs.getLong("footprint_limit"),
+                        email.testinbox.domain.storage.FootprintAdmission.Load(
+                            exactLong(rs.getBigDecimal("cleanup_bytes")),
+                            exactLong(rs.getBigDecimal("cleanup_objects")),
+                        ),
+                    )
+                },
+            id = rs.getObject("id", UUID::class.java),
+            owner = rs.getObject("owner", UUID::class.java),
+            t0 = checkNotNull(Timestamps.fromDb(rs, "t0")),
+            usage =
+                StorageUsage(
+                    exactLong(rs.getBigDecimal("committed")),
+                    exactLong(rs.getBigDecimal("reserved")),
+                    // Counts can only drift negative through corruption; a bound cannot carry that.
+                    maxOf(0L, exactLong(rs.getBigDecimal("committed_objects"))),
+                    maxOf(0L, exactLong(rs.getBigDecimal("reserved_objects"))),
+                ),
+        )
 
     /**
      * One multi-row insert. It is bounded by the 50-recipient event cap, and
@@ -320,6 +329,7 @@ open class JdbcStorageAdmission(
         val footprint: email.testinbox.application.port.ObservedFootprint?,
         val budget: email.testinbox.application.storage.WorkspaceStorageBudget?,
         val scope: String,
+        val inactive: Boolean,
         val id: UUID?,
         val owner: UUID?,
         val t0: java.time.Instant,

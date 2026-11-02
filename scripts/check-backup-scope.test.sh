@@ -301,7 +301,10 @@ for stmt in 'CREATE TABLE public.message AS(SELECT 1 AS id);' \
             "COPY public.workspace (id) FROM PROGRAM 'cmd';" \
             "COPY public.workspace (id) FROM '/var/lib/postgresql/rows.csv';" \
             'CREATE AGGREGATE public.agg (int) (sfunc = public.evil, stype = int);' \
-            'CREATE INDEX ix ON public.workspace USING btree (public.evil(id));'; do
+            'CREATE INDEX ix ON public.workspace USING btree (public.evil(id));' \
+            'CREATE VIEW public.v AS SELECT public.evil() AS x;' \
+            'CREATE TEMPORARY VIEW v AS SELECT 1 AS x;' \
+            'CREATE RECURSIVE VIEW public.v (n) AS SELECT 1;'; do
   { control_plane_dump; printf '%s\n' "$stmt"; } > "$WORK/exec.sql"
   check_says "[$stmt] is refused as unaccounted for" 1 "AMBIGUOUS INPUT" "$WORK/exec.sql"
 done
@@ -315,6 +318,9 @@ check_says "an INSERT after a trigger definition is refused" 1 "AMBIGUOUS INPUT:
 check_says "a \\copy after a trigger definition is refused" 1 "AMBIGUOUS INPUT: table data after a trigger definition" "$WORK/trigger-then-copy.sql"
 { control_plane_dump; printf 'CREATE TRIGGER t AFTER INSERT ON public.workspace FOR EACH ROW EXECUTE FUNCTION public.storage_footprint_trust_guard();\n'; } > "$WORK/trigger-last.sql"
 check "a trigger defined after the data, as pg_dump orders it, is accounted for" 0 "$WORK/trigger-last.sql"
+# The V22 lifecycle view, as pg_dump writes it: a plain view holds no rows and runs nothing at restore.
+{ control_plane_dump; printf "CREATE VIEW public.workspace_lifecycle_eligibility WITH (security_barrier='true') AS\n SELECT p.workspace_id, (COALESCE(((h.state = 'ACTIVE'::text) AND (a.workspace_id = p.workspace_id)), false) AND (EXISTS ( SELECT 1 FROM public.lifecycle_restore_clearance))) AS active\n   FROM ((public.participant_workspace p\n     LEFT JOIN public.beta_admission a ON (((a.cohort_id = p.cohort_id) AND (a.place = p.place))))\n     LEFT JOIN public.human_account h ON ((h.id = a.account_id)));\n"; } > "$WORK/plain-view.sql"
+check "a plain view in pg_dump's form is accounted for" 0 "$WORK/plain-view.sql"
 # psql variables would rewrite a statement after the reader classified it.
 { control_plane_dump; printf "\\set q 'TABLE public.message AS SELECT 1 AS id'\nCREATE :q;\n"; } > "$WORK/psql-var.sql"
 check_says "a psql \\set is refused: variable interpolation rewrites statements after they were read" 1 "AMBIGUOUS INPUT: a psql meta-command" "$WORK/psql-var.sql"
@@ -460,7 +466,7 @@ done
 # classification check; marking one '+' is refused outright, in either mode,
 # because backing it up would carry derived or transient state (ADR-035 §14).
 for t in workspace_storage_account inbox_storage storage_delta storage_reservation \
-         storage_ambiguity storage_node storage_admission_latch storage_cohort_plan workspace_deletion_charge storage_clock_episode human_session email_login_challenge human_auth_gate provider_login_state beta_waitlist human_request_global human_request_budget; do
+         storage_ambiguity storage_node storage_admission_latch storage_cohort_plan workspace_deletion_charge storage_clock_episode human_session email_login_challenge human_auth_gate provider_login_state beta_waitlist human_request_global human_request_budget lifecycle_restore_clearance; do
   grep -qx -- "- $t" "$SCOPE_FILE" || { echo "FAIL — $t is not classified '-' in the real scope"; fail=$((fail + 1)); continue; }
   grep -vx -- "- $t" "$SCOPE_FILE" > "$WORK/omit-$t.txt"
   out=$(BACKUP_SCOPE="$WORK/omit-$t.txt" "$GATE" --classification "$MIGRATIONS" 2>&1); st=$?
@@ -581,7 +587,7 @@ SQL
         echo "FAIL — seeding the synthetic database failed"; fail=$((fail + 1))
       fi
       # Real authentication rows must be omitted, not just empty classified tables.
-      for transient in human_session email_login_challenge human_auth_gate provider_login_state beta_waitlist human_request_global human_request_budget; do
+      for transient in human_session email_login_challenge human_auth_gate provider_login_state beta_waitlist human_request_global human_request_budget lifecycle_restore_clearance; do
         transient_args=(); for t in $(grep -E '^- ' "$SCOPE_FILE" | sed 's/^- //'); do
           [[ "$t" == "$transient" ]] || transient_args+=(--exclude-table-data="public.$t")
         done
@@ -611,6 +617,13 @@ SQL
         restored=$(docker exec -e PGPASSWORD=t "$PG_CONTAINER" psql -tAc "SELECT count(*) FROM participant_workspace WHERE place=1 AND payload_limit_bytes=134217728 AND footprint_limit_bytes=268435456" -h 127.0.0.1 -U postgres -d marker_restore)
         if [[ "$restored" == 1 ]]; then echo "ok   — genuine restore keeps the participant marker and fixed share"; pass=$((pass + 1))
         else echo "FAIL — restored marker/share mismatch"; fail=$((fail + 1)); fi
+        # Account lifecycle (V22): the source carries a clearance row, the restore
+        # must not, so the restored participant is inactive and no session exists.
+        quarantine=$(docker exec -e PGPASSWORD=t "$PG_CONTAINER" psql -tAc "SELECT (SELECT count(*) FROM lifecycle_restore_clearance)::text || '/' || (SELECT count(*) FROM human_session)::text || '/' || (SELECT string_agg(active::text, ',') FROM workspace_lifecycle_eligibility)" -h 127.0.0.1 -U postgres -d marker_restore)
+        source_clearance=$(psql -tAc "SELECT count(*) FROM lifecycle_restore_clearance" </dev/null)
+        if [[ "$source_clearance" == 1 && "$quarantine" == "0/0/false" ]]; then
+          echo "ok   — genuine restore is quarantined: no clearance, no session, the restored participant is inactive"; pass=$((pass + 1))
+        else echo "FAIL — restore quarantine not in effect (source clearance $source_clearance, restored '$quarantine')"; fail=$((fail + 1)); fi
       else echo "FAIL — genuine backup restore failed: $(tail -2 "$WORK/restore.log")"; fail=$((fail + 1)); fi
       pg_dump "${keep_args[@]}" > "$WORK/v10-table.sql" 2>/dev/null
       check "genuine pg_dump --table for every '+' table passes" 0 "$WORK/v10-table.sql"

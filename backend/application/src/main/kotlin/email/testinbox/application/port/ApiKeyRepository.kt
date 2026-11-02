@@ -30,6 +30,12 @@ sealed interface RevokeApiKeyOutcome {
     data object NotFound : RevokeApiKeyOutcome
 }
 
+data class ManagedKeyInventory(
+    val usable: Long,
+    val retained: Long,
+)
+
+@Suppress("TooManyFunctions") // one statement per credential operation, including the operator-only revocations
 interface ApiKeyRepository {
     /**
      * Resolves a managed credential by its non-secret handle. Returns the row
@@ -97,6 +103,34 @@ interface ApiKeyRepository {
         id: ApiKeyId,
         at: Instant,
     ): RevokeApiKeyOutcome
+
+    /**
+     * Revokes every not-yet-revoked MANAGED key of the workspace in one
+     * statement and returns how many it revoked. Only the account-lifecycle
+     * operator path calls this, with a verified operator authority
+     * ([email.testinbox.application.usecase.RevokeApiKey.revokeWorkspaceForLifecycle]).
+     * Rows are retained as audit history, exactly like a single revocation.
+     */
+    fun revokeAllManaged(
+        workspaceId: WorkspaceId,
+        at: Instant,
+    ): Int
+
+    /**
+     * Revokes every not-yet-revoked MANAGED key of EVERY workspace in one
+     * statement and returns how many it revoked. Only restore reconciliation
+     * calls this, with a verified operator authority
+     * ([email.testinbox.application.usecase.RevokeApiKey.revokeEveryManagedForRestore]):
+     * after a restore no restored credential may authenticate again, owner
+     * and monitoring keys included. Rows are retained as audit history.
+     */
+    fun revokeEveryManaged(at: Instant): Int
+
+    /** The workspace's managed-key inventory: usable (not revoked, not expired at [at]) and retained (every managed row). */
+    fun managedInventory(
+        workspaceId: WorkspaceId,
+        at: Instant,
+    ): ManagedKeyInventory
 
     /**
      * Bounded `last_used_at` refresh (ADR-032 §7). The staleness condition is
