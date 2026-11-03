@@ -1,0 +1,166 @@
+== dedicated MinIO filesystem
++ findmnt -no SOURCE,TARGET,FSTYPE,OPTIONS /srv/testinbox/minio
+/dev/loop0 /srv/testinbox/minio ext4   rw,relatime
++ losetup -l -O NAME,BACK-FILE,BACK-INO,OFFSET,SIZELIMIT,DIO,LOG-SEC,RO
+NAME       BACK-FILE                         BACK-INO OFFSET SIZELIMIT DIO LOG-SEC RO
+/dev/loop0 /var/lib/testinbox-minio/ext4.img   557857      0         0   0     512  0
++ stat -c size=%s blocks=%b blksz=%B ino=%i mode=%a owner=%U:%G /var/lib/testinbox-minio/ext4.img
+size=51539607552 blocks=100663360 blksz=512 ino=557857 mode=600 owner=root:root
++ filefrag /var/lib/testinbox-minio/ext4.img
+/var/lib/testinbox-minio/ext4.img: 33 extents found
++ cat /sys/block/loop0/queue/discard_max_bytes
+0
++ blkid -o export /dev/loop0
+DEVNAME=/dev/loop0
+LABEL=tb-minio
+UUID=c33e14fd-6b6f-4f05-881e-dbc4db22c964
+BLOCK_SIZE=4096
+TYPE=ext4
++ stat -f -c bsize=%s frsize=%S blocks=%b bfree=%f bavail=%a files=%c ffree=%d /srv/testinbox/minio
+bsize=4096 frsize=4096 blocks=11716773 bfree=11716679 bavail=11083438 files=12582912 ffree=12582815
++ df -B1 /srv/testinbox/minio
+Filesystem       1B-blocks   Used   Available Use% Mounted on
+/dev/loop0     47991902208 385024 45397762048   1% /srv/testinbox/minio
++ df -i /srv/testinbox/minio
+Filesystem       Inodes IUsed    IFree IUse% Mounted on
+/dev/loop0     12582912    97 12582815    1% /srv/testinbox/minio
+Filesystem volume name:   tb-minio
+Filesystem UUID:          c33e14fd-6b6f-4f05-881e-dbc4db22c964
+Filesystem features:      has_journal ext_attr resize_inode dir_index filetype needs_recovery extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+Filesystem flags:         signed_directory_hash 
+Default mount options:    user_xattr acl
+Filesystem state:         clean
+Errors behavior:          Continue
+Inode count:              12582912
+Block count:              12582912
+Reserved block count:     629145
+Overhead clusters:        866139
+Free blocks:              11716690
+Free inodes:              12582826
+Block size:               4096
+Blocks per group:         32768
+Inodes per group:         32768
+Flex block group size:    16
+Filesystem created:       Tue Oct 27 14:37:46 2026
+Last mount time:          Tue Oct 27 14:37:47 2026
+Mount count:              1
+Lifetime writes:          10 GB
+Reserved blocks uid:      0 (user root)
+Inode size:	          256
+  itable_zeroed groups: 384 / 385
++ cat /etc/infinity/testinbox-minio-fs.env
+# written by testinbox-minio-fs create 2026-10-27T13:37:47Z; do not edit
+TB_MINIO_IMAGE=/var/lib/testinbox-minio/ext4.img
+TB_MINIO_IMAGE_BYTES=51539607552
+TB_MINIO_MOUNTPOINT=/srv/testinbox/minio
+TB_MINIO_FS_UUID=c33e14fd-6b6f-4f05-881e-dbc4db22c964
+TB_MINIO_FS_BYTES=47991902208
+TB_MINIO_FS_INODES=12582912
++ cat /run/infinity/testinbox-minio-fs/status
+PASS 1793674800 /dev/loop0 
++ cat /opt/infinity/data/monitoring/textfile/testinbox-minio-fs.prom
+# HELP testinbox_objfs_expected 1 where this host records a dedicated TestInbox object filesystem.
+# TYPE testinbox_objfs_expected gauge
+testinbox_objfs_expected 1
+# HELP testinbox_objfs_check_ok 1 if every dedicated-filesystem invariant held at the last check.
+# TYPE testinbox_objfs_check_ok gauge
+testinbox_objfs_check_ok 1
+# HELP testinbox_objfs_mounted 1 if the recorded image is mounted at the recorded mountpoint, rw,relatime.
+# TYPE testinbox_objfs_mounted gauge
+testinbox_objfs_mounted 1
+# HELP testinbox_objfs_check_timestamp_seconds When the last check ran.
+# TYPE testinbox_objfs_check_timestamp_seconds gauge
+testinbox_objfs_check_timestamp_seconds 1793674800
+# HELP testinbox_objfs_image_apparent_bytes Apparent size of the backing image.
+# TYPE testinbox_objfs_image_apparent_bytes gauge
+testinbox_objfs_image_apparent_bytes 51539607552
+# HELP testinbox_objfs_image_allocated_bytes Bytes allocated to the backing image on the host filesystem.
+# TYPE testinbox_objfs_image_allocated_bytes gauge
+testinbox_objfs_image_allocated_bytes 51539640320
+# HELP testinbox_objfs_image_holes Gaps in the backing image's extent map (FIEMAP); must be 0.
+# TYPE testinbox_objfs_image_holes gauge
+testinbox_objfs_image_holes 0
+# HELP testinbox_objfs_loop_discard_max_bytes discard_max_bytes of the mounted loop device; must be 0.
+# TYPE testinbox_objfs_loop_discard_max_bytes gauge
+testinbox_objfs_loop_discard_max_bytes 0
++ ls -la /opt/infinity/data/monitoring/textfile/
+total 36
+drwxr-xr-x 2 root root 4096 Nov  3 04:03 .
+drwxr-xr-x 5 root root 4096 Sep 19 19:36 ..
+-rw-r--r-- 1 root root  221 Nov  3 03:35 aeroclub_backup_local.prom
+-rw-r--r-- 1 root root  193 Nov  3 04:00 aeroclub_salt.prom
+-rw-r--r-- 1 root root 1080 Nov  3 04:01 infinity-deploy.prom
+-rw-r--r-- 1 root root 1421 Nov  3 04:00 testinbox-minio-fs.prom
+-rw-r--r-- 1 root root  286 Nov  3 04:03 testinbox-readiness.prom
+-rw-r--r-- 1 root root 2004 Nov  3 04:01 testinbox_backup.prom
+-rw-r--r-- 1 root root 1056 Nov  3 04:03 ti-relay.prom
++ du -sb /srv/testinbox/minio/data
+37248	/srv/testinbox/minio/data
++ systemctl cat testinbox-minio-fs-check.service testinbox-minio-fs-check.timer testinbox-minio-fs.service
+# /etc/systemd/system/testinbox-minio-fs-check.service
+# /etc/systemd/system/testinbox-minio-fs-check.service (TI-008 D3) — re-verify the dedicated object filesystem:
+# image allocation (FIEMAP, no holes), exact loop/inode identity, UUID, discard_max_bytes=0, rw,relatime, geometry.
+# Writes /run/infinity/testinbox-minio-fs/status (read by the deploy preflight gate) and the node-exporter textfile
+# testinbox-minio-fs.prom. Read-only towards the filesystem: it never attaches, mounts or repairs anything.
+[Unit]
+Description=TestInbox dedicated MinIO filesystem check
+After=testinbox-minio-fs.service
+ConditionPathExists=/etc/infinity/testinbox-minio-fs.env
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/testinbox-minio-fs check
+TimeoutStartSec=120
+
+# /etc/systemd/system/testinbox-minio-fs-check.timer
+# /etc/systemd/system/testinbox-minio-fs-check.timer (TI-008 D3) — every 5 minutes, UTC (house rule for sub-daily
+# timers). The deploy gate needs a PASS no older than 15 minutes.
+[Unit]
+Description=TestInbox dedicated MinIO filesystem check (every 5 minutes)
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00 UTC
+OnBootSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
+
+# /etc/systemd/system/testinbox-minio-fs.service
+# /etc/systemd/system/testinbox-minio-fs.service (TI-008 D3) — attach and mount TestInbox's dedicated object filesystem.
+# A supported, ordered oneshot (not a .mount unit: a mount unit has no ExecStartPost=, so a discard guard there would
+# never run). ExecStart verifies the recorded image (ownership, full allocation, UUID), attaches THAT inode to a loop
+# device, sets and proves discard_max_bytes=0, mounts rw,relatime and verifies the live mount; any failure leaves the
+# filesystem unmounted, so TestInbox's MinIO bind (create_host_path: false) refuses to start.
+#
+# Ordering only: Before=docker.service lets the restart policy find the mount at boot. Nothing here, and no drop-in,
+# makes Docker REQUIRE this unit (no Requires=/BindsTo=/RequiresMountsFor= on docker.service): if this unit fails,
+# Docker and every other stack start normally and only TestInbox's MinIO stays down (D3 review D2).
+[Unit]
+Description=TestInbox dedicated MinIO filesystem (loop attach, discard guard, verified mount)
+After=local-fs.target
+Before=docker.service
+ConditionPathExists=/etc/infinity/testinbox-minio-fs.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/testinbox-minio-fs attach
+ExecStop=/usr/local/sbin/testinbox-minio-fs detach
+TimeoutStartSec=120
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
++ systemctl is-enabled testinbox-minio-fs.service testinbox-minio-fs-check.timer
+enabled
+enabled
++ sha256sum /usr/local/sbin/testinbox-minio-fs
+c6f8de7d51f5c67bb02bac8294ab4f818c4286264311fd4ff3d3f2f84a057b0c  /usr/local/sbin/testinbox-minio-fs
++ systemctl list-units --no-pager --type=service --state=running
+
+
++ grep -rn testinbox /etc/systemd/system/fstrim.service.d /etc/systemd/system/fstrim.timer.d
+grep: /etc/systemd/system/fstrim.service.d: No such file or directory
+grep: /etc/systemd/system/fstrim.timer.d: No such file or directory
+== tools present

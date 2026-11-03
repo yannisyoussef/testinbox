@@ -390,6 +390,12 @@ fe frsize '.declared.blockSizeBytes = 2048' "f_frsize other than declared B bloc
 both inodes '.statvfs.files = 1000' '.observation.inodesTotal = 1000' "fewer inodes than declared blocks" "inodes: f_files 1000 < declared I_fs 16777216"
 both inode-ratio '.declared.inodes = 1000 | .statvfs.files = 1000' '.observation.inodesTotal = 1000' "declared I_fs below C_fs / B blocks" "inodes: declared I_fs 1000 < C_fs / B 16777216"
 fe sparse '.preallocation.allocatedBytes = 4096' "a sparse backing image blocks" "preallocation: backing image allocated 4096 ≠ apparent size 68719476736 \(sparse\)"
+ev tree-overhead '.preallocation.allocatedBytes = 68719509504 | .preallocation.holeBytes = 0'
+case_ "F: a fully allocated image whose extent tree adds blocks (allocated > apparent, 0 FIEMAP holes) passes" 0 '^F-filesystem[[:space:]]+PASS' "$TMP/f-ev-tree-overhead"
+fe tree-no-fiemap '.preallocation.allocatedBytes = 68719509504' "without holeBytes, allocated ≠ apparent still blocks (fail closed)" "preallocation: backing image allocated 68719509504 ≠ apparent size 68719476736 \(sparse\)"
+fe holes '.preallocation.allocatedBytes = 68719509504 | .preallocation.holeBytes = 4096' "a FIEMAP hole blocks even when the sum exceeds the size" "preallocation: backing image has 4096 B of holes \(FIEMAP\)"
+fe under-no-holes '.preallocation.allocatedBytes = 4096 | .preallocation.holeBytes = 0' "allocated below apparent blocks even with holeBytes 0" "preallocation: backing image has 0 B of holes \(FIEMAP\), allocated 4096"
+fe holes-fraction '.preallocation.allocatedBytes = 68719509504 | .preallocation.holeBytes = 0.5' "a non-integer holeBytes falls back to the exact rule" "preallocation: backing image allocated 68719509504 ≠ apparent size"
 fe thin '.preallocation.thinPool = true' "a thin pool blocks" "preallocation: the filesystem is on a thin pool"
 fe fstrim '.preallocation.fstrimExcluded = false' "no fstrim exclusion blocks" "no fstrim exclusion is recorded"
 fe isolation '.isolation.hostFreeAtCreationBytes = 1' "a host filesystem that could not hold the image blocks" "isolation: the host filesystem had 1 free at creation"

@@ -1,0 +1,14 @@
++ uname -r
+6.8.0-142-generic
++ uname -m
+x86_64
++ cat /var/run/reboot-required
+*** System restart required ***
++ cat /var/run/reboot-required.pkgs
+linux-image-6.8.0-146-generic
+linux-image-6.8.0-147-generic
++ apt-mark showhold
+linux-generic 6.8.0-147.147 install ok installed
+linux-image-6.8.0-142-generic 6.8.0-142.142 install ok installed
+linux-image-6.8.0-147-generic 6.8.0-147.147 install ok installed
+linux-image-generic 6.8.0-147.147 install ok installed
