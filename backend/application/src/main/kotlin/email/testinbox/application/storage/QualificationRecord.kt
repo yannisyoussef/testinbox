@@ -23,6 +23,13 @@ data class QualificationRecord(
     val ineligibilityReasons: List<String>,
     /** Where the record came from: shipped in the artifact, or the lab-only file (issue #102). */
     val source: QualificationRecordSource = QualificationRecordSource.SHIPPED,
+    /**
+     * The ADR-035 Amendment 2 filesystem elements (contract §9): the qualified
+     * filesystem, the measured *O_max* and E7 metadata inodes, and the E1–E11
+     * results. Optional in the format: records issued before Amendment 2 carry
+     * none, and they are then never production evidence ([productionGaps]).
+     */
+    val filesystem: QualifiedFilesystem? = null,
 ) {
     /** The platform class a lab-only record must declare; a shipped record with it is never eligible. */
     val isLab: Boolean get() = platformClass.equals(LAB_PLATFORM_CLASS, ignoreCase = true)
@@ -60,7 +67,78 @@ data class QualificationRecord(
         if (uploadImplementationVersion.isBlank()) reasons += "the upload implementation version is absent from the record"
         return QualificationEligibility(enablementEligible && reasons.isEmpty(), reasons.distinct())
     }
+
+    /**
+     * Why this record, on top of [eligibility], cannot back `ALL` in production
+     * (TI-DELIVERY-002b): ADR-035 §18 gate 7a requires the production host to be
+     * qualified on ITS OWN combination, and Amendment 2 §A2.4/§A2.6 require the
+     * record to carry the filesystem elements, the measured *O_max* and E7
+     * inode figure, and E1–E11 as PASS. Empty means none of those reasons
+     * applies; it never means "eligible" on its own.
+     */
+    fun productionGaps(): List<String> =
+        buildList {
+            if (source != QualificationRecordSource.SHIPPED) add("it is not shipped in the artifact")
+            if (platformClass != PRODUCTION_PLATFORM_CLASS) {
+                add(
+                    "platformClass is '$platformClass', not '$PRODUCTION_PLATFORM_CLASS': ADR-035 §18 gate 7a requires the " +
+                        "production host's own combination",
+                )
+            }
+            val fs = filesystem
+            if (fs == null) {
+                add("it carries no filesystem elements (ADR-035 Amendment 2 §A2.4: re-issue it after E1–E11 on the production filesystem)")
+                return@buildList
+            }
+            listOf("uuid" to fs.uuid, "type" to fs.type, "mountOptions" to fs.mountOptions, "mountSource" to fs.mountSource)
+                .filter { it.second.isBlank() }
+                .forEach { add("filesystem.${it.first} is absent") }
+            if (fs.objectOverheadMaxBytes == null || fs.objectOverheadMaxBytes <= 0) {
+                add("filesystem.objectOverheadMaxBytes (the measured O_max, E1–E3) is absent")
+            }
+            if (fs.metadataInodesMeasured == null || fs.metadataInodesMeasured <= 0) {
+                add("filesystem.metadataInodesMeasured (E7) is absent")
+            }
+            val missing = REQUIRED_EXPERIMENTS.filter { fs.experiments[it] != PASS }
+            if (missing.isNotEmpty()) add("experiments ${missing.joinToString(", ")} are not recorded as PASS")
+            // The record states its filesystem twice: in the matched identity and in the
+            // Amendment 2 elements. Two different answers are a contradiction, never a choice.
+            if (fs.type.isNotBlank() && fs.type != identity.filesystemType) {
+                add("filesystem.type '${fs.type}' contradicts host.filesystemType '${identity.filesystemType}'")
+            }
+            if (fs.mountOptions.isNotBlank() && fs.mountOptions != identity.mountOptions) {
+                add("filesystem.mountOptions '${fs.mountOptions}' contradicts host.mountOptions '${identity.mountOptions}'")
+            }
+        }
+
+    companion object {
+        /** The platform class of a record qualified on the production host itself (ADR-035 §18 gate 7a). */
+        const val PRODUCTION_PLATFORM_CLASS = "production-host"
+
+        /** Amendment 2 §A2.6: every experiment of annex §10 must be recorded as PASS before `ALL`. */
+        val REQUIRED_EXPERIMENTS: List<String> = (1..11).map { "E$it" }
+
+        const val PASS = "PASS"
+    }
 }
+
+/**
+ * The Amendment 2 filesystem elements of a qualification record, as
+ * `scripts/check-storage-activation.sh` gate F reads them (`filesystem.*`).
+ * Values are copied from Ops evidence; nothing here is a secret.
+ */
+data class QualifiedFilesystem(
+    val uuid: String,
+    val type: String,
+    val mountOptions: String,
+    val mountSource: String,
+    /** The measured *O_max* (E1–E3); a deployment must declare at least this. */
+    val objectOverheadMaxBytes: Long?,
+    /** The E7 metadata inode measurement. */
+    val metadataInodesMeasured: Long?,
+    /** `E1` … `E11` → `PASS` (or whatever the run recorded). */
+    val experiments: Map<String, String>,
+)
 
 /** Where a [QualificationRecord] was loaded from. */
 enum class QualificationRecordSource {

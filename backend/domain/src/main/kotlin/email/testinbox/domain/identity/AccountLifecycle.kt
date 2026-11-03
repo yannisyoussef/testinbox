@@ -1,5 +1,8 @@
 package email.testinbox.domain.identity
 
+import java.time.Duration
+import java.time.Instant
+
 /** The operator's account-state commands (ADR-036 §5; ACCOUNT-LIFECYCLE.md). There is no public request form. */
 enum class AccountLifecycleAction {
     SUSPEND,
@@ -69,4 +72,76 @@ object AccountLifecycle {
 
     /** Every non-active state revokes browser sessions and managed keys, and refuses new ingestion. */
     fun revokesAccess(state: HumanAccountState): Boolean = state != HumanAccountState.ACTIVE
+}
+
+/**
+ * The observable stages of an account deletion (TI-DELIVERY-002b owner
+ * decision 1). The workflow only moves forward; every stage is re-entrant, so
+ * a run interrupted between two stages resumes where it stopped.
+ */
+enum class AccountDeletionStage {
+    /** Access is revoked; reservations made before the fence may still be in flight. Nothing is deleted yet. */
+    DRAINING,
+
+    /**
+     * Every inbox is DELETED. Waiting for the retention sweep to remove the
+     * inbox rows (objects are proven deleted before rows) and for every EXACT
+     * address cooldown of the workspace to elapse.
+     */
+    CONTENT_DELETING,
+
+    /** Content is gone and the contact and login identity has been erased. Terminal. */
+    ERASED,
+}
+
+/** What the content gate reads, under the lifecycle locks, before identity may be erased. */
+data class AccountContentRemaining(
+    val reservationsHeld: Long,
+    val inboxRows: Long,
+    /** EXACT reservations still ACTIVE, or in COOLDOWN with `available_at` in the future. */
+    val exactCooldowns: Long,
+) {
+    val none: Boolean get() = reservationsHeld == 0L && inboxRows == 0L && exactCooldowns == 0L
+
+    val stage: AccountDeletionStage
+        get() =
+            when {
+                reservationsHeld > 0 -> AccountDeletionStage.DRAINING
+                none -> AccountDeletionStage.ERASED
+                else -> AccountDeletionStage.CONTENT_DELETING
+            }
+
+    companion object {
+        val NONE = AccountContentRemaining(0, 0, 0)
+    }
+}
+
+/**
+ * When an unfinished deletion is overdue. The threshold is the longest the
+ * existing machinery may legitimately take — the EXACT cooldown the deleted
+ * addresses re-enter, plus the paced-retention `T_max` within which the sweep
+ * tears every inbox down whatever its pacing — plus slack for draining and the
+ * operator timer's own period (POLICY-002b.md).
+ */
+class AccountDeletionPolicy(
+    val overdueAfter: Duration,
+) {
+    init {
+        require(!overdueAfter.isNegative && !overdueAfter.isZero) { "the overdue threshold must be positive" }
+    }
+
+    fun overdue(
+        stage: AccountDeletionStage,
+        requestedAt: Instant,
+        now: Instant,
+    ): Boolean = stage != AccountDeletionStage.ERASED && Duration.between(requestedAt, now) > overdueAfter
+
+    companion object {
+        val SLACK: Duration = Duration.ofHours(24)
+
+        fun derived(
+            exactCooldown: Duration,
+            retentionMaxDelay: Duration,
+        ): AccountDeletionPolicy = AccountDeletionPolicy(exactCooldown.plus(retentionMaxDelay).plus(SLACK))
+    }
 }

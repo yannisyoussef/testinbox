@@ -144,6 +144,33 @@ class BetaWaitlistTest : PersistenceIntegrationTest() {
         manage().execute(admitted, ManageBetaWaitlist.Action.READ) shouldBe ManageBetaWaitlist.Result.Admitted
     }
 
+    @Test fun `the configured thirty-day retention removes older entries and keeps younger ones, on the timer and on requests`() {
+        val old = applicant()
+        val young = applicant()
+        val reader = applicant()
+        // Joined with the shipped policy (30 days), 31 and 29 days before "now".
+        manage(at = now.minus(Duration.ofDays(31))).execute(old, ManageBetaWaitlist.Action.JOIN, policy)
+        manage(at = now.minus(Duration.ofDays(29))).execute(young, ManageBetaWaitlist.Action.JOIN, policy)
+        store.find(old)!!.expiresAt shouldBe now.minus(Duration.ofDays(1))
+        count("beta_waitlist") shouldBe 2
+
+        // The scheduled path (BetaWaitlistMaintenance calls exactly this) with no sign-up traffic.
+        manage().purge()
+        store.find(old) shouldBe null
+        store.find(young).shouldBeInstanceOf<BetaWaitlistEntry>()
+
+        // The boundary is inclusive of expiry: an entry expires at joined + 30 days, not later.
+        manage(at = now.plus(Duration.ofDays(1))).purge()
+        store.find(young) shouldBe null
+
+        // The request path purges first too: any applicant's read removes an expired entry.
+        val late = applicant()
+        manage(at = now.minus(Duration.ofDays(30))).execute(late, ManageBetaWaitlist.Action.JOIN, policy)
+        manage().execute(reader, ManageBetaWaitlist.Action.READ) shouldBe ManageBetaWaitlist.Result.NotWaiting
+        store.find(late) shouldBe null
+        count("beta_waitlist") shouldBe 0
+    }
+
     @Test fun `concurrent applicants across independent use cases cannot overspend the last place`() {
         val entrants = List(12) { applicant() }
         val start = CountDownLatch(1)

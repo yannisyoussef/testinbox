@@ -96,6 +96,12 @@ class GuardedIngestHarness(
     val footprint: email.testinbox.application.storage.FootprintPolicy? = null,
     /** Replaces the pre-resolution check's reader (to drive the T1 backstop race); null reads the database. */
     footprintGate: email.testinbox.application.storage.FootprintGate? = null,
+    /**
+     * ADR-037 (V21): the cohort mode and binding this node registers with, as the gateway wires
+     * them from its declarations. OFF/null is a node that knows no cohort.
+     */
+    cohortMode: StorageEnforcement = StorageEnforcement.OFF,
+    cohortBinding: String? = null,
 ) : AutoCloseable {
     val dbName: String = shared?.dbName ?: "guarded_${UUID.randomUUID().toString().replace("-", "")}"
     val bucket: String = shared?.bucket ?: "g-${UUID.randomUUID().toString().take(12)}"
@@ -153,7 +159,7 @@ class GuardedIngestHarness(
     private val directInspection: StorageInspection = S3StorageInspection(s3, bucket)
     val inspection: StorageInspection = inspectionOverride?.invoke(directInspection) ?: directInspection
     val reservations = JdbcStorageReservations(jdbc, template)
-    val ambiguity = JdbcStorageAmbiguity(jdbc, template)
+    val ambiguity = JdbcStorageAmbiguity(jdbc, template, cohortMode, cohortBinding)
     val clock: DatabaseClock = reservations
     val node = StorageNode(nodeId, UUID.randomUUID())
     val lifecycle = StorageNodeLifecycle(ambiguity, node, maxSlots).also { it.start() }

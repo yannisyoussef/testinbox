@@ -3,6 +3,7 @@ package email.testinbox.storage
 import email.testinbox.application.storage.LAB_PLATFORM_CLASS
 import email.testinbox.application.storage.QualificationRecord
 import email.testinbox.application.storage.QualificationRecordSource
+import email.testinbox.application.storage.QualifiedFilesystem
 import email.testinbox.application.storage.StorageBackendIdentity
 import tools.jackson.databind.JsonNode
 import tools.jackson.databind.json.JsonMapper
@@ -117,8 +118,27 @@ object QualificationRecords {
             slowWExecuted = qualification.boolean("slowWExecuted"),
             enablementEligible = reader.boolean("enablementEligible"),
             ineligibilityReasons = reader.stringList("ineligibilityReasons"),
+            filesystem = reader.optionalNode("filesystem")?.let(::filesystem),
         )
     }
+
+    /**
+     * The ADR-035 Amendment 2 filesystem elements (`filesystem`), when the record
+     * carries them. Optional as a whole (records before Amendment 2 have none),
+     * strict once present: the four identity strings are required, the two
+     * measurements are integers when present, and `experiments` maps a name to a
+     * string. A malformed object fails the whole record, never reads as qualified.
+     */
+    private fun filesystem(fs: Reader): QualifiedFilesystem =
+        QualifiedFilesystem(
+            uuid = fs.string("uuid"),
+            type = fs.string("type"),
+            mountOptions = fs.string("mountOptions"),
+            mountSource = fs.string("mountSource"),
+            objectOverheadMaxBytes = fs.optionalLong("objectOverheadMaxBytes"),
+            metadataInodesMeasured = fs.optionalLong("metadataInodesMeasured"),
+            experiments = fs.optionalNode("experiments")?.let { fs.stringMap("experiments") }.orEmpty(),
+        )
 
     /** Typed, required-by-default access: an absent or mistyped member is an error naming its path. */
     private class Reader(
@@ -129,6 +149,20 @@ object QualificationRecords {
             node.get(name)?.takeUnless { it.isNull } ?: throw QualificationRecordException("$path: '$name' is required")
 
         fun node(name: String): Reader = Reader("$path.$name", member(name).also { if (!it.isObject) fail(name, "an object") })
+
+        /** An object member that may be absent or null; present, it must be an object. */
+        fun optionalNode(name: String): Reader? {
+            val value = node.get(name)?.takeUnless { it.isNull } ?: return null
+            if (!value.isObject) fail(name, "an object or null")
+            return Reader("$path.$name", value)
+        }
+
+        /** An integer member that may be absent or null; present, it must be an integer that fits a long. */
+        fun optionalLong(name: String): Long? {
+            val value = node.get(name)?.takeUnless { it.isNull } ?: return null
+            if (!value.isIntegralNumber || !value.canConvertToLong()) fail(name, "an integer or null")
+            return value.asLong()
+        }
 
         fun string(name: String): String =
             member(name)

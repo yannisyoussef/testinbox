@@ -23,8 +23,9 @@ TESTINBOX_ACCOUNTS_WAITLIST_RETENTION=30d
 TESTINBOX_ACCOUNTS_WAITLIST_MAXIMUM=1000
 ```
 
-Thirty days is a proposed implementation default, pending the consolidated
-owner retention decision before release. Configure 1–90 days and 1–1000
+Thirty days is the owner-decided retention (TI-DELIVERY-002b decision 5;
+it was a proposed default until then). Expiry was verified end to end: see
+"Expiry evidence" below. Configure 1–90 days and 1–1000
 entries. An out-of-range policy refuses new enrollment while still allowing
 existing entries to be read or withdrawn. Changing retention cannot silently
 extend an existing entry. A minute scheduler removes expired/admitted entries
@@ -57,3 +58,30 @@ YAML/env binding test cover cleanup and configuration. The backup suite passes
 181/181, including genuine waitlist-containing dump refusal. Full backend and
 result verifier: 1,648 tests, zero failures/errors/skips; Detekt and formatting
 pass. This is local implementation evidence, not production enrollment approval.
+
+## Expiry evidence (TI-DELIVERY-002b)
+
+The 30-day expiry works end to end; no defect was found. Each entry's
+`expires_at` is fixed at join (`joined_at + retention`). The purge deletes
+every entry with `expires_at <= now`, and every admitted entry. Two paths run
+it:
+
+- `BetaWaitlistMaintenance`, a `@Scheduled(fixedDelay = 60 s)` task on every
+  API node (`@EnableScheduling` on `ApiApplication`), skipped only before V16;
+- every `/account/waitlist` request, before it reads or writes.
+
+Tests on real PostgreSQL:
+
+- `BetaWaitlistTest` (persistence) joins entries under the shipped 30-day
+  policy 31 and 29 days back. The purge removes the first and keeps the
+  second. The second goes at exactly 30 days. A request-path read by another
+  applicant also removes an expired entry.
+- `BetaWaitlistExpiryApiTest` (API, full Spring context) proves three
+  things: the shipped configuration binds 30 days; the purge is a registered
+  scheduled task with a one-minute delay; running it in the live context
+  removes a 31-day entry and keeps a 29-day one. An HTTP `GET
+  /account/waitlist` by another account also purges.
+
+Erasure of a deleted account removes its entry through the account cascade
+(LIFECYCLE.md).
+

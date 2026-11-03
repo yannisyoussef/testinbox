@@ -1,6 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { config } from "../src/env.mjs";
+import { enforcesWorkspace, footprintProblems, storageEnforcementExpected } from "../src/storage-mode.mjs";
 
 /**
  * ADR-035 §13 through the deployed environment (TI-STORAGE-004).
@@ -12,11 +13,14 @@ import { config } from "../src/env.mjs";
  * caller's own, and that a wait which omits the cursor behaves exactly as it
  * did before ADR-035.
  *
- * They also prove, from outside, that live storage enforcement is OFF: an
- * opt-in wait on a fresh inbox ends `200 TIMEOUT` with a zero refusal count. A
- * `409` here would mean the deployment recorded a storage refusal against a
- * tenant inbox, which no deployable may do until the ADR-035 §18 enablement
- * gates have passed.
+ * They also check the storage enforcement mode the environment DECLARES
+ * (`TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED`, default `OFF`; src/storage-mode.mjs)
+ * as far as it is observable from outside: an opt-in wait on a fresh inbox ends
+ * `200 TIMEOUT` with a zero refusal count in every mode (a `409` would mean a
+ * refusal was recorded against an inbox that received nothing), and when the
+ * workspace's private usage carries the optional `footprint` object, its
+ * `enforced` flag must match the declared mode. The suite never infers the mode
+ * from a response.
  *
  * Convergence signal: an artifact from before TI-STORAGE-004 answers
  * `GET /v1/workspace/storage` with `404`, so the first test also tells a
@@ -28,6 +32,9 @@ const REFUSAL_MEMBERS = ["storageRefusalCount", "lastStorageRefusalAt", "lastSto
 
 /** Members whose presence would mean a global or node figure leaked into a tenant response (ADR-035 §13d). */
 const FORBIDDEN_MEMBER = /global|finalize|^[gh]$|node|generation|backlog|ambigu|reservation/i;
+
+/** The mode this deployment declares; resolved at load so a malformed declaration fails every test loudly. */
+const DECLARED_MODE = storageEnforcementExpected();
 
 const headers = { authorization: `Bearer ${config.apiKey}`, "content-type": "application/json" };
 
@@ -57,8 +64,10 @@ function assertNoGlobalFigure(body, label) {
   assert.deepEqual(offenders, [], `${label} must not carry a global, node or reservation-level member`);
 }
 
-function assertStorageUsage(usage, label) {
-  assert.deepEqual(Object.keys(usage).sort(), STORAGE_USAGE_MEMBERS, `${label}: exactly the five StorageUsage members`);
+function assertStorageUsage(usage, label, { footprintAllowed = false } = {}) {
+  // The workspace usage may add the optional ADR-037 `footprint` object (WorkspaceStorageUsage); nothing else.
+  const members = Object.keys(usage).filter((name) => !(footprintAllowed && name === "footprint"));
+  assert.deepEqual(members.sort(), STORAGE_USAGE_MEMBERS, `${label}: exactly the five StorageUsage members`);
   for (const name of ["limitBytes", "storedBytes", "reservedBytes", "availableBytes"]) {
     assert.equal(typeof usage[name], "number", `${label}.${name} is a number`);
     assert.ok(Number.isInteger(usage[name]), `${label}.${name} is an integer`);
@@ -106,8 +115,13 @@ test("GET /v1/workspace/storage answers the caller's own StorageUsage, and nothi
     200,
     "a 404 here means the deployment still serves an artifact from before TI-STORAGE-004 (ADR-035 §13a)",
   );
-  assertStorageUsage(response.body, "workspace");
+  assertStorageUsage(response.body, "workspace", { footprintAllowed: true });
   assertNoGlobalFigure(response.body, "workspace storage");
+  assert.deepEqual(
+    footprintProblems(response.body, DECLARED_MODE),
+    [],
+    `workspace footprint under the declared mode ${DECLARED_MODE} (TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED)`,
+  );
   // Charged as a metadata READ, so the budget headers of that category are present (ADR-027).
   assert.ok(response.headers.get("ratelimit-limit"), "the read is rate-governed, not a free endpoint");
 });
@@ -145,7 +159,7 @@ test("a wait that omits the cursor still ends MATCHED or TIMEOUT, carrying the c
   assertNoGlobalFigure(response.body, "legacy wait result");
 });
 
-test("an opt-in wait on a fresh inbox ends TIMEOUT: live storage enforcement is OFF, so no refusal is ever recorded", async () => {
+test(`an opt-in wait on a fresh inbox ends TIMEOUT under the declared ${DECLARED_MODE} mode: nothing received, nothing refused`, async () => {
   const inbox = await newInbox();
   const response = await call("POST", `/v1/inboxes/${inbox.id}/messages/wait`, {
     timeoutSeconds: 2,
@@ -154,8 +168,11 @@ test("an opt-in wait on a fresh inbox ends TIMEOUT: live storage enforcement is 
   assert.equal(
     response.status,
     200,
-    `expected 200 TIMEOUT; a ${response.status} means a storage refusal was recorded against a tenant inbox, ` +
-      "which the deployed wiring (StorageEnforcement.OFF) must never do before the ADR-035 §18 enablement gates",
+    `expected 200 TIMEOUT; a ${response.status} means a storage refusal was recorded against a fresh inbox that ` +
+      `received nothing, which no mode may do (declared ${DECLARED_MODE}; ` +
+      (enforcesWorkspace(DECLARED_MODE)
+        ? "an enforcing deployment refuses only real copies, never an empty inbox)"
+        : "an OFF deployment refuses nothing before the ADR-035 §18 enablement gates)"),
   );
   assert.equal(response.body.status, "TIMEOUT");
   assert.equal(response.body.storageRefusalCount, 0);

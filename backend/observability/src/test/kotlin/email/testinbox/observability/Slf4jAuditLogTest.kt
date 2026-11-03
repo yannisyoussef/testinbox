@@ -95,7 +95,7 @@ class Slf4jAuditLogTest {
         val line = messages().single()
         line shouldContain "correlationId=-"
         line shouldContain "actorApiKeyId=-"
-        line shouldContain "name=-"
+        line shouldContain "named=false"
         line.contains("null") shouldBe false
     }
 
@@ -142,7 +142,7 @@ class Slf4jAuditLogTest {
     }
 
     @Test
-    fun `untrusted key labels cannot introduce audit lines or unquoted log fields`() {
+    fun `key labels are never logged, so erasure leaves no label behind and none can forge a field`() {
         Slf4jAuditLog().record(
             AuditEvent.ApiKeyCreated(
                 at,
@@ -157,6 +157,8 @@ class Slf4jAuditLogTest {
         )
         val line = messages().single()
         line.contains('\n') shouldBe false
-        line shouldContain "name=\"SDK\\nevent=api_key.revoked apiKeyId=forged\""
+        line shouldContain "named=true"
+        line.contains("SDK") shouldBe false
+        line.contains("forged") shouldBe false
     }
 }
