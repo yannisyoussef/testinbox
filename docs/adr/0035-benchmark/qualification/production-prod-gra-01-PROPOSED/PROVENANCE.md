@@ -1,6 +1,9 @@
 # Proposed production-host record for `adr035-presigned-put-v2` — Ops-prepared, for app-team review
 
-**Status: PROPOSAL, not shipped.** `PROPOSED-record.json` is deliberately **not** in
+**Status: PROPOSED and NOT eligible (`enablementEligible: false`).** It must not be merged or shipped as an eligible
+record until (i) the post-reboot production evidence, (ii) E1–E11 per the app contract on the final production
+filesystem or an explicitly reviewed and documented amendment, and (iii) a gate D (§11 benchmark) PASS on the staging
+host class all exist (items 1, 2, 5 below). `PROPOSED-record.json` is deliberately **not** in
 `backend/storage/src/main/resources/adr035-qualification/index.txt`, says `enablementEligible: false` and lists why.
 Shipping it is the app team's pull request (production.md, "Adding the record"), after the open items below. Nothing
 here was measured by writing to production: every PROD-NOW value was read with read-only commands (scripts and raw
@@ -43,10 +46,14 @@ of the artifact.
 
 1. **Reboot into 6.8.0-147-generic with a kernel hold** (O2), then re-measure: kernel, filesystem identity, geometry,
    FIEMAP, MinIO identity and runtime-config hash. Any difference from this proposal = no shipping.
-2. **Venue (O1 + production.md):** accept that the §9a sweep and E1–E11 on the staging host with the identical
-   combination qualify the production host and its final filesystem, or run them there (W1 for §9a; E1–E11 on the
-   final filesystem would need TestInbox stopped and the production store filled to ENOSPC — not recommended).
-3. **Gate F preallocation rule:** the production image is fully allocated but `st_blocks` counts the extent tree, so
-   allocated (51,539,640,320) > apparent (51,539,607,552). The gate's exact equality would block it; this PR proposes
-   an optional FIEMAP `holeBytes` (see the script change and its tests).
+2. **Venue (O1 + production.md):** the app contract requires E1–E11 on the final production filesystem. Copied
+   staging PASS results are not a substitute. A different evidence strategy (for example, the staging-host corpus of
+   the identical combination plus read-only post-reboot identity/geometry proof on production plus a re-run of the
+   app-level experiments on the final candidate) needs an explicit app/security review and a documented amendment
+   before this record is treated as eligible.
+3. **Gate F preallocation rule:** the production image is fully allocated, but `st_blocks` counts the extent tree, so
+   allocated (51,539,640,320) > apparent (51,539,607,552). The gate's exact equality would block it. The optional
+   FIEMAP `holeBytes` rule is proposed separately in PR #125 so it can be reviewed and merged on its own.
 4. The production `qualification-check` reports `testinbox_storage_qualification_valid 1` against the shipped record.
+5. **Gate D:** the ADR-035 §11 global benchmark PASS on the staging host class (thresholds unchanged), and the re-run of
+   E5, E6c, E6d, E9 v2, E10 and E11 on the final candidate (they ran on 201ce6cf, before ADR-037 and V19–V23).

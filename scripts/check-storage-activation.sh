@@ -1093,19 +1093,8 @@ gate_filesystem() {
                 then "capacity: f_blocks × f_frsize \($e.statvfs.blocks * $e.statvfs.frsize) < declared C_fs \($d.capacityBytes)" else empty end ),
             ( if $e.statvfs.files < $d.inodes then "inodes: f_files \($e.statvfs.files) < declared I_fs \($d.inodes)" else empty end ),
             ( if $d.inodes < ($d.capacityBytes / $B | ceilnum) then "inodes: declared I_fs \($d.inodes) < C_fs / B \($d.capacityBytes / $B | ceilnum)" else empty end ),
-            # st_blocks counts the blocks of the extent tree itself, so a FULLY allocated image reports allocated > apparent
-            # (prod-gra-01: 51539640320 vs 51539607552, 0 FIEMAP holes). With the optional FIEMAP figure
-            # `holeBytes` (a non-negative integer) the rule is "no hole and allocated >= apparent"; without it, the
-            # original exact equality (fail closed: a sum alone cannot tell overhead from a hole plus overhead).
-            ( if $e.preallocation.blockDevice != false then empty
-              elif (($e.preallocation.holeBytes | type) == "number" and $e.preallocation.holeBytes >= 0
-                    and ($e.preallocation.holeBytes | floor) == $e.preallocation.holeBytes) then
-                ( if $e.preallocation.holeBytes > 0 or $e.preallocation.allocatedBytes < $e.preallocation.apparentBytes
-                    then "preallocation: backing image has \($e.preallocation.holeBytes) B of holes (FIEMAP), allocated \($e.preallocation.allocatedBytes) of apparent size \($e.preallocation.apparentBytes) (sparse)"
-                  else empty end )
-              elif $e.preallocation.allocatedBytes != $e.preallocation.apparentBytes
-                then "preallocation: backing image allocated \($e.preallocation.allocatedBytes) ≠ apparent size \($e.preallocation.apparentBytes) (sparse)"
-              else empty end ),
+            ( if $e.preallocation.blockDevice == false and $e.preallocation.allocatedBytes != $e.preallocation.apparentBytes
+                then "preallocation: backing image allocated \($e.preallocation.allocatedBytes) ≠ apparent size \($e.preallocation.apparentBytes) (sparse)" else empty end ),
             ( if $e.preallocation.thinPool then "preallocation: the filesystem is on a thin pool" else empty end ),
             ( if $e.preallocation.fstrimExcluded != true then "preallocation: no fstrim exclusion is recorded" else empty end ),
             ( if $e.isolation.dedicatedDevice == false and $e.isolation.hostFreeAtCreationBytes < $e.isolation.imageBytes

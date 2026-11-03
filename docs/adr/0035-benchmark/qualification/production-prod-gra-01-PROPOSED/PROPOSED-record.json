@@ -91,7 +91,9 @@
   "enablementEligible": false,
   "ineligibilityReasons": [
     "post-reboot evidence pending: prod-gra-01 runs 6.8.0-142-generic; host.kernelRelease 6.8.0-147-generic is valid only after the reboot (PACKET O2) and its read-only re-measurement",
-    "venue (PACKET O1 + app production.md 'Storage activation'): the \u00a79a sweep and E1-E11 ran on the staging host with the identical combination, not on prod-gra-01 and not on the final production filesystem; production-host needs that accepted or re-run",
+    "venue (PACKET O1 + app production.md 'Storage activation'): the \u00a79a sweep and E1-E11 ran on the staging host with the identical combination, not on prod-gra-01 and not on the final production filesystem; the app contract requires E1-E11 on the final production filesystem, or an explicitly reviewed and documented amendment; copied staging PASS results are not a substitute",
+    "E5, E6c, E6d, E9 v2, E10, E11 ran on 201ce6cf (V10), before ADR-037 and V19-V23; admission/cleanup code changed since",
+    "gate D (ADR-035 \u00a711 global benchmark) has no PASS on the staging host class yet",
     "the Ops production qualification-check (--environment production) has not yet reported valid=1 against this record",
     "app-team review: uploadImplementationVersion adr035-presigned-put-v2 stamped on the harness corpus plus E8 v2 (as the shipped v1 record did for v1)"
   ]
