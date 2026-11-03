@@ -149,7 +149,22 @@ class AccountLifecycleApiTest : ApiIntegrationTestBase() {
             get("/v1/workspace").statusCode.value() shouldBe 401
             quarantined() shouldBe before + 1
         } finally {
-            jdbc.sql("INSERT INTO lifecycle_restore_clearance (id) VALUES (1) ON CONFLICT DO NOTHING").update()
+            // V22's lifecycle_restore_clearance_credentials barrier rightly refuses re-recording the
+            // clearance while managed keys are live (only restore-reconcile may, after revoking them).
+            // This fixture faked the quarantine, so it restores the row with only that barrier off, in
+            // one transaction; the authority trigger still applies (the test role is the owner).
+            jdbc
+                .sql(
+                    """
+                    DO $$
+                    BEGIN
+                        ALTER TABLE lifecycle_restore_clearance DISABLE TRIGGER lifecycle_restore_clearance_credentials;
+                        INSERT INTO lifecycle_restore_clearance (id) VALUES (1) ON CONFLICT DO NOTHING;
+                        ALTER TABLE lifecycle_restore_clearance ENABLE TRIGGER lifecycle_restore_clearance_credentials;
+                    END
+                    $$
+                    """.trimIndent(),
+                ).update()
         }
         gauge() shouldBe 0.0
         get("/v1/workspace").statusCode.value() shouldBe 200
