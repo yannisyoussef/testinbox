@@ -668,6 +668,7 @@ the site column says so.
 | `TESTINBOX_ACCOUNTS_EMAIL_SMTP_USERNAME` | empty | submission credential | **yes** |
 | `TESTINBOX_ACCOUNTS_EMAIL_SMTP_PASSWORD` | empty | submission credential | **yes** |
 | `TESTINBOX_ACCOUNTS_EMAIL_SMTP_FROM` | empty | the approved, authenticated sending address | no |
+| `TESTINBOX_ACCOUNTS_EMAIL_SMTP_REPLY_TO` | empty (no `Reply-To`) | optional: one well-formed address that receives replies to the sign-in mail; invalid → email sign-in is `INCOMPLETE` | no |
 | `TESTINBOX_ACCOUNTS_OAUTH_STATE_KEY_BASE64` | empty | base64 of exactly 32 random bytes; encrypts the PKCE/nonce state. Rotating it invalidates sign-ins in progress | **yes** |
 | `TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_ENABLED` | `false` | `true` to offer Google | no |
 | `TESTINBOX_ACCOUNTS_OAUTH_GOOGLE_CLIENT_ID` / `_CLIENT_SECRET` | empty | the Google OAuth client | secret: **yes** |
@@ -746,6 +747,11 @@ never the inbound mail edge and never the forwarding aliases:
   DKIM, DMARC alignment on its domain). The application only checks that the
   address is well-formed: alignment and the provider's own sending budget are
   Ops/owner evidence;
+- an optional `Reply-To` (`TESTINBOX_ACCOUNTS_EMAIL_SMTP_REPLY_TO`): blank sends
+  none; otherwise it must be one well-formed address (same check as `From`), or
+  email sign-in stays `INCOMPLETE`. Use it when `From` is a no-reply address and
+  replies should reach a monitored mailbox. It is not a sending identity: it
+  needs no SPF/DKIM, but it must be an address the owner controls;
 - a failed delivery has the same public result as a sent one (no enumeration)
   and increments `testinbox_email_login_total{outcome="delivery_failed"}`. Alert
   on it; a successful HTTP response is not proof a code was sent.
