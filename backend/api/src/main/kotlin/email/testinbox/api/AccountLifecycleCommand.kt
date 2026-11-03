@@ -292,7 +292,7 @@ object AccountLifecycleCommand {
         return Operations(
             ChangeAccountState(store, guard, sessions, keys, tx, clock),
             ProcessAccountDeletion(store, guard, sessions, keys, deleteInbox, tx, clock),
-            ReconcileRestoredDatabase(store, guard, sessions, keys, tx, clock),
+            ReconcileRestoredDatabase(store, guard, sessions, keys, tx),
             AccountLifecycleStatus(store, tx),
             AccountDeletionReport(store, tx, clock, policy),
             clock,
@@ -559,7 +559,7 @@ object AccountLifecycleCommand {
                 out.println(
                     "event=restore.reconcile outcome=CLEARED participantWorkspaces=${result.participantWorkspaces} " +
                         "suspendedAccounts=${result.suspendedAccounts} revokedKeys=${result.revokedKeys} " +
-                        "legacyRevokedKeys=${result.legacyRevokedKeys} admissions=CLOSED",
+                        "revokedLegacyKeys=${result.revokedLegacyKeys} admissions=CLOSED",
                 )
                 EXIT_DONE
             }

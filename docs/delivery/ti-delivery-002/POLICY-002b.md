@@ -88,18 +88,22 @@ legacy owner and monitoring keys included, before access reopens. Ops issues
 replacement credentials and re-keys the synthetics. Bootstrap and configured
 credentials are audited separately.
 
-**What changed.**
+**What changed.** (After the merge of `develop`: the TI-DELIVERY-002 release
+`a00c16e` already shipped this mechanism from #118 — the quarantine check,
+the `api_key` lock and `RevokeApiKey.revokeEveryManagedForRestore`, and V22's
+`lifecycle_restore_clearance_credentials` trigger. This change keeps that
+code and adds the `testinbox_restore_quarantined` gauge.)
 
 - `ReconcileRestoredDatabase` still revokes the keys of every participant
   workspace. It now also revokes every other still-usable managed key, in
-  every workspace (`legacyRevokedKeys=` in its output), before it records
+  every workspace (`revokedLegacyKeys=` in its output), before it records
   the clearance.
 - **No restored managed key works before that.** `AuthenticateApiKey` reads
   the restore clearance per request (`RestoreQuarantine`,
   `JdbcRestoreQuarantine`) and refuses every managed key of a legacy
   workspace while the database is quarantined. Participant keys were already
   refused. The answer is `401`, counted as its own closed outcome
-  `QUARANTINED`. The secret is still verified first, so the refusal is no
+  `RESTORE_QUARANTINED`. The secret is still verified first, so the refusal is no
   oracle. The gauge `testinbox_restore_quarantined` reports the state; it is
   not a readiness failure, and Ops alerts on it outside a restore window.
   Without this, an owner key revoked after the backup would have worked
@@ -218,7 +222,7 @@ node, and the start of every `/account/waitlist` request.
    credentials table to Ops' names (`TESTINBOX_SYNTHETIC_API_KEY` / key file;
    monitoring uses the management port).
 3a. Alert on `testinbox_restore_quarantined == 1` for more than 5 minutes
-    outside a restore window, and on `QUARANTINED` auth outcomes outside one.
+    outside a restore window, and on `RESTORE_QUARANTINED` auth outcomes outside one.
 4. Replace `erase-identity` in any runbook with `delete` / `process-deletions`.
 5. On staging, if V22 left it quarantined: reconcile, then re-key through the
    staging bootstrap credential.
@@ -296,7 +300,7 @@ documented, and the key `name` was already optional.
 - A guard-free quiesce before erasure removes the console-request deadlock.
   Test: a raw transaction holds the claim's `FOR KEY SHARE`, then takes the
   workspace guard while the workflow waits.
-- `QUARANTINED` auth outcome; `testinbox_restore_quarantined` gauge.
+- `RESTORE_QUARANTINED` auth outcome; `testinbox_restore_quarantined` gauge.
 - `process-deletions` prints a machine-readable summary line; the usage text
   starts with a stable preflight marker.
 - Storage gate G is DEFERRED under `ALL` until a `storage-budget check` PASS

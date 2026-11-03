@@ -27,7 +27,7 @@ class RestoreQuarantineGauge(
             .register(registry)
     }
 
-    internal fun sample(): Double = runCatching { if (quarantine.active()) 1.0 else 0.0 }.getOrDefault(Double.NaN)
+    internal fun sample(): Double = runCatching { if (quarantine.quarantined()) 1.0 else 0.0 }.getOrDefault(Double.NaN)
 
     companion object {
         const val NAME = "testinbox_restore_quarantined"

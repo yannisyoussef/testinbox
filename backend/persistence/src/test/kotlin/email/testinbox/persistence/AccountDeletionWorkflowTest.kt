@@ -537,7 +537,7 @@ class AccountDeletionWorkflowTest : PersistenceIntegrationTest() {
                         .update()
                 }
             }
-        val authenticate = AuthenticateApiKey(w.apiKeys, clock, w.eligibility, restoreQuarantine = JdbcRestoreQuarantine(w.jdbc))
+        val authenticate = AuthenticateApiKey(w.apiKeys, clock, w.eligibility, quarantine = JdbcRestoreQuarantine(w.jdbc))
         credentials.forEach { authenticate.authenticate(it.render()).shouldNotBeNull() }
 
         // The restored database: no clearance row.
@@ -547,7 +547,7 @@ class AccountDeletionWorkflowTest : PersistenceIntegrationTest() {
         credentials.forEach { authenticate.authenticate(it.render()).shouldBeNull() }
         authenticate.authenticate(participantKey).shouldBeNull()
 
-        ReconcileRestoredDatabase(w.lifecycle, w.quotas, w.revokeSessions, w.revokeKeys, w.tx, clock).execute() shouldBe
+        ReconcileRestoredDatabase(w.lifecycle, w.quotas, w.revokeSessions, w.revokeKeys, w.tx).execute() shouldBe
             ReconcileRestoredDatabase.Result.Reconciled(1, 1, 1, 2)
         w.count("SELECT count(*) FROM api_key WHERE kind = 'MANAGED' AND revoked_at IS NULL") shouldBe 0
         // Cleared, and still refused: they are revoked, not merely quarantined.

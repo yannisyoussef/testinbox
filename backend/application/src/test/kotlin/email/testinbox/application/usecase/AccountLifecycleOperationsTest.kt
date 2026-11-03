@@ -85,6 +85,40 @@ class AccountLifecycleOperationsTest {
             ),
         )
 
+    private fun legacyKey(
+        workspaceId: WorkspaceId,
+        scopes: Set<ApiScope>,
+        revokedAt: Instant? = null,
+        kind: ApiKeyKind = ApiKeyKind.MANAGED,
+    ): ApiKey =
+        apiKeys.put(
+            ApiKey(
+                id = ApiKeyId(UUID.randomUUID()),
+                workspaceId = workspaceId,
+                projectId = project,
+                keyHash =
+                    UUID
+                        .randomUUID()
+                        .toString()
+                        .replace("-", "")
+                        .repeat(2),
+                scopes = scopes,
+                createdAt = clock.now.minusSeconds(3600),
+                revokedAt = revokedAt,
+                kind = kind,
+                publicId =
+                    if (kind == ApiKeyKind.MANAGED) {
+                        UUID
+                            .randomUUID()
+                            .toString()
+                            .replace("-", "")
+                            .take(16)
+                    } else {
+                        null
+                    },
+            ),
+        )
+
     private fun inbox(state: InboxState = InboxState.ACTIVE): Inbox =
         Inbox(
             id = InboxId(UUID.randomUUID()),
@@ -373,7 +407,7 @@ class AccountLifecycleOperationsTest {
             .refusedState shouldBe HumanAccountState.SUSPENDED
     }
 
-    private val reconcile = ReconcileRestoredDatabase(store, guard, revokeSessions, revokeKeys, NoopTx, clock)
+    private val reconcile = ReconcileRestoredDatabase(store, guard, revokeSessions, revokeKeys, NoopTx)
 
     @Test
     fun `restore reconciliation refuses a database that is not quarantined`() {
@@ -404,13 +438,50 @@ class AccountLifecycleOperationsTest {
         legacyKeys.all { apiKeys.keys.getValue(it.id).isRevoked() } shouldBe true
         sessions.count(account) shouldBe 0
         store.quarantined shouldBe false
-        // Guards (sorted), then the cohort row and fence, then accounts; clearance last.
+        // Guards (sorted), then the cohort row and fence, then every credential write; clearance last.
         val guards = events.filter { it.startsWith("guard:") }
         guards shouldBe guards.sortedBy { UUID.fromString(it.removePrefix("guard:")) }
         events.indexOf("cohort+fence") shouldBe events.indexOfLast { it.startsWith("guard:") } + 1
-        events.indexOf("close") shouldBe events.indexOf("cohort+fence") + 1
-        events.takeLast(2) shouldBe listOf("revoke-every-managed-key", "clear")
+        events.indexOf("credentials") shouldBe events.indexOf("cohort+fence") + 1
+        events.indexOf("close") shouldBe events.indexOf("credentials") + 1
+        events.last() shouldBe "clear"
         reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.NotQuarantined
+    }
+
+    @Test
+    fun `restore reconciliation also revokes every owner and monitoring key, and only the restored ones`() {
+        participant()
+        val participantKey = key()
+        val owner = WorkspaceId(UUID.randomUUID())
+        val ownerAdmin = legacyKey(owner, setOf(ApiScope.API_KEYS_MANAGE, ApiScope.INBOXES_WRITE))
+        val synthetic = legacyKey(owner, setOf(ApiScope.INBOXES_WRITE, ApiScope.MESSAGES_READ))
+        val alreadyRevoked = legacyKey(owner, setOf(ApiScope.MESSAGES_READ), revokedAt = clock.now.minusSeconds(60))
+        val bootstrap = legacyKey(owner, ApiScope.entries.toSet(), kind = ApiKeyKind.BOOTSTRAP)
+        store.quarantined = true
+
+        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.Reconciled(1, 1, 1, 2)
+        listOf(participantKey, ownerAdmin, synthetic).forEach { apiKeys.keys.getValue(it.id).revokedAt shouldBe clock.now }
+        // History is kept: an earlier revocation keeps its own time, and nothing is deleted.
+        apiKeys.keys.getValue(alreadyRevoked.id).revokedAt shouldBe clock.now.minusSeconds(60)
+        apiKeys.keys.size shouldBe 5
+        // Configuration, not restored data: the bootstrap row is not revoked. It reopens
+        // because no usable managed administrator remains (ADR-032 §8), which is the
+        // owner's way to mint a new administrator and re-key monitoring.
+        apiKeys.keys.getValue(bootstrap.id).isRevoked() shouldBe false
+        apiKeys.hasUsableManagedAdmin(owner, clock.now) shouldBe false
+        events.indexOf("credentials") shouldBe events.indexOf("cohort+fence") + 1
+        events.last() shouldBe "clear"
+    }
+
+    @Test
+    fun `a reconciliation that is refused revokes no owner or monitoring key`() {
+        val owner = WorkspaceId(UUID.randomUUID())
+        val ownerAdmin = legacyKey(owner, setOf(ApiScope.API_KEYS_MANAGE))
+        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.NotQuarantined
+        store.quarantined = true
+        store.clearedWhileWaiting = true
+        reconcile.execute() shouldBe ReconcileRestoredDatabase.Result.NotQuarantined
+        apiKeys.keys.getValue(ownerAdmin.id).isRevoked() shouldBe false
     }
 
     @Test
@@ -575,6 +646,10 @@ class AccountLifecycleOperationsTest {
             events += "close"
         }
 
+        override fun lockCredentials() {
+            events += "credentials"
+        }
+
         override fun clearQuarantine() {
             events += "clear"
             quarantined = false
@@ -630,14 +705,6 @@ class AccountLifecycleOperationsTest {
         override fun quiesceAccount(accountId: HumanAccountId): Boolean {
             events += "quiesce:$accountId"
             return accountId in states
-        }
-
-        override fun revokeEveryManagedKey(at: Instant): Int {
-            events += "revoke-every-managed-key"
-            return apiKeys.keys.values
-                .map { it.workspaceId }
-                .distinct()
-                .sumOf { apiKeys.revokeAllManaged(it, at) }
         }
     }
 }

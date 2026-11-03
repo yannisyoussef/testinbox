@@ -579,7 +579,7 @@ the same list. Unit example and triage:
 database therefore treats every participant workspace as inactive and every
 human account as suspended, and refuses **every managed API key**, including
 the owner's `ops-admin` and the synthetic key
-(`testinbox_api_key_auth_total{outcome="QUARANTINED"}`), until
+(`testinbox_api_key_auth_total{outcome="RESTORE_QUARANTINED"}`), until
 `account-lifecycle restore-reconcile` runs. The **bootstrap credential is not
 quarantine-gated**: it authenticates whenever no usable administrator exists,
 and any key it mints during quarantine is refused and then revoked by
@@ -598,7 +598,7 @@ The restore sequence (Ops runbook; full text in
    any deployable starts.
 4. `account-lifecycle restore-reconcile`: it suspends the restored
    participants, revokes every restored managed key and records the
-   clearance.
+   clearance. V22 refuses the clearance while any managed key is unrevoked.
 5. **Replay the lifecycle log** — mandatory before sign-in or registration is
    re-enabled. Replay every `delete` and `suspend` (a pre-002b
    `erase-identity` replays as `delete`), for participant **and
@@ -1006,9 +1006,12 @@ leaving the restored database unquarantined.
 
 What that buys, stated plainly:
 
-- **Disaster recovery keeps identity.** Workspaces, projects and every
-  credential verifier survive; a tenant's CI keeps authenticating after a
-  restore. No plaintext credential is recoverable from a backup (ADR-032 §4).
+- **Disaster recovery keeps identity, not authorization.** Workspaces,
+  projects and every credential verifier survive. Since V22, though, no
+  restored managed key authenticates again: `restore-reconcile` revokes them
+  all and keys are reissued (owner decision 2026-10-30). The rows stay as
+  revoked history. No plaintext credential is recoverable from a backup
+  (ADR-032 §4).
 - **Retention cannot silently widen.** Nothing a sender or tenant was
   promised would be deleted exists in a backup.
 - **A restore cannot dangle.** No message row is restored, so none can point
@@ -1025,11 +1028,13 @@ not, stop: the dump was not the accepted form and the restore is not
 quarantined. Then start an API node against it and confirm that a managed
 key of a **legacy** (owner/monitoring) workspace that existed at backup time
 is **refused** (`401`: no managed key authenticates while quarantined,
-TI-DELIVERY-002b; counted `QUARANTINED`, and `testinbox_restore_quarantined`
+TI-DELIVERY-002b; counted `RESTORE_QUARANTINED`, and `testinbox_restore_quarantined`
 is `1`). Run `account-lifecycle restore-reconcile`, confirm its
-`legacyRevokedKeys=` count, run `mint-synthetic-key.sh` and then mint
+`revokedLegacyKeys=` count, run `mint-synthetic-key.sh` and then mint
 `ops-admin` with the (rotated) bootstrap credential, and confirm that
-`message` and `inbox` are empty. A drill that
+`message` and `inbox` are empty. After reconciliation
+`SELECT count(*) FROM api_key WHERE kind = 'MANAGED' AND revoked_at IS NULL`
+must return `0`, and the old legacy key still gets `401`. A drill that
 checks only "restore exited 0" is not a drill.
 
 ### Credentials after a restore
@@ -1041,7 +1046,7 @@ TI-DELIVERY-002b decision 2: no restored credential is trusted.
 | credential | where it lives | after a restore | Ops action |
 |---|---|---|---|
 | participant managed keys | `api_key` (verifier) | refused while quarantined; revoked by `restore-reconcile` | none; participants mint new keys after `resume` |
-| owner `ops-admin` and other owner keys (managed) | `api_key` (verifier) | refused while quarantined (`QUARANTINED`); **revoked** by `restore-reconcile` (`legacyRevokedKeys=`) | mint `ops-admin` with the bootstrap credential **after** the synthetic key (that mint closes the bootstrap window), then re-issue the other owner keys with it |
+| owner `ops-admin` and other owner keys (managed) | `api_key` (verifier) | refused while quarantined (`RESTORE_QUARANTINED`); **revoked** by `restore-reconcile` (`revokedLegacyKeys=`) | mint `ops-admin` with the bootstrap credential **after** the synthetic key (that mint closes the bootstrap window), then re-issue the other owner keys with it |
 | production synthetic key (managed; `TESTINBOX_SYNTHETIC_API_KEY`, or the deploy-only key file `~deploy/.local/state/infinity-deploy/testinbox-synthetic.key`) | `api_key` (verifier) | refused while quarantined; **revoked** by `restore-reconcile` | shred the stale key file, then run `mint-synthetic-key.sh` while the bootstrap window is open; run `synthetic.sh` |
 | monitoring | the management port, not a managed key | unaffected | none |
 | `TESTINBOX_BOOTSTRAP_API_KEY` | Ops secret store (`.env.testinbox`, escrowed off-host); the database holds only a `kind = BOOTSTRAP` verifier row | **not** quarantine-gated, rotated or revoked by reconciliation. It authenticates when the presented token matches the configured value and no usable managed administrator exists; after reconciliation it is the break-glass that re-keys the owner | **rotate it in every restore** (new value, restart the API) **before** the API serves the restored database. Without one the owner workspace has no way back into key management. It retires itself again when `ops-admin` is minted; `TestInboxBootstrapKeyUsed` fires for the two mints |

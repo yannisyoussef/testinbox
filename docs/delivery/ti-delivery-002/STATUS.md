@@ -143,7 +143,10 @@ Before the first lifecycle or admission command:
     during windows and restores, installed after the V23 window's T5.
 12. After MD1/md1: revoke API writes on `lifecycle_restore_clearance`,
     `human_account(state)`, `beta_admission`, ALL on `account_deletion`;
-    revoke `TEMPORARY`.
+    revoke `TEMPORARY`. *App side for the V22 tables carried in
+    `roles.reference.sql` since develop (`UPDATE (id)` only on
+    `human_account`); the `TEMPORARY` revocation is Ops-owned
+    (`roles.sql.inc`).*
 
 Before registration:
 

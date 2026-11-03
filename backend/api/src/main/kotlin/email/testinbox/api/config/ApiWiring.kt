@@ -21,6 +21,7 @@ import email.testinbox.application.port.MessageNotifier
 import email.testinbox.application.port.MessageRepository
 import email.testinbox.application.port.NotifierMetrics
 import email.testinbox.application.port.RateLimiter
+import email.testinbox.application.port.RestoreQuarantine
 import email.testinbox.application.port.StorageAccountingMetrics
 import email.testinbox.application.port.StorageAmbiguity
 import email.testinbox.application.port.StorageInspection
@@ -70,7 +71,6 @@ import email.testinbox.observability.Slf4jAuditLog
 import email.testinbox.persistence.BundledMigrations
 import email.testinbox.persistence.JdbcDatabaseSessionSettings
 import email.testinbox.persistence.JdbcRateLimiter
-import email.testinbox.persistence.JdbcRestoreQuarantine
 import email.testinbox.persistence.JdbcSchemaHistory
 import email.testinbox.persistence.JdbcStorageAmbiguity
 import email.testinbox.persistence.JdbcStorageReservations
@@ -420,7 +420,7 @@ class ApiWiring(
         apiKeys: ApiKeyRepository,
         lastUsed: CoalescingLastUsedRecorder,
         eligibility: WorkspaceEligibility,
-        jdbc: JdbcClient,
+        quarantine: RestoreQuarantine,
     ): AuthenticateApiKey =
         AuthenticateApiKey(
             apiKeys,
@@ -437,8 +437,7 @@ class ApiWiring(
             metrics = apiKeyMetrics,
             lastUsed = lastUsed.asRecorder(),
             audit = audit,
-            // No restored managed key, legacy or participant, authenticates before restore-reconcile.
-            restoreQuarantine = JdbcRestoreQuarantine(jdbc),
+            quarantine = quarantine,
         )
 
     @Bean

@@ -312,14 +312,15 @@ absent:
 - **no managed key authenticates, owner and monitoring keys included**
   (TI-DELIVERY-002b decision 2). API-key authentication reads the clearance per
   request (`RestoreQuarantine`) and answers `401`, counted as its own outcome
-  `testinbox_api_key_auth_total{outcome="QUARANTINED"}`. A legacy managed key
+  `testinbox_api_key_auth_total{outcome="RESTORE_QUARANTINED"}` (a
+  participant's key still reports `WORKSPACE_INACTIVE`). A legacy managed key
   revoked after the backup was taken therefore never works again, not even
   in the window before reconciliation;
 - the gauge `testinbox_restore_quarantined` reads `1` (no labels; `0` once
   cleared, NaN if unreadable). It is deliberately not a readiness failure:
   the API must stay up so the operator can reconcile and re-key. **Ops alert:**
   `testinbox_restore_quarantined == 1` for more than 5 minutes outside a
-  declared restore window pages; any increase of the `QUARANTINED` outcome
+  declared restore window pages; any increase of the `RESTORE_QUARANTINED` outcome
   outside a restore window means the clearance row is missing.
 
 **The bootstrap credential is not quarantine-gated.** It is configuration,
@@ -329,7 +330,7 @@ administrator exists (ADR-032 §8). In a restored database the restored
 administrator still counts as usable until reconciliation revokes it, so the
 bootstrap credential is normally superseded during quarantine. If the backup
 held no usable administrator, it authenticates during quarantine. Any managed
-key it mints then is refused while quarantined (`QUARANTINED`) and revoked by
+key it mints then is refused while quarantined (`RESTORE_QUARANTINED`) and revoked by
 `restore-reconcile`, but the bootstrap credential itself can act on the owner
 workspace. Access through the bootstrap credential is therefore **not**
 closed by the quarantine. That is why rotating it is a **mandatory** step of
@@ -348,11 +349,29 @@ quarantined. In one transaction it:
 3. suspends every restored `ACTIVE` participant account;
 4. deletes their sessions;
 5. permanently revokes every managed key of every participant workspace;
-6. permanently revokes every other still-usable managed key, in every
-   workspace: the owner's `ops-admin` and the synthetic key (Ops' monitoring
-   uses the management port, not a managed key) (`legacyRevokedKeys=` in its
-   output);
+6. locks every credential write (`LOCK TABLE api_key IN SHARE ROW EXCLUSIVE
+   MODE`, taken right after the cohort row and T1 fence; reads are not
+   blocked) and permanently revokes every other still-usable managed key, in
+   every workspace: the owner's `ops-admin` and the synthetic key (Ops'
+   monitoring uses the management port, not a managed key)
+   (`revokedLegacyKeys=` in its output). The rows are kept as revoked history;
 7. records the clearance.
+
+V22 refuses to record the clearance while any managed key is unrevoked
+(trigger `lifecycle_restore_clearance_credentials`, after the authority
+trigger). The order therefore cannot be skipped, not even by an operator
+inserting the row by hand. The table lock means no key can be committed
+between step 6 and step 7.
+
+The revocation boundary is "every managed key that exists when
+reconciliation commits". It contains every key restored from the backup,
+plus anything minted from the bootstrap credential during the quarantine.
+The revocation is idempotent: rows that are already revoked keep their own
+`revoked_at`, and a second run is refused (`outcome=REFUSED`, nothing
+changed). It is auditable by count, never key material: the
+`event=restore.reconcile outcome=CLEARED` line carries `revokedKeys`
+(participant keys) and `revokedLegacyKeys` (owner and monitoring keys) as
+counts.
 
 From then on the operator resumes individual accounts from Ops' external
 lifecycle record. Those users sign in again and mint new keys. Ops issues
@@ -390,6 +409,7 @@ and both start quarantined:
 | application | `AccountLifecycleOperationsTest` (14); inactive and race cases in `ReceiveInboundDeliveryTest` (+3, plus two new A1 kinds); `AuthenticateApiKeyTest` (+2); `ApiKeyLifecycleTest` (+5); `CreateInboxTest` (+1) |
 | persistence | `AccountLifecycleTest` (9) |
 | ingestion | `SmtpAccountLifecycleTest` (4) |
+| restore re-key (owner decision 2026-10-30) | application `AuthenticateApiKeyTest` (+3: quarantine refuses legacy keys, a participant key is still `WORKSPACE_INACTIVE`, bootstrap keeps its own window); `AccountLifecycleOperationsTest` (+2: owner and monitoring keys revoked with history kept and bootstrap untouched; a refused run revokes nothing); persistence `AccountLifecycleTest` (+1, real PostgreSQL: the restore path end to end, below) |
 | api | `AccountLifecycleApiTest` (3), `AccountLifecycleCommandInputTest` (3), `AccountLifecycleCommandProcessTest` (3) |
 | backup scope suite | 205 cases (was 197) |
 
@@ -409,6 +429,16 @@ The persistence `AccountLifecycleTest` runs on real PostgreSQL and covers:
   then revoked;
 - deletion with tombstones and an unreleased place;
 - restore quarantine and reconciliation;
+- the restore re-key path:
+  - a bootstrap-provisioned owner workspace (synthetic key, then
+    administrator) and a participant key are all refused while quarantined;
+  - the operator cannot insert the clearance while a key is unrevoked;
+  - `restore-reconcile` reports `(1, 1, 1, 2)` and leaves no unrevoked
+    managed key;
+  - the old keys stay refused;
+  - the bootstrap credential reopens, re-keys the synthetic, mints a new
+    administrator and is then superseded again;
+  - revoked rows are kept (`3/5`);
 - V22 quarantine on upgrade.
 
 `SmtpAccountLifecycleTest` uses real SMTP, PostgreSQL and MinIO. It drives
@@ -688,7 +718,7 @@ and only then the `ops-admin` key, which closes it.
    accepted, because re-running V22 on it seeds the clearance before the data
    loads. The scope checker refuses a dump carrying the row. The deployables
    may now start:
-   - no managed key authenticates (`QUARANTINED`);
+   - no managed key authenticates (`RESTORE_QUARANTINED`);
    - logins are refused;
    - mail to participants is discarded with the uniform `250`;
    - `testinbox_restore_quarantined` is `1`;
@@ -696,7 +726,7 @@ and only then the `ops-admin` key, which closes it.
 4. **Reconcile:** `account-lifecycle restore-reconcile`, and record its
    `event=restore.reconcile` line. It suspends every restored participant,
    revokes **every** restored managed key (`revokedKeys=` participant,
-   `legacyRevokedKeys=` owner `ops-admin` and the synthetic key), closes
+   `revokedLegacyKeys=` owner `ops-admin` and the synthetic key), closes
    admissions and records the clearance. It does **not** read the lifecycle
    log. A second, concurrent run is a clean no-op.
 5. **Replay the lifecycle log,** by hand, from Ops' external lifecycle log:
@@ -727,7 +757,10 @@ and only then the `ops-admin` key, which closes it.
    2. Mint the owner's `ops-admin` key (`api-keys:manage`) with the bootstrap
       credential. That closes the bootstrap window (ADR-032 §8).
    3. Re-issue any other owner keys with `ops-admin`.
-   4. Run `synthetic.sh`; it must pass before the restore is declared complete.
+   4. Prove the old keys are refused: the previous synthetic key and the
+      previous administrator each get `401`, and the bootstrap credential
+      gets `401` too (`BOOTSTRAP_SUPERSEDED`).
+   5. Run `synthetic.sh`; it must pass before the restore is declared complete.
 
    **Expected alert:** `TestInboxBootstrapKeyUsed` fires for the two mints.
    Any other use of the bootstrap credential is not expected.
@@ -753,8 +786,9 @@ GRANT SELECT ON workspace_lifecycle_eligibility TO :"ingestion_role";
 The change adds no `DO`, `SET`, `set_config` or `search_path`. The API role
 needs nothing new: it already receives `SELECT/INSERT/UPDATE/DELETE ON ALL
 TABLES`, which now also covers the view and `lifecycle_restore_clearance`.
-The V22 triggers, not grants, stop the API role from writing state, erasing
-accounts or lifting quarantine.
+The V22 triggers stop the API role from writing state, erasing accounts or
+lifting quarantine, and the grant-level hardening below narrows the same
+writes by grant.
 
 `StorageRoleModelTest` pins the ingestion allow-list exactly, now including
 the view. It also proves:
@@ -786,19 +820,30 @@ always passes, and the V22 authority functions and triggers add nothing,
 because the owner is the operator authority. Only production's separate roles
 get the protection.
 
-**Required Ops action once MD1/md1 are fixed: grant-level hardening.** Add
-grant-level barriers on top of the V22 triggers by revoking these from the
-API role:
+**Grant-level hardening (STATUS "Required Ops changes" item 12, V22 part now in `roles.reference.sql`).**
+On top of the V22 triggers, the reference revokes these from the API role:
 
-- `INSERT, UPDATE, DELETE ON lifecycle_restore_clearance`;
-- `UPDATE (state) ON human_account`;
-- `UPDATE, DELETE ON beta_admission`;
-- `ALL ON account_deletion` (V23, TI-DELIVERY-002b: the runtime never reads or
-  writes it; the operator authority is the schema owner).
+- `INSERT, UPDATE, DELETE ON lifecycle_restore_clearance` (it keeps `SELECT`
+  for the readiness probe);
+- `UPDATE ON human_account`, re-granting only `UPDATE (id)`. The API locks
+  account rows (`FOR UPDATE` in admission, `FOR NO KEY UPDATE` in session
+  issuance and authentication), and a row lock needs `UPDATE` on at least one
+  column. Every foreign key to `human_account(id)` is `ON UPDATE NO ACTION`,
+  so a referenced account cannot be re-keyed;
+- `UPDATE, DELETE ON beta_admission`.
 
-These are kept out of `roles.reference.sql` for now because of the MD1
-constraint. The triggers, which a real-PostgreSQL test proves, enforce the
-same rule in the meantime.
+`ALL ON account_deletion` (V23, TI-DELIVERY-002b: the runtime never reads or
+writes it; the operator authority is the schema owner) is not in the
+reference yet; it stays STATUS "Required Ops changes" item 12 until the app
+adds it, and V23's triggers refuse every non-operator write meanwhile.
+
+The API never updates an account column or a membership, and never writes
+the clearance, so nothing it runs is refused. `StorageRoleModelTest` proves it
+under psql with the shipped file: the effective privileges, the refusals by
+grant, and session issuance, authentication, admission and the readiness
+probe still working under the API role. Ops asserts the same through its
+contract's `api-denied-privileges.txt`. Those assertions are enabled in the
+infinity-core change that pins a candidate carrying this reference.
 
 **Also added to `roles.reference.sql`'s read-only guard block.** It refuses an
 API, ingestion or monitor role that is a member of the schema owner, because
@@ -818,6 +863,7 @@ checks):
 
 - the V22 triggers (`human_account_lifecycle_authority`,
   `lifecycle_restore_clearance_authority`/`_truncate`,
+  `lifecycle_restore_clearance_credentials`,
   `beta_admission_lifecycle_authority`/`_truncate`) and the V23 triggers
   (`account_deletion_lifecycle_authority`, `account_deletion_lifecycle_truncate`)
   are present and enabled (`pg_trigger.tgenabled = 'O'`);
@@ -827,7 +873,7 @@ checks):
 - **T5**: `max(version)` in `flyway_schema_history` is `23` with success;
   `SELECT count(*) FROM account_deletion` is `0` on a database that had no
   deletion-pending account (otherwise exactly that many backfilled
-  `DRAINING` rows); the seven triggers above exist;
+  `DRAINING` rows); the eight triggers above exist;
 - **partial migration** (V22 applied, V23 not): **roll forward only.** Complete
   V23 with the same candidate. Neither rolling back nor running the new API
   against V22 is supported: it would fail readiness `schema`. The deletion

@@ -131,13 +131,13 @@ class AccountLifecycleApiTest : ApiIntegrationTestBase() {
     @Autowired lateinit var registry: io.micrometer.core.instrument.MeterRegistry
 
     @Test
-    fun `while restore-quarantined a legacy key gets 401 counted QUARANTINED, and the gauge reports it`() {
+    fun `while restore-quarantined a legacy key gets 401 counted RESTORE_QUARANTINED, and the gauge reports it`() {
         fun gauge() = registry.get(email.testinbox.api.ops.RestoreQuarantineGauge.NAME).gauge().value()
 
         fun quarantined() =
             registry
                 .get("testinbox_api_key_auth_total")
-                .tag("outcome", "QUARANTINED")
+                .tag("outcome", "RESTORE_QUARANTINED")
                 .counter()
                 .count()
         get("/v1/workspace").statusCode.value() shouldBe 200

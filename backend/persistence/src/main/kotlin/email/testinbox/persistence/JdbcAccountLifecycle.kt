@@ -157,6 +157,13 @@ class JdbcAccountLifecycle(
             .update()
     }
 
+    override fun lockCredentials() {
+        requireTransaction()
+        // SHARE ROW EXCLUSIVE: conflicts with every row write of others and with
+        // itself, never with plain reads, so authentication keeps reading keys.
+        jdbc.sql("LOCK TABLE api_key IN SHARE ROW EXCLUSIVE MODE").update()
+    }
+
     override fun clearQuarantine() {
         requireTransaction()
         // A concurrent reconciliation that committed first makes this a no-op, never a failure.
@@ -312,14 +319,6 @@ class JdbcAccountLifecycle(
             .query()
             .listOfRows()
             .isNotEmpty()
-    }
-
-    override fun revokeEveryManagedKey(at: Instant): Int {
-        requireTransaction()
-        return jdbc
-            .sql("UPDATE api_key SET revoked_at = :at WHERE kind = 'MANAGED' AND revoked_at IS NULL")
-            .param("at", Timestamps.toDb(at))
-            .update()
     }
 
     private fun deletionRecord(rs: ResultSet) =

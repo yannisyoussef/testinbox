@@ -361,4 +361,18 @@ class RevokeApiKey(
         check(authority.open) { "operator authority is bound to the transaction that verified it" }
         return apiKeys.revokeAllManaged(workspaceId, clock.instant())
     }
+
+    /**
+     * Restore reconciliation only (owner decision 2026-10-30): every managed
+     * key of every workspace, participant, owner and monitoring alike, in the
+     * caller's reconciliation transaction. A backup is never current
+     * authorization, so no restored credential authenticates again; the
+     * owner's way back in is the configured bootstrap credential, which
+     * reopens exactly because no usable managed administrator remains
+     * (ADR-032 §8). Returns how many keys this call revoked.
+     */
+    fun revokeEveryManagedForRestore(authority: OperatorAuthorization): Int {
+        check(authority.open) { "operator authority is bound to the transaction that verified it" }
+        return apiKeys.revokeEveryManaged(clock.instant())
+    }
 }

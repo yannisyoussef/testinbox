@@ -28,23 +28,22 @@ enum class WorkspaceStatus {
     INACTIVE_PARTICIPANT,
 }
 
-/** Thrown when a write discovers, under its workspace guard, that the workspace became inactive after authentication. */
-class WorkspaceInactiveException : RuntimeException("the workspace is no longer active")
-
 /**
- * Whether the database is restore-quarantined (V22: it carries no restore
- * clearance). Read per request by API-key authentication, so that NO restored
- * managed credential, participant or legacy, authenticates before the
- * operator's `restore-reconcile` has revoked it (TI-DELIVERY-002b decision 2).
+ * Whether the database is restore-quarantined: it carries no
+ * `lifecycle_restore_clearance` row (V22). Read per request, like every other
+ * authorization fact; nothing is cached.
  */
 fun interface RestoreQuarantine {
-    fun active(): Boolean
+    fun quarantined(): Boolean
 
     companion object {
-        /** For contexts with no lifecycle schema (unit tests of unrelated use cases). */
+        /** For compositions without a lifecycle schema (unit tests). */
         val NONE = RestoreQuarantine { false }
     }
 }
+
+/** Thrown when a write discovers, under its workspace guard, that the workspace became inactive after authentication. */
+class WorkspaceInactiveException : RuntimeException("the workspace is no longer active")
 
 /** A deletion's durable, non-identifying record (V23): the account UUID, its stage and when. */
 data class AccountDeletionRecord(
@@ -132,6 +131,15 @@ interface AccountLifecycleStore {
     /** Closes admissions and capacity on the locked cohort row. */
     fun closeCohort()
 
+    /**
+     * Blocks every other credential write (a mint, a revocation, a
+     * `last_used_at` refresh) until this transaction ends, so no managed key
+     * can be committed between restore reconciliation's revocation and its
+     * clearance. Taken before the first credential row is touched.
+     */
+    fun lockCredentials()
+
+    /** Records the clearance. V22 refuses it while any managed key is still unrevoked. */
     fun clearQuarantine()
 
     /**
@@ -178,7 +186,4 @@ interface AccountLifecycleStore {
      * foreign-key share lock on it. False when there is no such account.
      */
     fun quiesceAccount(accountId: HumanAccountId): Boolean
-
-    /** Restore reconciliation: permanently revokes every still-usable managed key of EVERY workspace. */
-    fun revokeEveryManagedKey(at: Instant): Int
 }
