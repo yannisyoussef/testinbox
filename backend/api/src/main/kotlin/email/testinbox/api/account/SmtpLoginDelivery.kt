@@ -15,14 +15,22 @@ class SmtpLoginDelivery(
         email: ContactEmail,
         code: EmailLoginCode,
     ) {
+        sender.send(message(email, code))
+    }
+
+    internal fun message(
+        email: ContactEmail,
+        code: EmailLoginCode,
+    ): SimpleMailMessage {
         val message = SimpleMailMessage()
         message.setFrom(checkNotNull(ContactEmail.parse(properties.from)).value)
+        if (properties.replyTo.isNotBlank()) message.setReplyTo(checkNotNull(ContactEmail.parse(properties.replyTo)).value)
         message.setTo(email.value)
         message.subject = "Your TestInbox sign-in code"
         message.text = "Your TestInbox sign-in code is ${code.value}.\n\n" +
             "It expires in 10 minutes and only works in the browser that requested it.\n" +
             "Do not share this code. If you did not request it, ignore this message."
-        sender.send(message)
+        return message
     }
 
     companion object {
@@ -31,6 +39,9 @@ class SmtpLoginDelivery(
             require(properties.port == 587) { "login SMTP requires port 587 with mandatory STARTTLS" }
             require(properties.username.isNotBlank() && properties.password.isNotBlank()) { "SMTP credentials are required" }
             require(ContactEmail.parse(properties.from) != null) { "an approved sending identity is required" }
+            require(properties.replyTo.isBlank() || ContactEmail.parse(properties.replyTo) != null) {
+                "the reply-to address must be a single well-formed address"
+            }
         }
 
         internal fun configuredSender(properties: LoginSmtpProperties): JavaMailSenderImpl {

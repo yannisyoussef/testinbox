@@ -13,7 +13,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class SmtpLoginDeliveryTest {
-    private fun properties() = LoginSmtpProperties("relay.example.invalid", 587, "fixture", "fixture", "login@example.invalid")
+    private fun properties(replyTo: String = "") =
+        LoginSmtpProperties("relay.example.invalid", 587, "fixture", "fixture", "login@example.invalid", replyTo)
 
     @Test
     fun `a server without STARTTLS receives no authentication recipient or code`() {
@@ -81,5 +82,23 @@ class SmtpLoginDeliveryTest {
         }
         properties().toString().contains("fixture") shouldBe false
         EmailLoginProperties(true, "never-log-this-key", properties()).toString().contains("never-log-this-key") shouldBe false
+    }
+
+    @Test
+    fun `an optional reply-to is validated and set only when configured`() {
+        val recipient = checkNotNull(ContactEmail.parse("recipient@example.invalid"))
+        val code = EmailLoginCode.generate()
+        SmtpLoginDelivery(properties()).message(recipient, code).replyTo shouldBe null
+        SmtpLoginDelivery(properties("   ")).message(recipient, code).replyTo shouldBe null
+
+        SmtpLoginDelivery.validate(properties("Ops@Example.invalid"))
+        val message = SmtpLoginDelivery(properties("Ops@Example.invalid")).message(recipient, code)
+        message.from shouldBe "login@example.invalid"
+        message.replyTo shouldBe "ops@example.invalid"
+        message.to?.toList() shouldBe listOf("recipient@example.invalid")
+
+        listOf("bad\r\nBcc: person@example.invalid", "one@example.invalid, two@example.invalid", "not-an-address").forEach {
+            shouldThrow<IllegalArgumentException> { SmtpLoginDelivery.validate(properties(it)) }
+        }
     }
 }
