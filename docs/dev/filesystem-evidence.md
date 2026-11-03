@@ -132,6 +132,7 @@ file is `NOT RUN`. Every field is required. A missing or mistyped field is
 | `statvfs.frsize`, `.blocks`, `.files` | `stat -f -c '%S %b %c' <mountpoint>` (fragment size, total blocks, total inodes) | capacity and inodes; also checked against the monitor's newest row (a disagreement is contradictory input) |
 | `preallocation.blockDevice` | `true` for a dedicated block device | preallocation |
 | `preallocation.allocatedBytes`, `.apparentBytes` | for an image: `stat -c '%b*%B' <image>` and `stat -c %s <image>` | preallocation: equal (not sparse) |
+| `preallocation.holeBytes` (optional) | for an image: bytes of the image not covered by any extent (`filefrag -v` / FIEMAP; what the fs-monitor and the D3 root check compute) | preallocation: with it, 0 holes and allocated ≥ apparent (`st_blocks` also counts the extent tree, so a fully allocated large image reports allocated > apparent: prod-gra-01 51,539,640,320 vs 51,539,607,552); without it, the exact equality above |
 | `preallocation.thinPool` | `lsblk -no TYPE` shows no `thin`/`lvm` thin pool under the device | preallocation: `false` |
 | `preallocation.fstrimExcluded` | the `fstrim.timer` and `discard` exclusion for this device, as recorded in the host runbook | preallocation: `true` |
 | `isolation.dedicatedDevice` | `true` when the filesystem has its own device | isolation |
