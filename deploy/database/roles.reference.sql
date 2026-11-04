@@ -129,7 +129,7 @@ REVOKE INSERT, UPDATE, DELETE ON flyway_schema_history FROM :"api_role", :"inges
 -- definer code writes them). Revoking the table-level privilege also revokes
 -- any column grant, so the column grants below come after.
 REVOKE INSERT, UPDATE, DELETE ON
-    storage_delta, workspace_storage_account, inbox_storage,
+    storage_delta, workspace_storage_account, storage_global_base, inbox_storage,
     storage_legacy_share, storage_cohort_plan, workspace_deletion_charge,
     storage_deletion_debt, storage_debt_watermark, storage_footprint_trust,
     storage_filesystem_observation, storage_sweep_run, storage_containment_watermark
@@ -173,7 +173,7 @@ GRANT EXECUTE ON FUNCTION
 -- Adding a statement to the ingestion path means adding its privilege here;
 -- StorageRoleModelTest pins this set exactly.
 GRANT SELECT ON flyway_schema_history, inbox, message, attachment, inbox_storage,
-    workspace_storage_account, storage_delta, storage_deletion_debt, storage_debt_watermark,
+    workspace_storage_account, storage_global_base, storage_delta, storage_deletion_debt, storage_debt_watermark,
     storage_footprint_trust, storage_filesystem_observation,
     participant_workspace, storage_legacy_share, workspace_deletion_charge, storage_cohort_plan
     TO :"ingestion_role";
