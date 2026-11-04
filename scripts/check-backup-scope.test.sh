@@ -95,13 +95,15 @@ COPY public.storage_legacy_share (workspace_id, payload_limit_bytes, footprint_l
 \.
 COPY public.participant_workspace (workspace_id, cohort_id, place) FROM stdin;
 \.
+COPY public.account_deletion (account_id, stage) FROM stdin;
+\.
 CREATE TABLE public.message (id uuid);
 CREATE TABLE public.inbox (id uuid);
 SQL
 }
 control_plane_dump > "$WORK/good.sql"
 check "a control-plane-only dump passes (content tables schema-only)" 0 "$WORK/good.sql"
-for table in human_account human_identity beta_cohort beta_admission participant_workspace storage_legacy_share; do
+for table in human_account human_identity beta_cohort beta_admission participant_workspace storage_legacy_share account_deletion; do
   awk -v omitted="$table" '
     $0 ~ "^COPY public\\." omitted " " { skipping=1; next }
     skipping && $0 == "\\." { skipping=0; next }
@@ -220,6 +222,8 @@ COPY public.beta_admission (place) FROM stdin;
 COPY public.storage_legacy_share (workspace_id, payload_limit_bytes, footprint_limit_bytes) FROM stdin;
 \.
 COPY public.participant_workspace (workspace_id, place) FROM stdin;
+\.
+COPY public.account_deletion (account_id) FROM stdin;
 \.
 SQL
 check "COPY data rows that look like statements, quotes or terminators are data, not statements" 0 "$WORK/data-rows.sql"
@@ -419,7 +423,7 @@ printf 'PGDMP\x01\x0e\x00\x04\x08binary archive bytes' > "$WORK/archive.dump"
 check_says "a custom-format archive is refused with the pg_restore -l recipe" 1 "is a pg_dump archive, not plain SQL" "$WORK/archive.dump"
 
 # --- pg_restore -l style table lists -----------------------------------------
-printf 'workspace\nproject\napi_key\nexact_address_reservation\nflyway_schema_history\nhuman_account\nhuman_identity\nbeta_cohort\nbeta_admission\nparticipant_workspace\nstorage_legacy_share\n' > "$WORK/list.txt"
+printf 'workspace\nproject\napi_key\nexact_address_reservation\nflyway_schema_history\nhuman_account\nhuman_identity\nbeta_cohort\nbeta_admission\nparticipant_workspace\nstorage_legacy_share\naccount_deletion\n' > "$WORK/list.txt"
 check "a table list of exactly the control plane passes" 0 "$WORK/list.txt"
 # The documented recipe, run against a genuine `pg_restore -l` excerpt.
 cat > "$WORK/restore.list" <<'LIST'
@@ -437,6 +441,7 @@ cat > "$WORK/restore.list" <<'LIST'
 3125; 0 16383 TABLE DATA public beta_admission testinbox
 3127; 0 16385 TABLE DATA public participant_workspace testinbox
 3128; 0 16386 TABLE DATA public storage_legacy_share testinbox
+3129; 0 16387 TABLE DATA public account_deletion testinbox
 215; 1259 16391 TABLE public message testinbox
 LIST
 awk '/ TABLE DATA / {print $7}' "$WORK/restore.list" > "$WORK/from-restore.txt"
@@ -445,7 +450,7 @@ check_says "the raw pg_restore -l listing itself is refused, naming the recipe" 
 printf '3122; 0 16435 TABLE DATA public message testinbox\n' >> "$WORK/restore.list"
 awk '/ TABLE DATA / {print $7}' "$WORK/restore.list" > "$WORK/from-restore-content.txt"
 check "and refuses once message data appears in the archive listing" 1 "$WORK/from-restore-content.txt"
-printf 'public.workspace\nPUBLIC.PROJECT\n"api_key"\nexact_address_reservation\nflyway_schema_history\nHUMAN_ACCOUNT\npublic.human_identity\npublic.beta_cohort\n"beta_admission"\npublic.participant_workspace\npublic.storage_legacy_share\n' > "$WORK/list-forms.txt"
+printf 'public.workspace\nPUBLIC.PROJECT\n"api_key"\nexact_address_reservation\nflyway_schema_history\nHUMAN_ACCOUNT\npublic.human_identity\npublic.beta_cohort\n"beta_admission"\npublic.participant_workspace\npublic.storage_legacy_share\n"public"."account_deletion"\n' > "$WORK/list-forms.txt"
 check "schema prefixes, quoting and case in a list are normalised" 0 "$WORK/list-forms.txt"
 { cat "$WORK/list.txt"; printf 'inbox\n'; } > "$WORK/list-inbox.txt"
 check_says "a list including inbox data is refused" 1 "RETAINS CONTENT: inbox" "$WORK/list-inbox.txt"
@@ -574,6 +579,7 @@ INSERT INTO human_session (verifier, account_id, created_at, expires_at, last_se
 INSERT INTO beta_admission (cohort_id, place, account_id, workspace_id, project_id, admitted_at) VALUES ('beta-30', 1, '77777777-7777-7777-7777-777777777777', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', now());
 INSERT INTO participant_workspace (workspace_id, cohort_id, place, allocated_at) VALUES ('11111111-1111-1111-1111-111111111111', 'beta-30', 1, now());
 INSERT INTO storage_legacy_share VALUES ('88888888-8888-8888-8888-888888888888',134217728,268435456);
+INSERT INTO account_deletion (account_id, stage, requested_at, stage_changed_at, erased_at) VALUES ('99999999-9999-9999-9999-999999999999', 'ERASED', now(), now(), now());
 INSERT INTO api_key (id, workspace_id, project_id, key_hash, scopes, created_at, created_by_human_account_id) VALUES ('33333333-3333-3333-3333-333333333333', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', repeat('a', 64), ARRAY['inboxes:write'], now(), '77777777-7777-7777-7777-777777777777');
 INSERT INTO exact_address_reservation (id, workspace_id, local_part, inbox_id, status, reserved_at) VALUES ('44444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', 'qa', '55555555-5555-5555-5555-555555555555', 'ACTIVE', now());
 INSERT INTO inbox (id, workspace_id, project_id, address, address_mode, state, created_at, expires_at) VALUES ('55555555-5555-5555-5555-555555555555', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'qa@inbox.testinbox.local', 'EXACT', 'ACTIVE', now(), now() + interval '1 hour');

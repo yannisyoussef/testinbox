@@ -38,6 +38,7 @@ class HumanAccountEnvironmentTest {
             email.verificationKeyBase64 shouldBe ""
             email.smtp.username shouldBe ""
             email.smtp.password shouldBe ""
+            email.smtp.replyTo shouldBe ""
         }
     }
 
@@ -55,6 +56,7 @@ class HumanAccountEnvironmentTest {
                 "TESTINBOX_ACCOUNTS_EMAIL_SMTP_USERNAME" to "fixture",
                 "TESTINBOX_ACCOUNTS_EMAIL_SMTP_PASSWORD" to "fixture",
                 "TESTINBOX_ACCOUNTS_EMAIL_SMTP_FROM" to "login@example.invalid",
+                "TESTINBOX_ACCOUNTS_EMAIL_SMTP_REPLY_TO" to "ops@example.invalid",
             ),
         ).run { context ->
             context.getBean(HumanAccountProperties::class.java).canonicalOrigin shouldBe "https://console.example.invalid"
@@ -65,6 +67,7 @@ class HumanAccountEnvironmentTest {
             email.smtp.username shouldBe "fixture"
             email.smtp.password shouldBe "fixture"
             email.smtp.from shouldBe "login@example.invalid"
+            email.smtp.replyTo shouldBe "ops@example.invalid"
             SmtpLoginDelivery.validate(email.smtp)
         }
     }

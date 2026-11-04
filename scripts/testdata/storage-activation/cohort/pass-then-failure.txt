@@ -1,0 +1,2 @@
+cohort storage check: PASS; admissions unchanged
+Exception in thread "main" java.lang.IllegalStateException: operator file differs from installed pool

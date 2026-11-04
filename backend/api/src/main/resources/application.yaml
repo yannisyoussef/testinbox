@@ -60,6 +60,7 @@ testinbox:
         username: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_USERNAME:}
         password: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_PASSWORD:}
         from: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_FROM:}
+        reply-to: ${TESTINBOX_ACCOUNTS_EMAIL_SMTP_REPLY_TO:}
   mail-domain: ${TESTINBOX_MAIL_DOMAIN:testinbox.local}
   default-ttl: 15m
   max-ttl: 24h

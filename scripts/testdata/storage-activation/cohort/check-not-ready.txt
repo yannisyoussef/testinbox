@@ -1,0 +1,3 @@
+Exception in thread "main" java.lang.IllegalStateException: cohort storage is not ready
+	at email.testinbox.api.CohortBudgetCommand.run(CohortBudgetCommand.kt:104)
+	at email.testinbox.api.ApiApplicationKt.main(ApiApplication.kt:19)

@@ -1878,6 +1878,11 @@ Until a re-issued record carries these, the bounds are planning values.
   below level 1 stamps the monotone `storage_containment_watermark`.
 - `DeploymentSafety` refuses inconsistent declarations, refuses I-C
   violations, and refuses `ALL` in production.
+  > **Amended 2026-10-30 by owner decision (TI-DELIVERY-002b):** the
+  > production `ALL` refusal is now conditional on the existing
+  > qualification, capacity, node, observation and cohort-reservation
+  > requirements; `TENANT_LIMITS` stays refused. See "Amendment note
+  > (2026-10-30, TI-DELIVERY-002b)" below.
 - The half-open rule for an ambiguous upload is amended on 2026-10-19
   (issue #102): see "Amendments to this ADR (effective 2026-10-19)".
 
@@ -1942,6 +1947,13 @@ implemented both of the following, as separate scoped decisions
 - **(A)** the envelope-order oracle mitigation;
 - **(B)** the single-sender amplification bound.
 
+> **Amended 2026-10-30 by owner decision (TI-DELIVERY-002b):** production
+> `ALL` is permitted only when the existing qualification, capacity, node,
+> observation and cohort-reservation requirements are satisfied (ADR-037
+> decided (A) and (B) for the bounded beta); there is no unchecked override,
+> and `TENANT_LIMITS` stays refused. See "Amendment note (2026-10-30,
+> TI-DELIVERY-002b)" below.
+
 A dedicated production MinIO, and production role separation, are also
 prerequisites.
 
@@ -1989,6 +2001,67 @@ match, is unchanged and mandatory.
 - Under `OFF`, a rollback to an earlier artifact stays supported: the V8–V10
   definer functions and triggers keep the ledger exact, and a pre-V10
   artifact cannot mark trust.
+
+## Amendment note (2026-10-30, TI-DELIVERY-002b): the production `ALL` refusal becomes conditional
+
+**Authority: owner decision, TI-DELIVERY-002b instruction (2026-10-30)**,
+quoted exactly:
+
+> "Prepare the smallest reviewed change permitting production ALL enforcement only when the existing qualification, capacity, node, observation and cohort-reservation requirements are satisfied. Keep TENANT_LIMITS refused unless separately justified and authorized. Do not replace the production refusal with an unchecked override."
+
+This note implements that decision; it is not a reinterpretation of the
+earlier text, which said production `ALL` is refused, and the dated notes at
+§A2.3 and §A2.7 point here. The consolidated TI-DELIVERY-002 release review
+reviews the implementation. It changes what §A2.3 ("`DeploymentSafety` …
+refuses `ALL` in production") and §A2.7 state about **how** the refusal is
+enforced, not **whether** production may run `ALL` today: no shipped
+record satisfies it, so production still cannot start `ALL`.
+
+- **Why the refusal existed.** §A2.7 refused `ALL` in production until the
+  owner had decided and implemented (A) the envelope-order oracle mitigation
+  and (B) the single-sender amplification bound. ADR-037 (accepted
+  2026-10-29) decided both for the bounded beta — full-envelope pricing
+  (§5) and non-overcommitted per-workspace shares (§1–§2) — and they are
+  implemented and tested (`docs/delivery/ti-delivery-002/STORAGE-READINESS.md`).
+  ADR-037 ties lifting the refusal to "every explicit mitigation and
+  required qualification record [being] independently reviewable and
+  tested".
+- **The rule now.** `DeploymentSafety` refuses `ALL` in production unless,
+  in addition to everything any non-`OFF` deployment already needs
+  (declarations, I-C, the node inventory, an eligible matching record), all
+  of these hold at startup (`ProductionAllConditions`):
+  1. a record **shipped in the artifact** (never the lab file) matches the
+     declared identity and the running upload implementation element by
+     element, is enablement-eligible, has `platformClass`
+     `production-host` (§18 gate 7a: the production host's own
+     combination), carries the §A2.4 `filesystem` elements (uuid, type,
+     mount options, mount source, the measured *O_max*, the E7 inode
+     figure) and E1–E11 as `PASS`, and does not contradict its own
+     `host.filesystemType`/`host.mountOptions`;
+  2. the declared *O_max* is at least the record's measured one;
+  3. the process declares its storage node identity;
+  4. the declarations hold all thirty participant shares, the worst full
+     envelope and finalization within *G*, *G_F* and *C_fs* **before** any
+     legacy share or allowance (a necessary condition only), and the cohort
+     binding is computable.
+
+  Each unmet condition is named in the startup refusal. There is no flag,
+  variable or profile that skips any of them.
+- **What stays a runtime gate.** The reserved, approved, matching cohort
+  pool and its exact legacy inventory, trusted counts, the monitor
+  observation, live node compatibility, role separation and a dedicated
+  production MinIO cannot be known by a starting process. Admission reads the
+  first five through the readiness collaborator and answers
+  `CAPACITY_UNAVAILABLE` while any is missing; `storage-budget check` and
+  gate F (privileges, observation, filesystem identity) prove them, and §A2.7's
+  "dedicated production MinIO and production role separation" remain Ops
+  prerequisites evidenced there.
+- **Unchanged.** `TENANT_LIMITS` is refused in production whatever is
+  declared (§A2.5; ADR-037 "never permit TENANT_LIMITS in production"). `OFF`
+  and every non-production environment behave exactly as before. No record is
+  added by this change: the Ops-evidenced `production-host` record for
+  `adr035-presigned-put-v2` ships in a later pull request
+  (`docs/dev/production.md`, "Storage activation").
 
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
