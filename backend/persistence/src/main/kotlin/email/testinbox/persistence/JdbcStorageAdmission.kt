@@ -12,9 +12,12 @@ import email.testinbox.domain.InboxId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.storage.StorageUsage
 import org.springframework.jdbc.core.simple.JdbcClient
+import org.springframework.jdbc.core.support.AbstractSqlTypeValue
 import org.springframework.transaction.support.TransactionOperations
 import org.springframework.transaction.support.TransactionSynchronizationManager
+import java.sql.Connection
 import java.sql.SQLException
+import java.sql.Types
 import java.time.Duration
 import java.util.UUID
 
@@ -113,7 +116,14 @@ open class JdbcStorageAdmission(
     private fun configureTransaction() {
         jdbc.sql("SET TRANSACTION ISOLATION LEVEL READ COMMITTED").update()
         // SET takes no bind parameters. Every value below is a validated Long, never input.
-        jdbc.sql("SET LOCAL synchronous_commit = on; SET LOCAL lock_timeout = '${lockTimeout.toMillis()}ms'").update()
+        // Gate D prototype (WS-D2, for app-team review): the snapshot is ONE fixed SQL text with one array bind per id
+        // list, so pgjdbc server-prepares it and PostgreSQL keeps one generic plan instead of replanning the
+        // ~15-join UNION on every admission (measured: planning was about half of the statement under the lock).
+        jdbc
+            .sql(
+                "SET LOCAL synchronous_commit = on; SET LOCAL lock_timeout = '${lockTimeout.toMillis()}ms'; " +
+                    "SET LOCAL plan_cache_mode = force_generic_plan",
+            ).update()
         jdbc
             .sql(
                 "SET LOCAL statement_timeout = '${lockTimeout.plus(STATEMENT_MARGIN).toMillis()}ms'; " +
@@ -156,8 +166,14 @@ open class JdbcStorageAdmission(
      */
     val snapshotStatement: String =
         """
-        WITH ws AS (SELECT DISTINCT unnest(ARRAY[:workspaces]::uuid[]) AS id),
-             ib AS (SELECT DISTINCT unnest(ARRAY[:inboxes]::uuid[]) AS id),
+        WITH ws AS (SELECT DISTINCT unnest(CAST(:workspaces AS uuid[])) AS id),
+             ib AS (SELECT DISTINCT unnest(CAST(:inboxes AS uuid[])) AS id),
+             -- Each global sum is ONE scan of its table, bytes and objects together
+             -- (referenced twice, so materialized once), still in the same statement.
+             g_base AS ($GLOBAL_BASE_SQL),
+             g_delta AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(objects), 0) AS objects FROM storage_delta),
+             g_reserved AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(cardinality(object_keys)), 0) AS objects
+                              FROM storage_reservation),
              -- Each sum is aggregated once for the involved ids, not
              -- once per id: the statement's cost must not grow with
              -- the recipient count times the ledger backlog.
@@ -176,12 +192,10 @@ open class JdbcStorageAdmission(
         -- Objects beside bytes (TI-STORAGE-006E): the footprint bound is
         -- applied by the caller, from the same snapshot.
         SELECT 'GLOBAL' AS scope, NULL::uuid AS id, NULL::uuid AS owner, now() AS t0,
-               (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
-             + (SELECT coalesce(sum(bytes), 0) FROM storage_delta) AS committed,
-               (SELECT coalesce(sum(bytes), 0) FROM storage_reservation) AS reserved,
-               (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)
-             + (SELECT coalesce(sum(objects), 0) FROM storage_delta) AS committed_objects,
-               (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation) AS reserved_objects,
+               (SELECT bytes FROM g_base) + (SELECT bytes FROM g_delta) AS committed,
+               (SELECT bytes FROM g_reserved) AS reserved,
+               (SELECT objects FROM g_base) + (SELECT objects FROM g_delta) AS committed_objects,
+               (SELECT objects FROM g_reserved) AS reserved_objects,
                NULL::bigint AS payload_limit, NULL::bigint AS footprint_limit,
                NULL::numeric AS cleanup_bytes,NULL::numeric AS cleanup_objects,
                NULL::boolean AS inactive,
@@ -225,8 +239,8 @@ open class JdbcStorageAdmission(
         val rows =
             jdbc
                 .sql(snapshotStatement)
-                .param("workspaces", scope.workspaceIds.map { it.value })
-                .param("inboxes", scope.inboxIds.map { it.value })
+                .param("workspaces", uuidArray(scope.workspaceIds.map { it.value }), Types.ARRAY)
+                .param("inboxes", uuidArray(scope.inboxIds.map { it.value }), Types.ARRAY)
                 .query { rs, _ -> snapshotRow(rs) }
                 .list()
         val global = rows.single { it.scope == "GLOBAL" }
@@ -248,6 +262,16 @@ open class JdbcStorageAdmission(
             inactiveWorkspaces = rows.filter { it.scope == "WORKSPACE" && it.inactive }.mapTo(HashSet()) { WorkspaceId(it.id!!) },
         )
     }
+
+    /** One `uuid[]` bind: the statement text no longer depends on how many ids an event carries. */
+    private fun uuidArray(ids: List<UUID>): AbstractSqlTypeValue =
+        object : AbstractSqlTypeValue() {
+            override fun createTypeValue(
+                connection: Connection,
+                sqlType: Int,
+                typeName: String?,
+            ): Any = connection.createArrayOf("uuid", ids.toTypedArray())
+        }
 
     private fun snapshotRow(rs: java.sql.ResultSet): SnapshotRow =
         SnapshotRow(
@@ -350,6 +374,13 @@ open class JdbcStorageAdmission(
         /** ADR-035's advisory class and ids: (35, 1) admission, (35, 2) ledger (`JdbcStorageLedger`). */
         const val STORAGE_LOCK_CLASS = 35
         const val ADMISSION_LOCK = 1
+
+        /**
+         * Σbase over every workspace, one scan for bytes and objects. Code-only variant: still linear in the
+         * workspace population (see the V24 prototype for the compactor-maintained global base row).
+         */
+        private const val GLOBAL_BASE_SQL =
+            "SELECT coalesce(sum(base_bytes), 0) AS bytes, coalesce(sum(base_objects), 0) AS objects FROM workspace_storage_account"
 
         /** How much longer than the lock timeout any one T1 statement may run. */
         private val STATEMENT_MARGIN: Duration = Duration.ofSeconds(5)
