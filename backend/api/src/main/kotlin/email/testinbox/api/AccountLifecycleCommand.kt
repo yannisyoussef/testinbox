@@ -56,7 +56,12 @@ object AccountLifecycleCommand {
     /** Completed: settled, active, erased, reconciled, or (process-deletions/status) nothing overdue. */
     const val EXIT_DONE = 0
 
-    /** Refused, unknown account, missing authority or invalid credentials: nothing was changed. */
+    /**
+     * Refused, unknown account, missing authority or invalid credentials: nothing was changed. One
+     * exception: `delete` commits DELETION_PENDING (its `event=account.lifecycle ... to=DELETION_PENDING`
+     * line is printed) before its first workflow step; if a concurrent change refuses that step, the
+     * command exits 1 although the state change committed. That output line is the signal.
+     */
     const val EXIT_REFUSED = 1
     const val EXIT_USAGE = 2
 
@@ -351,6 +356,7 @@ object AccountLifecycleCommand {
         return when (advance(command.account, ops, out)) {
             Advance.ERASED -> EXIT_DONE
             Advance.PENDING, Advance.OVERDUE -> EXIT_PENDING
+            // DELETION_PENDING has already committed here (see EXIT_REFUSED).
             Advance.REFUSED -> EXIT_REFUSED
             Advance.ANOMALY -> EXIT_ANOMALY
         }
