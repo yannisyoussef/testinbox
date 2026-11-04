@@ -563,7 +563,7 @@ Exit codes:
 | Code | Meaning |
 |---|---|
 | `0` | done. For `process-deletions` and `status` without an account: nothing is overdue or anomalous (deletions still within the threshold are normal) |
-| `1` | refused, unknown account, or missing authority; nothing changed |
+| `1` | refused, unknown account, or missing authority; nothing changed. Exception: `delete` prints `to=DELETION_PENDING` (committed) before its first workflow step; if a concurrent change refuses that step, it exits `1` after the commit |
 | `2` | usage (including the removed `erase-identity`). The usage text starts with the preflight marker line |
 | `3` | applied, but draining or content pending; the timer (or a re-run) continues it |
 | `4` | failed for another reason (a lock or statement timeout, a lost connection, a deadlock abort). Whether it committed is unknown, so run `status` first. The message names only the exception type. For `process-deletions`: at least one deletion's step failed (`outcome=FAILED`); the others were still advanced |
