@@ -728,6 +728,7 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
                 "storage_clock_episode" to PROTOCOL,
                 "storage_admission_latch" to setOf("SELECT", "INSERT"),
                 "workspace_storage_account" to READ,
+                "storage_global_base" to READ,
                 "storage_delta" to READ,
                 "storage_deletion_debt" to READ,
                 "storage_debt_watermark" to READ,
