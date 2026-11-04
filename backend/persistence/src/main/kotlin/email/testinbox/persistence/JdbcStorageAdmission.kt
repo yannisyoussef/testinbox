@@ -298,10 +298,10 @@ open class JdbcStorageAdmission(
             t0 = checkNotNull(Timestamps.fromDb(rs, "t0")),
             usage =
                 StorageUsage(
-                    exactLong(rs.getBigDecimal("committed")),
+                    exactLong(checkNotNull(rs.getBigDecimal("committed")) { "the global storage base row is missing (V24)" }),
                     exactLong(rs.getBigDecimal("reserved")),
                     // Counts can only drift negative through corruption; a bound cannot carry that.
-                    maxOf(0L, exactLong(rs.getBigDecimal("committed_objects"))),
+                    maxOf(0L, exactLong(checkNotNull(rs.getBigDecimal("committed_objects")) { "the global storage base row is missing (V24)" })),
                     maxOf(0L, exactLong(rs.getBigDecimal("reserved_objects"))),
                 ),
         )
@@ -376,11 +376,12 @@ open class JdbcStorageAdmission(
         const val ADMISSION_LOCK = 1
 
         /**
-         * Σbase over every workspace, one scan for bytes and objects. Code-only variant: still linear in the
-         * workspace population (see the V24 prototype for the compactor-maintained global base row).
+         * Σbase over every workspace, as ONE row (V24 prototype): kept by statement triggers on
+         * workspace_storage_account in the compactor's own transaction, never written by T1 or T2. A missing row
+         * reads as NULL and fails T1 closed (see [snapshotRow]); it never reads as 0.
          */
         private const val GLOBAL_BASE_SQL =
-            "SELECT coalesce(sum(base_bytes), 0) AS bytes, coalesce(sum(base_objects), 0) AS objects FROM workspace_storage_account"
+            "SELECT base_bytes AS bytes, base_objects AS objects FROM storage_global_base WHERE id = 1"
 
         /** How much longer than the lock timeout any one T1 statement may run. */
         private val STATEMENT_MARGIN: Duration = Duration.ofSeconds(5)
