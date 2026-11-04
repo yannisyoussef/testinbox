@@ -124,4 +124,95 @@ class QualificationRecordsTest {
             }
         assertThrows<QualificationRecordException> { QualificationRecords.load(loader) }.message shouldContain "ghost.json"
     }
+
+    /** The Amendment 2 elements a production record carries (TI-DELIVERY-002b); values are synthetic. */
+    private val filesystem =
+        """
+        "filesystem": {
+          "uuid": "00000000-0000-4000-8000-000000000000",
+          "type": "xfs",
+          "mountOptions": "rw,noatime",
+          "mountSource": "/dev/test-fixture-not-a-device",
+          "objectOverheadMaxBytes": 24576,
+          "metadataInodesMeasured": 50000,
+          "experiments": {${(1..11).joinToString(", ") { "\"E$it\": \"PASS\"" }}}
+        },
+        """.trimIndent()
+
+    private val production =
+        good
+            .replace("\"platformClass\": \"staging-host\"", "\"platformClass\": \"production-host\"")
+            .replace("\"enablementEligible\": true", "$filesystem\n  \"enablementEligible\": true")
+
+    @Test
+    fun `a record without filesystem elements still loads - and is never production evidence`() {
+        val record = QualificationRecords.parse(good)
+        record.filesystem shouldBe null
+        record.eligibility().eligible shouldBe true
+        record.productionGaps().joinToString() shouldContain "carries no filesystem elements"
+    }
+
+    @Test
+    fun `the Amendment 2 filesystem elements parse element by element, and a complete production record has no gap`() {
+        val record = QualificationRecords.parse(production)
+        val fs = checkNotNull(record.filesystem)
+        fs.uuid shouldBe "00000000-0000-4000-8000-000000000000"
+        fs.type shouldBe "xfs"
+        fs.mountSource shouldBe "/dev/test-fixture-not-a-device"
+        fs.objectOverheadMaxBytes shouldBe 24576
+        fs.metadataInodesMeasured shouldBe 50000
+        fs.experiments.keys shouldBe (1..11).map { "E$it" }.toSet()
+        record.eligibility().eligible shouldBe true
+        record.productionGaps() shouldBe emptyList()
+    }
+
+    @Test
+    fun `malformed filesystem elements fail the whole record rather than reading as qualified`() {
+        fun broken(transform: (String) -> String) =
+            assertThrows<QualificationRecordException> { QualificationRecords.parse(transform(production), "fixture.json") }
+        broken { it.replace("\"uuid\": \"00000000-0000-4000-8000-000000000000\",", "") }.message shouldContain
+            "filesystem: 'uuid' is required"
+        broken { it.replace("\"mountSource\": \"/dev/test-fixture-not-a-device\"", "\"mountSource\": \"\"") }
+            .message shouldContain "mountSource"
+        broken { it.replace("\"objectOverheadMaxBytes\": 24576", "\"objectOverheadMaxBytes\": \"24576\"") }
+            .message shouldContain "objectOverheadMaxBytes"
+        broken { it.replace("\"metadataInodesMeasured\": 50000", "\"metadataInodesMeasured\": 1.5") }
+            .message shouldContain "metadataInodesMeasured"
+        broken { it.replace("\"E1\": \"PASS\"", "\"E1\": true") }.message shouldContain "experiments"
+        broken { it.replace("\"filesystem\": {", "\"filesystem\": \"not-an-object\", \"unused\": {") }
+            .message shouldContain "filesystem must be an object or null"
+    }
+
+    @Test
+    fun `absent measurements and missing experiments load, and are named as production gaps`() {
+        val partial =
+            QualificationRecords.parse(
+                production
+                    .replace("\"objectOverheadMaxBytes\": 24576,", "")
+                    .replace("\"metadataInodesMeasured\": 50000,", "\"metadataInodesMeasured\": null,")
+                    .replace("\"E9\": \"PASS\"", "\"E9\": \"FAIL\""),
+            )
+        val gaps = partial.productionGaps().joinToString()
+        gaps shouldContain "objectOverheadMaxBytes"
+        gaps shouldContain "metadataInodesMeasured (E7) is absent"
+        gaps shouldContain "experiments E9 are not recorded as PASS"
+    }
+
+    @Test
+    fun `no record shipped in this artifact can back production ALL - the Ops-evidenced v2 record does not exist yet`() {
+        // TI-DELIVERY-002b: the production rule is conditional, and this is what keeps it
+        // closed today. When the Ops-evidenced record ships, this test changes in that PR.
+        val records = QualificationRecords.load()
+        records.shouldNotBeEmpty()
+        for (record in records) {
+            val notProduction =
+                record.productionGaps().isNotEmpty() ||
+                    !record.eligibility().eligible ||
+                    record.uploadImplementationVersion != StorageProtocol.UPLOAD_IMPLEMENTATION_VERSION
+            notProduction shouldBe true
+            record.recordId.contains("fixture", ignoreCase = true) shouldBe false
+            record.evidenceReference.contains("fixture", ignoreCase = true) shouldBe false
+        }
+        records.none { it.platformClass == "production-host" } shouldBe true
+    }
 }

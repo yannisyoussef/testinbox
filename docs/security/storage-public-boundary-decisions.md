@@ -9,6 +9,12 @@ suite**.
 
 Until then the restriction is enforced, not merely documented:
 - `DeploymentSafety` refuses `ALL` in production.
+  > **Amended 2026-10-30 by owner decision (TI-DELIVERY-002b):** the refusal
+  > is now conditional: production `ALL` starts only when the existing
+  > qualification, capacity, node, observation and cohort-reservation
+  > requirements are satisfied, with no unchecked override; `TENANT_LIMITS`
+  > stays refused. Authority and the exact conditions: ADR-035, "Amendment
+  > note (2026-10-30, TI-DELIVERY-002b)".
 - Staging has no public MX record.
 - ADR-035 Amendment 2 §A2.7 makes both decisions activation prerequisites.
 
@@ -160,3 +166,10 @@ own-workspace diagnostics remain, and residual recipient inference under
 globally constrained conditions is explicit. Reservation proof also needs
 worst-case transient envelope and finalization headroom, not merely Σ shares
 ≤ G_F. Accepted decisions do not lift production ALL/TENANT_LIMITS refusals.
+
+> **Amended 2026-10-30 by owner decision (TI-DELIVERY-002b):** the owner has
+> since decided to permit production `ALL` only when the existing
+> qualification, capacity, node, observation and cohort-reservation
+> requirements are satisfied ("Do not replace the production refusal with an
+> unchecked override"); the production `TENANT_LIMITS` refusal is unchanged.
+> See ADR-035, "Amendment note (2026-10-30, TI-DELIVERY-002b)".

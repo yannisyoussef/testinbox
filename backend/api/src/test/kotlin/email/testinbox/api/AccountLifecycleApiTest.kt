@@ -77,6 +77,7 @@ class AccountLifecycleApiTest : ApiIntegrationTestBase() {
             RevokeAccountSessions(sessions, transactions),
             RevokeApiKey(JdbcApiKeyRepository(jdbc), Clock.systemUTC()),
             transactions,
+            Clock.systemUTC(),
         )
     }
 
@@ -125,6 +126,48 @@ class AccountLifecycleApiTest : ApiIntegrationTestBase() {
     private fun keyOf(response: HttpResponse<String>): String {
         response.statusCode() shouldBe 201
         return json.readTree(response.body())["key"].asText()
+    }
+
+    @Autowired lateinit var registry: io.micrometer.core.instrument.MeterRegistry
+
+    @Test
+    fun `while restore-quarantined a legacy key gets 401 counted RESTORE_QUARANTINED, and the gauge reports it`() {
+        fun gauge() = registry.get(email.testinbox.api.ops.RestoreQuarantineGauge.NAME).gauge().value()
+
+        fun quarantined() =
+            registry
+                .get("testinbox_api_key_auth_total")
+                .tag("outcome", "RESTORE_QUARANTINED")
+                .counter()
+                .count()
+        get("/v1/workspace").statusCode.value() shouldBe 200
+        gauge() shouldBe 0.0
+        val before = quarantined()
+        jdbc.sql("DELETE FROM lifecycle_restore_clearance").update()
+        try {
+            gauge() shouldBe 1.0
+            get("/v1/workspace").statusCode.value() shouldBe 401
+            quarantined() shouldBe before + 1
+        } finally {
+            // V22's lifecycle_restore_clearance_credentials barrier rightly refuses re-recording the
+            // clearance while managed keys are live (only restore-reconcile may, after revoking them).
+            // This fixture faked the quarantine, so it restores the row with only that barrier off, in
+            // one transaction; the authority trigger still applies (the test role is the owner).
+            jdbc
+                .sql(
+                    """
+                    DO $$
+                    BEGIN
+                        ALTER TABLE lifecycle_restore_clearance DISABLE TRIGGER lifecycle_restore_clearance_credentials;
+                        INSERT INTO lifecycle_restore_clearance (id) VALUES (1) ON CONFLICT DO NOTHING;
+                        ALTER TABLE lifecycle_restore_clearance ENABLE TRIGGER lifecycle_restore_clearance_credentials;
+                    END
+                    $$
+                    """.trimIndent(),
+                ).update()
+        }
+        gauge() shouldBe 0.0
+        get("/v1/workspace").statusCode.value() shouldBe 200
     }
 
     @Test

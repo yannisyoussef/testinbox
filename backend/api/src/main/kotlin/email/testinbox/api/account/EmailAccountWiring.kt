@@ -38,6 +38,8 @@ class LoginSmtpProperties(
     val username: String = "",
     val password: String = "",
     val from: String = "",
+    /** Optional `Reply-To`; blank sends none. Must be a single well-formed address. */
+    val replyTo: String = "",
 ) {
     override fun toString(): String = "LoginSmtpProperties([REDACTED])"
 }

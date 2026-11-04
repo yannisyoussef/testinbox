@@ -187,12 +187,14 @@ class StorageEnforcementSafetyTest {
     }
 
     @Test
-    fun `ALL is refused in production until the envelope-order mitigation exists, and allowed elsewhere`() {
-        // Contract §11.6 (TI-STORAGE-006E PR D): a code gate, not a procedure.
+    fun `ALL is refused in production without a production-qualified record, and allowed elsewhere`() {
+        // Contract §11.6 (TI-STORAGE-006E PR D): a code gate, not a procedure. Since
+        // TI-DELIVERY-002b the gate is conditional (ProductionAllSafetyTest); a record
+        // eligible for staging is still never production evidence.
         val all = complete.copy(enforcement = StorageEnforcement.ALL)
-        DeploymentSafety
-            .validate(deployed.copy(environment = ProductionPolicy.ENVIRONMENT, storage = all))
-            .map { it.setting } shouldContain "testinbox.storage.enforcement"
+        val found = DeploymentSafety.validate(deployed.copy(environment = ProductionPolicy.ENVIRONMENT, storage = all))
+        found.map { it.setting } shouldContain "testinbox.storage.enforcement"
+        found.single { it.setting == "testinbox.storage.enforcement" }.problem shouldContain "is ALL in production"
         violations(all).map { it.setting } shouldNotContain "testinbox.storage.enforcement"
     }
 
