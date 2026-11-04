@@ -1,0 +1,3642 @@
+{
+  "schemaVersion" : 1,
+  "gitSha" : "c10dd3d50ffee7f226caee453ae9e5e3379852ae",
+  "timestamp" : "2026-11-03T16:31:09.406652495Z",
+  "architecture" : "amd64",
+  "kernel" : "Linux version 6.8.0-147-generic (buildd@lcy02-amd64-081) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026",
+  "hostClass" : "staging-host vmi2932906 (Contabo VPS, 8 vCPU, 23 GiB)",
+  "postgresVersion" : "PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+  "jvmVersion" : "25.0.3+9-LTS",
+  "harness" : {
+    "measures" : "The database protocol only: write slot, T1 (admission lock, one-statement snapshot, reservation insert), the fence rows, T2 (reservations FOR UPDATE, inboxes FOR KEY SHARE, message and attachment rows through JdbcMessageRepository.appendVisible so the ledger triggers run, pg_notify, reservations consumed), retention (ExpireInboxes.sweep hard-deleting one expired inbox per sweep) and compaction on its interval. Uploads are an in-memory stub whose fenced PUT is Stored instantly; T_put and the storage backend are qualified separately (ADR-035 §9a).",
+    "arrivals" : "POISSON",
+    "durationSeconds" : 30,
+    "warmupSeconds" : 3,
+    "expectedRate" : 260.0,
+    "referenceMode" : "NO_LOCK",
+    "recipientMix" : "1:60,3:25,10:12,50:3",
+    "bytesPerCopy" : 24576,
+    "slots" : 16,
+    "slotsPerWorkspace" : 4,
+    "compactionIntervalSeconds" : 5,
+    "retentionMessagesPerInbox" : 200,
+    "inboxesPerWorkspace" : 10,
+    "sustainedTolerance" : 0.995,
+    "seed" : 35,
+    "rates" : [ 260.0, 520.0 ],
+    "concurrency" : [ 1, 10, 25, 50, 100 ],
+    "workspaces" : [ 200, 10000 ],
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "target" : {
+      "kind" : "remote",
+      "databaseName" : "testinbox_bench_gate"
+    },
+    "lockWaitDefinition" : "lockWait is StorageProtocolMetrics.lockWait as GuardedStorage reports it: the whole admission call (lock wait, snapshot, decision, insert, commit), NOT the pg_advisory_xact_lock wait alone."
+  },
+  "safety" : {
+    "databaseName" : "testinbox_bench_gate",
+    "createdByHarness" : true,
+    "tenantRowCountsAtStart" : {
+      "workspace" : 0,
+      "inbox" : 0,
+      "message" : 0
+    },
+    "acknowledgementVariable" : "TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK"
+  },
+  "scenarios" : [ {
+    "name" : "chosen-ws200-c1-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 953,
+      "meanRows" : 1345.4060860440713,
+      "maxRows" : 8352
+    },
+    "concurrency" : 1,
+    "offeredRate" : 260.0,
+    "achievedRate" : 32.53418788303044,
+    "durationSeconds" : 239.74780093,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 209751.647084,
+    "copiesCommitted" : 31659,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 112819.89564,
+        "p95Ms" : 198807.820439,
+        "p99Ms" : 207275.519613,
+        "maxMs" : 209735.173543
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 13.775477,
+        "p95Ms" : 20.009747,
+        "p99Ms" : 25.811542,
+        "maxMs" : 60.575388
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 6.534099,
+        "p95Ms" : 30.533496,
+        "p99Ms" : 103.244477,
+        "maxMs" : 202.085011
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 112824.117212,
+        "p95Ms" : 198811.392592,
+        "p99Ms" : 207307.916631,
+        "maxMs" : 209751.647084
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 27.513198,
+        "p95Ms" : 62.481454,
+        "p99Ms" : 103.988747,
+        "maxMs" : 128.414756
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 13.795403,
+        "p95Ms" : 20.04411,
+        "p99Ms" : 25.856667,
+        "maxMs" : 60.613128
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.257911,
+        "p95Ms" : 0.799959,
+        "p99Ms" : 1.389188,
+        "maxMs" : 8.377943
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.02196661180175,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws200-c1-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 785,
+      "meanRows" : 1533.2050955414013,
+      "maxRows" : 8754
+    },
+    "concurrency" : 1,
+    "offeredRate" : 260.0,
+    "achievedRate" : 39.508714139453026,
+    "durationSeconds" : 197.424800323,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 167428.646477,
+    "copiesCommitted" : 31842,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 82395.827389,
+        "p95Ms" : 156906.337693,
+        "p99Ms" : 165634.751519,
+        "maxMs" : 167423.936866
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 8.078105,
+        "p95Ms" : 17.426015,
+        "p99Ms" : 22.290596,
+        "maxMs" : 56.067111
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 6.215486,
+        "p95Ms" : 27.51187,
+        "p99Ms" : 100.270727,
+        "maxMs" : 198.1538
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 82401.482441,
+        "p95Ms" : 156925.519999,
+        "p99Ms" : 165641.272262,
+        "maxMs" : 167428.646477
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 24.130036,
+        "p95Ms" : 52.454814,
+        "p99Ms" : 69.679918,
+        "maxMs" : 102.310884
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 8.098282,
+        "p95Ms" : 17.474275,
+        "p99Ms" : 22.31936,
+        "maxMs" : 56.086567
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.22567,
+        "p95Ms" : 0.669647,
+        "p99Ms" : 1.249657,
+        "maxMs" : 9.306653
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.024178606566513,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws200-c10-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 455,
+      "meanRows" : 2264.4307692307693,
+      "maxRows" : 9682
+    },
+    "concurrency" : 10,
+    "offeredRate" : 260.0,
+    "achievedRate" : 68.11682978297165,
+    "durationSeconds" : 114.509145902,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 84512.992056,
+    "copiesCommitted" : 32109,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 38668.678168,
+        "p95Ms" : 79560.334706,
+        "p99Ms" : 83627.632281,
+        "maxMs" : 84503.521597
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 127.89647,
+        "p95Ms" : 181.620889,
+        "p99Ms" : 216.305896,
+        "maxMs" : 308.948229
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 6.917152,
+        "p95Ms" : 30.44944,
+        "p99Ms" : 107.629977,
+        "maxMs" : 228.018091
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 38699.441912,
+        "p95Ms" : 79570.498037,
+        "p99Ms" : 83633.077709,
+        "maxMs" : 84512.992056
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 25.394478,
+        "p95Ms" : 55.638867,
+        "p99Ms" : 69.545151,
+        "maxMs" : 93.71056
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 127.955049,
+        "p95Ms" : 181.637179,
+        "p99Ms" : 216.322337,
+        "maxMs" : 308.964368
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.259263,
+        "p95Ms" : 0.819707,
+        "p99Ms" : 1.435204,
+        "maxMs" : 12.312151
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.023459275706811,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws200-c10-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 169,
+      "meanRows" : 5385.076923076923,
+      "maxRows" : 12626
+    },
+    "concurrency" : 10,
+    "offeredRate" : 260.0,
+    "achievedRate" : 182.63604474568325,
+    "durationSeconds" : 42.707889403,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 12711.735557,
+    "copiesCommitted" : 31713,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 5226.420276,
+        "p95Ms" : 11824.200898,
+        "p99Ms" : 12484.151154,
+        "maxMs" : 12646.909889
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 23.852648,
+        "p95Ms" : 53.037744,
+        "p99Ms" : 76.663242,
+        "maxMs" : 200.998175
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 9.975429,
+        "p95Ms" : 43.520298,
+        "p99Ms" : 137.372301,
+        "maxMs" : 413.864634
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 5260.757492,
+        "p95Ms" : 11842.704003,
+        "p99Ms" : 12513.099622,
+        "maxMs" : 12779.1766
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 73.692917,
+        "p95Ms" : 258.695764,
+        "p99Ms" : 407.765622,
+        "maxMs" : 434.911099
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 23.870882,
+        "p95Ms" : 53.066999,
+        "p99Ms" : 76.711031,
+        "maxMs" : 201.010947
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.21934,
+        "p95Ms" : 1.364563,
+        "p99Ms" : 3.67608,
+        "maxMs" : 17.618973
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 12.946615197568358,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws200-c25-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 511,
+      "meanRows" : 2073.5303326810176,
+      "maxRows" : 8844
+    },
+    "concurrency" : 25,
+    "offeredRate" : 260.0,
+    "achievedRate" : 60.601951820096346,
+    "durationSeconds" : 128.708725804,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 98712.571958,
+    "copiesCommitted" : 31236,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 45710.62588,
+        "p95Ms" : 93612.552122,
+        "p99Ms" : 97609.297601,
+        "maxMs" : 98905.136416
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 237.989077,
+        "p95Ms" : 343.853318,
+        "p99Ms" : 439.333337,
+        "maxMs" : 617.53501
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 7.368069,
+        "p95Ms" : 31.373996,
+        "p99Ms" : 106.8485,
+        "maxMs" : 197.008719
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 45746.730363,
+        "p95Ms" : 93622.810662,
+        "p99Ms" : 97620.954662,
+        "maxMs" : 98914.47737
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 28.097478,
+        "p95Ms" : 61.954417,
+        "p99Ms" : 81.709145,
+        "maxMs" : 100.413878
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 238.020547,
+        "p95Ms" : 343.867205,
+        "p99Ms" : 439.344348,
+        "maxMs" : 617.55114
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 37.129861,
+        "p95Ms" : 668.577166,
+        "p99Ms" : 1232.368348,
+        "maxMs" : 3033.367392
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.019696515437127,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws200-c25-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 178,
+      "meanRows" : 5318.786516853933,
+      "maxRows" : 14868
+    },
+    "concurrency" : 25,
+    "offeredRate" : 260.0,
+    "achievedRate" : 172.12282750280178,
+    "durationSeconds" : 45.316476107,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 15320.322261,
+    "copiesCommitted" : 31591,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 6790.022306,
+        "p95Ms" : 14015.093258,
+        "p99Ms" : 15083.709278,
+        "maxMs" : 15465.59798
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 42.642327,
+        "p95Ms" : 108.001118,
+        "p99Ms" : 148.918812,
+        "maxMs" : 374.191785
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 18.152249,
+        "p95Ms" : 76.527892,
+        "p99Ms" : 213.775911,
+        "maxMs" : 556.831074
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 6827.693054,
+        "p95Ms" : 14043.872753,
+        "p99Ms" : 15118.665979,
+        "maxMs" : 15470.487891
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 271.117148,
+        "p95Ms" : 1556.227616,
+        "p99Ms" : 1896.125801,
+        "maxMs" : 1934.025019
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 42.671833,
+        "p95Ms" : 108.017148,
+        "p99Ms" : 148.937277,
+        "maxMs" : 374.219285
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 12.15666,
+        "p95Ms" : 232.444128,
+        "p99Ms" : 428.829977,
+        "maxMs" : 751.750825
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 12.510116938785771,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws200-c50-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 554,
+      "meanRows" : 1911.4837545126354,
+      "maxRows" : 9342
+    },
+    "concurrency" : 50,
+    "offeredRate" : 260.0,
+    "achievedRate" : 55.89205974773303,
+    "durationSeconds" : 139.429465208,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7793,
+    "completionRatio" : 0.9991025641025642,
+    "terminalLagMs" : 109433.311362,
+    "copiesCommitted" : 30097,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7793,
+        "p50Ms" : 54939.847964,
+        "p95Ms" : 104959.568695,
+        "p99Ms" : 108669.960955,
+        "maxMs" : 111564.386448
+      },
+      "t1Transaction" : {
+        "samples" : 7793,
+        "p50Ms" : 257.506795,
+        "p95Ms" : 373.093214,
+        "p99Ms" : 449.411485,
+        "maxMs" : 636.225941
+      },
+      "t2" : {
+        "samples" : 7793,
+        "p50Ms" : 7.562489,
+        "p95Ms" : 32.611855,
+        "p99Ms" : 112.576103,
+        "maxMs" : 364.604147
+      },
+      "event" : {
+        "samples" : 7793,
+        "p50Ms" : 54983.852936,
+        "p95Ms" : 104974.915856,
+        "p99Ms" : 108674.24712,
+        "maxMs" : 111568.259694
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 30.971093,
+        "p95Ms" : 63.283862,
+        "p99Ms" : 80.065021,
+        "maxMs" : 112.404306
+      },
+      "lockWait" : {
+        "samples" : 7793,
+        "p50Ms" : 257.544153,
+        "p95Ms" : 373.114423,
+        "p99Ms" : 449.429869,
+        "maxMs" : 636.249043
+      },
+      "slotWait" : {
+        "samples" : 7793,
+        "p50Ms" : 58.795667,
+        "p95Ms" : 2906.324402,
+        "p99Ms" : 5493.947084,
+        "maxMs" : 9871.478591
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.021342029501497,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 7,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 7
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 7
+  }, {
+    "name" : "reference-ws200-c50-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 194,
+      "meanRows" : 4773.4639175257735,
+      "maxRows" : 12762
+    },
+    "concurrency" : 50,
+    "offeredRate" : 260.0,
+    "achievedRate" : 157.56934409918392,
+    "durationSeconds" : 49.502014777,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 19505.860931,
+    "copiesCommitted" : 31859,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 12943.216006,
+        "p95Ms" : 18979.790649,
+        "p99Ms" : 19461.513851,
+        "maxMs" : 20240.066119
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 45.656434,
+        "p95Ms" : 135.371164,
+        "p99Ms" : 202.545595,
+        "maxMs" : 375.141585
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 18.064152,
+        "p95Ms" : 91.88891,
+        "p99Ms" : 242.242186,
+        "maxMs" : 1225.207464
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 12996.250317,
+        "p95Ms" : 19006.732966,
+        "p99Ms" : 19498.105841,
+        "maxMs" : 20255.364909
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 4279.570909,
+        "p95Ms" : 4966.005271,
+        "p99Ms" : 5124.323407,
+        "maxMs" : 5209.549463
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 45.663497,
+        "p95Ms" : 135.396452,
+        "p99Ms" : 202.579788,
+        "maxMs" : 375.163025
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 47.222381,
+        "p95Ms" : 919.652964,
+        "p99Ms" : 1682.831623,
+        "maxMs" : 3608.652203
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 11.488873151654987,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws200-c100-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 489,
+      "meanRows" : 2213.8732106339467,
+      "maxRows" : 10272
+    },
+    "concurrency" : 100,
+    "offeredRate" : 260.0,
+    "achievedRate" : 62.781929254754516,
+    "durationSeconds" : 123.108673017,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7729,
+    "completionRatio" : 0.990897435897436,
+    "terminalLagMs" : 93112.519171,
+    "copiesCommitted" : 31760,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7729,
+        "p50Ms" : 44762.542393,
+        "p95Ms" : 88120.050317,
+        "p99Ms" : 92233.85641,
+        "maxMs" : 94847.160263
+      },
+      "t1Transaction" : {
+        "samples" : 7729,
+        "p50Ms" : 230.281974,
+        "p95Ms" : 336.504752,
+        "p99Ms" : 428.472244,
+        "maxMs" : 566.353522
+      },
+      "t2" : {
+        "samples" : 7729,
+        "p50Ms" : 6.08748,
+        "p95Ms" : 25.48282,
+        "p99Ms" : 93.217551,
+        "maxMs" : 180.566661
+      },
+      "event" : {
+        "samples" : 7729,
+        "p50Ms" : 44788.891687,
+        "p95Ms" : 88128.742099,
+        "p99Ms" : 92277.190509,
+        "maxMs" : 94853.828785
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 29.690627,
+        "p95Ms" : 64.678569,
+        "p99Ms" : 87.923814,
+        "maxMs" : 113.508329
+      },
+      "lockWait" : {
+        "samples" : 7729,
+        "p50Ms" : 230.310286,
+        "p95Ms" : 336.517756,
+        "p99Ms" : 428.501178,
+        "maxMs" : 566.366065
+      },
+      "slotWait" : {
+        "samples" : 7729,
+        "p50Ms" : 341.805109,
+        "p95Ms" : 5342.146575,
+        "p99Ms" : 8299.579212,
+        "maxMs" : 9989.644174
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.02110993801728,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 71,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 74
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 71
+  }, {
+    "name" : "reference-ws200-c100-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 219,
+      "meanRows" : 4233.497716894977,
+      "maxRows" : 12054
+    },
+    "concurrency" : 100,
+    "offeredRate" : 260.0,
+    "achievedRate" : 139.59171962328935,
+    "durationSeconds" : 55.877239861,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 25881.086015,
+    "copiesCommitted" : 31355,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 13983.586647,
+        "p95Ms" : 24614.464089,
+        "p99Ms" : 26016.411674,
+        "maxMs" : 27830.763296
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 58.642477,
+        "p95Ms" : 168.471497,
+        "p99Ms" : 236.267957,
+        "maxMs" : 471.967093
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 16.729844,
+        "p95Ms" : 91.139563,
+        "p99Ms" : 257.715796,
+        "maxMs" : 902.686819
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 14033.170303,
+        "p95Ms" : 24641.607247,
+        "p99Ms" : 26028.01095,
+        "maxMs" : 27878.097031
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 3468.262463,
+        "p95Ms" : 6312.582756,
+        "p99Ms" : 6533.603382,
+        "maxMs" : 6561.312951
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 58.649682,
+        "p95Ms" : 168.489399,
+        "p99Ms" : 236.281471,
+        "maxMs" : 471.980608
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 201.631105,
+        "p95Ms" : 2457.091564,
+        "p99Ms" : 3999.010776,
+        "maxMs" : 7944.970484
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 10.761635948048985,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws200-c1-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1621,
+      "meanRows" : 1485.5817396668724,
+      "maxRows" : 14646
+    },
+    "concurrency" : 1,
+    "offeredRate" : 520.0,
+    "achievedRate" : 38.293750854999196,
+    "durationSeconds" : 407.377173865,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 377379.096942,
+    "copiesCommitted" : 63115,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 194674.015694,
+        "p95Ms" : 359643.27199,
+        "p99Ms" : 374218.530307,
+        "maxMs" : 377373.018369
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 12.894227,
+        "p95Ms" : 17.408147,
+        "p99Ms" : 22.61717,
+        "maxMs" : 47.362381
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 5.284534,
+        "p95Ms" : 22.390087,
+        "p99Ms" : 83.137723,
+        "maxMs" : 297.079125
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 194679.19965,
+        "p95Ms" : 359647.673278,
+        "p99Ms" : 374223.284842,
+        "maxMs" : 377379.096942
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 40.71224,
+        "p95Ms" : 140.451659,
+        "p99Ms" : 190.474048,
+        "maxMs" : 215.567015
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 12.910439,
+        "p95Ms" : 17.427572,
+        "p99Ms" : 22.647645,
+        "maxMs" : 47.376938
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.199692,
+        "p95Ms" : 0.459527,
+        "p99Ms" : 0.952404,
+        "maxMs" : 8.333773
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.015638400015895,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws200-c1-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1496,
+      "meanRows" : 1555.0975935828876,
+      "maxRows" : 14752
+    },
+    "concurrency" : 1,
+    "offeredRate" : 520.0,
+    "achievedRate" : 41.47386631627443,
+    "durationSeconds" : 376.140480394,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 346142.403471,
+    "copiesCommitted" : 62796,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 172757.502913,
+        "p95Ms" : 326385.153831,
+        "p99Ms" : 342679.792403,
+        "maxMs" : 346137.691284
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 8.4934,
+        "p95Ms" : 18.159245,
+        "p99Ms" : 22.792565,
+        "maxMs" : 53.774374
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 5.526714,
+        "p95Ms" : 22.976086,
+        "p99Ms" : 86.553768,
+        "maxMs" : 191.105459
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 172765.743623,
+        "p95Ms" : 326389.403206,
+        "p99Ms" : 342803.200755,
+        "maxMs" : 346142.403471
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 40.566173,
+        "p95Ms" : 160.309152,
+        "p99Ms" : 243.096053,
+        "maxMs" : 281.08888
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 8.512065,
+        "p95Ms" : 18.188889,
+        "p99Ms" : 22.834212,
+        "maxMs" : 53.788038
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.205523,
+        "p95Ms" : 0.5042,
+        "p99Ms" : 1.006615,
+        "maxMs" : 9.063572
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.008271941294236,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws200-c10-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1033,
+      "meanRows" : 2081.161665053243,
+      "maxRows" : 16424
+    },
+    "concurrency" : 10,
+    "offeredRate" : 520.0,
+    "achievedRate" : 59.992968915417016,
+    "durationSeconds" : 260.030471604,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 230032.394681,
+    "copiesCommitted" : 61921,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 117219.26456,
+        "p95Ms" : 217398.01185,
+        "p99Ms" : 227624.487818,
+        "maxMs" : 230026.343051
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 144.794876,
+        "p95Ms" : 203.597117,
+        "p99Ms" : 262.880932,
+        "maxMs" : 475.201013
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 6.740263,
+        "p95Ms" : 29.261003,
+        "p99Ms" : 107.291981,
+        "maxMs" : 381.295801
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 117229.54707,
+        "p95Ms" : 217411.14386,
+        "p99Ms" : 227629.921237,
+        "maxMs" : 230037.502675
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 79.902577,
+        "p95Ms" : 305.094502,
+        "p99Ms" : 422.767059,
+        "maxMs" : 476.256467
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 144.822246,
+        "p95Ms" : 203.612645,
+        "p99Ms" : 262.920787,
+        "maxMs" : 475.217143
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.228567,
+        "p95Ms" : 0.753513,
+        "p99Ms" : 1.347199,
+        "maxMs" : 15.973071
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.005598984656917,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws200-c10-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 400,
+      "meanRows" : 4614.345,
+      "maxRows" : 20376
+    },
+    "concurrency" : 10,
+    "offeredRate" : 520.0,
+    "achievedRate" : 153.40304842821632,
+    "durationSeconds" : 101.692894371,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 71694.817448,
+    "copiesCommitted" : 63510,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 35609.71198,
+        "p95Ms" : 67849.544473,
+        "p99Ms" : 70933.890733,
+        "maxMs" : 71662.686656
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 30.713361,
+        "p95Ms" : 64.410531,
+        "p99Ms" : 92.671926,
+        "maxMs" : 266.789045
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 10.807287,
+        "p95Ms" : 52.188457,
+        "p99Ms" : 156.033312,
+        "maxMs" : 528.593025
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 35645.208277,
+        "p95Ms" : 67899.265381,
+        "p99Ms" : 70963.732387,
+        "maxMs" : 71730.836636
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 8517.227549,
+        "p95Ms" : 16816.385945,
+        "p99Ms" : 17167.161189,
+        "maxMs" : 17296.361812
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 30.729021,
+        "p95Ms" : 64.428073,
+        "p99Ms" : 92.684139,
+        "maxMs" : 266.796289
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.226151,
+        "p95Ms" : 1.282438,
+        "p99Ms" : 3.44197,
+        "maxMs" : 21.653339
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 16.520771810937084,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws200-c25-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1008,
+      "meanRows" : 2094.1011904761904,
+      "maxRows" : 13562
+    },
+    "concurrency" : 25,
+    "offeredRate" : 520.0,
+    "achievedRate" : 61.555322802836415,
+    "durationSeconds" : 253.430561155,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 223432.484232,
+    "copiesCommitted" : 63833,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 112969.232881,
+        "p95Ms" : 211943.568501,
+        "p99Ms" : 221222.08923,
+        "maxMs" : 223387.367818
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 238.126047,
+        "p95Ms" : 316.584696,
+        "p99Ms" : 377.832713,
+        "maxMs" : 599.238517
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 6.679891,
+        "p95Ms" : 28.978401,
+        "p99Ms" : 107.89945,
+        "maxMs" : 263.238756
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 112985.150897,
+        "p95Ms" : 211977.154576,
+        "p99Ms" : 221232.717816,
+        "maxMs" : 223472.909819
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 65.174755,
+        "p95Ms" : 356.662371,
+        "p99Ms" : 430.344756,
+        "maxMs" : 527.681649
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 238.143521,
+        "p95Ms" : 316.625986,
+        "p99Ms" : 377.8472,
+        "maxMs" : 599.273652
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 43.316635,
+        "p95Ms" : 635.601544,
+        "p99Ms" : 1133.673007,
+        "maxMs" : 3766.231491
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.010221563629646,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws200-c25-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 389,
+      "meanRows" : 4805.532133676093,
+      "maxRows" : 19026
+    },
+    "concurrency" : 25,
+    "offeredRate" : 520.0,
+    "achievedRate" : 156.73710235626166,
+    "durationSeconds" : 99.529720567,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 69531.643644,
+    "copiesCommitted" : 60659,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 31771.997327,
+        "p95Ms" : 67012.461644,
+        "p99Ms" : 68977.39659,
+        "maxMs" : 69553.365642
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 50.642512,
+        "p95Ms" : 123.80639,
+        "p99Ms" : 184.306031,
+        "maxMs" : 375.602994
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 17.933141,
+        "p95Ms" : 79.123318,
+        "p99Ms" : 245.547895,
+        "maxMs" : 661.917717
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 31804.399813,
+        "p95Ms" : 67040.813445,
+        "p99Ms" : 69002.444398,
+        "maxMs" : 69600.733862
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 22988.871658,
+        "p95Ms" : 51524.642557,
+        "p99Ms" : 54099.523692,
+        "maxMs" : 54727.730158
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 50.671144,
+        "p95Ms" : 123.83321,
+        "p99Ms" : 184.315329,
+        "maxMs" : 375.661984
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 14.893699,
+        "p95Ms" : 251.717455,
+        "p99Ms" : 461.969731,
+        "maxMs" : 1691.720024
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 9.210139492292372,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws200-c50-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1001,
+      "meanRows" : 2141.0449550449553,
+      "maxRows" : 17052
+    },
+    "concurrency" : 50,
+    "offeredRate" : 520.0,
+    "achievedRate" : 61.82713357350461,
+    "durationSeconds" : 251.831179938,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15570,
+    "completionRatio" : 0.9980769230769231,
+    "terminalLagMs" : 221833.103015,
+    "copiesCommitted" : 62969,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15570,
+        "p50Ms" : 116527.025633,
+        "p95Ms" : 210832.515786,
+        "p99Ms" : 219157.478851,
+        "maxMs" : 222116.63687
+      },
+      "t1Transaction" : {
+        "samples" : 15570,
+        "p50Ms" : 234.684486,
+        "p95Ms" : 321.849582,
+        "p99Ms" : 374.586989,
+        "maxMs" : 484.987697
+      },
+      "t2" : {
+        "samples" : 15570,
+        "p50Ms" : 6.112004,
+        "p95Ms" : 26.696974,
+        "p99Ms" : 98.043939,
+        "maxMs" : 177.868875
+      },
+      "event" : {
+        "samples" : 15570,
+        "p50Ms" : 116537.160809,
+        "p95Ms" : 210841.199198,
+        "p99Ms" : 219191.871326,
+        "maxMs" : 222124.662177
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 67.283474,
+        "p95Ms" : 254.657683,
+        "p99Ms" : 337.88153,
+        "maxMs" : 375.934059
+      },
+      "lockWait" : {
+        "samples" : 15570,
+        "p50Ms" : 234.700306,
+        "p95Ms" : 321.873237,
+        "p99Ms" : 374.602088,
+        "maxMs" : 484.99947
+      },
+      "slotWait" : {
+        "samples" : 15570,
+        "p50Ms" : 53.440264,
+        "p95Ms" : 2637.335658,
+        "p99Ms" : 5478.492609,
+        "maxMs" : 9916.166527
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.006645512803413,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 30,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 30
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 30
+  }, {
+    "name" : "reference-ws200-c50-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 496,
+      "meanRows" : 4012.6330645161293,
+      "maxRows" : 19788
+    },
+    "concurrency" : 50,
+    "offeredRate" : 520.0,
+    "achievedRate" : 121.6841265509801,
+    "durationSeconds" : 128.200780514,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 98202.703591,
+    "copiesCommitted" : 63192,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 36975.949157,
+        "p95Ms" : 92505.44142,
+        "p99Ms" : 97246.369814,
+        "maxMs" : 98443.370078
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 63.943347,
+        "p95Ms" : 189.235318,
+        "p99Ms" : 269.255988,
+        "maxMs" : 521.826419
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 20.278719,
+        "p95Ms" : 110.73672,
+        "p99Ms" : 323.653635,
+        "maxMs" : 1158.798872
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 36997.887524,
+        "p95Ms" : 92573.302289,
+        "p99Ms" : 97293.235459,
+        "maxMs" : 98455.893694
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 31145.787014,
+        "p95Ms" : 80925.492649,
+        "p99Ms" : 84974.560611,
+        "maxMs" : 85843.891257
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 63.968153,
+        "p95Ms" : 189.246468,
+        "p99Ms" : 269.284382,
+        "maxMs" : 521.844574
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 46.0345,
+        "p95Ms" : 1261.03108,
+        "p99Ms" : 2258.339674,
+        "maxMs" : 6970.820994
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 6.735435243064691,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws200-c100-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1082,
+      "meanRows" : 1935.6524953789278,
+      "maxRows" : 14036
+    },
+    "concurrency" : 100,
+    "offeredRate" : 520.0,
+    "achievedRate" : 56.3822168766366,
+    "durationSeconds" : 272.408586445,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15359,
+    "completionRatio" : 0.9845512820512821,
+    "terminalLagMs" : 242410.509522,
+    "copiesCommitted" : 61377,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15359,
+        "p50Ms" : 124622.22291,
+        "p95Ms" : 231278.801573,
+        "p99Ms" : 240195.16515,
+        "maxMs" : 243121.967491
+      },
+      "t1Transaction" : {
+        "samples" : 15359,
+        "p50Ms" : 255.744906,
+        "p95Ms" : 357.498926,
+        "p99Ms" : 455.122102,
+        "maxMs" : 587.690245
+      },
+      "t2" : {
+        "samples" : 15359,
+        "p50Ms" : 6.681474,
+        "p95Ms" : 28.738217,
+        "p99Ms" : 103.900229,
+        "maxMs" : 229.644732
+      },
+      "event" : {
+        "samples" : 15359,
+        "p50Ms" : 124688.62111,
+        "p95Ms" : 231287.141827,
+        "p99Ms" : 240218.039878,
+        "maxMs" : 243135.763046
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 90.349899,
+        "p95Ms" : 268.125456,
+        "p99Ms" : 317.453401,
+        "maxMs" : 378.473586
+      },
+      "lockWait" : {
+        "samples" : 15359,
+        "p50Ms" : 255.760454,
+        "p95Ms" : 357.51652,
+        "p99Ms" : 455.138914,
+        "maxMs" : 587.953386
+      },
+      "slotWait" : {
+        "samples" : 15359,
+        "p50Ms" : 215.98497,
+        "p95Ms" : 5940.252372,
+        "p99Ms" : 8391.035373,
+        "maxMs" : 9978.269203
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 25.926555530906192,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 241,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 260
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 241
+  }, {
+    "name" : "reference-ws200-c100-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 200,
+    "inboxCount" : 2000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 571,
+      "meanRows" : 3527.6672504378284,
+      "maxRows" : 20082
+    },
+    "concurrency" : 100,
+    "offeredRate" : 520.0,
+    "achievedRate" : 105.29246224625747,
+    "durationSeconds" : 148.130261818,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15597,
+    "completionRatio" : 0.9998076923076923,
+    "terminalLagMs" : 118132.184895,
+    "copiesCommitted" : 63692,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15597,
+        "p50Ms" : 51659.096646,
+        "p95Ms" : 111866.312591,
+        "p99Ms" : 116317.700522,
+        "maxMs" : 119041.362665
+      },
+      "t1Transaction" : {
+        "samples" : 15597,
+        "p50Ms" : 74.989446,
+        "p95Ms" : 208.947494,
+        "p99Ms" : 299.089337,
+        "maxMs" : 611.602116
+      },
+      "t2" : {
+        "samples" : 15597,
+        "p50Ms" : 22.413015,
+        "p95Ms" : 136.355157,
+        "p99Ms" : 385.417833,
+        "maxMs" : 1802.187672
+      },
+      "event" : {
+        "samples" : 15597,
+        "p50Ms" : 51696.366662,
+        "p95Ms" : 111908.609022,
+        "p99Ms" : 116386.093141,
+        "maxMs" : 119056.214695
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 44785.279669,
+        "p95Ms" : 99054.416014,
+        "p99Ms" : 104032.641872,
+        "maxMs" : 104953.918754
+      },
+      "lockWait" : {
+        "samples" : 15597,
+        "p50Ms" : 75.031778,
+        "p95Ms" : 209.028697,
+        "p99Ms" : 299.119192,
+        "maxMs" : 611.665344
+      },
+      "slotWait" : {
+        "samples" : 15597,
+        "p50Ms" : 238.428483,
+        "p95Ms" : 3259.050379,
+        "p99Ms" : 5596.931124,
+        "maxMs" : 9643.546931
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 5.781398210061078,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 3,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 3
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 3
+  }, {
+    "name" : "chosen-ws10000-c1-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1003,
+      "meanRows" : 1317.738783649053,
+      "maxRows" : 8378
+    },
+    "concurrency" : 1,
+    "offeredRate" : 260.0,
+    "achievedRate" : 30.908674198201275,
+    "durationSeconds" : 252.3563434,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 222360.189554,
+    "copiesCommitted" : 31659,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 115130.639193,
+        "p95Ms" : 212324.082621,
+        "p99Ms" : 220407.363903,
+        "maxMs" : 222349.143291
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 16.12437,
+        "p95Ms" : 23.320182,
+        "p99Ms" : 30.254366,
+        "maxMs" : 59.099137
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 6.10512,
+        "p95Ms" : 28.266705,
+        "p99Ms" : 97.514012,
+        "maxMs" : 239.447915
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 115139.913285,
+        "p95Ms" : 212331.19111,
+        "p99Ms" : 220434.450171,
+        "maxMs" : 222360.189554
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 23.007803,
+        "p95Ms" : 51.96014,
+        "p99Ms" : 71.999235,
+        "maxMs" : 87.564537
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 16.142655,
+        "p95Ms" : 23.35643,
+        "p99Ms" : 30.271939,
+        "maxMs" : 59.117671
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.221502,
+        "p95Ms" : 0.678293,
+        "p99Ms" : 1.227266,
+        "maxMs" : 12.139078
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.000917795891526,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws10000-c1-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 926,
+      "meanRows" : 1405.304535637149,
+      "maxRows" : 9110
+    },
+    "concurrency" : 1,
+    "offeredRate" : 260.0,
+    "achievedRate" : 33.527564245216396,
+    "durationSeconds" : 232.644397993,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 202648.244147,
+    "copiesCommitted" : 31842,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 94299.685247,
+        "p95Ms" : 192284.643181,
+        "p99Ms" : 200368.348062,
+        "maxMs" : 202643.285482
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 15.583073,
+        "p95Ms" : 21.404005,
+        "p99Ms" : 26.695219,
+        "maxMs" : 53.119583
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 5.601143,
+        "p95Ms" : 24.029895,
+        "p99Ms" : 89.422367,
+        "maxMs" : 277.510397
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 94306.087471,
+        "p95Ms" : 192293.847455,
+        "p99Ms" : 200373.400242,
+        "maxMs" : 202648.244147
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 22.281776,
+        "p95Ms" : 43.531833,
+        "p99Ms" : 57.301028,
+        "maxMs" : 66.250739
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 15.60351,
+        "p95Ms" : 21.422209,
+        "p99Ms" : 26.708552,
+        "maxMs" : 53.157153
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.209079,
+        "p95Ms" : 0.518094,
+        "p99Ms" : 0.958835,
+        "maxMs" : 4.680378
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.02288237769932,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws10000-c10-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 513,
+      "meanRows" : 2205.3606237816766,
+      "maxRows" : 10060
+    },
+    "concurrency" : 10,
+    "offeredRate" : 260.0,
+    "achievedRate" : 60.52820217503224,
+    "durationSeconds" : 128.865548946,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 98869.3951,
+    "copiesCommitted" : 32105,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 38986.732728,
+        "p95Ms" : 93201.094711,
+        "p99Ms" : 97723.68647,
+        "maxMs" : 98865.235183
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 153.826842,
+        "p95Ms" : 204.650681,
+        "p99Ms" : 231.877139,
+        "maxMs" : 350.516713
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 5.998992,
+        "p95Ms" : 24.621076,
+        "p99Ms" : 94.708886,
+        "maxMs" : 205.765417
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 39008.309935,
+        "p95Ms" : 93209.220606,
+        "p99Ms" : 97728.131482,
+        "maxMs" : 98869.3951
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 24.472788,
+        "p95Ms" : 49.009768,
+        "p99Ms" : 68.400745,
+        "maxMs" : 81.337093
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 153.840869,
+        "p95Ms" : 204.666902,
+        "p99Ms" : 231.890875,
+        "maxMs" : 350.532794
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.215381,
+        "p95Ms" : 0.539455,
+        "p99Ms" : 1.058511,
+        "maxMs" : 5.238737
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.01933671033024,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws10000-c10-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 156,
+      "meanRows" : 5717.25641025641,
+      "maxRows" : 14760
+    },
+    "concurrency" : 10,
+    "offeredRate" : 260.0,
+    "achievedRate" : 197.5766099162174,
+    "durationSeconds" : 39.478357298,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 9482.203452,
+    "copiesCommitted" : 31512,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 3593.572091,
+        "p95Ms" : 9069.077965,
+        "p99Ms" : 9219.486109,
+        "maxMs" : 9431.53181
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 23.421903,
+        "p95Ms" : 52.926076,
+        "p99Ms" : 83.560561,
+        "maxMs" : 211.421102
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 8.502316,
+        "p95Ms" : 41.753395,
+        "p99Ms" : 136.351194,
+        "maxMs" : 526.653473
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 3609.198683,
+        "p95Ms" : 9082.164562,
+        "p99Ms" : 9244.42901,
+        "maxMs" : 9549.740662
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 77.873451,
+        "p95Ms" : 292.889328,
+        "p99Ms" : 455.049409,
+        "maxMs" : 585.923148
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 23.432603,
+        "p95Ms" : 52.94479,
+        "p99Ms" : 83.578485,
+        "maxMs" : 211.468782
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.201776,
+        "p95Ms" : 1.071195,
+        "p99Ms" : 3.353596,
+        "maxMs" : 19.607709
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.004512155208758,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws10000-c25-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 540,
+      "meanRows" : 2000.4703703703703,
+      "maxRows" : 8656
+    },
+    "concurrency" : 25,
+    "offeredRate" : 260.0,
+    "achievedRate" : 57.466247843411615,
+    "durationSeconds" : 135.731847697,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 105735.693851,
+    "copiesCommitted" : 31140,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 50812.23526,
+        "p95Ms" : 100312.277995,
+        "p99Ms" : 104625.178815,
+        "maxMs" : 105939.827677
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 264.955101,
+        "p95Ms" : 331.438145,
+        "p99Ms" : 388.984095,
+        "maxMs" : 534.173481
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 5.621369,
+        "p95Ms" : 23.783877,
+        "p99Ms" : 92.449588,
+        "maxMs" : 208.410866
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 50818.498621,
+        "p95Ms" : 100334.214971,
+        "p99Ms" : 104635.502824,
+        "maxMs" : 105946.394127
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 27.045663,
+        "p95Ms" : 58.59234,
+        "p99Ms" : 77.508869,
+        "maxMs" : 119.868257
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 264.978234,
+        "p95Ms" : 331.466688,
+        "p99Ms" : 389.19087,
+        "maxMs" : 534.189761
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 48.798138,
+        "p95Ms" : 694.061874,
+        "p99Ms" : 1165.635693,
+        "maxMs" : 3000.051484
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.011579801173749,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws10000-c25-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 181,
+      "meanRows" : 5655.635359116022,
+      "maxRows" : 14312
+    },
+    "concurrency" : 25,
+    "offeredRate" : 260.0,
+    "achievedRate" : 169.30337957131655,
+    "durationSeconds" : 46.071141756,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 16074.98791,
+    "copiesCommitted" : 31587,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 7324.966464,
+        "p95Ms" : 14806.165261,
+        "p99Ms" : 15740.199044,
+        "maxMs" : 16359.780461
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 46.106124,
+        "p95Ms" : 108.221985,
+        "p99Ms" : 154.386328,
+        "maxMs" : 274.914041
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 16.975688,
+        "p95Ms" : 75.602971,
+        "p99Ms" : 223.469865,
+        "maxMs" : 597.611709
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 7363.064272,
+        "p95Ms" : 14840.267082,
+        "p99Ms" : 15782.793621,
+        "maxMs" : 16457.754258
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 1016.402054,
+        "p95Ms" : 3484.036633,
+        "p99Ms" : 3689.504948,
+        "maxMs" : 3760.21909
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 46.116642,
+        "p95Ms" : 108.238495,
+        "p99Ms" : 154.419719,
+        "maxMs" : 274.933247
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 13.444621,
+        "p95Ms" : 239.043791,
+        "p99Ms" : 436.02409,
+        "maxMs" : 863.201133
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 11.720433128506489,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws10000-c50-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 503,
+      "meanRows" : 2156.047713717694,
+      "maxRows" : 8954
+    },
+    "concurrency" : 50,
+    "offeredRate" : 260.0,
+    "achievedRate" : 61.542257614328506,
+    "durationSeconds" : 126.563442778,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7789,
+    "completionRatio" : 0.9985897435897436,
+    "terminalLagMs" : 96567.288932,
+    "copiesCommitted" : 30778,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7789,
+        "p50Ms" : 51290.159657,
+        "p95Ms" : 91735.584164,
+        "p99Ms" : 95707.758812,
+        "maxMs" : 97690.634048
+      },
+      "t1Transaction" : {
+        "samples" : 7789,
+        "p50Ms" : 237.00177,
+        "p95Ms" : 333.446589,
+        "p99Ms" : 390.99791,
+        "maxMs" : 510.252563
+      },
+      "t2" : {
+        "samples" : 7789,
+        "p50Ms" : 6.20155,
+        "p95Ms" : 25.991039,
+        "p99Ms" : 96.812315,
+        "maxMs" : 148.305411
+      },
+      "event" : {
+        "samples" : 7789,
+        "p50Ms" : 51299.356306,
+        "p95Ms" : 91744.61885,
+        "p99Ms" : 95715.200283,
+        "maxMs" : 97697.685171
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 27.9738,
+        "p95Ms" : 65.499094,
+        "p99Ms" : 97.476378,
+        "maxMs" : 108.191857
+      },
+      "lockWait" : {
+        "samples" : 7789,
+        "p50Ms" : 237.033588,
+        "p95Ms" : 333.464952,
+        "p99Ms" : 391.011997,
+        "maxMs" : 510.276648
+      },
+      "slotWait" : {
+        "samples" : 7789,
+        "p50Ms" : 58.585366,
+        "p95Ms" : 2581.252156,
+        "p99Ms" : 5114.242792,
+        "maxMs" : 9631.706726
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 12.991098224085574,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 11,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 13
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 11
+  }, {
+    "name" : "reference-ws10000-c50-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 197,
+      "meanRows" : 5257.756345177665,
+      "maxRows" : 12210
+    },
+    "concurrency" : 50,
+    "offeredRate" : 260.0,
+    "achievedRate" : 155.43689335103585,
+    "durationSeconds" : 50.181136742,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 20184.982896,
+    "copiesCommitted" : 31810,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 11032.819575,
+        "p95Ms" : 19092.321521,
+        "p99Ms" : 19712.418812,
+        "maxMs" : 20921.202858
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 50.001438,
+        "p95Ms" : 130.834992,
+        "p99Ms" : 185.834861,
+        "maxMs" : 337.730288
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 18.014652,
+        "p95Ms" : 81.212089,
+        "p99Ms" : 231.861226,
+        "maxMs" : 609.585103
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 11070.828795,
+        "p95Ms" : 19132.16557,
+        "p99Ms" : 19758.303174,
+        "maxMs" : 20941.486496
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 1793.195,
+        "p95Ms" : 4232.712779,
+        "p99Ms" : 4677.525024,
+        "maxMs" : 4706.968266
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 50.019943,
+        "p95Ms" : 130.853095,
+        "p99Ms" : 185.868924,
+        "maxMs" : 337.756127
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 55.210421,
+        "p95Ms" : 930.217536,
+        "p99Ms" : 1538.874521,
+        "maxMs" : 2739.795349
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 11.714866942963447,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws10000-c100-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 628,
+      "meanRows" : 1852.8057324840765,
+      "maxRows" : 9110
+    },
+    "concurrency" : 100,
+    "offeredRate" : 260.0,
+    "achievedRate" : 47.87264505136929,
+    "durationSeconds" : 157.793662579,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7554,
+    "completionRatio" : 0.9684615384615385,
+    "terminalLagMs" : 127797.508733,
+    "copiesCommitted" : 30753,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7554,
+        "p50Ms" : 64901.901282,
+        "p95Ms" : 121023.240217,
+        "p99Ms" : 126559.258526,
+        "maxMs" : 128697.320586
+      },
+      "t1Transaction" : {
+        "samples" : 7554,
+        "p50Ms" : 308.380004,
+        "p95Ms" : 409.687441,
+        "p99Ms" : 504.291633,
+        "maxMs" : 629.936371
+      },
+      "t2" : {
+        "samples" : 7554,
+        "p50Ms" : 7.155497,
+        "p95Ms" : 33.049185,
+        "p99Ms" : 117.713073,
+        "maxMs" : 242.954156
+      },
+      "event" : {
+        "samples" : 7554,
+        "p50Ms" : 64908.577677,
+        "p95Ms" : 121056.57808,
+        "p99Ms" : 126574.974419,
+        "maxMs" : 128704.265301
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 37.621673,
+        "p95Ms" : 92.669912,
+        "p99Ms" : 132.407809,
+        "maxMs" : 154.179066
+      },
+      "lockWait" : {
+        "samples" : 7554,
+        "p50Ms" : 308.391966,
+        "p95Ms" : 409.700676,
+        "p99Ms" : 504.303055,
+        "maxMs" : 629.948323
+      },
+      "slotWait" : {
+        "samples" : 7554,
+        "p50Ms" : 120.915327,
+        "p95Ms" : 6653.498308,
+        "p99Ms" : 8982.455389,
+        "maxMs" : 9972.614737
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.019299402798591,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 246,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 256
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 246
+  }, {
+    "name" : "reference-ws10000-c100-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 250,
+      "meanRows" : 4262.656,
+      "maxRows" : 11726
+    },
+    "concurrency" : 100,
+    "offeredRate" : 260.0,
+    "achievedRate" : 121.77935056497381,
+    "durationSeconds" : 64.050267667,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 34054.113821,
+    "copiesCommitted" : 31000,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 17276.117727,
+        "p95Ms" : 32397.646861,
+        "p99Ms" : 33917.068686,
+        "maxMs" : 36581.076337
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 65.028908,
+        "p95Ms" : 185.30241,
+        "p99Ms" : 265.653997,
+        "maxMs" : 724.605004
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 20.592233,
+        "p95Ms" : 110.268708,
+        "p99Ms" : 293.216271,
+        "maxMs" : 887.179451
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 17354.453609,
+        "p95Ms" : 32434.376602,
+        "p99Ms" : 33979.376654,
+        "maxMs" : 36600.975189
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 5287.936467,
+        "p95Ms" : 8420.312995,
+        "p99Ms" : 8762.848384,
+        "maxMs" : 8913.684426
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 65.099049,
+        "p95Ms" : 185.319742,
+        "p99Ms" : 265.67773,
+        "maxMs" : 724.620782
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 190.025977,
+        "p95Ms" : 2890.897561,
+        "p99Ms" : 4655.404814,
+        "maxMs" : 9740.871149
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 10.042031623211308,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws10000-c1-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1707,
+      "meanRows" : 1474.1019332161686,
+      "maxRows" : 14368
+    },
+    "concurrency" : 1,
+    "offeredRate" : 520.0,
+    "achievedRate" : 36.33351969040911,
+    "durationSeconds" : 429.35559596,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 399357.519037,
+    "copiesCommitted" : 63115,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 200550.743634,
+        "p95Ms" : 380276.264649,
+        "p99Ms" : 396039.912188,
+        "maxMs" : 399352.175094
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 10.858757,
+        "p95Ms" : 17.763331,
+        "p99Ms" : 24.483601,
+        "maxMs" : 76.807095
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 6.408558,
+        "p95Ms" : 27.31836,
+        "p99Ms" : 101.377875,
+        "maxMs" : 252.162708
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 200557.613482,
+        "p95Ms" : 380283.077721,
+        "p99Ms" : 396046.4039,
+        "maxMs" : 399357.519037
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 43.929283,
+        "p95Ms" : 158.064898,
+        "p99Ms" : 282.719352,
+        "maxMs" : 303.525949
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 10.878215,
+        "p95Ms" : 17.814124,
+        "p99Ms" : 24.530628,
+        "maxMs" : 76.829807
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.222174,
+        "p95Ms" : 0.602592,
+        "p99Ms" : 1.098717,
+        "maxMs" : 7.754797
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.015731950720955,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws10000-c1-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1636,
+      "meanRows" : 1513.4339853300733,
+      "maxRows" : 14516
+    },
+    "concurrency" : 1,
+    "offeredRate" : 520.0,
+    "achievedRate" : 37.92177929344676,
+    "durationSeconds" : 411.373102493,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 381375.02557,
+    "copiesCommitted" : 62796,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 186616.999666,
+        "p95Ms" : 361939.274563,
+        "p99Ms" : 377942.554867,
+        "maxMs" : 381368.379171
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 10.436159,
+        "p95Ms" : 16.84697,
+        "p99Ms" : 24.601134,
+        "maxMs" : 72.095262
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 6.019903,
+        "p95Ms" : 25.733724,
+        "p99Ms" : 97.116507,
+        "maxMs" : 220.02156
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 186636.844551,
+        "p95Ms" : 361944.621833,
+        "p99Ms" : 378070.344912,
+        "maxMs" : 381375.02557
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 47.571849,
+        "p95Ms" : 142.548324,
+        "p99Ms" : 200.84963,
+        "maxMs" : 224.448804
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 10.453541,
+        "p95Ms" : 16.871286,
+        "p99Ms" : 24.646789,
+        "maxMs" : 72.1315
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.212214,
+        "p95Ms" : 0.537121,
+        "p99Ms" : 1.071276,
+        "maxMs" : 12.213249
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 25.999685419406237,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws10000-c10-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1186,
+      "meanRows" : 1921.2006745362564,
+      "maxRows" : 15716
+    },
+    "concurrency" : 10,
+    "offeredRate" : 520.0,
+    "achievedRate" : 52.255988504610805,
+    "durationSeconds" : 298.53037798,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 268532.301057,
+    "copiesCommitted" : 61872,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 140542.880895,
+        "p95Ms" : 255783.977373,
+        "p99Ms" : 265849.914562,
+        "maxMs" : 268509.008493
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 168.862725,
+        "p95Ms" : 231.747175,
+        "p99Ms" : 294.685576,
+        "maxMs" : 436.727857
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 6.701492,
+        "p95Ms" : 28.460221,
+        "p99Ms" : 103.438554,
+        "maxMs" : 198.785027
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 140548.939289,
+        "p95Ms" : 255797.411125,
+        "p99Ms" : 265856.596547,
+        "maxMs" : 268540.20065
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 75.768016,
+        "p95Ms" : 287.194163,
+        "p99Ms" : 437.276499,
+        "maxMs" : 492.986492
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 168.8987,
+        "p95Ms" : 231.771589,
+        "p99Ms" : 295.754936,
+        "maxMs" : 436.75098
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.224348,
+        "p95Ms" : 0.659549,
+        "p99Ms" : 1.313396,
+        "maxMs" : 14.14144
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.00626975361795,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws10000-c10-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 392,
+      "meanRows" : 5340.117346938776,
+      "maxRows" : 20416
+    },
+    "concurrency" : 10,
+    "offeredRate" : 520.0,
+    "achievedRate" : 156.10378544721183,
+    "durationSeconds" : 99.933515099,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 69935.438176,
+    "copiesCommitted" : 63656,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 36676.578669,
+        "p95Ms" : 67352.70637,
+        "p99Ms" : 69282.299186,
+        "maxMs" : 69848.11643
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 31.537932,
+        "p95Ms" : 71.125989,
+        "p99Ms" : 101.319486,
+        "maxMs" : 230.720257
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 10.231919,
+        "p95Ms" : 49.597019,
+        "p99Ms" : 170.611518,
+        "maxMs" : 513.418358
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 36719.172173,
+        "p95Ms" : 67359.943195,
+        "p99Ms" : 69303.976714,
+        "maxMs" : 69967.477715
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 8181.109716,
+        "p95Ms" : 15211.155682,
+        "p99Ms" : 15842.776033,
+        "maxMs" : 15930.668793
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 31.554412,
+        "p95Ms" : 71.140786,
+        "p99Ms" : 101.336458,
+        "maxMs" : 230.751777
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.204291,
+        "p95Ms" : 1.298488,
+        "p99Ms" : 3.595347,
+        "maxMs" : 47.908684
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 17.037570689233828,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws10000-c25-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1231,
+      "meanRows" : 1828.6580016246953,
+      "maxRows" : 12944
+    },
+    "concurrency" : 25,
+    "offeredRate" : 520.0,
+    "achievedRate" : 50.3933775956756,
+    "durationSeconds" : 309.564485341,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 279566.408418,
+    "copiesCommitted" : 63745,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 138791.382631,
+        "p95Ms" : 264621.44027,
+        "p99Ms" : 276324.420201,
+        "maxMs" : 279629.409016
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 293.670074,
+        "p95Ms" : 387.915965,
+        "p99Ms" : 459.96392,
+        "maxMs" : 847.792786
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 6.478056,
+        "p95Ms" : 27.409593,
+        "p99Ms" : 99.720447,
+        "maxMs" : 234.4539
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 138801.07298,
+        "p95Ms" : 264647.182173,
+        "p99Ms" : 276341.21369,
+        "maxMs" : 279634.271242
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 77.670778,
+        "p95Ms" : 502.511156,
+        "p99Ms" : 786.358036,
+        "maxMs" : 880.807245
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 293.70535,
+        "p95Ms" : 387.928188,
+        "p99Ms" : 459.97465,
+        "maxMs" : 847.806973
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 44.664721,
+        "p95Ms" : 802.147516,
+        "p99Ms" : 1438.617981,
+        "maxMs" : 4016.742209
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.009522952470014,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "reference-ws10000-c25-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 394,
+      "meanRows" : 5437.329949238579,
+      "maxRows" : 19504
+    },
+    "concurrency" : 25,
+    "offeredRate" : 520.0,
+    "achievedRate" : 155.0840579476524,
+    "durationSeconds" : 100.590610063,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 70592.53314,
+    "copiesCommitted" : 60781,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 35635.846761,
+        "p95Ms" : 68210.143677,
+        "p99Ms" : 70124.453311,
+        "maxMs" : 70637.484892
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 51.737404,
+        "p95Ms" : 124.545655,
+        "p99Ms" : 174.735208,
+        "maxMs" : 344.640239
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 18.675214,
+        "p95Ms" : 81.381129,
+        "p99Ms" : 233.306882,
+        "maxMs" : 585.136752
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 35665.168779,
+        "p95Ms" : 68239.246707,
+        "p99Ms" : 70154.928069,
+        "maxMs" : 70712.68729
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 26234.645247,
+        "p95Ms" : 49302.180797,
+        "p99Ms" : 51136.74039,
+        "maxMs" : 51791.063701
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 51.754446,
+        "p95Ms" : 124.559982,
+        "p99Ms" : 174.748572,
+        "maxMs" : 344.689761
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 14.093932,
+        "p95Ms" : 258.321935,
+        "p99Ms" : 460.517859,
+        "maxMs" : 1224.600662
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 9.540980435969264,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws10000-c50-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1252,
+      "meanRows" : 1858.5638977635783,
+      "maxRows" : 16006
+    },
+    "concurrency" : 50,
+    "offeredRate" : 520.0,
+    "achievedRate" : 49.18110583924811,
+    "durationSeconds" : 315.141348197,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15499,
+    "completionRatio" : 0.993525641025641,
+    "terminalLagMs" : 285143.271274,
+    "copiesCommitted" : 61986,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15499,
+        "p50Ms" : 147174.795066,
+        "p95Ms" : 272470.750706,
+        "p99Ms" : 282728.252646,
+        "maxMs" : 285686.627936
+      },
+      "t1Transaction" : {
+        "samples" : 15499,
+        "p50Ms" : 295.946853,
+        "p95Ms" : 418.394021,
+        "p99Ms" : 513.8065,
+        "maxMs" : 818.312081
+      },
+      "t2" : {
+        "samples" : 15499,
+        "p50Ms" : 6.681545,
+        "p95Ms" : 28.717329,
+        "p99Ms" : 107.081351,
+        "maxMs" : 250.129024
+      },
+      "event" : {
+        "samples" : 15499,
+        "p50Ms" : 147200.874695,
+        "p95Ms" : 272498.356294,
+        "p99Ms" : 282739.622277,
+        "maxMs" : 285696.770899
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 77.85653,
+        "p95Ms" : 315.520059,
+        "p99Ms" : 425.224254,
+        "maxMs" : 467.897023
+      },
+      "lockWait" : {
+        "samples" : 15499,
+        "p50Ms" : 295.959587,
+        "p95Ms" : 418.409318,
+        "p99Ms" : 513.820716,
+        "maxMs" : 818.347477
+      },
+      "slotWait" : {
+        "samples" : 15499,
+        "p50Ms" : 45.206422,
+        "p95Ms" : 3338.00039,
+        "p99Ms" : 7108.7042,
+        "maxMs" : 9902.292399
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.000177363676578,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 101,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 106
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 101
+  }, {
+    "name" : "reference-ws10000-c50-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 497,
+      "meanRows" : 4537.17907444668,
+      "maxRows" : 18160
+    },
+    "concurrency" : 50,
+    "offeredRate" : 520.0,
+    "achievedRate" : 121.84815493807032,
+    "durationSeconds" : 128.02820041,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 98030.123487,
+    "copiesCommitted" : 63370,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 53316.17975,
+        "p95Ms" : 92092.903241,
+        "p99Ms" : 96578.703921,
+        "maxMs" : 98313.670097
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 66.085481,
+        "p95Ms" : 166.194954,
+        "p99Ms" : 243.333123,
+        "maxMs" : 525.224491
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 21.596145,
+        "p95Ms" : 104.956802,
+        "p99Ms" : 321.08935,
+        "maxMs" : 1221.857312
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 53354.116471,
+        "p95Ms" : 92133.838415,
+        "p99Ms" : 96709.351883,
+        "maxMs" : 98352.524506
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 37161.268164,
+        "p95Ms" : 63035.959829,
+        "p99Ms" : 64773.766939,
+        "maxMs" : 64961.543131
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 66.101932,
+        "p95Ms" : 166.294821,
+        "p99Ms" : 243.368587,
+        "maxMs" : 525.230222
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 46.811852,
+        "p95Ms" : 1233.293902,
+        "p99Ms" : 2210.204295,
+        "maxMs" : 9022.978056
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 8.217884720839713,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0
+  }, {
+    "name" : "chosen-ws10000-c100-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1421,
+      "meanRows" : 1603.9887403237158,
+      "maxRows" : 13442
+    },
+    "concurrency" : 100,
+    "offeredRate" : 520.0,
+    "achievedRate" : 41.63801478314249,
+    "durationSeconds" : 357.966153709,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 14905,
+    "completionRatio" : 0.955448717948718,
+    "terminalLagMs" : 327968.076786,
+    "copiesCommitted" : 59099,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 14905,
+        "p50Ms" : 159616.497237,
+        "p95Ms" : 311515.35622,
+        "p99Ms" : 324737.722798,
+        "maxMs" : 328466.382813
+      },
+      "t1Transaction" : {
+        "samples" : 14905,
+        "p50Ms" : 348.011714,
+        "p95Ms" : 497.165637,
+        "p99Ms" : 615.952188,
+        "maxMs" : 911.736787
+      },
+      "t2" : {
+        "samples" : 14905,
+        "p50Ms" : 8.497387,
+        "p95Ms" : 37.928315,
+        "p99Ms" : 132.974036,
+        "maxMs" : 508.812226
+      },
+      "event" : {
+        "samples" : 14905,
+        "p50Ms" : 159636.241661,
+        "p95Ms" : 311569.65036,
+        "p99Ms" : 324747.380097,
+        "maxMs" : 328491.127112
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 92.298771,
+        "p95Ms" : 360.703456,
+        "p99Ms" : 613.738328,
+        "maxMs" : 659.340992
+      },
+      "lockWait" : {
+        "samples" : 14905,
+        "p50Ms" : 348.028825,
+        "p95Ms" : 497.179142,
+        "p99Ms" : 615.988545,
+        "maxMs" : 911.772435
+      },
+      "slotWait" : {
+        "samples" : 14905,
+        "p50Ms" : 156.240372,
+        "p95Ms" : 6850.356797,
+        "p99Ms" : 9233.609097,
+        "maxMs" : 9995.870461
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.002218982563978,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 695,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 720
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 695
+  }, {
+    "name" : "reference-ws10000-c100-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 624,
+      "meanRows" : 4013.9455128205127,
+      "maxRows" : 18650
+    },
+    "concurrency" : 100,
+    "offeredRate" : 520.0,
+    "achievedRate" : 96.4360745623744,
+    "durationSeconds" : 161.713342966,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15595,
+    "completionRatio" : 0.9996794871794872,
+    "terminalLagMs" : 131715.266043,
+    "copiesCommitted" : 63390,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15595,
+        "p50Ms" : 68297.990571,
+        "p95Ms" : 125812.730469,
+        "p99Ms" : 130630.655121,
+        "maxMs" : 132367.73009
+      },
+      "t1Transaction" : {
+        "samples" : 15595,
+        "p50Ms" : 82.535839,
+        "p95Ms" : 233.032843,
+        "p99Ms" : 334.058792,
+        "maxMs" : 658.238934
+      },
+      "t2" : {
+        "samples" : 15595,
+        "p50Ms" : 25.401763,
+        "p95Ms" : 144.699375,
+        "p99Ms" : 387.309236,
+        "maxMs" : 1306.49776
+      },
+      "event" : {
+        "samples" : 15595,
+        "p50Ms" : 68337.512359,
+        "p95Ms" : 125900.255787,
+        "p99Ms" : 130681.07848,
+        "maxMs" : 132579.208955
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 38553.27267,
+        "p95Ms" : 82817.013733,
+        "p99Ms" : 85620.408563,
+        "maxMs" : 87143.093478
+      },
+      "lockWait" : {
+        "samples" : 15595,
+        "p50Ms" : 82.548865,
+        "p95Ms" : 233.048422,
+        "p99Ms" : 334.214401,
+        "maxMs" : 658.256217
+      },
+      "slotWait" : {
+        "samples" : 15595,
+        "p50Ms" : 215.111212,
+        "p95Ms" : 3657.242489,
+        "p99Ms" : 6099.756681,
+        "maxMs" : 9984.470672
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 6.660709953676975,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 5,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 6
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 5
+  } ],
+  "criteria" : {
+    "sustained2x" : {
+      "pass" : false,
+      "observed" : 0.0800731053521971,
+      "threshold" : "achieved / offered >= 0.995 at 520.0 events/s at concurrency [10, 25, 50, 100] (concurrency 1 is the uncontended baseline, reported only)",
+      "detail" : "worst achieved/offered over 8 scenario(s); terminal lag c10=230032 ms, c25=223432 ms, c50=221833 ms, c100=242411 ms, c10=268532 ms, c25=279566 ms, c50=285143 ms, c100=327968 ms"
+    },
+    "t1P99" : {
+      "pass" : false,
+      "observed" : 324737.722798,
+      "threshold" : "T1 p99 <= 50.0 ms (completion - due, schedule lag included) at concurrency [10, 25, 50, 100]; concurrency 1 is reported only",
+      "detail" : "worst T1 p99 over 8 scenario(s)"
+    },
+    "retentionP99VsReference" : {
+      "pass" : true,
+      "observed" : 1.4076169918759622,
+      "threshold" : "retention p99 <= 2.0 x the NO_LOCK reference's retention p99 (ADR-035 §11 mode c, no global ceiling) at the same offered load",
+      "detail" : "worst chosen/reference retention p99 ratio over 10 scenario(s); reference mode NO_LOCK"
+    },
+    "deadlocks" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "0 deadlocks (SQLSTATE 40P01) across every scenario",
+      "detail" : "sum over 40 scenario(s)"
+    },
+    "lockTimeoutRate" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "lock_timeout rate < 0.001 of events, every CHOSEN scenario",
+      "detail" : "worst per-scenario rate over 20 scenario(s)"
+    },
+    "slotQueueingDeadlineMisses" : {
+      "pass" : false,
+      "observed" : 1410.0,
+      "threshold" : "0 events refused for W_slot (StorageUnavailableReason.SLOT_WAIT) across every scenario",
+      "detail" : "sum over 40 scenario(s)"
+    },
+    "otherErrors" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "0 errors other than lock_timeout, deadlock or slot wait, events and retention, across every scenario",
+      "detail" : "sum over 40 scenario(s)"
+    },
+    "retentionStarvedTicks" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "0 retention ticks that found nothing to delete, across every scenario",
+      "detail" : "sum over 40 scenario(s)"
+    }
+  },
+  "adrEvidence" : true,
+  "adrEvidenceReasons" : [ ],
+  "incompleteReasons" : [ ],
+  "verdict" : "FAIL"
+}
