@@ -615,11 +615,13 @@ object StorageEnforcementSafety {
     /**
      * The share-partitioned T1 (PROPOSED ADR-035 amendment note, gate D W1).
      * The owner authorized implementation and testing on 2026-11-05, not
-     * release ("This does not authorize opening admission"), so:
-     * - production refuses it, whatever else is declared: no accepted ADR text
-     *   permits it, and an independent correctness review is a release condition;
-     * - anywhere else it needs `ALL` with a declared filesystem, the only
-     *   deployment whose T1 reads the cohort pool the partition guard relies on
+     * release ("This does not authorize opening admission"), so, like a lab-only
+     * qualification record (issue #102):
+     * - it is refused in EVERY environment but `lab`, production included,
+     *   whatever else is declared; the activation inventory refuses a node that
+     *   runs it anyway ([email.testinbox.application.storage.activation.NodeInventoryCheck]);
+     * - in the lab it needs `ALL` with a declared filesystem, the only deployment
+     *   whose T1 reads the cohort pool the partition guard relies on
      *   (`FootprintWiring.readsFootprint`). Elsewhere every T1 would fall back to
      *   mode a, so a declared partitioned mode would only ever be a false label.
      * GLOBAL, mode a, is the default and is never refused here.
@@ -630,13 +632,14 @@ object StorageEnforcementSafety {
     ): List<DeploymentViolation> =
         buildList {
             if (storage.admissionLocking == AdmissionLocking.GLOBAL) return@buildList
-            if (settings.environment == ProductionPolicy.ENVIRONMENT) {
+            if (settings.environment != LAB_ENVIRONMENT) {
                 add(
                     DeploymentViolation(
                         LOCKING,
-                        "is ${storage.admissionLocking} in production; the share-partitioned T1 is a PROPOSED ADR-035 " +
-                            "amendment (docs/adr/0035-amendment-note-partitioned-t1-PROPOSED.md) and its release needs an " +
-                            "independent correctness review and an owner decision; production runs GLOBAL (mode a)",
+                        "is ${storage.admissionLocking} in environment '${settings.environment}'; the share-partitioned T1 is a " +
+                            "PROPOSED ADR-035 amendment (docs/adr/0035-amendment-note-partitioned-t1-PROPOSED.md), authorized " +
+                            "for implementation and testing in environment '$LAB_ENVIRONMENT' only; its release needs an " +
+                            "independent correctness review and an owner decision; every other environment runs GLOBAL (mode a)",
                     ),
                 )
             }

@@ -210,6 +210,8 @@ class IngestionWiring(
                 .footprint(declarations)
                 ?.cohort
                 ?.binding,
+            // V25: the node row says which T1 protocol it runs, for the activation inventory.
+            declarations.admissionLocking,
         )
 
     @Bean
@@ -303,6 +305,10 @@ class IngestionWiring(
             declarations.enforcement,
             guard,
             storageMetrics,
+            // The share-partitioned T1 is permitted in the lab only (DeploymentSafety refuses it elsewhere).
+            partitionedAllowed =
+                properties.deployment.environment ==
+                    email.testinbox.application.deployment.StorageEnforcementSafety.LAB_ENVIRONMENT,
         )
 
     /**
@@ -328,6 +334,7 @@ class IngestionWiring(
         transactionManager: PlatformTransactionManager,
         policy: StorageCapacityPolicy,
         declarations: StorageDeclarations,
+        storageMetrics: StorageProtocolMetrics,
     ): StorageAdmission =
         FootprintWiring.admission(
             JdbcStorageAdmission(
@@ -335,8 +342,9 @@ class IngestionWiring(
                 template(transactionManager),
                 readsFootprint = FootprintWiring.readsFootprint(declarations),
                 // GLOBAL (mode a) unless declared; DeploymentSafety refuses COHORT_PARTITIONED
-                // in production and wherever the partition guard could not engage.
+                // outside the lab and wherever the partition guard could not engage.
                 locking = declarations.admissionLocking,
+                onFallback = storageMetrics::partitionFallback,
             ),
             policy,
             declarations,

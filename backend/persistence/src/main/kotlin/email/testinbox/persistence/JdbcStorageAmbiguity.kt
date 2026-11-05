@@ -27,6 +27,13 @@ class JdbcStorageAmbiguity(
     private val transactions: TransactionTemplate,
     private val cohortMode: email.testinbox.domain.storage.StorageEnforcement = email.testinbox.domain.storage.StorageEnforcement.OFF,
     private val cohortBinding: String? = null,
+    /**
+     * V25: recorded on this node's row after every registration and heartbeat when
+     * it is not GLOBAL, so a row re-inserted by the heartbeat upsert never reads as
+     * mode a. GLOBAL leaves the statements exactly as they were (the column default).
+     */
+    private val admissionLocking: email.testinbox.application.storage.AdmissionLocking =
+        email.testinbox.application.storage.AdmissionLocking.GLOBAL,
 ) : StorageAmbiguity,
     StorageLatch {
     /**
@@ -192,6 +199,20 @@ class JdbcStorageAmbiguity(
             .param("cohortMode", cohortMode.name)
             .param("cohortBinding", cohortBinding)
             .update()
+        recordLocking(nodeId, generation)
+    }
+
+    private fun recordLocking(
+        nodeId: String,
+        generation: UUID,
+    ) {
+        if (admissionLocking == email.testinbox.application.storage.AdmissionLocking.GLOBAL) return
+        jdbc
+            .sql("UPDATE storage_node SET admission_locking = :locking WHERE node_id = :node AND generation = :generation")
+            .param("locking", admissionLocking.name)
+            .param("node", nodeId)
+            .param("generation", generation)
+            .update()
     }
 
     override fun heartbeat(
@@ -218,6 +239,7 @@ class JdbcStorageAmbiguity(
             .param("cohortBinding", cohortBinding)
             .query(Boolean::class.java)
             .single()
+            .also { recordLocking(nodeId, generation) }
 
     override fun markCleanShutdown(
         nodeId: String,

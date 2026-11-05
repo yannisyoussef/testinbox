@@ -127,6 +127,11 @@ object NodeInventoryCheck {
     /** The same staleness the cleaner uses to declare a generation dead. */
     val DEFAULT_STALE_AFTER: Duration = Duration.ofMinutes(5)
 
+    private const val GLOBAL_LOCKING = "GLOBAL"
+
+    /** Not "api", so it always stops admission ([Problem.stopsAdmission]). */
+    private const val LOCKING_ROLE = "admission-locking"
+
     /** One inventory problem, with the role of the node it concerns (`undeclared` for an extra node). */
     data class Problem(
         val role: String,
@@ -147,11 +152,12 @@ object NodeInventoryCheck {
         rows: List<StorageNodeRow>,
         now: Instant,
         staleAfter: Duration = DEFAULT_STALE_AFTER,
+        partitionedAllowed: Boolean = false,
     ): GateResult {
         if (!expected.declared) {
             return GateResult(ActivationGate.NODE_INVENTORY, GateVerdict.NOT_RUN, "no expected node inventory is declared")
         }
-        val problems = problems(expected, rows, now, staleAfter)
+        val problems = problems(expected, rows, now, staleAfter, partitionedAllowed)
         return if (problems.isEmpty()) {
             GateResult(
                 ActivationGate.NODE_INVENTORY,
@@ -163,11 +169,19 @@ object NodeInventoryCheck {
         }
     }
 
+    /**
+     * [partitionedAllowed]: whether a node may run the share-partitioned T1
+     * (PROPOSED ADR-035 amendment), true only in the `lab` environment. Anywhere
+     * else a live node declaring it is an inventory problem that stops admission,
+     * whatever its role: the startup refusal in `DeploymentSafety` can be bypassed
+     * by a process this one cannot see, the database row cannot.
+     */
     fun problems(
         expected: ExpectedNodes,
         rows: List<StorageNodeRow>,
         now: Instant,
         staleAfter: Duration = DEFAULT_STALE_AFTER,
+        partitionedAllowed: Boolean = false,
     ): List<Problem> {
         val live = rows.filter { !it.cleanShutdown }
         val healthy =
@@ -200,6 +214,20 @@ object NodeInventoryCheck {
         }
         for (node in (healthy - expected.all).sorted()) {
             problems += Problem("undeclared", "undeclared node '$node' is heartbeating with ${StorageProtocol.CAPABILITY}")
+        }
+        if (!partitionedAllowed) {
+            live
+                .filter { it.admissionLocking != GLOBAL_LOCKING && !it.heartbeatAt.isBefore(now.minus(staleAfter)) }
+                .map { it.nodeId to it.admissionLocking }
+                .distinct()
+                .sortedBy { it.first }
+                .forEach { (node, locking) ->
+                    problems +=
+                        Problem(
+                            LOCKING_ROLE,
+                            "node '$node' runs T1 with admission-locking $locking, a PROPOSED ADR-035 amendment permitted only in the lab",
+                        )
+                }
         }
         return problems
     }
@@ -249,6 +277,8 @@ class ActivationWatch(
     private val guard: ActivationGuard,
     private val metrics: StorageProtocolMetrics = StorageProtocolMetrics.NOOP,
     private val staleAfter: Duration = NodeInventoryCheck.DEFAULT_STALE_AFTER,
+    /** Only the `lab` environment may run the share-partitioned T1 ([NodeInventoryCheck.problems]). */
+    private val partitionedAllowed: Boolean = false,
 ) {
     data class Outcome(
         val sessions: GateResult,
@@ -308,7 +338,7 @@ class ActivationWatch(
         val sessions = SessionAllowlist.evaluate(inventory.sessions(), inventory.applicationRole())
         val rows = inventory.nodes()
         val now = inventory.now()
-        val nodes = NodeInventoryCheck.evaluate(expected, rows, now, staleAfter)
+        val nodes = NodeInventoryCheck.evaluate(expected, rows, now, staleAfter, partitionedAllowed)
         val outcome = Outcome(sessions, nodes)
         metrics.activationGate(ActivationGate.SESSION_ALLOWLIST, sessions.verdict == GateVerdict.PASS)
         metrics.activationGate(ActivationGate.NODE_INVENTORY, nodes.verdict == GateVerdict.PASS)
@@ -333,7 +363,7 @@ class ActivationWatch(
         val stopsAdmission =
             sessions.verdict != GateVerdict.PASS ||
                 nodes.verdict == GateVerdict.NOT_RUN ||
-                NodeInventoryCheck.problems(expected, rows, now, staleAfter).any { it.stopsAdmission }
+                NodeInventoryCheck.problems(expected, rows, now, staleAfter, partitionedAllowed).any { it.stopsAdmission }
         if (stopsAdmission) {
             guard.set(detail)
             log.error("storage_activation_violation enforcement {} with a broken barrier; this node answers 451: {}", enforcement, detail)

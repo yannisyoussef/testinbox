@@ -9,6 +9,7 @@ import email.testinbox.application.port.StorageAdmissionUnavailableException
 import email.testinbox.application.port.StorageReservationDraft
 import email.testinbox.application.port.StorageUsageSnapshot
 import email.testinbox.application.storage.AdmissionLocking
+import email.testinbox.application.storage.PartitionFallbackReason
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.storage.StorageUsage
@@ -86,6 +87,8 @@ open class JdbcStorageAdmission(
      * decision both rest on the cohort pool that statement reads.
      */
     val locking: AdmissionLocking = AdmissionLocking.GLOBAL,
+    /** Told why each share-partitioned T1 was decided by mode a (the closed-label fallback metric). */
+    private val onFallback: (PartitionFallbackReason) -> Unit = {},
 ) : StorageAdmissionStore {
     init {
         // Whole milliseconds: '0ms' would mean NO timeout, an unbounded wait.
@@ -117,13 +120,18 @@ open class JdbcStorageAdmission(
             "storage admission (T1) must not run inside another transaction"
         }
         if (locking == AdmissionLocking.COHORT_PARTITIONED) {
-            val decided = bounded { admitPartitioned(scope, decide) }
-            if (decided != null) {
-                partitionedCount.incrementAndGet()
-                return decided.outcome
+            when (val attempt = bounded { attemptPartitioned(scope, decide) }) {
+                is Attempt.Decided -> {
+                    partitionedCount.incrementAndGet()
+                    return attempt.outcome
+                }
+
+                // Nothing was written and every lock is released: mode a decides, in a new transaction.
+                is Attempt.FellBack -> {
+                    fallbackCount.incrementAndGet()
+                    onFallback(attempt.reason)
+                }
             }
-            // The guard did not hold: nothing was written and every lock is released.
-            fallbackCount.incrementAndGet()
         }
         return bounded {
             checkNotNull(
@@ -148,35 +156,70 @@ open class JdbcStorageAdmission(
             throw failure
         }
 
-    /** A partitioned decision, or null for "the guard does not hold". */
-    private class Partitioned<R : Any>(
-        val outcome: R,
-    )
+    /** A partitioned decision, or the reason mode a decides instead. */
+    private sealed interface Attempt<out R : Any> {
+        class Decided<R : Any>(
+            val outcome: R,
+        ) : Attempt<R>
+
+        class FellBack(
+            val reason: PartitionFallbackReason,
+        ) : Attempt<Nothing>
+    }
+
+    /** A per-workspace lock that could not be taken: never a 451 attributable to one workspace (I9). */
+    private class WorkspaceLockFallback(
+        val reason: PartitionFallbackReason,
+        cause: Throwable,
+    ) : RuntimeException(cause)
 
     /**
      * The share-partitioned transaction: `(35, 1)` SHARED, the per-workspace
      * locks in ascending key order, ONE statement, the caller's decision, the
-     * insert. Null, with the transaction rolled back before any write, when the
-     * partition guard read in that statement does not hold.
+     * insert. A fallback, with the transaction rolled back before any write, when
+     * a guard condition read in that statement does not hold, or when a
+     * per-workspace lock times out or is broken as a deadlock: that wait depends
+     * on one workspace's load, so its 451 would tell a sender which workspace an
+     * address belongs to (I9, ADR-025). The shared `(35, 1)` is everyone's, like
+     * mode a's exclusive one, so its timeout stays the global 451 it is in mode a.
      */
-    private fun <R : Any> admitPartitioned(
+    private fun <R : Any> attemptPartitioned(
         scope: StorageAdmissionScope,
         decide: (StorageUsageSnapshot) -> StorageAdmissionPlan<R>,
-    ): Partitioned<R>? =
-        transactions.execute { status ->
-            configureTransaction()
-            acquireSharedAdmissionLock()
-            acquireWorkspaceLocks(workspaceLockKeys(scope.workspaceIds.map { it.value }))
-            val snapshot = readPartitionedSnapshot(scope)
-            if (snapshot == null) {
-                status.setRollbackOnly()
-                null
-            } else {
-                val plan = decide(snapshot)
-                insert(plan.reservations)
-                Partitioned(plan.outcome)
-            }
+    ): Attempt<R> =
+        try {
+            checkNotNull(
+                transactions.execute { status ->
+                    configureTransaction()
+                    acquireSharedAdmissionLock()
+                    try {
+                        acquireWorkspaceLocks(workspaceLockKeys(scope.workspaceIds.map { it.value }))
+                    } catch (failure: RuntimeException) {
+                        throw WorkspaceLockFallback(workspaceLockFailure(failure) ?: throw failure, failure)
+                    }
+                    val (snapshot, refused) = readPartitioned(scope)
+                    if (refused != null) {
+                        status.setRollbackOnly()
+                        Attempt.FellBack(refused)
+                    } else {
+                        val plan = decide(snapshot)
+                        insert(plan.reservations)
+                        Attempt.Decided(plan.outcome)
+                    }
+                },
+            )
+        } catch (fallback: WorkspaceLockFallback) {
+            Attempt.FellBack(fallback.reason)
         }
+
+    private fun workspaceLockFailure(failure: Throwable): PartitionFallbackReason? {
+        val states = generateSequence(failure) { it.cause }.filterIsInstance<SQLException>().mapNotNull { it.sqlState }.toSet()
+        return when {
+            DEADLOCK_DETECTED in states -> PartitionFallbackReason.WORKSPACE_LOCK_DEADLOCK
+            states.any { it in TIMEOUT_STATES } -> PartitionFallbackReason.WORKSPACE_LOCK_TIMEOUT
+            else -> null
+        }
+    }
 
     /**
      * Stated, never inherited from a server or pool default (ADR-035 §4):
@@ -242,18 +285,22 @@ open class JdbcStorageAdmission(
 
     /**
      * Partitioned: one EXCLUSIVE `(38, k)` per distinct key of the involved
-     * workspaces, in the ascending order [workspaceLockKeys] returns: `unnest`
-     * yields the array in order and the aggregate consumes it in that order, so
-     * every T1 acquires its keys in one global order, and two T1s cannot wait for
-     * each other's keys (no cycle). A key collision only serializes two workspaces.
+     * workspaces, ONE STATEMENT PER KEY, in the ascending order of the keys
+     * themselves ([workspaceLockKeys]). The order is the program's, never an
+     * executor's, so every T1 acquires its keys in one global order and two T1s
+     * cannot wait for each other's keys (no cycle). A key collision only
+     * serializes two workspaces. At most one statement per distinct workspace of
+     * the event (≤ 50), all outside any global exclusive lock.
      */
     protected open fun acquireWorkspaceLocks(keys: List<Int>) {
-        jdbc
-            .sql("SELECT count(pg_advisory_xact_lock(:class, k)) FROM unnest(CAST(:keys AS int[])) AS t(k)")
-            .param("class", WORKSPACE_LOCK_CLASS)
-            .param("keys", intArray(keys), Types.ARRAY)
-            .query(Long::class.java)
-            .single()
+        for (key in keys) {
+            jdbc
+                .sql("SELECT pg_advisory_xact_lock(:class, :key)")
+                .param("class", WORKSPACE_LOCK_CLASS)
+                .param("key", key)
+                .query()
+                .singleRow()
+        }
     }
 
     /**
@@ -315,40 +362,20 @@ open class JdbcStorageAdmission(
      */
     val partitionedStatement: String? by lazy {
         if (locking == AdmissionLocking.COHORT_PARTITIONED) {
-            statement("", partitionedGlobalRow(partitionGuard()), guardColumn = ", NULL::boolean")
+            statement("", PartitionedT1Sql.globalRow(partitionGuard()), guardColumn = PartitionedT1Sql.NO_GUARD)
         } else {
             null
         }
     }
 
     /**
-     * The partition guard, evaluated in the statement's own snapshot (the V25
-     * function is STABLE, so it reads the calling statement's snapshot):
-     * - an APPROVED plan whose recorded V25 bound carries the plan's exact binding
-     *   and fingerprint (a re-reserved pool, by any binary, is not partitioned
-     *   until its own bound is recorded);
-     * - 30 participant places + every legacy share within that bound
-     *   (`storage_partition_within_bound()`), i.e. not overcommitted;
-     * - every workspace of this event holds a share (an unshared or legacy-less
-     *   workspace is decided by mode a).
-     * A test mutant overrides this to prove the guard is load-bearing; nothing else does.
+     * The partition guard's four columns ([PartitionedT1Sql]): G1 an approved
+     * plan with its own recorded bound, G2 not overcommitted, G3 every involved
+     * workspace shared, G4 no uncharged debt of a shared workspace. A test mutant
+     * overrides this to prove each condition is load-bearing; the architecture
+     * suite forbids any main-code subclass from doing so.
      */
-    protected open fun partitionGuard(): String = PARTITION_GUARD
-
-    private fun partitionedGlobalRow(guard: String): String =
-        """-- Share-partitioned T1 (PROPOSED amendment, gate D W1): NO global sum. Every
-        -- live and reserved byte belongs to a share the guard below proves fits the
-        -- declarations, so the global ceilings hold by that partition, not by these
-        -- figures (docs/adr/0035-benchmark/partitioned-t1-correctness.md). Debt, trash,
-        -- trust, the observation and the WHOLE cohort pool are still read, and decided.
-        SELECT 'GLOBAL' AS scope, NULL::uuid AS id, NULL::uuid AS owner, now() AS t0,
-               0::numeric AS committed, 0::numeric AS reserved,
-               0::numeric AS committed_objects, 0::numeric AS reserved_objects,
-               NULL::bigint AS payload_limit, NULL::bigint AS footprint_limit,
-               NULL::numeric AS cleanup_bytes,NULL::numeric AS cleanup_objects,
-               NULL::boolean AS inactive,
-               ${FootprintSql.PARTITIONED_COLUMNS},
-               $guard AS partition_ok"""
+    protected open fun partitionGuard(): String = PartitionedT1Sql.columns()
 
     /**
      * The ONE statement's text, built from the parts mode a and the partitioned
@@ -426,22 +453,23 @@ open class JdbcStorageAdmission(
     }
 
     /**
-     * The partitioned statement, ONE snapshot: the figures, and whether the
-     * partition guard holds in that snapshot. Null when it does not: the caller
-     * then writes nothing and runs mode a.
+     * The partitioned statement, ONE snapshot: the figures, and the first guard
+     * condition that does not hold in that snapshot (null when the partition holds).
      */
-    protected open fun readPartitionedSnapshot(scope: StorageAdmissionScope): StorageUsageSnapshot? {
-        var guard: Boolean? = null
+    private fun readPartitioned(scope: StorageAdmissionScope): Pair<StorageUsageSnapshot, PartitionFallbackReason?> {
+        var guard: List<Boolean?> = emptyList()
         val rows =
             jdbc
                 .sql(checkNotNull(partitionedStatement))
                 .param("workspaces", uuidArray(scope.workspaceIds.map { it.value }), Types.ARRAY)
                 .param("inboxes", uuidArray(scope.inboxIds.map { it.value }), Types.ARRAY)
                 .query { rs, _ ->
-                    if (rs.getString("scope") == "GLOBAL") guard = rs.getBoolean("partition_ok") && !rs.wasNull()
+                    if (rs.getString("scope") == "GLOBAL") {
+                        guard = PartitionedT1Sql.GUARD_COLUMN_NAMES.map { rs.getBoolean(it).takeUnless { rs.wasNull() } }
+                    }
                     snapshotRow(rs)
                 }.list()
-        return if (guard == true) snapshot(rows) else null
+        return snapshot(rows) to PartitionedT1Sql.reason(guard)
     }
 
     private fun snapshot(rows: List<SnapshotRow>): StorageUsageSnapshot {
@@ -464,16 +492,6 @@ open class JdbcStorageAdmission(
             inactiveWorkspaces = rows.filter { it.scope == "WORKSPACE" && it.inactive }.mapTo(HashSet()) { WorkspaceId(it.id!!) },
         )
     }
-
-    /** One `int[]` bind of advisory keys, in the order given. */
-    private fun intArray(keys: List<Int>): AbstractSqlTypeValue =
-        object : AbstractSqlTypeValue() {
-            override fun createTypeValue(
-                connection: Connection,
-                sqlType: Int,
-                typeName: String?,
-            ): Any = connection.createArrayOf("int4", keys.toTypedArray())
-        }
 
     /** One `uuid[]` bind: the statement text no longer depends on how many ids an event carries. */
     private fun uuidArray(ids: List<UUID>): AbstractSqlTypeValue =
@@ -598,20 +616,15 @@ open class JdbcStorageAdmission(
         const val WORKSPACE_LOCK_CLASS = 38
 
         /**
-         * Distinct and ascending: the one global acquisition order that makes the
-         * per-workspace locks deadlock-free. `UUID.hashCode` is specified by the
-         * JDK (the XOR of the four 32-bit words), so every node computes the same
-         * key for a workspace; a collision only serializes two workspaces.
+         * Distinct, and ascending by the KEY itself: the one global acquisition
+         * order that makes the per-workspace locks deadlock-free. Deduplicating and
+         * sorting the keys (not the workspaces) is what makes a collision safe: two
+         * colliding workspaces of one event take their one shared key once, and
+         * across events every key still comes in the same order. `UUID.hashCode` is
+         * specified by the JDK (the XOR of the four 32-bit words), so every node
+         * computes the same key for a workspace; a collision only serializes.
          */
         fun workspaceLockKeys(workspaces: Collection<UUID>): List<Int> = workspaces.map { it.hashCode() }.distinct().sorted()
-
-        /** See [partitionGuard]. `cp_shares` is the cohort pool's share inventory CTE ([CohortSql]). */
-        const val PARTITION_GUARD =
-            """coalesce((SELECT p.approved AND b.binding = p.binding AND b.fingerprint = p.fingerprint
-                         FROM storage_cohort_plan p JOIN storage_partition_bound b ON b.id
-                        WHERE p.id), false)
-               AND storage_partition_within_bound()
-               AND NOT EXISTS (SELECT 1 FROM ws WHERE NOT EXISTS (SELECT 1 FROM cp_shares s WHERE s.workspace_id = ws.id))"""
 
         /** How much longer than the lock timeout any one T1 statement may run. */
         private val STATEMENT_MARGIN: Duration = Duration.ofSeconds(5)
@@ -624,5 +637,8 @@ open class JdbcStorageAdmission(
          * (statement_timeout) and `idle_in_transaction_session_timeout`.
          */
         private val TIMEOUT_STATES = setOf("55P03", "57014", "25P03")
+
+        /** PostgreSQL's `deadlock_detected`. */
+        private const val DEADLOCK_DETECTED = "40P01"
     }
 }

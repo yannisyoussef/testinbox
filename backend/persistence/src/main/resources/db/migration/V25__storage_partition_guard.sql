@@ -3,14 +3,21 @@
 -- correctness argument docs/adr/0035-benchmark/partitioned-t1-correctness.md).
 -- Owner decision 2026-11-05: implementation and testing authorized, release not.
 --
--- Expand-only: one new table, one invoker function, two definer trigger functions
--- and their triggers. Nothing is dropped, renamed or narrowed.
+-- Expand-only: one new table, one new column on storage_node, one invoker function,
+-- two definer trigger functions and their triggers. Nothing is dropped, renamed or
+-- narrowed. (Amended in place after review #136, before any deployment: V25 had
+-- only ever run in tests.)
 --
--- Mode a (testinbox.storage.admission-locking = GLOBAL, the default) is unchanged:
--- its T1 never reads anything created here. The triggers below fence writes to the
--- share tables, which every application writer already does under (35, 1)
--- EXCLUSIVE (JdbcBetaAdmissions.lockPolicy, JdbcCohortBudgets.lockClosed); for
--- those writers the lock is re-entrant and changes nothing.
+-- What this changes under mode a (testinbox.storage.admission-locking = GLOBAL, the
+-- default): mode a's T1 STATEMENT reads nothing created here and is unchanged byte
+-- for byte. Everything else below applies whatever the switch says:
+-- * every write to the share tables, the plan or the bound now takes (35, 1)
+--   EXCLUSIVE (re-entrant for JdbcBetaAdmissions.lockPolicy and
+--   JdbcCohortBudgets.lockClosed, which already hold it; new for owner SQL);
+-- * such a write is refused outside READ COMMITTED and SERIALIZABLE (below);
+-- * the pool reserve also records the partition bound, and a commit that leaves
+--   the shares above a bound matching the approved plan is refused;
+-- * storage_node gains admission_locking, which the activation inventory reads.
 --
 -- What the partitioned T1 relies on, enforced HERE rather than in application code:
 -- * NON-OVERCOMMIT. storage_partition_bound records, for the approved pool's exact
@@ -27,6 +34,17 @@
 --   changed inventory no longer matches the plan's fingerprint, so the cohort
 --   readiness that T1 reads in the same snapshot refuses (451) exactly as mode a's
 --   does; past the bound, the guard below also sends it to mode a.
+-- * ISOLATION. The fence lock is taken by a BEFORE STATEMENT trigger, after a
+--   REPEATABLE READ transaction's snapshot; its deferred check would then judge
+--   a stale snapshot, and two such writers could each pass and jointly overcommit
+--   (review #136, P2). So a share write is refused unless the transaction is READ
+--   COMMITTED (the check's statements take fresh snapshots after the fence) or
+--   SERIALIZABLE (SSI aborts that write skew).
+-- * A STALE BOUND does not bind. The bound check applies only while the bound's
+--   binding and fingerprint match the APPROVED plan; an older artifact that
+--   re-reserves without recording a bound changes the plan, so the bound it never
+--   knew about cannot refuse it (G1 then keeps every T1 on mode a). See
+--   docs/dev/rollback.md.
 -- * The participant places are counted as all THIRTY at V19's pinned ceilings
 --   (ADR-037: reserve every place before the first participant), whatever rows
 --   exist; V19's CHECKs and UNIQUE (cohort_id, place) with place 1..30 already
@@ -65,6 +83,11 @@ CREATE FUNCTION storage_partition_share_fence() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
+    IF current_setting('transaction_isolation') NOT IN ('read committed', 'serializable') THEN
+        RAISE EXCEPTION 'share, plan and partition-bound writes run under READ COMMITTED or SERIALIZABLE only, not %',
+            current_setting('transaction_isolation')
+            USING ERRCODE = 'invalid_transaction_state';
+    END IF;
     PERFORM pg_advisory_xact_lock(35, 1);
     RETURN NULL;
 END
@@ -76,7 +99,9 @@ CREATE FUNCTION storage_partition_bound_check() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM storage_partition_bound) AND NOT storage_partition_within_bound() THEN
+    IF EXISTS (SELECT 1 FROM storage_partition_bound b JOIN storage_cohort_plan p ON p.id
+                WHERE b.id AND p.approved AND p.binding = b.binding AND p.fingerprint = b.fingerprint)
+       AND NOT storage_partition_within_bound() THEN
         RAISE EXCEPTION 'storage shares exceed the recorded partition bound: cohort growth past the approved capacity is refused (ADR-037 §2)'
             USING ERRCODE = 'check_violation';
     END IF;
@@ -99,6 +124,15 @@ CREATE CONSTRAINT TRIGGER storage_partition_bound_check AFTER INSERT OR UPDATE O
     DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION storage_partition_bound_check();
 CREATE CONSTRAINT TRIGGER storage_partition_bound_check AFTER INSERT OR UPDATE ON storage_partition_bound
     DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION storage_partition_bound_check();
+CREATE CONSTRAINT TRIGGER storage_partition_bound_check AFTER INSERT OR UPDATE ON storage_cohort_plan
+    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION storage_partition_bound_check();
+
+-- The lock protocol each node runs T1 with, for the activation inventory
+-- (NodeInventoryCheck refuses a non-GLOBAL node outside the lab) and gate L of
+-- scripts/check-storage-activation.sh. A row written by an artifact that predates
+-- the switch runs mode a, which is what the default says.
+ALTER TABLE storage_node ADD COLUMN admission_locking text NOT NULL DEFAULT 'GLOBAL'
+    CHECK (admission_locking IN ('GLOBAL', 'COHORT_PARTITIONED'));
 
 -- The trigger functions run as their owner from the triggers only; the guard
 -- function is granted to the ingestion role explicitly (roles.reference.sql).

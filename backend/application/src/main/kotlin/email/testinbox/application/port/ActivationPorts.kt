@@ -14,6 +14,8 @@ data class StorageNodeRow(
     val capability: String,
     val heartbeatAt: Instant,
     val cleanShutdown: Boolean,
+    /** V25: the T1 lock protocol the node declared (`GLOBAL` for rows of artifacts that predate it). */
+    val admissionLocking: String = "GLOBAL",
 )
 
 /**

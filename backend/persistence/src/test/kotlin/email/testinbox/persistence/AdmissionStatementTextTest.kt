@@ -44,7 +44,7 @@ class AdmissionStatementTextTest {
     }
 
     @Test
-    fun `the partitioned statement reads no global sum and carries the guard, in one statement`() {
+    fun `the partitioned statement reads no g_star global sum and carries the four guard conditions, in one statement`() {
         val text = checkNotNull(store(readsFootprint = true, locking = AdmissionLocking.COHORT_PARTITIONED).partitionedStatement)
         text shouldNotContain "g_base"
         text shouldNotContain "g_delta"
@@ -52,7 +52,8 @@ class AdmissionStatementTextTest {
         text shouldNotContain "storage_global_base"
         text shouldContain "storage_partition_within_bound()"
         text shouldContain "storage_partition_bound b"
-        text shouldContain "AS partition_ok"
+        for (column in listOf("g_plan", "g_bound", "g_shares", "g_debt")) text shouldContain "AS $column"
+        text shouldContain "workspace_deletion_charge c WHERE c.debt_id = d.id"
         // The cohort pool, the debt, the observation and trust are still read and decided.
         text shouldContain "'shares'"
         text shouldContain "fp_debt"

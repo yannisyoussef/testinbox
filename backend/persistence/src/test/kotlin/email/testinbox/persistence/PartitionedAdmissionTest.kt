@@ -50,175 +50,7 @@ import kotlin.random.Random
  * No sleep decides any interleaving: latches, and pg_stat_activity's blocked
  * sessions, do.
  */
-class PartitionedAdmissionTest : PersistenceIntegrationTest() {
-    @Autowired lateinit var admin: JdbcClient
-
-    private lateinit var db: LedgerTestDatabase
-    private lateinit var fx: AdmissionFixture
-    private val gib = 1L shl 30
-
-    /** Each shared workspace's payload share: ten copies of [COPY] bytes. */
-    private val payloadShare = 10 * COPY
-    private val footprintShare = 1L shl 20
-
-    private val declarations =
-        StorageDeclarations(
-            enforcement = StorageEnforcement.ALL,
-            globalLimitBytes = 10 * gib,
-            declaredBucketQuotaBytes = 20 * gib,
-            declaredMaxIngestionProcesses = 1,
-            inboxShare = "1",
-            expectedApiNodes = setOf("api"),
-            expectedIngestionNodes = setOf("smtp"),
-            filesystem =
-                FilesystemDeclarations(
-                    4096,
-                    32768,
-                    16 * gib,
-                    2 * gib,
-                    gib,
-                    2 * gib,
-                    32 * gib,
-                    8_000_000,
-                    Duration.ofMinutes(15),
-                    256L shl 20,
-                    PersistenceIntegrationTest.postgres.username,
-                ),
-            admissionLocking = AdmissionLocking.COHORT_PARTITIONED,
-        )
-    private val tenantPolicy: StorageCapacityPolicy = policy(workspace = 2 * gib, share = "1", global = 10 * gib)
-
-    @BeforeEach
-    fun database() {
-        db = LedgerTestDatabase.create(postgres, admin)
-        fx = AdmissionFixture(db)
-    }
-
-    // --- the closed cohort -----------------------------------------------------------------------
-
-    private class Cohort(
-        val workspaces: List<UUID>,
-        val inboxes: Map<UUID, List<UUID>>,
-    )
-
-    private val tx =
-        object : TransactionRunner {
-            override fun <T> required(block: () -> T): T = checkNotNull(db.transactions.execute { block() })
-        }
-
-    private fun observation() {
-        val order = db.beginObservation()
-        db.jdbc
-            .sql(
-                """INSERT INTO storage_filesystem_observation(started_seq,source,block_size_bytes,capacity_bytes,used_bytes,avail_bytes,inodes_total,inodes_used,trash_bytes,minio_sys_bytes)
-            VALUES (?,'partitioned-test',4096,?,0,?,8000000,0,0,0)""",
-            ).params(order, 32 * gib, 32 * gib)
-            .update()
-    }
-
-    /** [n] workspaces, every one with a legacy share, the pool reserved and approved by production's use case. */
-    private fun closedCohort(n: Int = 3): Cohort {
-        val workspaces = List(n) { db.workspace() }
-        val inboxes = workspaces.associateWith { ws -> List(3) { db.inbox(ws) } }
-        val binding = checkNotNull(EffectiveStoragePolicy.footprint(declarations)?.cohort?.binding)
-        for (node in listOf("api", "smtp")) {
-            db.jdbc
-                .sql(
-                    "INSERT INTO storage_node(node_id,generation,capability,heartbeat_at,clean_shutdown," +
-                        "cohort_capability,cohort_mode,cohort_binding) VALUES (?,?,'storage-guarded-v1',now(),false,'cohort-storage-v1','ALL',?)",
-                ).params(node, UUID.randomUUID(), binding)
-                .update()
-        }
-        db.ledger.confirmTrust() shouldBe true
-        observation()
-        reserve(workspaces.associate { WorkspaceId(it) to LegacyStorageShare(payloadShare, footprintShare) })
-        return Cohort(workspaces, inboxes)
-    }
-
-    private fun reserve(legacy: Map<WorkspaceId, LegacyStorageShare>) =
-        ReserveCohortStorage(JdbcCohortBudgets(db.jdbc), tx, JdbcFootprintGate(db.jdbc), declarations).execute(legacy, gib, gib)
-
-    private fun partitioned(lockTimeout: Duration = JdbcStorageAdmission.DEFAULT_LOCK_TIMEOUT) =
-        JdbcStorageAdmission(db.jdbc, db.transactions, lockTimeout, readsFootprint = true, locking = AdmissionLocking.COHORT_PARTITIONED)
-
-    private fun modeA() = JdbcStorageAdmission(db.jdbc, db.transactions, readsFootprint = true)
-
-    private fun admission(store: StorageAdmissionStore) =
-        StorageAdmission(store, tenantPolicy, StorageEnforcement.ALL, footprint = EffectiveStoragePolicy.footprint(declarations))
-
-    private fun admit(
-        store: StorageAdmissionStore,
-        vararg copies: Pair<UUID, UUID>,
-    ): StorageAdmissionResult = admission(store).admit(fx.request(COPY, copies.map { fx.candidate(it.first, it.second) }))
-
-    // --- concurrency helpers ---------------------------------------------------------------------
-
-    /** Pauses inside T1, holding whatever that T1 holds, after its read and before its decision. */
-    private class Paused(
-        private val delegate: StorageAdmissionStore,
-    ) : StorageAdmissionStore {
-        val reachedDecision = CountDownLatch(1)
-        val release = CountDownLatch(1)
-
-        override fun <R : Any> admit(
-            scope: StorageAdmissionScope,
-            decide: (StorageUsageSnapshot) -> StorageAdmissionPlan<R>,
-        ): R =
-            delegate.admit(scope) { snapshot ->
-                reachedDecision.countDown()
-                check(release.await(60, TimeUnit.SECONDS)) { "never released" }
-                decide(snapshot)
-            }
-    }
-
-    private fun awaitBlockedOrDone(future: Future<*>): Boolean {
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
-        while (System.nanoTime() < deadline) {
-            if (future.isDone) return false
-            val blocked =
-                db.jdbc
-                    .sql(
-                        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND cardinality(pg_blocking_pids(pid)) > 0",
-                    ).query(Int::class.java)
-                    .single()
-            if (blocked > 0) return true
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5))
-        }
-        error("the second operation neither blocked nor finished")
-    }
-
-    private data class Race<T>(
-        val first: StorageAdmissionResult,
-        val second: T,
-        val secondWasBlocked: Boolean,
-    )
-
-    /** A T1 on [first] pauses inside its transaction; [second] then runs; only after it blocked or finished does the T1 continue. */
-    private fun <T> race(
-        store: StorageAdmissionStore,
-        first: List<Pair<UUID, UUID>>,
-        second: () -> T,
-    ): Race<T> {
-        val paused = Paused(store)
-        val pool = Executors.newFixedThreadPool(2)
-        try {
-            val a = pool.submit<StorageAdmissionResult> { admit(paused, *first.toTypedArray()) }
-            check(paused.reachedDecision.await(30, TimeUnit.SECONDS)) { "the first T1 never reached its decision" }
-            val b = pool.submit<T> { second() }
-            val blocked = awaitBlockedOrDone(b)
-            paused.release.countDown()
-            return Race(a.get(30, TimeUnit.SECONDS), b.get(30, TimeUnit.SECONDS), blocked)
-        } finally {
-            pool.shutdownNow()
-        }
-    }
-
-    private fun legacyBound(): Pair<Long, Long> =
-        db.jdbc
-            .sql("SELECT payload_capacity_bytes, footprint_capacity_bytes FROM storage_partition_bound")
-            .query { rs, _ -> rs.getLong(1) to rs.getLong(2) }
-            .single()
-
+class PartitionedAdmissionTest : PartitionedAdmissionFixture() {
     // --- 1. a closed cohort partitions, and decides as mode a ------------------------------------
 
     @Test
@@ -510,7 +342,7 @@ class PartitionedAdmissionTest : PersistenceIntegrationTest() {
         store.partitionFallbacks shouldBe 1
         val guardless =
             object : JdbcStorageAdmission(db.jdbc, db.transactions, readsFootprint = true, locking = AdmissionLocking.COHORT_PARTITIONED) {
-                override fun partitionGuard() = "true"
+                override fun partitionGuard() = PartitionedT1Sql.columns("true", "true", "true", "true")
             }
         admitTight(guardless).shape() shouldBe listOf("admitted", "admitted")
         guardless.partitionedAdmissions shouldBe 1
@@ -552,9 +384,5 @@ class PartitionedAdmissionTest : PersistenceIntegrationTest() {
             .sql("SELECT storage_partition_within_bound()")
             .query(Boolean::class.java)
             .single() shouldBe true
-    }
-
-    private companion object {
-        const val COPY = 100L
     }
 }

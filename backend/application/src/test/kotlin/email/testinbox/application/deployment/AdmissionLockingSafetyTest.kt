@@ -15,7 +15,7 @@ import java.time.Duration
  * `testinbox.storage.admission-locking` (PROPOSED share-partitioned T1, gate D W1).
  * Owner decision 2026-11-05: implementation and testing authorized, release not.
  * GLOBAL (mode a) is the default and never refused; COHORT_PARTITIONED is refused
- * in production whatever else is declared, and anywhere it could not engage.
+ * in every environment but `lab` (issue #102 precedent), and wherever it could not engage.
  */
 class AdmissionLockingSafetyTest {
     private val gib = 1024L * 1024 * 1024
@@ -82,11 +82,16 @@ class AdmissionLockingSafetyTest {
         }
     }
 
+    private val lab = staging.copy(environment = "lab", mailDomain = "lab.testinbox.test", activeProfiles = setOf("lab"))
+
     @Test
-    fun `COHORT_PARTITIONED under ALL with a declared filesystem is accepted outside production`() {
+    fun `COHORT_PARTITIONED under ALL with a declared filesystem is accepted in the lab, and only there`() {
         val partitioned = all.copy(admissionLocking = AdmissionLocking.COHORT_PARTITIONED)
-        locking(staging, partitioned).shouldBeEmpty()
-        DeploymentSafety.validate(staging.copy(storage = partitioned)).shouldBeEmpty()
+        locking(lab, partitioned).shouldBeEmpty()
+        for (environment in listOf("staging", "production", "rehearsal", "")) {
+            locking(staging.copy(environment = environment), partitioned).map { it.problem }.single() shouldContain
+                "in environment '$environment'"
+        }
     }
 
     @Test
@@ -98,7 +103,7 @@ class AdmissionLockingSafetyTest {
     @Test
     fun `COHORT_PARTITIONED is refused wherever its guard could not engage`() {
         for (mode in listOf(StorageEnforcement.OFF, StorageEnforcement.TENANT_LIMITS)) {
-            locking(staging, all.copy(enforcement = mode, admissionLocking = AdmissionLocking.COHORT_PARTITIONED))
+            locking(lab, all.copy(enforcement = mode, admissionLocking = AdmissionLocking.COHORT_PARTITIONED))
                 .map { it.problem }
                 .single() shouldContain "only ALL with a declared filesystem"
         }

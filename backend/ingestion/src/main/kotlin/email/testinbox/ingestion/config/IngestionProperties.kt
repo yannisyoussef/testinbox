@@ -5,6 +5,7 @@ import email.testinbox.application.BackendIdentityProperties
 import email.testinbox.application.LimitsProperties
 import email.testinbox.application.StorageDeclarationsFactory
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.storage.AdmissionLocking
 import email.testinbox.application.storage.QualificationRecord
 import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.domain.storage.StorageEnforcement
@@ -76,8 +77,7 @@ data class IngestionProperties(
          * and outside `ALL` with a declared filesystem, and every node exports the
          * value as `testinbox_storage_admission_locking` for the activation barrier.
          */
-        val admissionLocking: email.testinbox.application.storage.AdmissionLocking =
-            email.testinbox.application.storage.AdmissionLocking.GLOBAL,
+        val admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
     )
 
     /** The framework-free declarations `DeploymentSafety` and `EffectiveStoragePolicy` read (ADR-035 §18). */

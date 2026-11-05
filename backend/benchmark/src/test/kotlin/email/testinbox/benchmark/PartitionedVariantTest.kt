@@ -70,7 +70,7 @@ class PartitionedVariantTest {
         globalRow shouldNotContain "g_base"
         globalRow shouldNotContain "g_delta"
         globalRow shouldNotContain "g_reserved"
-        globalRow shouldContain "partition_ok"
+        globalRow shouldContain "g_debt"
         globalRow shouldContain "storage_partition_within_bound()"
     }
 
