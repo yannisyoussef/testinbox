@@ -17,7 +17,7 @@ The tools:
 |---|---|
 | `scripts/build-qualification-record.py` | the offline generator: verifies the bundle's `SHA256SUMS` first, then builds the record, `PROVENANCE.md` and the evidence copy; refuses (exit 1, nothing written) on any gap |
 | `docs/adr/0035-benchmark/qualification/production-expected.json` | the **FIXED** values (below). Not a record, never shipped. A bundle that measures anything else is refused |
-| `scripts/build-qualification-record.test.sh` | 35 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
+| `scripts/build-qualification-record.test.sh` | 43 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
 | `backend/storage/src/test/.../GeneratedQualificationRecordTest.kt` | the generator's output on the fake bundle (golden file, byte-compared by the shell test) loads through the real `QualificationRecords.parse`, is eligible and has no production gap |
 
 ## Value status
@@ -67,7 +67,7 @@ An eligible record has no LAB or POST-REBOOT member. The generator cannot emit e
 | `qualification.evidenceReference` | DERIVED | `docs/adr/0035-benchmark/qualification/production-<date>/` | — | DERIVED |
 | `qualification.procedure`, `cMaxSeconds` | CODE | the repository procedure; `900` (ADR-035 §9 C_max) | — | CODE |
 | `qualification.scenarios`, `trials`, `lateCommits`, `slowWExecuted`, `slowWMaxCommitLagAfterCompletedWitnessS` | FROM-N1 (§9a sweep incl. slow-W) | **recomputed from raw** with the staging `gen-record.py` criteria: 0 late commits, every base-W visible, every freeze witness blocked, ≥ 18 dm slow-W trials, lag ≤ C_max, every key swept ≥ 17 min after its pass | `qualification-9a/{main,v3,slow}/results-slow.jsonl`, `sweep-slow.jsonl`, `orchestrator.log` | PROD-QUAL |
-| `qualification.slowWMechanism` | FROM-N1 | Ops' statement; every slow trial's `slow_mode` must be `dm` | `qualification-9a/venue.json` | PROD-QUAL |
+| `qualification.slowWMechanism` | FROM-N1 | Ops' statement; every slow trial's `slow_mode` must be `dm`. The venue (R3) is the final filesystem, or Ops' own loop image on `/` under dm-delay labelled `9a: "loop-image-on-root + dm-delay(slow-W)"` whose `dumpe2fs -h` shows the final filesystem's features, block size and inode size; `qualification.platform` and `PROVENANCE.md` name it | `qualification-9a/venue.json`, `qualification-9a/venue-dumpe2fs-h.txt` (own image only) | PROD-QUAL |
 | `qualification.experimentArtifact` (additive member) | FROM-N1 | `{sourceSha, apiDigest, ingestionDigest}`; must equal what E5, E6, E8–E11 each name (verdict R3/R4, D3) | `MANIFEST.json`, `experiments/E*.json` | PROD-QUAL |
 | `filesystem.uuid`, `type`, `mountOptions`, `mountSource` | FIXED `c33e14fd-6b6f-4f05-881e-dbc4db22c964`, `ext4`, `rw,relatime`, `/var/lib/testinbox-minio/ext4.img` | gate F evidence = baselines (post-reboot and post-cleanup) = `dumpe2fs -h` | `gate-f/filesystem-evidence.json`, `identity/fs-baseline-post-*.txt`, `identity/dumpe2fs-h.txt` | PROD-NOW |
 | `filesystem.objectOverheadMaxBytes` (O_max) | FROM-N1 (E1–E3) | the O_max that E1–E3's PASS criterion was evaluated against (`measurements.oMaxBytes`, identical in all three). Every `worstObjectOverheadBytes` must be ≤ it. It must be a multiple of B and at least 6·B. It stays 24,576 only if the final filesystem measures within it (verdict 2.1 (g)) | `experiments/E1.json`, `E2.json`, `E3.json` | PROD-QUAL |
@@ -111,6 +111,8 @@ identity/qualification-check-observed.json qualification-check.py --environment 
                                             `normalization` and `path` are read)
 identity/upload-impl-identity.txt          the candidate SHA + digests, and its StorageProtocol version line
 qualification-9a/venue.json                {"filesystemUuid","kernelRelease","minioPlatformMemberDigest","slowWMechanism"}
+                                            + "9a": "loop-image-on-root + dm-delay(slow-W)" when §9a ran on Ops' own image
+qualification-9a/venue-dumpe2fs-h.txt      dumpe2fs -h of that own image (required with the label; R3)
 qualification-9a/orchestrator.log          run-slow.sh's orchestrator log
 qualification-9a/{main,v3,slow}/           run-slow.sh's per-pass output, unchanged: results-slow.jsonl, sweep-slow.jsonl,
                                             uname.txt, mount.txt, minio-binary.sha256, harness-minio-capture.txt (+ any others)
@@ -232,12 +234,15 @@ fs-monitor use one metadata definition (`scripts/adr035-metadata-accounting.py`)
 
 ## Open questions for Ops
 
-1. **§9a venue.** The harness slow-W uses dm-delay over a loop device. On prod-gra-01, which filesystem holds the
-   qualification MinIO's data during the sweep? Is it the final filesystem `c33e14fd…` directly, or an image on it
-   under a dm-delay mapper?
-   - `venue.json.filesystemUuid` must be `c33e14fd…` (verdict R3).
-   - If the data sits on a nested filesystem, state that in `venue.json` (for example
-     `"nesting": "ext4 image on c33e14fd… under dm-delay"`). The record text will carry it.
+1. **§9a venue (answered; R3 adjusted).** Ops runs §9a on its own 3 GiB loop image on `/` under dm-delay, by design,
+   so the venue's uuid is not `c33e14fd…`. The generator accepts exactly two venues:
+   - the final filesystem (`venue.json.filesystemUuid` = `c33e14fd…`);
+   - Ops' own image, labelled `"9a": "loop-image-on-root + dm-delay(slow-W)"`, with
+     `qualification-9a/venue-dumpe2fs-h.txt`. Its UUID must be the venue's, and its features, block size and inode size
+     must be the final filesystem's. Kernel, MinIO member, binary, runtime configuration and mount type/options must
+     also be equal (from every pass's raw output).
+
+   Anything else is refused. The record's `qualification.platform` names the venue. Note §10 has the details.
 2. **The experiment JSON format** above is a proposal. Can N1's tooling emit it directly, or does Ops need a converter?
    The generator fixes only the members listed; any extra member is allowed.
 3. **`qualification-check-observed.json`.** Run qualification-check post-reboot with `--no-latch --evidence`

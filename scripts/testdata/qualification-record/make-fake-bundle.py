@@ -5,7 +5,7 @@ Every value is plainly fake (host fake-host-0, kernel 0.0.0-fake, uuid 00000000-
 year 2000) so nothing here can be mistaken for production evidence. Deterministic: the same arguments always write
 the same bytes, so the generator's output can be compared with a committed golden record.
 
-    make-fake-bundle.py <out-dir> [--e7 final-filesystem|carried]
+    make-fake-bundle.py <out-dir> [--e7 final-filesystem|carried] [--venue-9a final-filesystem|own-image]
 writes <out-dir>/bundle/ (with SHA256SUMS), <out-dir>/expected.json and <out-dir>/repo/ (a minimal repository
 root: StorageProtocol.kt and an ADR-035 text that, with --e7 carried, contains the fake amendment note).
 """
@@ -16,6 +16,7 @@ REAL_REPO = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 HOST = "fake-host-0"
 KERNEL = "0.0.0-fake"
 UUID = "00000000-0000-4000-8000-0000000fa4e0"
+VENUE_UUID = "00000000-0000-4000-8000-00000009a4e0"  # Ops' own §9a loop image (R3), plainly fake
 MEMBER = "sha256:" + "fa4e" * 16
 BINARY = "fa4e" * 16
 COMMIT = "fa4e" * 10
@@ -92,6 +93,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("--e7", choices=("final-filesystem", "carried"), default="final-filesystem")
+    ap.add_argument("--venue-9a", choices=("final-filesystem", "own-image"), default="final-filesystem")
     a = ap.parse_args()
     out = os.path.abspath(a.out)
     root = os.path.join(out, "bundle")
@@ -139,8 +141,15 @@ def main():
       "2000-01-01T01:00:00Z pass main trials done rc=0\n2000-01-01T01:18:00Z sweep main start\n"
       "2000-01-01T02:00:00Z pass v3 trials done rc=0\n2000-01-01T02:18:00Z sweep v3 start\n"
       "2000-01-01T03:00:00Z pass slow trials done rc=0\n2000-01-01T03:18:00Z sweep slow start\n")
-    w(root, "qualification-9a/venue.json", {"filesystemUuid": UUID, "kernelRelease": KERNEL, "minioPlatformMemberDigest": MEMBER,
-                                            "slowWMechanism": "FAKE dm-delay, write delay 500 ms / 2000 ms"})
+    venue = {"filesystemUuid": UUID, "kernelRelease": KERNEL, "minioPlatformMemberDigest": MEMBER,
+             "slowWMechanism": "FAKE dm-delay, write delay 500 ms / 2000 ms"}
+    if a.venue_9a == "own-image":
+        # R3: Ops' own loop image on / under dm-delay: another uuid and geometry, the same type, features, sizes.
+        venue.update({"filesystemUuid": VENUE_UUID, "9a": "loop-image-on-root + dm-delay(slow-W)"})
+        w(root, "qualification-9a/venue-dumpe2fs-h.txt", f"Filesystem UUID:          {VENUE_UUID}\nFilesystem features:      {FEATURES}\n"
+                                                         "Block count:              786432\nInode count:              786432\n"
+                                                         "Block size:               4096\nInode size:               256\n")
+    w(root, "qualification-9a/venue.json", venue)
     for n in range(1, 12):
         w(root, f"experiments/E{n}.json", experiment(n, a.e7))
         w(root, f"experiments/E{n}/run.log", f"FAKE run output E{n}\n")

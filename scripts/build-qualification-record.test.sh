@@ -171,6 +171,31 @@ if [ "$(jq -c '[.filesystem.metadataBytesMeasured, .filesystem.metadataBytesScop
     ok "the record carries the larger of E2 and E7 as metadataBytesMeasured, scope minio-sys+unattributed"
 else bad "record metadataBytes members" "$(jq -c .filesystem "$REC")"; fi
 
+# ---------------------------------------------- R3: the §9a venue (final filesystem, or Ops' own loop image)
+fresh own --venue-9a own-image
+gen own
+OWNREC="$TMP/own/out/production-2000-01-01/record.json"
+if [ "$STATUS" = 0 ] && jq -e '.qualification.platform | test("§9a sweep on Ops. own loop image 00000000-0000-4000-8000-00000009a4e0 on / under dm-delay")' "$OWNREC" >/dev/null \
+    && grep -q "venue 9a \`loop-image-on-root + dm-delay(slow-W)\`" "$TMP/own/out/production-2000-01-01/PROVENANCE.md" \
+    && [ "$(jq -c .filesystem "$OWNREC")" = "$(jq -c .filesystem "$REC")" ]; then
+    ok "a §9a venue on Ops' own labelled loop image (other uuid, same identity) builds and says so; the filesystem elements stay the final one"
+else bad "own-image §9a venue (exit $STATUS)" "$OUT"; fi
+fresh nolabel --venue-9a own-image; edit nolabel qualification-9a/venue.json 'del(d["9a"])'
+refused "a §9a venue on another filesystem without the 9a label → refuse" nolabel "is not the final filesystem .*its 9a label is None"
+fresh otherlabel --venue-9a own-image; edit otherlabel qualification-9a/venue.json 'd["9a"] = "tmpfs + cgroup io.max"'
+refused "a §9a venue labelled anything else → refuse" otherlabel "its 9a label is 'tmpfs \\+ cgroup io.max'"
+fresh feat --venue-9a own-image
+sed -i.bak 's/ metadata_csum$/ metadata_csum orphan_file/' "$TMP/feat/bundle/qualification-9a/venue-dumpe2fs-h.txt"; rm "$TMP/feat/bundle/qualification-9a/venue-dumpe2fs-h.txt.bak"; resum "$TMP/feat/bundle"
+refused "an own-image venue whose filesystem features differ → refuse" feat "venue-dumpe2fs-h.txt: Filesystem features is .*R3: only the uuid and the geometry may differ"
+fresh vuuid --venue-9a own-image; edit vuuid qualification-9a/venue.json 'd["filesystemUuid"] = "00000000-0000-4000-8000-0000000000aa"'
+refused "an own-image venue whose dumpe2fs is of another filesystem → refuse" vuuid "venue-dumpe2fs-h.txt: Filesystem UUID is '00000000-0000-4000-8000-00000009a4e0'"
+fresh nodump --venue-9a own-image; rm "$TMP/nodump/bundle/qualification-9a/venue-dumpe2fs-h.txt"; resum "$TMP/nodump/bundle"
+refused "an own-image venue without its dumpe2fs -h → refuse" nodump "required file qualification-9a/venue-dumpe2fs-h.txt is missing"
+fresh contra; edit contra qualification-9a/venue.json 'd["9a"] = "loop-image-on-root + dm-delay(slow-W)"'
+refused "the final filesystem's uuid labelled as Ops' own image → refuse" contra "names the final filesystem .* but labels the venue"
+fresh vkern --venue-9a own-image; edit vkern qualification-9a/venue.json 'd["kernelRelease"] = "0.0.1-other"'
+refused "an own-image venue on another kernel → refuse" vkern "qualification-9a/venue.json kernelRelease is '0.0.1-other'"
+
 # ------------------------------------------------------------------- E7 carried (W3 A5): both outcomes
 fresh carry --e7 carried
 gen carry

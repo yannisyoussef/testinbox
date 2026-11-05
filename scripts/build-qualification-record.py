@@ -23,7 +23,10 @@ It REFUSES (exit 1, nothing written) when
   - E7 is carried from another corpus without MANIFEST.e7.mode = "carried" and an amendment reference that is
     present in ADR-035's text (W3 question A5: both outcomes are supported, neither is silent);
   - a metadata figure (E7 inodes; E2 and E7 bytes; the gate F evidence) is not counted by the one definition
-    (scopes minio-sys and minio-sys+unattributed), or a declared budget is below its measurement.
+    (scopes minio-sys and minio-sys+unattributed), or a declared budget is below its measurement;
+  - the §9a venue is neither the final filesystem nor Ops' own loop image on / under dm-delay, labelled
+    "loop-image-on-root + dm-delay(slow-W)" and equal to the final filesystem in type, features, block and inode size
+    (verdict R3).
 Nothing measured is typed by hand: every record value is read from a bundle file, derived from bundle files by a
 rule stated in PROVENANCE.md, or is a constant of the artifact (CODE). Exit 2 is a usage error.
 
@@ -56,6 +59,10 @@ METADATA_INODES_SCOPE = "minio-sys"
 # (scripts/adr035-metadata-accounting.py; PROPOSED amendment note). Per-object directories are inside O_max (§3.1).
 METADATA_BYTES_SCOPE = "minio-sys+unattributed"
 METADATA_BYTES_EXPERIMENTS = ("E2", "E7")  # E2: after the partial drain; E7: the peak over 24 h
+# Verdict R3: the §9a sweep runs on the final filesystem, or on Ops' own loop image on / under dm-delay (the slow-W
+# mechanism needs a device-mapper target it can delay), labelled exactly so in venue.json and identical in every
+# identity element but the uuid and the geometry. Nothing else may differ.
+NINE_A_OWN_IMAGE = "loop-image-on-root + dm-delay(slow-W)"
 C_MAX_S = 15 * 60  # ADR-035 §9: C_max = 15 min, measured from the writer's RST
 SLOW_W_MIN_TRIALS = 18  # plan-slow.json
 SWEEP_MIN_GAP_MIN = 17
@@ -539,8 +546,32 @@ def build(bundle_dir, expected, repo):
         for s in combo["servers"]:
             p.check(s["release"] == xm["release"] and s["commitId"] == xm["commitId"] and s["mode"] == xm["mode"]
                     and s["driveCount"] == xm["driveCount"], f"§9a harness MinIO server info {s} is not the expected combination")
-    for key, want in (("filesystemUuid", xf["uuid"]), ("kernelRelease", X["kernelRelease"]),
-                      ("minioPlatformMemberDigest", xm["platformMemberDigest"])):
+    # R3: the venue is the final filesystem, or Ops' own loop image on / under dm-delay, explicitly labelled, whose
+    # filesystem has the final filesystem's type, features, block size and inode size (read from its dumpe2fs -h).
+    venue_label, venue_uuid = venue.get("9a"), venue.get("filesystemUuid")
+    own_image = False
+    if venue_uuid == xf["uuid"]:
+        p.check(venue_label in (None, "final-filesystem"),
+                f"qualification-9a/venue.json names the final filesystem {xf['uuid']} but labels the venue {venue_label!r}")
+    elif venue_label == NINE_A_OWN_IMAGE:
+        own_image = True
+        p.check(isinstance(venue_uuid, str) and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", venue_uuid),
+                f"qualification-9a/venue.json filesystemUuid {venue_uuid!r} is not a filesystem uuid")
+        vd = b.text("qualification-9a/venue-dumpe2fs-h.txt")
+        if vd is not None:
+            p.check(dumpe2fs_field(vd, "Filesystem UUID") == venue_uuid,
+                    f"qualification-9a/venue-dumpe2fs-h.txt: Filesystem UUID is '{dumpe2fs_field(vd, 'Filesystem UUID')}', "
+                    f"venue.json says {venue_uuid!r}")
+            for name, want in (("Filesystem features", xf["features"]), ("Block size", str(xf["blockSize"])),
+                               ("Inode size", str(xf["inodeSize"]))):
+                p.check(dumpe2fs_field(vd, name) == want,
+                        f"qualification-9a/venue-dumpe2fs-h.txt: {name} is '{dumpe2fs_field(vd, name)}', expected the final "
+                        f"filesystem's '{want}' (R3: only the uuid and the geometry may differ)")
+    else:
+        p.add(f"qualification-9a/venue.json filesystemUuid {venue_uuid!r} is not the final filesystem {xf['uuid']!r}, and "
+              f"its 9a label is {venue_label!r}, not {NINE_A_OWN_IMAGE!r} (verdict R3: only Ops' own loop image on / "
+              "under dm-delay, explicitly labelled, may differ)")
+    for key, want in (("kernelRelease", X["kernelRelease"]), ("minioPlatformMemberDigest", xm["platformMemberDigest"])):
         p.check(venue.get(key) == want, f"qualification-9a/venue.json {key} is {venue.get(key)!r}, expected {want!r}")
     mech = need(p, venue, "slowWMechanism", "str", "qualification-9a/venue.json")
 
@@ -700,7 +731,10 @@ def build(bundle_dir, expected, repo):
         "qualification": {
             "platformClass": "production-host",
             "platform": (f"{X['host']} itself ({bp['arch']}, kernel {obs['host.kernelRelease']}); qualification MinIO of member "
-                         f"{member} with its data on the final filesystem {xf['uuid']}"),
+                         f"{member} with its data on the final filesystem {xf['uuid']}"
+                         + (f"; the §9a sweep on Ops' own loop image {venue_uuid} on / under dm-delay (venue 9a: "
+                            f"{NINE_A_OWN_IMAGE}; same kernel, member, runtime configuration, filesystem type, features, "
+                            "block and inode size)" if own_image else "")),
             "evidenceReference": evidence_ref,
             "procedure": PROCEDURE,
             "scenarios": stats["scenarios"],
@@ -751,7 +785,9 @@ def build(bundle_dir, expected, repo):
     label("`qualification.scenarios`, `trials`, `lateCommits`, `slowWExecuted`, `slowWMaxCommitLagAfterCompletedWitnessS`",
           f"{len(stats['scenarios'])} scenarios, {stats['trials']} trials, {stats['lateCommits']} late, slow-W {stats['slowTrials']} trials, max lag {stats['slowMaxCommitLagAfterWitnessS']} s",
           PQ, f"recomputed from `{ev}qualification-9a/{{main,v3,slow}}/` raw results and sweeps (staging gen-record.py criteria)")
-    label("`qualification.slowWMechanism`", mech, PQ, f"`{ev}qualification-9a/venue.json`; every slow trial's slow_mode is dm")
+    label("`qualification.slowWMechanism`", mech, PQ, f"`{ev}qualification-9a/venue.json`; every slow trial's slow_mode is dm"
+          + (f"; venue 9a `{NINE_A_OWN_IMAGE}` on filesystem {venue_uuid} (`{ev}qualification-9a/venue-dumpe2fs-h.txt`: the "
+             "final filesystem's type, features, block and inode size)" if own_image else ""))
     label("`qualification.cMaxSeconds`, `procedure`", f"{C_MAX_S}", CD, "ADR-035 §9 C_max; the repository procedure")
     label("`qualification.experimentArtifact`", json.dumps(cand), PQ, f"`{ev}MANIFEST.json`; every app-level experiment names it")
     label("`filesystem.uuid`, `type`, `mountOptions`, `mountSource`", f"{ffs['uuid']}, {ffs['type']}, {ffs['mountOptions']}, {ffs['mountSource']}", PN,

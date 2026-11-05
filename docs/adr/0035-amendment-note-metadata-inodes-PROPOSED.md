@@ -16,6 +16,7 @@ This note is that reviewed implementation:
 - §2 is the inode side, unchanged since Ops implemented it.
 - §3–§8 are the bytes side.
 - §9 lists what Ops changes.
+- §10 is the §9a venue rule (R3).
 - §11 is the text to append.
 
 One reference implementation, [`scripts/adr035-metadata-accounting.py`](../../scripts/adr035-metadata-accounting.py)
@@ -338,6 +339,30 @@ python3 scripts/adr035-metadata-accounting.py --mount <qual mount> --data-dir <q
   `.metadataInodes` as `metadataInodesMeasured`, each with its scope.
 
 The **gate F evidence**, after the N1 cleanup, is the collector above.
+
+## 10. The §9a venue (generator rule R3)
+
+Ops runs §9a, the slow-W sweep, on its **own** 3 GiB loop image on `/` under dm-delay, by design. Its
+`filesystemUuid` therefore differs from the final filesystem `c33e14fd-6b6f-4f05-881e-dbc4db22c964`.
+
+**The generator accepts exactly two venues:**
+
+- **The final filesystem:** `venue.json.filesystemUuid` = `c33e14fd…`, and the `9a` member absent or
+  `"final-filesystem"`.
+- **Ops' own image:** `venue.json` `9a: "loop-image-on-root + dm-delay(slow-W)"`, with a different uuid. Every
+  identity element must equal the final filesystem's:
+  - the kernel (the venue and every pass's `uname.txt`);
+  - the MinIO member, binary, release, commit, mode and runtime-configuration hash (from every pass's capture);
+  - the mount type and options (`mount.txt`);
+  - the filesystem features, block size and inode size, read from `qualification-9a/venue-dumpe2fs-h.txt`, whose
+    UUID must be the venue's.
+
+  Only the uuid and the geometry may differ. The record's `qualification.platform` and `PROVENANCE.md` say which
+  venue ran. The `filesystem` elements stay the final filesystem's.
+
+**Anything else is refused:** another uuid without the label, another label, the final uuid with the own-image label,
+or differing features. The N1 condition throughout is the running kernel 6.8.0-147-generic with the boot id
+unchanged, checked at every step.
 
 ## 11. Text to append to ADR-035 on acceptance
 
