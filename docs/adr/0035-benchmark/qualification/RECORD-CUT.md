@@ -17,7 +17,7 @@ The tools:
 |---|---|
 | `scripts/build-qualification-record.py` | the offline generator: verifies the bundle's `SHA256SUMS` first, then builds the record, `PROVENANCE.md` and the evidence copy; refuses (exit 1, nothing written) on any gap |
 | `docs/adr/0035-benchmark/qualification/production-expected.json` | the **FIXED** values (below). Not a record, never shipped. A bundle that measures anything else is refused |
-| `scripts/build-qualification-record.test.sh` | 58 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
+| `scripts/build-qualification-record.test.sh` | 62 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
 | `backend/storage/src/test/.../GeneratedQualificationRecordTest.kt` | the generator's output on the fake bundle (golden file, byte-compared by the shell test) loads through the real `QualificationRecords.parse`, is eligible and has no production gap |
 
 ## Value status
@@ -157,6 +157,21 @@ Experiment file (`testinbox.n1-experiment/1`):
   drain) and E7 (peak over every sample) each carry `metadataBytesMeasured`, the `metadataBytes` of
   `scripts/adr035-metadata-accounting.py`, and `metadataBytesScope: "minio-sys+unattributed"`.
   Ops may add any other figure.
+- **Optional members** (#124 comment 6672561295, Q9):
+  - `problems`: a list of what went wrong. A file whose `verdict` is `PASS` while `problems` is present and
+    non-empty is **refused**.
+  - `bootId`: the boot id the run saw. It may be one value, or several (a list, or a per-window map, as in the
+    combined E9 file). Several values must all be equal, or the file is **refused**: the N1 condition is the running
+    kernel 6.8.0-147-generic, boot id unchanged.
+  - `wallSeconds`: the run's wall time, for information.
+
+  Any other member the generator does not know is ignored.
+- **One combined E9 file** (E9 under `ALL`, including case C, and under `OFF`):
+  - one `verdict`, `PASS` only if the `ALL` part (including C) **and** the `OFF` part both pass;
+  - `startedAt` is the `OFF` start and `completedAt` the `ALL` end, both between the baselines (`completedAt` feeds
+    the `recordId`);
+  - one `artifact`, equal to `MANIFEST.candidate`, so both windows run the same digests;
+  - `rawFiles` covers both windows.
 
 The `recordId` follows from `qualifiedAt`, so Ops can compute it before running the gate F collector:
 `production-amd64-prod-gra-01-<UTC date of the later of the §9a slow-sweep start and the last experiment's

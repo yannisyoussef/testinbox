@@ -929,6 +929,22 @@ The interlock is Ops code.
 9. **E10's fault goes only into the lab monitor's input** (a decoy image). The production image is never punched,
    truncated or detached. Verify the production monitor's configuration hash afterwards.
 
+*2026-11-06 (procedure change; #124 comment 6672561295, Q3): a second declared tree for the app lab.* With the stack up,
+the app-lab tree `…/n1-qual/lab-<run>` (lab MinIO data, stall and filler) may be a **second** declared tree. This
+extends item 2's "exactly one path" condition.
+
+- **Its declaration** has the E2/E7 form: one path, the run id, the running kernel and boot id, an expiry within the
+  window cap, and a **byte cap**.
+- **WARN (exported) only while all of these hold:**
+  - the tree stays within its cap;
+  - `f_bavail ≥ 5,874,909,696 B` throughout, so the stack-up filesystem never enters a fill band;
+  - the production monitor is observe-only;
+  - the running kernel and boot id match the declaration;
+  - the two declared trees (E2/E7's and this one) are the only foreign entries.
+- **Fallocated files** inside it use the ballast form. Any fallocated file outside a declared tree is ballast, and
+  always FAILs.
+- **Gate F is unchanged.**
+
 **Adding the record (a later pull request, once the evidence exists):** add
 the JSON file and its line in `adr035-qualification/index.txt`; commit the
 evidence directory it cites; update `QualificationRecordsTest` ("no record

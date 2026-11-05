@@ -133,6 +133,21 @@ fresh extra; printf 'x\n' > "$TMP/extra/bundle/unlisted.txt"
 refused "a file not in SHA256SUMS → refuse" extra "unlisted.txt is in the bundle but not in SHA256SUMS"
 fresh e9; edit e9 experiments/E9.json 'd["verdict"] = "FAIL"'
 refused "a non-PASS experiment → refuse" e9 "E9 is not PASS"
+# A PASS that lists problems, and several boot ids in one file (e.g. the combined E9 ALL+OFF file), are refused;
+# members the generator does not know (wallSeconds, ...) stay ignored.
+fresh probs; edit probs experiments/E9.json 'd["problems"] = ["OFF window: witness not blocked"]'
+refused "a PASS experiment whose problems member is non-empty → refuse" probs "experiments/E9.json: verdict PASS but 'problems' is non-empty"
+fresh boots; edit boots experiments/E9.json 'd["bootId"] = {"ALL": "b0" * 16, "OFF": "b1" * 16}'
+refused "a combined E9 whose per-window boot ids differ → refuse" boots "experiments/E9.json: bootId holds different values"
+fresh bootl; edit bootl experiments/E5.json 'd["bootId"] = ["b0" * 16, "b0" * 16, "b2" * 16]'
+refused "a list of boot ids that are not all equal → refuse" bootl "experiments/E5.json: bootId holds different values"
+fresh benign
+edit benign experiments/E9.json 'd["problems"] = []; d["bootId"] = {"ALL": "b0" * 16, "OFF": "b0" * 16}; d["wallSeconds"] = {"ALL": 5400, "OFF": 3600}'
+edit benign experiments/E4.json 'd["bootId"] = "b0" * 16; d["wallSeconds"] = 1800; d["somethingNew"] = {"x": 1}'
+gen benign
+if [ "$STATUS" = 0 ] && cmp -s "$TMP/benign/out/production-2000-01-01/record.json" "$GOLDEN"; then
+    ok "empty problems, one boot id across windows, wallSeconds and unknown members build the same record"
+else bad "benign optional members (exit $STATUS)" "$OUT"; fi
 fresh e2; edit e2 experiments/E2.json 'd["measurements"]["worstObjectOverheadBytes"] = 28000'
 refused "a measured overhead above O_max → refuse" e2 "E2: worst per-object overhead 28000 exceeds the O_max 24576"
 fresh late; python3 - "$TMP/late/bundle/qualification-9a/main/results-slow.jsonl" <<'EOF'

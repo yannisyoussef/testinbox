@@ -593,6 +593,21 @@ def build(bundle_dir, expected, repo):
         p.check(e.get("schema") == EXPERIMENT_SCHEMA, f"{rel}: schema is not {EXPERIMENT_SCHEMA}")
         p.check(e.get("experiment") == name, f"{rel}: experiment is {e.get('experiment')!r}, not {name}")
         p.check(e.get("verdict") == "PASS", f"{name} is not PASS (verdict {e.get('verdict')!r})")
+        # A PASS that also lists problems contradicts itself (#124 6672561295 Q9): refuse rather than pick one.
+        probs = e.get("problems")
+        p.check(not (e.get("verdict") == "PASS" and probs not in (None, [], {}, "")),
+                f"{rel}: verdict PASS but 'problems' is non-empty ({probs!r})")
+        # One file, one boot: a bootId holding several values (a list, or a per-window map such as the combined E9
+        # ALL+OFF file) must hold one value only (the N1 condition: running kernel, boot id unchanged).
+        def _flat(v):
+            if isinstance(v, dict):
+                return [x for w in v.values() for x in _flat(w)]
+            if isinstance(v, list):
+                return [x for w in v for x in _flat(w)]
+            return [v]
+        boots = _flat(e["bootId"]) if "bootId" in e else []
+        p.check(len({json.dumps(b, sort_keys=True) for b in boots}) <= 1,
+                f"{rel}: bootId holds different values {boots!r}: the boot id must be unchanged within one file")
         s, c = need(p, e, "startedAt", "iso", rel), need(p, e, "completedAt", "iso", rel)
         need(p, e, "criterion", "str", rel)
         carried = name == "E7" and e7_mode == "carried"
