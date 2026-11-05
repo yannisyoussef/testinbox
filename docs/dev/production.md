@@ -453,7 +453,7 @@ rehearsal keep automatic creation because the store there is theirs.
 | `TESTINBOX_ACCOUNTS_ENABLED` (API) | API environment | every `/account/*` route, including the human product aliases, answers `503` (`accounts-unavailable`) with no cookie and no side effect. `/v1`, ingestion and the synthetics are unaffected. This is the kill switch: the console stops working for every participant until it is turned back on. It revokes nothing — stored sessions resume when it returns, and participants' SDK keys keep working throughout |
 | `TESTINBOX_ACCOUNTS_ENABLED` (site) | site environment | the site's proxy answers `503` "Sign-in is unavailable" without calling the API, and the sign-in pages show the invitation-only copy. It must agree with the API's flag |
 | `beta_cohort.admissions_open` | database row `beta-30` | sign-in still works; existing participants keep their workspaces; a new admission answers `CLOSED` and the console offers the waitlist. This is the **admission pause** |
-| `beta_cohort.capacity_ready` | database row `beta-30` | a new admission answers `CAPACITY_UNAVAILABLE` |
+| `beta_cohort.capacity_ready` | database row `beta-30`, set only by the schema owner ([the statement](#setting-capacity_ready-schema-owner-sql)) | a new admission answers `CAPACITY_UNAVAILABLE` |
 | the approved storage pool | `storage_cohort_plan` (V21) + every node's effective declarations | a new admission answers `CAPACITY_UNAVAILABLE` even with both flags true: `capacity_ready` is necessary, never sufficient. The live check requires an approved, matching, non-overcommitted pool reserving all thirty shares, enforced by `ALL`-mode nodes — see [STORAGE-READINESS](../delivery/ti-delivery-002/STORAGE-READINESS.md) for why that is not yet reachable in production |
 
 The thirty-place cap is a database constraint (`beta_admission.place BETWEEN 1
@@ -645,8 +645,10 @@ there either: the owner IS the operator authority.
 
 A **partial migration** (V22 applied, V23 not) is **roll forward only**:
 complete V23 with the same candidate. The deletion timer is installed only
-after T5 passes. Post-MD1 grant hardening adds
-`REVOKE ALL ON account_deletion FROM <api role>` to the V22 revoke list.
+after T5 passes. The admission release's `roles.reference.sql` adds
+`REVOKE ALL ON account_deletion FROM <api role>` to the V22 revoke list (the
+runtime API never reads or writes the table; `StorageRoleModelTest` proves
+it); it changes the reference's SHA-256, which Ops pins with that release.
 
 ### The API environment contract (`TESTINBOX_ACCOUNTS_*`)
 
@@ -783,6 +785,15 @@ not set `capacity_ready` as a substitute for it; the use case ignores it
 without the live pool. Nothing here authorizes activation; every step needs
 the consolidated TI-DELIVERY-002 release decision.
 
+**This holds on every environment, staging and labs included.** The live
+check (`CohortStorage.ready`) returns false unless enforcement is `ALL` and an
+approved, reserved, matching pool exists (ADR-037 §2/§7); nothing relaxes it
+outside production. With storage `OFF`, admission answers
+`CAPACITY_UNAVAILABLE` everywhere. Staged acceptance therefore runs the same
+order on staging as production does: `ALL` with that environment's eligible
+record → `storage-budget reserve` → activation gate G PASS → `capacity_ready`
+→ admit (TI-DELIVERY-002 STATUS, "Staged acceptance").
+
 **When production may start `ALL` (TI-DELIVERY-002b; ADR-035 amendment note
 2026-10-30).** `TESTINBOX_STORAGE_ENFORCEMENT=TENANT_LIMITS` is refused in
 production, always. `ALL` is refused unless, on top of every non-`OFF`
@@ -879,6 +890,58 @@ check's printed `reviewed-file sha256=` equals that file's digest. The run with
 gate G PASS is required evidence before `capacity_ready`. Pass
 `--environment production` on production: gate F then also requires the
 matched record's `platformClass` to be `production-host`.
+
+### Setting `capacity_ready` (schema-owner SQL)
+
+There is no subcommand for `capacity_ready` (TI-DELIVERY-002b D4): the
+`admission` command changes `admissions_open` only, and the runtime API role
+holds nothing on `beta_cohort` but `UPDATE (id)`, which it needs for its row
+lock. The switch is one statement, run with `psql` **as the schema owner** (the
+owner of `beta_cohort`, or a member of it: the `TI_BUDGET_*` credentials), on
+the environment being opened.
+
+**Set it true only after activation gate G PASS** on that environment: the
+activation script run with `--cohort-check-output` and `--cohort-pool-file`
+reported `ACTIVATION READY`, bound to the reviewed pool file's SHA-256, after
+`storage-budget reserve` and `check`. On production it also needs the release
+decision. Then:
+
+```sql
+UPDATE beta_cohort SET capacity_ready = true WHERE id = 'beta-30';
+-- UPDATE 1; then `admission status` prints capacity_ready=true
+```
+
+It is necessary, never sufficient: the live pool check still decides every
+admission. Admissions stay closed until `admission resume --open-beta`.
+Keep the statement's output, its time and the gate G evidence together in the
+activation evidence.
+
+**`storage-budget reserve` and `revoke` require `admissions_open = false`
+and `capacity_ready = false`.** Both take the cohort row lock and refuse
+otherwise ("close admissions and capacity before changing a pool",
+`JdbcCohortBudgets.lockClosed`), with nothing written. `admission pause`
+alone does not permit them. `storage-budget check` is read-only and needs
+neither.
+
+**Set it back to false** — `admission pause` first, then:
+
+```sql
+UPDATE beta_cohort SET capacity_ready = false WHERE id = 'beta-30';
+```
+
+- before any `storage-budget reserve` or `revoke`: a changed legacy share,
+  node inventory, declarations or capacity, or a re-reservation;
+- before leaving `ALL`, and before any rollback that applies the hold-first
+  procedure ([cohort storage](cohort-storage.md#upgrade-restore-and-rollback-boundaries));
+- whenever activation stops passing on that environment (gate G, or any gate
+  of the activation script), until it passes again;
+- when the beta closes.
+
+Existing participants are not affected by either value: it gates new
+admissions only. After a restore, `account-lifecycle restore-reconcile`
+closes both switches itself, and the pool must be reserved again before
+either is reopened. Reopen in the forward order: `reserve` → `check` → gate G
+PASS → `capacity_ready = true` → `admission resume --open-beta`.
 
 ## Promotion and handoff
 

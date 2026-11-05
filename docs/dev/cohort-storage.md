@@ -132,6 +132,29 @@ of the same image; see
 A pause alone does not permit `storage-budget` changes, which still require
 `capacity_ready` closed as well.
 
+**`capacity_ready` is schema-owner SQL, not a subcommand.** Only after the
+activation run with gate G PASS (`ACTIVATION READY`, bound to the reviewed
+pool file), as the schema owner:
+
+```sql
+UPDATE beta_cohort SET capacity_ready = true WHERE id = 'beta-30';
+```
+
+`reserve` and `revoke` require `admissions_open = false` **and**
+`capacity_ready = false` (`JdbcCohortBudgets.lockClosed`, under the cohort
+row lock); to change a pool, `admission pause`, then
+`UPDATE beta_cohort SET capacity_ready = false WHERE id = 'beta-30';`, then
+`reserve`/`revoke` → `check` → gate G PASS → `capacity_ready = true` again.
+When to set it back to false, and the rest of the contract:
+[production.md](production.md#setting-capacity_ready-schema-owner-sql).
+
+**No environment admits without this path.** `cohort.ready` requires
+enforcement `ALL` and an approved, reserved pool everywhere, staging and labs
+included; with storage `OFF` every admission answers `CAPACITY_UNAVAILABLE`.
+A staged acceptance on staging runs the same order as production: `ALL` with
+staging's eligible record → `reserve` → gate G PASS → `capacity_ready` →
+admit.
+
 ## Upgrade, restore and rollback boundaries
 
 1. Stage the candidate backup scope AND checker before running migrator.
