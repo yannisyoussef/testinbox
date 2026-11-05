@@ -647,8 +647,8 @@ A **partial migration** (V22 applied, V23 not) is **roll forward only**:
 complete V23 with the same candidate. The deletion timer is installed only
 after T5 passes. The admission release's `roles.reference.sql` adds
 `REVOKE ALL ON account_deletion FROM <api role>` to the V22 revoke list (the
-runtime API never reads or writes the table; `StorageRoleModelTest` proves
-it); it changes the reference's SHA-256, which Ops pins with that release.
+runtime API never reads or writes the table;
+`AccountDeletionReferenceGrantsTest` proves it under psql); it changes the reference's SHA-256, which Ops pins with that release.
 
 ### The API environment contract (`TESTINBOX_ACCOUNTS_*`)
 
