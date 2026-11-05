@@ -90,6 +90,7 @@ class Harness(
 
             val results = mutableListOf<ScenarioResult>()
             val seeder = Seeder(admin, Random(options.seed))
+            val monitorRole = FootprintSeed.monitorRole(admin)
             var bytesPerCopy = 0L
             options.workspaces.forEachIndexed { index, workspaces ->
                 if (index > 0) wipe(admin)
@@ -103,7 +104,7 @@ class Harness(
                 val population = seeder.population(workspaces, options.inboxesPerWorkspace)
                 seeder.deltas(population, options.deltaBacklog)
                 seeder.reservations(population, options.reservationBacklog)
-                val runner = ScenarioRunner(target, options, population, seeder, admin)
+                val runner = ScenarioRunner(target, options, population, seeder, admin, monitorRole)
                 bytesPerCopy = runner.bytesPerCopy
                 for (rate in options.rates) {
                     for (concurrency in options.concurrency) {
@@ -217,7 +218,11 @@ class Harness(
         const val CONNECTION_MARGIN = 12
         val STAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC)
         const val MEASURES =
-            "The database protocol only: write slot, T1 (admission lock, one-statement snapshot, reservation insert), " +
+            "The database protocol only: write slot, T1 assembled as production ALL assembles it (IngestionWiring: " +
+                "FootprintWiring.admission over JdbcStorageAdmission(readsFootprint = FootprintWiring.readsFootprint(declarations)) " +
+                "with a declared filesystem, so the one statement also reads the footprint and cohort inputs; seeded trust, " +
+                "observation and watermark rows; no participant and no cohort plan, so the cohort pool is read but not required; " +
+                "probed before every scenario, see t1Probe), T1 (admission lock, one-statement snapshot, reservation insert), " +
                 "the fence rows, T2 (reservations FOR UPDATE, inboxes FOR KEY SHARE, message and attachment rows through " +
                 "JdbcMessageRepository.appendVisible so the ledger triggers run, pg_notify, reservations consumed), retention " +
                 "(ExpireInboxes.sweep hard-deleting one expired inbox per sweep) and compaction on its interval. Uploads are an " +

@@ -57,9 +57,10 @@ open class JdbcStorageAdmission(
      * TI-STORAGE-006E PR D: read the footprint inputs (debt, observations,
      * watermark, trust) in the same statement. Only where the deployment
      * declares its filesystem: an undeclared OFF deployment's roles may hold no
-     * privilege on those tables, and T1 must never need one.
+     * privilege on those tables, and T1 must never need one. Readable so the
+     * §11 benchmark can prove it assembled the production T1 (gate D).
      */
-    private val readsFootprint: Boolean = false,
+    val readsFootprint: Boolean = false,
 ) : StorageAdmissionStore {
     init {
         // Whole milliseconds: '0ms' would mean NO timeout, an unbounded wait.
@@ -148,76 +149,83 @@ open class JdbcStorageAdmission(
     private val footprintCtes = if (readsFootprint) ",\n${FootprintSql.CTES}" else ""
     private val footprintColumns = if (readsFootprint) FootprintSql.COLUMNS else FootprintSql.NONE
 
+    /**
+     * The statement's exact text, with its binds `:workspaces` and `:inboxes`.
+     * Readable so the §11 benchmark can record and EXPLAIN exactly what
+     * production runs (gate D evidence); nothing else may build SQL from it.
+     */
+    val snapshotStatement: String =
+        """
+        WITH ws AS (SELECT DISTINCT unnest(ARRAY[:workspaces]::uuid[]) AS id),
+             ib AS (SELECT DISTINCT unnest(ARRAY[:inboxes]::uuid[]) AS id),
+             -- Each sum is aggregated once for the involved ids, not
+             -- once per id: the statement's cost must not grow with
+             -- the recipient count times the ledger backlog.
+             ws_delta AS (SELECT d.workspace_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d
+                           WHERE d.workspace_id IN (SELECT id FROM ws) GROUP BY d.workspace_id),
+             ws_reserved AS (SELECT r.workspace_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
+                               FROM storage_reservation r
+                              WHERE r.workspace_id IN (SELECT id FROM ws) GROUP BY r.workspace_id),
+             ws_charge AS (SELECT workspace_id AS id,sum(bytes) AS bytes,sum(objects) AS objects
+                              FROM workspace_deletion_charge WHERE workspace_id IN (SELECT id FROM ws) GROUP BY workspace_id),
+             ib_delta AS (SELECT d.inbox_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d
+                           WHERE d.inbox_id IN (SELECT id FROM ib) GROUP BY d.inbox_id),
+             ib_reserved AS (SELECT r.inbox_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
+                               FROM storage_reservation r
+                              WHERE r.inbox_id IN (SELECT id FROM ib) GROUP BY r.inbox_id)$footprintCtes
+        -- Objects beside bytes (TI-STORAGE-006E): the footprint bound is
+        -- applied by the caller, from the same snapshot.
+        SELECT 'GLOBAL' AS scope, NULL::uuid AS id, NULL::uuid AS owner, now() AS t0,
+               (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
+             + (SELECT coalesce(sum(bytes), 0) FROM storage_delta) AS committed,
+               (SELECT coalesce(sum(bytes), 0) FROM storage_reservation) AS reserved,
+               (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)
+             + (SELECT coalesce(sum(objects), 0) FROM storage_delta) AS committed_objects,
+               (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation) AS reserved_objects,
+               NULL::bigint AS payload_limit, NULL::bigint AS footprint_limit,
+               NULL::numeric AS cleanup_bytes,NULL::numeric AS cleanup_objects,
+               NULL::boolean AS inactive,
+               $footprintColumns
+        UNION ALL
+        SELECT 'WORKSPACE', ws.id, ws.id, now(),
+               coalesce(a.base_bytes, 0) + coalesce(d.bytes, 0),
+               coalesce(r.bytes, 0),
+               coalesce(a.base_objects, 0) + coalesce(d.objects, 0),
+               coalesce(r.objects, 0),
+               coalesce(p.payload_limit_bytes,l.payload_limit_bytes),coalesce(p.footprint_limit_bytes,l.footprint_limit_bytes),
+               coalesce(c.bytes,0),coalesce(c.objects,0),
+               -- Account lifecycle (V22), in the SAME statement under (35, 1):
+               -- a participant marker without an active membership is inactive.
+               coalesce(NOT e.active, false),
+               ${FootprintSql.NONE}
+          FROM ws
+          LEFT JOIN workspace_storage_account a ON a.workspace_id = ws.id
+          LEFT JOIN ws_delta d ON d.id = ws.id
+          LEFT JOIN ws_reserved r ON r.id = ws.id
+          LEFT JOIN ws_charge c ON c.id=ws.id
+          LEFT JOIN participant_workspace p ON p.workspace_id=ws.id
+          LEFT JOIN storage_legacy_share l ON l.workspace_id=ws.id
+          LEFT JOIN workspace_lifecycle_eligibility e ON e.workspace_id = ws.id
+        UNION ALL
+        SELECT 'INBOX', ib.id, x.workspace_id, now(),
+               coalesce(s.base_bytes, 0) + coalesce(d.bytes, 0),
+               coalesce(r.bytes, 0),
+               coalesce(s.base_objects, 0) + coalesce(d.objects, 0),
+               coalesce(r.objects, 0),
+               NULL::bigint,NULL::bigint,NULL::numeric,NULL::numeric,NULL::boolean,
+               ${FootprintSql.NONE}
+          FROM ib
+          LEFT JOIN inbox x ON x.id = ib.id
+          LEFT JOIN inbox_storage s ON s.inbox_id = ib.id
+          LEFT JOIN ib_delta d ON d.id = ib.id
+          LEFT JOIN ib_reserved r ON r.id = ib.id
+        """.trimIndent()
+
     protected open fun readSnapshot(scope: StorageAdmissionScope): StorageUsageSnapshot {
         val rows =
             jdbc
-                .sql(
-                    """
-                    WITH ws AS (SELECT DISTINCT unnest(ARRAY[:workspaces]::uuid[]) AS id),
-                         ib AS (SELECT DISTINCT unnest(ARRAY[:inboxes]::uuid[]) AS id),
-                         -- Each sum is aggregated once for the involved ids, not
-                         -- once per id: the statement's cost must not grow with
-                         -- the recipient count times the ledger backlog.
-                         ws_delta AS (SELECT d.workspace_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d
-                                       WHERE d.workspace_id IN (SELECT id FROM ws) GROUP BY d.workspace_id),
-                         ws_reserved AS (SELECT r.workspace_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
-                                           FROM storage_reservation r
-                                          WHERE r.workspace_id IN (SELECT id FROM ws) GROUP BY r.workspace_id),
-                         ws_charge AS (SELECT workspace_id AS id,sum(bytes) AS bytes,sum(objects) AS objects
-                                          FROM workspace_deletion_charge WHERE workspace_id IN (SELECT id FROM ws) GROUP BY workspace_id),
-                         ib_delta AS (SELECT d.inbox_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d
-                                       WHERE d.inbox_id IN (SELECT id FROM ib) GROUP BY d.inbox_id),
-                         ib_reserved AS (SELECT r.inbox_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
-                                           FROM storage_reservation r
-                                          WHERE r.inbox_id IN (SELECT id FROM ib) GROUP BY r.inbox_id)$footprintCtes
-                    -- Objects beside bytes (TI-STORAGE-006E): the footprint bound is
-                    -- applied by the caller, from the same snapshot.
-                    SELECT 'GLOBAL' AS scope, NULL::uuid AS id, NULL::uuid AS owner, now() AS t0,
-                           (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
-                         + (SELECT coalesce(sum(bytes), 0) FROM storage_delta) AS committed,
-                           (SELECT coalesce(sum(bytes), 0) FROM storage_reservation) AS reserved,
-                           (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)
-                         + (SELECT coalesce(sum(objects), 0) FROM storage_delta) AS committed_objects,
-                           (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation) AS reserved_objects,
-                           NULL::bigint AS payload_limit, NULL::bigint AS footprint_limit,
-                           NULL::numeric AS cleanup_bytes,NULL::numeric AS cleanup_objects,
-                           NULL::boolean AS inactive,
-                           $footprintColumns
-                    UNION ALL
-                    SELECT 'WORKSPACE', ws.id, ws.id, now(),
-                           coalesce(a.base_bytes, 0) + coalesce(d.bytes, 0),
-                           coalesce(r.bytes, 0),
-                           coalesce(a.base_objects, 0) + coalesce(d.objects, 0),
-                           coalesce(r.objects, 0),
-                           coalesce(p.payload_limit_bytes,l.payload_limit_bytes),coalesce(p.footprint_limit_bytes,l.footprint_limit_bytes),
-                           coalesce(c.bytes,0),coalesce(c.objects,0),
-                           -- Account lifecycle (V22), in the SAME statement under (35, 1):
-                           -- a participant marker without an active membership is inactive.
-                           coalesce(NOT e.active, false),
-                           ${FootprintSql.NONE}
-                      FROM ws
-                      LEFT JOIN workspace_storage_account a ON a.workspace_id = ws.id
-                      LEFT JOIN ws_delta d ON d.id = ws.id
-                      LEFT JOIN ws_reserved r ON r.id = ws.id
-                      LEFT JOIN ws_charge c ON c.id=ws.id
-                      LEFT JOIN participant_workspace p ON p.workspace_id=ws.id
-                      LEFT JOIN storage_legacy_share l ON l.workspace_id=ws.id
-                      LEFT JOIN workspace_lifecycle_eligibility e ON e.workspace_id = ws.id
-                    UNION ALL
-                    SELECT 'INBOX', ib.id, x.workspace_id, now(),
-                           coalesce(s.base_bytes, 0) + coalesce(d.bytes, 0),
-                           coalesce(r.bytes, 0),
-                           coalesce(s.base_objects, 0) + coalesce(d.objects, 0),
-                           coalesce(r.objects, 0),
-                           NULL::bigint,NULL::bigint,NULL::numeric,NULL::numeric,NULL::boolean,
-                           ${FootprintSql.NONE}
-                      FROM ib
-                      LEFT JOIN inbox x ON x.id = ib.id
-                      LEFT JOIN inbox_storage s ON s.inbox_id = ib.id
-                      LEFT JOIN ib_delta d ON d.id = ib.id
-                      LEFT JOIN ib_reserved r ON r.id = ib.id
-                    """.trimIndent(),
-                ).param("workspaces", scope.workspaceIds.map { it.value })
+                .sql(snapshotStatement)
+                .param("workspaces", scope.workspaceIds.map { it.value })
                 .param("inboxes", scope.inboxIds.map { it.value })
                 .query { rs, _ -> snapshotRow(rs) }
                 .list()

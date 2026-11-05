@@ -49,6 +49,8 @@ class ScenarioRunner(
     private val population: SeededPopulation,
     private val seeder: Seeder,
     private val admin: JdbcClient,
+    /** The harness's login role, declared as the monitor role ([HarnessDeclarations], [FootprintSeed]). */
+    private val monitorRole: String,
 ) {
     private val raw = ByteArray(options.rawBytes) { (it % 251).toByte() }
     private val attachment = ByteArray(options.attachmentBytes) { (it % 241).toByte() }
@@ -78,14 +80,18 @@ class ScenarioRunner(
             attachment.size.toLong(),
         )
         target.pool(spec.concurrency + POOL_MARGIN).use { pool ->
-            val protocol = ProtocolAssembly(pool, options, spec.mode)
+            val declarations = HarnessDeclarations.of(HarnessDeclarations.enforcement(spec.mode, options.referenceMode), monitorRole)
+            val protocol = ProtocolAssembly(pool, options, spec.mode, declarations)
             try {
                 // The drain folds whatever the previous scenario left, so the configured
                 // delta backlog is seeded AFTER it, and re-seeded after every compaction
                 // pass below: the floor the ADR names stays, the load adds to it.
                 drainCompaction(protocol)
                 seeder.deltas(population, options.deltaBacklog)
+                // Production ALL's footprint inputs: trust, a fresh observation, the watermark.
+                FootprintSeed.seed(admin)
                 admin.sql("ANALYZE").update()
+                val probe = verifiedProbe(protocol, name)
 
                 // Warm-up: plans, pool connections and the JIT, untimed and discarded.
                 val warmupEvents = (spec.offeredRate * options.warmupSeconds).toInt()
@@ -174,7 +180,7 @@ class ScenarioRunner(
                         deltaSamples = deltaSamples.toList(),
                         terminalLagNanos = report.elapsedNanos - (scheduler.schedule(events).lastOrNull() ?: 0L),
                     )
-                val result = summarize(name, spec, observation, protocol)
+                val result = summarize(name, spec, observation, protocol).copy(t1Probe = probe)
                 log.info(
                     "scenario {} done: offered {} achieved {} T1 p99 {} ms, lock timeouts {}, deadlocks {}",
                     name,
@@ -190,6 +196,25 @@ class ScenarioRunner(
                 protocol.stop()
             }
         }
+    }
+
+    /**
+     * Gate D counts only a production-faithful T1 (#120 verdict §2.3): the
+     * assembled store reads the footprint, its statement ran with the footprint
+     * figures, and production's footprint policy finds them evaluable, so no
+     * event below is a `451` of an unready deployment. Anything else stops
+     * the run rather than measuring a different T1.
+     */
+    private fun verifiedProbe(
+        protocol: ProtocolAssembly,
+        name: String,
+    ): T1Probe {
+        val probe = protocol.probe(population.inboxes.first())
+        check(probe.readsFootprint && probe.footprintRead && probe.footprintUnavailable == null) {
+            "scenario $name: the assembled T1 is not production-faithful: $probe"
+        }
+        log.info("scenario {}: production T1 probe {}", name, probe)
+        return probe
     }
 
     private val retentionAchieved = AtomicLong()

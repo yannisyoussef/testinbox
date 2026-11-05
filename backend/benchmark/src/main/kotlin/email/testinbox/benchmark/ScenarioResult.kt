@@ -83,6 +83,8 @@ data class ScenarioResult(
     val otherErrors: Int,
     val errorSamples: List<String>,
     val physicalFailures: Map<String, Int>,
+    /** The production-faithfulness probe run before the scenario (see `ScenarioRunner`). */
+    val t1Probe: T1Probe? = null,
 ) {
     /** completed / scheduled: separate from the achieved rate, which also carries the terminal lag. */
     val completionRatio: Double get() = if (scheduledEvents == 0) 0.0 else completedEvents.toDouble() / scheduledEvents

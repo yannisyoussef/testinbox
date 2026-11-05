@@ -249,6 +249,18 @@ class Evidence(
             "lockTimeoutRate" to s.lockTimeoutRate,
             "deadlocks" to s.deadlocks,
             "deadlineMissesFromSlotQueueing" to s.deadlineMissesFromSlotQueueing,
+            "t1Probe" to
+                s.t1Probe?.let {
+                    linkedMapOf(
+                        "storeClass" to it.storeClass,
+                        "enforcement" to it.enforcement.name,
+                        "readsFootprint" to it.readsFootprint,
+                        "footprintRead" to it.footprintRead,
+                        "footprintUnavailable" to it.footprintUnavailable,
+                        "cohortRequired" to it.cohortRequired,
+                        "snapshotStatementSha256" to it.snapshotStatementSha256,
+                    )
+                },
         )
 
     private fun scenarioRow(s: ScenarioResult): String =
