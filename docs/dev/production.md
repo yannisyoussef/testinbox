@@ -547,7 +547,10 @@ The controls:
   erased automatically in one transaction, once the content gate passes.
   The spent place, the participant marker, pending-cleanup charges and the
   revoked keys' technical rows are kept. Keep every
-  `event=…` line it prints in a lifecycle log outside the database. After a
+  `event=…` line it prints in the lifecycle log outside the database
+  (`/var/lib/testinbox-lifecycle-log/` on the host, written by Ops'
+  `ti-lifecycle` wrapper; infinity-core `infra/testinbox/PRODUCTION.md` is
+  authoritative for the path). After a
   restore, `restore-reconcile` does NOT read that log: it suspends every
   restored participant, revokes **every** restored managed key (the owner's
   `ops-admin` and the synthetic key included), and the operator then replays the log

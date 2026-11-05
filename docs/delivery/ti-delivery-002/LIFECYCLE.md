@@ -658,8 +658,9 @@ authoritative for paths and permissions; this document does not repeat a
 literal unit. Every lifecycle command, the timer's included, runs through the
 wrapper `/usr/local/sbin/ti-lifecycle`, which pins the operator image,
 applies the allow-listed env file and appends the output to the lifecycle log
-under `/var/log/testinbox-lifecycle/` (append-only, hash-chained, `ts=`
-prefixed). What the application requires of those units:
+under `/var/lib/testinbox-lifecycle-log/` (append-only, hash-chained, `ts=`
+prefixed; not under `/var/log`, which Ubuntu owns `root:syslog 0775`, so the
+installer's ancestor check refuses it). What the application requires of those units:
 
 - `Type=oneshot`, with a start timeout (a run is seconds; a hung run must not
   hold the next one off);
