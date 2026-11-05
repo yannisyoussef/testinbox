@@ -165,6 +165,9 @@ Before production ALL:
 18. Build `qualification-check`.
 19. §9a sweep incl. slow-W on the production combination; E1–E11 on the final
     production filesystem (own DB, no reformat afterwards), evidence committed.
+    *2026-11-05:* E4 by the A1 route (ADR-035 amendment note "WS-N1 A1",
+    effective with C1–C6); E10 includes the inode-headroom latch (C4); the
+    ballast windows follow the A2 procedure note in `docs/dev/production.md`.
 20. Record PR (`platformClass` `production-host`, upload v2), co-reviewed by Ops.
 21. Declarations on both deployables (backend identity, `FS_*`, node id, O_max ≥
     the record's).

@@ -177,6 +177,10 @@ staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
 
 ## Before `ALL` can pass
 
+*2026-11-05 (ADR-035 amendment note "WS-N1 A1", effective with C1–C6):* on a `production-host` record, E4 in step 3
+passes by the A1 route ((i)–(vi) and C1–C6 evidenced). E10 includes the inode-headroom latch (C4), and the census
+(vi) uses the E2/E7 population. Lab and staging records keep the full-scale E4.
+
 1. PR D merges, and its `TI-STORAGE-006E` containment rollback floor is added
    to `deploy/rollback-floors.txt` (the mixed-versions row). Gate E then
    proves that every running artifact contains it.

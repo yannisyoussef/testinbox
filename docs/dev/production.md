@@ -817,6 +817,12 @@ condition 1**, so production cannot start `ALL` with this artifact.
 
 #### The production qualification record Ops must evidence (`adr035-presigned-put-v2`)
 
+*2026-11-05 (ADR-035 amendment note "WS-N1 A1", effective with C1–C6).* For this `production-host` record, E4 passes
+by geometry proof plus bounded measurement: (i)–(vi) of that note, and C1–C6, evidenced on the final filesystem with
+running kernel 6.8.0-147-generic and the boot id unchanged at every step. The census (vi) runs on the E2/E7
+population, because A5 is not used. E10's PASS includes the inode-headroom latch (C4). The ballast windows follow the
+A2 procedure note below.
+
 No record is created, relabelled or promoted by engineering. The existing
 records stay as they are (the laptop record ineligible, the staging record
 `v1`). A `production-host` record is added only from committed Ops evidence,
