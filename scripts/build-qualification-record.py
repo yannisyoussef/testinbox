@@ -62,7 +62,7 @@ METADATA_INODES_SCOPE_EXCL_TRASH = "minio-sys-excl-trash"
 METADATA_INODES_SCOPES = (METADATA_INODES_SCOPE, METADATA_INODES_SCOPE_EXCL_TRASH)
 # ONE metadata-bytes counting definition for E2, E7, the record, the declaration (M), gate F and the fs-monitor:
 # .minio.sys without .trash, plus every allocation outside .minio.sys that no object is charged for
-# (scripts/adr035-metadata-accounting.py; PROPOSED amendment note). Per-object directories are inside O_max (§3.1).
+# (scripts/adr035-metadata-accounting.py; ADR-035 amendment note of 2026-11-05). Per-object directories are inside O_max (§3.1).
 METADATA_BYTES_SCOPE = "minio-sys+unattributed"
 METADATA_BYTES_EXPERIMENTS = ("E2", "E7")  # E2: after the partial drain; E7: the peak over 24 h
 # Verdict R3: the §9a sweep runs on the final filesystem, or on Ops' own loop image on / under dm-delay (the slow-W

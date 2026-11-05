@@ -2063,6 +2063,68 @@ record satisfies it, so production still cannot start `ALL`.
   `adr035-presigned-put-v2` ships in a later pull request
   (`docs/dev/production.md`, "Storage activation").
 
+## Amendment note (2026-11-05, WS-N1): one definition of MinIO metadata, in inodes and bytes
+
+Authority: the owner's acceptance of `docs/adr/0035-amendment-note-metadata-inodes-PROPOSED.md`, relayed on #124
+(comments 6665820491 and 6671007334; owner decision of 2026-11-05: double counting removed, conservative coverage of every allocation kept; application, monitor and
+qualification agree; no safety control disabled).
+
+**Inodes.** Wherever this ADR or its annex (Amendment 2) speaks of MinIO metadata inodes, *M*'s inode budget or the
+inodes of MinIO's metadata, the counted set is every inode under the MinIO data directory's `.minio.sys` (scope
+`minio-sys`). This applies to:
+
+- annex §3.5;
+- the §6 monitor row "or their inodes > *M*'s inode budget";
+- the §10 E7 criterion "inodes ≤ budget";
+- the record's `filesystem.metadataInodesMeasured`;
+- the declared `metadataBudgetInodes`;
+- gate F.
+
+Directories under the bucket are per-object inodes charged by `i_max` (annex §3.5).
+
+The same count without the contents of `.minio.sys/tmp/.trash` (scope `minio-sys-excl-trash`) may be used **only
+while** the Ops monitor's scope-independent inode-headroom latch (`inodes_total − inodes_used ≥ ⌈avail / B⌉`) is
+armed. Trashed objects' inodes are covered by that latch once their debt rows are superseded, because each holds a
+block and `I_fs ≥ C_fs / B`. Gate F refuses that scope unless the record carries a `PASS` E10 drill of that latch
+on the fs-monitor build the evidence names. Gate F also refuses evidence and a record that count inodes over
+different scopes.
+
+**Bytes.** Wherever this ADR or its annex speaks of *M*'s bytes, the counted figure is `metadataBytes` (scope
+`minio-sys+unattributed`): the allocated bytes under `.minio.sys` except the contents of `.minio.sys/tmp/.trash`
+(which are *W*; the `.trash` directory's own blocks stay in *M*, as annex §3.6 puts them), plus every allocation
+on the mount outside `.minio.sys` that no object is charged for. The second term is:
+
+- the bucket root;
+- every block beyond the first of a bucket directory that is, is inside, or contains an object directory (a
+  directory holding `xl.meta`);
+- every block of a bucket directory holding no object;
+- every file under the bucket that is not part of an object;
+- every subdirectory of an object directory that its `xl.meta` does not reference;
+- every inode outside `.minio.sys` and the bucket.
+
+This applies to annex §2.2 class (e), the §6 monitor row, the §9 gate F row, E2's drain clause and E7's criterion.
+E7's "probe residue" is inside it.
+
+The first block of each directory leading to an object, and the object's own files, are in *O_max* (annex §3.1–§3.3,
+verified in aggregate by E2's `total delta ≤ Σφ`). They are never also in *M*. The reference implementation is
+`scripts/adr035-metadata-accounting.py`.
+
+**Records and gate F.** The qualification record carries `filesystem.metadataBytesMeasured`, the larger of E2's
+post-drain and E7's peak `metadataBytes`, with `metadataBytesScope`. Gate F requires the evidence's
+`minio.metadataBytesScope` and the record's `filesystem.metadataBytesScope` to be `minio-sys+unattributed`, and the
+declared *M* to be at least the record's measurement.
+
+The walk fails closed: no figure for a missing or foreign `.minio.sys` or data directory. Evidence collected with
+no bucket directory (`bucketPresent: false`) does not pass gate F.
+
+**What does not change.** The inode budget and every other criterion are unchanged. *M* is a declaration: 1 GiB
+for production by the owner's decision of 2026-11-05 (subject to the capacity proof, which passes), and 256 MiB on
+staging. Post-drain residue has no
+declared bound (ext4 keeps each directory's historical peak). *M* bounds it through the monitor's alert, and the
+operator acts on the runbook, never by changing a latch. In-flight upload staging
+under `.minio.sys/tmp` stays in *M* and is also charged in *F_r*/*H_F*: a deliberate, conservative overlap, sized
+in the note's §7.
+
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
 - **ADR-027 §2.** The storage-quota paragraph and the overshoot bound are

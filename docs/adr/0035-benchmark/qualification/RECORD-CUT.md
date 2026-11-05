@@ -225,8 +225,8 @@ fs-monitor use one metadata definition (`scripts/adr035-metadata-accounting.py`)
   record must carry `filesystem.metadataBytesScope` and `metadataBytesMeasured`, and the declared *M* must be at least
   that measurement.
 
-- This rests on the PROPOSED note `docs/adr/0035-amendment-note-metadata-inodes-PROPOSED.md`, so #133 does not merge
-  before the owner accepts it.
+- This rests on the note `docs/adr/0035-amendment-note-metadata-inodes-PROPOSED.md`, ACCEPTED 2026-11-05 (#124
+  comments 6665820491 and 6671007334) and appended to ADR-035 as its 2026-11-05 WS-N1 amendment note.
 - No budget or criterion is lowered, and no gate F row is removed.
 - Ops' collector and fs-monitor need the change written in that note (§9). Until then, gate F reports NOT RUN.
 

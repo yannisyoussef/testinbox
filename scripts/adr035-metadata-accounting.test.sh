@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proves scripts/adr035-metadata-accounting.py classifies every allocation the way the PROPOSED ADR-035 note
+# Proves scripts/adr035-metadata-accounting.py classifies every allocation the way the ADR-035 note (accepted 2026-11-05)
 # ("one definition of MinIO metadata") says, on a fake MinIO data tree. The expected figures are computed
 # independently from an explicit list of paths per class, with the allocated size the filesystem reports, so the
 # suite holds on any filesystem (ext4 in CI; directories report 0 blocks on APFS). Each class is also mutated on its

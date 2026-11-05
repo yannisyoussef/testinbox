@@ -1,10 +1,20 @@
-# PROPOSED ADR-035 amendment note: one definition of MinIO metadata, in inodes and bytes
+# ADR-035 amendment note: one definition of MinIO metadata, in inodes and bytes
 
-**Status: PROPOSED, pending the owner's acceptance of this final text.** The normative text of ADR-035 and its annex
-(Amendment 2) is not edited by this proposal. Once the owner accepts it, the dated note in
-[Text to append](#11-text-to-append-to-adr-035-on-acceptance) is appended to
-`docs/adr/0035-physical-storage-bound-at-ingest.md`, after the 2026-10-30 note. Until then, the pull request that
-carries the matching gate F, generator and reference-implementation change (#133) must not merge.
+**Status: ACCEPTED 2026-11-05**, conditionally, as reviewed. That includes `minio-sys-excl-trash` only with the E10
+inode-headroom drill PASS bound by `fsMonitorSha256`.
+
+**Authority.** The owner's decisions, relayed by Ops on #124:
+
+- comment 6665820491: the conditional acceptance of inodes and bytes, quoted below;
+- comment 6671007334: acceptance of this note as reviewed at `0eeda4a`, and production *M* = 1 GiB.
+
+**Reviews.** The independent review of #133 (all 9 findings accepted, fixed at `a93a5c8`) and its delta review
+(ACCEPT WITH CONDITIONS, fixed at `0eeda4a`).
+
+The dated note in [Text to append](#11-text-to-append-to-adr-035-on-acceptance) is appended to
+`docs/adr/0035-physical-storage-bound-at-ingest.md`, after the 2026-10-30 note, with that date. The file name keeps
+its historical `-PROPOSED` suffix, because the reference implementation's pinned bytes (`cc30f658…`, which Ops
+vendors) cite this path.
 
 **Owner decision (2026-11-05), verbatim:** "Inodes and bytes accepted conditionally. The reviewed implementation must
 remove double counting while retaining conservative coverage of all allocations, including shared/residual
