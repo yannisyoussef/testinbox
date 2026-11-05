@@ -444,15 +444,34 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Gate D: the §11 global-ceiling benchmark. Required only for --mode ALL. The
+# Gate D: the §11 global-ceiling benchmark. Required only for --mode ALL, but a
+# node exporting the share-partitioned T1 (admission-locking) blocks it in any mode. The
 # file's own verdict is not trusted: the pass criteria are recomputed from the
 # scenarios as docs/dev/storage-benchmark.md defines them, and a disagreement
 # blocks. A CHOSEN 2× scenario with no matching REFERENCE run cannot be judged
 # and blocks; an INCOMPLETE run blocks with its reasons.
 # ---------------------------------------------------------------------------
 gate_benchmark() {
-    local gate="D-benchmark" verdict recomputed bench_sha api_sha warn=""
+    local gate="D-benchmark" verdict recomputed bench_sha api_sha warn="" role label path err locking
     reset_problems
+    # T1's lock protocol (testinbox.storage.admission-locking), exported by every node as
+    # testinbox_storage_admission_locking{mode=...}. This gate's evidence is mode a (GLOBAL,
+    # the CHOSEN scenarios); the share-partitioned T1 is a PROPOSED ADR-035 amendment whose
+    # benchmark variant is reported apart and never counts here. A node running it blocks,
+    # in every mode. An absent series is an artifact that predates the switch: mode a.
+    while IFS="$TAB" read -r role label path err; do
+        [ -n "$role" ] && [ -z "$err" ] || continue
+        locking="$(metric_value "$path" testinbox_storage_admission_locking 'mode="cohort_partitioned"')"
+        if is_number "$locking" && num_eq "$locking" 1; then
+            problem "$label ($role): runs the share-partitioned T1 (testinbox_storage_admission_locking{mode=cohort_partitioned}=1), a PROPOSED ADR-035 amendment that gate D evidence does not cover"
+        fi
+    done <<EOF
+$METRICS_INDEX
+EOF
+    if [ -n "$PROBLEMS" ]; then
+        record "$gate" BLOCKED "$PROBLEMS"
+        return
+    fi
     if [ "$MODE" = TENANT_LIMITS ]; then
         record "$gate" NOT_REQUIRED "NOT REQUIRED FOR TENANT_LIMITS: the global ceiling is not enabled in this mode (§14 phase 4)"
         return
@@ -820,7 +839,8 @@ SELECT json_build_object(
         JOIN (SELECT tbl, priv FROM (VALUES ('storage_sweep_run'), ('storage_delta'), ('workspace_storage_account'),
                                             ('storage_global_base'),
                                             ('storage_containment_watermark'), ('storage_legacy_share'),
-                                            ('storage_cohort_plan'), ('workspace_deletion_charge')) AS t(tbl)
+                                            ('storage_cohort_plan'), ('storage_partition_bound'),
+                                            ('workspace_deletion_charge')) AS t(tbl)
                      CROSS JOIN (VALUES ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE')) AS v(priv)
               UNION ALL
               -- ADR-037: a participant marker is inserted once by provisioning; erasing or
