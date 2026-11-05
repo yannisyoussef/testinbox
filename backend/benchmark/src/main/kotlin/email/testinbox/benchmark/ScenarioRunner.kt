@@ -51,6 +51,10 @@ class ScenarioRunner(
     private val admin: JdbcClient,
     /** The harness's login role, declared as the monitor role ([HarnessDeclarations], [FootprintSeed]). */
     private val monitorRole: String,
+    /** The 30-participant + legacy cohort the PARTITIONED variant's events go to; null without `--partitioned-variant`. */
+    private val cohort: SeededPopulation? = null,
+    /** `pg_stat_statements` for the T1 statement over each measured phase; null records nothing. */
+    private val diagnostics: Diagnostics? = null,
 ) {
     private val raw = ByteArray(options.rawBytes) { (it % 251).toByte() }
     private val attachment = ByteArray(options.attachmentBytes) { (it % 241).toByte() }
@@ -83,15 +87,7 @@ class ScenarioRunner(
             val declarations = HarnessDeclarations.of(HarnessDeclarations.enforcement(spec.mode, options.referenceMode), monitorRole)
             val protocol = ProtocolAssembly(pool, options, spec.mode, declarations)
             try {
-                // The drain folds whatever the previous scenario left, so the configured
-                // delta backlog is seeded AFTER it, and re-seeded after every compaction
-                // pass below: the floor the ADR names stays, the load adds to it.
-                drainCompaction(protocol)
-                seeder.deltas(population, options.deltaBacklog)
-                // Production ALL's footprint inputs: trust, a fresh observation, the watermark.
-                FootprintSeed.seed(admin)
-                admin.sql("ANALYZE").update()
-                val probe = verifiedProbe(protocol, name)
+                val probe = prepare(protocol, name, spec.mode)
 
                 // Warm-up: plans, pool connections and the JIT, untimed and discarded.
                 val warmupEvents = (spec.offeredRate * options.warmupSeconds).toInt()
@@ -101,7 +97,7 @@ class ScenarioRunner(
                     }
                 }
 
-                errors.clear() // warm-up failures are not the scenario's
+                errors.clear().also { diagnostics?.resetStatements() } // warm-up failures and statements are not the scenario's
                 val records = Collections.synchronizedList(ArrayList<EventRecord>())
                 val retentionLatencies = Collections.synchronizedList(ArrayList<Long>())
                 val retentionStarved = AtomicInteger()
@@ -168,6 +164,7 @@ class ScenarioRunner(
                 retentionThread.join()
                 compactor.shutdownNow()
                 deltaSampler.shutdownNow()
+                val t1Statement = diagnostics?.t1Stats()
 
                 val observation =
                     Observation(
@@ -180,7 +177,7 @@ class ScenarioRunner(
                         deltaSamples = deltaSamples.toList(),
                         terminalLagNanos = report.elapsedNanos - (scheduler.schedule(events).lastOrNull() ?: 0L),
                     )
-                val result = summarize(name, spec, observation, protocol).copy(t1Probe = probe)
+                val result = summarize(name, spec, observation, protocol).copy(t1Probe = probe, t1Statement = t1Statement)
                 log.info(
                     "scenario {} done: offered {} achieved {} T1 p99 {} ms, lock timeouts {}, deadlocks {}",
                     name,
@@ -199,6 +196,26 @@ class ScenarioRunner(
     }
 
     /**
+     * Untimed, before warm-up: the backlog floor, production ALL's footprint
+     * inputs, fresh statistics, and the production-faithfulness probe.
+     */
+    private fun prepare(
+        protocol: ProtocolAssembly,
+        name: String,
+        mode: AdmissionMode,
+    ): T1Probe {
+        // The drain folds whatever the previous scenario left, so the configured
+        // delta backlog is seeded AFTER it, and re-seeded after every compaction
+        // pass below: the floor the ADR names stays, the load adds to it.
+        drainCompaction(protocol)
+        seeder.deltas(population, options.deltaBacklog)
+        // Production ALL's footprint inputs: trust, a fresh observation, the watermark.
+        FootprintSeed.seed(admin)
+        admin.sql("ANALYZE").update()
+        return verifiedProbe(protocol, name, mode)
+    }
+
+    /**
      * Gate D counts only a production-faithful T1 (#120 verdict §2.3): the
      * assembled store reads the footprint, its statement ran with the footprint
      * figures, and production's footprint policy finds them evaluable, so no
@@ -208,14 +225,29 @@ class ScenarioRunner(
     private fun verifiedProbe(
         protocol: ProtocolAssembly,
         name: String,
+        mode: AdmissionMode,
     ): T1Probe {
-        val probe = protocol.probe(population.inboxes.first())
+        val probe = protocol.probe(eventInboxes(mode).first())
         check(probe.readsFootprint && probe.footprintRead && probe.footprintUnavailable == null) {
             "scenario $name: the assembled T1 is not production-faithful: $probe"
+        }
+        // The variant's events must be priced against an active participant's share, never refused as unbudgeted.
+        check(mode != AdmissionMode.PARTITIONED || (probe.budgetedWorkspaces == 1 && probe.inactiveWorkspaces == 0)) {
+            "scenario $name: the PARTITIONED cohort is not an active, budgeted cohort: $probe"
         }
         log.info("scenario {}: production T1 probe {}", name, probe)
         return probe
     }
+
+    /** Where a mode's events go: the gate population, or the PARTITIONED variant's cohort. */
+    private fun eventInboxes(mode: AdmissionMode): List<SeededInbox> =
+        if (mode ==
+            AdmissionMode.PARTITIONED
+        ) {
+            checkNotNull(cohort) { "the PARTITIONED variant needs its cohort" }.inboxes
+        } else {
+            population.inboxes
+        }
 
     private val retentionAchieved = AtomicLong()
     private val threadSeeds = AtomicInteger()
@@ -230,9 +262,10 @@ class ScenarioRunner(
         record: EventRecord,
         random: Random,
     ): Boolean {
+        val inboxes = eventInboxes(protocol.mode)
         val recipients = options.recipientMix.draw(random.nextDouble())
-        val start = random.nextInt(population.inboxes.size - recipients + 1)
-        val chosen = population.inboxes.subList(start, start + recipients)
+        val start = random.nextInt(inboxes.size - recipients + 1)
+        val chosen = inboxes.subList(start, start + recipients)
         val plans = chosen.map(::plan)
         val byMessage = chosen.zip(plans).associate { (inbox, plan) -> plan.messageId to inbox }
         EventTimings.current.set(record.timings)
@@ -358,7 +391,7 @@ class ScenarioRunner(
             mode = spec.mode,
             referenceMode = if (spec.mode == AdmissionMode.REFERENCE) options.referenceMode else null,
             workspaceCount = population.workspaceCount,
-            inboxCount = population.inboxes.size,
+            inboxCount = eventInboxes(spec.mode).size,
             reservationBacklog = options.reservationBacklog,
             deltaBacklog = options.deltaBacklog,
             deltaBacklogObserved =
@@ -402,6 +435,7 @@ class ScenarioRunner(
     private fun restoreBacklog(protocol: ProtocolAssembly) {
         admin.sql("DELETE FROM storage_reservation WHERE node_id = :node").param("node", protocol.node.nodeId).update()
         admin.sql("DELETE FROM inbox WHERE state = 'EXPIRED'").update()
+        if (protocol.mode == AdmissionMode.PARTITIONED) seeder.resetCohortUsage(checkNotNull(cohort))
         drainCompaction(protocol)
         admin.sql("ANALYZE").update()
     }

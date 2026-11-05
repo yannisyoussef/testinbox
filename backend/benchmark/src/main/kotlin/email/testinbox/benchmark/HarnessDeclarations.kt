@@ -43,13 +43,13 @@ object HarnessDeclarations {
     val API_NODES = setOf("bench-api")
     val INGESTION_NODES = setOf("bench-ingestion")
 
-    /** The enforcement each harness mode runs under: production's ALL for CHOSEN. */
+    /** The enforcement each harness mode runs under: production's ALL for CHOSEN and the PARTITIONED variant. */
     fun enforcement(
         mode: AdmissionMode,
         referenceMode: ReferenceMode,
     ): StorageEnforcement =
         when (mode) {
-            AdmissionMode.CHOSEN -> {
+            AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED -> {
                 StorageEnforcement.ALL
             }
 

@@ -213,7 +213,68 @@ class Seeder(
         return inboxIds.size
     }
 
+    /**
+     * The W1 cohort at its maximum, for the BENCHMARK-ONLY PARTITIONED variant:
+     * [PARTICIPANTS] ACTIVE, verified participants (the ADR-037 fixed 128/256 MiB
+     * shares, by V19's defaults) and one legacy share, each with
+     * [inboxesPerWorkspace] inboxes, provisioned the way `AdmitBetaParticipant`
+     * leaves them (account, admission, marker). The gate population is left as
+     * it is. Inserting the markers needs the operator authority: the harness is
+     * the owner of its own benchmark database.
+     */
+    fun cohort(inboxesPerWorkspace: Int): SeededPopulation {
+        val cohort = population(PARTICIPANTS + 1, inboxesPerWorkspace)
+        cohort.workspaceIds.take(PARTICIPANTS).forEachIndexed { index, ws ->
+            val account = UUID.randomUUID()
+            jdbc
+                .sql(
+                    "INSERT INTO human_account (id, contact_email, contact_verified_at, state, created_at) " +
+                        "VALUES (:a, :email, now(), 'ACTIVE', now())",
+                ).param("a", account)
+                .param("email", "$account@bench.invalid")
+                .update()
+            jdbc
+                .sql(
+                    "INSERT INTO beta_admission (cohort_id, place, account_id, workspace_id, project_id, admitted_at) " +
+                        "VALUES ('beta-30', :place, :a, :ws, :ws, now())",
+                ).param("place", index + 1)
+                .param("a", account)
+                .param("ws", ws)
+                .update()
+            jdbc
+                .sql(
+                    "INSERT INTO participant_workspace (workspace_id, cohort_id, place, allocated_at) VALUES (:ws, 'beta-30', :place, now())",
+                ).param("ws", ws)
+                .param("place", index + 1)
+                .update()
+        }
+        jdbc
+            .sql("INSERT INTO storage_legacy_share (workspace_id, payload_limit_bytes, footprint_limit_bytes) VALUES (:ws, :p, :f)")
+            .param("ws", cohort.workspaceIds[PARTICIPANTS])
+            .param("p", LEGACY_PAYLOAD_BYTES)
+            .param("f", LEGACY_FOOTPRINT_BYTES)
+            .update()
+        return cohort
+    }
+
+    /**
+     * Between PARTITIONED scenarios, untimed: the cohort's messages go (their
+     * ledger deltas fold in the next compaction), and the deletion debt and
+     * cleanup charges they leave are dropped, so every scenario starts the
+     * cohort from the same usage, far inside its shares.
+     */
+    fun resetCohortUsage(cohort: SeededPopulation) {
+        val ids = cohort.workspaceIds
+        jdbc.sql("DELETE FROM message WHERE workspace_id = ANY(ARRAY[:ws]::uuid[])").param("ws", ids).update()
+        jdbc.sql("DELETE FROM workspace_deletion_charge WHERE workspace_id = ANY(ARRAY[:ws]::uuid[])").param("ws", ids).update()
+        jdbc.sql("DELETE FROM storage_deletion_debt WHERE workspace_id = ANY(ARRAY[:ws]::uuid[])").param("ws", ids).update()
+    }
+
     companion object {
+        /** ADR-037: the cohort's thirty places (`BetaCohortPolicy.MAX_PARTICIPANTS`). */
+        const val PARTICIPANTS = 30
+        const val LEGACY_PAYLOAD_BYTES = 1L shl 30
+        const val LEGACY_FOOTPRINT_BYTES = 2L shl 30
         const val SEED_NODE = "bench-seed"
         private const val BATCH = 200
     }

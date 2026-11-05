@@ -236,7 +236,7 @@ class ProtocolAssembly(
     // Generous: nothing is refused, so every T1 inserts and every event reaches T2. The lock and the rows are what is measured.
     private val policy =
         when (mode) {
-            AdmissionMode.CHOSEN -> StorageCapacityPolicy(1L shl 40, InboxShare.of("1"), 1L shl 50, 0)
+            AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED -> StorageCapacityPolicy(1L shl 40, InboxShare.of("1"), 1L shl 50, 0)
 
             // No global ceiling: an effectively unlimited G.
             AdmissionMode.REFERENCE -> StorageCapacityPolicy(1L shl 40, InboxShare.of("1"), Long.MAX_VALUE, 0)
@@ -276,6 +276,9 @@ class ProtocolAssembly(
 
     val compactor = CompactStorageLedger(JdbcStorageLedger(jdbc, template))
 
+    /** The statement this mode's T1 runs: production's, or the variant's. */
+    val statement: String = (store as? PartitionedAdmissionStore)?.partitionedStatement ?: store.snapshotStatement
+
     /**
      * The production-faithfulness probe, run before every scenario: one real
      * T1 of this assembly's store over one existing inbox, which reserves
@@ -297,7 +300,9 @@ class ProtocolAssembly(
                     footprintRead = snapshot.footprint != null,
                     footprintUnavailable = footprint?.unavailability(snapshot.footprint)?.name,
                     cohortRequired = snapshot.footprint?.cohort?.required,
-                    snapshotStatementSha256 = sha256(store.snapshotStatement),
+                    snapshotStatementSha256 = sha256(statement),
+                    budgetedWorkspaces = snapshot.budgets.size,
+                    inactiveWorkspaces = snapshot.inactiveWorkspaces.size,
                 ),
             )
         }
@@ -325,6 +330,11 @@ class ProtocolAssembly(
             return when (mode) {
                 AdmissionMode.CHOSEN -> {
                     JdbcStorageAdmission(jdbc, template, readsFootprint = readsFootprint)
+                }
+
+                // Benchmark-only (never a production switch): W1's share-partitioned T1.
+                AdmissionMode.PARTITIONED -> {
+                    PartitionedAdmissionStore(jdbc, template)
                 }
 
                 AdmissionMode.REFERENCE -> {
@@ -356,4 +366,7 @@ data class T1Probe(
     val footprintUnavailable: String?,
     val cohortRequired: Boolean?,
     val snapshotStatementSha256: String,
+    /** Workspaces of the probed scope with a share (participant or legacy), and inactive ones. */
+    val budgetedWorkspaces: Int = 0,
+    val inactiveWorkspaces: Int = 0,
 )
