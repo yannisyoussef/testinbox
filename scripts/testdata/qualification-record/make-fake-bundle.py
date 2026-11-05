@@ -78,7 +78,7 @@ def experiment(n, e7_mode):
     if n in (1, 2, 3):
         e["measurements"] = {"oMaxBytes": 24576, "worstObjectOverheadBytes": 20000 + n}
     if n == 7:
-        e["measurements"] = {"metadataInodesMeasured": 157}
+        e["measurements"] = {"metadataInodesMeasured": 157, "metadataInodesScope": "minio-sys"}
     if carried:
         e["startedAt"], e["completedAt"] = "1999-12-01T00:00:00Z", "1999-12-02T00:00:00Z"
         e["sourceEvidence"] = "fake/staging/e7-corpus/"

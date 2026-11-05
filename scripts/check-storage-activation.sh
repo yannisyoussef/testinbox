@@ -951,7 +951,7 @@ gate_filesystem() {
               [["statvfs","frsize"], "positive"], [["statvfs","blocks"], "count"], [["statvfs","files"], "count"],
               [["preallocation","blockDevice"], "boolean"], [["preallocation","thinPool"], "boolean"], [["preallocation","fstrimExcluded"], "boolean"],
               [["isolation","dedicatedDevice"], "boolean"],
-              [["minio","bucketDirectoryBytes"], "count"], [["minio","metadataInodes"], "count"],
+              [["minio","bucketDirectoryBytes"], "count"], [["minio","metadataInodes"], "count"], [["minio","metadataInodesScope"], "string"],
               [["database","allConnectionsToPrimary"], "boolean"],
               [["declared","capacityBytes"], "positive"], [["declared","blockSizeBytes"], "positive"], [["declared","inodes"], "positive"],
               [["declared","globalFootprintLimitBytes"], "positive"],
@@ -1164,6 +1164,13 @@ gate_filesystem() {
                 then "ordering: a reader or writer is not on the primary" else empty end ),
             ( if $o != null and ($o.minioSysBytes + $e.minio.bucketDirectoryBytes) > $d.metadataBudgetBytes
                 then "MinIO metadata: .minio.sys \($o.minioSysBytes) + bucket directories \($e.minio.bucketDirectoryBytes) > M \($d.metadataBudgetBytes)" else empty end ),
+            # ONE counting definition for metadata inodes (ADR-035 §3.5; amendment note, metadata inodes): the inodes
+            # under .minio.sys only. Bucket directories ({ws}/, {inbox}/, {message}/, {key}/, {uuid}/) are per-object
+            # inodes charged by i_max = 6, never also metadata; the starting-headroom row bounds them physically.
+            ( if $e.minio.metadataInodesScope != "minio-sys"
+                then "MinIO metadata: the evidence counts metadataInodes over scope \($e.minio.metadataInodesScope), not minio-sys (.minio.sys only; bucket directories are per-object inodes charged by i_max, ADR-035 §3.5)" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataInodesScope // "") != "minio-sys"
+                then "MinIO metadata: record \($e.qualificationRecordId) does not state its E7 metadataInodesMeasured as scope minio-sys (filesystem.metadataInodesScope)" else empty end ),
             ( if $e.minio.metadataInodes > $d.metadataBudgetInodes
                 then "MinIO metadata: \($e.minio.metadataInodes) metadata inodes > the inode budget \($d.metadataBudgetInodes)" else empty end ),
             ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataInodesMeasured | type) != "number"

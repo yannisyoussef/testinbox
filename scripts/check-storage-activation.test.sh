@@ -423,6 +423,12 @@ qrec() { jq "$2" "$FIX/qualification/laptop-arm64-reference.json" > "$TMP/rec-$1
 qrec no-e7 'del(.filesystem.metadataInodesMeasured)'
 with --qualification-dir "$TMP/qual-no-e7" > "$TMP/f-no-e7"
 only "F: a record without the E7 metadata inode measurement blocks" F-filesystem "carries no E7 metadata inode measurement" "$TMP/f-no-e7"
+# One counting definition (amendment note, metadata inodes): .minio.sys only, on both sides.
+fe meta-scope-all '.minio.metadataInodesScope = "minio-sys+bucket-directories"' "evidence counting bucket directories as metadata inodes blocks" "MinIO metadata: the evidence counts metadataInodes over scope minio-sys\\+bucket-directories, not minio-sys"
+fe no-meta-scope 'del(.minio.metadataInodesScope)' "evidence that does not state its metadata inode scope → NOT RUN" "evidence.minio.metadataInodesScope missing"
+qrec no-scope 'del(.filesystem.metadataInodesScope)'
+with --qualification-dir "$TMP/qual-no-scope" > "$TMP/f-no-scope"
+only "F: a record whose E7 figure does not state scope minio-sys blocks" F-filesystem "record fixture-laptop-arm64-reference does not state its E7 metadataInodesMeasured as scope minio-sys" "$TMP/f-no-scope"
 qrec no-e3 'del(.filesystem.experiments.E3)'
 with --qualification-dir "$TMP/qual-no-e3" > "$TMP/f-no-e3"
 only "F: ALL needs every experiment E1–E11 recorded PASS" F-filesystem "experiments: record fixture-laptop-arm64-reference does not record PASS for E3" "$TMP/f-no-e3"

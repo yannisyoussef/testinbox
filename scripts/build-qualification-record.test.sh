@@ -146,6 +146,10 @@ fresh member; edit member identity/minio-image-inspect.json 'd[0]["RepoDigests"]
 refused "the running member is not the index's amd64 member → refuse" member "the index lists linux/amd64"
 fresh uuid; edit uuid experiments/E3.json 'd["filesystemUuid"] = "11111111-0000-4000-8000-000000000000"'
 refused "an experiment on another filesystem → refuse" uuid "experiments/E3.json: filesystemUuid"
+fresh e7scope; edit e7scope experiments/E7.json 'd["measurements"]["metadataInodesScope"] = "minio-sys+bucket-directories"'
+refused "an E7 figure counted over another scope than .minio.sys → refuse" e7scope "measurements.metadataInodesScope is 'minio-sys\\+bucket-directories'"
+fresh fescope; edit fescope gate-f/filesystem-evidence.json 'del(d["minio"]["metadataInodesScope"])'
+refused "gate F evidence from a collector that does not count .minio.sys only → refuse" fescope "gate F evidence minio.metadataInodesScope is None"
 fresh rid; edit rid gate-f/filesystem-evidence.json 'd["qualificationRecordId"] = "production-amd64-fake-host-0-1999-12-31"'
 refused "recordId ≠ gate F evidence qualificationRecordId → refuse" rid "gate F evidence qualificationRecordId .* ≠ recordId"
 fresh art; edit art experiments/E10.json 'd["artifact"] = None'

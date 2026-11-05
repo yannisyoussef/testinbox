@@ -836,7 +836,7 @@ on the production host and its recreated dedicated data filesystem:
 | `qualification.scenarios`, `trials`, `lateCommits`, `slowWExecuted`, `slowWMechanism`, `slowWMaxCommitLagAfterCompletedWitnessS`, `cMaxSeconds`, `procedure`, `evidenceReference` | the §9a sweep on the production combination, **including `slow-W`** (dm-delay or cgroup `io.max`), `lateCommits` 0, with the raw evidence committed under `docs/adr/0035-benchmark/qualification/production-<date>/` |
 | `filesystem.uuid`, `type`, `mountOptions`, `mountSource` | the recreated dedicated filesystem (preallocated, `mkfs -i 4096`, isolated; filesystem-evidence.md, "Before `ALL` can pass") |
 | `filesystem.objectOverheadMaxBytes` | the measured *O_max* from E1–E3 |
-| `filesystem.metadataInodesMeasured` | the E7 metadata inode measurement |
+| `filesystem.metadataInodesMeasured`, `metadataInodesScope` | the E7 metadata inode measurement, counted over `.minio.sys` only (scope `minio-sys`; bucket directories are per-object inodes charged by *i_max*, see `docs/dev/filesystem-evidence.md`) |
 | `filesystem.experiments` | `E1`…`E11` (annex §10: amplification, directory growth, fragmentation, inode ratio, trash accounting, debt release, `.minio.sys` growth, ENOSPC corpus, zero-byte PUT/`STORAGE_FULL` trial incl. case C, monitor latches, restart/deletes/recovery at full), each `"PASS"` with its run output in the evidence directory |
 | `enablementEligible`, `ineligibilityReasons` | `true` and `[]` only when every row above is complete |
 

@@ -65,6 +65,7 @@
     "mountSource": "/var/lib/fake/fake.img",
     "objectOverheadMaxBytes": 24576,
     "metadataInodesMeasured": 157,
+    "metadataInodesScope": "minio-sys",
     "metadataInodesBasis": "E7 on the final filesystem",
     "experiments": {
       "E1": "PASS",

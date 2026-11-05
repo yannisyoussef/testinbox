@@ -46,6 +46,9 @@ EXPERIMENTS = [f"E{i}" for i in range(1, 12)]
 # candidate artifact they ran (app verdict 2.1 R3/R4, D3). E1-E4 and E7 run the harness against MinIO only.
 APP_EXPERIMENTS = {"E5", "E6", "E8", "E9", "E10", "E11"}
 OMAX_EXPERIMENTS = ("E1", "E2", "E3")
+# ONE metadata-inode counting definition for E7, the record, the declaration and gate F: the inodes under
+# <data>/.minio.sys only. Bucket directories are per-object inodes charged by i_max = 6 (ADR-035 annex §3.5).
+METADATA_INODES_SCOPE = "minio-sys"
 C_MAX_S = 15 * 60  # ADR-035 §9: C_max = 15 min, measured from the writer's RST
 SLOW_W_MIN_TRIALS = 18  # plan-slow.json
 SWEEP_MIN_GAP_MIN = 17
@@ -593,6 +596,9 @@ def build(bundle_dir, expected, repo):
                 f"O_max {omax} is not a multiple of B covering at least 6 blocks (gate F would refuse every declaration)")
     m7 = (exps.get("E7") or {}).get("measurements") or {}
     metadata_inodes = need(p, m7, "metadataInodesMeasured", "pos", "experiments/E7.json measurements")
+    p.check(m7.get("metadataInodesScope") == METADATA_INODES_SCOPE,
+            f"experiments/E7.json measurements.metadataInodesScope is {m7.get('metadataInodesScope')!r}, not "
+            f"{METADATA_INODES_SCOPE!r} (.minio.sys only; bucket directories are per-object inodes charged by i_max)")
 
     # --- recordId and qualifiedAt (DERIVED), and the gate F evidence that must name the same record
     qualified_at = max([t for t in completions] + ([sweep_at] if sweep_at else []), default=None)
@@ -614,6 +620,9 @@ def build(bundle_dir, expected, repo):
     p.check((fe.get("mount") or {}).get("otherDataOnMount") is False and fe.get("otherEntriesOnMount", []) == [],
             "gate F evidence: something other than MinIO data is on the mount (N1 cleanup incomplete)")
     p.check((fe.get("preallocation") or {}).get("holeBytes") == 0, "gate F evidence: preallocation.holeBytes is not 0")
+    p.check((fe.get("minio") or {}).get("metadataInodesScope") == METADATA_INODES_SCOPE,
+            f"gate F evidence minio.metadataInodesScope is {(fe.get('minio') or {}).get('metadataInodesScope')!r}, not "
+            f"{METADATA_INODES_SCOPE!r}: the collector must count .minio.sys only (RECORD-CUT.md, collector change)")
     dcl = fe.get("declared") or {}
     p.check(omax is None or (isinstance(dcl.get("objectOverheadBytes"), int) and dcl["objectOverheadBytes"] >= omax),
             f"gate F evidence declares O = {dcl.get('objectOverheadBytes')}, below the qualified O_max {omax}")
@@ -686,6 +695,7 @@ def build(bundle_dir, expected, repo):
             "mountSource": ffs["mountSource"],
             "objectOverheadMaxBytes": omax,
             "metadataInodesMeasured": metadata_inodes,
+            "metadataInodesScope": METADATA_INODES_SCOPE,
             "metadataInodesBasis": ("E7 on the final filesystem" if e7_mode == "final-filesystem"
                                     else f"E7 carried under {e7['amendment']}"),
             "experiments": {n: exps[n]["verdict"] for n in EXPERIMENTS},
@@ -721,7 +731,7 @@ def build(bundle_dir, expected, repo):
     label("`filesystem.uuid`, `type`, `mountOptions`, `mountSource`", f"{ffs['uuid']}, {ffs['type']}, {ffs['mountOptions']}, {ffs['mountSource']}", PN,
           f"`{ev}gate-f/filesystem-evidence.json` = `{ev}identity/fs-baseline-post-*.txt` = `{ev}identity/dumpe2fs-h.txt`")
     label("`filesystem.objectOverheadMaxBytes`", f"{omax} (worst measured {max(worst)})", PQ, f"`{ev}experiments/E1.json`, `E2.json`, `E3.json` measurements: the O_max their criterion was evaluated against")
-    label("`filesystem.metadataInodesMeasured`", str(metadata_inodes),
+    label("`filesystem.metadataInodesMeasured`, `metadataInodesScope`", f"{metadata_inodes}, {METADATA_INODES_SCOPE}",
           PQ if e7_mode == "final-filesystem" else "CARRIED-AMENDMENT",
           f"`{ev}experiments/E7.json`" + ("" if e7_mode == "final-filesystem" else f" (source {exps['E7']['sourceEvidence']}; authority: {e7['amendment']})"))
     for n in EXPERIMENTS:
