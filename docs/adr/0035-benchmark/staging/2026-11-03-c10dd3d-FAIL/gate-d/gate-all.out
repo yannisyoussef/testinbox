@@ -1,0 +1,16 @@
+ADR-035 activation barrier — mode ALL — evaluated 2026-11-03T19:27:26Z
+GATE                   VERDICT       DETAIL
+---------------------- ------------- ------
+A-sessions             NOT RUN       no --sessions-file and TESTINBOX_ACTIVATION_DB_URL is unset
+A-inventory            NOT RUN       no --nodes-file and TESTINBOX_ACTIVATION_DB_URL is unset
+B-physical-baseline    NOT RUN       no --api-metrics supplied
+C-clock-offset         NOT RUN       no --api-metrics / --ingestion-metrics supplied
+D-benchmark            BLOCKED       benchmark verdict is 'FAIL', not PASS; sustained2x: chosen-ws200-c10-r520 achieved 59.992968915417016 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws200-c25-r520 achieved 61.555322802836415 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws200-c50-r520 achieved 61.82713357350461 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws200-c100-r520 achieved 56.3822168766366 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws10000-c10-r520 achieved 52.255988504610805 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws10000-c25-r520 achieved 50.3933775956756 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws10000-c50-r520 achieved 49.18110583924811 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws10000-c100-r520 achieved 41.63801478314249 of 520.0/s offered (ratio below 0.995); t1P99: chosen-ws200-c10-r520 T1 p99 227624.487818 ms > 50 ms; t1P99: chosen-ws200-c25-r520 T1 p99 221222.08923 ms > 50 ms; t1P99: chosen-ws200-c50-r520 T1 p99 219157.478851 ms > 50 ms; t1P99: chosen-ws200-c100-r520 T1 p99 240195.16515 ms > 50 ms; t1P99: chosen-ws10000-c10-r520 T1 p99 265849.914562 ms > 50 ms; t1P99: chosen-ws10000-c25-r520 T1 p99 276324.420201 ms > 50 ms; t1P99: chosen-ws10000-c50-r520 T1 p99 282728.252646 ms > 50 ms; t1P99: chosen-ws10000-c100-r520 T1 p99 324737.722798 ms > 50 ms; slotQueueingDeadlineMisses: 1410 across all scenarios; criterion sustained2x reported pass=false (observed 0.0800731053521971, threshold achieved / offered >= 0.995 at 520.0 events/s at concurrency [10, 25, 50, 100] (concurrency 1 is the uncontended baseline, reported only)); criterion t1P99 reported pass=false (observed 324737.722798, threshold T1 p99 <= 50.0 ms (completion - due, schedule lag included) at concurrency [10, 25, 50, 100]; concurrency 1 is reported only); criterion slotQueueingDeadlineMisses reported pass=false (observed 1410.0, threshold 0 events refused for W_slot (StorageUnavailableReason.SLOT_WAIT) across every scenario)
+E-floor-staging        NOT RUN       no --api-metrics / --ingestion-metrics supplied (the running git_sha comes from testinbox_build)
+E-floor-production     PASS          4 ADR-035 floor(s) on origin/master and listed in master's floors file
+Q-qualification        NOT RUN       no --backend-identity supplied
+F-filesystem           NOT RUN       no --filesystem-evidence supplied
+G-cohort               DEFERRED      not yet evidenced: the cohort gate is `storage-budget check <reviewed pool file>` (docs/dev/cohort-storage.md), which can pass only after the switch to ALL and the offline reservation; rerun with --cohort-check-output and --cohort-pool-file: that run, with gate G PASS, is the required evidence before capacity_ready is set
+----
+ACTIVATION BLOCKED
+rc=1

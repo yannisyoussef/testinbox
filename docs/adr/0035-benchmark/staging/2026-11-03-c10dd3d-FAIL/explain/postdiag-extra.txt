@@ -1,0 +1,22 @@
+== 2026-11-03T19:26:00Z extra pgbench probes (after VACUUM FULL; DB as left by the run otherwise; ws10000 population)
+-- p_snap -M simple c1
+latency average = 12.650 ms
+tps = 79.054172 (without initial connection time)
+-- p_wsa -M simple c1
+latency average = 1.353 ms
+tps = 739.362140 (without initial connection time)
+-- p_res -M simple c1
+latency average = 0.367 ms
+tps = 2727.334125 (without initial connection time)
+-- p_snap -M prepared c1
+latency average = 5.323 ms
+tps = 187.853444 (without initial connection time)
+-- p_wsa -M prepared c1
+latency average = 1.256 ms
+tps = 796.199533 (without initial connection time)
+-- p_res -M prepared c1
+latency average = 0.301 ms
+tps = 3327.313348 (without initial connection time)
+-- EXPLAIN (ANALYZE, TIMING OFF) snapshot: execution without per-node timing overhead
+Planning Time: 22.880 ms
+Execution Time: 7.402 ms
