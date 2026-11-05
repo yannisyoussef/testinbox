@@ -499,7 +499,14 @@ artifact older than this change.
 
 **Before the first admission**, the integrator records the integrated commit
 in `deploy/rollback-floors.txt`. It cannot be recorded earlier: the floor must
-name a SHA that every production candidate contains. Never run an older API
+name a SHA that every production candidate contains. **Recorded by the
+admission release:** `a00c16e` (the merge of PR 117, which brought V22 and
+the lifecycle-aware API, ingestion and operator command to `develop`; it is on
+`master` and in production since R1). It is the floor, not the V23 release
+`bcd30fc`: V23 adds no state an older artifact could corrupt (below), and
+`a00c16e` already enforces the restore quarantine for every managed key. Every
+candidate below it — `d17044d` and the ADR-035 floors included — is now
+refused by `check-rollback-floors.sh` unless the hazard is acknowledged. Never run an older API
 against a quarantined database. Reconcile first (`account-lifecycle
 restore-reconcile`,
 [LIFECYCLE.md](../delivery/ti-delivery-002/LIFECYCLE.md#restore-procedure)).
@@ -555,7 +562,7 @@ erasure already made is permanent.
   `lifecycle_restore_clearance` is empty, and `a00c16e` already has it.
 
 No new floor in `deploy/rollback-floors.txt` is needed beyond the V22
-lifecycle floor above. This change adds no state that an older artifact
+lifecycle floor above (`a00c16e`). This change adds no state that an older artifact
 could corrupt. The restore-window protections (every managed key refused
 while quarantined, every managed key revoked by `restore-reconcile`) already
 ship in `a00c16e`; only artifacts older than it lack them.

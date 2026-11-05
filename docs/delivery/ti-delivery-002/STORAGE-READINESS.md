@@ -322,7 +322,8 @@ consolidated TI-DELIVERY-002 release decision.
    `--cohort-check-output <that check's stdout> --cohort-pool-file <the
    reviewed file>`; it must report `ACTIVATION READY` (gate G PASS, bound to
    the file's SHA-256) before step 10.
-10. **Open, deliberately**: set `capacity_ready`, then — when someone is
+10. **Open, deliberately**: set `capacity_ready` (the schema-owner statement in
+    [production.md](../../dev/production.md#setting-capacity_ready-schema-owner-sql)), then — when someone is
     watching admissions (see the sybil note in abuse-model.md) — enable accounts
     on API and site and open `admissions_open`. Run `npm run test:accounts`
     with `TESTINBOX_ACCOUNTS_EXPECTED=enabled` and the declared methods. From
