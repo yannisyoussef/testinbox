@@ -7,7 +7,7 @@ ADR-035 invariant that mode a keeps. The mode is a **PROPOSED** ADR-035
 amendment ([`../0035-amendment-note-partitioned-t1-PROPOSED.md`](../0035-amendment-note-partitioned-t1-PROPOSED.md));
 ADR-035's dated "Owner decision note (2026-11-05)" records what the decision
 authorizes. Nothing here changes a §11 criterion or threshold, and nothing here
-is gate D evidence. Revised after the two independent reviews of #136 (§8).
+is gate D evidence. Revised after the two independent reviews of #136 and their re-review, with the security review of the timing channel (§8).
 
 Owner decision, verbatim: *"Partitioned locking: Implementation and testing
 authorized. Release requires independent correctness review, passing applicable
@@ -33,8 +33,9 @@ the switch:
 - `DeploymentSafety` refuses `COHORT_PARTITIONED` in every environment but
   `lab`, and in the lab anywhere but `ALL` with a declared filesystem
   (`DeploymentSafety.kt:629`).
-- Each node records its protocol in `storage_node.admission_locking` (V25:134,
-  `JdbcStorageAmbiguity.kt:205`, after every registration and heartbeat); the
+- Each node records its protocol in `storage_node.admission_locking` (V25:136),
+  in the registration insert and the heartbeat upsert themselves
+  (`JdbcStorageAmbiguity.kt:194`, `:218`: one statement, never a GLOBAL window); the
   activation inventory refuses a live non-`GLOBAL` node outside the lab and
   stops admission (`ActivationBarrier.kt:218`; `partitionedAllowed` only for
   environment `lab`, `IngestionWiring.kt:309`).
@@ -61,19 +62,20 @@ gate L.
 
 1. mode a's `configureTransaction` (READ COMMITTED, `synchronous_commit = on`,
    `lock_timeout`, `statement_timeout`, idle timeout, generic plan);
-2. `pg_advisory_xact_lock_shared(35, 1)` (`JSA:277`);
-3. `pg_advisory_xact_lock(38, k)` for each distinct key, **one statement per
-   key**, in ascending order of the key itself (`JSA:295`, keys `JSA:627`);
-4. ONE statement (`JSA:363`, read at `JSA:459`): mode a's per-workspace and
+2. `pg_advisory_xact_lock(38, k)` for each distinct key, **one statement per
+   key**, in ascending order of the key itself (`JSA:301`, keys `JSA:633`);
+3. THEN `pg_advisory_xact_lock_shared(35, 1)` (`JSA:204`, `JSA:283`): a T1
+   queued on a busy workspace holds no `(35, 1)` (security review S-REC, §3);
+4. ONE statement (`JSA:369`, read at `JSA:465`): mode a's per-workspace and
    per-inbox CTEs and rows; **no `g_*` global sums** (*L* = 0 and global payload
    0, `PTS:70`); debt, trash, trust, watermark, observation and the WHOLE cohort
    pool read and later decided; and the four guard columns (`PTS:15–34`). Not
    "no global scan": the cohort pool's per-share usage still aggregates the
    whole of `storage_delta` and `storage_reservation`, and `fp_debt` the debt
    table, as in mode a;
-5. a guard condition false ⇒ `setRollbackOnly`, nothing written (`JSA:202`); a
+5. a guard condition false ⇒ `setRollbackOnly`, nothing written (`JSA:207`); a
    per-workspace lock timeout (55P03/57014) or deadlock (40P01) ⇒ the
-   transaction rolls back (`JSA:198`, `JSA:215`). Either way the SAME call runs
+   transaction rolls back (`JSA:202`, `JSA:220`). Either way the SAME call runs
    the mode a transaction (exclusive `(35, 1)`) from scratch and reports the
    reason (`JSA:130`) to the closed-label counter
    `testinbox_storage_admission_partition_fallback_total{reason}`. Otherwise
@@ -85,7 +87,7 @@ it reads the calling statement's snapshot):
 
 - G1 `NO_MATCHING_BOUND`: an APPROVED plan and a `storage_partition_bound` with
   the plan's exact `binding` and `fingerprint`;
-- G2 `OVER_BOUND`: `storage_partition_within_bound()` (V25:65): 30 × 128 MiB +
+- G2 `OVER_BOUND`: `storage_partition_within_bound()` (V25:67): 30 × 128 MiB +
   Σ legacy payload ≤ the bound's payload capacity, 30 × 256 MiB + Σ legacy
   footprint ≤ its footprint capacity, ≤ 30 participant rows, every one at V19's
   pinned figures;
@@ -109,11 +111,13 @@ binding and fingerprint (`JdbcCohortBudgets.kt:107`, computed at
 - S1 fence: a BEFORE STATEMENT trigger on `storage_legacy_share`,
   `participant_workspace`, `storage_cohort_plan`, `storage_partition_bound`
   (insert, update, delete, truncate) refuses any isolation level but READ
-  COMMITTED and SERIALIZABLE, then takes `(35, 1)` EXCLUSIVE (V25:82,
-  V25:112–118).
+  COMMITTED (a REPEATABLE READ or SERIALIZABLE snapshot predates the fence, and
+  SSI cannot see a READ COMMITTED writer on the other side), then takes
+  `(35, 1)` EXCLUSIVE (V25:84,
+  V25:114–120).
 - S2 bound check: a DEFERRED constraint trigger refuses at commit a state in
   which the bound matches the APPROVED plan (binding and fingerprint) and G2
-  fails (V25:98, V25:121–127). A bound that does not match the approved plan
+  fails (V25:100, V25:123–129). A bound that does not match the approved plan
   (a re-reserve by an older binary, a revocation) is inert: it neither binds
   nor lets a T1 partition (G1).
 
@@ -153,12 +157,12 @@ attribution trigger. It holds `(35, 1)` EXCLUSIVE (`JdbcRowFreeDebtStore.kt:52`)
 so no T1 is in flight, and it admits against the global (P) inequality on the
 full *L* and *D*. If it leaves *w* over `F_w`, R2 fails in every later
 snapshot and every T1 in both modes answers 451 until the charge is released —
-fail closed, as in mode a (`PRT:269`).
+fail closed, as in mode a (`PRT:355`).
 (c) Debt that enters `D` for a shared workspace WITHOUT a charge (it raced the
 reserve that shared the workspace, review P1): `C_w` does not grow, so I-W is
 not violated, but that debt is then in no share and not in `D_u`. G4 sees it in
 the same snapshot and sends every T1 to mode a, whose (C) counts it in *D*
-(`PRT:89`).
+(`PRT:175`).
 Every other writer lowers or moves bytes WITHIN *w* (T2, compaction,
 retention, cleanup — usage → debt and its charge in the same transaction —,
 charge release). ∎
@@ -184,7 +188,7 @@ mode a's global rules admit every candidate (I-G with the event's own prefix ≤
 W), and the partitioned rules evaluate the same rules on smaller figures, which
 admit too; every other input is byte-identical SQL. So both modes decide alike;
 when a guard condition fails the event is decided by mode a itself. Tests:
-`PAT:57` (a sequence under both modes), `PRT:288` (at the edge of the
+`PAT:57` (a sequence under both modes), `PRT:374` (at the edge of the
 partition: 30 full participants and legacy shares filling the bound exactly,
 mode a's global slack exactly `W + 3` copies, seven events decided identically
 on both paths), `PAT:264` (an un-approved pool refused identically).
@@ -192,9 +196,9 @@ on both paths), `PAT:264` (an un-approved pool refused identically).
 **I9 (no per-tenant 451 from partitioning).** Every partition-specific failure
 falls back to mode a, never to a refusal: a guard condition (G3 is the per-tenant
 one), and a `(38, k)` lock timeout or deadlock, whose wait depends on one
-workspace's load (review A3; `PRT:152`, `PRT:178`). The shared `(35, 1)` is
+workspace's load (review A3; `PRT:238`, `PRT:264`). The shared `(35, 1)` is
 everyone's, like mode a's exclusive one, so its timeout stays mode a's global
-451 (`PRT:152`, second half). The residual timing channel is §7.
+451 (`PRT:238`, second half). The residual timing channel is §7.
 
 **One statement (§4).** The partitioned figures, the cohort pool and the guard
 come from one statement (`AdmissionStatementTextTest`); the `STABLE` guard
@@ -209,7 +213,7 @@ replies are not touched.
 
 | Holder | Order |
 |---|---|
-| partitioned T1 | `(35,1)` shared → `(38,k)` one statement per key, ascending by key → FK `KEY SHARE` of the insert |
+| partitioned T1 | `(38,k)` one statement per key, ascending by key → `(35,1)` shared → FK `KEY SHARE` of the insert |
 | mode a T1 (also every fallback) | `(35,1)` exclusive → FK `KEY SHARE` |
 | rule (P) | `(35,1)` exclusive → definer writes |
 | lifecycle fence | ADR-027 guard → `beta_cohort` row (cohort ops) → `(35,1)` exclusive → account row |
@@ -224,20 +228,47 @@ replies are not touched.
   executor's (review P4), and there is no cycle. Keys are `UUID.hashCode`
   (specified by the JDK, identical on every node); two colliding workspaces in
   one event take their one key once, and across events every key comes in the
-  same order, so a collision only serializes (`PRT:200`, with two colliding ids).
-- A partitioned T1 takes no row lock before its insert other than mode a's FK
-  `KEY SHARE` on `workspace`; an exclusive `(35,1)` holder never takes `(38,·)`.
-  No cycle through `(35,1)`.
+  same order, so a collision only serializes (`PRT:286`, with two colliding ids).
+- **Deadlock freedom with `(38,·)` before `(35,1)`.** Order the lock kinds
+  `(38, k₁) < … < (38, kₙ) < (35,1)`. Every partitioned T1 acquires in that
+  order and takes nothing between them but those locks. Every exclusive
+  `(35,1)` holder (mode a T1, every fallback, rule (P), the lifecycle fence, the
+  node fence and heartbeats, reserve/revoke, beta admission, S1 writers) takes
+  NO `(38,·)` at all, before or after. So a waits-for edge into a `(38,·)` lock
+  only ever comes from a partitioned T1 holding smaller keys, and a holder of
+  `(35,1)` (shared or exclusive) waits only for `(35,1)` itself or for row
+  locks no partitioned T1 holds before its insert (mode a's FK `KEY SHARE` on
+  `workspace` is the only one, and it conflicts only with deleting or re-keying
+  a workspace). A cycle would need a `(35,1)` holder waiting on a `(38,·)`
+  holder: there is none. ∎
+- **Why the order matters (cross-tenant convoy).** With `(35,1)` first, a T1
+  queued on a hot workspace's `(38,k)` held a shared `(35,1)` for its whole
+  wait (up to `lock_timeout`); an exclusive `(35,1)` asker (a heartbeat's node
+  fence, a fallback, rule (P)) queued behind those, and PostgreSQL queues every
+  later shared request — every cold workspace's T1 — behind that exclusive
+  waiter. With `(38,·)` first, the queued hot T1s hold nothing global; the
+  exclusive asker waits only for T1s that already hold their workspace locks and
+  are in their short critical section. `PRT:137` holds a hot workspace's key,
+  queues a hot T1, and shows an exclusive `(35,1)` asker and a cold T1 both
+  complete while the key is still held (it failed with the old order).
+- **What is unchanged.** The critical section (snapshot → decision → insert →
+  commit) is still covered by the shared `(35,1)` AND the workspace locks, so
+  I-W and mode a's exclusion (an exclusive holder excludes every partitioned
+  T1's critical section) hold exactly as before; a T1 still waiting on `(38,k)`
+  has read nothing yet, and reads after its locks.
 - The fallback never upgrades a lock: the partitioned transaction ends (all
   locks released) before mode a's begins.
 - S1 takes `(35,1)` after a share row lock; a cycle needs an operator
   transaction holding `(35,1)` (reserve) and an owner-SQL edit of the same row.
   PostgreSQL detects it and aborts one (operator vs operator).
 - Starvation: PostgreSQL queues a new lock request behind a waiting
-  conflicting one; every wait is bounded by `lock_timeout`.
+  conflicting one; every wait is bounded by `lock_timeout`. A T1 can therefore
+  take about two lock timeouts plus its statement when it times out on `(38,k)`
+  and falls back (the benchmark's hot scenario reports the worst case and the
+  fallbacks by reason, C-3).
 
 Tests: `PAT:134` (12 threads, multi-workspace events in random order, no
-deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:200`.
+deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:286`.
 
 ## 4. The five dependencies on the global exclusive lock
 
@@ -245,7 +276,7 @@ deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:200`.
 |---|---|---|---|
 | 1 | per-workspace races | (T1 itself) | `(38, k(w))` exclusive per workspace, snapshot after it (I-W); `PAT:103`, mutant `PAT:118` over-admits without it |
 | 2 | lifecycle drain fence | `JdbcAccountLifecycle.lockStorageFence` (`JdbcAccountLifecycle.kt:49`) | still EXCLUSIVE; `PAT:172` (both directions) |
-| 3 | rule (P) debt writes | `JdbcRowFreeDebtStore.admit` (`JdbcRowFreeDebtStore.kt:52`) | still EXCLUSIVE, decides on the full *L* + *D*; `PAT:207`; over-allocation closes admission in both modes, `PRT:269` |
+| 3 | rule (P) debt writes | `JdbcRowFreeDebtStore.admit` (`JdbcRowFreeDebtStore.kt:52`) | still EXCLUSIVE, decides on the full *L* + *D*; `PAT:207`; over-allocation closes admission in both modes, `PRT:355` |
 | 4 | node fence, pool reserve/revoke, beta admission | V21 `storage_cohort_node_fence`, `JdbcCohortBudgets.lockClosed` (`JdbcCohortBudgets.kt:24`), `JdbcBetaAdmissions.lockPolicy` (`JdbcBetaAdmissions.kt:31`); plus S1 | all EXCLUSIVE; S1 extends the fence to any writer; `PAT:294`, mutant `PAT:310` |
 | 5 | unbudgeted / unshared workspaces, no cohort | (guard) | G1/G3 ⇒ mode a; `PAT:283`; without a cohort the guard sends T1 to mode a whose global sum refuses, and the guard-less mutant over-admits past G − H (`PAT:327`) |
 
@@ -253,14 +284,14 @@ deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:200`.
 
 | Requirement | Enforced by | Where | Fails |
 |---|---|---|---|
-| partition only an approved pool with its own recorded bound | G1 | T1 statement | to mode a (`PAT:353`, `PRT:119`) |
-| non-overcommit: all shares within the bound | G2 in T1; S2 at every commit (matching bound) | PostgreSQL | T1 to mode a (`PRT:248` distinguishes G2 from R3); growth refused (`PAT:222`, mutant `PAT:246`) |
+| partition only an approved pool with its own recorded bound | G1 | T1 statement | to mode a (`PAT:353`, `PRT:205`) |
+| non-overcommit: all shares within the bound | G2 in T1; S2 at every commit (matching bound) | PostgreSQL | T1 to mode a (`PRT:334` distinguishes G2 from R3); growth refused (`PAT:222`, mutant `PAT:246`) |
 | closed cohort: the event's workspaces shared | G3 | PostgreSQL | to mode a (`PAT:283`) |
-| every unsuperseded debt of a share is charged to it | G4 | PostgreSQL | to mode a (`PRT:89`) |
-| closed cohort, no overallocation, allowances, nodes, fingerprint | R1–R4 | application rules on the same snapshot (mode a's readiness) | 451 for every event, as mode a (`PAT:264`, `PRT:269`) |
+| every unsuperseded debt of a share is charged to it | G4 | PostgreSQL | to mode a (`PRT:175`) |
+| closed cohort, no overallocation, allowances, nodes, fingerprint | R1–R4 | application rules on the same snapshot (mode a's readiness) | 451 for every event, as mode a (`PAT:264`, `PRT:355`) |
 | growth atomically ordered with every T1 | S1 | PostgreSQL | the writer waits (`PAT:294`) |
-| no write skew on stale snapshots | S1 isolation rule | PostgreSQL | REPEATABLE READ writer refused (`PRT:33`); READ COMMITTED refused at commit (`PRT:65`) |
-| no per-tenant 451 from a workspace lock | fallback on 55P03/57014/40P01 in the `(38,k)` phase | `JSA:198` | to mode a (`PRT:152`, `PRT:178`) |
+| no write skew on stale snapshots | S1 isolation rule (READ COMMITTED only) | PostgreSQL | REPEATABLE READ writer refused (`PRT:35`), SERIALIZABLE writer refused (`PRT:91`); READ COMMITTED refused at commit (`PRT:67`); re-approval past the bound refused (`PRT:122`) |
+| no per-tenant 451 from a workspace lock | fallback on 55P03/57014/40P01 in the `(38,k)` phase | `JSA:202` | to mode a (`PRT:238`, `PRT:264`) |
 | lab only | `DeploymentSafety`, node inventory, gate L, committed-config gate, ArchUnit | startup, runtime, activation, CI | refuses to start / 451 / BLOCKED / CI fails |
 | bound equals the proof | `partitionCapacity` ⇔ `assess` | domain, property-tested | — |
 | fallbacks visible | `..._partition_fallback_total{reason}` | metrics | — |
@@ -291,16 +322,25 @@ deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:200`.
 
 1. R1–R4 are application rules over database figures (mode a's code, same
    snapshot), not SQL; the database enforces G1–G4, S1, S2.
-2. **Timing side channel (I9 / ADR-025), for the security review.** A sender
-   flooding workspace A can still observe LATENCY: a probe to an address of A
-   waits on `(38, kA)` up to `lock_timeout` before falling back, and the
-   fallback's exclusive `(35,1)` waits for every in-flight shared holder,
-   including the flood's T1s that hold shared `(35,1)` while they queue on
-   `(38, kA)`. The SMTP reply is still the uniform `250` or mode a's global
-   451, but the time to it differs with workspace membership. A fallback can
-   itself time out on `(35,1)`; that 451 is mode a's global one, and it is a
-   consequence of the flood's load on everyone, but whether it lands is
-   correlated with the probe's workspace. Not closed here.
+2. **Timing side channel (I9 / ADR-025), accepted with conditions by the
+   security review.** The observer is an **authenticated tenant**, not the
+   sender: it co-addresses its own inbox with a candidate address in one DATA
+   and reads its own inbox's delivery time (or its absence after a `451`). The
+   external sender learns nothing new: the edge stores and forwards, so the
+   sender sees only the edge's reply. What the observer can see: if the candidate
+   belongs to a workspace kept busy (by flooding addresses it knows there), the
+   event waits on that workspace's `(38, k)` up to `lock_timeout` and then falls
+   back to mode a, so the delivery is slower; it is never a partition-specific
+   `451`. The baseline is mode a's **existing** write-slot fairness channel (4
+   slots per workspace per node, `W_slot` 10 s, then a `451` for the whole
+   DATA; `StorageProtocol.kt:42`, `:45`): a stable state of the same kind,
+   recorded as an accepted residual in `docs/security/abuse-model.md`. The
+   lock reorder (§3) removes the cross-tenant convoy, so a busy workspace no
+   longer slows other workspaces through `(35,1)`. Conditions: (a) the benchmark
+   measures the channel against mode a under the same load (`*-probe`
+   scenarios; proposed criterion in the PROPOSED note, not adopted); (b) in any
+   environment running the mode, only the edge or trusted test clients reach
+   ingestion's SMTP port (Ops precondition, PROPOSED note and production.md).
 3. `storage_delta` has no foreign key: I-G assumes no positive delta exists for
    a workspace without a share (only corruption could create one; I8 reports
    drift).
@@ -314,18 +354,29 @@ deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:200`.
 
 | Finding | Resolution |
 |---|---|
-| P1 orphan debt | guard G4 (`PTS:34`) ⇒ mode a; `PRT:89` (failed before, passes after) |
-| P2 REPEATABLE READ write skew | S1 refuses non-RC, non-SERIALIZABLE writers (V25:86); `PRT:33` (failed before), control `PRT:65` |
-| P3 / A4 stale bound | S2 binds only a bound matching the approved plan (V25:103); rollback entry; `PRT:119` (failed before) |
-| P4 lock order | one statement per key, sorted by key (`JSA:295`); collision test `PRT:200` |
+| P1 orphan debt | guard G4 (`PTS:34`) ⇒ mode a; `PRT:175` (failed before, passes after) |
+| P2 REPEATABLE READ write skew | S1 refuses non-RC, non-SERIALIZABLE writers (V25:88); `PRT:35` (failed before), control `PRT:67` |
+| P3 / A4 stale bound | S2 binds only a bound matching the approved plan (V25:105); rollback entry; `PRT:205` (failed before) |
+| P4 lock order | one statement per key, sorted by key (`JSA:301`); collision test `PRT:286` |
 | P5 invisible fallbacks | closed-reason counter; `MetricCardinalityTest` |
-| P6 tests | `PRT:248`, `PRT:269`, `PRT:288`, `PRT:33`, `PRT:89` |
+| P6 tests | `PRT:334`, `PRT:355`, `PRT:374`, `PRT:35`, `PRT:175` |
 | P7 wording | "no `g_*` global sums", not "no global sum" (§1 step 4) |
 | A1 ADR text | dated owner-decision note appended to ADR-035; both passages listed in the PROPOSED note |
 | A2 lab only | `DeploymentSafety`, `storage_node.admission_locking`, inventory, gate L |
-| A3 I9 oracle | `(38,k)` timeout and deadlock fall back (`JSA:198`); `PRT:152` (failed before), `PRT:178` (new); residual §7.2 |
+| A3 I9 oracle | `(38,k)` timeout and deadlock fall back (`JSA:202`); `PRT:238` (failed before), `PRT:264` (new); residual §7.2 |
 | A5 wording | "mode a's T1 statement and transaction unchanged" (§1), V25 header, PROPOSED note, production.md |
 | A6 ArchUnit | `PartitionedT1RuleTest` with rogue fixtures |
 | A7 committed config | `check-storage-enforcement-off.sh` and its tests |
 | A8 startup log | `IngestionOps.kt` logs `admissionLocking` |
 | A9 criteria | recommendation in the PROPOSED note (not adopted); hot-workspace and heartbeat scenarios in the variant |
+| C-1 SERIALIZABLE vs READ COMMITTED writers | fence READ COMMITTED only (V25:88); reserve command asserts it; `PRT:91` (R3, failed before), `PRT:122` (R5) |
+| C-2 node writes | `admission_locking` in the insert and the heartbeat upsert themselves; one write per heartbeat |
+| C-3 fallback cascade | hot scenario reports `partitionFallbackReasons` and `t1Transaction.maxMs` |
+| N1 key spellings | `check-storage-enforcement-off.sh` canonicalizes the key like Spring (case, `-`, `_`, `.`); new tests failed before |
+| N3 API inventory | `ApiStorageWiring` passes the lab flag |
+| N5 heartbeat age | gate L uses `$HEARTBEAT_MAX_AGE` |
+| per-metric reasons | `MetricCardinalityTest` keeps one `reason` set per metric |
+| S-C1 probes | `*-probe` scenarios in mode a and partitioned (`ProbeLoad`) |
+| S-C2 Ops precondition | PROPOSED note and production.md |
+| S-C3 §7.2 and abuse model | §7.2 above; abuse-model.md slot-channel baseline and partitioned-timing entry |
+| S-REC lock order | `(38,·)` before shared `(35,1)` (`JSA:204`), argument in §3, `PRT:137` (failed before) |

@@ -155,8 +155,14 @@ by the database.**
   `UPDATE`, `DELETE` or `TRUNCATE` on it (gate F). Its two definer trigger
   functions are executable by nobody (`REVOKE ... FROM PUBLIC`). Also under
   mode a: every write to the share tables, the plan or the bound takes the
-  `(35, 1)` admission lock and runs only under READ COMMITTED or SERIALIZABLE,
-  and nodes record `storage_node.admission_locking` (activation gate L).
+  `(35, 1)` admission lock and runs only under READ COMMITTED, and nodes
+  record `storage_node.admission_locking` (activation gate L).
+- **Ops precondition for `COHORT_PARTITIONED` (lab only today):** only the
+  mail edge or trusted test clients may reach ingestion's SMTP port;
+  `TESTINBOX_SMTP_BIND` stays loopback or internal. The application cannot check
+  networking: Ops verifies it from the rendered compose and on the host
+  (`ss -ltnp`) and records it with that environment's evidence (PROPOSED note,
+  "Ops precondition").
 - Both deployables keep a column grant for the refusal record:
   - `INSERT (inbox_id, workspace_id, refusal_count, last_refusal_at, last_refusal_reason)`
     and `UPDATE (refusal_count, last_refusal_at, last_refusal_reason)` on

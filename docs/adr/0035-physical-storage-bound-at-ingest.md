@@ -2131,7 +2131,9 @@ This note records that decision; it changes no text above. In particular the
 gate D note's last bullet ("A measurement, not a mode … lives only in the
 benchmark module … whether any such mode exists is an owner decision and a
 separate ADR amendment") and ADR-037's "preserve … transaction lock ordering"
-stand as written. What the decision authorizes, and nothing more:
+stand as written. What follows is **the team's safeguard reading** of the
+decision — how the implementation keeps within it — not the owner's words,
+which are only the quotation above:
 
 - the production-code implementation of the share-partitioned T1 behind a
   **lab-only** switch, `testinbox.storage.admission-locking`, whose default
@@ -2142,8 +2144,8 @@ stand as written. What the decision authorizes, and nothing more:
 - its tests, and its measurement by the §11 harness as a variant reported
   apart from gate D, which is still computed from mode a's CHOSEN scenarios.
 
-It does not authorize release, enablement, opening admission, or any §11
-parameter, threshold or criterion change. Whether the mode exists in ADR-035,
+On that reading it authorizes nothing more: not release, enablement, opening
+admission, or any §11 parameter, threshold or criterion change. Whether the mode exists in ADR-035,
 and on which criteria, is the PROPOSED note
 [`0035-amendment-note-partitioned-t1-PROPOSED.md`](0035-amendment-note-partitioned-t1-PROPOSED.md),
 which lists both passages above as text it would amend.

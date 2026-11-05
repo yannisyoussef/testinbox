@@ -103,6 +103,22 @@ under `variant` and left out of the informational criteria. The reviewers'
 recommended criteria for a partitioned T1 (not adopted) are in the PROPOSED
 note.
 
+Then the timing-channel probes (security review S-C1), twice at the same
+heaviest point and on the same closed cohort, once in mode a (`chosen-…-probe`,
+the declared ingestion node, GLOBAL) and once partitioned
+(`partitioned-…-probe`): a hot-workspace flood whose events, like the probes,
+pass production's ADR-027 INGEST limits (per inbox, then per workspace) before
+T1, production write slots, heartbeats on; beside it three probe classes at
+5 events/s each — `inside` (the hot workspace's reserved inbox co-addressed with
+an observer's inbox in another workspace), `cold`, and `unknown` (resolution
+discards it; recorded `reachesT1 = false`). Each class reports its events,
+latency (due to completion) and 451 rate under `probes`. Every PARTITIONED
+scenario also reports `partitionFallbackReasons`; with the hot scenario's
+`t1Transaction.maxMs` that is the evidence for the lock-timeout fallback
+cascade (a T1 can take about two lock timeouts plus its statement when it
+falls back). None of this is gate D; the mode a probe scenario is reported
+under `variant` too.
+
 Every variant scenario's probe must show the partitioned path
 (`t1Probe.partitioned = true`, `t1Probe.locking = COHORT_PARTITIONED`) or the
 run stops; `partitionFallbacks` records the T1s whose guard did not hold during

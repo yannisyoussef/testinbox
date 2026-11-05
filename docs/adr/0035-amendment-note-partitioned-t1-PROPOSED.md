@@ -34,9 +34,9 @@ Add a second T1 lock protocol, selected by
 `testinbox.storage.admission-locking` (default and only committed value
 `GLOBAL` = mode a):
 
-- `COHORT_PARTITIONED`: `(35, 1)` SHARED, one exclusive `(38, k)` per involved
-  workspace, one statement per key in ascending key order, then one statement
-  without the `g_*` global sums that also evaluates a four-condition partition
+- `COHORT_PARTITIONED`: one exclusive `(38, k)` per involved workspace, one
+  statement per key in ascending key order, THEN `(35, 1)` SHARED, then one
+  statement without the `g_*` global sums that also evaluates a four-condition partition
   guard in the same snapshot. If the guard does not hold, or a per-workspace
   lock times out or is broken as a deadlock, the same call runs mode a. A
   fallback is counted by a closed-label metric.
@@ -45,8 +45,8 @@ Add a second T1 lock protocol, selected by
   places plus every legacy share within that bound; every involved workspace
   shared; no debt of a shared workspace charged to no share. Every write to the
   share tables, the plan or the bound takes `(35, 1)` exclusive, runs only
-  under READ COMMITTED or SERIALIZABLE, and is refused at commit past a bound
-  that matches the approved plan.
+  under READ COMMITTED, and is refused at commit past a bound that matches the
+  approved plan.
 - Every other holder of `(35, 1)` (rule (P), the lifecycle drain fence, the
   node fence, pool reserve/revoke, beta admission) stays exclusive.
 
@@ -98,6 +98,28 @@ For the owner's decision; nothing here is a criterion until the owner adopts it.
 6. Legacy shares at `MAX_LEGACY_WORKSPACES` (32), not one.
 7. I9 under load: the p99 latency and the 451 rate of a COLD workspace while
    another workspace is saturated, with a bound on both.
+8. Timing channel (security review S-C1; the variant now runs it as
+   `*-probe`, in mode a and partitioned under the same load): at the heaviest
+   matrix point, with production write slots and INGEST limits and heartbeats
+   on, a hot-workspace flood beside three probe classes — `inside` (an address
+   of the hot workspace co-addressed with the observer's own inbox in one
+   event), `cold`, and `unknown` (which never reaches T1). Proposed criterion:
+   the inside-vs-cold difference in latency and 451 distributions under
+   PARTITIONED is no larger than under mode a, and the cold workspace's 451
+   rate is no higher than mode a's.
+
+## Ops precondition (security review S-C2)
+
+In any environment that runs `COHORT_PARTITIONED` (today: the lab only), only
+the mail edge, or trusted test clients, may reach the ingestion SMTP port:
+`TESTINBOX_SMTP_BIND` stays loopback or an internal address, never a public
+interface. The timing residual (correctness document §7.2) assumes the
+observer reaches ingestion only through the edge, which stores and forwards.
+`DeploymentSafety` cannot see networking, so **Ops checks it**: in the
+deployment review of that environment, from the rendered compose
+(`deploy/staging/compose.yaml` publishes `${TESTINBOX_SMTP_BIND:-127.0.0.1}`)
+and from the host (`ss -ltnp` shows the SMTP listener on loopback/internal
+only), and records the result with the environment's evidence.
 
 ## Conditions before any acceptance
 

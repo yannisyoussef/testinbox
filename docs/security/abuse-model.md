@@ -174,9 +174,34 @@
   for up to 1 s) and T1's own snapshot; (2) a `STORAGE_FULL` breaker's
   half-open trial fails (or its probe is refused by rule (P)) after resolution;
   (3) an inbox stops receiving — expired by the sweep or deleted by its owner —
-  while an upload into it is in flight, and T2 fences the whole event. None is
-  a stable state an attacker can hold open: each answers "a recipient existed
-  at that instant", which address entropy already makes infeasible to aim.
+  while an upload into it is in flight, and T2 fences the whole event. None of
+  these three races is a stable state an attacker can hold open: each answers
+  "a recipient existed at that instant", which address entropy already makes
+  infeasible to aim. *(Corrected 2026-11-05, review #136 S-C3: the next item is
+  a stable state, and pre-existing.)*
+- **Write-slot fairness channel (mode a, pre-existing, accepted residual).** A
+  node gives one workspace at most `max-concurrent-events-per-workspace` = 4
+  write slots (`StorageProtocol.MAX_EVENTS_PER_WORKSPACE`, slots / 4) and an
+  event waits at most `W_slot` = 10 s (`StorageProtocol.SLOT_WAIT`) before the
+  whole DATA is answered `451`. A party that keeps a workspace's slots busy
+  (by flooding addresses it knows in that workspace) can hold that state open,
+  and an observer co-addressing its own inbox with a candidate address in one
+  DATA then sees the delay or the `451` when the candidate belongs to the
+  flooded workspace. It is bounded by the INGEST rate limits and needs known
+  addresses of the target workspace; it answers workspace membership, never
+  content. It exists in ADR-035 mode a as shipped; this entry records it as the
+  baseline any later change is measured against. No behaviour changes here.
+- **Share-partitioned T1 timing (PROPOSED, lab only; ADR-035 PROPOSED note,
+  correctness document §7.2).** The partitioned T1 adds a per-workspace lock
+  `(38, k)`. Its timeout or deadlock falls back to mode a rather than answering
+  `451`, but the wait is still visible as latency to an **authenticated tenant
+  observer** that co-addresses its own inbox with a candidate address and reads
+  its own inbox's delivery time. The external sender learns nothing new: the
+  edge stores and forwards, so the sender sees the edge's reply. The channel is
+  of the same kind as the slot channel above and is measured against it by the
+  benchmark's `*-probe` scenarios (mode a vs partitioned under the same load).
+  Precondition: in an environment running the mode, only the edge or trusted
+  test clients reach ingestion's SMTP port.
 - **Envelope-order capacity refusals under `ALL`** (contract §11.6): with
   footprint admission, copies of one event are decided against running totals
   in envelope order, so a tenant parking global headroom at the cliff could
