@@ -33,8 +33,15 @@ data class ScenarioSpec(
     val mode: AdmissionMode,
     val concurrency: Int,
     val offeredRate: Double,
+    /**
+     * PARTITIONED variant only: every event goes to ONE hot participant workspace
+     * (its per-workspace lock is the contended one), reported apart, never in the
+     * informational criteria.
+     */
+    val hot: Boolean = false,
 ) {
-    fun name(workspaces: Int): String = "${mode.name.lowercase()}-ws$workspaces-c$concurrency-r${Math.round(offeredRate)}"
+    fun name(workspaces: Int): String =
+        "${mode.name.lowercase()}-ws$workspaces-c$concurrency-r${Math.round(offeredRate)}" + if (hot) "-hot" else ""
 }
 
 /**
@@ -111,6 +118,7 @@ class ScenarioRunner(
                     HarnessDeclarations.locking(spec.mode),
                 )
             val protocol = ProtocolAssembly(pool, options, spec.mode, declarations)
+            hotWorkspace = spec.hot
             try {
                 val probe = prepare(protocol, name, spec.mode)
 
@@ -124,6 +132,7 @@ class ScenarioRunner(
                 val compactor = startCompactor(protocol)
                 val deltaSamples = Collections.synchronizedList(ArrayList<Long>())
                 val deltaSampler = startDeltaSampler(deltaSamples)
+                val heartbeats = startHeartbeats(protocol)
                 val retentionEvents = Math.ceil(retentionRate * options.durationSeconds).toInt()
                 val retentionThread =
                     Thread({
@@ -160,6 +169,7 @@ class ScenarioRunner(
                 retentionThread.join()
                 compactor.shutdownNow()
                 deltaSampler.shutdownNow()
+                heartbeats?.shutdownNow()
                 val t1Statement = diagnostics?.t1Stats()
 
                 val observation =
@@ -224,6 +234,29 @@ class ScenarioRunner(
                 TimeUnit.MILLISECONDS,
             )
         }
+
+    /**
+     * The closed cohort's nodes heartbeat at production's cadence (StorageNodeRuntime,
+     * every 10 s): each heartbeat writes storage_node, whose V21 fence trigger takes
+     * (35, 1) EXCLUSIVE and so drains every in-flight partitioned T1 once. Null for the
+     * gate's own runner, whose scenarios are unchanged.
+     */
+    private fun startHeartbeats(protocol: ProtocolAssembly): ScheduledExecutorService? {
+        val closed = closedCohort ?: return null
+        return Executors.newSingleThreadScheduledExecutor { Thread(it, "bench-heartbeats").apply { isDaemon = true } }.also {
+            it.scheduleWithFixedDelay(
+                {
+                    runCatching {
+                        protocol.heartbeat()
+                        closed.heartbeat()
+                    }
+                },
+                HEARTBEAT_MILLIS,
+                HEARTBEAT_MILLIS,
+                TimeUnit.MILLISECONDS,
+            )
+        }
+    }
 
     /** Samples the storage_delta row count every DELTA_SAMPLE_MILLIS into [samples]. */
     private fun startDeltaSampler(samples: MutableList<Long>): ScheduledExecutorService =
@@ -290,10 +323,14 @@ class ScenarioRunner(
         if (mode ==
             AdmissionMode.PARTITIONED
         ) {
-            checkNotNull(cohort) { "the PARTITIONED variant needs its cohort" }.inboxes
+            val inboxes = checkNotNull(cohort) { "the PARTITIONED variant needs its cohort" }.inboxes
+            if (hotWorkspace) inboxes.filter { it.workspaceId == inboxes.first().workspaceId } else inboxes
         } else {
             population.inboxes
         }
+
+    /** Set per scenario: the PARTITIONED variant's single-hot-workspace skew. */
+    @Volatile private var hotWorkspace = false
 
     private val retentionAchieved = AtomicLong()
     private val threadSeeds = AtomicInteger()
@@ -309,7 +346,8 @@ class ScenarioRunner(
         random: Random,
     ): Boolean {
         val inboxes = eventInboxes(protocol.mode)
-        val recipients = options.recipientMix.draw(random.nextDouble())
+        // A hot workspace has fewer inboxes than the largest event: an event then covers all of them.
+        val recipients = minOf(options.recipientMix.draw(random.nextDouble()), inboxes.size)
         val start = random.nextInt(inboxes.size - recipients + 1)
         val chosen = inboxes.subList(start, start + recipients)
         val plans = chosen.map(::plan)
@@ -503,5 +541,8 @@ class ScenarioRunner(
         const val RETENTION_HEADROOM = 1.5
         const val ERROR_SAMPLES = 5
         const val DELTA_SAMPLE_MILLIS = 250L
+
+        /** StorageNodeRuntime's production heartbeat interval. */
+        const val HEARTBEAT_MILLIS = 10_000L
     }
 }

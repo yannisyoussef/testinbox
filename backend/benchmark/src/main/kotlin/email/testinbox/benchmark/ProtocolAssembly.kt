@@ -234,7 +234,8 @@ class ProtocolAssembly(
     val footprint = EffectiveStoragePolicy.footprint(declarations)
 
     private val reservations = JdbcStorageReservations(jdbc, template)
-    private val ambiguity = JdbcStorageAmbiguity(jdbc, template, declarations.enforcement, footprint?.cohort?.binding)
+    private val ambiguity =
+        JdbcStorageAmbiguity(jdbc, template, declarations.enforcement, footprint?.cohort?.binding, declarations.admissionLocking)
     private val lifecycle = StorageNodeLifecycle(ambiguity, node, options.slots).also { it.start() }
     val slots =
         WriteSlots(
@@ -329,6 +330,9 @@ class ProtocolAssembly(
             }
         return probe.copy(partitioned = store.partitionedAdmissions == partitionedBefore + 1)
     }
+
+    /** One production heartbeat of this assembly's node. */
+    fun heartbeat() = lifecycle.heartbeat()
 
     fun stop() {
         lifecycle.stop(slots.poisoned())

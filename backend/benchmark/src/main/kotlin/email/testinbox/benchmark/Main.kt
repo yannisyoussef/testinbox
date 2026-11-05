@@ -114,7 +114,8 @@ class Harness(
                     null
                 } else {
                     GateEvaluator(expectedRate = options.expectedRate).evaluate(
-                        variantResults.map { it.copy(mode = AdmissionMode.CHOSEN) } + results.filter { it.mode == AdmissionMode.REFERENCE },
+                        variantResults.filterNot { it.name.endsWith("-hot") }.map { it.copy(mode = AdmissionMode.CHOSEN) } +
+                            results.filter { it.mode == AdmissionMode.REFERENCE },
                         nonAdr,
                     )
                 }
@@ -243,6 +244,9 @@ class Harness(
                         variantResults += variant.run(ScenarioSpec(AdmissionMode.PARTITIONED, concurrency, rate))
                     }
                 }
+                // The single-hot-workspace skew, at the matrix's heaviest point (reported, never in the criteria).
+                variantResults +=
+                    variant.run(ScenarioSpec(AdmissionMode.PARTITIONED, options.concurrency.max(), options.rates.max(), hot = true))
             }
             diagnosticsRecords +=
                 linkedMapOf(
