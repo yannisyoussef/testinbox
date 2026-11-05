@@ -198,12 +198,6 @@ class MetricCardinalityTest {
                 BlobOperation.entries.map { it.name }.toSet() +
                 ApiKeyOperation.entries.map { it.name }.toSet() +
                 IdempotentOperation.entries.map { it.name }.toSet(),
-            "reason" to
-                SmtpRejection.entries.map { it.name }.toSet() +
-                // Why a share-partitioned T1 fell back to mode a: a closed enum.
-                email.testinbox.application.storage.PartitionFallbackReason.entries
-                    .map { it.name.lowercase() }
-                    .toSet(),
             "cause" to
                 email.testinbox.application.storage.FootprintUnavailability.entries
                     .map { it.name.lowercase() }
@@ -220,11 +214,32 @@ class MetricCardinalityTest {
             "gate" to setOf("session_allowlist", "node_inventory"),
         )
 
+    /**
+     * `reason` means different things on different metrics, so each metric has its
+     * own closed set: an SMTP rejection can never carry a partition-fallback reason,
+     * nor the reverse. A metric with a `reason` label not listed here fails.
+     */
+    private val allowedReasonsByMetric: Map<String, Set<String>> =
+        mapOf(
+            "testinbox_smtp_reject" to SmtpRejection.entries.map { it.name }.toSet(),
+            // Why a share-partitioned T1 fell back to mode a (PROPOSED, gate D W1).
+            "testinbox_storage_admission_partition_fallback" to
+                email.testinbox.application.storage.PartitionFallbackReason.entries
+                    .map { it.name.lowercase() }
+                    .toSet(),
+        )
+
     @Test
     fun `every label key and value is drawn from a closed set`() {
         exerciseEverything()
         registry.meters.forEach { meter ->
             meter.id.tags.forEach { tag ->
+                if (tag.key == "reason") {
+                    val allowed = allowedReasonsByMetric[meter.id.name.removeSuffix("_total")]
+                    io.kotest.assertions.withClue("${meter.id.name} reason=${tag.value}") {
+                        (allowed != null && tag.value in allowed) shouldBe true
+                    }
+                }
                 (tag.key in allowedLabelKeys) shouldBe true
                 // build_info's labels are fixed for a process's lifetime — one
                 // series per deployed build, not one per request — so they are
@@ -427,6 +442,14 @@ class MetricCardinalityTest {
             email.testinbox.application.storage.AdmissionLocking.COHORT_PARTITIONED,
         )
         partitioned.scrape() shouldContain "testinbox_storage_admission_locking{mode=\"cohort_partitioned\"} 1.0"
+    }
+
+    @Test
+    fun `an SMTP rejection reason and a partition-fallback reason never cross metrics`() {
+        allowedReasonsByMetric.getValue("testinbox_smtp_reject").intersect(
+            allowedReasonsByMetric.getValue("testinbox_storage_admission_partition_fallback"),
+        ) shouldBe emptySet()
+        ("uncharged_debt" in allowedReasonsByMetric.getValue("testinbox_smtp_reject")) shouldBe false
     }
 
     @Test

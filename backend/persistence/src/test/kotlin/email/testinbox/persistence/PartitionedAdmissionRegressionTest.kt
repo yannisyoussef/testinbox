@@ -20,6 +20,8 @@ import org.springframework.dao.CannotAcquireLockException
 import java.sql.SQLException
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Regression tests from the independent PostgreSQL-concurrency and architecture
@@ -81,6 +83,90 @@ class PartitionedAdmissionRegressionTest : PartitionedAdmissionFixture() {
             shouldThrow<SQLException> { a.commit() }
         }
         withinBound() shouldBe true
+    }
+
+    // --- C-1 (re-review): a SERIALIZABLE writer racing a READ COMMITTED one ---------------------
+
+    @Test
+    fun `C-1 R3 - a SERIALIZABLE share writer is refused, since SSI cannot see a READ COMMITTED writer`() {
+        val cohort = closedCohort()
+        val (w1, w2) = cohort.workspaces
+        val x = headroom()
+        db.dataSource.connection.use { a ->
+            a.autoCommit = false
+            a.createStatement().use { it.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE") }
+            a.createStatement().use { it.executeQuery("SELECT 1").close() } // the snapshot is taken here
+            db.jdbc
+                .sql("UPDATE storage_legacy_share SET payload_limit_bytes = payload_limit_bytes + ? WHERE workspace_id = ?")
+                .params(x, w2)
+                .update() shouldBe 1
+            val refused =
+                shouldThrow<SQLException> {
+                    a
+                        .prepareStatement(
+                            "UPDATE storage_legacy_share SET payload_limit_bytes = payload_limit_bytes + ? WHERE workspace_id = ?",
+                        ).use {
+                            it.setLong(1, x)
+                            it.setObject(2, w1)
+                            it.executeUpdate()
+                        }
+                    a.commit()
+                }
+            refused.message.orEmpty() shouldContain "READ COMMITTED"
+            a.rollback()
+        }
+        withinBound() shouldBe true
+    }
+
+    @Test
+    fun `C-1 R5 - revoke, grow past the bound, re-approve by a plan UPDATE - the re-approval is refused`() {
+        val cohort = closedCohort()
+        val w1 = cohort.workspaces.first()
+        db.jdbc.sql("UPDATE storage_cohort_plan SET approved = false").update()
+        db.jdbc
+            .sql("UPDATE storage_legacy_share SET payload_limit_bytes = payload_limit_bytes + ? WHERE workspace_id = ?")
+            .params(headroom() + 1, w1)
+            .update() shouldBe 1
+        withinBound() shouldBe false
+        shouldThrow<Exception> { db.jdbc.sql("UPDATE storage_cohort_plan SET approved = true").update() }
+    }
+
+    // --- S-REC: no cross-tenant convoy through the shared (35, 1) ----------------------------------
+
+    @Test
+    fun `S-REC - T1s queued on a hot workspace hold no (35, 1), so an exclusive waiter and a cold T1 do not wait for them`() {
+        val cohort = closedCohort()
+        val (hot, cold) = cohort.workspaces
+        val key = JdbcStorageAdmission.workspaceLockKeys(listOf(hot)).single()
+        val store = partitioned(lockTimeout = Duration.ofSeconds(20))
+        val pool = Executors.newFixedThreadPool(3)
+        db.dataSource.connection.use { holder ->
+            holder.autoCommit = false
+            // The head of the hot workspace's queue, holding its (38, k) for as long as the test wants.
+            holder.createStatement().use { it.execute("SELECT pg_advisory_xact_lock(38, $key)") }
+            try {
+                val queued = pool.submit<List<String>> { admit(store, hot to cohort.inboxes.getValue(hot)[0]).shape() }
+                db.awaitBlockedSessions(1)
+                // An exclusive (35, 1) asker (a heartbeat's node fence, a fallback, rule P): it must not wait
+                // for the queued hot T1, which holds nothing but its place in the (38, k) queue.
+                val exclusive =
+                    pool.submit {
+                        db.dataSource.connection.use { x ->
+                            x.autoCommit = false
+                            x.createStatement().use { it.execute("SELECT pg_advisory_xact_lock(35, 1)") }
+                            x.commit()
+                        }
+                    }
+                exclusive.get(15, TimeUnit.SECONDS)
+                val coldT1 = pool.submit<List<String>> { admit(store, cold to cohort.inboxes.getValue(cold)[0]).shape() }
+                coldT1.get(15, TimeUnit.SECONDS) shouldBe listOf("admitted") // while the hot head still holds its key
+                queued.isDone shouldBe false
+                holder.rollback()
+                queued.get(30, TimeUnit.SECONDS) shouldBe listOf("admitted")
+            } finally {
+                pool.shutdownNow()
+            }
+        }
     }
 
     // --- P1: debt racing the reserve that shares its workspace ------------------------------------

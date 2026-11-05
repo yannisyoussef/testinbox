@@ -5,8 +5,8 @@
 --
 -- Expand-only: one new table, one new column on storage_node, one invoker function,
 -- two definer trigger functions and their triggers. Nothing is dropped, renamed or
--- narrowed. (Amended in place after review #136, before any deployment: V25 had
--- only ever run in tests.)
+-- narrowed. (Amended in place after review #136 and its re-review, before any
+-- deployment: V25 had only ever run in tests.)
 --
 -- What this changes under mode a (testinbox.storage.admission-locking = GLOBAL, the
 -- default): mode a's T1 STATEMENT reads nothing created here and is unchanged byte
@@ -14,7 +14,7 @@
 -- * every write to the share tables, the plan or the bound now takes (35, 1)
 --   EXCLUSIVE (re-entrant for JdbcBetaAdmissions.lockPolicy and
 --   JdbcCohortBudgets.lockClosed, which already hold it; new for owner SQL);
--- * such a write is refused outside READ COMMITTED and SERIALIZABLE (below);
+-- * such a write is refused outside READ COMMITTED (below);
 -- * the pool reserve also records the partition bound, and a commit that leaves
 --   the shares above a bound matching the approved plan is refused;
 -- * storage_node gains admission_locking, which the activation inventory reads.
@@ -34,12 +34,14 @@
 --   changed inventory no longer matches the plan's fingerprint, so the cohort
 --   readiness that T1 reads in the same snapshot refuses (451) exactly as mode a's
 --   does; past the bound, the guard below also sends it to mode a.
--- * ISOLATION. The fence lock is taken by a BEFORE STATEMENT trigger, after a
---   REPEATABLE READ transaction's snapshot; its deferred check would then judge
---   a stale snapshot, and two such writers could each pass and jointly overcommit
---   (review #136, P2). So a share write is refused unless the transaction is READ
---   COMMITTED (the check's statements take fresh snapshots after the fence) or
---   SERIALIZABLE (SSI aborts that write skew).
+-- * ISOLATION: READ COMMITTED ONLY. The fence lock is taken by a BEFORE STATEMENT
+--   trigger, after a REPEATABLE READ or SERIALIZABLE transaction's snapshot; its
+--   deferred check would then judge a stale snapshot, and two writers could each
+--   pass and jointly overcommit (review #136 P2). SSI does not save SERIALIZABLE:
+--   it cannot see a READ COMMITTED writer on the other side of the race (re-review
+--   C-1). Under READ COMMITTED the check's statements take fresh snapshots after
+--   the fence, so every share writer (reserve, revoke, beta admission, the account
+--   lifecycle, owner SQL) must run READ COMMITTED, the PostgreSQL default.
 -- * A STALE BOUND does not bind. The bound check applies only while the bound's
 --   binding and fingerprint match the APPROVED plan; an older artifact that
 --   re-reserves without recording a bound changes the plan, so the bound it never
@@ -83,8 +85,8 @@ CREATE FUNCTION storage_partition_share_fence() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS
 $$
 BEGIN
-    IF current_setting('transaction_isolation') NOT IN ('read committed', 'serializable') THEN
-        RAISE EXCEPTION 'share, plan and partition-bound writes run under READ COMMITTED or SERIALIZABLE only, not %',
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'share, plan and partition-bound writes run under READ COMMITTED only, not %',
             current_setting('transaction_isolation')
             USING ERRCODE = 'invalid_transaction_state';
     END IF;

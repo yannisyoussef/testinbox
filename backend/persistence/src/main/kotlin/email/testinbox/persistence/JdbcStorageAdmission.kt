@@ -54,15 +54,15 @@ import java.util.concurrent.atomic.AtomicLong
  * ADR-035 mode a exactly as above: `(35, 1)` EXCLUSIVE, one statement with the
  * global sums. [AdmissionLocking.COHORT_PARTITIONED] is the share-partitioned T1
  * of the PROPOSED amendment note (gate D, W1;
- * `docs/adr/0035-benchmark/partitioned-t1-correctness.md`): `(35, 1)` SHARED, then
- * one exclusive `(38, k)` per involved workspace in ascending `k`, then ONE
- * statement without global sums that also evaluates the partition guard in the
- * same snapshot (V25). Where the guard does not hold — no approved pool with a
- * matching recorded bound, shares above it, or an involved workspace without a
- * share — that transaction ends without a write and the SAME call runs the mode a
- * transaction instead, so every such event is decided exactly as mode a decides
- * it (a per-tenant 451 would break I9). Every other `(35, 1)` holder stays
- * EXCLUSIVE and so still excludes every T1 of either kind.
+ * `docs/adr/0035-benchmark/partitioned-t1-correctness.md`): one exclusive
+ * `(38, k)` per involved workspace in ascending `k`, then `(35, 1)` SHARED, then ONE
+ * statement without the `g_*` global sums that also evaluates the partition guard
+ * in the same snapshot (V25). Where a guard condition does not hold, or a
+ * per-workspace lock times out or deadlocks, that transaction ends without a write
+ * and the SAME call runs the mode a transaction instead, so every such event is
+ * decided exactly as mode a decides it (a per-tenant 451 would break I9). Every
+ * other `(35, 1)` holder stays EXCLUSIVE and so still excludes every T1 of either
+ * kind; none of them takes a `(38, k)`.
  */
 open class JdbcStorageAdmission(
     private val jdbc: JdbcClient,
@@ -174,8 +174,8 @@ open class JdbcStorageAdmission(
     ) : RuntimeException(cause)
 
     /**
-     * The share-partitioned transaction: `(35, 1)` SHARED, the per-workspace
-     * locks in ascending key order, ONE statement, the caller's decision, the
+     * The share-partitioned transaction: the per-workspace locks in ascending key
+     * order, then `(35, 1)` SHARED, ONE statement, the caller's decision, the
      * insert. A fallback, with the transaction rolled back before any write, when
      * a guard condition read in that statement does not hold, or when a
      * per-workspace lock times out or is broken as a deadlock: that wait depends
@@ -191,12 +191,17 @@ open class JdbcStorageAdmission(
             checkNotNull(
                 transactions.execute { status ->
                     configureTransaction()
-                    acquireSharedAdmissionLock()
+                    // The workspace locks FIRST, then the shared (35, 1): a T1 queued behind a
+                    // busy workspace holds no (35, 1), so an exclusive (35, 1) asker (a heartbeat's
+                    // node fence, rule P, a fallback) and, behind it, every other workspace's T1
+                    // never wait for that queue. No exclusive (35, 1) holder takes a (38, k), so
+                    // no cycle (partitioned-t1-correctness.md §3).
                     try {
                         acquireWorkspaceLocks(workspaceLockKeys(scope.workspaceIds.map { it.value }))
                     } catch (failure: RuntimeException) {
                         throw WorkspaceLockFallback(workspaceLockFailure(failure) ?: throw failure, failure)
                     }
+                    acquireSharedAdmissionLock()
                     val (snapshot, refused) = readPartitioned(scope)
                     if (refused != null) {
                         status.setRollbackOnly()
@@ -272,7 +277,8 @@ open class JdbcStorageAdmission(
      * pool reserve/revoke, beta admission and the V25 share-table fence — so each
      * of those still excludes, and is excluded by, every partitioned T1.
      * PostgreSQL queues a new shared request behind a waiting exclusive one, so a
-     * stream of partitioned T1s cannot starve those writers.
+     * stream of partitioned T1s cannot starve those writers. Taken AFTER the
+     * workspace locks, and held only from there to commit.
      */
     protected open fun acquireSharedAdmissionLock() {
         jdbc
