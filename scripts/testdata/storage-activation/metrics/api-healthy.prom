@@ -21,3 +21,7 @@ testinbox_storage_activation_gate_ready{service="testinbox-api",environment="sta
 testinbox_storage_enforcement_mode{service="testinbox-api",environment="staging",mode="off"} 1
 testinbox_storage_enforcement_mode{service="testinbox-api",environment="staging",mode="tenant_limits"} 0
 testinbox_storage_enforcement_mode{service="testinbox-api",environment="staging",mode="all"} 0
+# HELP testinbox_storage_admission_locking T1 lock protocol (V25)
+# TYPE testinbox_storage_admission_locking gauge
+testinbox_storage_admission_locking{service="testinbox-api",environment="staging",mode="global"} 1.0
+testinbox_storage_admission_locking{service="testinbox-api",environment="staging",mode="cohort_partitioned"} 0.0

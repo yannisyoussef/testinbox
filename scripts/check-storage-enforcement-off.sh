@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ADR-035 §14 phase 2 / §18 gate 6: every committed deployed environment ships
-# with storage enforcement OFF, and so does the code's own default.
+# with storage enforcement OFF, and so does the code's own default. Likewise T1's
+# lock protocol ships GLOBAL (mode a), in every consumer and in the default.
 #
 # WHY THIS EXISTS: `testinbox.storage.enforcement` is configuration on the same
 # digests. Nothing in the build, the image digest or the handoff can tell a
@@ -164,7 +165,40 @@ done <<EOF
 $PROPERTY_FILES
 EOF
 
+# T1's lock protocol (testinbox.storage.admission-locking): the share-partitioned
+# T1 is a PROPOSED ADR-035 amendment, authorized for the lab only (owner,
+# 2026-11-05), so no committed consumer may set anything but GLOBAL — in any
+# spelling Spring's lenient enum binding accepts (`cohort-partitioned`,
+# `CohortPartitioned`, `cohort.partitioned`...), and in any `${VAR:-default}` —
+# and the ingestion property default is pinned to GLOBAL.
+LOCKING_KEY_RE='(TESTINBOX_STORAGE_ADMISSION_LOCKING|testinbox\.storage\.admission-locking|(^|[^A-Za-z0-9_.-])admission-locking|admissionLocking)[[:space:]]*[:=]'
+locking_findings="$(
+    consumers | while IFS= read -r file; do
+        [ -n "$file" ] || continue
+        rel="${file#"$SCAN_ROOT"/}"
+        scan_values "$file" "$LOCKING_KEY_RE" | while IFS="$(printf '\t')" read -r lineno value; do
+            literal="$(canonical_enum "$(placeholder_literal "$value")")"
+            # `(pattern)` form: bash 3.2 cannot parse a bare `pattern)` inside $( ).
+            case "$literal" in
+                ("" | global) ;;
+                (*) printf '%s:%s: T1 admission locking is set to %s. Only GLOBAL (ADR-035 mode a) may be committed; the share-partitioned T1 is a PROPOSED amendment for the lab only.\n' "$rel" "$lineno" "$value" ;;
+            esac
+        done
+    done
+)"
+[ -z "$locking_findings" ] || { printf '%s\n' "$locking_findings" >&2; status=1; }
+
+LOCKING_PROPERTY="backend/ingestion/src/main/kotlin/email/testinbox/ingestion/config/IngestionProperties.kt"
+if [ -f "$SCAN_ROOT/$LOCKING_PROPERTY" ]; then
+    decl="$(strip_comments < "$SCAN_ROOT/$LOCKING_PROPERTY" | grep -E 'admissionLocking:[[:space:]]*AdmissionLocking[[:space:]]*=' | head -1)"
+    if [ -z "$decl" ]; then
+        finding "$LOCKING_PROPERTY: declares no 'admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL' default"
+    elif ! printf '%s' "$decl" | grep -qE '=[[:space:]]*AdmissionLocking\.GLOBAL([^A-Za-z0-9_]|$)'; then
+        finding "$LOCKING_PROPERTY: the admission-locking default is not GLOBAL:$(printf '%s' "$decl" | sed 's/^[[:space:]]*/ /')"
+    fi
+fi
+
 if [ "$status" -eq 0 ]; then
-    echo "Storage enforcement: $scanned consumer file(s) scanned, no TENANT_LIMITS/ALL assignment; both property defaults are OFF"
+    echo "Storage enforcement: $scanned consumer file(s) scanned, no TENANT_LIMITS/ALL assignment; both property defaults are OFF; admission locking GLOBAL everywhere"
 fi
 exit "$status"

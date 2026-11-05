@@ -38,6 +38,7 @@
 #   --sessions-file <tsv>              application_name<TAB>usename, replaces the pg_stat_activity query
 #   --application-role <role>      evaluate only sessions of this database role (ADR-035 §14 (a) scope; default: every role)
 #   --nodes-file <tsv>                 node_id<TAB>capability<TAB>heartbeat_age_seconds<TAB>clean_shutdown(t|f)
+#                                      [<TAB>admission_locking]: the optional V25 column, read by gate L
 #   --qualification-dir <dir>          default backend/storage/src/main/resources/adr035-qualification
 #   --backend-identity <json>          the Ops-declared backend identity (non-secret)
 #   --qualification-valid-metric 0|1   the Ops qualification-check's testinbox_storage_qualification_valid
@@ -444,34 +445,15 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Gate D: the §11 global-ceiling benchmark. Required only for --mode ALL, but a
-# node exporting the share-partitioned T1 (admission-locking) blocks it in any mode. The
+# Gate D: the §11 global-ceiling benchmark. Required only for --mode ALL. The
 # file's own verdict is not trusted: the pass criteria are recomputed from the
 # scenarios as docs/dev/storage-benchmark.md defines them, and a disagreement
 # blocks. A CHOSEN 2× scenario with no matching REFERENCE run cannot be judged
 # and blocks; an INCOMPLETE run blocks with its reasons.
 # ---------------------------------------------------------------------------
 gate_benchmark() {
-    local gate="D-benchmark" verdict recomputed bench_sha api_sha warn="" role label path err locking
+    local gate="D-benchmark" verdict recomputed bench_sha api_sha warn=""
     reset_problems
-    # T1's lock protocol (testinbox.storage.admission-locking), exported by every node as
-    # testinbox_storage_admission_locking{mode=...}. This gate's evidence is mode a (GLOBAL,
-    # the CHOSEN scenarios); the share-partitioned T1 is a PROPOSED ADR-035 amendment whose
-    # benchmark variant is reported apart and never counts here. A node running it blocks,
-    # in every mode. An absent series is an artifact that predates the switch: mode a.
-    while IFS="$TAB" read -r role label path err; do
-        [ -n "$role" ] && [ -z "$err" ] || continue
-        locking="$(metric_value "$path" testinbox_storage_admission_locking 'mode="cohort_partitioned"')"
-        if is_number "$locking" && num_eq "$locking" 1; then
-            problem "$label ($role): runs the share-partitioned T1 (testinbox_storage_admission_locking{mode=cohort_partitioned}=1), a PROPOSED ADR-035 amendment that gate D evidence does not cover"
-        fi
-    done <<EOF
-$METRICS_INDEX
-EOF
-    if [ -n "$PROBLEMS" ]; then
-        record "$gate" BLOCKED "$PROBLEMS"
-        return
-    fi
     if [ "$MODE" = TENANT_LIMITS ]; then
         record "$gate" NOT_REQUIRED "NOT REQUIRED FOR TENANT_LIMITS: the global ceiling is not enabled in this mode (§14 phase 4)"
         return
@@ -553,6 +535,64 @@ EOF
         record "$gate" BLOCKED "$PROBLEMS${warn:+; $warn}"
     else
         record "$gate" PASS "recorded PASS and the §11 criteria recompute from the numbers${warn:+; $warn}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Gate L: T1's lock protocol (testinbox.storage.admission-locking). Gate D's
+# evidence and every accepted ADR-035 text are mode a (GLOBAL); the
+# share-partitioned T1 is a PROPOSED amendment authorized for the lab only. So
+# every evaluated node must PROVE GLOBAL, in any mode:
+#   - metrics: testinbox_storage_admission_locking{mode="global"} 1 on every
+#     endpoint; a series that is absent (an artifact older than the switch, or a
+#     scrape that lost it) is UNKNOWN and blocks, never read as mode a;
+#   - database (TESTINBOX_ACTIVATION_DB_URL, or a 5th column of --nodes-file):
+#     no live storage_node row (V25 admission_locking) other than GLOBAL.
+# No input at all is NOT RUN, which blocks like every unevaluated gate.
+# ---------------------------------------------------------------------------
+gate_locking() {
+    local gate="L-lock-protocol" role label path err global partitioned checked=0 rows="" node locking age clean
+    reset_problems
+    while IFS="$TAB" read -r role label path err; do
+        [ -n "$role" ] || continue
+        [ -z "$err" ] || { problem "$err"; continue; }
+        checked=$((checked + 1))
+        global="$(metric_value "$path" testinbox_storage_admission_locking 'mode="global"')"
+        partitioned="$(metric_value "$path" testinbox_storage_admission_locking 'mode="cohort_partitioned"')"
+        if is_number "$partitioned" && num_eq "$partitioned" 1; then
+            problem "$label ($role): runs the share-partitioned T1 (admission-locking COHORT_PARTITIONED), a PROPOSED ADR-035 amendment permitted only in the lab"
+        elif ! is_number "$global"; then
+            problem "$label ($role): T1 lock protocol UNKNOWN (testinbox_storage_admission_locking absent); a node must prove GLOBAL"
+        elif ! num_eq "$global" 1; then
+            problem "$label ($role): testinbox_storage_admission_locking{mode=global} is $global, not 1"
+        fi
+    done <<EOF
+$METRICS_INDEX
+EOF
+    if [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
+        if ! rows="$(PGAPPNAME="ops:storage-activation-check" psql "$TESTINBOX_ACTIVATION_DB_URL" -X -At -F "$TAB" -v ON_ERROR_STOP=1 \
+            -c "SELECT node_id, admission_locking FROM storage_node WHERE NOT clean_shutdown AND heartbeat_at > now() - interval '5 minutes' AND admission_locking <> 'GLOBAL'" \
+            2>"$WORK/psql-locking.err")"; then
+            problem "storage_node admission_locking query failed; the T1 protocol of the nodes could not be observed"
+        fi
+        checked=$((checked + 1))
+    elif [ -n "$NODES_FILE" ] && grep -v '^#' "$NODES_FILE" | awk -F'\t' 'NF >= 5 { found = 1 } END { exit !found }'; then
+        rows="$(grep -v '^#' "$NODES_FILE" | awk -F'\t' -v max="$HEARTBEAT_MAX_AGE" \
+            'NF >= 5 && $4 !~ /^(t|true|T|TRUE)$/ && ($3 + 0) <= max && $5 != "GLOBAL" { print $1 "\t" $5 }')"
+        checked=$((checked + 1))
+    fi
+    while IFS="$TAB" read -r node locking; do
+        [ -n "$node" ] || continue
+        problem "storage_node '$node' records admission_locking $locking (live); a PROPOSED ADR-035 amendment permitted only in the lab"
+    done <<EOF
+$rows
+EOF
+    if [ "$checked" -eq 0 ]; then
+        record "$gate" NOT_RUN "no metrics endpoint, no TESTINBOX_ACTIVATION_DB_URL and no --nodes-file admission_locking column: the T1 lock protocol is unobserved"
+    elif [ -n "$PROBLEMS" ]; then
+        record "$gate" BLOCKED "$PROBLEMS"
+    else
+        record "$gate" PASS "$checked source(s): every node proves admission-locking GLOBAL (ADR-035 mode a)"
     fi
 }
 
@@ -1306,6 +1346,7 @@ gate_inventory
 gate_physical
 gate_clock
 gate_benchmark
+gate_locking
 gate_floors_staging
 gate_floors_production
 gate_qualification

@@ -120,6 +120,30 @@ variant lab-path-empty
 printf 'testinbox:\n  storage:\n    enforcement: OFF\n    qualification:\n      lab-record-path: ${TESTINBOX_STORAGE_QUALIFICATION_LAB_RECORD_PATH:}\n' > "$TMP/lab-path-empty/backend/api/src/main/resources/application-deployed.yaml"
 check "an empty-default lab record path is fine" 0 "$TMP/lab-path-empty"
 
+# T1's lock protocol: only GLOBAL may be committed, in any spelling Spring would bind.
+variant locking-yaml
+printf 'testinbox:\n  storage:\n    enforcement: OFF\n    admission-locking: COHORT_PARTITIONED\n' > "$TMP/locking-yaml/backend/ingestion/src/main/resources/application-deployed.yaml"
+check "a committed COHORT_PARTITIONED fails, naming the file" 1 "$TMP/locking-yaml" 'application-deployed.yaml:4: T1 admission locking is set to COHORT_PARTITIONED'
+variant locking-lenient
+printf 'TESTINBOX_STORAGE_ADMISSION_LOCKING=cohort-partitioned\n' >> "$TMP/locking-lenient/deploy/staging/.env.example"
+check "a dashed lower-case spelling Spring would bind fails" 1 "$TMP/locking-lenient" '\.env\.example:[0-9]+: T1 admission locking is set to cohort-partitioned'
+variant locking-default
+printf 'testinbox:\n  storage:\n    admission-locking: ${TESTINBOX_STORAGE_ADMISSION_LOCKING:-Cohort.Partitioned}\n' > "$TMP/locking-default/backend/api/src/main/resources/application-deployed.yaml"
+check "a placeholder default in a dotted mixed-case spelling fails" 1 "$TMP/locking-default" 'application-deployed.yaml:3: T1 admission locking is set to'
+variant locking-workflow
+printf '      - run: ./gradlew bootRun --args="--testinbox.storage.admission-locking=cohortpartitioned"\n' >> "$TMP/locking-workflow/.github/workflows/ci.yml"
+check "a workflow passing the property fails" 1 "$TMP/locking-workflow" 'ci.yml:[0-9]+: T1 admission locking is set to'
+variant locking-global
+printf 'testinbox:\n  storage:\n    admission-locking: ${TESTINBOX_STORAGE_ADMISSION_LOCKING:GLOBAL}\n' > "$TMP/locking-global/backend/api/src/main/resources/application-deployed.yaml"
+check "GLOBAL, or a bare placeholder, is fine" 0 "$TMP/locking-global"
+variant locking-property
+sed -i.bak 's/AdmissionLocking = AdmissionLocking.GLOBAL/AdmissionLocking = AdmissionLocking.COHORT_PARTITIONED/' \
+    "$TMP/locking-property/backend/ingestion/src/main/kotlin/email/testinbox/ingestion/config/IngestionProperties.kt" && rm -f "$TMP/locking-property/backend/ingestion/src/main/kotlin/email/testinbox/ingestion/config/IngestionProperties.kt.bak"
+check "an ingestion property default other than GLOBAL fails" 1 "$TMP/locking-property" 'IngestionProperties.kt: the admission-locking default is not GLOBAL'
+variant locking-property-missing
+sed -i.bak '/admissionLocking: AdmissionLocking/d' "$TMP/locking-property-missing/backend/ingestion/src/main/kotlin/email/testinbox/ingestion/config/IngestionProperties.kt" && rm -f "$TMP/locking-property-missing/backend/ingestion/src/main/kotlin/email/testinbox/ingestion/config/IngestionProperties.kt.bak"
+check "an ingestion property class with no locking default fails" 1 "$TMP/locking-property-missing" "declares no 'admissionLocking"
+
 # The real repository: what CI gates. Reported, and asserted, because the gate
 # step in ci.yml runs it against this tree.
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"

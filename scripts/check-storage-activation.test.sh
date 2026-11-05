@@ -127,9 +127,9 @@ only() {
 good > "$TMP/args-good"
 case_ "all gates satisfied → ACTIVATION READY" 0 '^ACTIVATION READY$' "$TMP/args-good" --json "$TMP/evidence.json"
 if [ -f "$TMP/evidence.json" ] && jq -e '.mode == "ALL" and .evaluatedAt == "2026-10-07T00:00:00Z" and .verdict == "READY"
-        and (.gates | length) == 10 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
+        and (.gates | length) == 11 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
         and (.cohortGate | startswith("storage-budget check"))' "$TMP/evidence.json" >/dev/null 2>&1; then
-    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 10 gates"
+    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 11 gates (gate L included)"
 else
     bad "the evidence JSON shape is wrong" "$(cat "$TMP/evidence.json" 2>/dev/null)"
 fi
@@ -206,6 +206,25 @@ only "C: an open breaker blocks, naming the node" C-clock-offset "\(ingestion\):
 case_ "C: ε_max is configurable (--max-clock-offset-seconds 60 admits -31.5 s)" 0 '^C-clock-offset[[:space:]]+PASS' "$TMP/c1" --max-clock-offset-seconds 60
 
 # ---------------------------------------------------------------------------
+# Gate L: T1's lock protocol. Every node must PROVE GLOBAL; absent = unknown = blocked.
+# ---------------------------------------------------------------------------
+sed 's/mode="global"} 1.0/mode="global"} 0.0/; s/mode="cohort_partitioned"} 0.0/mode="cohort_partitioned"} 1.0/' "$M/ingestion-healthy.prom" > "$M/ingestion-partitioned.prom"
+grep -v 'testinbox_storage_admission_locking' "$M/ingestion-healthy.prom" > "$M/ingestion-no-locking.prom"
+with --ingestion-metrics "$M/ingestion-partitioned.prom" > "$TMP/l1"
+only "L: a node running the share-partitioned T1 blocks, naming it" L-lock-protocol "runs the share-partitioned T1" "$TMP/l1"
+with --ingestion-metrics "$M/ingestion-no-locking.prom" > "$TMP/l2"
+only "L: a node whose lock protocol is not exported is UNKNOWN and blocks, never read as mode a" L-lock-protocol "T1 lock protocol UNKNOWN" "$TMP/l2"
+with --ingestion-metrics "$M/ingestion-partitioned.prom" | sed 's/^ALL$/TENANT_LIMITS/' > "$TMP/l3"
+case_ "L: ...and blocks under TENANT_LIMITS too" 1 '^L-lock-protocol[[:space:]]+BLOCKED[[:space:]].*runs the share-partitioned T1' "$TMP/l3"
+awk -F'\t' 'BEGIN { OFS = "\t" } /^#/ || NF < 4 { print; next } $1 == "ing-1" { print $0, "COHORT_PARTITIONED"; next } { print $0, "GLOBAL" }' \
+    "$FIX/nodes/healthy.tsv" > "$TMP/nodes-partitioned.tsv"
+with --nodes-file "$TMP/nodes-partitioned.tsv" > "$TMP/l4"
+only "L: a live storage_node row recording COHORT_PARTITIONED blocks (the database, not only the metric)" L-lock-protocol "storage_node 'ing-1' records admission_locking COHORT_PARTITIONED" "$TMP/l4"
+awk -F'\t' 'BEGIN { OFS = "\t" } /^#/ || NF < 4 { print; next } { print $0, "GLOBAL" }' "$FIX/nodes/healthy.tsv" > "$TMP/nodes-global.tsv"
+with --nodes-file "$TMP/nodes-global.tsv" > "$TMP/l5"
+case_ "L: GLOBAL metrics and GLOBAL node rows pass, and so does the whole barrier" 0 '^L-lock-protocol[[:space:]]+PASS' "$TMP/l5"
+
+# ---------------------------------------------------------------------------
 # Gate D: the §11 benchmark, required only for ALL.
 # ---------------------------------------------------------------------------
 with --benchmark-evidence "" > "$TMP/d1"
@@ -215,15 +234,6 @@ case_ "D: --mode TENANT_LIMITS without benchmark → NOT REQUIRED and ACTIVATION
 printf '%s\n' "$OUT" | grep -qE '^D-benchmark[[:space:]]+NOT REQUIRED[[:space:]].*NOT REQUIRED FOR TENANT_LIMITS' && ok "D: the TENANT_LIMITS verdict is literally NOT REQUIRED, never PASS" || bad "D is not NOT REQUIRED for TENANT_LIMITS" "$OUT"
 good | sed 's/^ALL$/TENANT_LIMITS/' | sed "s#$TMP/bench-pass.json#$TMP/bench-fail.json#" > "$TMP/d3"
 case_ "D: --mode TENANT_LIMITS with a FAILED benchmark is still READY (the gate does not decide)" 0 '^ACTIVATION READY$' "$TMP/d3"
-# The T1 lock protocol: mode a passes; a node running the PROPOSED partitioned T1 blocks gate D in any mode.
-{ cat "$M/ingestion-healthy.prom"; printf '%s\n' 'testinbox_storage_admission_locking{mode="global"} 1.0' 'testinbox_storage_admission_locking{mode="cohort_partitioned"} 0.0'; } > "$M/ingestion-global.prom"
-{ cat "$M/ingestion-healthy.prom"; printf '%s\n' 'testinbox_storage_admission_locking{mode="global"} 0.0' 'testinbox_storage_admission_locking{mode="cohort_partitioned"} 1.0'; } > "$M/ingestion-partitioned.prom"
-with --ingestion-metrics "$M/ingestion-global.prom" > "$TMP/dl1"
-case_ "D: a node exporting admission-locking GLOBAL (mode a) passes" 0 '^D-benchmark[[:space:]]+PASS' "$TMP/dl1"
-with --ingestion-metrics "$M/ingestion-partitioned.prom" > "$TMP/dl2"
-only "D: a node running the share-partitioned T1 blocks, naming it" D-benchmark "runs the share-partitioned T1" "$TMP/dl2"
-with --ingestion-metrics "$M/ingestion-partitioned.prom" | sed 's/^ALL$/TENANT_LIMITS/' > "$TMP/dl3"
-case_ "D: ...and blocks under TENANT_LIMITS too, never NOT REQUIRED" 1 '^D-benchmark[[:space:]]+BLOCKED[[:space:]].*runs the share-partitioned T1' "$TMP/dl3"
 with --benchmark-evidence "$TMP/bench-fail.json" > "$TMP/d4"
 only "D: a benchmark whose verdict is FAIL blocks" D-benchmark "benchmark verdict is 'FAIL', not PASS" "$TMP/d4"
 with --benchmark-evidence "$TMP/bench-t1.json" > "$TMP/d5"
