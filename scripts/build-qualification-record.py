@@ -55,7 +55,9 @@ OMAX_EXPERIMENTS = ("E1", "E2", "E3")
 # <data>/.minio.sys only. Bucket directories are per-object inodes charged by i_max = 6 (ADR-035 annex §3.5).
 METADATA_INODES_SCOPE = "minio-sys"
 # The same count without .minio.sys/tmp/.trash's contents: accepted ONLY with the Ops fs-monitor's scope-independent
-# inode-headroom latch armed (gate F evidence monitor.inodeHeadroomLatchArmed), which covers the trash inodes.
+# inode-headroom latch PROVEN, not declared: E10's drill recorded that latch firing (measurements.inodeHeadroomLatch
+# "PASS") with the fs-monitor build it ran (measurements.fsMonitorSha256), and the gate F evidence names the SAME
+# fs-monitor build (monitor.fsMonitorSha256) and states it armed (monitor.inodeHeadroomLatchArmed, additional only).
 METADATA_INODES_SCOPE_EXCL_TRASH = "minio-sys-excl-trash"
 METADATA_INODES_SCOPES = (METADATA_INODES_SCOPE, METADATA_INODES_SCOPE_EXCL_TRASH)
 # ONE metadata-bytes counting definition for E2, E7, the record, the declaration (M), gate F and the fs-monitor:
@@ -76,6 +78,7 @@ SUBSYSTEMS = ("api", "drive", "storage_class", "scanner")
 TIMEOUT_NAME = re.compile(r"^MINIO_.*(TIMEOUT|DEADLINE|KEEP_?ALIVE)", re.I)
 TIMEOUT_FLAG = re.compile(r"timeout|deadline|keep-?alive", re.I)
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 PROCEDURE = ("docs/adr/0035-benchmark/minio-probes/QUALIFICATION.md; qualification/run-slow.sh --mode dm with plan.json, "
              "plan3.json and plan-slow.json, each swept after >= 17 min; E1-E11 per ADR-035 Amendment 2 annex §10 and "
@@ -679,10 +682,29 @@ def build(bundle_dir, expected, repo):
     p.check(fe_inodes_scope in METADATA_INODES_SCOPES,
             f"gate F evidence minio.metadataInodesScope is {fe_inodes_scope!r}, not one of {METADATA_INODES_SCOPES}: "
             "the collector must count .minio.sys only (RECORD-CUT.md, collector change)")
-    p.check(METADATA_INODES_SCOPE_EXCL_TRASH not in (inodes_scope, fe_inodes_scope)
-            or (fe.get("monitor") or {}).get("inodeHeadroomLatchArmed") is True,
-            f"{METADATA_INODES_SCOPE_EXCL_TRASH} is used but gate F evidence monitor.inodeHeadroomLatchArmed is not true: "
-            "trash inodes are covered only by the armed inode-headroom latch (note §8.2)")
+    p.check(fe_inodes_scope == inodes_scope,
+            f"gate F evidence minio.metadataInodesScope {fe_inodes_scope!r} differs from E7's {inodes_scope!r}: the record "
+            "and the evidence must count inodes over one scope (gate F refuses a mismatch)")
+    # The inode-headroom latch drill (E10). Optional with scope minio-sys; when given it must be complete.
+    m10 = (exps.get("E10") or {}).get("measurements") or {}
+    fe_mon = fe.get("monitor") or {}
+    drill = None
+    if "inodeHeadroomLatch" in m10 or "fsMonitorSha256" in m10:
+        ok_drill = p.check(m10.get("inodeHeadroomLatch") == "PASS" and HEX64_RE.match(str(m10.get("fsMonitorSha256") or "")),
+                           f"experiments/E10.json: inodeHeadroomLatch {m10.get('inodeHeadroomLatch')!r} / fsMonitorSha256 "
+                           f"{m10.get('fsMonitorSha256')!r} is not a PASS drill of a named fs-monitor build (64 hex)")
+        if ok_drill:
+            drill = {"result": "PASS", "fsMonitorSha256": m10["fsMonitorSha256"]}
+    if METADATA_INODES_SCOPE_EXCL_TRASH in (inodes_scope, fe_inodes_scope):
+        p.check(drill is not None,
+                f"{METADATA_INODES_SCOPE_EXCL_TRASH} is used but experiments/E10.json records no PASS inode-headroom latch "
+                "drill (measurements.inodeHeadroomLatch, fsMonitorSha256): only minio-sys is acceptable (note §8.2)")
+        p.check(drill is None or fe_mon.get("fsMonitorSha256") == drill["fsMonitorSha256"],
+                f"{METADATA_INODES_SCOPE_EXCL_TRASH} is used but gate F evidence monitor.fsMonitorSha256 "
+                f"{fe_mon.get('fsMonitorSha256')!r} is not the fs-monitor build E10 drilled "
+                f"{drill['fsMonitorSha256'] if drill else None!r}")
+        p.check(fe_mon.get("inodeHeadroomLatchArmed") is True,
+                f"{METADATA_INODES_SCOPE_EXCL_TRASH} is used but gate F evidence monitor.inodeHeadroomLatchArmed is not true")
     p.check((fe.get("minio") or {}).get("bucketPresent") is True,
             "gate F evidence minio.bucketPresent is not true: production pre-provisions the bucket, so the collector "
             "measured the wrong directory or nothing")
@@ -769,6 +791,7 @@ def build(bundle_dir, expected, repo):
             "metadataInodesScope": inodes_scope,
             "metadataInodesBasis": ("E7 on the final filesystem" if e7_mode == "final-filesystem"
                                     else f"E7 carried under {e7['amendment']}"),
+            **({"inodeHeadroomLatchDrill": drill} if drill else {}),
             "metadataBytesMeasured": metadata_bytes_max,
             "metadataBytesScope": METADATA_BYTES_SCOPE,
             "experiments": {n: exps[n]["verdict"] for n in EXPERIMENTS},

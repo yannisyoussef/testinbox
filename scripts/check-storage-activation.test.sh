@@ -439,13 +439,26 @@ qrec no-bytes 'del(.filesystem.metadataBytesMeasured)'
 with --qualification-dir "$TMP/qual-no-bytes" > "$TMP/f-no-bytes"
 only "F: a record without the E2/E7 metadata bytes measurement blocks" F-filesystem "carries no E2/E7 metadata bytes measurement" "$TMP/f-no-bytes"
 # The inode scope without .trash only with the armed inode-headroom latch; a missing bucket never passes.
-ev excl-trash-armed '.minio.metadataInodesScope = "minio-sys-excl-trash" | .monitor.inodeHeadroomLatchArmed = true'
-case_ "F: inode scope minio-sys-excl-trash with the inode-headroom latch armed passes" 0 '^F-filesystem[[:space:]]+PASS' "$TMP/f-ev-excl-trash-armed"
-fe excl-trash-unarmed '.minio.metadataInodesScope = "minio-sys-excl-trash"' "inode scope minio-sys-excl-trash without the inode-headroom latch blocks" "MinIO metadata: the evidence counts metadataInodes without .trash \\(minio-sys-excl-trash\\) but monitor.inodeHeadroomLatchArmed is not true"
-fe excl-trash-off '.minio.metadataInodesScope = "minio-sys-excl-trash" | .monitor.inodeHeadroomLatchArmed = false' "inode scope minio-sys-excl-trash with the latch declared off blocks" "monitor.inodeHeadroomLatchArmed is not true"
-qrec excl-trash '.filesystem.metadataInodesScope = "minio-sys-excl-trash"'
-with --qualification-dir "$TMP/qual-excl-trash" > "$TMP/f-rec-excl-trash"
-case_ "F: a record whose E7 inode figure is scope minio-sys-excl-trash is accepted" 0 '^F-filesystem[[:space:]]+PASS' "$TMP/f-rec-excl-trash"
+# The inode scope without .trash only when PROVEN (record: PASS E10 drill of the evidence's fs-monitor build); one
+# scope on both sides; a missing bucket never passes.
+FSM="$(printf 'f%.0s' $(seq 1 64))"
+qrec excl '.filesystem.metadataInodesScope = "minio-sys-excl-trash" | .filesystem.inodeHeadroomLatchDrill = {"result": "PASS", "fsMonitorSha256": "'"$FSM"'"}'
+xev() {  # xev <name> <jq over the proven evidence> <case> <regex|PASS>
+    jq '.minio.metadataInodesScope = "minio-sys-excl-trash" | .monitor = {"inodeHeadroomLatchArmed": true, "fsMonitorSha256": "'"$FSM"'"} | '"$2" "$FSE" > "$TMP/ev-x-$1.json"
+    with --filesystem-evidence "$TMP/ev-x-$1.json" | sed "s#$FIX/qualification\$#$TMP/qual-$5#" > "$TMP/f-x-$1"
+    if [ "$4" = PASS ]; then case_ "F: $3" 0 '^F-filesystem[[:space:]]+PASS' "$TMP/f-x-$1"; else only "F: $3" F-filesystem "$4" "$TMP/f-x-$1"; fi
+}
+xev proven '.' "minio-sys-excl-trash with a PASS E10 drill of the evidence's fs-monitor build passes" PASS excl
+xev sha-mismatch '.monitor.fsMonitorSha256 = "'"$(printf 'e%.0s' $(seq 1 64))"'"' "minio-sys-excl-trash with another fs-monitor build than E10 drilled blocks" "no PASS E10 inode-headroom latch drill of the fs-monitor build the evidence names" excl
+xev no-sha 'del(.monitor.fsMonitorSha256)' "minio-sys-excl-trash with no fs-monitor build named blocks" "monitor.fsMonitorSha256 null\): only minio-sys is acceptable" excl
+xev unarmed 'del(.monitor.inodeHeadroomLatchArmed)' "minio-sys-excl-trash proven but not stated armed blocks" "monitor.inodeHeadroomLatchArmed is not true" excl
+qrec excl-nodrill '.filesystem.metadataInodesScope = "minio-sys-excl-trash"'
+xev no-drill '.' "minio-sys-excl-trash with a record carrying no E10 drill blocks (a declared flag is not proof)" "record carries no PASS E10 inode-headroom latch drill" excl-nodrill
+qrec excl-fail '.filesystem.metadataInodesScope = "minio-sys-excl-trash" | .filesystem.inodeHeadroomLatchDrill = {"result": "FAIL", "fsMonitorSha256": "'"$FSM"'"}'
+xev drill-fail '.' "minio-sys-excl-trash with a failed E10 drill blocks" "record carries no PASS E10 inode-headroom latch drill" excl-fail
+fe scope-vs-record '.minio.metadataInodesScope = "minio-sys-excl-trash" | .monitor = {"inodeHeadroomLatchArmed": true, "fsMonitorSha256": "'"$FSM"'"}' "an evidence inode scope that differs from the record's blocks" "but record fixture-laptop-arm64-reference measured scope minio-sys: one scope on both sides"
+with --qualification-dir "$TMP/qual-excl" > "$TMP/f-rec-excl-ev-sys"
+only "F: a record measured without .trash against evidence counting .trash blocks (one scope on both sides)" F-filesystem "counts inodes over scope minio-sys but record fixture-laptop-arm64-reference measured scope minio-sys-excl-trash" "$TMP/f-rec-excl-ev-sys"
 fe no-bucket '.minio.bucketPresent = false' "evidence collected with no bucket directory blocks" "MinIO metadata: the evidence was collected with no bucket directory \\(bucketPresent false\\)"
 fe no-bucket-field 'del(.minio.bucketPresent)' "evidence that does not state bucketPresent → NOT RUN" "evidence.minio.bucketPresent missing"
 fe bytes-budget '.declared.metadataBudgetBytes = 120000000' "an M below the record's measured metadata bytes blocks" "MinIO metadata: M 120000000 is below the E2/E7 measurement 125829120"

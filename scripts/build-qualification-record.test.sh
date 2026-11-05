@@ -169,14 +169,43 @@ fresh mbudget; edit mbudget gate-f/filesystem-evidence.json 'd["declared"]["meta
 refused "a declared M below the E2/E7 metadata bytes measurement → refuse" mbudget "declares M = 50000000, below the E2/E7 metadata bytes measurement 52428800"
 fresh nobucket; edit nobucket gate-f/filesystem-evidence.json 'd["minio"]["bucketPresent"] = False'
 refused "gate F evidence collected with no bucket directory → refuse" nobucket "gate F evidence minio.bucketPresent is not true"
-fresh excl; edit excl experiments/E7.json 'd["measurements"]["metadataInodesScope"] = "minio-sys-excl-trash"'
-refused "an E7 inode figure without .trash, with no armed inode-headroom latch → refuse" excl "minio-sys-excl-trash is used but gate F evidence monitor.inodeHeadroomLatchArmed is not true"
-fresh exclok; edit exclok experiments/E7.json 'd["measurements"]["metadataInodesScope"] = "minio-sys-excl-trash"'
-edit exclok gate-f/filesystem-evidence.json 'd["minio"]["metadataInodesScope"] = "minio-sys-excl-trash"; d["monitor"] = {"inodeHeadroomLatchArmed": True}'
+# Scope minio-sys-excl-trash is accepted only when PROVEN: E10 drilled the inode-headroom latch (PASS) on a named
+# fs-monitor build, and the gate F evidence names that same build (and states the latch armed, additionally).
+FSM="$(printf 'f%.0s' $(seq 1 64))"
+exclbundle() {  # exclbundle <name>: a complete, correctly bound minio-sys-excl-trash bundle
+    fresh "$1"
+    edit "$1" experiments/E7.json 'd["measurements"]["metadataInodesScope"] = "minio-sys-excl-trash"'
+    edit "$1" experiments/E10.json "d['measurements'] = {'inodeHeadroomLatch': 'PASS', 'fsMonitorSha256': '$FSM'}"
+    edit "$1" gate-f/filesystem-evidence.json "d['minio']['metadataInodesScope'] = 'minio-sys-excl-trash'; d['monitor'] = {'inodeHeadroomLatchArmed': True, 'fsMonitorSha256': '$FSM'}"
+}
+exclbundle exclok
 gen exclok
-if [ "$STATUS" = 0 ] && [ "$(jq -r .filesystem.metadataInodesScope "$TMP/exclok/out/production-2000-01-01/record.json")" = minio-sys-excl-trash ]; then
-    ok "an E7 inode figure without .trash builds when the inode-headroom latch is armed, and the record states that scope"
-else bad "excl-trash with armed latch (exit $STATUS)" "$OUT"; fi
+XREC="$TMP/exclok/out/production-2000-01-01/record.json"
+if [ "$STATUS" = 0 ] && [ "$(jq -c '[.filesystem.metadataInodesScope, .filesystem.inodeHeadroomLatchDrill.result, .filesystem.inodeHeadroomLatchDrill.fsMonitorSha256]' "$XREC")" = "[\"minio-sys-excl-trash\",\"PASS\",\"$FSM\"]" ]; then
+    ok "minio-sys-excl-trash builds when E10 drilled the inode-headroom latch on the fs-monitor build the evidence names; the record carries the drill"
+else bad "excl-trash proven (exit $STATUS)" "$OUT"; fi
+QX="$TMP/qualx"; mkdir -p "$QX"; XRID="$(jq -r .recordId "$XREC")"
+cp "$XREC" "$QX/$XRID.json"; printf '%s.json\n' "$XRID" > "$QX/index.txt"
+jq '.collectedAt = "2026-10-07T00:00:00Z"' "$TMP/exclok/bundle/gate-f/filesystem-evidence.json" > "$TMP/evx.json"
+XOUT="$("$GATE" --mode ALL --environment production --repo "$REPO" --qualification-dir "$QX" \
+    --backend-identity "$TMP/identity.json" --qualification-valid-metric 1 --filesystem-evidence "$TMP/evx.json" \
+    --footprint-state "$SCRIPT_DIR/testdata/storage-activation/filesystem/state-good.json" 2>&1)"
+if printf '%s\n' "$XOUT" | grep -qE '^F-filesystem[[:space:]]+PASS'; then ok "gate F passes the proven minio-sys-excl-trash record and evidence"
+else bad "gate F on the excl-trash record" "$(printf '%s\n' "$XOUT" | grep -E '^F-')"; fi
+exclbundle xnodrill; edit xnodrill experiments/E10.json 'd["measurements"] = {}'
+refused "minio-sys-excl-trash without an E10 inode-headroom drill → refuse (only minio-sys is acceptable)" xnodrill "records no PASS inode-headroom latch drill"
+exclbundle xfail; edit xfail experiments/E10.json 'd["measurements"]["inodeHeadroomLatch"] = "FAIL"'
+refused "an E10 inode-headroom drill that did not PASS → refuse" xfail "inodeHeadroomLatch 'FAIL' .* is not a PASS drill"
+exclbundle xnosha; edit xnosha experiments/E10.json 'del(d["measurements"]["fsMonitorSha256"])'
+refused "an E10 drill that names no fs-monitor build → refuse" xnosha "is not a PASS drill of a named fs-monitor build"
+exclbundle xmismatch; edit xmismatch gate-f/filesystem-evidence.json 'd["monitor"]["fsMonitorSha256"] = "e" * 64'
+refused "evidence naming another fs-monitor build than E10 drilled → refuse" xmismatch "is not the fs-monitor build E10 drilled"
+exclbundle xevsha; edit xevsha gate-f/filesystem-evidence.json 'del(d["monitor"]["fsMonitorSha256"])'
+refused "evidence without monitor.fsMonitorSha256 → refuse" xevsha "monitor.fsMonitorSha256 None is not the fs-monitor build"
+exclbundle xarmed; edit xarmed gate-f/filesystem-evidence.json 'del(d["monitor"]["inodeHeadroomLatchArmed"])'
+refused "evidence that does not also state the latch armed → refuse" xarmed "monitor.inodeHeadroomLatchArmed is not true"
+exclbundle xscope; edit xscope gate-f/filesystem-evidence.json 'd["minio"]["metadataInodesScope"] = "minio-sys"'
+refused "an evidence inode scope that differs from E7's → refuse" xscope "differs from E7's 'minio-sys-excl-trash'"
 if [ "$(jq -c '[.filesystem.metadataBytesMeasured, .filesystem.metadataBytesScope]' "$REC")" = '[52428800,"minio-sys+unattributed"]' ]; then
     ok "the record carries the larger of E2 and E7 as metadataBytesMeasured, scope minio-sys+unattributed"
 else bad "record metadataBytes members" "$(jq -c .filesystem "$REC")"; fi

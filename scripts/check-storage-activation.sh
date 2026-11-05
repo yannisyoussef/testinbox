@@ -1181,13 +1181,20 @@ gate_filesystem() {
             # ONE counting definition for metadata inodes (ADR-035 §3.5; amendment note, metadata inodes): the inodes
             # under .minio.sys only. Bucket directories ({ws}/, {inbox}/, {message}/, {key}/, {uuid}/) are per-object
             # inodes charged by i_max = 6, never also metadata; the starting-headroom row bounds them physically.
-            # Scope minio-sys-excl-trash (trash inodes left out) is accepted ONLY with the scope-independent
-            # inode-headroom latch armed on the monitor (inodes_total - inodes_used >= ceil(avail / B), the
-            # starting-headroom row above, re-checked every cycle): that latch, not the budget, covers trash inodes.
+            # Scope minio-sys-excl-trash (trash inodes left out) is accepted ONLY when PROVEN: the record carries a
+            # PASS E10 drill of the scope-independent inode-headroom latch (inodes_total - inodes_used >= ceil(avail / B),
+            # the starting-headroom row above, every cycle) on a named fs-monitor build, and the evidence names the SAME
+            # build. monitor.inodeHeadroomLatchArmed is required too, but as a declaration it proves nothing alone.
             ( if (["minio-sys", "minio-sys-excl-trash"] | index($e.minio.metadataInodesScope)) == null
                 then "MinIO metadata: the evidence counts metadataInodes over scope \($e.minio.metadataInodesScope), not minio-sys or minio-sys-excl-trash (.minio.sys only; bucket directories are per-object inodes charged by i_max, ADR-035 §3.5)"
+              elif $e.minio.metadataInodesScope == "minio-sys-excl-trash" and (($rec.filesystem.inodeHeadroomLatchDrill.result // "") != "PASS"
+                     or ($rec.filesystem.inodeHeadroomLatchDrill.fsMonitorSha256 | type) != "string"
+                     or $rec.filesystem.inodeHeadroomLatchDrill.fsMonitorSha256 != ($e.monitor.fsMonitorSha256 // null))
+                then "MinIO metadata: the evidence counts metadataInodes without .trash (minio-sys-excl-trash) but the record carries no PASS E10 inode-headroom latch drill of the fs-monitor build the evidence names (monitor.fsMonitorSha256 \($e.monitor.fsMonitorSha256 // "null")): only minio-sys is acceptable"
               elif $e.minio.metadataInodesScope == "minio-sys-excl-trash" and ($e.monitor.inodeHeadroomLatchArmed // false) != true
-                then "MinIO metadata: the evidence counts metadataInodes without .trash (minio-sys-excl-trash) but monitor.inodeHeadroomLatchArmed is not true: trash inodes are covered only by the armed inode-headroom latch" else empty end ),
+                then "MinIO metadata: the evidence counts metadataInodes without .trash (minio-sys-excl-trash) but monitor.inodeHeadroomLatchArmed is not true" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataInodesScope // "") != $e.minio.metadataInodesScope
+                then "MinIO metadata: the evidence counts inodes over scope \($e.minio.metadataInodesScope) but record \($e.qualificationRecordId) measured scope \($rec.filesystem.metadataInodesScope // "null"): one scope on both sides" else empty end ),
             ( if $rec != null and $rec.filesystem != null and (["minio-sys", "minio-sys-excl-trash"] | index($rec.filesystem.metadataInodesScope // "")) == null
                 then "MinIO metadata: record \($e.qualificationRecordId) does not state its E7 metadataInodesMeasured as scope minio-sys or minio-sys-excl-trash (filesystem.metadataInodesScope)" else empty end ),
             # bucketPresent false is a 0-object baseline, or the walk measured the wrong directory: production
