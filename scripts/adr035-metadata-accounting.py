@@ -42,7 +42,8 @@ Allocated bytes are `st_blocks * 512` (what `du -B1` counts, never the apparent 
 nothing crosses into another filesystem. An entry that vanishes mid-walk is skipped (MinIO renames while we walk). The
 walk is iterative, so no directory depth can exhaust the interpreter's stack.
 
-It FAILS CLOSED (exit 1, nothing printed on stdout) unless the mountpoint, the data directory and <data>/.minio.sys
+It FAILS CLOSED (exit 1, nothing printed on stdout) on ANY exception during the walk (a PermissionError, an I/O
+error), and unless the mountpoint, the data directory and <data>/.minio.sys
 exist, are directories, are on the mount's filesystem, and the data directory is the mountpoint or under it. A missing
 bucket directory is reported as `bucketPresent: false` (legitimate only at a 0-object baseline); gate F refuses it.
 
@@ -225,6 +226,9 @@ def main():
         result = metadata_accounting(a.mount, a.data_dir, a.bucket, a.block_size)
     except AccountingRefused as e:
         print(f"adr035-metadata-accounting: REFUSED — {e}; no figure reported", file=sys.stderr)
+        return 1
+    except Exception as e:  # any other failure mid-walk (PermissionError, I/O error, ...): never a partial figure
+        print(f"adr035-metadata-accounting: FAILED — {type(e).__name__}: {e}; no figure reported", file=sys.stderr)
         return 1
     print(json.dumps(result, indent=1, sort_keys=True))
     return 0

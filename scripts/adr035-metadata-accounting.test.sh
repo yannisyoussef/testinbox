@@ -196,6 +196,13 @@ out="$(python3 "$ACC" --mount "$TMP/nobucket" --data-dir "$TMP/nobucket" --bucke
 if [ "$rc" = 0 ] && [ "$(printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["bucketPresent"], d["unattributed"]["bucketRoot"])')" = "False 0" ]; then
     ok "a missing bucket is reported explicitly as bucketPresent: false (a 0-object baseline), never silently"
 else bad "missing bucket (exit $rc)" "$out"; fi
+# Any exception mid-walk (here a PermissionError on an unreadable directory) reports no figure: exit 1, empty stdout.
+if [ "$(id -u)" = 0 ]; then ok "an unreadable directory mid-walk fails closed (skipped: root reads anything)"
+else
+    mkdir -p "$K/locked/inner"; chmod 000 "$K/locked"
+    refused "an unreadable directory mid-walk fails closed (no partial figure)" "FAILED — PermissionError" --mount "$M" --data-dir "$D" --bucket testinbox
+    chmod 755 "$K/locked"; rm -rf "$K/locked"
+fi
 python3 "$ACC" --mount "$M" --data-dir "$D" --bucket testinbox --block-size 0 >/dev/null 2>&1; rc=$?
 if [ "$rc" = 2 ]; then ok "a non-positive block size is a usage error (exit 2)"; else bad "block size 0 exit $rc"; fi
 
