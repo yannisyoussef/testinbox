@@ -45,10 +45,12 @@ One reference implementation, [`scripts/adr035-metadata-accounting.py`](../../sc
 - **What both rows compare.** In both cases the lab figures were counted another way, so the rows compare unlike
   quantities.
 
-## 2. Inodes (unchanged since Ops implemented it)
+## 2. Inodes
 
 MinIO metadata inodes are **every inode under `<data>/.minio.sys`**: the directory itself, `.trash` included
-(`find <data>/.minio.sys -xdev | wc -l`). The scope is `minio-sys`.
+(`find <data>/.minio.sys -xdev | wc -l`). The scope is `minio-sys`, as Ops implemented it. A second scope,
+`minio-sys-excl-trash`, leaves out the contents of `.trash`. It is accepted only together with an armed inode-headroom
+latch (§8.2).
 
 Bucket directories are per-object inodes charged by `i_max` (§3.5), and are never also metadata. They stay bounded by:
 
@@ -56,9 +58,10 @@ Bucket directories are per-object inodes charged by `i_max` (§3.5), and are nev
 - gate F's starting-headroom row, `f_files − inodes used ≥ ⌈avail / B⌉`;
 - the A1 census (vi), which found zero blockless inodes on the E2/E7 population.
 
-The budget (100 000) and every criterion are unchanged. Gate F refuses evidence or a record that does not state
-`minio-sys`: NOT RUN when the field is absent, BLOCKED when it names another scope. The generator refuses an E7 that
-does not state it. See §8.2 for an open point about `.trash` inodes.
+The budget (100 000) and every criterion are unchanged. Gate F refuses evidence or a record whose scope is neither
+`minio-sys` nor `minio-sys-excl-trash`: NOT RUN when the field is absent, BLOCKED otherwise. It also blocks
+`minio-sys-excl-trash` unless the evidence states `monitor.inodeHeadroomLatchArmed: true`. The generator refuses the
+same cases, for E7 as well.
 
 ## 3. Bytes: what is double-counted, and what must stay counted
 
@@ -91,14 +94,16 @@ from *post-drain* residue (charged nowhere else). By the owner's rule, it theref
 
 ```
 metadataBytes   = minioSysBytes + unattributedBytes                         (scope minio-sys+unattributed)
-minioSysBytes   = allocated bytes of every inode under <data>/.minio.sys, the directory included, except
-                  <data>/.minio.sys/tmp/.trash and its subtree (that is W)  (= today's observation minio_sys_bytes)
+minioSysBytes   = allocated bytes of every inode under <data>/.minio.sys, the directory included, except the
+                  CONTENTS of <data>/.minio.sys/tmp/.trash (W); the .trash directory's own blocks stay in M
 unattributed    = every other allocation on the mount that no object is charged for:
   bucket root, in full;  a stray file under the bucket (not part of an object), in full;
   a directory under the bucket that IS, is INSIDE or CONTAINS an object directory: every block beyond its first;
   a directory under the bucket that holds no object: every block;  every inode outside .minio.sys and the bucket
-  (mount root, lost+found, the data directory itself), in full.
+  (mount root, lost+found, the data directory itself), in full;  every subdirectory of an object directory that its
+  xl.meta does not reference (an old <dataDir>/part.N left by a crashed or retried overwrite), its whole subtree.
 object directory = a directory under the bucket that directly holds a regular file named xl.meta
+referenced       = a data-dir name that is a UUID whose 16 raw bytes occur in the object's xl.meta (MinIO's DDir)
 ```
 
 **"Attributable to a live or debt object", mechanically.** The rule is structural: an object present in the bucket
@@ -116,39 +121,79 @@ tree is charged somewhere in `Φ + H_F`.
   - an orphan (f), covered by (b)/(c) until swept.
 
   A deleted object is not in the bucket: MinIO renames it into `.trash` at once (W, and *D* after the walk began).
-- **What is attributed.** The object's own files, its data directories, and the **first** block of every directory
-  that leads to it, which E1–E3 measured inside *O_max*.
+- **What is attributed.** The object's own files, its **referenced** data directories, and the **first** block of
+  every directory that leads to it, which E1–E3 measured inside *O_max*.
+- **Referenced, without a msgpack parser.** MinIO stores each version's data directory (`DDir`) as a 16-byte msgpack
+  bin in `xl.meta`. A subdirectory of an object directory is referenced when its name is a UUID and those 16 bytes
+  occur in `xl.meta`. This fails safe: an unreadable `xl.meta`, or one that encoded the id another way, references
+  nothing, so every data directory of that object is counted. That is an over-count, never an under-count. An old
+  data directory an overwrite left behind is therefore *M* (row 17a). Before this rule, a reproduced 15 MB orphan
+  `part.1` added 0.
 - **What is not.** Nothing else in the tree: those blocks are *M*.
 - **A foreign object** would be attributed and charged nowhere. Only the headroom row sees it (§5, row 20), which is
   the model-violation latch's job.
 
 **The algorithm** (`metadata_accounting` in the reference implementation; to be copied verbatim):
 
+0. **Fail closed.** Refuse, with exit 1 and no figure, unless all of these hold:
+   - the mountpoint, the data directory and `.minio.sys` exist and are directories;
+   - all three are on the mountpoint's filesystem (`st_dev`);
+   - the data directory is the mountpoint or under it.
+
+   A missing bucket directory is reported as `bucketPresent: false`, which is legitimate only at a 0-object
+   baseline. Gate F and the generator refuse such evidence, because production pre-provisions the bucket.
 1. Use allocated bytes only: `st_blocks × 512` from `lstat`, which is what `du -B1` counts, never the apparent size.
-   Stay on one filesystem (`st_dev`), follow no symlink, and skip an entry that vanishes mid-walk.
-2. `minioSysBytes`: sum every inode under `.minio.sys`, skipping the `.trash` subtree. `trashBytes` is that subtree.
-   `metadataInodes` counts both.
+   Stay on one filesystem (`st_dev`), follow no symlink, and skip an entry that vanishes mid-walk. Every walk is
+   iterative, so no directory depth can exhaust the interpreter's stack (tested at depth 1 100).
+2. `minioSysBytes`: sum every inode under `.minio.sys`, skipping the contents of `.trash` but keeping the `.trash`
+   directory's own blocks. `trashBytes` is `du -s .trash` (the directory included). `metadataInodes` counts
+   everything. `trashInodes` is the contents of `.trash`, and `metadataInodesExclTrash` = `metadataInodes −
+   trashInodes`.
 3. `fsRoot`: sum every inode under the mount, skipping the `.minio.sys` and bucket subtrees.
 4. Bucket: add the root's own blocks. Then make one post-order walk over each directory *d*:
    - *d* is an **object directory** if it directly holds a regular `xl.meta`.
    - *d* is **occupied** if it is an object directory, lies inside one, or any child is occupied.
-   - A file in *d* is attributable if *d* is inside an object directory, or if the file is the `xl.meta` of object
-     directory *d*. Any other file is a stray: count it.
+   - A file in *d* is attributable if *d* is inside a referenced data directory, or if the file is the `xl.meta` of
+     object directory *d*. Any other file is a stray: count it.
+   - A subdirectory of an object directory that holds no `xl.meta` of its own and is not referenced: count its whole
+     subtree (`unreferencedDataDirs`), and do not descend further.
    - If *d* is occupied, count `max(0, alloc(d) − B)`. Otherwise count `alloc(d)`.
    - Only directories and strays are `stat`ed. An object's own files are never read.
-5. `unattributedBytes` = `fsRoot` + bucket root + occupied growth + unoccupied directories + strays.
+5. `unattributedBytes` = `fsRoot` + bucket root + occupied growth + unoccupied directories + strays + unreferenced
+   data directories.
 
 The JSON output carries every term (`unattributed.{fsRoot, bucketRoot, occupiedGrowth, unoccupiedDirectories,
-strayFiles}`), so Ops can see which class grew.
+strayFiles, unreferencedDataDirs}`), plus `bucketPresent`, `trashInodes` and `metadataInodesExclTrash`, so Ops can
+see which class grew.
 
-Cross-checks with standard tools, for the parts that have one:
+Cross-checks with standard tools are **approximate**, never normative:
 
-- `minioSysBytes` ≡ `du -B1 -sx --exclude=.trash <data>/.minio.sys`;
-- `trashBytes` ≡ `du -B1 -sx <data>/.minio.sys/tmp/.trash`;
+- `minioSysBytes` ≈ `du -B1 -sx --exclude=.trash <data>/.minio.sys` plus the `.trash` directory's own blocks. `du`
+  excludes **every** entry named `.trash` (only one is expected), and it counts a hard-linked file once where the
+  script counts it at each link. MinIO makes no hard links, and the script's figure is never the smaller.
+- `trashBytes` ≈ `du -B1 -sx <data>/.minio.sys/tmp/.trash`.
 - `metadataInodes` ≡ `find <data>/.minio.sys -xdev | wc -l`.
 
-The bucket classification has no `find`/`du` one-liner: it needs post-order occupancy. The reference implementation
-is normative.
+The bucket classification has no `find`/`du` one-liner: it needs post-order occupancy and the `xl.meta` reference
+test. The reference implementation is normative.
+
+**Performance.** The independent review measured about 6.4 s, warm cache, for 100 000 objects (300 000 inodes). It scales with the inodes walked, so expect 50–60 s at about 750 000 objects, close to a 60 s monitor cycle.
+Ops measures it on tonight's E2 population.
+
+The monitor must never run two walks at once. A cycle whose walk is still running skips its start, and its overrun
+must **not** read as healthy:
+
+- no observation is written for that cycle, so `testinbox_storage_filesystem_observation_age_seconds` rises and
+  alerts at *A_obs*;
+- the monitor raises a `metadata-walk-overrun` alert at once.
+
+A slower cadence for the metadata walk alone (for example every 5 min, the `statvfs` part staying per minute) is an
+Ops choice. It never reuses a stale figure as current.
+
+**N1 invocation.** On the shared production mount, N1 runs the script with `--mount = --data-dir = <qual data dir>`.
+`fsRoot` is then the qualification data directory alone, and production's `data/` is never walked. The real mount
+root and `lost+found` are recorded once, at the baseline and at the end of E7. Production use (the monitor and the
+gate F collector) passes the real mountpoint.
 
 ## 5. Where every allocation is counted, class by class
 
@@ -169,8 +214,9 @@ every reachable inode into exactly one of M, O_max and W. Only rows 20–22 are 
 | 2 | `.minio.sys/tmp/<uuid>/`: **in-flight** PUT staging of a live reservation or an unresolved late object | M (`minioSysBytes`); **also** inside *F_r* / *H_F* (annex (b), (c)) | **Deliberate conservative overlap.** The monitor cannot tell in-flight staging from residue: a stalled `rename(2)` has no server bound (`FINALIZE-SOURCE.md`). The overlap is ≤ in-flight uploads × 15 MiB ≤ `procs × 16 × 15 MiB`. §7 and §8.1 cover it |
 | 3 | `.minio.sys/tmp/<uuid>/` **residue** of aborted uploads after resolution; `tmp-old/` during startup cleanup | M | Annex (e). MinIO reclaims it after 24 h (`MINIO_API_STALE_UPLOADS_EXPIRY`) or on restart |
 | 4 | `.minio.sys/multipart/` (incomplete or aborted multipart) | M | TestInbox never initiates multipart (ADR-035 §5): anything here is foreign or residue. The orphan sweep's `ListMultipartUploads` reports it |
-| 5 | `.minio.sys/tmp/.trash/` and everything under it, `.trash` itself included | W (`trash_bytes`) | Excluded from `minioSysBytes`. An object trashed after the walk began is in *D* (annex §5.3 ordering lemma) |
-| 6 | A live object's own allocations: `{key}/` and its `xl.meta`, `{key}/<dataDir>/` and `part.N`, any extent or xattr block on those files | O_max + payload in *F(L)* | Never walked into *M*. Their first directory block is attributed. A block beyond the first of such a single-entry directory is not expected; if one appears, it is *M* (conservative) |
+| 5 | The contents of `.minio.sys/tmp/.trash/` | W (`trash_bytes`) | Excluded from `minioSysBytes`. An object trashed after the walk began is in *D* (annex §5.3 ordering lemma) |
+| 5a | The `.trash` directory's own blocks | M **and** W (`du -s .trash` includes them) | This is annex §3.6's placement, kept on purpose: the conservative choice. Moving them to W alone would supersede §3.6 to save a few blocks, while counting them twice costs only those few blocks. A `.trash` that grew to many entries and was purged keeps its blocks (ext4 does not shrink it), and *M* sees that |
+| 6 | A live object's own allocations: `{key}/` and its `xl.meta`, its **referenced** `{key}/<dataDir>/` and `part.N`, any extent or xattr block on those files | O_max + payload in *F(L)* | Never walked into *M*. Their first directory block is attributed. A block beyond the first of such a single-entry directory is not expected; if one appears, it is *M* (conservative) |
 | 7 | Message-level `{message}/` and `{message}/attachments/` holding an object | first block O_max (§3.1, §3.2 term 2); the rest M | `attachments/` grows past one block only beyond about 90 attachments. That growth is in *M* and in *O_max*'s slack (bounded overlap, §7) |
 | 8 | Objects of a retention batch between its prefix delete and its row delete | W (in trash); the rows are still in *F_c* | Annex `R(t)`: the overlap is by design and makes Φ larger. Nothing is left in the bucket: MinIO renames the object directory away |
 | 9 | Objects still in the bucket with a **pending debt row**: an orphan-sweep target before its delete, an ambiguity-verifier late object, a witness or breaker probe | O_max via *F(D)* (rule P) | Pending rows are never superseded. The structural rule attributes the present object once, and *M* does not count it |
@@ -181,7 +227,8 @@ every reachable inode into exactly one of M, O_max and W. Only rows 20–22 are 
 | 14 | Directories under the bucket holding **no** object: a fully drained `{inbox}/` or `{ws}/` MinIO did not remove, an empty `{message}/` or `{key}/` left by a crash, an empty `_probe/{node}/` | M, every block | Unoccupied, so nothing is attributed |
 | 15 | The bucket root `<data>/<bucket>/` | M, every block | Created by MakeBucket, so it is in no object's measured delta. Its growth (one entry per workspace) is included |
 | 16 | Probe and witness residue: probe objects (row 9), `_probe` prefix directories (rows 12 and 14), probe staging (rows 2 and 3) | as in those rows | E7's "probe residue" is now inside `metadataBytes`, not a separate addend |
-| 17 | Stray files under the bucket: not the `xl.meta` of an object directory, not inside an object's data directory (for example `xl.meta.bkp`, a crash leftover) | M, in full | Charged by no object |
+| 17 | Stray files under the bucket: not the `xl.meta` of an object directory, not inside a referenced data directory (for example `xl.meta.bkp`, a crash leftover) | M, in full | Charged by no object |
+| 17a | An object directory's subdirectory that `xl.meta` does not reference: an old `<dataDir>/part.N` from a crashed or retried overwrite, a non-UUID directory | M, the whole subtree (`unreferencedDataDirs`) | φ charges one data directory per object. Any other is charged by nothing. An unreadable `xl.meta` references nothing (fail safe) |
 | 18 | Mount root directory, `lost+found`, the MinIO data directory itself | M (`fsRoot`) | Outside both trees, so the walk sees them once. They are a few blocks |
 | 19 | Anything else on the mount outside `.minio.sys` and the bucket | M (`fsRoot`) | Also fails gate F's dedicated-mount row (`otherDataOnMount`) |
 | 20 | Foreign objects (written by anything but TestInbox) | headroom row only | Attributed structurally and charged nowhere, so `used > Φ + H_F + M` shows them. That is an Ops invariant violation (annex §3.6) |
@@ -206,7 +253,8 @@ every reachable inode into exactly one of M, O_max and W. Only rows 20–22 are 
   - absent is NOT RUN;
   - another value is BLOCKED.
 
-  Its `minio.bucketDirectoryBytes` is `unattributedBytes`.
+  Its `minio.bucketDirectoryBytes` is `unattributedBytes`, and it must state `minio.bucketPresent: true`. Absent is
+  NOT RUN, and `false` is BLOCKED.
 
   The existing row `observation.minio_sys_bytes + bucketDirectoryBytes ≤ M` is kept unchanged. Three rows are new,
   each BLOCKED:
@@ -227,65 +275,102 @@ every reachable inode into exactly one of M, O_max and W. Only rows 20–22 are 
 
 ## 7. Is *M* = 256 MiB still enough?
 
-**For what the old rule broke, yes.** Per-object directories no longer reach *M*: the 20 000–35 000-object ceiling
-is gone. The directory part of *M* is now the shared-directory overlap (rows 7, 12) plus residue (rows 13, 14). The
-size of each term:
+**For what the old rule broke, yes.** Per-object directories no longer reach *M*, so the 20 000–35 000-object ceiling
+is gone. The terms *M* must hold:
 
-- Shared-directory growth costs about 49 B per entry, by the annex's own figure (about 1 200 blocks per 100 000
-  messages). The worst case is about 89 B, when every htree leaf is half full.
-- An object on disk costs at least *K* = 28 688 B, so the number of objects present is at most `G_F / K`:
-  - G_F = 20 GiB (the staging example) gives about 749 000;
-  - G_F = 32 GiB gives about 1.2 M.
-- **Live overlap:** about 35 MiB at 20 GiB (56 MiB at 32 GiB). The worst case is 127 MiB (203 MiB), when every
-  object sits in a directory past 92 entries and the leaves are half full.
-- **Residue** of partially drained inboxes is at most the peak growth of the inboxes being torn down. In the worst
-  case that equals the live term again.
+- **Shared-directory growth while live** (rows 7 and 12). The annex's figure is about 49 B per entry; the worst case
+  is 89 B, when every htree leaf is half full.
+  - Objects present are at most `⌈G_F / K⌉`, with *K* = 28 688 B. At production G_F = 16 GiB that is 598 852.
+  - So this term is at most 89 B × 598 852 ≈ 51 MiB, plus the same again for workspace and attachment entries:
+    **≈ 102 MiB**.
+- **In-flight staging** (row 2). At most `procs × 16 × F(15 MiB, 1)`, with F(15 MiB, 1) = 15 818 768 B. At
+  `procs = 2` that is 506 200 576 B **≈ 483 MiB** (= *H_F*).
+- **Open GETs** of unlinked objects (row 21). At most the in-flight GETs × 15 MiB. No walk sees them; they sit only
+  in the headroom row `used ≤ Φ + H_F + M`. That row relies on the declared *M* covering them, so they get a term:
+  *G_open*, Ops' declared GET concurrency × 15 MiB.
+- **`.minio.sys` static peak**, measured by E7.
+- **Residue** (rows 13, 14) is **not bounded by `G_F / K`**. ext4 never shrinks a directory, so every non-empty
+  `{inbox}/` or `{ws}/` keeps the blocks of its **historical peak**, whatever it holds now. A long-lived workspace
+  that once had many inboxes, or an inbox that peaked high and drains slowly, keeps them.
+  - No declared constant bounds this term. *M* therefore bounds it only through the monitor's **alert**: the alert
+    is the real control for residue growth.
+  - The operator acts on the runbook entry (`docs/dev/production.md`, "MinIO metadata residue"). No latch or
+    threshold is ever changed for it.
 
-**For the runtime monitor, no, once in-flight staging counts (row 2).** `minioSysBytes` includes
-`.minio.sys/tmp/<uuid>` staging:
-
-- up to 16 × 15 MiB = 240 MiB per ingestion process;
-- with `procs = 2`, up to 480 MiB plus the static `.minio.sys` and the directory term.
-
-That crosses *M* under ordinary load, so the monitor alerts. Above about 32 MiB of everything else, it crosses `2·M`
-= 512 MiB, so the monitor latches and stops mail.
-
-E7 does not drive ingestion at full concurrency, so the qualified figure does not show this. Gate F's activation run
-(no load) is not affected.
-
-**The evidence-based figure:**
+**The adequacy condition for M = 1 GiB:**
 
 ```
-M ≥ E7 static peak  +  2 · c_dir(E2) · ⌈G_F / K⌉  +  procs · 16 · (15 MiB + 3 · B)
-  ≈ E7 + 70 MiB + 481 MiB          (procs = 2, G_F = 20 GiB, c_dir = 49 B)
+E7 static peak + G_open  ≤  1 024 MiB − ≈102 MiB (directories, worst case) − ≈483 MiB (staging, procs = 2)  ≈ 440 MiB
 ```
 
-This recommends **M = 1 GiB** once E2 and E7 report. It costs 768 MiB of *G_F*, 1.6 % of production's *C_fs*
-(47 991 902 208 B).
+With 256 MiB the staging term alone is about 483 MiB, so the bytes check alerts under ordinary load. It crosses
+`2·M` = 512 MiB, latching the monitor, as soon as everything else exceeds about 29 MiB. **256 MiB is not adequate**
+at `procs ≥ 2`.
 
-**This note does not change M.** That is the owner's decision (§8.1). Until it is taken, E7's measurement and gate F
-compare against the declared 256 MiB.
+**The cost of +768 MiB**, checked against the formulas:
+
+- **[I-C]** `G_F + D_budget + P_F + M + R_ops ≤ C_fs` (annex §2.1, `DeploymentSafety`). The reviewer's slack is
+  16 786 280 448 B at M = 1 GiB. That figure is consistent with C_fs = 47 991 902 208 B (11 716 773 × 4 096),
+  G_F = 16 GiB, D_budget = 8 GiB, R_ops = 2.5 GiB and P_F = 1 600 MiB. G_F and C_fs are the production values;
+  **D_budget, R_ops and P_F are inferred from the slack** and must be confirmed against the production declaration.
+- **[FS]** The `FILESYSTEM` boundary of `CohortStorageBudget.demand` adds the unattributed-debt and trash allowances,
+  P_F, *M* and R_ops to the global footprint. The reviewer's slack is 24 988 291 265 B at M = 1 GiB. It depends on
+  the reviewed pool file and could not be recomputed from this repository; +768 MiB lowers it by exactly
+  805 306 368 B.
+- **[GLOBAL_F]** Unchanged: the global footprint demand has no *M* term.
+
+**This note does not change M** in any declaration. That is the owner's decision (§8.1).
 
 ## 8. Open points for the owner
 
-1. **In-flight staging under *M* (row 2).** Choose one:
-   - **(a) Raise *M*** through the declaration, to the figure of §7 (recommended; conservative, keeps every control
-     armed).
-   - **(b) Attribute** `.minio.sys/tmp/<uuid>` entries younger than `T_verify` to *F_r* ∪ *H_F*. This is not
-     conservative: residue of a definitively failed upload could hide under the allowance for up to `T_verify`.
-   - **(c) Keep 256 MiB**, with the monitor's bytes latch armed, and accept that full-concurrency ingestion at
-     `procs ≥ 2` can latch it.
+1. **In-flight staging under *M* (row 2).** The review recommends **(a)**: raise *M* to 1 GiB through the
+   declaration, subject to §7's adequacy condition once E2 and E7 report. It is conservative and keeps every control
+   armed.
 
-   Until one is chosen, the bytes latch at `2·M` is a production risk under load. The rest of the monitor (identity,
-   preallocation, model-violation, headroom) is unaffected.
-2. **`.trash` inodes (inode side, §2).** Scope `minio-sys` counts every inode in `.minio.sys/tmp/.trash`. Those are
-   trashed objects' own inodes (2–4 per object), which `i_max` already charges through *D* ("trash preserves the
-   ratio", §3.5): the inode analogue of the bytes double count.
-   - **Size of the effect.** A paced teardown of 25 000–50 000 objects puts about 100 000 inodes in trash until purge,
-     which exceeds the budget. 50 000–100 000 objects reach the 200 000 latch. The lab's 157 had no mass deletion.
-   - **The candidate fix.** Use scope `minio-sys-excl-trash`, the same boundary as the bytes side. It is not made
-     here, because Ops implemented `minio-sys` and the owner accepted it conditionally.
-   - **Until the owner decides,** keep the inode latch alert-only during mass retention, or decide the fix.
+   Two alternatives were rejected in review:
+   - **(b) Attribute** `.minio.sys/tmp/<uuid>` entries younger than `T_verify` to *F_r* ∪ *H_F*. Rejected: it is not
+     conservative, because residue of a definitively failed upload hides under the allowance.
+   - **(c) Keep 256 MiB.** Rejected: the bytes latch at `2·M` is reachable under ordinary load at `procs ≥ 2`.
+
+   *M* is not changed by this note.
+2. **`.trash` inodes (inode side, §2).** Scope `minio-sys` counts every inode in `.minio.sys/tmp/.trash`: trashed
+   objects' own inodes, 2–4 per object. Size of the effect:
+   - a paced teardown of 25 000–50 000 objects puts about 100 000 inodes in trash until purge, over the budget;
+   - 50 000–100 000 objects reach the 200 000 latch;
+   - the lab's 157 had no mass deletion.
+
+   **The proposal.** Adopt scope `minio-sys-excl-trash` **only together with** an armed, scope-independent
+   inode-headroom check on the monitor:
+
+   ```
+   inodes_total − inodes_used ≥ ⌈avail_bytes / B⌉
+   ```
+
+   This mirrors gate F's starting-headroom row (`scripts/check-storage-activation.sh`, "Blocks must run out before
+   inodes"). Ops is building it as the fs-monitor `inode-headroom` latch, with the same gating as the other latches
+   (A1 security condition C4).
+   - **Reporting.** Trash inodes are reported apart (`trashInodes`, `metadataInodesExclTrash` in the script's
+     output). The inode budget then compares `metadataInodesExclTrash`.
+   - **No control is disabled or loosened.** The inode-budget latch stays armed, on a figure that no longer counts
+     objects' own inodes, and a new latch is added.
+
+   **Why trash inodes are covered.** *i_max* does not cover them for long. *D* charges a trashed object only until an
+   observation supersedes its debt row; after that its bytes are in *W*, and its inodes are charged by nothing
+   per-object. They are still covered, for two reasons:
+   - every trash inode holds at least one block (the A1 census (vi): zero blockless inodes), and that block is in
+     `trash_bytes` ⊂ `used_bytes`;
+   - the filesystem has `I_fs ≥ C_fs / B` (gate F's inode row).
+
+   So trash inodes cannot exhaust inodes before blocks. The armed inode-headroom latch checks exactly that, every
+   cycle, whatever any budget counts.
+
+   **How it is enforced.**
+   - Gate F accepts `minio-sys-excl-trash` (in the evidence or the record) only when the evidence states
+     `monitor.inodeHeadroomLatchArmed: true`. Otherwise it is BLOCKED.
+   - The generator refuses it on the same condition.
+   - `minio-sys` stays accepted with no such condition.
+   - The field is an Ops declaration, like the other `declared.*` members: gate F cannot read the monitor's
+     configuration. It is backed by E10, whose latch drill must include the `inode-headroom` latch firing.
 
 ## 9. What Ops changes (infinity-core; written here, not applied)
 
@@ -312,7 +397,11 @@ Vendor `metadata_accounting` from `scripts/adr035-metadata-accounting.py` **verb
 +    return a["unattributedBytes"], a["metadataInodes"], a
 ```
 
-- **Callers** pass the mountpoint, the data directory and the bucket instead of the two paths.
+- **Callers** pass the mountpoint, the data directory and the bucket instead of the two paths. On
+  `AccountingRefused` (a missing or foreign `.minio.sys` or data directory) the cycle writes **no** observation and
+  raises an alert. It never reports a figure, and never reports 0.
+- **New latch:** `inode-headroom` latches when `inodes_total − inodes_used < ⌈avail / B⌉`, with the same gating as the
+  other latches (§8.2). Never run two walks at once (§4, "Performance").
 - **The M check** is unchanged in form: `minio_sys_bytes + unattributed > M` alerts, and `> 2·M` latches. The
   observation's `minio_sys_bytes` and `trash_bytes` may come from the same call (`a["minioSysBytes"]`,
   `a["trashBytes"]`), which equal today's `du` figures.
@@ -323,7 +412,11 @@ Vendor `metadata_accounting` from `scripts/adr035-metadata-accounting.py` **verb
 ```diff
 -        "minio": {"bucketDirectoryBytes": bdir, "metadataInodes": meta_inodes, "metadataInodesScope": "minio-sys"},
 +        "minio": {"bucketDirectoryBytes": acc["unattributedBytes"], "metadataBytesScope": acc["metadataBytesScope"],
++                  "bucketPresent": acc["bucketPresent"],
 +                  "metadataInodes": acc["metadataInodes"], "metadataInodesScope": acc["metadataInodesScope"]},
++        # only with the armed inode-headroom latch (note §8.2), and then the inode figure may drop .trash:
++        #   "minio": {..., "metadataInodes": acc["metadataInodesExclTrash"], "metadataInodesScope": "minio-sys-excl-trash"},
++        "monitor": {"inodeHeadroomLatchArmed": <the fs-monitor's inode-headroom latch is armed>},
 ```
 
 **N1 (E2, E7):** at each measurement point, run:
@@ -385,15 +478,22 @@ unchanged, checked at every step.
 >
 > Directories under the bucket are per-object inodes charged by `i_max` (annex §3.5).
 >
+> The same count without the contents of `.minio.sys/tmp/.trash` (scope `minio-sys-excl-trash`) may be used **only
+> while** the Ops monitor's scope-independent inode-headroom latch (`inodes_total − inodes_used ≥ ⌈avail / B⌉`) is
+> armed. Trashed objects' inodes are covered by that latch once their debt rows are superseded, because each holds a
+> block and `I_fs ≥ C_fs / B`. Gate F refuses that scope unless the evidence states the latch armed.
+>
 > **Bytes.** Wherever this ADR or its annex speaks of *M*'s bytes, the counted figure is `metadataBytes` (scope
-> `minio-sys+unattributed`): the allocated bytes under `.minio.sys` except `.minio.sys/tmp/.trash` (which is *W*),
-> plus every allocation on the mount outside `.minio.sys` that no object is charged for. The second term is:
+> `minio-sys+unattributed`): the allocated bytes under `.minio.sys` except the contents of `.minio.sys/tmp/.trash`
+> (which are *W*; the `.trash` directory's own blocks stay in *M*, as annex §3.6 puts them), plus every allocation
+> on the mount outside `.minio.sys` that no object is charged for. The second term is:
 >
 > - the bucket root;
 > - every block beyond the first of a bucket directory that is, is inside, or contains an object directory (a
 >   directory holding `xl.meta`);
 > - every block of a bucket directory holding no object;
 > - every file under the bucket that is not part of an object;
+> - every subdirectory of an object directory that its `xl.meta` does not reference;
 > - every inode outside `.minio.sys` and the bucket.
 >
 > This applies to annex §2.2 class (e), the §6 monitor row, the §9 gate F row, E2's drain clause and E7's criterion.
@@ -408,6 +508,11 @@ unchanged, checked at every step.
 > `minio.metadataBytesScope` and the record's `filesystem.metadataBytesScope` to be `minio-sys+unattributed`, and the
 > declared *M* to be at least the record's measurement.
 >
-> **What does not change.** *M*, the inode budget and every other criterion are unchanged. In-flight upload staging
+> The walk fails closed: no figure for a missing or foreign `.minio.sys` or data directory. Evidence collected with
+> no bucket directory (`bucketPresent: false`) does not pass gate F.
+>
+> **What does not change.** *M*, the inode budget and every other criterion are unchanged. Post-drain residue has no
+> declared bound (ext4 keeps each directory's historical peak). *M* bounds it through the monitor's alert, and the
+> operator acts on the runbook, never by changing a latch. In-flight upload staging
 > under `.minio.sys/tmp` stays in *M* and is also charged in *F_r*/*H_F*: a deliberate, conservative overlap, sized
 > in the note's §7.

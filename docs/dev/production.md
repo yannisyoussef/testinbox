@@ -1119,12 +1119,33 @@ Boot's standard binders, whose presence the rehearsal asserts:
 | **storage admission latched** (ADR-035) | `testinbox_storage_admission_latched`; `testinbox_storage_late_object_total` | **page**: any late object, or the latch set. Every node refuses mail until an operator clears it (runbook above) |
 | **filesystem observation stale** (TI-STORAGE-006E, observational while `OFF`) | `testinbox_storage_filesystem_observation_age_seconds`; `testinbox_storage_footprint_bytes{kind}` | **alert**: age `< 0` (never observed) or above the declared maximum (proposed 15 min), since only an observation ever lowers the deletion-debt estimate; `kind="deletion_debt"` growing without the age falling means the purge is not being verified |
 | **retention backlog** (TI-STORAGE-006E PR D, paced under `ALL` only) | `testinbox_storage_retention_backlog_seconds` | **alert** above one inbox TTL: physical teardown lags logical expiry (which never waits). Escalate per runbook: raise `D_budget` within I-C, or investigate the purge. Past `testinbox.storage.filesystem.retention-pacing-max-delay` (*T_max*, default 24 h) teardown proceeds anyway and logs `storage_retention_t_max_exceeded` |
+| **MinIO metadata residue** (ADR-035 metadata note, Ops fs-monitor) | the monitor's `metadataBytes` = `minio_sys_bytes` + `unattributedBytes`, with its `unattributed.{occupiedGrowth, unoccupiedDirectories, unreferencedDataDirs, strayFiles}` breakdown (`scripts/adr035-metadata-accounting.py`) | **alert** above *M*, and on sustained growth of `occupiedGrowth` + `unoccupiedDirectories` while the object count is flat: ext4 keeps each directory's historical peak, so residue has no declared bound and this alert is its control. Act per **MinIO metadata residue** below; the latch at `2·M` is unchanged |
 | **storage full** (TI-STORAGE-006E) | `testinbox_storage_physical_failure_total{kind="storage_full"}`; `testinbox_storage_breaker_open` | **page**: MinIO answered `507 XMinioStorageFull` or a `500` naming ENOSPC. The node answers `451` to every `DATA` and does NOT recover on a timer or a zero-byte probe (a full filesystem accepts both): it trials one real event only once a filesystem observation that BEGAN AFTER the trip is younger than *A_obs* and shows `avail ≥ R_ops` and at least `R_ops / B` free inodes; each failed trial needs a newer observation. Without a monitor writing observations, only a restart clears it. Runbook: free space (purge `.minio.sys/tmp/.trash`, retention), then let the monitor record an observation |
 | old ambiguity / old RELEASING (ADR-035) | `testinbox_storage_ambiguous_uploads`; `testinbox_storage_reservations{state="releasing"}` | ambiguity older than `T_verify` + 5 min, or `RELEASING` rows older than 1 h: verification or cleanup is stuck (for example, the witness is failing: `testinbox_storage_witness_failed_total`) |
 | physical over-coverage (ADR-035) | `testinbox_storage_physical_listed_bytes` against committed + reserved | `physical_listed > covered + H`: objects exist that nothing accounts for |
 | incomplete multipart (ADR-035) | `testinbox_storage_incomplete_uploads` | `> 0`: TestInbox never starts one; the orphan sweep aborts it and it is a defect to explain |
 | storage clock offset (ADR-035) | `testinbox_storage_clock_offset_seconds` | `abs(offset) > 15 s` (`ε_max / 2`): releases suspend at 30 s |
 | storage ledger backlog (ADR-035) | `testinbox_storage_ledger_unfolded_rows` (every API replica reports the same global figure, so take `max`, never `sum`); `testinbox_storage_ledger_compaction_total{outcome="failed"}` | backlog > 1 000 sustained, or failed compactions with no `ok` in 5 min: compaction is not keeping up, or is failing. T1 reads the backlog on every event, so its cost grows with it. |
+
+**MinIO metadata residue (runbook).** This entry answers the residue alert above. ext4 never shrinks a directory,
+so a `{ws}/` or `{inbox}/` that once held many entries keeps their blocks after the entries are deleted. *M* bounds
+this residue only through the alert: no declared constant does.
+
+1. **Name the class.** Read the monitor's `unattributed` breakdown. Find the largest directories with `find
+   <data>/<bucket> -maxdepth 2 -type d -size +1M -printf '%s %p\n' | sort -n | tail`. A workspace or an inbox
+   directory is residue. `unreferencedDataDirs` or `strayFiles` are crash leftovers to explain, never residue.
+2. **Inbox directories need no action beyond waiting.** MinIO removes an inbox's directory once its last object is
+   deleted, so the residue ends with the inbox's retention.
+3. **Long-lived workspace directories, or residue that keeps *M* above its alert:** compact them in a maintenance
+   window.
+   - Stop MinIO with the admission latch set; that is the documented maintenance state, not a threshold change.
+   - Run `e2fsck -fD` on the unmounted filesystem, which rebuilds and compacts every directory.
+   - Remount, start MinIO, and confirm `metadataBytes` fell.
+   - Recreating a directory under a running MinIO is not an alternative: it races its renames.
+4. **If the residue is structural** (many long-lived workspaces): raising *M* is a reviewed declaration change, under
+   the I-C and cohort checks.
+
+Never raise the `2·M` latch multiplier, disarm the latch, or switch it to alert-only to absorb residue.
 
 The **edge queue-age and deferred-mail alerting** of ADR-035 §12 is an Ops
 prerequisite owned by the mail edge's operators. It is not in this
