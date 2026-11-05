@@ -142,6 +142,11 @@ by the database.**
   `inbox_storage`'s base columns.
 - The API role holds `SELECT` on the three tables and `EXECUTE` on the two
   functions.
+- From V24 (gate D step (1)), `storage_global_base` (Σ workspace bases, the
+  row T1 reads) is written only by definer triggers on
+  `workspace_storage_account`. Both deployables need `SELECT` on it (T1, the
+  footprint gate, rule P, reconciliation) and nothing else; no role may hold
+  `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` or `TRIGGER` on it (gate F).
 - Both deployables keep a column grant for the refusal record:
   - `INSERT (inbox_id, workspace_id, refusal_count, last_refusal_at, last_refusal_reason)`
     and `UPDATE (refusal_count, last_refusal_at, last_refusal_reason)` on
@@ -998,7 +1003,7 @@ leaving the restored database unquarantined.
 
 | backed up | never |
 |---|---|
-| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch`, `storage_clock_episode` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
+| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `storage_global_base` (V24), `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch`, `storage_clock_episode` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
 
 > **Amended by TI-DELIVERY-001 (ADR-036/ADR-037), recorded 2026-10-30.** The
 > table above is the TI-006 set. `deploy/backup/scope.txt` is authoritative and

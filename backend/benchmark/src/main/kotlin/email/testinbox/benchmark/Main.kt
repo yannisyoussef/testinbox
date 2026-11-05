@@ -1,7 +1,12 @@
 package email.testinbox.benchmark
 
+import email.testinbox.application.storage.FootprintWiring
+import email.testinbox.domain.storage.StorageEnforcement
+import email.testinbox.persistence.JdbcStorageAdmission
 import org.slf4j.LoggerFactory
 import org.springframework.jdbc.core.simple.JdbcClient
+import org.springframework.jdbc.datasource.DataSourceTransactionManager
+import org.springframework.transaction.support.TransactionTemplate
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -88,33 +93,31 @@ class Harness(
             target.migrate(adminPool)
             val environmentRecord = describeEnvironment(target, admin)
 
-            val results = mutableListOf<ScenarioResult>()
-            val seeder = Seeder(admin, Random(options.seed))
-            var bytesPerCopy = 0L
+            val directory = options.outputDirectory.resolve(STAMP.format(environmentRecord.timestamp))
+            Files.createDirectories(directory)
+            val matrix = Matrix(target, adminPool, directory)
             options.workspaces.forEachIndexed { index, workspaces ->
                 if (index > 0) wipe(admin)
-                log.info(
-                    "seeding {} workspaces x {} inboxes, {} deltas, {} reservations",
-                    workspaces,
-                    options.inboxesPerWorkspace,
-                    options.deltaBacklog,
-                    options.reservationBacklog,
-                )
-                val population = seeder.population(workspaces, options.inboxesPerWorkspace)
-                seeder.deltas(population, options.deltaBacklog)
-                seeder.reservations(population, options.reservationBacklog)
-                val runner = ScenarioRunner(target, options, population, seeder, admin)
-                bytesPerCopy = runner.bytesPerCopy
-                for (rate in options.rates) {
-                    for (concurrency in options.concurrency) {
-                        results += runner.run(ScenarioSpec(AdmissionMode.CHOSEN, concurrency, rate))
-                        if (options.reference) results += runner.run(ScenarioSpec(AdmissionMode.REFERENCE, concurrency, rate))
-                    }
-                }
+                matrix.population(workspaces)
             }
+            val results = matrix.results
+            val variantResults = matrix.variantResults
+            val bytesPerCopy = matrix.bytesPerCopy
+            val diagnosticsRecords = matrix.diagnosticsRecords
 
             val nonAdr = AdrConformance.reasons(options)
+            // Gate D: CHOSEN and the reference ONLY. The variant never enters the verdict.
             val gate = GateEvaluator(expectedRate = options.expectedRate).evaluate(results, nonAdr)
+            // The variant, read by the same criteria against the same NO_LOCK references, for information only.
+            val variantGate =
+                if (variantResults.isEmpty()) {
+                    null
+                } else {
+                    GateEvaluator(expectedRate = options.expectedRate).evaluate(
+                        variantResults.map { it.copy(mode = AdmissionMode.CHOSEN) } + results.filter { it.mode == AdmissionMode.REFERENCE },
+                        nonAdr,
+                    )
+                }
             val evidence =
                 Evidence(
                     environment = environmentRecord,
@@ -154,8 +157,10 @@ class Harness(
                     scenarios = results,
                     gate = gate,
                     adrEvidenceReasons = nonAdr,
+                    variantScenarios = variantResults,
+                    variantGate = variantGate,
+                    diagnostics = diagnosticsRecords,
                 )
-            val directory = options.outputDirectory.resolve(STAMP.format(environmentRecord.timestamp))
             val (json, markdown) = evidence.write(directory)
             println(evidence.toMarkdown())
             println("evidence: ${json.toAbsolutePath()}")
@@ -170,9 +175,78 @@ class Harness(
         }
     }
 
+    /** One run's populations, scenario by scenario: the gate's matrix, then (opt-in) the benchmark-only variant. */
+    private inner class Matrix(
+        private val target: BenchmarkTarget,
+        private val adminPool: javax.sql.DataSource,
+        private val directory: Path,
+    ) {
+        private val admin = JdbcClient.create(adminPool)
+        private val seeder = Seeder(admin, Random(options.seed))
+        private val monitorRole = FootprintSeed.monitorRole(admin)
+        private val diagnostics = Diagnostics(adminPool).also { d -> d.statementsUnavailable?.let { log.warn(it) } }
+        private val adminTemplate = TransactionTemplate(DataSourceTransactionManager(adminPool))
+        private val productionStatement =
+            JdbcStorageAdmission(
+                admin,
+                adminTemplate,
+                readsFootprint = FootprintWiring.readsFootprint(HarnessDeclarations.of(StorageEnforcement.ALL, monitorRole)),
+            ).snapshotStatement
+        val results = mutableListOf<ScenarioResult>()
+        val variantResults = mutableListOf<ScenarioResult>()
+        val diagnosticsRecords = mutableListOf<Map<String, Any?>>()
+        var bytesPerCopy = 0L
+
+        fun population(workspaces: Int) {
+            log.info(
+                "seeding {} workspaces x {} inboxes, {} deltas, {} reservations",
+                workspaces,
+                options.inboxesPerWorkspace,
+                options.deltaBacklog,
+                options.reservationBacklog,
+            )
+            val population = seeder.population(workspaces, options.inboxesPerWorkspace)
+            seeder.deltas(population, options.deltaBacklog)
+            seeder.reservations(population, options.reservationBacklog)
+            val runner = ScenarioRunner(target, options, population, seeder, admin, monitorRole, diagnostics = diagnostics)
+            bytesPerCopy = runner.bytesPerCopy
+            val commit = diagnostics.commitProbe()
+            for (rate in options.rates) {
+                for (concurrency in options.concurrency) {
+                    results += runner.run(ScenarioSpec(AdmissionMode.CHOSEN, concurrency, rate))
+                    if (options.reference) results += runner.run(ScenarioSpec(AdmissionMode.REFERENCE, concurrency, rate))
+                }
+            }
+            val statements = linkedMapOf("CHOSEN and NO_LOCK (production T1, readsFootprint = true)" to productionStatement)
+            // BENCHMARK-ONLY: after the gate's own scenarios, so no participant exists while they run.
+            if (options.partitionedVariant) {
+                val cohort = seeder.cohort(options.inboxesPerWorkspace)
+                val variant = ScenarioRunner(target, options, population, seeder, admin, monitorRole, cohort, diagnostics)
+                statements["PARTITIONED (benchmark-only variant)"] = PartitionedAdmissionStore(admin, adminTemplate).partitionedStatement
+                for (rate in options.rates) {
+                    for (concurrency in options.concurrency) {
+                        variantResults += variant.run(ScenarioSpec(AdmissionMode.PARTITIONED, concurrency, rate))
+                    }
+                }
+            }
+            val file = "diagnostics-ws$workspaces.txt"
+            Files.writeString(directory.resolve(file), diagnostics.report(population, statements, commit))
+            diagnosticsRecords +=
+                linkedMapOf(
+                    "workspaces" to workspaces,
+                    "file" to file,
+                    "pgStatStatements" to (diagnostics.statementsUnavailable ?: "available"),
+                    "commitMs" to
+                        commit?.let { linkedMapOf("samples" to it.samples, "p50" to it.p50Ms, "p95" to it.p95Ms, "p99" to it.p99Ms) },
+                    "statementSha256" to statements.mapValues { ProtocolAssembly.sha256(it.value) },
+                )
+        }
+    }
+
     /** Between populations: every tenant and ledger row goes. The database is the harness's own by preflight. */
     private fun wipe(admin: JdbcClient) {
-        admin.sql("TRUNCATE workspace, storage_ambiguity CASCADE").update()
+        // storage_legacy_share has no foreign key: the PARTITIONED variant's legacy share goes explicitly.
+        admin.sql("TRUNCATE workspace, storage_ambiguity, storage_legacy_share CASCADE").update()
         // V8 refuses TRUNCATE of the append-only ledger; a DELETE is folded by its
         // trigger into bases that no longer exist, which is nothing.
         admin.sql("DELETE FROM storage_delta").update()
@@ -217,7 +291,11 @@ class Harness(
         const val CONNECTION_MARGIN = 12
         val STAMP: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneOffset.UTC)
         const val MEASURES =
-            "The database protocol only: write slot, T1 (admission lock, one-statement snapshot, reservation insert), " +
+            "The database protocol only: write slot, T1 assembled as production ALL assembles it (IngestionWiring: " +
+                "FootprintWiring.admission over JdbcStorageAdmission(readsFootprint = FootprintWiring.readsFootprint(declarations)) " +
+                "with a declared filesystem, so the one statement also reads the footprint and cohort inputs; seeded trust, " +
+                "observation and watermark rows; no participant and no cohort plan, so the cohort pool is read but not required; " +
+                "probed before every scenario, see t1Probe), T1 (admission lock, one-statement snapshot, reservation insert), " +
                 "the fence rows, T2 (reservations FOR UPDATE, inboxes FOR KEY SHARE, message and attachment rows through " +
                 "JdbcMessageRepository.appendVisible so the ledger triggers run, pg_notify, reservations consumed), retention " +
                 "(ExpireInboxes.sweep hard-deleting one expired inbox per sweep) and compaction on its interval. Uploads are an " +

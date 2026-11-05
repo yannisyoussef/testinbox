@@ -65,6 +65,12 @@ class Evidence(
     val gate: GateVerdict,
     /** Why the run's inputs are not ADR-035 §11's; empty means they are. */
     val adrEvidenceReasons: List<String> = emptyList(),
+    /** BENCHMARK-ONLY PARTITIONED variant scenarios: never in [scenarios], never in [gate]. */
+    val variantScenarios: List<ScenarioResult> = emptyList(),
+    /** The §11 criteria read on the variant against the same references, for information only. */
+    val variantGate: GateVerdict? = null,
+    /** Per population: the diagnostics file, the commit cost, the statement hashes. */
+    val diagnostics: List<Map<String, Any?>> = emptyList(),
 ) {
     fun toJsonTree(): Map<String, Any?> =
         linkedMapOf(
@@ -117,6 +123,21 @@ class Evidence(
             "adrEvidenceReasons" to adrEvidenceReasons,
             "incompleteReasons" to gate.incompleteReasons,
             "verdict" to gate.verdict.name,
+            "diagnostics" to diagnostics,
+            // Never read by gate D (check-storage-activation.sh reads `scenarios`, `criteria` and `verdict`).
+            "variant" to
+                variantGate?.let { v ->
+                    linkedMapOf(
+                        "name" to "PARTITIONED",
+                        "status" to VARIANT_STATUS,
+                        "scenarios" to variantScenarios.map(::scenarioTree),
+                        "criteria" to
+                            v.criteria.mapValues { (_, c) ->
+                                linkedMapOf("pass" to c.pass, "observed" to c.observed, "threshold" to c.threshold, "detail" to c.detail)
+                            },
+                        "informationalVerdict" to v.verdict.name,
+                    )
+                },
         )
 
     fun toJson(): String = MAPPER.writeValueAsString(toJsonTree())
@@ -187,7 +208,13 @@ class Evidence(
             scenarios.forEach { s -> appendLine(scenarioRow(s)) }
             appendLine()
             appendLine("Latencies in ms. T1, event and retention are `completion − due` (open-loop schedule lag included).")
-            val samples = scenarios.flatMap { s -> s.errorSamples.map { "${s.name}: $it" } }
+            val statements = scenarios.filter { it.t1Statement != null }
+            if (statements.isNotEmpty()) {
+                appendLine()
+                appendLine("T1 snapshot statement (pg_stat_statements, measured phase): " + statements.joinToString("; ") { stmtCell(it) })
+            }
+            appendDiagnosticsAndVariant()
+            val samples = (scenarios + variantScenarios).flatMap { s -> s.errorSamples.map { "${s.name}: $it" } }
             if (samples.isNotEmpty()) {
                 appendLine("\n## Error samples\n")
                 samples.forEach { appendLine("- $it") }
@@ -249,6 +276,31 @@ class Evidence(
             "lockTimeoutRate" to s.lockTimeoutRate,
             "deadlocks" to s.deadlocks,
             "deadlineMissesFromSlotQueueing" to s.deadlineMissesFromSlotQueueing,
+            "t1Statement" to
+                s.t1Statement?.let {
+                    linkedMapOf(
+                        "calls" to it.calls,
+                        "plans" to it.plans,
+                        "meanPlanMs" to it.meanPlanMs,
+                        "meanExecMs" to it.meanExecMs,
+                        "maxExecMs" to it.maxExecMs,
+                        "rowsPerCall" to it.rowsPerCall,
+                    )
+                },
+            "t1Probe" to
+                s.t1Probe?.let {
+                    linkedMapOf(
+                        "storeClass" to it.storeClass,
+                        "enforcement" to it.enforcement.name,
+                        "readsFootprint" to it.readsFootprint,
+                        "footprintRead" to it.footprintRead,
+                        "footprintUnavailable" to it.footprintUnavailable,
+                        "cohortRequired" to it.cohortRequired,
+                        "snapshotStatementSha256" to it.snapshotStatementSha256,
+                        "budgetedWorkspaces" to it.budgetedWorkspaces,
+                        "inactiveWorkspaces" to it.inactiveWorkspaces,
+                    )
+                },
         )
 
     private fun scenarioRow(s: ScenarioResult): String =
@@ -261,6 +313,49 @@ class Evidence(
             "${s.lockTimeouts} (${"%.4f".format(s.lockTimeoutRate)}) | ${s.deadlocks} | " +
             "${s.deadlineMissesFromSlotQueueing} | ${s.otherErrors} |"
 
+    private fun StringBuilder.appendDiagnosticsAndVariant() {
+        diagnostics.forEach { d ->
+            appendLine()
+            appendLine(
+                "Diagnostics ${d["workspaces"]} workspaces: `${d["file"]}`; commit ms ${d["commitMs"]}; pg_stat_statements ${d["pgStatStatements"]}",
+            )
+        }
+        variantGate?.let { v ->
+            appendLine()
+            appendLine("## BENCHMARK-ONLY variant: PARTITIONED")
+            appendLine()
+            appendLine(
+                "**$VARIANT_STATUS** Informational reading of the §11 criteria against the same NO_LOCK references: ${v.verdict}.",
+            )
+            appendLine()
+            appendLine("| Criterion | Pass | Observed | Detail |")
+            appendLine("|---|---|---:|---|")
+            v.criteria.values.forEach {
+                appendLine("| ${it.name} | ${if (it.pass) "yes" else "NO"} | ${it.observed?.let(::num) ?: "n/a"} | ${it.detail} |")
+            }
+            appendLine()
+            appendLine(
+                "| Scenario | Mode | Workspaces | Conc. | Offered/s | Achieved/s | Completed/scheduled | Terminal lag ms | " +
+                    "T1 p50/p95/p99 | T1 tx p99 | T2 p50/p95/p99 | Event p99 | Retention p50/p95/p99 (n) | Starved | " +
+                    "Lock wait p50/p99 | Slot wait p50/p99 | Deltas mean/max | lock_timeout (rate) | Deadlocks | Slot misses | Other errors |",
+            )
+            appendLine("|---|---|---:|---:|---:|---:|---:|---:|---|---:|---|---:|---|---:|---|---|---|---|---:|---:|---:|")
+            variantScenarios.forEach { appendLine(scenarioRow(it)) }
+            if (variantScenarios.any { it.t1Statement != null }) {
+                appendLine()
+                appendLine(
+                    "Variant T1 statement: " + variantScenarios.filter { it.t1Statement != null }.joinToString("; ") { stmtCell(it) },
+                )
+            }
+        }
+    }
+
+    private fun stmtCell(s: ScenarioResult): String =
+        s.t1Statement!!.let {
+            "${s.name}: ${it.calls} calls, ${it.plans} plans, plan ${"%.3f".format(it.meanPlanMs)} ms, " +
+                "exec mean ${"%.3f".format(it.meanExecMs)} / max ${"%.1f".format(it.maxExecMs)} ms"
+        }
+
     private fun latency(l: LatencySummary?): Map<String, Any>? =
         l?.let { linkedMapOf("samples" to it.samples, "p50Ms" to it.p50Ms, "p95Ms" to it.p95Ms, "p99Ms" to it.p99Ms, "maxMs" to it.maxMs) }
 
@@ -272,6 +367,9 @@ class Evidence(
 
     companion object {
         const val SCHEMA_VERSION = 1
+        const val VARIANT_STATUS =
+            "BENCHMARK-ONLY measurement of the W1 share-partitioned T1, never a production mode and never gate D evidence; " +
+                "whether such a mode exists is an owner decision and an ADR amendment."
         private const val LARGE = 1e9
         val MAPPER: JsonMapper =
             JsonMapper

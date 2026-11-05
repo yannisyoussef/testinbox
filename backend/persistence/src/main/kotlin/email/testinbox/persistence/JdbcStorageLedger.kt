@@ -241,6 +241,8 @@ class JdbcStorageLedger(
          * object per message row and per attachment row). A scope drifts when
          * either figure disagrees. Figures that match are dropped. An inbox's
          * attachments are found through their message, as in V6's recompute.
+         * GLOBAL (V24): the `storage_global_base` row against Σ workspace bases,
+         * missing included, in the same snapshot.
          */
         private val DRIFT =
             """
@@ -293,6 +295,15 @@ class JdbcStorageLedger(
                   LEFT JOIN inbox_storage s ON s.inbox_id = i.id
                  WHERE coalesce(d.bytes, 0) <> coalesce(s.base_bytes, 0) + coalesce(u.bytes, 0)
                     OR coalesce(d.objects, 0) <> coalesce(s.base_objects, 0) + coalesce(u.objects, 0)
+                UNION ALL
+                -- V24: the global base row T1 reads must equal Σ workspace bases (derived),
+                -- and must exist. Reported with the nil uuid; the repair rewrites it.
+                SELECT 'GLOBAL', '00000000-0000-0000-0000-000000000000'::uuid,
+                       t.bytes, 0, coalesce(g.base_bytes, 0), t.objects, 0, coalesce(g.base_objects, 0)
+                  FROM (SELECT coalesce(sum(base_bytes), 0) AS bytes, coalesce(sum(base_objects), 0) AS objects
+                          FROM workspace_storage_account) t
+                  LEFT JOIN storage_global_base g ON g.id = 1
+                 WHERE g.id IS NULL OR g.base_bytes <> t.bytes OR g.base_objects <> t.objects
             )
             """.trimIndent()
     }

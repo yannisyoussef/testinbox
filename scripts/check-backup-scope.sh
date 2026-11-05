@@ -59,7 +59,7 @@ done < "$SCOPE"
 # put content, state that describes an object store that is not backed up, or
 # a reactivated authorization into a backup, so the scope file itself is refused.
 REQUIRED_DENY=(inbox message attachment human_session email_login_challenge human_auth_gate provider_login_state beta_waitlist human_request_global human_request_budget
-               workspace_storage_account inbox_storage storage_delta
+               workspace_storage_account storage_global_base inbox_storage storage_delta
                storage_reservation storage_ambiguity storage_node storage_admission_latch storage_cohort_plan workspace_deletion_charge
                storage_clock_episode storage_deletion_debt storage_filesystem_observation lifecycle_restore_clearance)
 for required in "${REQUIRED_DENY[@]}"; do

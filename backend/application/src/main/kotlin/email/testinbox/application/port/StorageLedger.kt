@@ -125,8 +125,11 @@ data class LedgerState(
     val reservedObjects: Long = 0,
 )
 
-/** The scope an accounting figure belongs to. */
-enum class AccountingScope { WORKSPACE, INBOX }
+/**
+ * The scope an accounting figure belongs to. [GLOBAL] is the V24 global base
+ * row T1 reads, checked against Σ workspace bases (its id is the nil uuid).
+ */
+enum class AccountingScope { WORKSPACE, INBOX, GLOBAL }
 
 /**
  * One figure that disagrees with the source rows. [id] is the workspace or

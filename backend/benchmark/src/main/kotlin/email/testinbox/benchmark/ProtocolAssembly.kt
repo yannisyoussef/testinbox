@@ -14,8 +14,11 @@ import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.StorageUsageSnapshot
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.UploadOutcome
+import email.testinbox.application.storage.EffectiveStoragePolicy
+import email.testinbox.application.storage.FootprintWiring
 import email.testinbox.application.storage.GuardedStorage
 import email.testinbox.application.storage.StorageBreaker
+import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.application.storage.StorageNode
 import email.testinbox.application.storage.StorageNodeLifecycle
 import email.testinbox.application.storage.StorageProtocol
@@ -23,6 +26,8 @@ import email.testinbox.application.storage.WriteSlots
 import email.testinbox.application.usecase.CompactStorageLedger
 import email.testinbox.application.usecase.ExpireInboxes
 import email.testinbox.application.usecase.StorageAdmission
+import email.testinbox.domain.InboxId
+import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.storage.InboxShare
 import email.testinbox.domain.storage.StorageCapacityPolicy
 import email.testinbox.domain.storage.StorageEnforcement
@@ -37,6 +42,7 @@ import email.testinbox.persistence.SpringTransactionRunner
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.jdbc.datasource.DataSourceTransactionManager
 import org.springframework.transaction.support.TransactionTemplate
+import java.security.MessageDigest
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -167,32 +173,39 @@ object InstantBlobStore :
 /**
  * ADR-035 §11 mode `c`, the default reference: the real adapter with its
  * `pg_advisory_xact_lock` step removed. The one-statement snapshot (global
- * sums included) and the reservation insert are untouched. It is a
- * measurement mutant: it lives only here, never in a deployable, and the
- * architecture suite names `ProtocolAssembly` as the one exemption allowed to
- * construct the protocol outside the ingestion wiring. It is the baseline,
- * never the implementation under test.
+ * sums and, like production, the footprint reads included) and the
+ * reservation insert are untouched. It is a measurement mutant: it lives only
+ * here, never in a deployable, and the architecture suite names
+ * `ProtocolAssembly` as the one exemption allowed to construct the protocol
+ * outside the ingestion wiring. It is the baseline, never the implementation
+ * under test.
  */
 class NoLockAdmissionStore(
     jdbc: JdbcClient,
     transactions: TransactionTemplate,
-) : JdbcStorageAdmission(jdbc, transactions) {
+    readsFootprint: Boolean,
+) : JdbcStorageAdmission(jdbc, transactions, readsFootprint = readsFootprint) {
     override fun acquireAdmissionLock() = Unit
 }
 
 /**
- * The real protocol objects, assembled by hand over one pool, the way
- * `GuardedIngestHarness` assembles them for the §17 scenarios:
- * `StorageAdmission` over `JdbcStorageAdmission`, `GuardedStorage` with the
- * real `JdbcStorageReservations` fence, `JdbcStorageAmbiguity` (also the
- * latch), `WriteSlots`, `StorageBreaker`, `SpringTransactionRunner`, and
- * `ExpireInboxes` over `JdbcInboxRepository` for retention. Only the upload
- * step is a stub ([InstantBlobStore]).
+ * The real protocol objects, assembled by hand over one pool the way
+ * `IngestionWiring` assembles them in production (#120 verdict §2.3):
+ * `StorageAdmission` built by `FootprintWiring.admission` over
+ * `JdbcStorageAdmission(readsFootprint = FootprintWiring.readsFootprint(declarations))`,
+ * `GuardedStorage` with the real `JdbcStorageReservations` fence,
+ * `JdbcStorageAmbiguity` (also the latch) registering the node with the
+ * deployment's cohort mode and binding, `WriteSlots` with production's
+ * orphaned-row count under `ALL`, `StorageBreaker`, `SpringTransactionRunner`,
+ * and `ExpireInboxes` over `JdbcInboxRepository` for retention. Only the
+ * upload step is a stub ([InstantBlobStore]). [declarations] are
+ * [HarnessDeclarations]: a filesystem is declared, as in production `ALL`.
  */
 class ProtocolAssembly(
     dataSource: DataSource,
     private val options: BenchmarkOptions,
-    mode: AdmissionMode,
+    val mode: AdmissionMode,
+    val declarations: StorageDeclarations,
 ) {
     val jdbc: JdbcClient = JdbcClient.create(dataSource)
     private val transactionManager = DataSourceTransactionManager(dataSource)
@@ -200,37 +213,41 @@ class ProtocolAssembly(
     val metrics = RecordingProtocolMetrics()
     val node = StorageNode("bench-${ProcessHandle.current().pid()}", UUID.randomUUID())
 
-    private val reservations = JdbcStorageReservations(jdbc, template)
-    private val ambiguity = JdbcStorageAmbiguity(jdbc, template)
-    private val lifecycle = StorageNodeLifecycle(ambiguity, node, options.slots).also { it.start() }
-    val slots = WriteSlots(options.slots, options.slotsPerWorkspace, StorageProtocol.SLOT_WAIT) { ambiguity.unresolvedFor(node.nodeId) }
+    /** Production's footprint policy for these declarations (null only if no filesystem were declared). */
+    val footprint = EffectiveStoragePolicy.footprint(declarations)
 
-    private val referenceMode: ReferenceMode? = if (mode == AdmissionMode.REFERENCE) options.referenceMode else null
-    private val store: StorageAdmissionStore =
-        if (referenceMode == ReferenceMode.NO_LOCK) NoLockAdmissionStore(jdbc, template) else JdbcStorageAdmission(jdbc, template)
+    private val reservations = JdbcStorageReservations(jdbc, template)
+    private val ambiguity = JdbcStorageAmbiguity(jdbc, template, declarations.enforcement, footprint?.cohort?.binding)
+    private val lifecycle = StorageNodeLifecycle(ambiguity, node, options.slots).also { it.start() }
+    val slots =
+        WriteSlots(
+            options.slots,
+            options.slotsPerWorkspace,
+            StorageProtocol.SLOT_WAIT,
+            orphaned =
+                FootprintWiring.orphanedSlots(declarations) {
+                    ambiguity.unresolvedOrphaned(StorageProtocol.STALE_HEARTBEAT)
+                },
+        ) { ambiguity.unresolvedFor(node.nodeId) }
+
+    /** The T1 adapter this mode runs: exactly production's for CHOSEN (see [admissionStore]). */
+    val store: JdbcStorageAdmission = admissionStore(jdbc, template, mode, options.referenceMode, declarations)
 
     // Generous: nothing is refused, so every T1 inserts and every event reaches T2. The lock and the rows are what is measured.
     private val policy =
         when (mode) {
-            AdmissionMode.CHOSEN -> StorageCapacityPolicy(1L shl 40, InboxShare.of("1"), 1L shl 50, 0)
+            AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED -> StorageCapacityPolicy(1L shl 40, InboxShare.of("1"), 1L shl 50, 0)
 
             // No global ceiling: an effectively unlimited G.
             AdmissionMode.REFERENCE -> StorageCapacityPolicy(1L shl 40, InboxShare.of("1"), Long.MAX_VALUE, 0)
         }
-    private val enforcement =
-        when (referenceMode) {
-            null -> StorageEnforcement.ALL
 
-            // Mode c: the tenant ceilings only, no global one, and no global lock (NoLockAdmissionStore).
-            ReferenceMode.NO_LOCK -> StorageEnforcement.TENANT_LIMITS
-
-            // Same lock, every ceiling observational: a diagnostic self-comparison.
-            ReferenceMode.CEILING_OFF -> StorageEnforcement.OFF
-        }
+    /** Production's construction: `FootprintWiring.admission(store, policy, declarations)`, with the store timed. */
+    val admission: StorageAdmission = FootprintWiring.admission(TimingAdmissionStore(store), policy, declarations)
 
     val guarded =
         GuardedStorage(
-            admission = StorageAdmission(TimingAdmissionStore(store), policy, enforcement),
+            admission = admission,
             reservations = reservations,
             ambiguity = ambiguity,
             latch = ambiguity,
@@ -259,7 +276,97 @@ class ProtocolAssembly(
 
     val compactor = CompactStorageLedger(JdbcStorageLedger(jdbc, template))
 
+    /** The statement this mode's T1 runs: production's, or the variant's. */
+    val statement: String = (store as? PartitionedAdmissionStore)?.partitionedStatement ?: store.snapshotStatement
+
+    /**
+     * The production-faithfulness probe, run before every scenario: one real
+     * T1 of this assembly's store over one existing inbox, which reserves
+     * nothing. It proves the footprint statement ran (the snapshot carries the
+     * footprint figures) and, under `ALL`, that production's footprint policy
+     * finds them evaluable, so no event of the scenario fails as an unready
+     * deployment instead of being measured.
+     */
+    fun probe(inbox: SeededInbox): T1Probe {
+        val scope = StorageAdmissionScope(setOf(WorkspaceId(inbox.workspaceId)), setOf(InboxId(inbox.inboxId)))
+        return store.admit(scope) { snapshot ->
+            StorageAdmissionPlan(
+                emptyList(),
+                T1Probe(
+                    mode = mode,
+                    storeClass = store.javaClass.name,
+                    enforcement = declarations.enforcement,
+                    readsFootprint = store.readsFootprint,
+                    footprintRead = snapshot.footprint != null,
+                    footprintUnavailable = footprint?.unavailability(snapshot.footprint)?.name,
+                    cohortRequired = snapshot.footprint?.cohort?.required,
+                    snapshotStatementSha256 = sha256(statement),
+                    budgetedWorkspaces = snapshot.budgets.size,
+                    inactiveWorkspaces = snapshot.inactiveWorkspaces.size,
+                ),
+            )
+        }
+    }
+
     fun stop() {
         lifecycle.stop(slots.poisoned())
     }
+
+    companion object {
+        /**
+         * The T1 adapter for [mode], built from [declarations] exactly as
+         * `IngestionWiring.storageAdmission` builds production's:
+         * `JdbcStorageAdmission(jdbc, template, readsFootprint = FootprintWiring.readsFootprint(declarations))`.
+         * The reference differs ONLY by the overridden lock step.
+         */
+        fun admissionStore(
+            jdbc: JdbcClient,
+            template: TransactionTemplate,
+            mode: AdmissionMode,
+            referenceMode: ReferenceMode,
+            declarations: StorageDeclarations,
+        ): JdbcStorageAdmission {
+            val readsFootprint = FootprintWiring.readsFootprint(declarations)
+            return when (mode) {
+                AdmissionMode.CHOSEN -> {
+                    JdbcStorageAdmission(jdbc, template, readsFootprint = readsFootprint)
+                }
+
+                // Benchmark-only (never a production switch): W1's share-partitioned T1.
+                AdmissionMode.PARTITIONED -> {
+                    PartitionedAdmissionStore(jdbc, template)
+                }
+
+                AdmissionMode.REFERENCE -> {
+                    if (referenceMode == ReferenceMode.NO_LOCK) {
+                        NoLockAdmissionStore(jdbc, template, readsFootprint)
+                    } else {
+                        JdbcStorageAdmission(jdbc, template, readsFootprint = readsFootprint)
+                    }
+                }
+            }
+        }
+
+        fun sha256(text: String): String =
+            MessageDigest
+                .getInstance("SHA-256")
+                .digest(text.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+    }
 }
+
+/** What the production-faithfulness probe found, recorded per scenario in the evidence. */
+data class T1Probe(
+    val mode: AdmissionMode,
+    val storeClass: String,
+    val enforcement: StorageEnforcement,
+    val readsFootprint: Boolean,
+    val footprintRead: Boolean,
+    /** Production's `FootprintPolicy.unavailability` on the probe's snapshot: null means evaluable. */
+    val footprintUnavailable: String?,
+    val cohortRequired: Boolean?,
+    val snapshotStatementSha256: String,
+    /** Workspaces of the probed scope with a share (participant or legacy), and inactive ones. */
+    val budgetedWorkspaces: Int = 0,
+    val inactiveWorkspaces: Int = 0,
+)

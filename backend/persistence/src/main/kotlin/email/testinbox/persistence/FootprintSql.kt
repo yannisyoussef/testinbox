@@ -13,19 +13,43 @@ import java.sql.ResultSet
  * the two can never read different definitions.
  */
 internal object FootprintSql {
-    val CTES = """fp_newest AS (SELECT observed_at, started_seq, trash_bytes, block_size_bytes, capacity_bytes, written_by
+    /**
+     * The global figures, ONE scan of each table (V24, gate D step (1)): Σ
+     * workspace bases from the definer-maintained `storage_global_base` row, and
+     * Σ delta and Σ reservation over the in-flight tables. T1 reads them for its
+     * GLOBAL row and, with the footprint, for *L*, from the same CTEs, so the two
+     * can never disagree.
+     *
+     * A missing row (a restore: the row, like the base rows, is never backed up)
+     * is never read as 0: the second branch then sums the base rows, exactly, in
+     * the same snapshot. It is a one-time filter the planner skips while the row
+     * exists, so the population is scanned only in that degenerate state, which
+     * reconciliation reports as GLOBAL drift and the repair ends (V24); under
+     * `ALL` the verifier also revokes trust while it lasts.
+     */
+    const val GLOBAL_CTES = """g_base AS (SELECT base_bytes AS bytes, base_objects AS objects FROM storage_global_base WHERE id = 1
+                                    UNION ALL
+                                    SELECT s.bytes, s.objects
+                                      FROM (SELECT coalesce(sum(base_bytes), 0) AS bytes, coalesce(sum(base_objects), 0) AS objects
+                                              FROM workspace_storage_account) s
+                                     WHERE NOT EXISTS (SELECT 1 FROM storage_global_base WHERE id = 1)),
+                         g_delta AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(objects), 0) AS objects FROM storage_delta),
+                         g_reserved AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(cardinality(object_keys)), 0) AS objects
+                                          FROM storage_reservation)"""
+
+    /** The footprint-only CTEs, for a statement that already carries [GLOBAL_CTES] (T1). */
+    val FOOTPRINT_CTES = """fp_newest AS (SELECT observed_at, started_seq, trash_bytes, block_size_bytes, capacity_bytes, written_by
                                        FROM storage_filesystem_observation ORDER BY started_seq DESC, id DESC LIMIT 1),
                          fp_debt AS (SELECT coalesce(sum(d.bytes), 0) AS bytes, coalesce(sum(d.objects), 0) AS objects
                                        FROM storage_deletion_debt d
                                       WHERE d.incurred_at = 'infinity'::timestamptz
                                          OR d.seq >= coalesce((SELECT started_seq FROM fp_newest), 0)), ${CohortSql.CTES}"""
 
-    val COLUMNS = """(SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
-                         + (SELECT coalesce(sum(bytes), 0) FROM storage_delta)
-                         + (SELECT coalesce(sum(bytes), 0) FROM storage_reservation) AS fp_live_bytes,
-                           (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)
-                         + (SELECT coalesce(sum(objects), 0) FROM storage_delta)
-                         + (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation) AS fp_live_objects,
+    /** Every CTE [COLUMNS] needs, for a statement of its own (the footprint gate, rule P). */
+    val CTES = "$GLOBAL_CTES,\n                         $FOOTPRINT_CTES"
+
+    val COLUMNS = """(SELECT bytes FROM g_base) + (SELECT bytes FROM g_delta) + (SELECT bytes FROM g_reserved) AS fp_live_bytes,
+                           (SELECT objects FROM g_base) + (SELECT objects FROM g_delta) + (SELECT objects FROM g_reserved) AS fp_live_objects,
                            (SELECT bytes FROM fp_debt) AS fp_debt_bytes,
                            (SELECT objects FROM fp_debt) AS fp_debt_objects,
                            coalesce((SELECT trusted_epoch IS NOT DISTINCT FROM distrust_epoch FROM storage_footprint_trust WHERE id = 1), false)

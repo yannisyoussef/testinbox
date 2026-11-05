@@ -6,8 +6,13 @@ package email.testinbox.benchmark
  * - [CHOSEN]: the implemented design, ADR-035 §11 mode `a`, all ceilings enforced.
  * - [REFERENCE]: the §11 "no global ceiling" baseline the retention criterion
  *   compares against. See [ReferenceMode] for exactly what differs.
+ * - [PARTITIONED]: the BENCHMARK-ONLY W1 share-partitioned variant
+ *   ([PartitionedAdmissionStore]), run only with `--partitioned-variant`, over
+ *   the 30-participant + legacy cohort. Never gate D evidence: its scenarios
+ *   are kept out of `scenarios` and the gate's criteria, and reported under
+ *   `variant` (see `Main`).
  */
-enum class AdmissionMode { CHOSEN, REFERENCE }
+enum class AdmissionMode { CHOSEN, REFERENCE, PARTITIONED }
 
 /**
  * How the reference is produced. The implemented protocol has no lock-free
@@ -83,6 +88,10 @@ data class ScenarioResult(
     val otherErrors: Int,
     val errorSamples: List<String>,
     val physicalFailures: Map<String, Int>,
+    /** The production-faithfulness probe run before the scenario (see `ScenarioRunner`). */
+    val t1Probe: T1Probe? = null,
+    /** `pg_stat_statements` for the T1 snapshot statement over the measured phase, when the server preloads it. */
+    val t1Statement: StatementStats? = null,
 ) {
     /** completed / scheduled: separate from the achieved rate, which also carries the terminal lag. */
     val completionRatio: Double get() = if (scheduledEvents == 0) 0.0 else completedEvents.toDouble() / scheduledEvents

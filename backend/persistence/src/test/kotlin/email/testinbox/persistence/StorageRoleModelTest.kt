@@ -313,6 +313,12 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
             } shouldContain
                 "permission denied"
             failure { role.sql("UPDATE workspace_storage_account SET base_objects = 0").update() } shouldContain "permission denied"
+            // V24: the global base row T1 reads is written only by the definer triggers.
+            failure { role.sql("UPDATE storage_global_base SET base_bytes = 0").update() } shouldContain "permission denied"
+            failure { role.sql("DELETE FROM storage_global_base").update() } shouldContain "permission denied"
+            failure { role.sql("INSERT INTO storage_global_base VALUES (1, 0, 0)").update() } shouldContain "permission denied"
+            failure { role.sql("TRUNCATE storage_global_base").update() } shouldContain "permission denied"
+            role.sql("SELECT base_bytes FROM storage_global_base WHERE id = 1").query(Long::class.java).single() shouldBe 1_010L
             failure { role.sql("UPDATE inbox_storage SET base_bytes = 0").update() } shouldContain "permission denied"
             failure { role.sql("UPDATE storage_footprint_trust SET trusted_epoch = 0").update() } shouldContain "permission denied"
             failure { role.sql("DELETE FROM storage_deletion_debt").update() } shouldContain "permission denied"
@@ -334,6 +340,8 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         // Activation gate F's own privilege query: nothing to report.
         val state = db.gateFState("$api,$ingestion").replace(" ", "")
         state shouldContain "\"roleViolations\":[]"
+        // V24: gate F reads the global base row beside the sum it must equal.
+        state shouldContain "\"globalBase\":{\"rowBytes\":1010,\"rowObjects\":2,\"sumBytes\":1010,\"sumObjects\":2}"
         state shouldContain "\"observationInserters\":[\"$monitor\"]"
         state shouldContain "\"beginObservationExecutors\":[\"$monitor\"]"
     }
@@ -728,6 +736,7 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
                 "storage_clock_episode" to PROTOCOL,
                 "storage_admission_latch" to setOf("SELECT", "INSERT"),
                 "workspace_storage_account" to READ,
+                "storage_global_base" to READ,
                 "storage_delta" to READ,
                 "storage_deletion_debt" to READ,
                 "storage_debt_watermark" to READ,

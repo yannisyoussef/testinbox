@@ -14,8 +14,75 @@ slot-queueing deadline misses, other errors, starved retention ticks).
 No latency threshold exists for concurrency 1. `scripts/check-storage-activation.sh`
 gate D recomputes the same split.
 
-No staging-host-class run has been recorded; only laptop smoke runs exist,
-and they are `adrEvidence: false` by construction.
+One staging-host-class run is recorded: **FAIL at `c10dd3d`** (2026-11-03,
+`docs/adr/0035-benchmark/staging/2026-11-03-c10dd3d-FAIL/`, #129). Its
+harness built T1 without `readsFootprint`, so it under-measured production
+`ALL`; the FAIL stands a fortiori (ADR-035 "Amendment note (2026-11-05, gate
+D)"). Gate D now counts only a production-faithful T1, below.
+
+## Production-faithful T1 (gate D correction, #120 verdict §2.3)
+
+`ProtocolAssembly` builds T1 exactly as `IngestionWiring` does in production
+`ALL`: `FootprintWiring.admission(store, policy, declarations)` over
+`JdbcStorageAdmission(jdbc, template, readsFootprint = FootprintWiring.readsFootprint(declarations))`,
+with `HarnessDeclarations` declaring a filesystem (B 4096, *O_max* 24 576, two
+processes, generous *G_F*/*C_fs*), `JdbcStorageAmbiguity` registering the node
+with the deployment's cohort mode and binding, and `WriteSlots` counting
+orphaned rows under `ALL`. So the one statement also reads the footprint
+(*L*, debt, trust, watermark, observation) and the cohort pool columns, as
+production's does.
+
+- **Seeded before every scenario** (`FootprintSeed`): a trusted ledger (marked
+  through the V10 verifier's own marker, as the owner of the benchmark
+  database: the synthetic ledger would not reconcile), a monitor observation
+  written by the harness's login role (declared as the monitor role), the
+  watermark row.
+- **No participant and no cohort plan** exist for CHOSEN and NO_LOCK, so the
+  cohort pool is read but not *required* at 10 000 workspaces (W1). Every
+  cohort column is still computed in the statement.
+- **Proven per scenario.** Before warm-up, every scenario runs one real T1 of
+  its store that reserves nothing (`ProtocolAssembly.probe`): the footprint
+  figures must have been read and production's `FootprintPolicy` must find
+  them evaluable, or the run stops. The probe (store class, enforcement,
+  `readsFootprint`, the statement's sha256) is recorded per scenario as
+  `t1Probe`. `ProtocolAssemblyTest` pins the CHOSEN store to production's class
+  and statement text, and NO_LOCK to the same statement.
+- Thresholds, `adrEvidence` rules and the §11 matrix are untouched.
+
+## Diagnostics (not criteria)
+
+Per population the harness writes `diagnostics-ws<N>.txt` beside the evidence:
+the settings the gate depends on; the commit cost (`synchronous_commit = on`,
+500 commits timed alone); for each T1 statement an `EXPLAIN (GENERIC_PLAN)`
+and an `EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` of it executed as a prepared
+statement under `plan_cache_mode = force_generic_plan`; `pg_stat_statements`
+(top statements); and the churn tables' live/dead tuples and reloptions. With
+`pg_stat_statements` preloaded (`shared_preload_libraries`, and
+`pg_stat_statements.track_planning = on` for plan time), every scenario also
+records `t1Statement`: the T1 statement's calls, plans, mean plan and execution
+time over the measured phase. Without it these are recorded as unavailable;
+nothing fails. `--local` preloads it.
+
+## The PARTITIONED variant (benchmark-only, `--partitioned-variant`)
+
+**Never a production mode and never gate D evidence.** It measures W1's
+share-partitioned T1 so one run can compare CHOSEN, NO_LOCK and PARTITIONED on
+the same host; whether such a mode exists is an owner decision and an ADR
+amendment. `PartitionedAdmissionStore` overrides only the adapter's two
+protected steps (like the NO_LOCK mutant): `(35, 1)` in shared mode, then one
+exclusive `(38, key)` per distinct workspace in ascending key order, and a
+statement that reuses production's per-workspace and per-inbox text verbatim
+with the GLOBAL row replaced by the cohort-scaled readiness facts (no global
+sums). The decision is production's `StorageAdmission` under `ALL` with the
+footprint policy. After the gate's own scenarios of a population, the harness
+provisions 30 ACTIVE participants (ADR-037's fixed shares) and one legacy
+share and runs the variant at every matrix point, its events going to that
+cohort; the cohort's usage is reset between scenarios. Its scenarios and an
+informational reading of the §11 criteria (against the same NO_LOCK
+references) are written under `variant`; `scenarios`, `criteria` and
+`verdict`, which gate D recomputes, never contain it. Limits: the Π approval
+verdict is not evaluated (the gate population has no approved plan), and in the
+gate population "a workspace with usage lacks a share" stops at its first row.
 
 ## What it exercises
 
@@ -195,7 +262,8 @@ TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK=I_UNDERSTAND_THIS_DESTROYS_THE_TARGET_DATABA
   scripts/storage-benchmark.sh --local --workspaces 50 --concurrency 1,10 --rates 50 \
     --duration-seconds 10 --warmup-seconds 2
 
-# The gate, on the staging host class (about 15 minutes per population)
+# The gate, on the staging host class (about 85 minutes per population for the
+# §11 matrix; --partitioned-variant adds about 40 minutes per population)
 TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK=I_UNDERSTAND_THIS_DESTROYS_THE_TARGET_DATABASE \
 TESTINBOX_BENCHMARK_DB_PASSWORD=... \
   scripts/storage-benchmark.sh \
