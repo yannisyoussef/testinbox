@@ -355,9 +355,12 @@ object AccountLifecycleCommand {
         // Deletion continues with the workflow at once; re-running (or the timer) resumes it.
         return when (advance(command.account, ops, out)) {
             Advance.ERASED -> EXIT_DONE
+
             Advance.PENDING, Advance.OVERDUE -> EXIT_PENDING
+
             // DELETION_PENDING has already committed here (see EXIT_REFUSED).
             Advance.REFUSED -> EXIT_REFUSED
+
             Advance.ANOMALY -> EXIT_ANOMALY
         }
     }
