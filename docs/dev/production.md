@@ -79,6 +79,7 @@ relaxed-binding override of the underlying property is refused).
 | `TESTINBOX_BOOTSTRAP_API_KEY` | ≥ 43 chars of real entropy | break-glass only |
 | `TESTINBOX_GIT_SHA`, `TESTINBOX_IMAGE_DIGEST` | the handed-off candidate and each image's own digest | identity on `/actuator/info` |
 | `TESTINBOX_MANAGEMENT_PORT`, `TESTINBOX_SMTP_PORT`, `TESTINBOX_SHUTDOWN_GRACE`, `TESTINBOX_DB_POOL_SIZE` | as staging | private management port; SMTP never public |
+| `TESTINBOX_CORS_ALLOWED_ORIGINS` | `https://docs.testinbox.email` (once the docs "Try it" release ships) | API only. Exact origins, comma-separated; empty = CORS off (the default). Production refuses `*`, a path, a non-`https`, loopback, staging or rehearsal origin at startup. See [Cross-origin access](#cross-origin-access-for-the-docs-try-it) |
 
 ## Readiness, and one setting the application checks live
 
@@ -1153,6 +1154,56 @@ address family** — so an IPv6 probe from an IPv4-only runner cannot pass for
 free. The result is Ops acceptance evidence; the `DOCKER-USER` chain being
 non-empty is not, and no test from outside can prove the probed address *is*
 the origin — that remains Ops's to show.
+
+## Cross-origin access for the docs "Try it"
+
+The hosted documentation's "Try it" calls `/v1` from the reader's browser, so
+the API must answer CORS for that one origin
+([principles #11](../api/principles.md),
+[abuse model](../security/abuse-model.md#cross-origin-access-to-v1)). It is
+**off unless Ops sets it**: the variable is not in any profile document, and
+an unset or empty value means no `Access-Control-*` header is ever sent —
+the API behaves exactly as before the setting existed.
+
+- **Set** `TESTINBOX_CORS_ALLOWED_ORIGINS=https://docs.testinbox.email` in the
+  API environment (not ingestion) after the release that carries it, and
+  restart the API. A malformed entry, `*`, or (in production) a non-`https`,
+  loopback, staging or rehearsal origin refuses startup with a message naming
+  `testinbox.cors.allowed-origins`; nothing is half-applied.
+- **Scope** is `/v1/**` only. `/account/**`, actuator (management port) and
+  the web console never get CORS headers, whatever the list says.
+- **The edge must pass it through.** A preflight is an `OPTIONS` request
+  with no credential; the API answers it `200` itself, before authentication.
+  Cloudflare and Traefik must forward `OPTIONS` to the API router unchanged and
+  must not add, strip or rewrite `Access-Control-*` or `Vary` headers. As of
+  the current Traefik configuration nothing does: the `/v1` router's
+  `testinbox-cf-only`, `sec-headers`, `testinbox-api-limit` and
+  `testinbox-body` middlewares define no `accessControl*` options (Traefik then
+  passes `OPTIONS` through instead of answering it), and the stream router
+  matches only `GET /v1/workspace/events`, so a preflight of the stream goes
+  through the ordinary `/v1` router. On Cloudflare, check that no WAF, bot or
+  challenge rule challenges `OPTIONS` on the API host (a challenged preflight
+  fails the browser's CORS check), that no cache rule caches `/v1`, and that
+  no transform rule touches `Access-Control-*`.
+- **The API host** the docs call must be routed to the API's `/v1` router;
+  if that is a new hostname (e.g. `api.testinbox.email`), its DNS and Traefik
+  `Host` rule are Ops changes outside this repository.
+- **Verify** from outside after setting it:
+
+  ```bash
+  curl -si -X OPTIONS https://<api host>/v1/inboxes \
+    -H 'Origin: https://docs.testinbox.email' \
+    -H 'Access-Control-Request-Method: POST' \
+    -H 'Access-Control-Request-Headers: authorization, content-type'
+  # 200, Access-Control-Allow-Origin: https://docs.testinbox.email,
+  # Access-Control-Allow-Methods: GET,POST,DELETE, no Allow-Credentials
+  curl -si https://<api host>/v1/workspace -H 'Origin: https://docs.testinbox.email'
+  # 401 problem+json WITH Access-Control-Allow-Origin and Access-Control-Expose-Headers
+  ```
+
+  The same preflight with `Origin: https://example.com` must be `403` with no
+  `Access-Control-Allow-*` header. **Rollback** is unsetting the variable and
+  restarting the API.
 
 ## Synthetics for a dark deployment
 
