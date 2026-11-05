@@ -84,7 +84,7 @@ Where the FIXED values come from:
   and the shipped staging record.
 - The geometry and the filesystem identity: `prod-gate-f-evidence-20261103.json.txt`, `prod-facts.json`, and
   `n1-fs-baseline.sh`'s qualified geometry and feature list.
-- The kernel: `prod-kernel-20261103.txt`. 6.8.0-147 is installed and held, and becomes true after the reboot.
+- The kernel: `prod-kernel-20261103.txt`. The N1 condition is the running kernel 6.8.0-147-generic, boot id unchanged, checked at every step.
 
 ## The N1 evidence bundle Ops delivers
 
