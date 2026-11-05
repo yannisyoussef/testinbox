@@ -17,7 +17,7 @@ The tools:
 |---|---|
 | `scripts/build-qualification-record.py` | the offline generator: verifies the bundle's `SHA256SUMS` first, then builds the record, `PROVENANCE.md` and the evidence copy; refuses (exit 1, nothing written) on any gap |
 | `docs/adr/0035-benchmark/qualification/production-expected.json` | the **FIXED** values (below). Not a record, never shipped. A bundle that measures anything else is refused |
-| `scripts/build-qualification-record.test.sh` | 46 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
+| `scripts/build-qualification-record.test.sh` | 53 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
 | `backend/storage/src/test/.../GeneratedQualificationRecordTest.kt` | the generator's output on the fake bundle (golden file, byte-compared by the shell test) loads through the real `QualificationRecords.parse`, is eligible and has no production gap |
 
 ## Value status
@@ -74,6 +74,7 @@ An eligible record has no LAB or POST-REBOOT member. The generator cannot emit e
 | `filesystem.metadataInodesMeasured` (M) | FROM-N1 (E7), or carried | `measurements.metadataInodesMeasured`; gate F evidence's declared inode budget must be ≥ it | `experiments/E7.json` | PROD-QUAL, or CARRIED-AMENDMENT |
 | `filesystem.metadataInodesScope` (additive member) | FROM-N1 (E7) | `minio-sys`: the inodes under `.minio.sys` only, or `minio-sys-excl-trash` with the armed inode-headroom latch. E7's `measurements.metadataInodesScope` and the gate F evidence's `minio.metadataInodesScope` must say the same, and gate F blocks a record or evidence that does not (PROPOSED note `docs/adr/0035-amendment-note-metadata-inodes-PROPOSED.md`) | `experiments/E7.json`, `gate-f/filesystem-evidence.json` | CODE |
 | `filesystem.metadataBytesMeasured`, `metadataBytesScope` (additive members) | FROM-N1 (E2, E7), CODE | the larger of E2's post-drain and E7's peak `measurements.metadataBytesMeasured`, both stating `metadataBytesScope: "minio-sys+unattributed"` (`scripts/adr035-metadata-accounting.py`). The gate F evidence must state the same scope and declare *M* ≥ it; gate F blocks otherwise | `experiments/E2.json`, `experiments/E7.json`, `gate-f/filesystem-evidence.json` | PROD-QUAL, or CARRIED-AMENDMENT when E7 is carried |
+| `filesystem.inodeHeadroomLatchDrill` (additive member, only when E10 drilled it) | FROM-N1 (E10) | `{result: "PASS", fsMonitorSha256}` from E10's `measurements.inodeHeadroomLatch` and `fsMonitorSha256`; gate F accepts `minio-sys-excl-trash` only when its `fsMonitorSha256` equals the evidence's `monitor.fsMonitorSha256` | `experiments/E10.json`, `gate-f/filesystem-evidence.json` | PROD-QUAL |
 | `filesystem.metadataInodesBasis` (additive member) | DERIVED | `E7 on the final filesystem` or `E7 carried under <amendment>` | `MANIFEST.json` `e7` | DERIVED |
 | `filesystem.experiments.E1`…`E11` | FROM-N1 | each must be `PASS`, on `venue: final-filesystem`, uuid `c33e14fd…`, kernel 147, member `3f97c565…`, started after the post-reboot baseline and finished before the post-cleanup one | `experiments/E1.json` … `E11.json` + their `rawFiles` | PROD-QUAL (E7 may be CARRIED-AMENDMENT) |
 | `enablementEligible`, `ineligibilityReasons` | DERIVED | `true`, `[]`. The generator writes no record otherwise | — | DERIVED |
@@ -147,8 +148,10 @@ Experiment file (`testinbox.n1-experiment/1`):
   equal `MANIFEST.candidate`.
 - `measurements` carries `oMaxBytes` and `worstObjectOverheadBytes` in E1–E3. In E7 it carries `metadataInodesMeasured`,
   counted as `find <data>/.minio.sys -xdev | wc -l`, and `metadataInodesScope: "minio-sys"`. It may instead carry
-  the script's `metadataInodesExclTrash` with `metadataInodesScope: "minio-sys-excl-trash"`, but only when the gate F
-  evidence states `monitor.inodeHeadroomLatchArmed: true` (note §8.2). E2 (after the partial
+  the script's `metadataInodesExclTrash` with `metadataInodesScope: "minio-sys-excl-trash"`, but only when **E10**
+  carries `measurements.inodeHeadroomLatch: "PASS"` and `measurements.fsMonitorSha256` (64 hex: the fs-monitor build
+  the drill ran). The gate F evidence must name that same build in `monitor.fsMonitorSha256`, state
+  `monitor.inodeHeadroomLatchArmed: true`, and use the same inode scope as E7 (note §8.2). E2 (after the partial
   drain) and E7 (peak over every sample) each carry `metadataBytesMeasured`, the `metadataBytes` of
   `scripts/adr035-metadata-accounting.py`, and `metadataBytesScope: "minio-sys+unattributed"`.
   Ops may add any other figure.

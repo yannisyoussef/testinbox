@@ -49,8 +49,8 @@ One reference implementation, [`scripts/adr035-metadata-accounting.py`](../../sc
 
 MinIO metadata inodes are **every inode under `<data>/.minio.sys`**: the directory itself, `.trash` included
 (`find <data>/.minio.sys -xdev | wc -l`). The scope is `minio-sys`, as Ops implemented it. A second scope,
-`minio-sys-excl-trash`, leaves out the contents of `.trash`. It is accepted only together with an armed inode-headroom
-latch (§8.2).
+`minio-sys-excl-trash`, leaves out the contents of `.trash`. It is accepted only with a **proven** inode-headroom
+latch: an E10 drill of that latch on the fs-monitor build the evidence names (§8.2).
 
 Bucket directories are per-object inodes charged by `i_max` (§3.5), and are never also metadata. They stay bounded by:
 
@@ -60,8 +60,8 @@ Bucket directories are per-object inodes charged by `i_max` (§3.5), and are nev
 
 The budget (100 000) and every criterion are unchanged. Gate F refuses evidence or a record whose scope is neither
 `minio-sys` nor `minio-sys-excl-trash`: NOT RUN when the field is absent, BLOCKED otherwise. It also blocks
-`minio-sys-excl-trash` unless the evidence states `monitor.inodeHeadroomLatchArmed: true`. The generator refuses the
-same cases, for E7 as well.
+`minio-sys-excl-trash` without that proof, and evidence whose scope differs from the record's. The generator refuses
+the same cases, for E7 as well.
 
 ## 3. Bytes: what is double-counted, and what must stay counted
 
@@ -177,18 +177,20 @@ Cross-checks with standard tools are **approximate**, never normative:
 The bucket classification has no `find`/`du` one-liner: it needs post-order occupancy and the `xl.meta` reference
 test. The reference implementation is normative.
 
-**Performance.** The independent review measured about 6.4 s, warm cache, for 100 000 objects (300 000 inodes). It scales with the inodes walked, so expect 50–60 s at about 750 000 objects, close to a 60 s monitor cycle.
-Ops measures it on tonight's E2 population.
+**Performance.** The walk's cost scales with the inodes walked. The delta review measured about 16 s, warm cache, for
+100 000 objects with data directories (about 400 000 inodes). Past about 400 000 large objects, a walk exceeds 60 s.
 
-The monitor must never run two walks at once. A cycle whose walk is still running skips its start, and its overrun
-must **not** read as healthy:
+The monitor therefore uses the **5-min cadence for the metadata walk** this note allows, with `statvfs` and the
+observation staying per minute. It must never run two walks at once. A cycle whose walk is still running skips its
+start, and an overrun must **not** read as healthy:
 
-- no observation is written for that cycle, so `testinbox_storage_filesystem_observation_age_seconds` rises and
-  alerts at *A_obs*;
-- the monitor raises a `metadata-walk-overrun` alert at once.
+- **no observation is written** for that cycle, so `testinbox_storage_filesystem_observation_age_seconds` rises,
+  alerts at *A_obs*, and admission eventually refuses (T1 answers `451` on a stale observation). That is a safe
+  stall, never an unchecked admit;
+- the monitor raises a `metadata-walk-overrun` alert at once;
+- a stale metadata figure is never reused as current.
 
-A slower cadence for the metadata walk alone (for example every 5 min, the `statvfs` part staying per minute) is an
-Ops choice. It never reuses a stale figure as current.
+Ops reports the walk time measured on the E2 population.
 
 **N1 invocation.** On the shared production mount, N1 runs the script with `--mount = --data-dir = <qual data dir>`.
 `fsRoot` is then the qualification data directory alone, and production's `data/` is never walked. The real mount
@@ -232,6 +234,7 @@ every reachable inode into exactly one of M, O_max and W. Only rows 20–22 are 
 | 18 | Mount root directory, `lost+found`, the MinIO data directory itself | M (`fsRoot`) | Outside both trees, so the walk sees them once. They are a few blocks |
 | 19 | Anything else on the mount outside `.minio.sys` and the bucket | M (`fsRoot`) | Also fails gate F's dedicated-mount row (`otherDataOnMount`) |
 | 20 | Foreign objects (written by anything but TestInbox) | headroom row only | Attributed structurally and charged nowhere, so `used > Φ + H_F + M` shows them. That is an Ops invariant violation (annex §3.6) |
+| 20a | *(info)* An orphan directory inside an object directory that holds an `xl.meta` of its own | treated as a nested object: its unreferenced data directory, with its `part.1`, is still counted (row 17a); its own first block and `xl.meta` (about 4 KiB each) are not | MinIO forbids nested objects (an object key cannot be a prefix of another), so such a directory is foreign, as in row 20: the headroom row sees it. The few KiB left uncounted are a bounded, accepted gap |
 | 21 | Unlinked files still open: a GET streaming an object deleted meanwhile, or a MinIO handle on a renamed tmp file | headroom row only (annex (e) budget: ≤ in-flight GETs × 15 MiB) | No walk can see them: they hold room in `used ≤ Φ + H_F + M`, inside *M*'s share |
 | 22 | Filesystem internals: inode tables, bitmaps, group descriptors, the journal; hidden inodes | not in `used_bytes` (bsddf: `f_blocks` is net of them, so *C_fs* already is) | The qualified features enable no `orphan_file` or quota inode. If such an inode appeared, it would be in `used_bytes` and fall to the headroom row |
 | 23 | Root-reserved blocks (`mkfs -m`) | not an allocation (in neither `used_bytes` nor `avail_bytes`) | This is a capacity question (annex §1: MinIO runs as root, so *C_fs* does not exclude them; the A1 (iv) uid evidence), not a metadata one |
@@ -307,17 +310,25 @@ With 256 MiB the staging term alone is about 483 MiB, so the bytes check alerts 
 `2·M` = 512 MiB, latching the monitor, as soon as everything else exceeds about 29 MiB. **256 MiB is not adequate**
 at `procs ≥ 2`.
 
-**The cost of +768 MiB**, checked against the formulas:
+**The cost of +768 MiB**, from Ops' capacity-proof run (infinity-core `master` 69318bb,
+`infra/testinbox/storage/activation/capacity-proof.py`; #124 comment 6670191661). The run used M = 1 073 741 824 in
+the environment declarations, the pool file and the fs-monitor configuration, with production R_ops =
+4 294 967 296 and P_F = 67 108 864:
 
-- **[I-C]** `G_F + D_budget + P_F + M + R_ops ≤ C_fs` (annex §2.1, `DeploymentSafety`). The reviewer's slack is
-  16 786 280 448 B at M = 1 GiB. That figure is consistent with C_fs = 47 991 902 208 B (11 716 773 × 4 096),
-  G_F = 16 GiB, D_budget = 8 GiB, R_ops = 2.5 GiB and P_F = 1 600 MiB. G_F and C_fs are the production values;
-  **D_budget, R_ops and P_F are inferred from the slack** and must be confirmed against the production declaration.
-- **[FS]** The `FILESYSTEM` boundary of `CohortStorageBudget.demand` adds the unattributed-debt and trash allowances,
-  P_F, *M* and R_ops to the global footprint. The reviewer's slack is 24 988 291 265 B at M = 1 GiB. It depends on
-  the reviewed pool file and could not be recomputed from this repository; +768 MiB lowers it by exactly
-  805 306 368 B.
-- **[GLOBAL_F]** Unchanged: the global footprint demand has no *M* term.
+```
+[FS]   13 004 390 207 + unattributed 268 435 456 + trash 4 294 967 296 + P_F 67 108 864 + M 1 073 741 824
+       + R_ops 4 294 967 296 = 23 003 610 943 <= C_fs 47 991 902 208          slack 24 988 291 265  OK
+[I-C]  G_F 17 179 869 184 + D_budget 8 589 934 592 + P_F + M + R_ops = 31 205 621 760 <= C_fs 47 991 902 208
+                                                                             slack 16 786 280 448  OK
+       (= the current slack 17 591 586 816 − 805 306 368)
+[R_ops + M >= root reserve]  5 368 709 120 >= 2 576 977 920                    slack  2 791 731 200  OK
+CONSISTENCY OK; VERDICT FITS
+```
+
+- [FS] is the `FILESYSTEM` boundary of `CohortStorageBudget.demand`; [I-C] is `G_F + D_budget + P_F + M + R_ops ≤
+  C_fs` (annex §2.1, `DeploymentSafety`).
+- [GLOBAL_F] is unchanged: its demand has no *M* term.
+- The live `storage-budget check` runs at W-E.
 
 **This note does not change M** in any declaration. That is the owner's decision (§8.1).
 
@@ -364,17 +375,26 @@ at `procs ≥ 2`.
    So trash inodes cannot exhaust inodes before blocks. The armed inode-headroom latch checks exactly that, every
    cycle, whatever any budget counts.
 
-   **How it is enforced.**
-   - Gate F accepts `minio-sys-excl-trash` (in the evidence or the record) only when the evidence states
-     `monitor.inodeHeadroomLatchArmed: true`. Otherwise it is BLOCKED.
-   - The generator refuses it on the same condition.
-   - `minio-sys` stays accepted with no such condition.
-   - The field is an Ops declaration, like the other `declared.*` members: gate F cannot read the monitor's
-     configuration. It is backed by E10, whose latch drill must include the `inode-headroom` latch firing.
+   **How it is enforced: proven, never self-declared.**
+   - **Without the proof, only `minio-sys` is acceptable.**
+   - **The drill (E10).** It records the latch firing and the fs-monitor build that ran it:
+     `measurements.inodeHeadroomLatch: "PASS"` and `measurements.fsMonitorSha256` (64 hex). The generator copies
+     them into the record as `filesystem.inodeHeadroomLatchDrill`.
+   - **The evidence** names the running fs-monitor build, `monitor.fsMonitorSha256`.
+   - **The binding.** Gate F accepts `minio-sys-excl-trash` only when the record carries a `PASS` drill whose
+     `fsMonitorSha256` equals the evidence's. The generator refuses the bundle unless E10's drill is `PASS` and
+     names the build the gate F evidence names. A failed drill, a missing build, or a different build blocks or
+     refuses.
+   - **`monitor.inodeHeadroomLatchArmed: true`** is still required, as an additional statement. On its own it proves
+     nothing.
+   - **One scope on both sides.** Gate F requires the evidence's `metadataInodesScope` to equal the record's (the
+     bytes scope is already fixed to `minio-sys+unattributed` on both sides), and the generator requires E7's to
+     equal the evidence's.
 
 ## 9. What Ops changes (infinity-core; written here, not applied)
 
-Vendor `metadata_accounting` from `scripts/adr035-metadata-accounting.py` **verbatim** (one function, stdlib only), as
+Vendor `metadata_accounting` and its module-level helpers from `scripts/adr035-metadata-accounting.py` **verbatim**
+(stdlib only), as
 `infra/testinbox/storage/adr035_metadata_accounting.py`. Pin it to this repository's commit in a header comment.
 
 `infra/testinbox/storage/fs-monitor.py`: the monitor's metadata check and the collector both use this.
@@ -393,18 +413,26 @@ Vendor `metadata_accounting` from `scripts/adr035-metadata-accounting.py` **verb
 +def dir_blocks_and_inodes(mount, data_dir, bucket):
 +    """ADR-035 note "one definition of MinIO metadata": (unattributed bytes, metadata inodes, full accounting).
 +    Bytes scope minio-sys+unattributed: per-object directory blocks are in O_max, never also in M. Inodes scope minio-sys."""
-+    a = metadata_accounting(mount, data_dir, bucket)
-+    return a["unattributedBytes"], a["metadataInodes"], a
++    a = metadata_accounting(mount, data_dir, bucket)          # raises on ANY failure: never a partial figure
++    return a["unattributedBytes"], a["metadataInodes"], a     # report a["metadataBytesScope"], a["metadataInodesScope"]
 ```
 
-- **Callers** pass the mountpoint, the data directory and the bucket instead of the two paths. On
-  `AccountingRefused` (a missing or foreign `.minio.sys` or data directory) the cycle writes **no** observation and
-  raises an alert. It never reports a figure, and never reports 0.
+- **Callers** pass the mountpoint, the data directory and the bucket instead of the two paths.
+- **On ANY exception** in the walk, the cycle writes **no** observation and raises an alert. That covers
+  `AccountingRefused` (a missing or foreign `.minio.sys` or data directory), a `PermissionError`, or an I/O error.
+  It never reports a figure, and never reports 0. The script behaves the same: exit 1, nothing on stdout.
+- **Scopes.** The monitor reports, with its figures, the scopes it counts: `metadataBytesScope`
+  (`minio-sys+unattributed`), and `metadataInodesScope` (`minio-sys`, or `minio-sys-excl-trash` only under §8.2's
+  proof).
+- **`bucketPresent: false` at runtime** raises an alert at once. Production pre-provisions the bucket, so a missing
+  bucket directory means the wrong path or a lost bucket. The metadata figure is not trusted while it lasts
+  (`docs/dev/production.md` alert table).
 - **New latch:** `inode-headroom` latches when `inodes_total − inodes_used < ⌈avail / B⌉`, with the same gating as the
-  other latches (§8.2). Never run two walks at once (§4, "Performance").
+  other latches (§8.2). Never run two walks at once; the metadata walk runs every 5 min (§4, "Performance").
 - **The M check** is unchanged in form: `minio_sys_bytes + unattributed > M` alerts, and `> 2·M` latches. The
   observation's `minio_sys_bytes` and `trash_bytes` may come from the same call (`a["minioSysBytes"]`,
-  `a["trashBytes"]`), which equal today's `du` figures.
+  `a["trashBytes"]`). They approximate today's `du` figures; `minio_sys_bytes` now also holds the `.trash`
+  directory's own blocks (row 5a).
 - **Logging:** log `a["unattributed"]` with each alert, so the class that grew is named.
 
 `infra/testinbox/storage/activation/collect-filesystem-evidence.py`:
@@ -414,15 +442,16 @@ Vendor `metadata_accounting` from `scripts/adr035-metadata-accounting.py` **verb
 +        "minio": {"bucketDirectoryBytes": acc["unattributedBytes"], "metadataBytesScope": acc["metadataBytesScope"],
 +                  "bucketPresent": acc["bucketPresent"],
 +                  "metadataInodes": acc["metadataInodes"], "metadataInodesScope": acc["metadataInodesScope"]},
-+        # only with the armed inode-headroom latch (note §8.2), and then the inode figure may drop .trash:
++        # only when E10 drilled the inode-headroom latch on THIS fs-monitor build (note §8.2) may it drop .trash:
 +        #   "minio": {..., "metadataInodes": acc["metadataInodesExclTrash"], "metadataInodesScope": "minio-sys-excl-trash"},
-+        "monitor": {"inodeHeadroomLatchArmed": <the fs-monitor's inode-headroom latch is armed>},
++        "monitor": {"fsMonitorSha256": <sha256 of the running fs-monitor.py>,
++                    "inodeHeadroomLatchArmed": <the fs-monitor's inode-headroom latch is armed>},
 ```
 
 **N1 (E2, E7):** at each measurement point, run:
 
 ```
-python3 scripts/adr035-metadata-accounting.py --mount <qual mount> --data-dir <qual data dir> --bucket <bucket>
+python3 scripts/adr035-metadata-accounting.py --mount <qual data dir> --data-dir <qual data dir> --bucket <bucket>
 ```
 
 - **E2:** after the 99 % drain, report `measurements.metadataBytesMeasured` = `.metadataBytes`, with
@@ -481,7 +510,9 @@ unchanged, checked at every step.
 > The same count without the contents of `.minio.sys/tmp/.trash` (scope `minio-sys-excl-trash`) may be used **only
 > while** the Ops monitor's scope-independent inode-headroom latch (`inodes_total − inodes_used ≥ ⌈avail / B⌉`) is
 > armed. Trashed objects' inodes are covered by that latch once their debt rows are superseded, because each holds a
-> block and `I_fs ≥ C_fs / B`. Gate F refuses that scope unless the evidence states the latch armed.
+> block and `I_fs ≥ C_fs / B`. Gate F refuses that scope unless the record carries a `PASS` E10 drill of that latch
+> on the fs-monitor build the evidence names. Gate F also refuses evidence and a record that count inodes over
+> different scopes.
 >
 > **Bytes.** Wherever this ADR or its annex speaks of *M*'s bytes, the counted figure is `metadataBytes` (scope
 > `minio-sys+unattributed`): the allocated bytes under `.minio.sys` except the contents of `.minio.sys/tmp/.trash`
