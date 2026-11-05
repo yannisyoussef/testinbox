@@ -147,6 +147,12 @@ by the database.**
   `workspace_storage_account`. Both deployables need `SELECT` on it (T1, the
   footprint gate, rule P, reconciliation) and nothing else; no role may hold
   `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` or `TRIGGER` on it (gate F).
+- From V25 (share-partitioned T1, a PROPOSED ADR-035 amendment that production
+  refuses), `storage_partition_bound` is written only by the operator's pool
+  reserve. The ingestion role holds `SELECT` on it and `EXECUTE` on the invoker
+  function `storage_partition_within_bound()`; no application role may hold
+  `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` on it (gate F). Its two definer
+  trigger functions are executable by nobody (`REVOKE ... FROM PUBLIC`).
 - Both deployables keep a column grant for the refusal record:
   - `INSERT (inbox_id, workspace_id, refusal_count, last_refusal_at, last_refusal_reason)`
     and `UPDATE (refusal_count, last_refusal_at, last_refusal_reason)` on

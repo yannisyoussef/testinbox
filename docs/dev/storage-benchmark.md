@@ -63,26 +63,46 @@ records `t1Statement`: the T1 statement's calls, plans, mean plan and execution
 time over the measured phase. Without it these are recorded as unavailable;
 nothing fails. `--local` preloads it.
 
-## The PARTITIONED variant (benchmark-only, `--partitioned-variant`)
+## The PARTITIONED variant (`--partitioned-variant`, reported apart)
 
-**Never a production mode and never gate D evidence.** It measures W1's
-share-partitioned T1 so one run can compare CHOSEN, NO_LOCK and PARTITIONED on
-the same host; whether such a mode exists is an owner decision and an ADR
-amendment. `PartitionedAdmissionStore` overrides only the adapter's two
-protected steps (like the NO_LOCK mutant): `(35, 1)` in shared mode, then one
-exclusive `(38, key)` per distinct workspace in ascending key order, and a
-statement that reuses production's per-workspace and per-inbox text verbatim
-with the GLOBAL row replaced by the cohort-scaled readiness facts (no global
-sums). The decision is production's `StorageAdmission` under `ALL` with the
-footprint policy. After the gate's own scenarios of a population, the harness
-provisions 30 ACTIVE participants (ADR-037's fixed shares) and one legacy
-share and runs the variant at every matrix point, its events going to that
-cohort; the cohort's usage is reset between scenarios. Its scenarios and an
-informational reading of the §11 criteria (against the same NO_LOCK
-references) are written under `variant`; `scenarios`, `criteria` and
-`verdict`, which gate D recomputes, never contain it. Limits: the Π approval
-verdict is not evaluated (the gate population has no approved plan), and in the
-gate population "a workspace with usage lacks a share" stops at its first row.
+**Never gate D evidence.** It measures the share-partitioned T1 **as it would
+ship**: production's `JdbcStorageAdmission`, built exactly as `IngestionWiring`
+builds it, with the declared `testinbox.storage.admission-locking =
+COHORT_PARTITIONED` (no benchmark-only store exists any more). The mode is a
+PROPOSED ADR-035 amendment
+(`docs/adr/0035-amendment-note-partitioned-t1-PROPOSED.md`); its correctness
+argument is `docs/adr/0035-benchmark/partitioned-t1-correctness.md`.
+
+The production T1 partitions only a **closed, approved, non-overcommitted
+cohort**, and falls back to mode a in any other state, so the variant runs on
+its own population (`ClosedCohort`): after the gate's own scenarios of a
+population and their diagnostics, the gate population is wiped and replaced by
+30 ACTIVE participants (ADR-037's fixed shares) and one legacy share, nothing
+else; the expected nodes (`bench-api`, `bench-ingestion`) are registered with
+the pool's binding; and production's `ReserveCohortStorage` reserves and
+approves the pool, recording the V25 partition bound. Every T1 therefore reads
+and decides the whole cohort readiness, as a real partitioned deployment does.
+
+Differences from the gate's population, by necessity, all recorded:
+- 31 workspaces (an unshared workspace with usage is exactly what the guard
+  refuses to partition);
+- the delta floor is seeded as usage-neutral `+x / −x` pairs (synthetic
+  positive deltas are bytes no T1 admitted and would push a share past its
+  ceiling);
+- retention's expired inboxes belong to the legacy workspace, whose share
+  (64 GiB payload, 128 GiB footprint) holds them; participants receive only
+  admitted copies. The cohort's usage is reset between scenarios.
+
+Every variant scenario's probe must show the partitioned path
+(`t1Probe.partitioned = true`, `t1Probe.locking = COHORT_PARTITIONED`) or the
+run stops; `partitionFallbacks` records the T1s whose guard did not hold during
+the scenario (warm-up included) and must be 0 for the scenario to describe the
+partitioned path alone. Its scenarios and an informational reading of the §11
+criteria (against the gate population's NO_LOCK references, so the retention
+ratio compares different populations) are written under `variant`;
+`scenarios`, `criteria` and `verdict`, which gate D recomputes, never contain
+it. Gate D itself (`check-storage-activation.sh`) also blocks while any node
+exports `testinbox_storage_admission_locking{mode="cohort_partitioned"} 1`.
 
 ## What it exercises
 
