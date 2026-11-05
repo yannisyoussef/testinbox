@@ -22,6 +22,7 @@ import java.time.Instant
 import java.util.Collections
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -113,45 +114,16 @@ class ScenarioRunner(
             try {
                 val probe = prepare(protocol, name, spec.mode)
 
-                // Warm-up: plans, pool connections and the JIT, untimed and discarded.
-                val warmupEvents = (spec.offeredRate * options.warmupSeconds).toInt()
-                if (warmupEvents > 0) {
-                    OpenLoopScheduler(spec.offeredRate, options.arrivals, options.seed - 1).run(warmupEvents, spec.concurrency) {
-                        runEvent(protocol, EventRecord(EventTimings(), it.scheduledNanos), threadRandom())
-                    }
-                }
+                warmUp(protocol, spec)
 
                 errors.clear().also { diagnostics?.resetStatements() } // warm-up failures and statements are not the scenario's
                 val records = Collections.synchronizedList(ArrayList<EventRecord>())
                 val retentionLatencies = Collections.synchronizedList(ArrayList<Long>())
                 val retentionStarved = AtomicInteger()
                 val retentionFailures = Collections.synchronizedList(ArrayList<Throwable>())
-                val compactor = Executors.newSingleThreadScheduledExecutor { Thread(it, "bench-compactor").apply { isDaemon = true } }
-                compactor.scheduleWithFixedDelay(
-                    {
-                        runCatching {
-                            protocol.compactor.compact()
-                            seedDeltas()
-                        }
-                    },
-                    options.compactionInterval.toMillis(),
-                    options.compactionInterval.toMillis(),
-                    TimeUnit.MILLISECONDS,
-                )
+                val compactor = startCompactor(protocol)
                 val deltaSamples = Collections.synchronizedList(ArrayList<Long>())
-                val deltaSampler =
-                    Executors.newSingleThreadScheduledExecutor {
-                        Thread(
-                            it,
-                            "bench-delta-sampler",
-                        ).apply { isDaemon = true }
-                    }
-                deltaSampler.scheduleWithFixedDelay(
-                    { runCatching { deltaSamples += admin.sql("SELECT count(*) FROM storage_delta").query(Long::class.java).single() } },
-                    0,
-                    DELTA_SAMPLE_MILLIS,
-                    TimeUnit.MILLISECONDS,
-                )
+                val deltaSampler = startDeltaSampler(deltaSamples)
                 val retentionEvents = Math.ceil(retentionRate * options.durationSeconds).toInt()
                 val retentionThread =
                     Thread({
@@ -223,6 +195,46 @@ class ScenarioRunner(
             }
         }
     }
+
+    /** Warm-up: plans, pool connections and the JIT, untimed and discarded. */
+    private fun warmUp(
+        protocol: ProtocolAssembly,
+        spec: ScenarioSpec,
+    ) {
+        val warmupEvents = (spec.offeredRate * options.warmupSeconds).toInt()
+        if (warmupEvents > 0) {
+            OpenLoopScheduler(spec.offeredRate, options.arrivals, options.seed - 1).run(warmupEvents, spec.concurrency) {
+                runEvent(protocol, EventRecord(EventTimings(), it.scheduledNanos), threadRandom())
+            }
+        }
+    }
+
+    /** The compactor at the configured interval, re-seeding the delta backlog after each pass. */
+    private fun startCompactor(protocol: ProtocolAssembly): ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { Thread(it, "bench-compactor").apply { isDaemon = true } }.also {
+            it.scheduleWithFixedDelay(
+                {
+                    runCatching {
+                        protocol.compactor.compact()
+                        seedDeltas()
+                    }
+                },
+                options.compactionInterval.toMillis(),
+                options.compactionInterval.toMillis(),
+                TimeUnit.MILLISECONDS,
+            )
+        }
+
+    /** Samples the storage_delta row count every DELTA_SAMPLE_MILLIS into [samples]. */
+    private fun startDeltaSampler(samples: MutableList<Long>): ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { Thread(it, "bench-delta-sampler").apply { isDaemon = true } }.also {
+            it.scheduleWithFixedDelay(
+                { runCatching { samples += admin.sql("SELECT count(*) FROM storage_delta").query(Long::class.java).single() } },
+                0,
+                DELTA_SAMPLE_MILLIS,
+                TimeUnit.MILLISECONDS,
+            )
+        }
 
     /**
      * Untimed, before warm-up: the backlog floor, production ALL's footprint
