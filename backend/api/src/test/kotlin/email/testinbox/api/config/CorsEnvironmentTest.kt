@@ -49,7 +49,14 @@ class CorsEnvironmentTest {
     fun `a bad origin refuses startup, naming the property`() {
         for (bad in listOf("*", "https://docs.testinbox.email/", "https://Docs.testinbox.email")) {
             val properties = TestInboxProperties(cors = TestInboxProperties.Cors(allowedOrigins = listOf(bad)))
-            val failure = shouldThrow<IllegalStateException> { ApiCorsFilter(properties) }
+            val failure =
+                shouldThrow<IllegalStateException> {
+                    ApiCorsFilter(
+                        properties,
+                        tools.jackson.databind.json
+                            .JsonMapper(),
+                    )
+                }
             failure.message!! shouldContain "testinbox.cors.allowed-origins"
         }
     }

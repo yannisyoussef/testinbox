@@ -448,8 +448,8 @@ attacker can do:
   (every `/v1` path preflights alike). The edge ceiling
   (`testinbox-api-limit`) still bounds their volume.
 - **The allow-list is exact.** No wildcard, no suffix match, no reflected
-  `Origin`; production refuses plaintext, loopback, staging and rehearsal
-  origins at startup. What remains is trust in the allowed origin itself: a
+  `Origin`; production refuses plaintext, loopback, IP-literal, staging and
+  rehearsal origins at startup. What remains is trust in the allowed origin itself: a
   compromised docs site could ask readers for their key. That is the same
   trust as any third-party tool a reader pastes a key into, and it is why the
   key should be a narrowly scoped, revocable one (ADR-032) and the list is one

@@ -79,7 +79,7 @@ relaxed-binding override of the underlying property is refused).
 | `TESTINBOX_BOOTSTRAP_API_KEY` | ≥ 43 chars of real entropy | break-glass only |
 | `TESTINBOX_GIT_SHA`, `TESTINBOX_IMAGE_DIGEST` | the handed-off candidate and each image's own digest | identity on `/actuator/info` |
 | `TESTINBOX_MANAGEMENT_PORT`, `TESTINBOX_SMTP_PORT`, `TESTINBOX_SHUTDOWN_GRACE`, `TESTINBOX_DB_POOL_SIZE` | as staging | private management port; SMTP never public |
-| `TESTINBOX_CORS_ALLOWED_ORIGINS` | `https://docs.testinbox.email` (once the docs "Try it" release ships) | API only. Exact origins, comma-separated; empty = CORS off (the default). Production refuses `*`, a path, a non-`https`, loopback, staging or rehearsal origin at startup. See [Cross-origin access](#cross-origin-access-for-the-docs-try-it) |
+| `TESTINBOX_CORS_ALLOWED_ORIGINS` | `https://docs.testinbox.email` (once the docs "Try it" release ships) | API only. Exact origins, comma-separated; empty = CORS off (the default). Production refuses `*`, a path, a non-`https`, loopback, IP-literal, staging or rehearsal origin at startup. See [Cross-origin access](#cross-origin-access-for-the-docs-try-it) |
 
 ## Readiness, and one setting the application checks live
 
@@ -1168,7 +1168,7 @@ the API behaves exactly as before the setting existed.
 - **Set** `TESTINBOX_CORS_ALLOWED_ORIGINS=https://docs.testinbox.email` in the
   API environment (not ingestion) after the release that carries it, and
   restart the API. A malformed entry, `*`, or (in production) a non-`https`,
-  loopback, staging or rehearsal origin refuses startup with a message naming
+  loopback, IP-literal, staging or rehearsal origin refuses startup with a message naming
   `testinbox.cors.allowed-origins`; nothing is half-applied.
 - **Scope** is `/v1/**` only. `/account/**`, actuator (management port) and
   the web console never get CORS headers, whatever the list says.
@@ -1184,7 +1184,19 @@ the API behaves exactly as before the setting existed.
   through the ordinary `/v1` router. On Cloudflare, check that no WAF, bot or
   challenge rule challenges `OPTIONS` on the API host (a challenged preflight
   fails the browser's CORS check), that no cache rule caches `/v1`, and that
-  no transform rule touches `Access-Control-*`.
+  no transform rule touches `Access-Control-*`. Cloudflare does **not** key its
+  cache on `Vary: Origin` (the API sends it, but only browsers and
+  Vary-aware caches honour it), so "no cache rule caches `/v1`" is the
+  control, not the header. `/v1` responses are dynamic and Cloudflare does not
+  cache them by default; the API deliberately does not add a blanket
+  `Cache-Control: no-store`, which would change caching for every non-browser
+  client and is not part of the contract.
+- **Edge refusals are opaque to the page.** Responses the edge produces
+  itself — the `testinbox-api-limit` `429`, the `testinbox-body` `413`, a
+  Cloudflare challenge or error page — carry no CORS headers, so the docs
+  page sees a network error, not a readable problem. The same holds for
+  `HEAD`, a `405`, and a request Tomcat rejects before the application sees
+  it. This is expected, not a misconfiguration.
 - **The API host** the docs call must be routed to the API's `/v1` router;
   if that is a new hostname (e.g. `api.testinbox.email`), its DNS and Traefik
   `Host` rule are Ops changes outside this repository.
@@ -1201,7 +1213,8 @@ the API behaves exactly as before the setting existed.
   # 401 problem+json WITH Access-Control-Allow-Origin and Access-Control-Expose-Headers
   ```
 
-  The same preflight with `Origin: https://example.com` must be `403` with no
+  The same preflight with `Origin: https://example.com` must be `403`
+  `application/problem+json` (`cors-request-refused`) with no
   `Access-Control-Allow-*` header. **Rollback** is unsetting the variable and
   restarting the API.
 

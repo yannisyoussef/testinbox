@@ -539,12 +539,19 @@ object DeploymentSafety {
                         "entry '$origin' is a loopback host; production never allows one"
                     }
 
+                    IPV4_LITERAL.matches(host) -> {
+                        "entry '$origin' is an IP literal; production allows only named https hosts"
+                    }
+
                     else -> {
                         namesNonProductionHost(origin)?.let { "entry '$origin' names a non-production host ('$it')" }
                     }
                 }
             problem?.let { DeploymentViolation(CorsOrigins.PROPERTY, it) }
         }
+
+    /** A dotted-quad host. IPv6 literals never get this far: [CorsOrigins] refuses them in every environment. */
+    private val IPV4_LITERAL = Regex("""^\d{1,3}(\.\d{1,3}){3}$""")
 
     /** Loopback by name or address — wider than [LOCAL_HOSTS], since an origin may be any 127/8 address or `*.localhost`. */
     private fun isLoopback(host: String): Boolean =
@@ -592,7 +599,11 @@ object DeploymentSafety {
         return ProductionPolicy.NON_PRODUCTION_HOST_FRAGMENTS.firstOrNull { authority.contains(it) }
     }
 
-    /** Renders violations for a startup failure. Setting *names* and problems only — no values. */
+    /**
+     * Renders violations for a startup failure: setting names and problems, never a secret's value.
+     * The one kind of value that does appear is a CORS origin, which is public by nature (browsers
+     * send it on every request) and is quoted so the operator can see which entry was refused.
+     */
     fun describe(violations: List<DeploymentViolation>): String =
         violations.joinToString(
             prefix = "Refusing to start: deployed configuration is unsafe.\n",

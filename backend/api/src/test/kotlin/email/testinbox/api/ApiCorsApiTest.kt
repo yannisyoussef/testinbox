@@ -2,6 +2,7 @@ package email.testinbox.api
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldContainAll
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
@@ -113,18 +114,27 @@ class ApiCorsApiTest : ApiIntegrationTestBase() {
     }
 
     @Test
-    fun `a preflight from any other origin gets no allow headers`() {
+    fun `a preflight from any other origin is a static problem with no allow headers`() {
         for (origin in listOf("https://evil.example", "https://docs.example.test.evil.example", "http://docs.example.test", "null")) {
-            val response = preflight("/v1/inboxes", origin = origin)
-            response.statusCode() shouldBe 403
-            assertNoCors(response.headers())
+            assertRefused(preflight("/v1/inboxes", origin = origin), origin)
+        }
+    }
+
+    @Test
+    fun `a non-canonical spelling of an allowed origin is refused at preflight, as the actual request would be`() {
+        // Spring's own matcher ignores case and a trailing slash; the filter does
+        // not, so a preflight is never granted for an Origin the actual request
+        // would not be answered for. Browsers never send either form.
+        for (origin in listOf("HTTPS://DOCS.EXAMPLE.TEST", "https://docs.example.test/")) {
+            assertRefused(preflight("/v1/inboxes", origin = origin), origin)
+            assertNoCors(send("/v1/inboxes", "GET", origin = origin, key = adminKey).headers())
         }
     }
 
     @Test
     fun `a preflight for a method or header the API does not use is not granted it`() {
-        preflight("/v1/inboxes", method = "PUT").statusCode() shouldBe 403
-        preflight("/v1/inboxes", requestHeaders = "cookie").statusCode() shouldBe 403
+        assertRefused(preflight("/v1/inboxes", method = "PUT"), ALLOWED)
+        assertRefused(preflight("/v1/inboxes", requestHeaders = "cookie"), ALLOWED)
         // A mixed request is answered with only the allowed subset; the browser
         // then refuses the actual request because x-csrf-token is not granted.
         val mixed = preflight("/v1/inboxes", requestHeaders = "authorization, x-csrf-token")
@@ -245,10 +255,18 @@ class ApiCorsApiTest : ApiIntegrationTestBase() {
     }
 
     @Test
-    fun `a request from another origin is served exactly as before, without CORS`() {
-        val response = send("/v1/inboxes", "GET", origin = "https://evil.example", key = adminKey)
-        response.statusCode() shouldBe 200
-        assertNoCors(response.headers())
+    fun `a request from another origin, or none, is served exactly as before, without CORS but varying on Origin`() {
+        for (origin in listOf("https://evil.example", null)) {
+            val response = send("/v1/inboxes", "GET", origin = origin, key = adminKey)
+            response.statusCode() shouldBe 200
+            assertNoCors(response.headers())
+            // A shared cache must not replay this response to an allowed origin, or the reverse.
+            response
+                .headers()
+                .allValues("Vary")
+                .flatMap { it.split(",") }
+                .map { it.trim() } shouldContain "Origin"
+        }
     }
 
     // --- scope -------------------------------------------------------------------
@@ -282,6 +300,21 @@ class ApiCorsApiTest : ApiIntegrationTestBase() {
         exposed shouldContainAll EXPOSED
     }
 
+    private fun assertRefused(
+        response: HttpResponse<String>,
+        origin: String,
+    ) {
+        response.statusCode() shouldBe 403
+        assertNoCors(response.headers())
+        response.headers().firstValue("Content-Type").orElse("") shouldStartWith "application/problem+json"
+        val problem = json.readTree(response.body())
+        problem["type"].asText() shouldBe "https://testinbox.email/problems/cors-request-refused"
+        problem["status"].asInt() shouldBe 403
+        problem["correlationId"].asText().isNotBlank() shouldBe true
+        // Never echoed ("null" is skipped: it is also a JSON literal).
+        if (origin != "null") response.body().contains(origin) shouldBe false
+    }
+
     private fun assertNoCors(headers: HttpHeaders) {
         headers
             .map()
@@ -300,7 +333,7 @@ class ApiCorsApiTest : ApiIntegrationTestBase() {
     private fun request(
         path: String,
         method: String,
-        origin: String = ALLOWED,
+        origin: String? = ALLOWED,
         body: String? = null,
         key: String? = null,
         customize: HttpRequest.Builder.() -> Unit = {},
@@ -308,8 +341,8 @@ class ApiCorsApiTest : ApiIntegrationTestBase() {
         HttpRequest
             .newBuilder(URI.create(url(path)))
             .timeout(Duration.ofSeconds(20))
-            .header("Origin", origin)
             .apply {
+                origin?.let { header("Origin", it) }
                 key?.let { header("Authorization", "Bearer $it") }
                 if (body != null) header("Content-Type", "application/json")
                 customize()
@@ -319,7 +352,7 @@ class ApiCorsApiTest : ApiIntegrationTestBase() {
     private fun send(
         path: String,
         method: String,
-        origin: String = ALLOWED,
+        origin: String? = ALLOWED,
         body: String? = null,
         key: String? = null,
         customize: HttpRequest.Builder.() -> Unit = {},

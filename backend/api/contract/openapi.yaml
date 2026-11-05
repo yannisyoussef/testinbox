@@ -41,13 +41,20 @@ info:
     off unless a deployment allows exact origins (the hosted documentation's
     "Try it" is the one such origin). For an allowed origin a preflight is
     answered without authentication and is never charged to a budget, and
-    every `/v1` response — the refusals above included — carries
+    every response the API itself produces for `GET`, `POST` or `DELETE`
+    under `/v1` — the refusals above included — carries
     `Access-Control-Allow-Origin` and exposes `X-Correlation-Id`,
     `X-API-Stability`, `RateLimit-Limit`, `RateLimit-Remaining`,
     `RateLimit-Reset`, `Retry-After`, `Idempotency-Replayed`,
-    `Content-Disposition` and `Allow`. Credentials are never allowed
-    cross-origin: the key is still sent as `Authorization: Bearer`. These
-    headers are transport, not part of any operation's contract, and
+    `Content-Disposition` and `Allow`. Other responses carry no CORS headers
+    and a page sees them as network errors: `HEAD`, a `405` for another
+    method, a request the servlet container rejects before the API sees it,
+    and anything the edge answers itself (an infrastructure `429` or `413`, a
+    CDN challenge). A preflight from an origin that is not allowed (compared
+    exactly), or for a method or headers the API does not use, is
+    `403 cors-request-refused` with no allow headers. Credentials are never
+    allowed cross-origin: the key is still sent as `Authorization: Bearer`.
+    These headers are transport, not part of any operation's contract, and
     `/account` never sends them.
 
     A `text/event-stream` operation types its body as text and lists the

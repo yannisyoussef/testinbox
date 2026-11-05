@@ -145,6 +145,13 @@ class CorsOriginsTest {
     }
 
     @Test
+    fun `production refuses an IP-literal origin, and a dot-local host`() {
+        productionCors("https://203.0.113.10").single().problem shouldContain "IP literal"
+        productionCors("https://203.0.113.10:8443").single().problem shouldContain "IP literal"
+        productionCors("https://docs.local").single().problem shouldContain ".local"
+    }
+
+    @Test
     fun `production reports every bad origin at once`() {
         productionCors("http://docs.testinbox.email", "https://localhost:3000", "https://docs.testinbox.email") shouldHaveSize 2
     }

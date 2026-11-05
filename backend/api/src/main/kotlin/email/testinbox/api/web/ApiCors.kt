@@ -8,11 +8,14 @@ import jakarta.servlet.http.HttpServletResponse
 import org.springframework.core.Ordered
 import org.springframework.core.annotation.Order
 import org.springframework.http.HttpHeaders
+import org.springframework.http.HttpStatus
+import org.springframework.http.MediaType
 import org.springframework.stereotype.Component
 import org.springframework.web.cors.CorsConfiguration
 import org.springframework.web.cors.CorsUtils
 import org.springframework.web.cors.DefaultCorsProcessor
 import org.springframework.web.filter.OncePerRequestFilter
+import tools.jackson.databind.ObjectMapper
 import java.time.Duration
 
 /**
@@ -112,7 +115,7 @@ object ApiCors {
  *
  * Requests from any other origin are left exactly as they were before CORS
  * existed — no headers, no refusal — except a preflight, which is refused
- * `403` by Spring's processor with no allow headers. Refusing *actual*
+ * `403 cors-request-refused` (problem+json) with no allow headers. Refusing *actual*
  * requests by origin would break server-side clients that happen to send one
  * while protecting nothing: the browser is what enforces CORS.
  */
@@ -120,6 +123,7 @@ object ApiCors {
 @Order(Ordered.HIGHEST_PRECEDENCE + 5)
 class ApiCorsFilter(
     properties: TestInboxProperties,
+    private val mapper: ObjectMapper,
 ) : OncePerRequestFilter() {
     private val configuration: CorsConfiguration? = ApiCors.configuration(properties.cors.allowedOrigins)
     private val allowed: Set<String> = properties.cors.allowedOrigins.toSet()
@@ -133,21 +137,74 @@ class ApiCorsFilter(
         filterChain: FilterChain,
     ) {
         val config = checkNotNull(configuration)
+        val origin = request.getHeader(HttpHeaders.ORIGIN)
         if (CorsUtils.isPreFlightRequest(request)) {
-            // Valid: 200 with the allow headers. Invalid origin, method or header:
-            // 403 without them. Either way the request ends here.
-            processor.processRequest(config, request, response)
+            // Either way the request ends here: a preflight never reaches authentication.
+            if (grantable(config, origin, request)) {
+                processor.processRequest(config, request, response)
+            } else {
+                refuse(request, response)
+            }
             return
         }
-        val origin = request.getHeader(HttpHeaders.ORIGIN)
         if (origin in allowed && request.method in ApiCors.ALLOWED_METHODS) {
-            // Cannot refuse here: origin and method are both pre-checked, and
-            // headers are checked only on a preflight.
-            processor.processRequest(config, request, response)
+            // Origin and method are pre-checked, so this does not refuse; if it
+            // ever did, the 403 is committed and no handler may run after it.
+            if (!processor.processRequest(config, request, response)) return
         } else {
             // A shared cache must not hand an allowed origin's response to another.
             response.addHeader(HttpHeaders.VARY, HttpHeaders.ORIGIN)
         }
         filterChain.doFilter(request, response)
+    }
+
+    /**
+     * Decided here, not by Spring's matcher, so the preflight and the actual
+     * request agree. Spring compares origins ignoring case and a trailing
+     * slash; a browser never sends either form, and granting a preflight the
+     * actual request would then not match only produces a confusing failure.
+     * Exact membership, the API's methods, and at least one grantable header
+     * when any are requested (a mixed list is answered with the granted subset).
+     */
+    private fun grantable(
+        config: CorsConfiguration,
+        origin: String?,
+        request: HttpServletRequest,
+    ): Boolean {
+        if (origin !in allowed) return false
+        if (request.getHeader(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD) !in ApiCors.ALLOWED_METHODS) return false
+        val requested =
+            request
+                .getHeaders(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS)
+                .toList()
+                .flatMap { it.split(",") }
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+        return requested.isEmpty() || config.checkHeaders(requested) != null
+    }
+
+    /** A static RFC 7807 refusal: no allow headers, and nothing from the request echoed but the correlation id. */
+    private fun refuse(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+    ) {
+        response.addHeader(HttpHeaders.VARY, HttpHeaders.ORIGIN)
+        response.status = HttpStatus.FORBIDDEN.value()
+        response.contentType = MediaType.APPLICATION_PROBLEM_JSON_VALUE
+        mapper.writeValue(
+            response.outputStream,
+            Problems.of(
+                HttpStatus.FORBIDDEN,
+                REFUSED_TYPE,
+                "CORS request refused",
+                "This origin, method or header is not allowed to call the API cross-origin",
+                request,
+            ),
+        )
+    }
+
+    companion object {
+        /** Documented in the contract's cross-cutting refusals (openapi.yaml `info.description`). */
+        const val REFUSED_TYPE = "cors-request-refused"
     }
 }
