@@ -420,3 +420,38 @@ places, and no mock login, test code, fixture account or privileged user is
 substituted. An incomplete configuration closes only the affected method. The
 `/v1` API, ingestion and the deployment synthetics are unaffected either way.
 `npm run test:accounts` asserts the declared state from outside.
+
+## Cross-origin access to /v1
+
+The documentation site's "Try it" (`https://docs.testinbox.email`) calls the
+public API from a reader's browser, which the browser allows only if `/v1`
+answers CORS for that origin. It is enabled by Ops per environment
+(`TESTINBOX_CORS_ALLOWED_ORIGINS`, empty by default; behaviour in
+[principles #11](../api/principles.md)). Why this does not widen what an
+attacker can do:
+
+- **No ambient authority crosses origins.** The API authenticates only by
+  `Authorization: Bearer`, which a page can send only if it holds the key —
+  a browser never attaches one by itself. `Access-Control-Allow-Credentials`
+  is never sent, so cookies are not usable cross-origin either, and `/account`
+  (the only surface with a cookie session) never answers CORS at all. An
+  allowed page therefore holds exactly the authority of the key the reader
+  pasted into it, no more.
+- **CORS is read permission, not access control.** Every request the
+  playground makes could already be made from `curl` with the same key; the
+  limits, scopes and tenancy checks are unchanged and keyed on the workspace.
+  The requests are real: "Try it" creates real inboxes and is charged to the
+  reader's own workspace budget, like any other client.
+- **Preflights are free and inert by construction.** They are answered before
+  authentication, so they cannot spend a workspace's budget, record an
+  authentication outcome, create an idempotency record or reveal a route
+  (every `/v1` path preflights alike). The edge ceiling
+  (`testinbox-api-limit`) still bounds their volume.
+- **The allow-list is exact.** No wildcard, no suffix match, no reflected
+  `Origin`; production refuses plaintext, loopback, IP-literal, staging and
+  rehearsal origins at startup. What remains is trust in the allowed origin itself: a
+  compromised docs site could ask readers for their key. That is the same
+  trust as any third-party tool a reader pastes a key into, and it is why the
+  key should be a narrowly scoped, revocable one (ADR-032) and the list is one
+  origin long.
+

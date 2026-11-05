@@ -85,3 +85,47 @@
 10. **No breaking changes within a major version.** Additive changes
     (new optional fields, new endpoints) are always safe; anything else
     requires a new version per [ADR-015](../adr/0015-rest-compatibility-versioning.md).
+
+11. **Cross-origin access (CORS)** is for the public `/v1` API only, off by
+    default, and enabled per deployment by an allow-list of exact origins
+    (`TESTINBOX_CORS_ALLOWED_ORIGINS`; production: the documentation site's
+    "Try it", `https://docs.testinbox.email`). It changes what a browser lets
+    a page *read*, never who may call the API:
+    - a preflight (`OPTIONS` with `Origin` and `Access-Control-Request-Method`)
+      from an allowed origin is answered `200` by the CORS layer before
+      authentication, rate limiting and idempotency — it carries no key, so it
+      is not authenticated, not charged to any workspace budget and not counted
+      as an authentication outcome. A preflight from any other origin
+      (compared exactly: a different case or a trailing slash is another
+      origin), or for a method other than `GET`/`POST`/`DELETE`, is
+      `403 cors-request-refused` (problem+json, nothing echoed) with no allow
+      headers; a request header outside `Authorization`, `Content-Type`,
+      `Accept`, `Idempotency-Key`, `X-Correlation-Id` and `Last-Event-ID` is
+      not granted;
+    - actual requests are authenticated exactly as before. Every response the
+      API itself produces for `GET`, `POST` or `DELETE` under `/v1` to an
+      allowed origin — `401`, `404`, `429` and every other problem included —
+      carries `Access-Control-Allow-Origin` (the origin itself, never `*`) and
+      exposes `X-Correlation-Id`, `X-API-Stability`, `RateLimit-*`,
+      `Retry-After`, `Idempotency-Replayed`, `Content-Disposition` and `Allow`,
+      so a page can read the problem and the pacing headers. Preflights are
+      cached for 600 s;
+    - responses the API does not produce that way carry **no** CORS headers,
+      and a page sees them as network errors, not as readable problems:
+      `HEAD`, a `405` for another method, a request the servlet container
+      rejects before the API sees it (a malformed URI or header `400`), and
+      anything the edge answers itself — the Traefik `testinbox-api-limit`
+      `429`, the `testinbox-body` `413`, a Cloudflare challenge;
+    - `Access-Control-Allow-Credentials` is never sent: no cookie is ever
+      honoured cross-origin, and the API has none to honour (#4);
+    - requests from origins not on the list are served exactly as they were
+      before CORS existed (no headers, no refusal) — the browser, not the
+      server, enforces CORS, and refusing by `Origin` would only break
+      non-browser clients that send one;
+    - `/account/**`, actuator and the web console never send CORS headers,
+      whatever the list says.
+    Each entry must be `scheme://host[:port]`, lowercase, with no path,
+    query, fragment, userinfo, explicit default port or wildcard; `*` is
+    always refused. Production additionally refuses any non-`https`,
+    loopback, IP-literal, staging or rehearsal origin (`DeploymentSafety`). Rationale:
+    [abuse model](../security/abuse-model.md#cross-origin-access-to-v1).
