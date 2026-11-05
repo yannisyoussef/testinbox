@@ -86,9 +86,10 @@ data class BenchmarkOptions(
     val reference: Boolean = true,
     val referenceMode: ReferenceMode = ReferenceMode.NO_LOCK,
     /**
-     * Also run the BENCHMARK-ONLY W1 share-partitioned variant
-     * ([PartitionedAdmissionStore]) at every matrix point, over a 30-participant
-     * + legacy cohort. Reported apart; never part of the gate's verdict, and it
+     * Also run the share-partitioned T1 as it would ship (production's
+     * `JdbcStorageAdmission` with `admission-locking = COHORT_PARTITIONED`) at
+     * every matrix point, over a closed 30-participant + legacy cohort
+     * ([ClosedCohort]). Reported apart; never part of the gate's verdict, and it
      * changes nothing about whether the run is ADR evidence.
      */
     val partitionedVariant: Boolean = false,
@@ -297,9 +298,11 @@ data class BenchmarkOptions(
               --reference-mode no-lock|ceiling-off
                                               no-lock (default) = §11 mode c, the adapter without its advisory lock;
                                               ceiling-off = same lock, G unlimited: diagnostic only, verdict INCOMPLETE
-              --partitioned-variant           also run the BENCHMARK-ONLY W1 share-partitioned T1 (shared (35,1) +
-                                              sorted per-workspace locks) at every matrix point, over 30 participants
-                                              + 1 legacy share; reported under "variant", never part of the verdict
+              --partitioned-variant           also run production's share-partitioned T1 (admission-locking =
+                                              COHORT_PARTITIONED: shared (35,1) + sorted per-workspace locks) at every
+                                              matrix point, over a closed cohort of 30 participants + 1 legacy share
+                                              (the gate population is wiped first); reported under "variant", never
+                                              part of the verdict
 
             Output:
               --host-class <text>             operator-supplied host class, recorded in the evidence

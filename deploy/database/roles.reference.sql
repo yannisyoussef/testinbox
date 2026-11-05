@@ -130,7 +130,7 @@ REVOKE INSERT, UPDATE, DELETE ON flyway_schema_history FROM :"api_role", :"inges
 -- any column grant, so the column grants below come after.
 REVOKE INSERT, UPDATE, DELETE ON
     storage_delta, workspace_storage_account, storage_global_base, inbox_storage,
-    storage_legacy_share, storage_cohort_plan, workspace_deletion_charge,
+    storage_legacy_share, storage_cohort_plan, storage_partition_bound, workspace_deletion_charge,
     storage_deletion_debt, storage_debt_watermark, storage_footprint_trust,
     storage_filesystem_observation, storage_sweep_run, storage_containment_watermark
     FROM :"api_role", :"ingestion_role";
@@ -175,7 +175,8 @@ GRANT EXECUTE ON FUNCTION
 GRANT SELECT ON flyway_schema_history, inbox, message, attachment, inbox_storage,
     workspace_storage_account, storage_global_base, storage_delta, storage_deletion_debt, storage_debt_watermark,
     storage_footprint_trust, storage_filesystem_observation,
-    participant_workspace, storage_legacy_share, workspace_deletion_charge, storage_cohort_plan
+    participant_workspace, storage_legacy_share, workspace_deletion_charge, storage_cohort_plan,
+    storage_partition_bound
     TO :"ingestion_role";
 GRANT INSERT ON message, attachment TO :"ingestion_role";
 -- The cohort snapshot counts workspaces by id; a workspace's name is not SMTP's.
@@ -193,6 +194,10 @@ GRANT SELECT, INSERT ON storage_admission_latch TO :"ingestion_role";
 GRANT USAGE ON SEQUENCE storage_ambiguity_id_seq TO :"ingestion_role";
 -- (the inbox_storage refusal-record column grants are above, shared with the API)
 GRANT EXECUTE ON FUNCTION storage_record_probe_debt(text), storage_resolve_probe_debt(text) TO :"ingestion_role";
+-- V25: the share-partitioned T1's guard reads the recorded partition bound through
+-- this STABLE invoker function (no definer rights: it reads only tables granted above).
+-- Mode a never calls it; granted so the PROPOSED mode needs no other grant change.
+GRANT EXECUTE ON FUNCTION storage_partition_within_bound() TO :"ingestion_role";
 
 -- The monitor role: begin a walk, insert its observation; nothing else.
 GRANT EXECUTE ON FUNCTION storage_begin_observation() TO :"monitor_role";

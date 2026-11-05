@@ -178,6 +178,10 @@ class MetricCardinalityTest {
                 AddressMode.entries.map { it.name }.toSet() +
                 email.testinbox.domain.storage.StorageEnforcement.entries
                     .map { it.name.lowercase() }
+                    .toSet() +
+                // T1's lock protocol (testinbox_storage_admission_locking), a closed enum.
+                email.testinbox.application.storage.AdmissionLocking.entries
+                    .map { it.name.lowercase() }
                     .toSet(),
             "parse_status" to ParseStatus.entries.map { it.name }.toSet(),
             "outcome" to
@@ -357,6 +361,7 @@ class MetricCardinalityTest {
             "testinbox_storage_activation_violation",
             "testinbox_storage_activation_gate_ready",
             "testinbox_storage_enforcement_mode",
+            "testinbox_storage_admission_locking",
             "testinbox_storage_orphan_sweep_completed_at_seconds",
             "testinbox_storage_orphan_sweep_total",
         ).forEach { name -> scrape shouldContain name }
@@ -388,6 +393,32 @@ class MetricCardinalityTest {
             .tag("kind", "committed")
             .gauge()
             .value() shouldBe 3_456.0
+    }
+
+    @Test
+    fun `T1's lock protocol is one closed-enum series per value, GLOBAL unless declared otherwise`() {
+        exerciseEverything()
+        // The activation barrier (gate D) reads exactly these series.
+        registry
+            .get("testinbox_storage_admission_locking")
+            .tag("mode", "global")
+            .gauge()
+            .value() shouldBe 1.0
+        registry
+            .get("testinbox_storage_admission_locking")
+            .tag("mode", "cohort_partitioned")
+            .gauge()
+            .value() shouldBe 0.0
+        registry.find("testinbox_storage_admission_locking").gauges().size shouldBe
+            email.testinbox.application.storage.AdmissionLocking.entries.size
+        val partitioned = io.micrometer.prometheusmetrics.PrometheusMeterRegistry(io.micrometer.prometheusmetrics.PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(
+            partitioned,
+            email.testinbox.domain.storage.StorageCapacityPolicy.ADR_035_REFERENCE,
+            email.testinbox.domain.storage.StorageEnforcement.ALL,
+            email.testinbox.application.storage.AdmissionLocking.COHORT_PARTITIONED,
+        )
+        partitioned.scrape() shouldContain "testinbox_storage_admission_locking{mode=\"cohort_partitioned\"} 1.0"
     }
 
     @Test

@@ -65,7 +65,7 @@ class Evidence(
     val gate: GateVerdict,
     /** Why the run's inputs are not ADR-035 §11's; empty means they are. */
     val adrEvidenceReasons: List<String> = emptyList(),
-    /** BENCHMARK-ONLY PARTITIONED variant scenarios: never in [scenarios], never in [gate]. */
+    /** PARTITIONED variant scenarios (production COHORT_PARTITIONED T1, closed cohort): never in [scenarios], never in [gate]. */
     val variantScenarios: List<ScenarioResult> = emptyList(),
     /** The §11 criteria read on the variant against the same references, for information only. */
     val variantGate: GateVerdict? = null,
@@ -299,8 +299,11 @@ class Evidence(
                         "snapshotStatementSha256" to it.snapshotStatementSha256,
                         "budgetedWorkspaces" to it.budgetedWorkspaces,
                         "inactiveWorkspaces" to it.inactiveWorkspaces,
+                        "locking" to it.locking.name,
+                        "partitioned" to it.partitioned,
                     )
                 },
+            "partitionFallbacks" to s.partitionFallbacks,
         )
 
     private fun scenarioRow(s: ScenarioResult): String =
@@ -322,7 +325,7 @@ class Evidence(
         }
         variantGate?.let { v ->
             appendLine()
-            appendLine("## BENCHMARK-ONLY variant: PARTITIONED")
+            appendLine("## Variant, reported apart: PARTITIONED")
             appendLine()
             appendLine(
                 "**$VARIANT_STATUS** Informational reading of the §11 criteria against the same NO_LOCK references: ${v.verdict}.",
@@ -368,8 +371,9 @@ class Evidence(
     companion object {
         const val SCHEMA_VERSION = 1
         const val VARIANT_STATUS =
-            "BENCHMARK-ONLY measurement of the W1 share-partitioned T1, never a production mode and never gate D evidence; " +
-                "whether such a mode exists is an owner decision and an ADR amendment."
+            "Measurement of the production share-partitioned T1 (admission-locking = COHORT_PARTITIONED) over a closed " +
+                "30-participant + legacy cohort, reported apart and never gate D evidence; the mode is a PROPOSED ADR-035 " +
+                "amendment, and its release needs an independent correctness review and an owner decision."
         private const val LARGE = 1e9
         val MAPPER: JsonMapper =
             JsonMapper

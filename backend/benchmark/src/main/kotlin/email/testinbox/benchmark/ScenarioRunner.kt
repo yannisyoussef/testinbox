@@ -55,7 +55,26 @@ class ScenarioRunner(
     private val cohort: SeededPopulation? = null,
     /** `pg_stat_statements` for the T1 statement over each measured phase; null records nothing. */
     private val diagnostics: Diagnostics? = null,
+    /** The PARTITIONED variant's closed cohort (its population IS [cohort]); null for the gate's own runner. */
+    private val closedCohort: ClosedCohort? = null,
 ) {
+    /** Retention's expired inboxes: anywhere in the gate population, only in the legacy workspace of a closed cohort. */
+    private val retentionPopulation: SeededPopulation =
+        closedCohort?.let { closed ->
+            val legacy = closed.legacyWorkspace(population)
+            SeededPopulation(1, population.inboxes.filter { it.workspaceId == legacy })
+        } ?: population
+
+    /** The delta floor: random bytes for the gate population, usage-neutral pairs for a closed cohort. */
+    private fun seedDeltas() =
+        if (closedCohort !=
+            null
+        ) {
+            seeder.neutralDeltas(population, options.deltaBacklog)
+        } else {
+            seeder.deltas(population, options.deltaBacklog)
+        }
+
     private val raw = ByteArray(options.rawBytes) { (it % 251).toByte() }
     private val attachment = ByteArray(options.attachmentBytes) { (it % 241).toByte() }
     private val fingerprint = MessageDigest.getInstance("SHA-256").digest(raw).joinToString("") { "%02x".format(it) }
@@ -77,14 +96,19 @@ class ScenarioRunner(
         val retentionRate = options.retentionRateFor(spec.offeredRate)
         val retentionTargets = Math.ceil(retentionRate * (options.durationSeconds + options.warmupSeconds) * RETENTION_HEADROOM).toInt() + 5
         seeder.retentionTargets(
-            population,
+            retentionPopulation,
             retentionTargets,
             options.retentionMessagesPerInbox,
             raw.size.toLong(),
             attachment.size.toLong(),
         )
         target.pool(spec.concurrency + POOL_MARGIN).use { pool ->
-            val declarations = HarnessDeclarations.of(HarnessDeclarations.enforcement(spec.mode, options.referenceMode), monitorRole)
+            val declarations =
+                HarnessDeclarations.of(
+                    HarnessDeclarations.enforcement(spec.mode, options.referenceMode),
+                    monitorRole,
+                    HarnessDeclarations.locking(spec.mode),
+                )
             val protocol = ProtocolAssembly(pool, options, spec.mode, declarations)
             try {
                 val probe = prepare(protocol, name, spec.mode)
@@ -107,7 +131,7 @@ class ScenarioRunner(
                     {
                         runCatching {
                             protocol.compactor.compact()
-                            seeder.deltas(population, options.deltaBacklog)
+                            seedDeltas()
                         }
                     },
                     options.compactionInterval.toMillis(),
@@ -177,7 +201,12 @@ class ScenarioRunner(
                         deltaSamples = deltaSamples.toList(),
                         terminalLagNanos = report.elapsedNanos - (scheduler.schedule(events).lastOrNull() ?: 0L),
                     )
-                val result = summarize(name, spec, observation, protocol).copy(t1Probe = probe, t1Statement = t1Statement)
+                val result =
+                    summarize(name, spec, observation, protocol).copy(
+                        t1Probe = probe,
+                        t1Statement = t1Statement,
+                        partitionFallbacks = if (spec.mode == AdmissionMode.PARTITIONED) protocol.store.partitionFallbacks else null,
+                    )
                 log.info(
                     "scenario {} done: offered {} achieved {} T1 p99 {} ms, lock timeouts {}, deadlocks {}",
                     name,
@@ -208,9 +237,10 @@ class ScenarioRunner(
         // delta backlog is seeded AFTER it, and re-seeded after every compaction
         // pass below: the floor the ADR names stays, the load adds to it.
         drainCompaction(protocol)
-        seeder.deltas(population, options.deltaBacklog)
+        seedDeltas()
         // Production ALL's footprint inputs: trust, a fresh observation, the watermark.
         FootprintSeed.seed(admin)
+        closedCohort?.heartbeat()
         admin.sql("ANALYZE").update()
         return verifiedProbe(protocol, name, mode)
     }
@@ -234,6 +264,10 @@ class ScenarioRunner(
         // The variant's events must be priced against an active participant's share, never refused as unbudgeted.
         check(mode != AdmissionMode.PARTITIONED || (probe.budgetedWorkspaces == 1 && probe.inactiveWorkspaces == 0)) {
             "scenario $name: the PARTITIONED cohort is not an active, budgeted cohort: $probe"
+        }
+        // ...and decided on the partitioned path: a guard that does not hold would measure mode a under a new name.
+        check(mode != AdmissionMode.PARTITIONED || probe.partitioned) {
+            "scenario $name: the production COHORT_PARTITIONED T1 fell back to mode a (partition guard not satisfied): $probe"
         }
         log.info("scenario {}: production T1 probe {}", name, probe)
         return probe

@@ -1,5 +1,7 @@
 package email.testinbox.benchmark
 
+import email.testinbox.application.storage.AdmissionLocking
+import email.testinbox.application.storage.FootprintWiring
 import email.testinbox.persistence.JdbcStorageAdmission
 import io.kotest.matchers.collections.shouldBeSorted
 import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
@@ -15,36 +17,74 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * The BENCHMARK-ONLY PARTITIONED variant: it reuses production's per-workspace
- * and per-inbox SQL verbatim, reads no global sum, takes its workspace locks
- * in one total order, and never enters gate D's verdict.
+ * The PARTITIONED variant measures what would ship: production's
+ * `JdbcStorageAdmission` built exactly as `IngestionWiring` builds it, with the
+ * declared `admission-locking = COHORT_PARTITIONED`; no benchmark-only store
+ * exists any more. It never enters gate D's verdict.
  */
 class PartitionedVariantTest {
     private val dataSource = DriverManagerDataSource("jdbc:postgresql://127.0.0.1:1/never_opened")
     private val jdbc = JdbcClient.create(dataSource)
     private val template = TransactionTemplate(DataSourceTransactionManager(dataSource))
 
-    @Test
-    fun `the variant's statement is production's, with only the GLOBAL row replaced`() {
-        val production = JdbcStorageAdmission(jdbc, template).snapshotStatement
-        val variant = PartitionedAdmissionStore(jdbc, template).partitionedStatement
+    private val declarations =
+        HarnessDeclarations.of(
+            HarnessDeclarations.enforcement(AdmissionMode.PARTITIONED, ReferenceMode.NO_LOCK),
+            "bench_monitor",
+            HarnessDeclarations.locking(AdmissionMode.PARTITIONED),
+        )
 
-        variant shouldContain production.substringBefore("SELECT 'GLOBAL'")
-        variant shouldContain production.substringAfter("SELECT 'WORKSPACE'")
-        val globalRow = variant.substringAfter("SELECT 'GLOBAL'").substringBefore("SELECT 'WORKSPACE'")
-        // No population or global sum is referenced by the GLOBAL row.
+    @Test
+    fun `the variant's store is production's adapter with the declared switch, not a benchmark class`() {
+        val store = ProtocolAssembly.admissionStore(jdbc, template, AdmissionMode.PARTITIONED, ReferenceMode.NO_LOCK, declarations)
+        // IngestionWiring.storageAdmission, with the same declarations:
+        val production =
+            JdbcStorageAdmission(
+                jdbc,
+                template,
+                readsFootprint = FootprintWiring.readsFootprint(declarations),
+                locking = declarations.admissionLocking,
+            )
+
+        store.javaClass shouldBe JdbcStorageAdmission::class.java
+        store.locking shouldBe AdmissionLocking.COHORT_PARTITIONED
+        store.partitionedStatement shouldBe production.partitionedStatement
+        // Its fallback is mode a's statement, byte for byte.
+        store.snapshotStatement shouldBe JdbcStorageAdmission(jdbc, template, readsFootprint = true).snapshotStatement
+    }
+
+    @Test
+    fun `the variant's statement reads no global sum and carries the partition guard`() {
+        val statement =
+            checkNotNull(
+                ProtocolAssembly
+                    .admissionStore(
+                        jdbc,
+                        template,
+                        AdmissionMode.PARTITIONED,
+                        ReferenceMode.NO_LOCK,
+                        declarations,
+                    ).partitionedStatement,
+            )
+        val globalRow = statement.substringAfter("SELECT 'GLOBAL'").substringBefore("SELECT 'WORKSPACE'")
         globalRow shouldNotContain "g_base"
         globalRow shouldNotContain "g_delta"
         globalRow shouldNotContain "g_reserved"
-        globalRow shouldNotContain "FROM storage_reservation"
-        globalRow shouldContain "cp_unattributed"
-        globalRow shouldContain "storage_cohort_plan"
+        globalRow shouldContain "partition_ok"
+        globalRow shouldContain "storage_partition_within_bound()"
+    }
+
+    @Test
+    fun `only the variant declares the partitioned switch`() {
+        HarnessDeclarations.locking(AdmissionMode.CHOSEN) shouldBe AdmissionLocking.GLOBAL
+        HarnessDeclarations.locking(AdmissionMode.REFERENCE) shouldBe AdmissionLocking.GLOBAL
+        HarnessDeclarations.locking(AdmissionMode.PARTITIONED) shouldBe AdmissionLocking.COHORT_PARTITIONED
     }
 
     @Test
     fun `workspace locks are distinct and ascending, so two events can never wait on each other in a cycle`() {
         val ids = List(50) { UUID.randomUUID() }
-        val keys = PartitionedAdmissionStore.workspaceLockKeys(ids + ids.take(10))
+        val keys = JdbcStorageAdmission.workspaceLockKeys(ids + ids.take(10))
         keys.shouldBeSorted()
         keys.toSet().size shouldBe keys.size
         keys.toSet() shouldBe ids.map { it.hashCode() }.toSet()

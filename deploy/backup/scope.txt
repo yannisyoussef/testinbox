@@ -93,8 +93,12 @@
 - human_request_budget
 
 # ADR-037: preserve legacy allocations; restore never restores pool approval or cleanup evidence.
+# V25: the partition bound is part of the pool's approval (recorded by the same
+# reserve, for the plan's binding and fingerprint), so it is never restored either:
+# a restored database re-reserves, and until then no T1 partitions.
 + storage_legacy_share
 - storage_cohort_plan
+- storage_partition_bound
 - workspace_deletion_charge
 
 # ADR-036 account lifecycle (V22): the restore-quarantine clearance. NEVER

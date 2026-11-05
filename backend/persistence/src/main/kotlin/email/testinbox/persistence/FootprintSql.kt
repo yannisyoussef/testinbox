@@ -48,9 +48,22 @@ internal object FootprintSql {
     /** Every CTE [COLUMNS] needs, for a statement of its own (the footprint gate, rule P). */
     val CTES = "$GLOBAL_CTES,\n                         $FOOTPRINT_CTES"
 
-    val COLUMNS = """(SELECT bytes FROM g_base) + (SELECT bytes FROM g_delta) + (SELECT bytes FROM g_reserved) AS fp_live_bytes,
+    /** *L* from the [GLOBAL_CTES] sums: mode a's (and the footprint gate's) live set. */
+    private const val LIVE_COLUMNS = """(SELECT bytes FROM g_base) + (SELECT bytes FROM g_delta) + (SELECT bytes FROM g_reserved) AS fp_live_bytes,
                            (SELECT objects FROM g_base) + (SELECT objects FROM g_delta) + (SELECT objects FROM g_reserved) AS fp_live_objects,
-                           (SELECT bytes FROM fp_debt) AS fp_debt_bytes,
+                           """
+
+    /**
+     * *L* = 0 for the share-partitioned T1 (PROPOSED, gate D W1): it reads no
+     * global sum. Every live byte belongs to a share, and the shares fit the
+     * declarations by the V25 bound the same statement checks, so rules (G) and
+     * (C) hold by that partition, not by this figure (partitioned-t1-correctness.md).
+     */
+    private const val NO_LIVE_COLUMNS = """0::numeric AS fp_live_bytes, 0::numeric AS fp_live_objects,
+                           """
+
+    /** Debt, trust, watermark, observation and cohort pool: identical in both. */
+    private val REST_COLUMNS = """(SELECT bytes FROM fp_debt) AS fp_debt_bytes,
                            (SELECT objects FROM fp_debt) AS fp_debt_objects,
                            coalesce((SELECT trusted_epoch IS NOT DISTINCT FROM distrust_epoch FROM storage_footprint_trust WHERE id = 1), false)
                              AS fp_trusted,
@@ -61,6 +74,11 @@ internal object FootprintSql {
                            (SELECT block_size_bytes FROM fp_newest) AS fp_block_size,
                            (SELECT capacity_bytes FROM fp_newest) AS fp_capacity,
                            (SELECT written_by::text FROM fp_newest) AS fp_written_by, ${CohortSql.COLUMN}"""
+
+    val COLUMNS = LIVE_COLUMNS + REST_COLUMNS
+
+    /** [COLUMNS] without the global live sums, for a statement that carries no [GLOBAL_CTES]. */
+    val PARTITIONED_COLUMNS = NO_LIVE_COLUMNS + REST_COLUMNS
 
     /** The same columns, typed, for the rows that do not carry them. */
     const val NONE = """NULL::numeric, NULL::numeric, NULL::numeric, NULL::numeric, NULL::boolean, NULL::bigint,

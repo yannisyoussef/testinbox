@@ -14,6 +14,7 @@ import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.StorageUsageSnapshot
 import email.testinbox.application.port.TransactionRunner
 import email.testinbox.application.port.UploadOutcome
+import email.testinbox.application.storage.AdmissionLocking
 import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.FootprintWiring
 import email.testinbox.application.storage.GuardedStorage
@@ -211,7 +212,23 @@ class ProtocolAssembly(
     private val transactionManager = DataSourceTransactionManager(dataSource)
     private val template = TransactionTemplate(transactionManager)
     val metrics = RecordingProtocolMetrics()
-    val node = StorageNode("bench-${ProcessHandle.current().pid()}", UUID.randomUUID())
+
+    /**
+     * The PARTITIONED variant's node is the declared ingestion node: its approved
+     * pool requires every live node to be an expected one with the pool's binding
+     * (production's `nodesReady`), exactly as in a real partitioned deployment.
+     */
+    val node =
+        StorageNode(
+            if (mode ==
+                AdmissionMode.PARTITIONED
+            ) {
+                declarations.expectedIngestionNodes.single()
+            } else {
+                "bench-${ProcessHandle.current().pid()}"
+            },
+            UUID.randomUUID(),
+        )
 
     /** Production's footprint policy for these declarations (null only if no filesystem were declared). */
     val footprint = EffectiveStoragePolicy.footprint(declarations)
@@ -276,8 +293,8 @@ class ProtocolAssembly(
 
     val compactor = CompactStorageLedger(JdbcStorageLedger(jdbc, template))
 
-    /** The statement this mode's T1 runs: production's, or the variant's. */
-    val statement: String = (store as? PartitionedAdmissionStore)?.partitionedStatement ?: store.snapshotStatement
+    /** The statement this mode's T1 runs: production's mode a statement, or production's partitioned one. */
+    val statement: String = store.partitionedStatement ?: store.snapshotStatement
 
     /**
      * The production-faithfulness probe, run before every scenario: one real
@@ -289,23 +306,28 @@ class ProtocolAssembly(
      */
     fun probe(inbox: SeededInbox): T1Probe {
         val scope = StorageAdmissionScope(setOf(WorkspaceId(inbox.workspaceId)), setOf(InboxId(inbox.inboxId)))
-        return store.admit(scope) { snapshot ->
-            StorageAdmissionPlan(
-                emptyList(),
-                T1Probe(
-                    mode = mode,
-                    storeClass = store.javaClass.name,
-                    enforcement = declarations.enforcement,
-                    readsFootprint = store.readsFootprint,
-                    footprintRead = snapshot.footprint != null,
-                    footprintUnavailable = footprint?.unavailability(snapshot.footprint)?.name,
-                    cohortRequired = snapshot.footprint?.cohort?.required,
-                    snapshotStatementSha256 = sha256(statement),
-                    budgetedWorkspaces = snapshot.budgets.size,
-                    inactiveWorkspaces = snapshot.inactiveWorkspaces.size,
-                ),
-            )
-        }
+        // Probes run alone, before the scenario: the counter's step is this probe's.
+        val partitionedBefore = store.partitionedAdmissions
+        val probe =
+            store.admit(scope) { snapshot ->
+                StorageAdmissionPlan(
+                    emptyList(),
+                    T1Probe(
+                        mode = mode,
+                        storeClass = store.javaClass.name,
+                        enforcement = declarations.enforcement,
+                        readsFootprint = store.readsFootprint,
+                        footprintRead = snapshot.footprint != null,
+                        footprintUnavailable = footprint?.unavailability(snapshot.footprint)?.name,
+                        cohortRequired = snapshot.footprint?.cohort?.required,
+                        snapshotStatementSha256 = sha256(statement),
+                        budgetedWorkspaces = snapshot.budgets.size,
+                        inactiveWorkspaces = snapshot.inactiveWorkspaces.size,
+                        locking = store.locking,
+                    ),
+                )
+            }
+        return probe.copy(partitioned = store.partitionedAdmissions == partitionedBefore + 1)
     }
 
     fun stop() {
@@ -316,8 +338,8 @@ class ProtocolAssembly(
         /**
          * The T1 adapter for [mode], built from [declarations] exactly as
          * `IngestionWiring.storageAdmission` builds production's:
-         * `JdbcStorageAdmission(jdbc, template, readsFootprint = FootprintWiring.readsFootprint(declarations))`.
-         * The reference differs ONLY by the overridden lock step.
+         * `JdbcStorageAdmission(jdbc, template, readsFootprint = FootprintWiring.readsFootprint(declarations),
+         * locking = declarations.admissionLocking)`. The reference differs ONLY by the overridden lock step.
          */
         fun admissionStore(
             jdbc: JdbcClient,
@@ -328,13 +350,10 @@ class ProtocolAssembly(
         ): JdbcStorageAdmission {
             val readsFootprint = FootprintWiring.readsFootprint(declarations)
             return when (mode) {
-                AdmissionMode.CHOSEN -> {
-                    JdbcStorageAdmission(jdbc, template, readsFootprint = readsFootprint)
-                }
-
-                // Benchmark-only (never a production switch): W1's share-partitioned T1.
-                AdmissionMode.PARTITIONED -> {
-                    PartitionedAdmissionStore(jdbc, template)
+                // Both exactly IngestionWiring.storageAdmission's construction: the switch is the
+                // declared `admission-locking`, GLOBAL for CHOSEN, COHORT_PARTITIONED for the variant.
+                AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED -> {
+                    JdbcStorageAdmission(jdbc, template, readsFootprint = readsFootprint, locking = declarations.admissionLocking)
                 }
 
                 AdmissionMode.REFERENCE -> {
@@ -369,4 +388,7 @@ data class T1Probe(
     /** Workspaces of the probed scope with a share (participant or legacy), and inactive ones. */
     val budgetedWorkspaces: Int = 0,
     val inactiveWorkspaces: Int = 0,
+    /** The store's declared lock protocol, and whether the probe's T1 was decided on the partitioned path. */
+    val locking: AdmissionLocking = AdmissionLocking.GLOBAL,
+    val partitioned: Boolean = false,
 )

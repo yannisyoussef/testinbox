@@ -1,5 +1,6 @@
 package email.testinbox.benchmark
 
+import email.testinbox.application.storage.AdmissionLocking
 import email.testinbox.application.storage.FilesystemDeclarations
 import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.domain.storage.StorageEnforcement
@@ -28,6 +29,11 @@ import java.time.Duration
  *   the cohort pool is not REQUIRED and its readiness checks stay off at
  *   10 000 workspaces (W1). T1 still READS every cohort column in its
  *   statement, as production does; only the verdict on them is not needed.
+ * - The PARTITIONED variant declares `admission-locking = COHORT_PARTITIONED`,
+ *   the production switch, and runs over a closed cohort whose pool is reserved
+ *   and approved through production's `ReserveCohortStorage` ([ClosedCohort]),
+ *   so its readiness IS required and decided on every T1, as it would be in a
+ *   real partitioned deployment.
  */
 object HarnessDeclarations {
     const val BLOCK_SIZE_BYTES = 4096L
@@ -64,12 +70,18 @@ object HarnessDeclarations {
             }
         }
 
+    /** The production switch each harness mode declares: the PARTITIONED variant is COHORT_PARTITIONED, everything else mode a. */
+    fun locking(mode: AdmissionMode): AdmissionLocking =
+        if (mode == AdmissionMode.PARTITIONED) AdmissionLocking.COHORT_PARTITIONED else AdmissionLocking.GLOBAL
+
     fun of(
         enforcement: StorageEnforcement,
         monitorRole: String,
+        locking: AdmissionLocking = AdmissionLocking.GLOBAL,
     ): StorageDeclarations =
         StorageDeclarations(
             enforcement = enforcement,
+            admissionLocking = locking,
             globalLimitBytes = 1L shl 50,
             declaredBucketQuotaBytes = 1L shl 50,
             declaredMaxIngestionProcesses = PROCESSES,

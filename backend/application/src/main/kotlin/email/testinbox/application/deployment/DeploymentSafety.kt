@@ -1,6 +1,8 @@
 package email.testinbox.application.deployment
 
+import email.testinbox.application.storage.AdmissionLocking
 import email.testinbox.application.storage.EffectiveStoragePolicy
+import email.testinbox.application.storage.FootprintWiring
 import email.testinbox.application.storage.LAB_PLATFORM_CLASS
 import email.testinbox.application.storage.NodeRole
 import email.testinbox.application.storage.QualificationMatch
@@ -11,6 +13,7 @@ import email.testinbox.domain.storage.CohortStorageBudget
 import email.testinbox.domain.storage.FilesystemContainment
 import email.testinbox.domain.storage.FootprintModel
 import email.testinbox.domain.storage.InboxShare
+import email.testinbox.domain.storage.StorageEnforcement
 import email.testinbox.domain.tenant.ApiKeyFormat
 import java.time.Duration
 
@@ -603,8 +606,51 @@ object StorageEnforcementSafety {
 
     fun check(settings: DeploymentSettings): List<DeploymentViolation> {
         val storage = settings.storage
-        return labRecord(settings, storage) + if (storage.enforced) enforced(settings, storage) else sanity(storage)
+        return labRecord(settings, storage) + admissionLocking(settings, storage) +
+            if (storage.enforced) enforced(settings, storage) else sanity(storage)
     }
+
+    private const val LOCKING = "testinbox.storage.admission-locking"
+
+    /**
+     * The share-partitioned T1 (PROPOSED ADR-035 amendment note, gate D W1).
+     * The owner authorized implementation and testing on 2026-11-05, not
+     * release ("This does not authorize opening admission"), so:
+     * - production refuses it, whatever else is declared: no accepted ADR text
+     *   permits it, and an independent correctness review is a release condition;
+     * - anywhere else it needs `ALL` with a declared filesystem, the only
+     *   deployment whose T1 reads the cohort pool the partition guard relies on
+     *   (`FootprintWiring.readsFootprint`). Elsewhere every T1 would fall back to
+     *   mode a, so a declared partitioned mode would only ever be a false label.
+     * GLOBAL, mode a, is the default and is never refused here.
+     */
+    private fun admissionLocking(
+        settings: DeploymentSettings,
+        storage: StorageDeclarations,
+    ): List<DeploymentViolation> =
+        buildList {
+            if (storage.admissionLocking == AdmissionLocking.GLOBAL) return@buildList
+            if (settings.environment == ProductionPolicy.ENVIRONMENT) {
+                add(
+                    DeploymentViolation(
+                        LOCKING,
+                        "is ${storage.admissionLocking} in production; the share-partitioned T1 is a PROPOSED ADR-035 " +
+                            "amendment (docs/adr/0035-amendment-note-partitioned-t1-PROPOSED.md) and its release needs an " +
+                            "independent correctness review and an owner decision; production runs GLOBAL (mode a)",
+                    ),
+                )
+            }
+            if (storage.enforcement != StorageEnforcement.ALL || !FootprintWiring.readsFootprint(storage)) {
+                add(
+                    DeploymentViolation(
+                        LOCKING,
+                        "is ${storage.admissionLocking} but enforcement is ${storage.enforcement}" +
+                            (if (FootprintWiring.readsFootprint(storage)) "" else " without a declared filesystem") +
+                            "; the partition guard reads the cohort pool, which only ALL with a declared filesystem has",
+                    ),
+                )
+            }
+        }
 
     /** The environment a lab-only qualification record is accepted in, and the only one (issue #102). */
     const val LAB_ENVIRONMENT = "lab"

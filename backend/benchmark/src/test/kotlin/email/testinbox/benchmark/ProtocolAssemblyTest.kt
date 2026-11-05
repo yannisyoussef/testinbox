@@ -51,6 +51,9 @@ class ProtocolAssemblyTest {
 
         store.javaClass shouldBe JdbcStorageAdmission::class.java
         store.readsFootprint shouldBe true
+        // CHOSEN is mode a: the switch is GLOBAL, so no partitioned statement exists.
+        store.locking shouldBe email.testinbox.application.storage.AdmissionLocking.GLOBAL
+        store.partitionedStatement shouldBe null
         store.snapshotStatement shouldBe production.snapshotStatement
         store.snapshotStatement shouldContain "storage_filesystem_observation"
         store.snapshotStatement shouldContain "fp_cohort"

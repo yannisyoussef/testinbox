@@ -219,6 +219,23 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
             )
         } shouldBe true
         reservations.reservationExists(reserved) shouldBe true
+        // V25: the share-partitioned T1 (PROPOSED) runs its whole statement, guard included, as this
+        // role. This workspace holds no share, so the guard does not hold and mode a decides.
+        val partitioned =
+            JdbcStorageAdmission(
+                smtp,
+                tx,
+                readsFootprint = true,
+                locking = email.testinbox.application.storage.AdmissionLocking.COHORT_PARTITIONED,
+            )
+        partitioned.admit(
+            email.testinbox.application.port
+                .StorageAdmissionScope(setOf(workspaceId), setOf(inboxId)),
+        ) {
+            email.testinbox.application.port
+                .StorageAdmissionPlan(emptyList(), true)
+        } shouldBe true
+        partitioned.partitionFallbacks shouldBe 1
         reservations.countsByState().values.sum() shouldBe 1
         reservations.expireOverdue(java.time.Duration.ofSeconds(1))
         JdbcFootprintGate(smtp).observe()
@@ -707,6 +724,7 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
         state shouldContain "$api:INSERTonstorage_filesystem_observation".replace(" ", "")
         state shouldContain "$api:INSERTonworkspace_deletion_charge"
         state shouldContain "$api:UPDATEonstorage_cohort_plan"
+        state shouldContain "$api:INSERTonstorage_partition_bound"
         state shouldContain "$api:DELETEonstorage_legacy_share"
         state shouldContain "$api:DELETEonparticipant_workspace"
     }
@@ -746,6 +764,8 @@ class StorageRoleModelTest : PersistenceIntegrationTest() {
                 "storage_legacy_share" to READ,
                 "workspace_deletion_charge" to READ,
                 "storage_cohort_plan" to READ,
+                // V25: the share-partitioned T1's guard reads the recorded partition bound.
+                "storage_partition_bound" to READ,
                 "workspace_lifecycle_eligibility" to READ,
                 "storage_ambiguity_id_seq" to setOf("USAGE"),
             )
