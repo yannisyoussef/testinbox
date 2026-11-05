@@ -33,5 +33,9 @@
     "directPath": true,
     "proxy": "none",
     "tls": false
+  },
+  "declared": {
+    "_comment": "Production declarations the record's gate F evidence must state exactly. M = 1 GiB: owner decision 2026-11-05 (#124 comment 6671007334), subject to Ops' capacity proof, which passes (infinity-core !189 @ cc1cab9). Not an E7 PASS: E7 is evaluated against this budget when it completes. The staging example stays at 256 MiB.",
+    "metadataBudgetBytes": 1073741824
   }
 }

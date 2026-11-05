@@ -17,7 +17,7 @@ The tools:
 |---|---|
 | `scripts/build-qualification-record.py` | the offline generator: verifies the bundle's `SHA256SUMS` first, then builds the record, `PROVENANCE.md` and the evidence copy; refuses (exit 1, nothing written) on any gap |
 | `docs/adr/0035-benchmark/qualification/production-expected.json` | the **FIXED** values (below). Not a record, never shipped. A bundle that measures anything else is refused |
-| `scripts/build-qualification-record.test.sh` | 53 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
+| `scripts/build-qualification-record.test.sh` | 58 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
 | `backend/storage/src/test/.../GeneratedQualificationRecordTest.kt` | the generator's output on the fake bundle (golden file, byte-compared by the shell test) loads through the real `QualificationRecords.parse`, is eligible and has no production gap |
 
 ## Value status
@@ -73,7 +73,7 @@ An eligible record has no LAB or POST-REBOOT member. The generator cannot emit e
 | `filesystem.objectOverheadMaxBytes` (O_max) | FROM-N1 (E1–E3) | the O_max that E1–E3's PASS criterion was evaluated against (`measurements.oMaxBytes`, identical in all three). Every `worstObjectOverheadBytes` must be ≤ it. It must be a multiple of B and at least 6·B. It stays 24,576 only if the final filesystem measures within it (verdict 2.1 (g)) | `experiments/E1.json`, `E2.json`, `E3.json` | PROD-QUAL |
 | `filesystem.metadataInodesMeasured` (M) | FROM-N1 (E7), or carried | `measurements.metadataInodesMeasured`; gate F evidence's declared inode budget must be ≥ it | `experiments/E7.json` | PROD-QUAL, or CARRIED-AMENDMENT |
 | `filesystem.metadataInodesScope` (additive member) | FROM-N1 (E7) | `minio-sys`: the inodes under `.minio.sys` only, or `minio-sys-excl-trash` with the armed inode-headroom latch. E7's `measurements.metadataInodesScope` and the gate F evidence's `minio.metadataInodesScope` must say the same, and gate F blocks a record or evidence that does not (PROPOSED note `docs/adr/0035-amendment-note-metadata-inodes-PROPOSED.md`) | `experiments/E7.json`, `gate-f/filesystem-evidence.json` | CODE |
-| `filesystem.metadataBytesMeasured`, `metadataBytesScope` (additive members) | FROM-N1 (E2, E7), CODE | the larger of E2's post-drain and E7's peak `measurements.metadataBytesMeasured`, both stating `metadataBytesScope: "minio-sys+unattributed"` (`scripts/adr035-metadata-accounting.py`). The gate F evidence must state the same scope and declare *M* ≥ it; gate F blocks otherwise | `experiments/E2.json`, `experiments/E7.json`, `gate-f/filesystem-evidence.json` | PROD-QUAL, or CARRIED-AMENDMENT when E7 is carried |
+| `filesystem.metadataBytesMeasured`, `metadataBytesScope` (additive members) | FROM-N1 (E2, E7), CODE | the larger of E2's post-drain and E7's peak `measurements.metadataBytesMeasured`, both stating `metadataBytesScope: "minio-sys+unattributed"` (`scripts/adr035-metadata-accounting.py`). The gate F evidence must state the same scope and declare exactly the production *M*, 1,073,741,824 (`production-expected.json` `declared.metadataBudgetBytes`; owner decision 2026-11-05), which must be ≥ it. Gate F blocks otherwise. This is not an E7 PASS: E7 is judged against that budget | `experiments/E2.json`, `experiments/E7.json`, `gate-f/filesystem-evidence.json` | PROD-QUAL, or CARRIED-AMENDMENT when E7 is carried |
 | `filesystem.inodeHeadroomLatchDrill` (additive member, only when E10 drilled it) | FROM-N1 (E10) | `{result: "PASS", fsMonitorSha256}` from E10's `measurements.inodeHeadroomLatch` and `fsMonitorSha256`; gate F accepts `minio-sys-excl-trash` only when its `fsMonitorSha256` equals the evidence's `monitor.fsMonitorSha256` | `experiments/E10.json`, `gate-f/filesystem-evidence.json` | PROD-QUAL |
 | `filesystem.metadataInodesBasis` (additive member) | DERIVED | `E7 on the final filesystem` or `E7 carried under <amendment>` | `MANIFEST.json` `e7` | DERIVED |
 | `filesystem.experiments.E1`…`E11` | FROM-N1 | each must be `PASS`, on `venue: final-filesystem`, uuid `c33e14fd…`, kernel 147, member `3f97c565…`, started after the post-reboot baseline and finished before the post-cleanup one | `experiments/E1.json` … `E11.json` + their `rawFiles` | PROD-QUAL (E7 may be CARRIED-AMENDMENT) |
@@ -85,6 +85,8 @@ Where the FIXED values come from:
   and the shipped staging record.
 - The geometry and the filesystem identity: `prod-gate-f-evidence-20261103.json.txt`, `prod-facts.json`, and
   `n1-fs-baseline.sh`'s qualified geometry and feature list.
+- The production metadata budget *M* = 1,073,741,824 (`declared.metadataBudgetBytes`): the owner's decision of
+  2026-11-05 (#124 comment 6671007334), with Ops' capacity proof (infinity-core !189 @ `cc1cab9`).
 - The kernel: `prod-kernel-20261103.txt`. The N1 condition is the running kernel 6.8.0-147-generic, boot id unchanged, checked at every step.
 
 ## The N1 evidence bundle Ops delivers

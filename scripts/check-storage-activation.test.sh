@@ -461,6 +461,14 @@ with --qualification-dir "$TMP/qual-excl" > "$TMP/f-rec-excl-ev-sys"
 only "F: a record measured without .trash against evidence counting .trash blocks (one scope on both sides)" F-filesystem "counts inodes over scope minio-sys but record fixture-laptop-arm64-reference measured scope minio-sys-excl-trash" "$TMP/f-rec-excl-ev-sys"
 fe no-bucket '.minio.bucketPresent = false' "evidence collected with no bucket directory blocks" "MinIO metadata: the evidence was collected with no bucket directory \\(bucketPresent false\\)"
 fe no-bucket-field 'del(.minio.bucketPresent)' "evidence that does not state bucketPresent → NOT RUN" "evidence.minio.bucketPresent missing"
+# Production M = 1 GiB (owner decision 2026-11-05): a production record whose measured metadata exceeds the staging
+# 256 MiB passes against M = 1 GiB, and is blocked against 256 MiB. Gate F compares; it pins nothing.
+qrec m768 '.filesystem.metadataBytesMeasured = 805306368'
+jq '.declared.metadataBudgetBytes = 1073741824' "$FSE" > "$TMP/ev-m1g.json"
+with --qualification-dir "$TMP/qual-m768" | sed "s#$FSE#$TMP/ev-m1g.json#" > "$TMP/f-m768-1g"
+case_ "F: a record measuring 768 MiB of metadata passes against the production M of 1 GiB" 0 '^F-filesystem[[:space:]]+PASS' "$TMP/f-m768-1g"
+with --qualification-dir "$TMP/qual-m768" > "$TMP/f-m768-256"
+only "F: the same record against M = 256 MiB blocks" F-filesystem "MinIO metadata: M 268435456 is below the E2/E7 measurement 805306368" "$TMP/f-m768-256"
 fe bytes-budget '.declared.metadataBudgetBytes = 120000000' "an M below the record's measured metadata bytes blocks" "MinIO metadata: M 120000000 is below the E2/E7 measurement 125829120"
 qrec no-e3 'del(.filesystem.experiments.E3)'
 with --qualification-dir "$TMP/qual-no-e3" > "$TMP/f-no-e3"

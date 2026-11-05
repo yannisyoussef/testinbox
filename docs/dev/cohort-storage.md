@@ -62,7 +62,12 @@ Use the reviewed API jar and a private JSON file containing:
 The declarations are facts/budgets from the reviewed Ops activation packet,
 not numbers inferred from the 48 GiB image. Reserve all thirty participant
 shares, all legacy shares, the worst full envelope, finalization, debt, trash,
-probe, metadata and operational headroom. The application checks arithmetic;
+probe, metadata and operational headroom. The metadata budget *M* is
+1,073,741,824 B (1 GiB) in production, by the owner's decision of 2026-11-05,
+subject to Ops' capacity proof, which passes: [FS] slack 24,988,291,265,
+[I-C] slack 16,786,280,448, root-reserve slack 2,791,731,200 (infinity-core
+!189). The pool file and the environment declarations must carry that same
+value. The staging example stays at 256 MiB. The application checks arithmetic;
 Ops still verifies the actual host/MinIO combination and qualified evidence.
 
 Set `TI_BUDGET_JDBC_URL`, `TI_BUDGET_USER`, `TI_BUDGET_PASSWORD` through the

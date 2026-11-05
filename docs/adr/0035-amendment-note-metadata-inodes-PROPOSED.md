@@ -330,7 +330,13 @@ CONSISTENCY OK; VERDICT FITS
 - [GLOBAL_F] is unchanged: its demand has no *M* term.
 - The live `storage-budget check` runs at W-E.
 
-**This note does not change M** in any declaration. That is the owner's decision (§8.1).
+**M status (2026-11-05).** The owner approved **M = 1 GiB for production**, "subject to the capacity proof passing",
+and it passes (#124 comment 6671007334; infinity-core !189 @ `cc1cab9` sets M = 1 073 741 824 in the production
+environment declarations, the pool file and the fs-monitor production configuration).
+
+- `production-expected.json` fixes it, and the record generator refuses gate F evidence that declares any other M.
+- It is **not** an E7 PASS: E7 is evaluated against this budget when it completes.
+- The staging example and the shipped staging record stay at 256 MiB.
 
 ## 8. Open points for the owner
 
@@ -343,7 +349,7 @@ CONSISTENCY OK; VERDICT FITS
      conservative, because residue of a definitively failed upload hides under the allowance.
    - **(c) Keep 256 MiB.** Rejected: the bytes latch at `2·M` is reachable under ordinary load at `procs ≥ 2`.
 
-   *M* is not changed by this note.
+   The owner chose (a): production *M* = 1 GiB (2026-11-05, see §7's M status). Staging stays at 256 MiB.
 2. **`.trash` inodes (inode side, §2).** Scope `minio-sys` counts every inode in `.minio.sys/tmp/.trash`: trashed
    objects' own inodes, 2–4 per object. Size of the effect:
    - a paced teardown of 25 000–50 000 objects puts about 100 000 inodes in trash until purge, over the budget;
@@ -542,7 +548,9 @@ unchanged, checked at every step.
 > The walk fails closed: no figure for a missing or foreign `.minio.sys` or data directory. Evidence collected with
 > no bucket directory (`bucketPresent: false`) does not pass gate F.
 >
-> **What does not change.** *M*, the inode budget and every other criterion are unchanged. Post-drain residue has no
+> **What does not change.** The inode budget and every other criterion are unchanged. *M* is a declaration: 1 GiB
+> for production by the owner's decision of 2026-11-05 (subject to the capacity proof, which passes), and 256 MiB on
+> staging. Post-drain residue has no
 > declared bound (ext4 keeps each directory's historical peak). *M* bounds it through the monitor's alert, and the
 > operator acts on the runbook, never by changing a latch. In-flight upload staging
 > under `.minio.sys/tmp` stays in *M* and is also charged in *F_r*/*H_F*: a deliberate, conservative overlap, sized

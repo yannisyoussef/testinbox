@@ -367,7 +367,7 @@ def build(bundle_dir, expected, repo):
     p = Problems()
     b = Bundle(bundle_dir, p)
     X = expected
-    xm, xf, xn = X["minio"], X["filesystem"], X["network"]
+    xm, xf, xn, xd = X["minio"], X["filesystem"], X["network"], X["declared"]
     labels = []  # (member, value, label, evidence)
 
     def label(member, value, lab, evidence):
@@ -716,6 +716,11 @@ def build(bundle_dir, expected, repo):
             f"gate F evidence declares O = {dcl.get('objectOverheadBytes')}, below the qualified O_max {omax}")
     p.check(metadata_inodes is None or (isinstance(dcl.get("metadataBudgetInodes"), int) and dcl["metadataBudgetInodes"] >= metadata_inodes),
             f"gate F evidence declares an inode budget {dcl.get('metadataBudgetInodes')}, below the E7 measurement {metadata_inodes}")
+    # M is FIXED for production (owner decision 2026-11-05: 1 GiB): the evidence must declare exactly it, and the
+    # measured metadata is compared against that budget (never a PASS by itself: E7 is judged when it completes).
+    p.check(dcl.get("metadataBudgetBytes") == xd["metadataBudgetBytes"],
+            f"gate F evidence declares M = {dcl.get('metadataBudgetBytes')}, not the production M "
+            f"{xd['metadataBudgetBytes']} (production-expected.json declared.metadataBudgetBytes)")
     p.check(metadata_bytes_max is None or (isinstance(dcl.get("metadataBudgetBytes"), int) and dcl["metadataBudgetBytes"] >= metadata_bytes_max),
             f"gate F evidence declares M = {dcl.get('metadataBudgetBytes')}, below the E2/E7 metadata bytes measurement {metadata_bytes_max}")
     if fe.get("collectedAt") and ISO_RE.match(str(fe.get("collectedAt"))) and qualified_at:
@@ -911,6 +916,10 @@ def main():
         expected = json.load(open(a.expected or os.path.join(a.repo, EXPECTED_REL), encoding="utf-8"))
         if expected.get("schema") != EXPECTED_SCHEMA:
             print(f"error: --expected is not {EXPECTED_SCHEMA}", file=sys.stderr)
+            return 2
+        m_fixed = (expected.get("declared") or {}).get("metadataBudgetBytes")
+        if not isinstance(m_fixed, int) or isinstance(m_fixed, bool) or m_fixed <= 0:
+            print("error: --expected has no positive declared.metadataBudgetBytes (the production M)", file=sys.stderr)
             return 2
         n = verify_sums(a.bundle)
         record, prov, date = build(a.bundle, expected, a.repo)

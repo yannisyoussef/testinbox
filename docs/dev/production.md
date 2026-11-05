@@ -289,7 +289,9 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   a rolling deploy that overlaps two gateways declares 2, so H doubles),
   `TESTINBOX_STORAGE_INBOX_SHARE`, the dedicated filesystem's declarations
   (`TESTINBOX_STORAGE_FS_*`: block size *B*, *O_max* from the qualification
-  record, *G_F*, *D_budget*, *M*, *R_ops*, *C_fs*, *I_fs*, *A_obs*; they must
+  record, *G_F*, *D_budget*, *M* (production: `TESTINBOX_STORAGE_FS_METADATA_BUDGET_BYTES=1073741824`, 1 GiB, by the
+  owner's decision of 2026-11-05 subject to Ops' capacity proof, which passes; the staging example stays at 256 MiB),
+  *R_ops*, *C_fs*, *I_fs*, *A_obs*; they must
   satisfy `G_F + D_budget + P_F + M + R_ops ≤ C_fs` (with *P_F* the probe budget, and the monitor role and *A_obs* declared too), `R_ops ≥ max(5 % of C_fs, 2 GiB)`,
   one inode per block, and `H_F < G_F`; filesystem-containment contract,
   ADR-035 Amendment 2), and the declared backend identity
@@ -837,7 +839,7 @@ on the production host and its recreated dedicated data filesystem:
 | `filesystem.uuid`, `type`, `mountOptions`, `mountSource` | the recreated dedicated filesystem (preallocated, `mkfs -i 4096`, isolated; filesystem-evidence.md, "Before `ALL` can pass") |
 | `filesystem.objectOverheadMaxBytes` | the measured *O_max* from E1–E3 |
 | `filesystem.metadataInodesMeasured`, `metadataInodesScope` | the E7 metadata inode measurement, counted over `.minio.sys` only (scope `minio-sys`; bucket directories are per-object inodes charged by *i_max*, see `docs/dev/filesystem-evidence.md`) |
-| `filesystem.metadataBytesMeasured`, `metadataBytesScope` | the larger of E2's post-drain and E7's peak `metadataBytes`, scope `minio-sys+unattributed` (`.minio.sys` without `.trash`, plus allocations no object is charged for; `scripts/adr035-metadata-accounting.py`). Gate F requires the declared *M* to be at least it |
+| `filesystem.metadataBytesMeasured`, `metadataBytesScope` | the larger of E2's post-drain and E7's peak `metadataBytes`, scope `minio-sys+unattributed` (`.minio.sys` without `.trash`, plus allocations no object is charged for; `scripts/adr035-metadata-accounting.py`). Gate F requires the declared *M* to be at least it. For production *M* is 1 GiB (owner decision 2026-11-05); the generator refuses evidence declaring another value |
 | `filesystem.experiments` | `E1`…`E11` (annex §10: amplification, directory growth, fragmentation, inode ratio, trash accounting, debt release, `.minio.sys` growth, ENOSPC corpus, zero-byte PUT/`STORAGE_FULL` trial incl. case C, monitor latches, restart/deletes/recovery at full), each `"PASS"` with its run output in the evidence directory |
 | `enablementEligible`, `ineligibilityReasons` | `true` and `[]` only when every row above is complete |
 

@@ -159,6 +159,7 @@ def main():
     ev["filesystem"] = {"uuid": UUID, "type": "ext4", "mountOptions": "rw,relatime", "mountSource": IMAGE}
     ev["preallocation"]["holeBytes"] = 0
     ev["otherEntriesOnMount"] = []
+    ev["declared"]["metadataBudgetBytes"] = 1073741824  # the production M (owner decision 2026-11-05)
     w(root, "gate-f/filesystem-evidence.json", ev)
     with open(os.path.join(root, "SHA256SUMS"), "w") as f:
         for dp, _, files in sorted(os.walk(root)):
@@ -175,7 +176,8 @@ def main():
                   "storageClassInlineDefaults": "release-defaults"},
         "filesystem": {"uuid": UUID, "type": "ext4", "mountOptions": "rw,relatime", "mountSource": IMAGE, "blockSize": 4096,
                        "blockCount": int(GEOM), "inodeCount": int(GEOM), "inodeSize": 256, "statvfsBlocks": int(GEOM), "features": FEATURES},
-        "network": {"directPath": True, "proxy": "none", "tls": False}})
+        "network": {"directPath": True, "proxy": "none", "tls": False},
+        "declared": {"metadataBudgetBytes": 1073741824}})
     rel_proto = "backend/application/src/main/kotlin/email/testinbox/application/storage/StorageProtocol.kt"
     rel_adr = "docs/adr/0035-physical-storage-bound-at-ingest.md"
     w(os.path.join(out, "repo"), rel_proto, open(os.path.join(REAL_REPO, rel_proto)).read())

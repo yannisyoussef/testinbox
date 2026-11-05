@@ -167,6 +167,22 @@ fresh febytes; edit febytes gate-f/filesystem-evidence.json 'del(d["minio"]["met
 refused "gate F evidence from a collector that does not count unattributed allocations only → refuse" febytes "gate F evidence minio.metadataBytesScope is None"
 fresh mbudget; edit mbudget gate-f/filesystem-evidence.json 'd["declared"]["metadataBudgetBytes"] = 50000000'
 refused "a declared M below the E2/E7 metadata bytes measurement → refuse" mbudget "declares M = 50000000, below the E2/E7 metadata bytes measurement 52428800"
+# Production M is fixed at 1 GiB (owner decision 2026-11-05): the staging 256 MiB is refused for a production record.
+fresh m256; edit m256 gate-f/filesystem-evidence.json 'd["declared"]["metadataBudgetBytes"] = 268435456'
+refused "gate F evidence declaring the staging M (256 MiB) for a production record → refuse" m256 "declares M = 268435456, not the production M 1073741824"
+fresh mbig; edit mbig experiments/E7.json 'd["measurements"]["metadataBytesMeasured"] = 1073741825'
+refused "E7 metadata bytes above the production M of 1 GiB → refuse" mbig "below the E2/E7 metadata bytes measurement 1073741825"
+fresh mfit; edit mfit experiments/E7.json 'd["measurements"]["metadataBytesMeasured"] = 805306368'
+gen mfit
+if [ "$STATUS" = 0 ] && [ "$(jq .filesystem.metadataBytesMeasured "$TMP/mfit/out/production-2000-01-01/record.json")" = 805306368 ]; then
+    ok "E7 metadata bytes above 256 MiB but within the production M of 1 GiB builds"
+else bad "768 MiB within 1 GiB (exit $STATUS)" "$OUT"; fi
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); del d["declared"]; json.dump(d, open(sys.argv[2], "w"))' "$TMP/good/expected.json" "$TMP/expected-nom.json"
+OUT="$(python3 "$GEN" --bundle "$TMP/good/bundle" --expected "$TMP/expected-nom.json" --repo "$TMP/good/repo" --check 2>&1)"; rc=$?
+if [ "$rc" = 2 ] && printf '%s' "$OUT" | grep -q "no positive declared.metadataBudgetBytes"; then ok "--expected without the production M is a usage error"
+else bad "--expected without M (exit $rc)" "$OUT"; fi
+REAL_M="$(jq .declared.metadataBudgetBytes "$REPO/docs/adr/0035-benchmark/qualification/production-expected.json")"
+if [ "$REAL_M" = 1073741824 ]; then ok "the committed production-expected.json fixes M = 1 GiB"; else bad "production-expected.json M is $REAL_M"; fi
 fresh nobucket; edit nobucket gate-f/filesystem-evidence.json 'd["minio"]["bucketPresent"] = False'
 refused "gate F evidence collected with no bucket directory → refuse" nobucket "gate F evidence minio.bucketPresent is not true"
 # Scope minio-sys-excl-trash is accepted only when PROVEN: E10 drilled the inode-headroom latch (PASS) on a named
