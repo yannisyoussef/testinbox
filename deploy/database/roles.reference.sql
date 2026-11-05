@@ -114,6 +114,11 @@ REVOKE UPDATE ON human_account FROM :"api_role";
 GRANT UPDATE (id) ON human_account TO :"api_role";
 REVOKE UPDATE, DELETE ON beta_admission FROM :"api_role";
 REVOKE INSERT, UPDATE, DELETE ON lifecycle_restore_clearance FROM :"api_role";
+-- The deletion workflow record (V23) is the operator command's alone
+-- (JdbcAccountLifecycle, run as the schema owner). No API path reads or writes
+-- it, so the API holds nothing on it: not even the account UUIDs and stage
+-- timestamps a read would show. (The V23 triggers refuse its writes as well.)
+REVOKE ALL ON account_deletion FROM :"api_role";
 
 -- The cohort switches (admissions_open, capacity_ready) are operator actions.
 -- The API only locks the row (JdbcBetaAdmissions: SELECT ... FOR UPDATE), which
