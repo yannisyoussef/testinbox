@@ -171,14 +171,33 @@ EOF
 # spelling Spring's lenient enum binding accepts (`cohort-partitioned`,
 # `CohortPartitioned`, `cohort.partitioned`...), and in any `${VAR:-default}` —
 # and the ingestion property default is pinned to GLOBAL.
-LOCKING_KEY_RE='(TESTINBOX_STORAGE_ADMISSION_LOCKING|testinbox\.storage\.admission-locking|(^|[^A-Za-z0-9_.-])admission-locking|admissionLocking)[[:space:]]*[:=]'
+# The KEY, too, is matched the way Spring binds it: relaxed binding ignores case and
+# drops '-', '_' and '.', so `admission-locking`, `admission_locking`,
+# `admissionLocking`, `ADMISSIONLOCKING` and the env forms
+# TESTINBOX_STORAGE_ADMISSION_LOCKING / TESTINBOX_STORAGE_ADMISSIONLOCKING are one key.
+# locking_hits <file> → "lineno<TAB>value" for every assignment to that key.
+locking_hits() {
+    strip_comments < "$1" | grep -niE 'admission[-_.]?locking' 2>/dev/null | while IFS= read -r hit; do
+        lineno="${hit%%:*}"
+        # Anchored on the key itself, so a key inside a quoted argument (`--args="--testinbox...=x"`) is found.
+        printf '%s\n' "${hit#*:}" | grep -oiE "[A-Za-z0-9_.-]*admission[-_.]?locking[[:space:]]*[:=][[:space:]]*$VALUE_RE" |
+            while IFS= read -r token; do
+            key="$(printf '%s' "$token" | sed -E 's/[[:space:]]*[:=].*$//')"
+            # `(pattern)` form: bash 3.2 cannot parse a bare `pattern)` inside $( ).
+            case "$(canonical_enum "$key")" in
+                (admissionlocking | storageadmissionlocking | testinboxstorageadmissionlocking)
+                    printf '%s\t%s\n' "$lineno" "$(printf '%s' "$token" | sed -E 's/^[^:=]*[:=][[:space:]]*//')" ;;
+                (*) ;;
+            esac
+        done
+    done
+}
 locking_findings="$(
     consumers | while IFS= read -r file; do
         [ -n "$file" ] || continue
         rel="${file#"$SCAN_ROOT"/}"
-        scan_values "$file" "$LOCKING_KEY_RE" | while IFS="$(printf '\t')" read -r lineno value; do
+        locking_hits "$file" | while IFS="$(printf '\t')" read -r lineno value; do
             literal="$(canonical_enum "$(placeholder_literal "$value")")"
-            # `(pattern)` form: bash 3.2 cannot parse a bare `pattern)` inside $( ).
             case "$literal" in
                 ("" | global) ;;
                 (*) printf '%s:%s: T1 admission locking is set to %s. Only GLOBAL (ADR-035 mode a) may be committed; the share-partitioned T1 is a PROPOSED amendment for the lab only.\n' "$rel" "$lineno" "$value" ;;

@@ -133,6 +133,19 @@ check "a placeholder default in a dotted mixed-case spelling fails" 1 "$TMP/lock
 variant locking-workflow
 printf '      - run: ./gradlew bootRun --args="--testinbox.storage.admission-locking=cohortpartitioned"\n' >> "$TMP/locking-workflow/.github/workflows/ci.yml"
 check "a workflow passing the property fails" 1 "$TMP/locking-workflow" 'ci.yml:[0-9]+: T1 admission locking is set to'
+# Spring's relaxed binding of the KEY (review #136 N1): case and '-', '_', '.' do not matter.
+variant locking-env-squashed
+printf 'TESTINBOX_STORAGE_ADMISSIONLOCKING=COHORT_PARTITIONED\n' >> "$TMP/locking-env-squashed/deploy/staging/.env.example"
+check "the squashed env key TESTINBOX_STORAGE_ADMISSIONLOCKING fails" 1 "$TMP/locking-env-squashed" '\.env\.example:[0-9]+: T1 admission locking is set to COHORT_PARTITIONED'
+variant locking-yaml-underscore
+printf 'testinbox:\n  storage:\n    admission_locking: cohort-partitioned\n' > "$TMP/locking-yaml-underscore/backend/ingestion/src/main/resources/application-deployed.yaml"
+check "an underscored YAML key admission_locking fails" 1 "$TMP/locking-yaml-underscore" 'application-deployed.yaml:3: T1 admission locking is set to cohort-partitioned'
+variant locking-yaml-camel
+printf 'testinbox:\n  storage:\n    admissionLocking: CohortPartitioned\n' > "$TMP/locking-yaml-camel/backend/api/src/main/resources/application-deployed.yaml"
+check "a camelCase YAML key admissionLocking fails" 1 "$TMP/locking-yaml-camel" 'application-deployed.yaml:3: T1 admission locking is set to CohortPartitioned'
+variant locking-other-key
+printf 'testinbox:\n  storage:\n    admission-locking-note: COHORT_PARTITIONED\n    max_admission_locking: COHORT_PARTITIONED\n' > "$TMP/locking-other-key/backend/api/src/main/resources/application-deployed.yaml"
+check "a different key that merely contains admission-locking is not this setting" 0 "$TMP/locking-other-key"
 variant locking-global
 printf 'testinbox:\n  storage:\n    admission-locking: ${TESTINBOX_STORAGE_ADMISSION_LOCKING:GLOBAL}\n' > "$TMP/locking-global/backend/api/src/main/resources/application-deployed.yaml"
 check "GLOBAL, or a bare placeholder, is fine" 0 "$TMP/locking-global"

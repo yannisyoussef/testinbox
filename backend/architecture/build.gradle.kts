@@ -24,5 +24,5 @@ dependencies {
     // Only for the fixture that proves the unfenced-write rule can fail.
     testImplementation(libs.aws.s3)
     // Only for the fixtures that prove the partitioned-T1 rules can fail (they build the adapter).
-    testImplementation("org.springframework:spring-jdbc")
+    testImplementation(libs.spring.jdbc)
 }

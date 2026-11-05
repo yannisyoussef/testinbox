@@ -571,7 +571,7 @@ $METRICS_INDEX
 EOF
     if [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
         if ! rows="$(PGAPPNAME="ops:storage-activation-check" psql "$TESTINBOX_ACTIVATION_DB_URL" -X -At -F "$TAB" -v ON_ERROR_STOP=1 \
-            -c "SELECT node_id, admission_locking FROM storage_node WHERE NOT clean_shutdown AND heartbeat_at > now() - interval '5 minutes' AND admission_locking <> 'GLOBAL'" \
+            -c "SELECT node_id, admission_locking FROM storage_node WHERE NOT clean_shutdown AND heartbeat_at > now() - make_interval(secs => $HEARTBEAT_MAX_AGE) AND admission_locking <> 'GLOBAL'" \
             2>"$WORK/psql-locking.err")"; then
             problem "storage_node admission_locking query failed; the T1 protocol of the nodes could not be observed"
         fi
