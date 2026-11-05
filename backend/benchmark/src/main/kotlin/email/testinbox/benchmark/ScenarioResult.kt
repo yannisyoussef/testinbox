@@ -99,6 +99,10 @@ data class ScenarioResult(
      * not measure the partitioned path alone.
      */
     val partitionFallbacks: Long? = null,
+    /** PARTITIONED only: those fallbacks by reason (C-3: the hot workspace's timeout cascade shows here). */
+    val partitionFallbackReasons: Map<String, Long>? = null,
+    /** The timing-probe scenario only: each probe class's latency and 451 rate (security review S-C1). */
+    val probes: Map<String, ProbeSummary>? = null,
 ) {
     /** completed / scheduled: separate from the achieved rate, which also carries the terminal lag. */
     val completionRatio: Double get() = if (scheduledEvents == 0) 0.0 else completedEvents.toDouble() / scheduledEvents

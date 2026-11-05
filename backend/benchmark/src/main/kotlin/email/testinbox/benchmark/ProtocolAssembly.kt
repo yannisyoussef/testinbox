@@ -207,6 +207,8 @@ class ProtocolAssembly(
     private val options: BenchmarkOptions,
     val mode: AdmissionMode,
     val declarations: StorageDeclarations,
+    /** Runs on the PARTITIONED variant's closed cohort (any mode): the node must be the declared ingestion node. */
+    onClosedCohort: Boolean = false,
 ) {
     val jdbc: JdbcClient = JdbcClient.create(dataSource)
     private val transactionManager = DataSourceTransactionManager(dataSource)
@@ -220,9 +222,7 @@ class ProtocolAssembly(
      */
     val node =
         StorageNode(
-            if (mode ==
-                AdmissionMode.PARTITIONED
-            ) {
+            if (mode == AdmissionMode.PARTITIONED || onClosedCohort) {
                 declarations.expectedIngestionNodes.single()
             } else {
                 "bench-${ProcessHandle.current().pid()}"
@@ -249,7 +249,30 @@ class ProtocolAssembly(
         ) { ambiguity.unresolvedFor(node.nodeId) }
 
     /** The T1 adapter this mode runs: exactly production's for CHOSEN (see [admissionStore]). */
-    val store: JdbcStorageAdmission = admissionStore(jdbc, template, mode, options.referenceMode, declarations)
+    val store: JdbcStorageAdmission =
+        admissionStore(jdbc, template, mode, options.referenceMode, declarations) { reason ->
+            fallbackReasons
+                .computeIfAbsent(reason.name) {
+                    java.util.concurrent.atomic
+                        .AtomicLong()
+                }.incrementAndGet()
+        }
+
+    /** Every fallback of a partitioned T1 to mode a, by reason (what production's metric would count). */
+    val fallbackReasons = ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+
+    /**
+     * ADR-027 INGEST as production charges it (per inbox, then per workspace), with
+     * production's default limits: the timing-probe scenario's flood and probes go
+     * through it, as delivery does before T1.
+     */
+    val ingestLimiter: email.testinbox.application.port.RateLimiter by lazy {
+        val limits =
+            email.testinbox.application
+                .LimitsProperties()
+                .toConfig()
+        email.testinbox.persistence.JdbcRateLimiter(jdbc, transactionManager) { category, perInbox -> limits.rateFor(category, perInbox) }
+    }
 
     // Generous: nothing is refused, so every T1 inserts and every event reaches T2. The lock and the rows are what is measured.
     private val policy =
@@ -351,13 +374,20 @@ class ProtocolAssembly(
             mode: AdmissionMode,
             referenceMode: ReferenceMode,
             declarations: StorageDeclarations,
+            onFallback: (email.testinbox.application.storage.PartitionFallbackReason) -> Unit = {},
         ): JdbcStorageAdmission {
             val readsFootprint = FootprintWiring.readsFootprint(declarations)
             return when (mode) {
                 // Both exactly IngestionWiring.storageAdmission's construction: the switch is the
                 // declared `admission-locking`, GLOBAL for CHOSEN, COHORT_PARTITIONED for the variant.
                 AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED -> {
-                    JdbcStorageAdmission(jdbc, template, readsFootprint = readsFootprint, locking = declarations.admissionLocking)
+                    JdbcStorageAdmission(
+                        jdbc,
+                        template,
+                        readsFootprint = readsFootprint,
+                        locking = declarations.admissionLocking,
+                        onFallback = onFallback,
+                    )
                 }
 
                 AdmissionMode.REFERENCE -> {

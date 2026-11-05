@@ -10,6 +10,7 @@ import email.testinbox.domain.AttachmentId
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.limits.RateCategory
 import email.testinbox.domain.message.Attachment
 import email.testinbox.domain.message.Message
 import email.testinbox.domain.message.ParseStatus
@@ -39,9 +40,17 @@ data class ScenarioSpec(
      * informational criteria.
      */
     val hot: Boolean = false,
+    /**
+     * Closed cohort only, any mode: the timing-channel probe scenario of security
+     * review S-C1 - a hot-workspace flood under production INGEST limits and write
+     * slots, heartbeats on, with the [ProbeLoad] classes running beside it.
+     * Reported under `variant`, never gate D.
+     */
+    val probe: Boolean = false,
 ) {
     fun name(workspaces: Int): String =
-        "${mode.name.lowercase()}-ws$workspaces-c$concurrency-r${Math.round(offeredRate)}" + if (hot) "-hot" else ""
+        "${mode.name.lowercase()}-ws$workspaces-c$concurrency-r${Math.round(offeredRate)}" +
+            (if (hot) "-hot" else "") + (if (probe) "-probe" else "")
 }
 
 /**
@@ -117,8 +126,9 @@ class ScenarioRunner(
                     monitorRole,
                     HarnessDeclarations.locking(spec.mode),
                 )
-            val protocol = ProtocolAssembly(pool, options, spec.mode, declarations)
-            hotWorkspace = spec.hot
+            val protocol = ProtocolAssembly(pool, options, spec.mode, declarations, onClosedCohort = closedCohort != null)
+            hotWorkspace = spec.hot || spec.probe
+            probeMode = spec.probe
             try {
                 val probe = prepare(protocol, name, spec.mode)
 
@@ -160,6 +170,7 @@ class ScenarioRunner(
                 val events = (spec.offeredRate * options.durationSeconds).toInt()
                 val scheduler = OpenLoopScheduler(spec.offeredRate, options.arrivals, options.seed)
                 retentionThread.start()
+                val probes = if (spec.probe) startProbes(protocol) else null
                 val report =
                     scheduler.run(events, spec.concurrency) { due ->
                         val record = EventRecord(EventTimings(), due.scheduledNanos)
@@ -167,6 +178,7 @@ class ScenarioRunner(
                         runEvent(protocol, record, threadRandom())
                     }
                 retentionThread.join()
+                probes?.join()
                 compactor.shutdownNow()
                 deltaSampler.shutdownNow()
                 heartbeats?.shutdownNow()
@@ -188,6 +200,9 @@ class ScenarioRunner(
                         t1Probe = probe,
                         t1Statement = t1Statement,
                         partitionFallbacks = if (spec.mode == AdmissionMode.PARTITIONED) protocol.store.partitionFallbacks else null,
+                        partitionFallbackReasons =
+                            if (spec.mode == AdmissionMode.PARTITIONED) protocol.fallbackReasons.mapValues { it.value.get() } else null,
+                        probes = probes?.summaries(),
                     )
                 log.info(
                     "scenario {} done: offered {} achieved {} T1 p99 {} ms, lock timeouts {}, deadlocks {}",
@@ -319,18 +334,83 @@ class ScenarioRunner(
     }
 
     /** Where a mode's events go: the gate population, or the PARTITIONED variant's cohort. */
-    private fun eventInboxes(mode: AdmissionMode): List<SeededInbox> =
-        if (mode ==
-            AdmissionMode.PARTITIONED
-        ) {
-            val inboxes = checkNotNull(cohort) { "the PARTITIONED variant needs its cohort" }.inboxes
-            if (hotWorkspace) inboxes.filter { it.workspaceId == inboxes.first().workspaceId } else inboxes
-        } else {
-            population.inboxes
-        }
+    private fun eventInboxes(mode: AdmissionMode): List<SeededInbox> {
+        val inboxes =
+            if (mode ==
+                AdmissionMode.PARTITIONED
+            ) {
+                checkNotNull(cohort) { "the PARTITIONED variant needs its cohort" }.inboxes
+            } else {
+                population.inboxes
+            }
+        if (!hotWorkspace) return inboxes
+        val hot = inboxes.filter { it.workspaceId == inboxes.first().workspaceId }
+        // The probe scenario keeps the hot workspace's last inbox for its `inside` probe.
+        return if (probeMode) hot.dropLast(1) else hot
+    }
 
-    /** Set per scenario: the PARTITIONED variant's single-hot-workspace skew. */
+    /** Set per scenario: the variant's single-hot-workspace skew, and the timing-probe scenario. */
     @Volatile private var hotWorkspace = false
+
+    @Volatile private var probeMode = false
+
+    /**
+     * The S-C1 probe classes over the closed cohort: `inside` co-addresses the hot
+     * workspace's reserved inbox with an observer's inbox in another workspace,
+     * `cold` is a third workspace's inbox, `unknown` resolves to nothing.
+     */
+    private fun startProbes(protocol: ProtocolAssembly): ProbeLoad {
+        val byWorkspace =
+            population.inboxes
+                .groupBy { it.workspaceId }
+                .values
+                .toList()
+        val classes =
+            mapOf(
+                "inside" to listOf(byWorkspace[0].last(), byWorkspace[1].first()),
+                "cold" to listOf(byWorkspace[2].first()),
+                "unknown" to emptyList(),
+            )
+        return ProbeLoad(classes, PROBE_RATE, options.durationSeconds, options.seed + PROBE_SEED) { probeIngest(protocol, it) }
+            .also { it.start() }
+    }
+
+    /** One probe event through production INGEST limits and the guarded protocol. */
+    @Suppress("TooGenericExceptionCaught") // every failure of a DATA is a 451 to its sender
+    private fun probeIngest(
+        protocol: ProtocolAssembly,
+        inboxes: List<SeededInbox>,
+    ): ProbeOutcome {
+        val admitted = admittedByIngest(protocol, inboxes)
+        if (admitted.isEmpty()) return ProbeOutcome.NO_T1
+        val plans = admitted.map(::plan)
+        val byMessage = admitted.zip(plans).associate { (inbox, plan) -> plan.messageId to inbox }
+        return try {
+            protocol.guarded.ingest(bytesPerCopy, plans) { ok ->
+                ok.associate { plan ->
+                    plan.messageId to
+                        (
+                            protocol.messages.appendVisible(message(plan, byMessage.getValue(plan.messageId), protocol)) ==
+                                AppendOutcome.Appended
+                        )
+                }
+            }
+            ProbeOutcome.DELIVERED
+        } catch (_: RuntimeException) {
+            ProbeOutcome.UNAVAILABLE
+        }
+    }
+
+    /** ADR-027 INGEST, charged per inbox then per workspace as delivery charges it; a refused copy is discarded (250). */
+    private fun admittedByIngest(
+        protocol: ProtocolAssembly,
+        inboxes: List<SeededInbox>,
+    ): List<SeededInbox> =
+        inboxes.filter { inbox ->
+            val ws = WorkspaceId(inbox.workspaceId)
+            protocol.ingestLimiter.tryConsume(ws, RateCategory.INGEST, InboxId(inbox.inboxId)).allowed &&
+                protocol.ingestLimiter.tryConsume(ws, RateCategory.INGEST).allowed
+        }
 
     private val retentionAchieved = AtomicLong()
     private val threadSeeds = AtomicInteger()
@@ -349,7 +429,10 @@ class ScenarioRunner(
         // A hot workspace has fewer inboxes than the largest event: an event then covers all of them.
         val recipients = minOf(options.recipientMix.draw(random.nextDouble()), inboxes.size)
         val start = random.nextInt(inboxes.size - recipients + 1)
-        val chosen = inboxes.subList(start, start + recipients)
+        val drawn = inboxes.subList(start, start + recipients)
+        // The probe scenario's flood goes through production INGEST limits, like its probes.
+        val chosen = if (probeMode) admittedByIngest(protocol, drawn) else drawn
+        if (chosen.isEmpty()) return true // every copy rate-limited: discarded before T1, a 250
         val plans = chosen.map(::plan)
         val byMessage = chosen.zip(plans).associate { (inbox, plan) -> plan.messageId to inbox }
         EventTimings.current.set(record.timings)
@@ -519,7 +602,7 @@ class ScenarioRunner(
     private fun restoreBacklog(protocol: ProtocolAssembly) {
         admin.sql("DELETE FROM storage_reservation WHERE node_id = :node").param("node", protocol.node.nodeId).update()
         admin.sql("DELETE FROM inbox WHERE state = 'EXPIRED'").update()
-        if (protocol.mode == AdmissionMode.PARTITIONED) seeder.resetCohortUsage(checkNotNull(cohort))
+        if (closedCohort != null) seeder.resetCohortUsage(population)
         drainCompaction(protocol)
         admin.sql("ANALYZE").update()
     }
@@ -544,5 +627,9 @@ class ScenarioRunner(
 
         /** StorageNodeRuntime's production heartbeat interval. */
         const val HEARTBEAT_MILLIS = 10_000L
+
+        /** Events per second of each probe class: a light observer beside the flood. */
+        const val PROBE_RATE = 5.0
+        const val PROBE_SEED = 4_711L
     }
 }

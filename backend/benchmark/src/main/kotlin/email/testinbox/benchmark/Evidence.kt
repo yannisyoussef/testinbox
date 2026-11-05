@@ -304,6 +304,16 @@ class Evidence(
                     )
                 },
             "partitionFallbacks" to s.partitionFallbacks,
+            "partitionFallbackReasons" to s.partitionFallbackReasons,
+            "probes" to
+                s.probes?.mapValues { (_, p) ->
+                    linkedMapOf(
+                        "events" to p.events,
+                        "latency" to latency(p.latency),
+                        "unavailableRate" to p.unavailableRate,
+                        "reachesT1" to p.reachesT1,
+                    )
+                },
         )
 
     private fun scenarioRow(s: ScenarioResult): String =

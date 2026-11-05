@@ -114,7 +114,9 @@ class Harness(
                     null
                 } else {
                     GateEvaluator(expectedRate = options.expectedRate).evaluate(
-                        variantResults.filterNot { it.name.endsWith("-hot") }.map { it.copy(mode = AdmissionMode.CHOSEN) } +
+                        variantResults
+                            .filter { it.mode == AdmissionMode.PARTITIONED && !it.name.endsWith("-hot") && !it.name.endsWith("-probe") }
+                            .map { it.copy(mode = AdmissionMode.CHOSEN) } +
                             results.filter { it.mode == AdmissionMode.REFERENCE },
                         nonAdr,
                     )
@@ -244,9 +246,13 @@ class Harness(
                         variantResults += variant.run(ScenarioSpec(AdmissionMode.PARTITIONED, concurrency, rate))
                     }
                 }
-                // The single-hot-workspace skew, at the matrix's heaviest point (reported, never in the criteria).
-                variantResults +=
-                    variant.run(ScenarioSpec(AdmissionMode.PARTITIONED, options.concurrency.max(), options.rates.max(), hot = true))
+                // At the matrix's heaviest point, reported, never in the criteria: the single-hot-workspace
+                // skew, then the timing-channel probes under the same load in mode a and partitioned (S-C1).
+                val heaviest = options.concurrency.max() to options.rates.max()
+                variantResults += variant.run(ScenarioSpec(AdmissionMode.PARTITIONED, heaviest.first, heaviest.second, hot = true))
+                for (mode in listOf(AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED)) {
+                    variantResults += variant.run(ScenarioSpec(mode, heaviest.first, heaviest.second, probe = true))
+                }
             }
             diagnosticsRecords +=
                 linkedMapOf(
