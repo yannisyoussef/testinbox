@@ -88,6 +88,10 @@ jobs:
           # are evaluated against origin/master inside the suite.
           ./scripts/check-storage-activation.test.sh
           ./scripts/check-storage-enforcement-off.test.sh
+          # R2 prep: the production-host record generator refuses an incomplete,
+          # tampered or non-PASS N1 bundle, and its output on a fake bundle is the
+          # golden file GeneratedQualificationRecordTest parses. Python 3 + jq.
+          ./scripts/build-qualification-record.test.sh
           # TI-DELIVERY-002: keep roles.reference.sql in the shape Ops reviewed
           # until their grant-contract weaknesses MD1/md1 are fixed. The suite
           # runs the guard on the real file first, then on mutated copies.
