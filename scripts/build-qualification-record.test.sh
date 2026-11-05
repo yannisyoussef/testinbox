@@ -167,6 +167,16 @@ fresh febytes; edit febytes gate-f/filesystem-evidence.json 'del(d["minio"]["met
 refused "gate F evidence from a collector that does not count unattributed allocations only → refuse" febytes "gate F evidence minio.metadataBytesScope is None"
 fresh mbudget; edit mbudget gate-f/filesystem-evidence.json 'd["declared"]["metadataBudgetBytes"] = 50000000'
 refused "a declared M below the E2/E7 metadata bytes measurement → refuse" mbudget "declares M = 50000000, below the E2/E7 metadata bytes measurement 52428800"
+fresh nobucket; edit nobucket gate-f/filesystem-evidence.json 'd["minio"]["bucketPresent"] = False'
+refused "gate F evidence collected with no bucket directory → refuse" nobucket "gate F evidence minio.bucketPresent is not true"
+fresh excl; edit excl experiments/E7.json 'd["measurements"]["metadataInodesScope"] = "minio-sys-excl-trash"'
+refused "an E7 inode figure without .trash, with no armed inode-headroom latch → refuse" excl "minio-sys-excl-trash is used but gate F evidence monitor.inodeHeadroomLatchArmed is not true"
+fresh exclok; edit exclok experiments/E7.json 'd["measurements"]["metadataInodesScope"] = "minio-sys-excl-trash"'
+edit exclok gate-f/filesystem-evidence.json 'd["minio"]["metadataInodesScope"] = "minio-sys-excl-trash"; d["monitor"] = {"inodeHeadroomLatchArmed": True}'
+gen exclok
+if [ "$STATUS" = 0 ] && [ "$(jq -r .filesystem.metadataInodesScope "$TMP/exclok/out/production-2000-01-01/record.json")" = minio-sys-excl-trash ]; then
+    ok "an E7 inode figure without .trash builds when the inode-headroom latch is armed, and the record states that scope"
+else bad "excl-trash with armed latch (exit $STATUS)" "$OUT"; fi
 if [ "$(jq -c '[.filesystem.metadataBytesMeasured, .filesystem.metadataBytesScope]' "$REC")" = '[52428800,"minio-sys+unattributed"]' ]; then
     ok "the record carries the larger of E2 and E7 as metadataBytesMeasured, scope minio-sys+unattributed"
 else bad "record metadataBytes members" "$(jq -c .filesystem "$REC")"; fi

@@ -951,7 +951,7 @@ gate_filesystem() {
               [["statvfs","frsize"], "positive"], [["statvfs","blocks"], "count"], [["statvfs","files"], "count"],
               [["preallocation","blockDevice"], "boolean"], [["preallocation","thinPool"], "boolean"], [["preallocation","fstrimExcluded"], "boolean"],
               [["isolation","dedicatedDevice"], "boolean"],
-              [["minio","bucketDirectoryBytes"], "count"], [["minio","metadataBytesScope"], "string"],
+              [["minio","bucketDirectoryBytes"], "count"], [["minio","metadataBytesScope"], "string"], [["minio","bucketPresent"], "boolean"],
               [["minio","metadataInodes"], "count"], [["minio","metadataInodesScope"], "string"],
               [["database","allConnectionsToPrimary"], "boolean"],
               [["declared","capacityBytes"], "positive"], [["declared","blockSizeBytes"], "positive"], [["declared","inodes"], "positive"],
@@ -1181,10 +1181,19 @@ gate_filesystem() {
             # ONE counting definition for metadata inodes (ADR-035 §3.5; amendment note, metadata inodes): the inodes
             # under .minio.sys only. Bucket directories ({ws}/, {inbox}/, {message}/, {key}/, {uuid}/) are per-object
             # inodes charged by i_max = 6, never also metadata; the starting-headroom row bounds them physically.
-            ( if $e.minio.metadataInodesScope != "minio-sys"
-                then "MinIO metadata: the evidence counts metadataInodes over scope \($e.minio.metadataInodesScope), not minio-sys (.minio.sys only; bucket directories are per-object inodes charged by i_max, ADR-035 §3.5)" else empty end ),
-            ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataInodesScope // "") != "minio-sys"
-                then "MinIO metadata: record \($e.qualificationRecordId) does not state its E7 metadataInodesMeasured as scope minio-sys (filesystem.metadataInodesScope)" else empty end ),
+            # Scope minio-sys-excl-trash (trash inodes left out) is accepted ONLY with the scope-independent
+            # inode-headroom latch armed on the monitor (inodes_total - inodes_used >= ceil(avail / B), the
+            # starting-headroom row above, re-checked every cycle): that latch, not the budget, covers trash inodes.
+            ( if (["minio-sys", "minio-sys-excl-trash"] | index($e.minio.metadataInodesScope)) == null
+                then "MinIO metadata: the evidence counts metadataInodes over scope \($e.minio.metadataInodesScope), not minio-sys or minio-sys-excl-trash (.minio.sys only; bucket directories are per-object inodes charged by i_max, ADR-035 §3.5)"
+              elif $e.minio.metadataInodesScope == "minio-sys-excl-trash" and ($e.monitor.inodeHeadroomLatchArmed // false) != true
+                then "MinIO metadata: the evidence counts metadataInodes without .trash (minio-sys-excl-trash) but monitor.inodeHeadroomLatchArmed is not true: trash inodes are covered only by the armed inode-headroom latch" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and (["minio-sys", "minio-sys-excl-trash"] | index($rec.filesystem.metadataInodesScope // "")) == null
+                then "MinIO metadata: record \($e.qualificationRecordId) does not state its E7 metadataInodesMeasured as scope minio-sys or minio-sys-excl-trash (filesystem.metadataInodesScope)" else empty end ),
+            # bucketPresent false is a 0-object baseline, or the walk measured the wrong directory: production
+            # pre-provisions the bucket (create-bucket=false), so it never passes for a populated filesystem.
+            ( if $e.minio.bucketPresent != true
+                then "MinIO metadata: the evidence was collected with no bucket directory (bucketPresent false): production pre-provisions the bucket, so the walk measured the wrong directory or nothing" else empty end ),
             ( if $e.minio.metadataInodes > $d.metadataBudgetInodes
                 then "MinIO metadata: \($e.minio.metadataInodes) metadata inodes > the inode budget \($d.metadataBudgetInodes)" else empty end ),
             ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataInodesMeasured | type) != "number"

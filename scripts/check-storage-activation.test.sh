@@ -438,6 +438,16 @@ only "F: a record whose metadata bytes figure does not state scope minio-sys+una
 qrec no-bytes 'del(.filesystem.metadataBytesMeasured)'
 with --qualification-dir "$TMP/qual-no-bytes" > "$TMP/f-no-bytes"
 only "F: a record without the E2/E7 metadata bytes measurement blocks" F-filesystem "carries no E2/E7 metadata bytes measurement" "$TMP/f-no-bytes"
+# The inode scope without .trash only with the armed inode-headroom latch; a missing bucket never passes.
+ev excl-trash-armed '.minio.metadataInodesScope = "minio-sys-excl-trash" | .monitor.inodeHeadroomLatchArmed = true'
+case_ "F: inode scope minio-sys-excl-trash with the inode-headroom latch armed passes" 0 '^F-filesystem[[:space:]]+PASS' "$TMP/f-ev-excl-trash-armed"
+fe excl-trash-unarmed '.minio.metadataInodesScope = "minio-sys-excl-trash"' "inode scope minio-sys-excl-trash without the inode-headroom latch blocks" "MinIO metadata: the evidence counts metadataInodes without .trash \\(minio-sys-excl-trash\\) but monitor.inodeHeadroomLatchArmed is not true"
+fe excl-trash-off '.minio.metadataInodesScope = "minio-sys-excl-trash" | .monitor.inodeHeadroomLatchArmed = false' "inode scope minio-sys-excl-trash with the latch declared off blocks" "monitor.inodeHeadroomLatchArmed is not true"
+qrec excl-trash '.filesystem.metadataInodesScope = "minio-sys-excl-trash"'
+with --qualification-dir "$TMP/qual-excl-trash" > "$TMP/f-rec-excl-trash"
+case_ "F: a record whose E7 inode figure is scope minio-sys-excl-trash is accepted" 0 '^F-filesystem[[:space:]]+PASS' "$TMP/f-rec-excl-trash"
+fe no-bucket '.minio.bucketPresent = false' "evidence collected with no bucket directory blocks" "MinIO metadata: the evidence was collected with no bucket directory \\(bucketPresent false\\)"
+fe no-bucket-field 'del(.minio.bucketPresent)' "evidence that does not state bucketPresent → NOT RUN" "evidence.minio.bucketPresent missing"
 fe bytes-budget '.declared.metadataBudgetBytes = 120000000' "an M below the record's measured metadata bytes blocks" "MinIO metadata: M 120000000 is below the E2/E7 measurement 125829120"
 qrec no-e3 'del(.filesystem.experiments.E3)'
 with --qualification-dir "$TMP/qual-no-e3" > "$TMP/f-no-e3"

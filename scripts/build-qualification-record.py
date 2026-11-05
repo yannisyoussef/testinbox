@@ -54,6 +54,10 @@ OMAX_EXPERIMENTS = ("E1", "E2", "E3")
 # ONE metadata-inode counting definition for E7, the record, the declaration and gate F: the inodes under
 # <data>/.minio.sys only. Bucket directories are per-object inodes charged by i_max = 6 (ADR-035 annex §3.5).
 METADATA_INODES_SCOPE = "minio-sys"
+# The same count without .minio.sys/tmp/.trash's contents: accepted ONLY with the Ops fs-monitor's scope-independent
+# inode-headroom latch armed (gate F evidence monitor.inodeHeadroomLatchArmed), which covers the trash inodes.
+METADATA_INODES_SCOPE_EXCL_TRASH = "minio-sys-excl-trash"
+METADATA_INODES_SCOPES = (METADATA_INODES_SCOPE, METADATA_INODES_SCOPE_EXCL_TRASH)
 # ONE metadata-bytes counting definition for E2, E7, the record, the declaration (M), gate F and the fs-monitor:
 # .minio.sys without .trash, plus every allocation outside .minio.sys that no object is charged for
 # (scripts/adr035-metadata-accounting.py; PROPOSED amendment note). Per-object directories are inside O_max (§3.1).
@@ -634,9 +638,10 @@ def build(bundle_dir, expected, repo):
                 f"O_max {omax} is not a multiple of B covering at least 6 blocks (gate F would refuse every declaration)")
     m7 = (exps.get("E7") or {}).get("measurements") or {}
     metadata_inodes = need(p, m7, "metadataInodesMeasured", "pos", "experiments/E7.json measurements")
-    p.check(m7.get("metadataInodesScope") == METADATA_INODES_SCOPE,
-            f"experiments/E7.json measurements.metadataInodesScope is {m7.get('metadataInodesScope')!r}, not "
-            f"{METADATA_INODES_SCOPE!r} (.minio.sys only; bucket directories are per-object inodes charged by i_max)")
+    inodes_scope = m7.get("metadataInodesScope")
+    p.check(inodes_scope in METADATA_INODES_SCOPES,
+            f"experiments/E7.json measurements.metadataInodesScope is {inodes_scope!r}, not one of "
+            f"{METADATA_INODES_SCOPES} (.minio.sys only; bucket directories are per-object inodes charged by i_max)")
     # Metadata bytes: E2 after its partial drain and E7's 24 h peak, both counted by the one definition. The record
     # carries the larger; gate F refuses a declared M below it.
     metadata_bytes = []
@@ -670,9 +675,17 @@ def build(bundle_dir, expected, repo):
     p.check((fe.get("mount") or {}).get("otherDataOnMount") is False and fe.get("otherEntriesOnMount", []) == [],
             "gate F evidence: something other than MinIO data is on the mount (N1 cleanup incomplete)")
     p.check((fe.get("preallocation") or {}).get("holeBytes") == 0, "gate F evidence: preallocation.holeBytes is not 0")
-    p.check((fe.get("minio") or {}).get("metadataInodesScope") == METADATA_INODES_SCOPE,
-            f"gate F evidence minio.metadataInodesScope is {(fe.get('minio') or {}).get('metadataInodesScope')!r}, not "
-            f"{METADATA_INODES_SCOPE!r}: the collector must count .minio.sys only (RECORD-CUT.md, collector change)")
+    fe_inodes_scope = (fe.get("minio") or {}).get("metadataInodesScope")
+    p.check(fe_inodes_scope in METADATA_INODES_SCOPES,
+            f"gate F evidence minio.metadataInodesScope is {fe_inodes_scope!r}, not one of {METADATA_INODES_SCOPES}: "
+            "the collector must count .minio.sys only (RECORD-CUT.md, collector change)")
+    p.check(METADATA_INODES_SCOPE_EXCL_TRASH not in (inodes_scope, fe_inodes_scope)
+            or (fe.get("monitor") or {}).get("inodeHeadroomLatchArmed") is True,
+            f"{METADATA_INODES_SCOPE_EXCL_TRASH} is used but gate F evidence monitor.inodeHeadroomLatchArmed is not true: "
+            "trash inodes are covered only by the armed inode-headroom latch (note §8.2)")
+    p.check((fe.get("minio") or {}).get("bucketPresent") is True,
+            "gate F evidence minio.bucketPresent is not true: production pre-provisions the bucket, so the collector "
+            "measured the wrong directory or nothing")
     p.check((fe.get("minio") or {}).get("metadataBytesScope") == METADATA_BYTES_SCOPE,
             f"gate F evidence minio.metadataBytesScope is {(fe.get('minio') or {}).get('metadataBytesScope')!r}, not "
             f"{METADATA_BYTES_SCOPE!r}: the collector must count unattributed allocations only (RECORD-CUT.md, collector change)")
@@ -753,7 +766,7 @@ def build(bundle_dir, expected, repo):
             "mountSource": ffs["mountSource"],
             "objectOverheadMaxBytes": omax,
             "metadataInodesMeasured": metadata_inodes,
-            "metadataInodesScope": METADATA_INODES_SCOPE,
+            "metadataInodesScope": inodes_scope,
             "metadataInodesBasis": ("E7 on the final filesystem" if e7_mode == "final-filesystem"
                                     else f"E7 carried under {e7['amendment']}"),
             "metadataBytesMeasured": metadata_bytes_max,
@@ -793,7 +806,7 @@ def build(bundle_dir, expected, repo):
     label("`filesystem.uuid`, `type`, `mountOptions`, `mountSource`", f"{ffs['uuid']}, {ffs['type']}, {ffs['mountOptions']}, {ffs['mountSource']}", PN,
           f"`{ev}gate-f/filesystem-evidence.json` = `{ev}identity/fs-baseline-post-*.txt` = `{ev}identity/dumpe2fs-h.txt`")
     label("`filesystem.objectOverheadMaxBytes`", f"{omax} (worst measured {max(worst)})", PQ, f"`{ev}experiments/E1.json`, `E2.json`, `E3.json` measurements: the O_max their criterion was evaluated against")
-    label("`filesystem.metadataInodesMeasured`, `metadataInodesScope`", f"{metadata_inodes}, {METADATA_INODES_SCOPE}",
+    label("`filesystem.metadataInodesMeasured`, `metadataInodesScope`", f"{metadata_inodes}, {inodes_scope}",
           PQ if e7_mode == "final-filesystem" else "CARRIED-AMENDMENT",
           f"`{ev}experiments/E7.json`" + ("" if e7_mode == "final-filesystem" else f" (source {exps['E7']['sourceEvidence']}; authority: {e7['amendment']})"))
     label("`filesystem.metadataBytesMeasured`, `metadataBytesScope`", f"{metadata_bytes_max}, {METADATA_BYTES_SCOPE}",
