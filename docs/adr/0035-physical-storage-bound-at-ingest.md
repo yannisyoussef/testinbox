@@ -2120,6 +2120,34 @@ criterion.
   evidence; whether any such mode exists is an owner decision and a separate
   ADR amendment.
 
+## Owner decision note (2026-11-05): partitioned locking, implementation and testing only
+
+**Authority: owner decision 2026-11-05**, relayed by Ops on #124 comment
+6665820491, quoted exactly:
+
+> "Partitioned locking: Implementation and testing authorized. Release requires independent correctness review, passing applicable benchmark criteria, and enforced safeguards against cohort growth or overcommit. Benchmark success alone is insufficient. This does not authorize opening admission."
+
+This note records that decision; it changes no text above. In particular the
+gate D note's last bullet ("A measurement, not a mode … lives only in the
+benchmark module … whether any such mode exists is an owner decision and a
+separate ADR amendment") and ADR-037's "preserve … transaction lock ordering"
+stand as written. What the decision authorizes, and nothing more:
+
+- the production-code implementation of the share-partitioned T1 behind a
+  **lab-only** switch, `testinbox.storage.admission-locking`, whose default
+  and only committed value is `GLOBAL` (mode a). `DeploymentSafety` refuses
+  `COHORT_PARTITIONED` in every environment but `lab`; the activation inventory
+  refuses a node that runs it outside the lab; activation gate L blocks while
+  any node runs it or cannot prove it does not;
+- its tests, and its measurement by the §11 harness as a variant reported
+  apart from gate D, which is still computed from mode a's CHOSEN scenarios.
+
+It does not authorize release, enablement, opening admission, or any §11
+parameter, threshold or criterion change. Whether the mode exists in ADR-035,
+and on which criteria, is the PROPOSED note
+[`0035-amendment-note-partitioned-t1-PROPOSED.md`](0035-amendment-note-partitioned-t1-PROPOSED.md),
+which lists both passages above as text it would amend.
+
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
 - **ADR-027 §2.** The storage-quota paragraph and the overshoot bound are

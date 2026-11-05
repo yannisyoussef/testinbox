@@ -93,6 +93,16 @@ Differences from the gate's population, by necessity, all recorded:
   (64 GiB payload, 128 GiB footprint) holds them; participants receive only
   admitted copies. The cohort's usage is reset between scenarios.
 
+During every variant scenario both expected nodes heartbeat at production's
+cadence (every 10 s, as `StorageNodeRuntime` does): each heartbeat writes
+`storage_node`, whose V21 fence takes `(35, 1)` exclusive and drains every
+in-flight partitioned T1 once. After the matrix, one more scenario,
+`partitioned-…-hot`, sends every event to ONE participant workspace at the
+matrix's heaviest point (its `(38, k)` is the contended lock); it is reported
+under `variant` and left out of the informational criteria. The reviewers'
+recommended criteria for a partitioned T1 (not adopted) are in the PROPOSED
+note.
+
 Every variant scenario's probe must show the partitioned path
 (`t1Probe.partitioned = true`, `t1Probe.locking = COHORT_PARTITIONED`) or the
 run stops; `partitionFallbacks` records the T1s whose guard did not hold during
