@@ -220,6 +220,7 @@ class SchemaUpgradeTest : PersistenceIntegrationTest() {
                 "22",
                 "23",
                 "24",
+                "25",
             )
     }
 

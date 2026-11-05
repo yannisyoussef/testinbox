@@ -83,19 +83,37 @@ class CohortStorageRuntime(
         trash: Long,
     ): CohortStorageBudget.Result {
         if (binding == null || legacy.size > MAX_LEGACY_WORKSPACES) return CohortStorageBudget.Result.Unproven
-        val budget =
-            CohortStorageBudget.Declarations(
-                model,
-                checkNotNull(declarations.globalLimitBytes),
-                EffectiveStoragePolicy.finalizeBudget(declarations).bytes,
-                limits,
-                legacy,
-                unattributed,
-                trash,
-                worstEnvelope,
-            )
-        return CohortStorageBudget.assess(budget)
+        return CohortStorageBudget.assess(budget(legacy, unattributed, trash))
     }
+
+    /**
+     * The partition bound the approved pool records beside its plan (V25,
+     * `storage_partition_bound`): what these declarations leave for all shares,
+     * so PostgreSQL can re-check non-overcommitment in T1's own snapshot and
+     * refuse share growth past it ([CohortStorageBudget.partitionCapacity]).
+     */
+    fun partitionCapacity(
+        unattributed: Long,
+        trash: Long,
+    ): CohortStorageBudget.PartitionCapacity? {
+        if (binding == null) return null
+        return CohortStorageBudget.partitionCapacity(budget(emptyMap(), unattributed, trash))
+    }
+
+    private fun budget(
+        legacy: Map<WorkspaceId, LegacyStorageShare>,
+        unattributed: Long,
+        trash: Long,
+    ) = CohortStorageBudget.Declarations(
+        model,
+        checkNotNull(declarations.globalLimitBytes),
+        EffectiveStoragePolicy.finalizeBudget(declarations).bytes,
+        limits,
+        legacy,
+        unattributed,
+        trash,
+        worstEnvelope,
+    )
 
     fun unavailable(pool: CohortPoolState?): FootprintUnavailability? {
         if (pool == null || !pool.required) return null
