@@ -146,6 +146,28 @@ check "a camelCase YAML key admissionLocking fails" 1 "$TMP/locking-yaml-camel" 
 variant locking-other-key
 printf 'testinbox:\n  storage:\n    admission-locking-note: COHORT_PARTITIONED\n    max_admission_locking: COHORT_PARTITIONED\n' > "$TMP/locking-other-key/backend/api/src/main/resources/application-deployed.yaml"
 check "a different key that merely contains admission-locking is not this setting" 0 "$TMP/locking-other-key"
+# A system property (-D) and SPRING_APPLICATION_JSON (review #136 final N1), for both settings.
+variant locking-java-tool-options
+printf 'services:\n  ingestion:\n    environment:\n      JAVA_TOOL_OPTIONS: "-Xmx512m -Dtestinbox.storage.admission-locking=COHORT_PARTITIONED"\n' > "$TMP/locking-java-tool-options/deploy/staging/compose.yaml"
+check "a -D system property in JAVA_TOOL_OPTIONS fails" 1 "$TMP/locking-java-tool-options" 'compose.yaml:4: T1 admission locking is set to COHORT_PARTITIONED'
+variant locking-command
+printf 'services:\n  ingestion:\n    command: ["java", "-Dtestinbox.storage.admission-locking=cohort-partitioned", "-jar", "app.jar"]\n' > "$TMP/locking-command/deploy/staging/compose.yaml"
+check "a -D system property in a compose command array fails" 1 "$TMP/locking-command" 'compose.yaml:3: T1 admission locking is set to cohort-partitioned'
+variant locking-json
+printf 'services:\n  ingestion:\n    environment:\n      SPRING_APPLICATION_JSON: '"'"'{"testinbox":{"storage":{"admission-locking":"COHORT_PARTITIONED"}}}'"'"'\n' > "$TMP/locking-json/deploy/staging/compose.yaml"
+check "SPRING_APPLICATION_JSON carrying the locking key fails" 1 "$TMP/locking-json" 'compose.yaml:4: T1 admission locking is set to COHORT_PARTITIONED'
+variant locking-json-escaped
+printf 'SPRING_APPLICATION_JSON="{\\"testinbox.storage.admissionLocking\\":\\"CohortPartitioned\\"}"\n' >> "$TMP/locking-json-escaped/deploy/staging/.env.example"
+check "escaped flat SPRING_APPLICATION_JSON carrying the locking key fails" 1 "$TMP/locking-json-escaped" '\.env\.example:[0-9]+: T1 admission locking is set to CohortPartitioned'
+variant enforcement-java-tool-options
+printf 'services:\n  api:\n    environment:\n      JAVA_TOOL_OPTIONS: "-Dtestinbox.storage.ENFORCEMENT=all"\n' > "$TMP/enforcement-java-tool-options/deploy/staging/compose.yaml"
+check "a -D enforcement property in any case fails" 1 "$TMP/enforcement-java-tool-options" 'compose.yaml:4: storage enforcement is set to all'
+variant enforcement-json
+printf 'services:\n  api:\n    environment:\n      SPRING_APPLICATION_JSON: '"'"'{"testinbox":{"storage":{"enforcement":"TENANT_LIMITS"}}}'"'"'\n' > "$TMP/enforcement-json/deploy/staging/compose.yaml"
+check "SPRING_APPLICATION_JSON carrying enforcement fails" 1 "$TMP/enforcement-json" 'compose.yaml:4: storage enforcement is set to TENANT_LIMITS'
+variant json-off
+printf 'services:\n  api:\n    environment:\n      SPRING_APPLICATION_JSON: '"'"'{"testinbox":{"storage":{"enforcement":"OFF","admission-locking":"GLOBAL"}}}'"'"'\n' > "$TMP/json-off/deploy/staging/compose.yaml"
+check "SPRING_APPLICATION_JSON with OFF and GLOBAL is fine" 0 "$TMP/json-off"
 variant locking-global
 printf 'testinbox:\n  storage:\n    admission-locking: ${TESTINBOX_STORAGE_ADMISSION_LOCKING:GLOBAL}\n' > "$TMP/locking-global/backend/api/src/main/resources/application-deployed.yaml"
 check "GLOBAL, or a bare placeholder, is fine" 0 "$TMP/locking-global"
