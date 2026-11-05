@@ -11,7 +11,16 @@ import tools.jackson.databind.json.JsonMapper
 import java.sql.ResultSet
 import java.util.UUID
 
-/** Global-only internal pool snapshot; kept in the SAME SQL statement as T1/health. */
+/**
+ * Global-only internal pool snapshot; kept in the SAME SQL statement as T1/health.
+ *
+ * `unknown` (gate D step (1)): whether ANY workspace lacks a share, as 0 or 1,
+ * never a population count. Only `== 0` is ever asked of it
+ * ([email.testinbox.application.storage.CohortPoolState.unknownWorkspaces]),
+ * and the anti-join stops at the first workspace without a share, so the
+ * statement visits at most the shared workspaces (≤ 62, the inventory bound
+ * [read] enforces) plus one, whatever the population.
+ */
 internal object CohortSql {
     const val CTES = """cp_shares AS (
         SELECT workspace_id,payload_limit_bytes,footprint_limit_bytes,true AS participant FROM participant_workspace
@@ -34,7 +43,7 @@ internal object CohortSql {
         'fingerprint',(SELECT fingerprint FROM storage_cohort_plan WHERE approved),
         'unattributedAllowance',(SELECT unattributed_allowance FROM storage_cohort_plan),
         'trashAllowance',(SELECT trash_allowance FROM storage_cohort_plan),
-        'unknown',(SELECT count(*) FROM workspace w WHERE NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=w.id)),
+        'unknown',(SELECT count(*) FROM (SELECT 1 FROM workspace w WHERE NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=w.id) LIMIT 1) u),
         'nodesReady',coalesce((SELECT NOT EXISTS(
             SELECT 1 FROM unnest(p.expected_nodes) expected WHERE NOT EXISTS(
                 SELECT 1 FROM storage_node n WHERE n.node_id=expected AND NOT n.clean_shutdown

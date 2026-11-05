@@ -780,6 +780,13 @@ SELECT json_build_object(
                  + (SELECT coalesce(sum(objects), 0) FROM storage_delta)
                  + (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation),
       'debtBytes', (SELECT bytes FROM debt), 'debtObjects', (SELECT objects FROM debt)),
+  -- V24: the global base row T1 reads instead of the population, against Σ workspace bases,
+  -- in the same snapshot. NULL row figures mean the row is missing.
+  'globalBase', json_build_object(
+      'rowBytes', (SELECT base_bytes FROM storage_global_base WHERE id = 1),
+      'rowObjects', (SELECT base_objects FROM storage_global_base WHERE id = 1),
+      'sumBytes', (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account),
+      'sumObjects', (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)),
   'observation', (SELECT json_build_object('startedSeq', started_seq, 'writtenBy', written_by::text,
                      'observedAt', to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
                      'blockSizeBytes', block_size_bytes, 'capacityBytes', capacity_bytes, 'usedBytes', used_bytes,
@@ -811,6 +818,7 @@ SELECT json_build_object(
       SELECT r.app || ': ' || p.priv || ' on ' || p.tbl
         FROM reach r
         JOIN (SELECT tbl, priv FROM (VALUES ('storage_sweep_run'), ('storage_delta'), ('workspace_storage_account'),
+                                            ('storage_global_base'),
                                             ('storage_containment_watermark'), ('storage_legacy_share'),
                                             ('storage_cohort_plan'), ('workspace_deletion_charge')) AS t(tbl)
                      CROSS JOIN (VALUES ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE')) AS v(priv)
@@ -825,7 +833,7 @@ SELECT json_build_object(
                      CROSS JOIN (VALUES ('TRIGGER'), ('TRUNCATE')) AS v(priv)
               UNION ALL
               SELECT tbl, 'TRIGGER' FROM (VALUES ('storage_sweep_run'), ('storage_delta'), ('workspace_storage_account'),
-                                                 ('storage_containment_watermark')) AS t(tbl)
+                                                 ('storage_global_base'), ('storage_containment_watermark')) AS t(tbl)
               UNION ALL
               SELECT 'inbox_storage', 'DELETE') AS p(tbl, priv)
           ON has_table_privilege(r.goid, p.tbl, p.priv)
@@ -974,7 +982,8 @@ gate_filesystem() {
               else [] end )
           + [ ( [["now"], "string"], [["inRecovery"], "boolean"], [["trust","distrustEpoch"], "count"], [["trust","distrustedSeq"], "count"], [["watermark"], "count"],
                 [["footprint","liveBytes"], "count"], [["footprint","liveObjects"], "count"], [["footprint","debtBytes"], "count"],
-                [["footprint","debtObjects"], "count"], [["sequenceCacheSize"], "positive"] ) | need($s; "state"; .[0]; .[1]) ]
+                [["footprint","debtObjects"], "count"], [["sequenceCacheSize"], "positive"],
+                [["globalBase","sumBytes"], "count"], [["globalBase","sumObjects"], "count"] ) | need($s; "state"; .[0]; .[1]) ]
           + ( if ($s.liveNodes | type) != "array" then ["state.liveNodes is not a list"] else [] end )
           + ( if ($s.observationInserters | type) != "array" then ["state.observationInserters is not a list"] else [] end )
           + ( if ($s.beginObservationExecutors | type) != "array" then ["state.beginObservationExecutors is not a list"] else [] end )
@@ -1124,6 +1133,14 @@ gate_filesystem() {
                 then "observation validity: the newest observation began at seq \($o.startedSeq), below the compaction watermark \($s.watermark) (T1 refuses it)" else empty end ),
             ( if ([$fp.liveBytes, $fp.liveObjects, $fp.debtBytes, $fp.debtObjects, $fp.liveBytes + $fp.debtBytes] | max) > 9223372036854775807
                 then "indeterminate: a footprint total does not fit a signed 64-bit figure (T1 refuses it)" else empty end ),
+            # V24: T1 reads Σ workspace bases from ONE row. Missing or different, the figure
+            # admission decides on is wrong (or, missing, the population scan is back):
+            # reconciliation repairs it and the verifier revokes trust until then.
+            ( if $s.globalBase.rowBytes == null or $s.globalBase.rowObjects == null
+                then "global base: the storage_global_base row is missing (T1 sums the population; reconciliation must recreate it)"
+              elif $s.globalBase.rowBytes != $s.globalBase.sumBytes or $s.globalBase.rowObjects != $s.globalBase.sumObjects
+                then "global base: storage_global_base \($s.globalBase.rowBytes) B / \($s.globalBase.rowObjects) objects ≠ Σ workspace bases \($s.globalBase.sumBytes) B / \($s.globalBase.sumObjects) objects (drift; reconciliation repairs it and revokes trust)"
+              else empty end ),
             ( if $s.trust == null or $s.trust.trustedEpoch != $s.trust.distrustEpoch
                 then "trusted counts: trusted_epoch \($s.trust.trustedEpoch // "null") ≠ distrust_epoch \($s.trust.distrustEpoch // "null")" else empty end ),
             ( if $o != null and $o.startedSeq <= $s.trust.distrustedSeq

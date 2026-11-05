@@ -240,4 +240,76 @@ class StorageAdmissionSnapshotTest : PersistenceIntegrationTest() {
                 listOf("INBOX_LIMIT")
         }
     }
+    // --- the compactor and the V24 global base row: delta → base row → global row ----------------------
+
+    /**
+     * The V24 mutant (gate D step (1)): the global base row read in its own
+     * statement, the deltas in a later one. The compactor's fold moves bytes
+     * from the deltas into a base row AND the global row in one transaction, so
+     * a split read sees them in neither place.
+     */
+    private class SplitGlobalRead(
+        fx: AdmissionFixture,
+        private val afterGlobalRow: () -> Unit,
+    ) : JdbcStorageAdmission(fx.db.jdbc, fx.db.transactions) {
+        private val jdbc = fx.db.jdbc
+
+        override fun readSnapshot(scope: StorageAdmissionScope): StorageUsageSnapshot {
+            val row =
+                jdbc
+                    .sql("SELECT base_bytes FROM storage_global_base WHERE id = 1")
+                    .query(Long::class.java)
+                    .single()
+            afterGlobalRow()
+            val rest = super.readSnapshot(scope)
+            val deltas =
+                jdbc
+                    .sql("SELECT coalesce(sum(bytes), 0) FROM storage_delta")
+                    .query(Long::class.java)
+                    .single()
+            return rest.copy(global = StorageUsage(row + deltas, rest.global.reservedBytes))
+        }
+    }
+
+    /** Global limit 100: another workspace holds 45 in its base and 50 in a delta, so a copy of 10 does not fit. */
+    private val globalPolicy = policy(workspace = 1_000_000, share = "1", global = 100)
+
+    @Test
+    fun `a split read of the global base row under-counts a fold the compactor commits between its statements, and over-admits`() {
+        val db = fx.db
+        val busy = db.workspace()
+        val busyInbox = db.inbox(busy)
+        fx.base(busy, busyInbox, 45)
+        fx.delta(busy, busyInbox, 50)
+        val ws = db.workspace()
+        val inbox = db.inbox(ws)
+        val mutant = SplitGlobalRead(fx) { compactorFolds() }
+
+        fx.admission(globalPolicy, StorageEnforcement.ALL, mutant).admit(fx.request(F, listOf(fx.candidate(ws, inbox)))).shape() shouldBe
+            listOf("admitted")
+
+        fx.snapshot(setOf(ws), setOf(inbox)).global.usedBytes shouldBe 105 // over the global limit of 100
+    }
+
+    @Test
+    fun `the single statement sees a fold into the global base row wholly before or wholly after, and refuses either way`() {
+        for (foldAfterRead in listOf(false, true)) {
+            val fresh = AdmissionFixture(LedgerTestDatabase.create(postgres, admin))
+            val db = fresh.db
+            val busy = db.workspace()
+            val busyInbox = db.inbox(busy)
+            fresh.base(busy, busyInbox, 45)
+            fresh.delta(busy, busyInbox, 50)
+            val ws = db.workspace()
+            val inbox = db.inbox(ws)
+            fx = fresh
+            val store = if (foldAfterRead) AfterRead(fresh.store()) { compactorFolds() } else fresh.store()
+            if (!foldAfterRead) compactorFolds()
+
+            fresh
+                .admission(globalPolicy, StorageEnforcement.ALL, store)
+                .admit(fresh.request(F, listOf(fresh.candidate(ws, inbox))))
+                .shape() shouldBe listOf("SERVICE_CAPACITY")
+        }
+    }
 }

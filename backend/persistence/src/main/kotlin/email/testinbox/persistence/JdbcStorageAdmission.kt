@@ -109,16 +109,20 @@ open class JdbcStorageAdmission(
      * - a lock timeout;
      * - a statement timeout and an idle-in-transaction timeout, so that a
      *   stalled or vanished client cannot hold the global lock, and with it
-     *   every tenant's admission, until TCP keepalive notices.
+     *   every tenant's admission, until TCP keepalive notices;
+     * - `plan_cache_mode = force_generic_plan` (gate D step (1)): the snapshot
+     *   is ONE fixed text with one `uuid[]` bind per id list, so the driver
+     *   server-prepares it after its prepare threshold and PostgreSQL plans it
+     *   once per connection, never per admission inside the lock. A generic
+     *   plan cannot depend on the bound ids, which is what a fixed-arity
+     *   statement over in-flight tables wants.
      *
      * The isolation level must be the transaction's first statement.
      */
     private fun configureTransaction() {
         jdbc.sql("SET TRANSACTION ISOLATION LEVEL READ COMMITTED").update()
         // SET takes no bind parameters. Every value below is a validated Long, never input.
-        // Gate D prototype (WS-D2, for app-team review): the snapshot is ONE fixed SQL text with one array bind per id
-        // list, so pgjdbc server-prepares it and PostgreSQL keeps one generic plan instead of replanning the
-        // ~15-join UNION on every admission (measured: planning was about half of the statement under the lock).
+        // Gate D: planning was about half of the statement under the lock at c10dd3d (#124 6633013793).
         jdbc
             .sql(
                 "SET LOCAL synchronous_commit = on; SET LOCAL lock_timeout = '${lockTimeout.toMillis()}ms'; " +
@@ -152,11 +156,14 @@ open class JdbcStorageAdmission(
      * bytes. `StorageAdmissionSnapshotTest` shows that window with a split
      * read.
      *
-     * Every figure is `base + Σdelta + Σreservation`. A missing base row reads
-     * as 0, and its deltas and reservations still count. Every reservation
-     * counts, whatever its state or age (I5).
+     * Every figure is `base + Σdelta + Σreservation`. A missing workspace or
+     * inbox base row reads as 0, and its deltas and reservations still count.
+     * Every reservation counts, whatever its state or age (I5). The GLOBAL
+     * base is the V24 `storage_global_base` row, kept equal to Σ workspace
+     * bases by definer triggers in the base writers' own transactions; a
+     * missing row is never read as 0 (see [FootprintSql.GLOBAL_CTES]).
      */
-    private val footprintCtes = if (readsFootprint) ",\n${FootprintSql.CTES}" else ""
+    private val footprintCtes = if (readsFootprint) ",\n${FootprintSql.FOOTPRINT_CTES}" else ""
     private val footprintColumns = if (readsFootprint) FootprintSql.COLUMNS else FootprintSql.NONE
 
     /**
@@ -169,11 +176,9 @@ open class JdbcStorageAdmission(
         WITH ws AS (SELECT DISTINCT unnest(CAST(:workspaces AS uuid[])) AS id),
              ib AS (SELECT DISTINCT unnest(CAST(:inboxes AS uuid[])) AS id),
              -- Each global sum is ONE scan of its table, bytes and objects together
-             -- (referenced twice, so materialized once), still in the same statement.
-             g_base AS ($GLOBAL_BASE_SQL),
-             g_delta AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(objects), 0) AS objects FROM storage_delta),
-             g_reserved AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(cardinality(object_keys)), 0) AS objects
-                              FROM storage_reservation),
+             -- (referenced more than once, so materialized once), still in the same
+             -- statement. Σ workspace bases is ONE row (V24), never the population.
+             ${FootprintSql.GLOBAL_CTES},
              -- Each sum is aggregated once for the involved ids, not
              -- once per id: the statement's cost must not grow with
              -- the recipient count times the ledger backlog.
@@ -298,10 +303,13 @@ open class JdbcStorageAdmission(
             t0 = checkNotNull(Timestamps.fromDb(rs, "t0")),
             usage =
                 StorageUsage(
-                    exactLong(checkNotNull(rs.getBigDecimal("committed")) { "the global storage base row is missing (V24)" }),
+                    exactLong(checkNotNull(rs.getBigDecimal("committed")) { "a committed figure is NULL: corrupt accounting" }),
                     exactLong(rs.getBigDecimal("reserved")),
                     // Counts can only drift negative through corruption; a bound cannot carry that.
-                    maxOf(0L, exactLong(checkNotNull(rs.getBigDecimal("committed_objects")) { "the global storage base row is missing (V24)" })),
+                    maxOf(
+                        0L,
+                        exactLong(checkNotNull(rs.getBigDecimal("committed_objects")) { "a committed figure is NULL: corrupt accounting" }),
+                    ),
                     maxOf(0L, exactLong(rs.getBigDecimal("reserved_objects"))),
                 ),
         )
@@ -374,14 +382,6 @@ open class JdbcStorageAdmission(
         /** ADR-035's advisory class and ids: (35, 1) admission, (35, 2) ledger (`JdbcStorageLedger`). */
         const val STORAGE_LOCK_CLASS = 35
         const val ADMISSION_LOCK = 1
-
-        /**
-         * Σbase over every workspace, as ONE row (V24 prototype): kept by statement triggers on
-         * workspace_storage_account in the compactor's own transaction, never written by T1 or T2. A missing row
-         * reads as NULL and fails T1 closed (see [snapshotRow]); it never reads as 0.
-         */
-        private const val GLOBAL_BASE_SQL =
-            "SELECT base_bytes AS bytes, base_objects AS objects FROM storage_global_base WHERE id = 1"
 
         /** How much longer than the lock timeout any one T1 statement may run. */
         private val STATEMENT_MARGIN: Duration = Duration.ofSeconds(5)
