@@ -863,6 +863,72 @@ production-named host; how those experiments are run against the production
 combination is an Ops procedure to state in the evidence, not something this
 repository decides.
 
+#### A2: the N1 ballast and qualification procedure (procedure note, 2026-11-05)
+
+*Dated 2026-11-05. Source: #124 comment 6649193963 §3, as clarified by the app answers in #124 comment 6667602147.
+Pointer from ADR-035: amendment note "WS-N1 A2". This is a procedure clarification: it lowers no criterion and
+changes no gate. The N1 condition throughout is running kernel 6.8.0-147-generic, boot id unchanged, checked at
+every step.*
+
+"Stack stopped" applies to ballast windows. E2/E7 run with the stack up and the production monitor observe-only.
+The interlock is Ops code.
+
+1. **Stopped stack per ballast window.** Production MinIO, ingestion, API and workers are stopped. Each window ends
+   inside the 4 h edge-queue lifetime, with an abort deadline. At its end: ballast removed, FIEMAP checked under the
+   #125 rule, gate F re-evaluated, stack restarted, synthetics green.
+2. **Interlock in code.** `testinbox-minio-fs check` and the deploy preflight apply a three-way rule:
+   - **Ballast: always FAIL.** This covers the ballast path, and any fallocated file outside `…/data` and the
+     declared qualification tree. The tool refuses to create ballast while the stack runs.
+   - **The declared E2/E7 qualification tree: WARN only** while all of these hold:
+     - the N1 tooling wrote a declaration at start naming exactly one path `…/n1-qual/qual-<run>`, the run id, the
+       declared `uname -r` and boot id, and an expiry ≤ start + 32 h;
+     - that path is the only foreign entry;
+     - the production monitor is observe-only;
+     - the running kernel and boot id equal the declared ones.
+
+     Past the expiry, or with the declaration missing or mismatched, it is FAIL. The WARN is exported (a textfile
+     metric and a log line), never silent.
+   - **Everything else: FAIL.**
+
+   **Gate F is unchanged.** Its dedicated-mount row (`otherEntriesOnMount: []`) keeps blocking `ALL` while the tree
+   exists, and enforcement stays `OFF` throughout N1. The declaration is removed with the tree (item 8).
+3. **Ballast form.** Plain `fallocate -l` (no punch, no keep-size), one file at a fixed path outside both data
+   directories.
+   - Prerequisites: `discard_max_bytes` = 0, and 0 FIEMAP holes before and after.
+   - Record statvfs and FIEMAP before creation, after creation and after removal.
+   - The evidence names the ballast size per run.
+4. **Recovery by the runbook, not by removing the ballast.**
+   - **Fill-and-recovery runs** (E3, E9, E11, and E5/E6 if they use ballast): the object band is ≥ *R_ops* +
+     *H_F* + a 1 GiB margin = 4,294,967,296 + 506,200,576 + 1,073,741,824 = **5,874,909,696 B**. The margin
+     exceeds `2·M` of the 256 MiB staging *M*, so the metadata latch is never what fires there. E3's band holds a
+     90 % fill, deletes and a refill, five times.
+   - **E4(iv) and E8 are exempt from that minimum.** They are failure-shape measurements driven to ENOSPC through
+     the qualification MinIO, with no TestInbox recovery inside the band. Their band is ≥ the run's declared size
+     (E4(iv) 1 GiB, E8 2 GiB). Items 1 and 3 still apply to them in full, and neither run ever targets production
+     `…/data`.
+5. **Lab monitor and latch configuration per run.** Every app-lab run uses the **production declarations**:
+   `operational_reserve_bytes` 4 GiB and `procs` 2. The lab monitor's configuration hash is recorded per run.
+   E9(C) must be attributable to the breaker with the latch clear before the run. "Reproduce the staging E9 v2
+   configuration" means its procedure and latch shape (the same latch conditions and observation interval), not
+   staging's declared values.
+6. **The production monitor is observe-only** while the E2/E7 population sits on the filesystem.
+7. **Isolation:**
+   - the qualification MinIO has its own credentials and network, with a sibling `…/qual-<run>` data directory,
+     never `…/data`;
+   - the enforcing lab instance has its MinIO data on `c33e14fd`, and its monitor observes that mount and the real
+     image;
+   - the lab database and all other state are **off** the final filesystem;
+   - no production hostnames or credentials;
+   - no registration in the production database;
+   - its record is `platformClass: lab` with the production identity.
+8. **Afterwards:**
+   - scratch trees and the qualification-tree declaration deleted;
+   - `otherEntriesOnMount: []`;
+   - gate F's dedicated-mount, identity and preallocation rows re-evaluated;
+   - production `…/data` unchanged.
+9. **E10's fault goes only into the lab monitor's input** (a decoy image). The production image is never punched,
+   truncated or detached. Verify the production monitor's configuration hash afterwards.
+
 **Adding the record (a later pull request, once the evidence exists):** add
 the JSON file and its line in `adr035-qualification/index.txt`; commit the
 evidence directory it cites; update `QualificationRecordsTest` ("no record

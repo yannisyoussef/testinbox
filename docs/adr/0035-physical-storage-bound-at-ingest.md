@@ -2188,6 +2188,13 @@ C1–C6 (#124 comment 6671007334). The six-hour full-capacity fallback is not au
 digest quoted in C6. "After the reboot" means the boot id C3 records: running kernel 6.8.0-147-generic, boot id
 unchanged at every step.
 
+## Amendment note (2026-11-05, WS-N1 A2): the N1 ballast and qualification procedure (pointer)
+
+This is a procedure clarification, not a criterion change. The procedure for N1's ballast windows and qualification
+trees (stopped stack, interlock, ballast form, band minimums, lab monitor configuration, isolation, cleanup, E10's
+decoy fault) is the dated note "A2: the N1 ballast and qualification procedure" in `docs/dev/production.md`, from #124
+comment 6649193963 §3 as clarified by comment 6667602147. Gate F is unchanged by it.
+
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
 - **ADR-027 §2.** The storage-quota paragraph and the overshoot bound are
