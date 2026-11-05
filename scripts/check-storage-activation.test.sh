@@ -429,6 +429,16 @@ fe no-meta-scope 'del(.minio.metadataInodesScope)' "evidence that does not state
 qrec no-scope 'del(.filesystem.metadataInodesScope)'
 with --qualification-dir "$TMP/qual-no-scope" > "$TMP/f-no-scope"
 only "F: a record whose E7 figure does not state scope minio-sys blocks" F-filesystem "record fixture-laptop-arm64-reference does not state its E7 metadataInodesMeasured as scope minio-sys" "$TMP/f-no-scope"
+# One counting definition for metadata BYTES (amendment note): .minio.sys without .trash + unattributed allocations.
+fe bytes-scope-all '.minio.metadataBytesScope = "minio-sys+bucket-directories"' "evidence counting every bucket directory block as metadata bytes blocks" "MinIO metadata: the evidence counts bucketDirectoryBytes over scope minio-sys\\+bucket-directories, not minio-sys\\+unattributed"
+fe no-bytes-scope 'del(.minio.metadataBytesScope)' "evidence that does not state its metadata bytes scope → NOT RUN" "evidence.minio.metadataBytesScope missing"
+qrec no-bytes-scope 'del(.filesystem.metadataBytesScope)'
+with --qualification-dir "$TMP/qual-no-bytes-scope" > "$TMP/f-no-bytes-scope"
+only "F: a record whose metadata bytes figure does not state scope minio-sys+unattributed blocks" F-filesystem "record fixture-laptop-arm64-reference does not state its metadataBytesMeasured as scope minio-sys\\+unattributed" "$TMP/f-no-bytes-scope"
+qrec no-bytes 'del(.filesystem.metadataBytesMeasured)'
+with --qualification-dir "$TMP/qual-no-bytes" > "$TMP/f-no-bytes"
+only "F: a record without the E2/E7 metadata bytes measurement blocks" F-filesystem "carries no E2/E7 metadata bytes measurement" "$TMP/f-no-bytes"
+fe bytes-budget '.declared.metadataBudgetBytes = 120000000' "an M below the record's measured metadata bytes blocks" "MinIO metadata: M 120000000 is below the E2/E7 measurement 125829120"
 qrec no-e3 'del(.filesystem.experiments.E3)'
 with --qualification-dir "$TMP/qual-no-e3" > "$TMP/f-no-e3"
 only "F: ALL needs every experiment E1–E11 recorded PASS" F-filesystem "experiments: record fixture-laptop-arm64-reference does not record PASS for E3" "$TMP/f-no-e3"
@@ -468,7 +478,7 @@ fs privileges '.roleViolations = ["testinbox_app: owns storage_deletion_debt"]' 
 fs cache '.sequenceCacheSize = 20' "a cached ordering sequence blocks" "ordering: storage_debt_order_seq has CACHE 20, not 1"
 fs replica '.inRecovery = true' "a gate connected to a replica blocks" "ordering: a reader or writer is not on the primary"
 fe primary '.database.allConnectionsToPrimary = false' "a reader or writer off the primary blocks" "ordering: a reader or writer is not on the primary"
-fe metadata '.minio.bucketDirectoryBytes = 200000000' "MinIO metadata above M blocks" "MinIO metadata: .minio.sys 104857600 \+ bucket directories 200000000 > M 268435456"
+fe metadata '.minio.bucketDirectoryBytes = 200000000' "MinIO metadata above M blocks" "MinIO metadata: .minio.sys 104857600 \+ unattributed 200000000 > M 268435456"
 fe qual-invalid '.qualificationValid = 0' "an Ops qualification-check reporting invalid blocks" "qualification identity: Ops qualification-check reports valid=0"
 fs obs-age '.observation.observedAt = "2026-10-06T23:40:00Z"' "an observation older than A_obs blocks" "observation liveness: the newest observation is 1500 s old, more than A_obs 900 s"
 fs obs-future '.observation.observedAt = "2026-10-07T00:10:00Z"' "an observation from the future blocks" "observation liveness: the newest observation is in the future"

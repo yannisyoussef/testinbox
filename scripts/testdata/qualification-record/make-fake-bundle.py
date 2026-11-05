@@ -77,8 +77,11 @@ def experiment(n, e7_mode):
          "measurements": {}, "rawFiles": [f"experiments/E{n}/run.log"]}
     if n in (1, 2, 3):
         e["measurements"] = {"oMaxBytes": 24576, "worstObjectOverheadBytes": 20000 + n}
+    if n == 2:
+        e["measurements"].update(metadataBytesMeasured=41943040, metadataBytesScope="minio-sys+unattributed")
     if n == 7:
-        e["measurements"] = {"metadataInodesMeasured": 157, "metadataInodesScope": "minio-sys"}
+        e["measurements"] = {"metadataInodesMeasured": 157, "metadataInodesScope": "minio-sys",
+                             "metadataBytesMeasured": 52428800, "metadataBytesScope": "minio-sys+unattributed"}
     if carried:
         e["startedAt"], e["completedAt"] = "1999-12-01T00:00:00Z", "1999-12-02T00:00:00Z"
         e["sourceEvidence"] = "fake/staging/e7-corpus/"

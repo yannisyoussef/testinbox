@@ -837,6 +837,7 @@ on the production host and its recreated dedicated data filesystem:
 | `filesystem.uuid`, `type`, `mountOptions`, `mountSource` | the recreated dedicated filesystem (preallocated, `mkfs -i 4096`, isolated; filesystem-evidence.md, "Before `ALL` can pass") |
 | `filesystem.objectOverheadMaxBytes` | the measured *O_max* from E1–E3 |
 | `filesystem.metadataInodesMeasured`, `metadataInodesScope` | the E7 metadata inode measurement, counted over `.minio.sys` only (scope `minio-sys`; bucket directories are per-object inodes charged by *i_max*, see `docs/dev/filesystem-evidence.md`) |
+| `filesystem.metadataBytesMeasured`, `metadataBytesScope` | the larger of E2's post-drain and E7's peak `metadataBytes`, scope `minio-sys+unattributed` (`.minio.sys` without `.trash`, plus allocations no object is charged for; `scripts/adr035-metadata-accounting.py`). Gate F requires the declared *M* to be at least it |
 | `filesystem.experiments` | `E1`…`E11` (annex §10: amplification, directory growth, fragmentation, inode ratio, trash accounting, debt release, `.minio.sys` growth, ENOSPC corpus, zero-byte PUT/`STORAGE_FULL` trial incl. case C, monitor latches, restart/deletes/recovery at full), each `"PASS"` with its run output in the evidence directory |
 | `enablementEligible`, `ineligibilityReasons` | `true` and `[]` only when every row above is complete |
 

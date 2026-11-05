@@ -158,6 +158,18 @@ fresh early; edit early experiments/E5.json 'd["startedAt"] = "1999-12-31T23:00:
 refused "an experiment before the post-reboot baseline → refuse" early "E5 started 1999-12-31T23:00:00Z, before the post-reboot baseline"
 fresh e7lab; edit e7lab experiments/E7.json 'd["venue"] = "carried"'
 refused "E7 carried without MANIFEST e7.mode carried → refuse" e7lab "experiments/E7.json: venue is 'carried', not final-filesystem"
+# One metadata-bytes definition (scope minio-sys+unattributed) for E2, E7, the gate F evidence and the declared M.
+fresh e2bytes; edit e2bytes experiments/E2.json 'd["measurements"]["metadataBytesScope"] = "minio-sys+bucket-directories"'
+refused "an E2 bytes figure counting every bucket directory → refuse" e2bytes "experiments/E2.json measurements.metadataBytesScope is 'minio-sys\\+bucket-directories'"
+fresh e7bytes; edit e7bytes experiments/E7.json 'del(d["measurements"]["metadataBytesMeasured"])'
+refused "an E7 without its metadata bytes peak → refuse" e7bytes "experiments/E7.json measurements: 'metadataBytesMeasured' is missing"
+fresh febytes; edit febytes gate-f/filesystem-evidence.json 'del(d["minio"]["metadataBytesScope"])'
+refused "gate F evidence from a collector that does not count unattributed allocations only → refuse" febytes "gate F evidence minio.metadataBytesScope is None"
+fresh mbudget; edit mbudget gate-f/filesystem-evidence.json 'd["declared"]["metadataBudgetBytes"] = 50000000'
+refused "a declared M below the E2/E7 metadata bytes measurement → refuse" mbudget "declares M = 50000000, below the E2/E7 metadata bytes measurement 52428800"
+if [ "$(jq -c '[.filesystem.metadataBytesMeasured, .filesystem.metadataBytesScope]' "$REC")" = '[52428800,"minio-sys+unattributed"]' ]; then
+    ok "the record carries the larger of E2 and E7 as metadataBytesMeasured, scope minio-sys+unattributed"
+else bad "record metadataBytes members" "$(jq -c .filesystem "$REC")"; fi
 
 # ------------------------------------------------------------------- E7 carried (W3 A5): both outcomes
 fresh carry --e7 carried

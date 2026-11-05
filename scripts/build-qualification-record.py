@@ -21,7 +21,9 @@ It REFUSES (exit 1, nothing written) when
   - the recordId derived from the evidence differs from MANIFEST.json or from the gate F evidence's
     qualificationRecordId;
   - E7 is carried from another corpus without MANIFEST.e7.mode = "carried" and an amendment reference that is
-    present in ADR-035's text (W3 question A5: both outcomes are supported, neither is silent).
+    present in ADR-035's text (W3 question A5: both outcomes are supported, neither is silent);
+  - a metadata figure (E7 inodes; E2 and E7 bytes; the gate F evidence) is not counted by the one definition
+    (scopes minio-sys and minio-sys+unattributed), or a declared budget is below its measurement.
 Nothing measured is typed by hand: every record value is read from a bundle file, derived from bundle files by a
 rule stated in PROVENANCE.md, or is a constant of the artifact (CODE). Exit 2 is a usage error.
 
@@ -49,6 +51,11 @@ OMAX_EXPERIMENTS = ("E1", "E2", "E3")
 # ONE metadata-inode counting definition for E7, the record, the declaration and gate F: the inodes under
 # <data>/.minio.sys only. Bucket directories are per-object inodes charged by i_max = 6 (ADR-035 annex §3.5).
 METADATA_INODES_SCOPE = "minio-sys"
+# ONE metadata-bytes counting definition for E2, E7, the record, the declaration (M), gate F and the fs-monitor:
+# .minio.sys without .trash, plus every allocation outside .minio.sys that no object is charged for
+# (scripts/adr035-metadata-accounting.py; PROPOSED amendment note). Per-object directories are inside O_max (§3.1).
+METADATA_BYTES_SCOPE = "minio-sys+unattributed"
+METADATA_BYTES_EXPERIMENTS = ("E2", "E7")  # E2: after the partial drain; E7: the peak over 24 h
 C_MAX_S = 15 * 60  # ADR-035 §9: C_max = 15 min, measured from the writer's RST
 SLOW_W_MIN_TRIALS = 18  # plan-slow.json
 SWEEP_MIN_GAP_MIN = 17
@@ -599,6 +606,18 @@ def build(bundle_dir, expected, repo):
     p.check(m7.get("metadataInodesScope") == METADATA_INODES_SCOPE,
             f"experiments/E7.json measurements.metadataInodesScope is {m7.get('metadataInodesScope')!r}, not "
             f"{METADATA_INODES_SCOPE!r} (.minio.sys only; bucket directories are per-object inodes charged by i_max)")
+    # Metadata bytes: E2 after its partial drain and E7's 24 h peak, both counted by the one definition. The record
+    # carries the larger; gate F refuses a declared M below it.
+    metadata_bytes = []
+    for name in METADATA_BYTES_EXPERIMENTS:
+        m = (exps.get(name) or {}).get("measurements") or {}
+        v = need(p, m, "metadataBytesMeasured", "pos", f"experiments/{name}.json measurements")
+        p.check(m.get("metadataBytesScope") == METADATA_BYTES_SCOPE,
+                f"experiments/{name}.json measurements.metadataBytesScope is {m.get('metadataBytesScope')!r}, not "
+                f"{METADATA_BYTES_SCOPE!r} (per-object directory blocks are charged by O_max, never also by M)")
+        if v is not None:
+            metadata_bytes.append(v)
+    metadata_bytes_max = max(metadata_bytes) if len(metadata_bytes) == len(METADATA_BYTES_EXPERIMENTS) else None
 
     # --- recordId and qualifiedAt (DERIVED), and the gate F evidence that must name the same record
     qualified_at = max([t for t in completions] + ([sweep_at] if sweep_at else []), default=None)
@@ -623,11 +642,16 @@ def build(bundle_dir, expected, repo):
     p.check((fe.get("minio") or {}).get("metadataInodesScope") == METADATA_INODES_SCOPE,
             f"gate F evidence minio.metadataInodesScope is {(fe.get('minio') or {}).get('metadataInodesScope')!r}, not "
             f"{METADATA_INODES_SCOPE!r}: the collector must count .minio.sys only (RECORD-CUT.md, collector change)")
+    p.check((fe.get("minio") or {}).get("metadataBytesScope") == METADATA_BYTES_SCOPE,
+            f"gate F evidence minio.metadataBytesScope is {(fe.get('minio') or {}).get('metadataBytesScope')!r}, not "
+            f"{METADATA_BYTES_SCOPE!r}: the collector must count unattributed allocations only (RECORD-CUT.md, collector change)")
     dcl = fe.get("declared") or {}
     p.check(omax is None or (isinstance(dcl.get("objectOverheadBytes"), int) and dcl["objectOverheadBytes"] >= omax),
             f"gate F evidence declares O = {dcl.get('objectOverheadBytes')}, below the qualified O_max {omax}")
     p.check(metadata_inodes is None or (isinstance(dcl.get("metadataBudgetInodes"), int) and dcl["metadataBudgetInodes"] >= metadata_inodes),
             f"gate F evidence declares an inode budget {dcl.get('metadataBudgetInodes')}, below the E7 measurement {metadata_inodes}")
+    p.check(metadata_bytes_max is None or (isinstance(dcl.get("metadataBudgetBytes"), int) and dcl["metadataBudgetBytes"] >= metadata_bytes_max),
+            f"gate F evidence declares M = {dcl.get('metadataBudgetBytes')}, below the E2/E7 metadata bytes measurement {metadata_bytes_max}")
     if fe.get("collectedAt") and ISO_RE.match(str(fe.get("collectedAt"))) and qualified_at:
         p.check(iso(fe["collectedAt"]) >= qualified_at, "gate F evidence was collected before the qualification completed")
 
@@ -698,6 +722,8 @@ def build(bundle_dir, expected, repo):
             "metadataInodesScope": METADATA_INODES_SCOPE,
             "metadataInodesBasis": ("E7 on the final filesystem" if e7_mode == "final-filesystem"
                                     else f"E7 carried under {e7['amendment']}"),
+            "metadataBytesMeasured": metadata_bytes_max,
+            "metadataBytesScope": METADATA_BYTES_SCOPE,
             "experiments": {n: exps[n]["verdict"] for n in EXPERIMENTS},
         },
         "enablementEligible": True,
@@ -734,6 +760,10 @@ def build(bundle_dir, expected, repo):
     label("`filesystem.metadataInodesMeasured`, `metadataInodesScope`", f"{metadata_inodes}, {METADATA_INODES_SCOPE}",
           PQ if e7_mode == "final-filesystem" else "CARRIED-AMENDMENT",
           f"`{ev}experiments/E7.json`" + ("" if e7_mode == "final-filesystem" else f" (source {exps['E7']['sourceEvidence']}; authority: {e7['amendment']})"))
+    label("`filesystem.metadataBytesMeasured`, `metadataBytesScope`", f"{metadata_bytes_max}, {METADATA_BYTES_SCOPE}",
+          PQ if e7_mode == "final-filesystem" else "CARRIED-AMENDMENT",
+          f"the larger of `{ev}experiments/E2.json` (after the partial drain) and `{ev}experiments/E7.json` (24 h peak) "
+          "`measurements.metadataBytesMeasured`, both counted by `scripts/adr035-metadata-accounting.py`")
     for n in EXPERIMENTS:
         e = exps[n]
         carried = n == "E7" and e7_mode == "carried"

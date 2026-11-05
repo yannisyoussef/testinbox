@@ -67,6 +67,8 @@
     "metadataInodesMeasured": 157,
     "metadataInodesScope": "minio-sys",
     "metadataInodesBasis": "E7 on the final filesystem",
+    "metadataBytesMeasured": 52428800,
+    "metadataBytesScope": "minio-sys+unattributed",
     "experiments": {
       "E1": "PASS",
       "E2": "PASS",

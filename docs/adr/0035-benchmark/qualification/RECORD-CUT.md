@@ -17,7 +17,7 @@ The tools:
 |---|---|
 | `scripts/build-qualification-record.py` | the offline generator: verifies the bundle's `SHA256SUMS` first, then builds the record, `PROVENANCE.md` and the evidence copy; refuses (exit 1, nothing written) on any gap |
 | `docs/adr/0035-benchmark/qualification/production-expected.json` | the **FIXED** values (below). Not a record, never shipped. A bundle that measures anything else is refused |
-| `scripts/build-qualification-record.test.sh` | 30 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
+| `scripts/build-qualification-record.test.sh` | 35 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
 | `backend/storage/src/test/.../GeneratedQualificationRecordTest.kt` | the generator's output on the fake bundle (golden file, byte-compared by the shell test) loads through the real `QualificationRecords.parse`, is eligible and has no production gap |
 
 ## Value status
@@ -73,6 +73,7 @@ An eligible record has no LAB or POST-REBOOT member. The generator cannot emit e
 | `filesystem.objectOverheadMaxBytes` (O_max) | FROM-N1 (E1–E3) | the O_max that E1–E3's PASS criterion was evaluated against (`measurements.oMaxBytes`, identical in all three). Every `worstObjectOverheadBytes` must be ≤ it. It must be a multiple of B and at least 6·B. It stays 24,576 only if the final filesystem measures within it (verdict 2.1 (g)) | `experiments/E1.json`, `E2.json`, `E3.json` | PROD-QUAL |
 | `filesystem.metadataInodesMeasured` (M) | FROM-N1 (E7), or carried | `measurements.metadataInodesMeasured`; gate F evidence's declared inode budget must be ≥ it | `experiments/E7.json` | PROD-QUAL, or CARRIED-AMENDMENT |
 | `filesystem.metadataInodesScope` (additive member) | CODE | `minio-sys`: the inodes under `.minio.sys` only. E7's `measurements.metadataInodesScope` and the gate F evidence's `minio.metadataInodesScope` must say the same, and gate F blocks a record or evidence that does not (PROPOSED note `docs/adr/0035-amendment-note-metadata-inodes-PROPOSED.md`) | `experiments/E7.json`, `gate-f/filesystem-evidence.json` | CODE |
+| `filesystem.metadataBytesMeasured`, `metadataBytesScope` (additive members) | FROM-N1 (E2, E7), CODE | the larger of E2's post-drain and E7's peak `measurements.metadataBytesMeasured`, both stating `metadataBytesScope: "minio-sys+unattributed"` (`scripts/adr035-metadata-accounting.py`). The gate F evidence must state the same scope and declare *M* ≥ it; gate F blocks otherwise | `experiments/E2.json`, `experiments/E7.json`, `gate-f/filesystem-evidence.json` | PROD-QUAL, or CARRIED-AMENDMENT when E7 is carried |
 | `filesystem.metadataInodesBasis` (additive member) | DERIVED | `E7 on the final filesystem` or `E7 carried under <amendment>` | `MANIFEST.json` `e7` | DERIVED |
 | `filesystem.experiments.E1`…`E11` | FROM-N1 | each must be `PASS`, on `venue: final-filesystem`, uuid `c33e14fd…`, kernel 147, member `3f97c565…`, started after the post-reboot baseline and finished before the post-cleanup one | `experiments/E1.json` … `E11.json` + their `rawFiles` | PROD-QUAL (E7 may be CARRIED-AMENDMENT) |
 | `enablementEligible`, `ineligibilityReasons` | DERIVED | `true`, `[]`. The generator writes no record otherwise | — | DERIVED |
@@ -116,7 +117,8 @@ qualification-9a/{main,v3,slow}/           run-slow.sh's per-pass output, unchan
 experiments/E1.json … E11.json             one per experiment (format below)
 experiments/E<n>/…                         the raw run output each Ei.json lists in rawFiles
 gate-f/filesystem-evidence.json            collect-filesystem-evidence.py --record-id <recordId>, after the N1 cleanup,
-                                            with the metadata-inode collector change (minio.metadataInodesScope "minio-sys")
+                                            with the metadata collector change (minio.metadataInodesScope "minio-sys",
+                                            minio.metadataBytesScope "minio-sys+unattributed")
 ```
 
 Experiment file (`testinbox.n1-experiment/1`):
@@ -142,7 +144,9 @@ Experiment file (`testinbox.n1-experiment/1`):
 - `artifact` is `{sourceSha, apiDigest, ingestionDigest}` and is required for E5, E6, E8, E9, E10 and E11. It must
   equal `MANIFEST.candidate`.
 - `measurements` carries `oMaxBytes` and `worstObjectOverheadBytes` in E1–E3. In E7 it carries `metadataInodesMeasured`,
-  counted as `find <data>/.minio.sys -xdev | wc -l`, and `metadataInodesScope: "minio-sys"`.
+  counted as `find <data>/.minio.sys -xdev | wc -l`, and `metadataInodesScope: "minio-sys"`. E2 (after the partial
+  drain) and E7 (peak over every sample) each carry `metadataBytesMeasured`, the `metadataBytes` of
+  `scripts/adr035-metadata-accounting.py`, and `metadataBytesScope: "minio-sys+unattributed"`.
   Ops may add any other figure.
 
 The `recordId` follows from `qualifiedAt`, so Ops can compute it before running the gate F collector:
@@ -202,16 +206,24 @@ note. Both stay separate prerequisites of `ALL` (verdict §4.3).
 
 **None.** The record keeps `schemaVersion` 1 and the shipped shape.
 
-**One gate F evidence change, pending owner acceptance.** Gate F now requires `minio.metadataInodesScope:
-"minio-sys"`, so that E7, the record, the declaration and gate F use one metadata-inode definition: the inodes
-under `.minio.sys` only. The matched record must carry `filesystem.metadataInodesScope: "minio-sys"`.
+**One gate F evidence change, pending owner acceptance.** E2, E7, the record, the declaration, gate F and the Ops
+fs-monitor use one metadata definition (`scripts/adr035-metadata-accounting.py`):
+
+- **Inodes**, scope `minio-sys`: the inodes under `.minio.sys`. Gate F requires `minio.metadataInodesScope`, and the
+  record must carry `filesystem.metadataInodesScope: "minio-sys"`.
+- **Bytes**, scope `minio-sys+unattributed`: `.minio.sys` without `.trash`, plus every allocation no object is charged
+  for. Per-object directory blocks are in *O_max*, never also in *M*. Gate F requires `minio.metadataBytesScope`. The
+  record must carry `filesystem.metadataBytesScope` and `metadataBytesMeasured`, and the declared *M* must be at least
+  that measurement.
 
 - This rests on the PROPOSED note `docs/adr/0035-amendment-note-metadata-inodes-PROPOSED.md`, so #133 does not merge
   before the owner accepts it.
-- No budget or criterion is lowered.
-- Ops' collector and fs-monitor need the two-line change written in that note. Until then, gate F reports NOT RUN.
+- No budget or criterion is lowered, and no gate F row is removed.
+- Ops' collector and fs-monitor need the change written in that note (§9). Until then, gate F reports NOT RUN.
 
-- Three members are additive: `qualification.experimentArtifact`, `filesystem.metadataInodesBasis` and `filesystem.metadataInodesScope` (the last one is read by gate F, below).
+- Five members are additive: `qualification.experimentArtifact`, `filesystem.metadataInodesBasis`,
+  `filesystem.metadataInodesScope`, `filesystem.metadataBytesMeasured` and `filesystem.metadataBytesScope` (the last
+  three are read by gate F, below).
   `QualificationRecords.parse`, gate Q, gate F, `check-minio-mirror-pin.sh` and Ops' `qualification-check.py` read
   members by name and ignore the first two, as they already ignore `slowWMechanism` and `uploadImplementationNote`.
 - No REST contract, migration or `DeploymentSafety` change.
