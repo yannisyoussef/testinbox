@@ -72,6 +72,7 @@ class DeploymentSafetyCheck(
                         requireDatabaseSessionTimeout = properties.deployment.requireDatabaseSessionTimeout,
                         storage = storage,
                         eventsVisibilityLag = properties.events.visibilityLag,
+                        corsAllowedOrigins = properties.cors.allowedOrigins,
                     ),
                 )
             check(violations.isEmpty()) { DeploymentSafety.describe(violations) }

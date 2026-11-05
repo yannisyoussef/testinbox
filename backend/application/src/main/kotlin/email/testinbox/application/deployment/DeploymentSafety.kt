@@ -87,6 +87,11 @@ data class DeploymentSettings(
      * missed" is false.
      */
     val eventsVisibilityLag: Duration? = null,
+    /**
+     * Browser origins allowed to call `/v1` cross-origin ([CorsOrigins]);
+     * empty (CORS off) for the gateway and wherever Ops has not set one.
+     */
+    val corsAllowedOrigins: List<String> = emptyList(),
 )
 
 /**
@@ -428,6 +433,7 @@ object DeploymentSafety {
         return buildList {
             addAll(checkProductionIdentity(settings, declared, profiled))
             addAll(checkProductionSurfaces(settings))
+            addAll(checkProductionCors(settings))
             addAll(checkProductionStorage(settings))
         }
     }
@@ -507,6 +513,42 @@ object DeploymentSafety {
                 )
             }
         }
+
+    /**
+     * A production API is a real credential sink, so the pages allowed to send
+     * it a reader's key are held to the same host rules as every other
+     * production value: HTTPS only (a plaintext page can be rewritten in
+     * transit to exfiltrate the key it is handed), and never a loopback,
+     * staging or rehearsal host — a developer's `localhost` or a staging docs
+     * build must not be able to drive production with a pasted key.
+     *
+     * Syntax is [CorsOrigins]' concern and is refused there in every
+     * environment; an entry it rejects is skipped here rather than reported
+     * twice.
+     */
+    private fun checkProductionCors(settings: DeploymentSettings): List<DeploymentViolation> =
+        settings.corsAllowedOrigins.mapNotNull { origin ->
+            val (scheme, host) = CorsOrigins.parse(origin) ?: return@mapNotNull null
+            val problem =
+                when {
+                    scheme != "https" -> {
+                        "entry '$origin' is not https; production allows only https origins"
+                    }
+
+                    isLoopback(host) -> {
+                        "entry '$origin' is a loopback host; production never allows one"
+                    }
+
+                    else -> {
+                        namesNonProductionHost(origin)?.let { "entry '$origin' names a non-production host ('$it')" }
+                    }
+                }
+            problem?.let { DeploymentViolation(CorsOrigins.PROPERTY, it) }
+        }
+
+    /** Loopback by name or address — wider than [LOCAL_HOSTS], since an origin may be any 127/8 address or `*.localhost`. */
+    private fun isLoopback(host: String): Boolean =
+        host in LOCAL_HOSTS || host.startsWith("127.") || host == "localhost" || host.endsWith(".localhost")
 
     private fun checkProductionStorage(settings: DeploymentSettings): List<DeploymentViolation> =
         buildList {

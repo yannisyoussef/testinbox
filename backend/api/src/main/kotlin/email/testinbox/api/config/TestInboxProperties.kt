@@ -30,7 +30,19 @@ data class TestInboxProperties(
     val storage: Storage = Storage(),
     val bootstrap: Bootstrap = Bootstrap(),
     val deployment: Deployment = Deployment(),
+    val cors: Cors = Cors(),
 ) {
+    /**
+     * Cross-origin access to the public `/v1` API (docs/api/principles.md #11).
+     * Empty — the default — means no CORS header is ever sent, exactly as before
+     * the setting existed. Validated at startup by `CorsOrigins`; production
+     * rules by `DeploymentSafety`.
+     */
+    data class Cors(
+        /** Exact origins (`https://docs.testinbox.email`), from `TESTINBOX_CORS_ALLOWED_ORIGINS`, comma-separated. */
+        val allowedOrigins: List<String> = emptyList(),
+    )
+
     data class Storage(
         val endpoint: String = "http://localhost:9000",
         val region: String = "us-east-1",

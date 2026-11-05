@@ -81,6 +81,13 @@ testinbox:
     bucket: testinbox-mime
   bootstrap:
     api-key: ${TESTINBOX_BOOTSTRAP_API_KEY:}
+  cors:
+    # Browser origins allowed to call /v1 cross-origin, comma-separated exact
+    # origins (scheme://host[:port], lowercase, no path, never '*'). Empty — the
+    # default everywhere, production included — sends no CORS header at all.
+    # Ops sets it per environment (production: https://docs.testinbox.email);
+    # /account and actuator never get CORS whatever it says.
+    allowed-origins: ${TESTINBOX_CORS_ALLOWED_ORIGINS:}
 
 management:
   endpoints:
