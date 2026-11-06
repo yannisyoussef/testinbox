@@ -119,8 +119,18 @@ SUSTAIN_TOLERANCE="0.995"
 # run measured (owner decision 2026-11-06, #124 6684712608: "keep the 150 ms terminal-lag
 # allowance ... unchanged"). A scenario whose window is longer is also read as the same
 # completion fraction and terminal lag over 30 s, and passes only if that reading is
-# >= 0.995 too; at 30 s or less the reading is achieved/offered exactly as before. The
-# harness's GateEvaluator.sustainedRatio is the same function.
+# >= 0.995 too; otherwise the reading is achieved/offered exactly as before. A window is
+# longer when the scenario scheduled more than floor(rate x 30) events OR records a
+# durationSeconds above 30. durationSeconds is the MEASURED span (first due to last
+# completion, terminal lag included), so it also marks most 30 s runs; for those the
+# 30 s reading is achieved/offered recomputed from completedEvents and terminalLagMs,
+# and the lower of the two counts, so it can only make the reading stricter, never
+# relax it, and never shorten the window scheduledEvents shows. A CHOSEN 2R scenario
+# without scheduledEvents blocks (fail closed). The window (30) is this constant, never
+# read from the evidence. The harness's GateEvaluator.sustainedRatio computes the same
+# 30 s reading from scheduledEvents alone, which it always records; on harness evidence
+# the two can differ only where durationSeconds marks a run of at most 30 s, by float
+# rounding (about 1e-11 of the ratio), and then in the stricter direction.
 SUSTAIN_WINDOW_SECONDS="30"
 T1_P99_MS="50"
 RETENTION_RATIO="2"
@@ -554,9 +564,10 @@ gate_benchmark() {
           def misses: (.errors.deadlineMissesFromSlotQueueing // .deadlineMissesFromSlotQueueing // 0);
           def others: (.errors.other // 0);
           def starved: (.retentionStarvedTicks // 0);
-          # The events a 30 s window holds at this rate; a scenario that scheduled more measured a longer window.
+          # The events a 30 s window holds at this rate; a scenario that scheduled more, or measured
+          # more than 30 s, is read over 30 s as well (only ever stricter: the lower reading counts).
           def refEvents: ((.offeredRate * $window) | floor);
-          def longWindow: (.scheduledEvents // 0) > refEvents and refEvents >= 2;
+          def longWindow: ((.scheduledEvents // 0) > refEvents or (.durationSeconds // 0) > $window) and refEvents >= 2;
           # The same completion fraction and terminal lag over a 30 s window (GateEvaluator.sustainedRatio).
           def over30: ((.completedEvents / .scheduledEvents) * refEvents) / ((refEvents - 1) + .offeredRate * .terminalLagMs / 1000);
         ( if .adrEvidence != true then ["not ADR evidence (the harness departed from §11): " + ((.adrEvidenceReasons // []) | join("; ") | if . == "" then "no reason recorded" else . end)] else [] end )
@@ -566,9 +577,11 @@ gate_benchmark() {
               | "coverage: no CHOSEN 2× scenario at concurrency \(.) with ≥ \($minws) workspaces and ≥ \($minres) live reservations" ]
         + [ $gated2x[] | select(.achievedRate == null or .achievedRate / .offeredRate < $tol)
               | "sustained2x: \(.name) achieved \(.achievedRate // "nothing") of \(.offeredRate)/s offered (ratio below \($tol))" ]
-        + [ $gated2x[] | select(.achievedRate != null and .achievedRate / .offeredRate >= $tol and longWindow)
+        + [ $chosen2x[] | select(.scheduledEvents == null)
+              | "sustained2x: \(.name) records no scheduledEvents, so the window it measured cannot be read over \($window) s (fail closed)" ]
+        + [ $gated2x[] | select(.achievedRate != null and .achievedRate / .offeredRate >= $tol and .scheduledEvents != null and longWindow)
               | if .completedEvents == null or .terminalLagMs == null
-                then "sustained2x: \(.name) measured \(.scheduledEvents) events, a window longer than \($window) s, but records no completedEvents or terminalLagMs to read it over \($window) s"
+                then "sustained2x: \(.name) measured \(.scheduledEvents) events over \(.durationSeconds // "an unrecorded") s, a window that must be read over \($window) s, but records no completedEvents or terminalLagMs to read it"
                 elif over30 < $tol
                 then "sustained2x: \(.name) terminal lag \(.terminalLagMs) ms is past the \($window) s allowance (ratio \(over30) read over \($window) s, below \($tol))"
                 else empty end ]

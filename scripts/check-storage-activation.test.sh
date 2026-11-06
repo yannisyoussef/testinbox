@@ -296,12 +296,18 @@ only "D: a PASS with no scenarios does not pass (fail closed)" D-benchmark "no s
 # the rate every node declares (testinbox_storage_gated_expected_rate). The
 # evidence must have run at exactly it; every other criterion is unchanged.
 # ---------------------------------------------------------------------------
-# The closed-beta evidence: the PASS fixture re-run at R = 31 and 2R = 62 (r = 1, 30 + L = 31).
+# The closed-beta evidence: the PASS fixture re-run at R = 31 and 2R = 62 (r = 1, 30 + L = 31),
+# over the same 30 s window: floor(rate x 30) events scheduled, the same completion fraction.
 jq '.harness.expectedRate = 31.0 | .harness.rates = [31.0, 62.0]
     | .scenarios |= map(
         .achievedRate = (if .achievedRate == null then null else .achievedRate * (if .offeredRate == 260 then 31 / 260 else 62 / 520 end) end)
         | .offeredRate = (if .offeredRate == 260 then 31.0 else 62.0 end)
+        | ((.offeredRate * 30) | floor) as $n
+        | .completedEvents = ((.completedEvents * $n / .scheduledEvents) | round) | .scheduledEvents = $n
         | .name |= (sub("-r260$"; "-r31") | sub("-r520$"; "-r62")))' "$TMP/bench-pass.json" > "$TMP/bench-beta.json"
+jq -e '[.scenarios[] | .scheduledEvents == ((.offeredRate * 30) | floor)] | all' "$TMP/bench-beta.json" >/dev/null \
+    && ok "D: the closed-beta fixture schedules floor(rate x 30) events, a 30 s window like the run it stands for" \
+    || bad "D: the closed-beta fixture's scheduledEvents is not a 30 s window"
 declare_rate() { sed -E "s/^(testinbox_storage_gated_expected_rate\{[^}]*\}) .*/\1 $3/" "$M/$1" > "$M/$2"; }
 declare_rate api-healthy.prom api-r31.prom 31.0
 declare_rate ingestion-healthy.prom ingestion-r31.prom 31.0
@@ -350,8 +356,9 @@ case_ "D: TENANT_LIMITS needs no R_gated (the gate is NOT REQUIRED there)" 0 '^A
 # samples, and sustained2x keeps the terminal-lag allowance of a 30 s window
 # whatever the window. Every case below is the beta evidence with each
 # scenario's events, completions, terminal lag and achieved rate rewritten as
-# the harness's open loop reports them for a window of $2 s: achieved =
-# completed / ((N - 1) / rate + lag). The c100 2R scenario carries lag $3 ms.
+# the harness's open loop reports them for a window of $2 s: durationSeconds =
+# (N - 1) / rate + lag (the measured span, terminal lag included) and achieved =
+# completed / durationSeconds. The c100 2R scenario carries lag $3 ms.
 # ---------------------------------------------------------------------------
 window_bench() {
     jq --argjson s "$2" --argjson lag "$3" '
@@ -359,7 +366,8 @@ window_bench() {
             ((.offeredRate * $s) | floor) as $n
             | .scheduledEvents = $n | .completedEvents = $n
             | .terminalLagMs = (if .name == "chosen-ws10000-c100-r62" then $lag else 8.0 end)
-            | .achievedRate = ($n / (($n - 1) / .offeredRate + .terminalLagMs / 1000)))' "$TMP/bench-beta.json" > "$1"
+            | .durationSeconds = (($n - 1) / .offeredRate + .terminalLagMs / 1000)
+            | .achievedRate = ($n / .durationSeconds))' "$TMP/bench-beta.json" > "$1"
 }
 window_case() { beta | sed "s#$TMP/bench-beta.json#$1#"; }
 # At 30 s nothing changes: the reading is achieved/offered, so each lag passes exactly when that ratio is
@@ -421,9 +429,13 @@ window_case "$TMP/bench-b30-above.json" > "$TMP/db2"
 [ "$(alone "$TMP/bench-b30-above.json")" = false ] || bad "D: the 30 s / lag_max + 1 us fixture passes achieved/offered alone, so it proves nothing"
 only "D: at 30 s, lag_max + 1 us blocks on the achieved rate, as before the window was held" D-benchmark \
     "sustained2x: chosen-ws10000-c100-r62 achieved .* of 62(\.0)?/s offered \(ratio below 0.995\)" "$TMP/db2"
+# Its measured span is 30.15 s (> 30, terminal lag included), so the 30 s reading also runs, and
+# agrees: at a 30 s schedule it IS achieved/offered, recomputed from completedEvents and terminalLagMs.
+jq -e '[.scenarios[] | select(.name == "chosen-ws10000-c100-r62") | .durationSeconds > 30] | first' "$TMP/bench-b30-above.json" >/dev/null \
+    || bad "D: the 30 s / lag_max + 1 us fixture does not measure more than 30 s, so it does not exercise the durationSeconds reading"
 printf '%s\n' "$OUT" | grep -q 'past the 30 s allowance' \
-    && bad "D: at 30 s the held-window reading was consulted; it must never be at 30 s or less" "$OUT" \
-    || ok "D: at 30 s only achieved/offered is read (the held-window reading never runs at 30 s or less)"
+    && bad "D: at 30 s the verdict came from the 30 s reading, not achieved/offered; they must agree at a 30 s schedule" "$OUT" \
+    || ok "D: at 30 s the verdict and its message are achieved/offered's (the durationSeconds-triggered 30 s reading agrees)"
 for s in 31 33 45 60 120; do
     window_bench "$TMP/bench-b$s-above.json" "$s" "$LAG_ABOVE"
     window_case "$TMP/bench-b$s-above.json" > "$TMP/db$s-above"
@@ -447,19 +459,44 @@ window_case "$TMP/bench-b60-below-partial.json" > "$TMP/dbp"
 only "D: at 60 s one missing event of 3720 shrinks the held allowance below lag_max - 1 us" D-benchmark \
     "sustained2x: chosen-ws10000-c100-r62 terminal lag [0-9.]+ ms is past the 30 s allowance" "$TMP/dbp"
 
-# KNOWN GAP, reported 2026-11-06 and deliberately NOT fixed in the commit that adds this case
-# (the owner's condition: "no widening ... through longer windows"). The window is inferred from
-# scheduledEvents alone, `(.scheduledEvents // 0) > N30`, so a 60 s scenario that omits
-# scheduledEvents is read as a window of at most 30 s and keeps the 60 s allowance (300 ms
-# passes), although it records durationSeconds 60 and a missing completedEvents or terminalLagMs
-# fails closed. This case FAILS until the gate fails closed on it too.
-jq '.harness.durationSeconds = 60
-    | (.scenarios[] | select(.name == "chosen-ws10000-c100-r62"))
-        |= (.durationSeconds = ((.scheduledEvents - 1) / .offeredRate + .terminalLagMs / 1000) | del(.scheduledEvents))' \
+# The measured window is read from scheduledEvents OR durationSeconds, each of which can only
+# make the reading stricter (owner condition: "no widening ... through longer windows").
+# Without scheduledEvents nothing can say how long the window was: fail closed, whatever
+# durationSeconds says. (Until the gate read it this way, a 60 s scenario that omitted
+# scheduledEvents kept the 60 s allowance and 300 ms passed.)
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c100-r62")) |= del(.scheduledEvents, .durationSeconds)' \
     "$TMP/bench-w60-300.json" > "$TMP/bench-w60-300-unscheduled.json"
-window_case "$TMP/bench-w60-300-unscheduled.json" > "$TMP/dbg"
-only "D: a 60 s window that omits scheduledEvents does not widen the allowance: 300 ms blocks (KNOWN GAP: fails today)" D-benchmark \
-    "sustained2x: chosen-ws10000-c100-r62" "$TMP/dbg"
+window_case "$TMP/bench-w60-300-unscheduled.json" > "$TMP/dbg1"
+only "D: a 60 s window that omits scheduledEvents (and durationSeconds) does not keep the 60 s allowance: it blocks" D-benchmark \
+    "sustained2x: chosen-ws10000-c100-r62 records no scheduledEvents, so the window it measured cannot be read over 30 s \(fail closed\)" "$TMP/dbg1"
+jq '.harness.durationSeconds = 60 | (.scenarios[] | select(.name == "chosen-ws10000-c100-r62")) |= del(.scheduledEvents)' \
+    "$TMP/bench-w60-300.json" > "$TMP/bench-w60-300-duration-only.json"
+jq -e '[.scenarios[] | select(.name == "chosen-ws10000-c100-r62") | .durationSeconds > 60] | first' "$TMP/bench-w60-300-duration-only.json" >/dev/null \
+    || bad "D: the 60 s duration-only fixture does not record a 60 s durationSeconds"
+window_case "$TMP/bench-w60-300-duration-only.json" > "$TMP/dbg2"
+only "D: 60 s with durationSeconds but without scheduledEvents blocks" D-benchmark \
+    "sustained2x: chosen-ws10000-c100-r62 records no scheduledEvents" "$TMP/dbg2"
+# durationSeconds marks a long window scheduledEvents understates: 1860 scheduled (a 30 s count)
+# but 60 s measured, with the achieved rate a 60 s run reports (0.9953 read alone) - blocks.
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c100-r62")) |= (.scheduledEvents = 1860 | .completedEvents = 1860)' \
+    "$TMP/bench-w60-300.json" > "$TMP/bench-w60-300-understated.json"
+[ "$(alone "$TMP/bench-w60-300-understated.json")" = true ] || bad "D: the understated fixture fails achieved/offered alone, so it proves nothing"
+window_case "$TMP/bench-w60-300-understated.json" > "$TMP/dbg3"
+only "D: a 60 s durationSeconds is read over 30 s even when scheduledEvents says 30 s: 300 ms blocks" D-benchmark \
+    "sustained2x: chosen-ws10000-c100-r62 terminal lag 300 ms is past the 30 s allowance" "$TMP/dbg3"
+# ...and it never relaxes: a durationSeconds that understates a 60 s schedule changes nothing.
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c100-r62")) |= (.durationSeconds = 29.0)' \
+    "$TMP/bench-w60-300.json" > "$TMP/bench-w60-300-shortdur.json"
+window_case "$TMP/bench-w60-300-shortdur.json" > "$TMP/dbg4"
+only "D: a durationSeconds of 29 s does not shorten a 60 s schedule: 300 ms still blocks" D-benchmark \
+    "sustained2x: chosen-ws10000-c100-r62 terminal lag 300 ms is past the 30 s allowance" "$TMP/dbg4"
+# A run of at most 30 s whose measured span exceeds 30 s and that records no terminalLagMs cannot
+# be read over 30 s either: fail closed (the harness always records it).
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c100-r62")) |= del(.terminalLagMs)' \
+    "$TMP/bench-b30-below.json" > "$TMP/bench-b30-nolag.json"
+window_case "$TMP/bench-b30-nolag.json" > "$TMP/dbg5"
+only "D: a 30 s schedule measured over more than 30 s without its terminal lag blocks (fail closed)" D-benchmark \
+    "records no completedEvents or terminalLagMs" "$TMP/dbg5"
 
 # ---------------------------------------------------------------------------
 # Gate W, ADR-035 amendment D: before a cohort plan exists every workspace

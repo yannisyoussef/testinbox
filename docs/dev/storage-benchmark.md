@@ -351,10 +351,8 @@ unchanged: [`docs/adr/0035-benchmark/terminal-allowance-regression.md`](../adr/0
 **Where it is enforced.** `scripts/check-storage-activation.sh` gate D
 recomputes it from the scenarios (`SUSTAIN_WINDOW_SECONDS`, jq `refEvents`,
 `longWindow`, `over30`), and that recomputation is what decides activation.
-The harness's copy, `GateEvaluator.sustainedRatio`, is on
-`app/fasttrack-gate-d-a-prime`; until it lands, this branch's `GateEvaluator`
-reads `sustained2x` as achieved/offered alone (finding 2 in the regression
-file).
+The harness records its own verdict with `GateEvaluator.sustainedRatio`
+(ported verbatim from `app/fasttrack-gate-d-a-prime`), the same 30 s reading.
 
 **Formula.** The open loop schedules N events with the last one due at
 (N − 1)/rate (`OpenLoopScheduler.schedule` pins it), and reports
@@ -389,6 +387,25 @@ that scheduled more than N₃₀ events is therefore also read over 30 s,
 `(C/S) × N₃₀ / ((N₃₀ − 1) + rate × L)`, and passes only if that reading is ≥
 0.995 too; at N ≤ N₃₀ the reading is achieved/offered exactly as before.
 
+**Which window counts as longer.** In `GateEvaluator`, a scenario whose
+`scheduledEvents` exceeds N₃₀ (the harness always records the count it
+scheduled). The gate script, which also reads evidence the harness did not
+write, reads a CHOSEN 2R scenario over 30 s when `scheduledEvents` > N₃₀ **or**
+`durationSeconds` > 30, and the lower reading counts, so either input can only
+tighten. A CHOSEN 2R scenario without `scheduledEvents` blocks, as one
+without `completedEvents` or `terminalLagMs` does once it must be read over
+30 s. `durationSeconds` is the measured span from the first due time to the
+last completion, terminal lag included (`(N − 1)/rate + L`), so it also marks
+most 30 s runs (any terminal lag above one mean gap, 16.1 ms at 62/s). For
+those the 30 s reading is achieved/offered recomputed from
+`completedEvents` and `terminalLagMs` rather than read from `achievedRate`;
+the two agree to within 1.6 × 10⁻¹¹ of the ratio on every 30 s scenario of
+the committed evidence (the last due time is rounded to the nanosecond), and
+the lower counts. That is the only way the script's verdict can differ from
+`GateEvaluator`'s on harness evidence, and only towards blocking. A
+`durationSeconds` that understates a longer schedule changes nothing:
+`scheduledEvents` still marks it.
+
 **Partial completion.** Missing events shrink the allowance; they never move
 it the other way.
 
@@ -419,7 +436,7 @@ it the other way.
   `worst >= SUSTAINED_TOLERANCE` in `GateEvaluator`. The only `floor` is
   N₃₀ = ⌊rate × 30⌋, an event count, which is the same truncation the harness
   applies when it schedules `(offeredRate × durationSeconds).toInt()` events,
-  so a 30 s run is never read as a longer one. The only `round` selects the
+  so a 30 s schedule is never counted as a longer one. The only `round` selects the
   2R scenarios and pairs references (`(.offeredRate | round) == ((2 × R) |
   round)`); it is selection, not the comparison. The interpolations in the
   messages (`\(over30)`, `"%.0f".format(terminalLagMs)`) are text produced
@@ -431,19 +448,21 @@ it the other way.
   which the tests decide (the ratio moves 3.3 × 10⁻⁸ per µs of lag at 62/s).
 - *The window is a constant.* `SUSTAIN_WINDOW_SECONDS="30"` is pinned in the
   script and `SUSTAINED_REFERENCE_WINDOW_SECONDS = 30` in `GateEvaluator`;
-  neither `harness.durationSeconds`, a scenario's `durationSeconds` nor
-  `harness.sustainedReferenceWindowSeconds` is read for the decision. The
-  window a scenario measured is inferred only from `scheduledEvents` > N₃₀,
-  which is the gap in finding 1 of the regression file: a long scenario that
-  omits `scheduledEvents` is read as 30 s.
+  the allowance is always computed over that constant. A scenario's
+  `durationSeconds` is read only to decide WHETHER the 30 s reading applies
+  as well, never to size the allowance, and since the lower reading counts it
+  can only tighten; `harness.durationSeconds` is not read.
 
 **Tests.** `scripts/check-storage-activation.test.sh` decides the boundary at
 lag_max(62/s) ± 1 µs at 30 s (the same verdict as achieved/offered alone),
-holds it at 31, 33, 45, 60 and 120 s in both directions, and covers one
-missing event at 60 s. `GateEvaluatorTest` decides the same 30 s boundary
-(and one missing event at 30 s, ±0.01 ms around 150.67 ms) for the harness
-and holds it at 33, 60 and 120 s. Each known gap has a test that fails until
-it is closed.
+holds it at 31, 33, 45, 60 and 120 s in both directions, covers one missing
+event at 60 s, and blocks a CHOSEN 2R scenario without `scheduledEvents`
+(with or without a 60 s `durationSeconds`), one whose 60 s `durationSeconds`
+contradicts a 30 s `scheduledEvents`, and a 30 s schedule measured over more
+than 30 s without its terminal lag; a 29 s `durationSeconds` does not shorten
+a 60 s schedule. `GateEvaluatorTest` decides the same 30 s boundary (and one
+missing event at 30 s, ±0.01 ms around 150.67 ms) for the harness, holds it
+at 33, 60 and 120 s, and carries a-prime's `sustainedRatio` tests verbatim.
 
 ### `adrEvidence`: the constants are not loosenable through flags
 
