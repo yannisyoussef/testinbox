@@ -20,13 +20,24 @@ class BenchmarkTarget private constructor(
     val createdByHarness: Boolean,
     private val container: PostgreSQLContainer<*>?,
 ) : AutoCloseable {
-    fun pool(maxSize: Int): HikariDataSource =
+    /**
+     * A pool on the target. A scenario pool passes its [lifecycle] (Hikari `maxLifetime` and
+     * keepalive, [PoolLifecycle]) and an [opens] counter; without them (the admin pool) Hikari's
+     * defaults apply, which are production's.
+     */
+    fun pool(
+        maxSize: Int,
+        lifecycle: PoolLifecycle? = null,
+        opens: ConnectionOpenCounter? = null,
+    ): HikariDataSource =
         HikariDataSource().apply {
             jdbcUrl = this@BenchmarkTarget.jdbcUrl
             username = this@BenchmarkTarget.username
             password = this@BenchmarkTarget.password
             maximumPoolSize = maxSize
             poolName = "storage-benchmark"
+            lifecycle?.applyTo(this)
+            opens?.let { metricsTrackerFactory = it }
         }
 
     /** Tenant rows per table, 0 for a table that does not exist yet (a database created but not migrated). */

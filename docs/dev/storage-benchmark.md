@@ -94,9 +94,14 @@ statement under `plan_cache_mode = force_generic_plan`; `pg_stat_statements`
 (top statements); and the churn tables' live/dead tuples and reloptions. With
 `pg_stat_statements` preloaded (`shared_preload_libraries`, and
 `pg_stat_statements.track_planning = on` for plan time), every scenario also
-records `t1Statement`: the T1 statement's calls, plans, mean plan and execution
-time over the measured phase. Without it these are recorded as unavailable;
-nothing fails. `--local` preloads it.
+records `t1Statement`: the T1 statement's calls, plans, mean and total plan time
+and execution time over the measured phase. Without it these are recorded as
+unavailable; nothing fails. `--local` preloads it. The statement is found by
+the identifiers of its snapshot row (`… AS scope, … now() AS t0`), because
+`pg_stat_statements` stores every constant as `$n`; until 2026-11-06 it was
+looked up by `'GLOBAL'`, which the stored text never contains, so every
+earlier run recorded `t1Statement: null` (`DiagnosticsTest` pins the lookup
+against a real `pg_stat_statements`).
 
 ## The PARTITIONED variant (`--partitioned-variant`, reported apart)
 
@@ -381,9 +386,10 @@ is not a departure: gate D binds it to the deployment's R_gated); `--concurrency
 {1, 10, 25, 50, 100}; `--reservation-backlog` < 1 000; `--delta-backlog`
 < 500; no population ≥ 10 000 in `--workspaces`; `--local`; no
 `--host-class` (the default `unspecified`); `--no-reference`; a reference
-mode other than `no-lock`. A departure can therefore never produce a
-`PASS`, and a `PASS` at an R other than the deployment's R_gated never passes
-gate D.
+mode other than `no-lock`; `--no-cohort-shares`; `--focused`; `--warm-pool`;
+a `--pool-max-lifetime` other than production's 30 min (the connection
+lifecycle above). A departure can therefore never produce a `PASS`, and a
+`PASS` at an R other than the deployment's R_gated never passes gate D.
 
 ## Safety: the harness destroys its target
 
@@ -436,7 +442,9 @@ Run from `backend/` by hand: `./gradlew :benchmark:installDist` then
 
 The module's unit tests (evaluator, conformance, scheduler, percentiles,
 preflight, evidence shape, options) run under `./gradlew build` with every
-other module and need no database. `scripts/verify-test-results.sh` carries a
+other module and need no database, except `PoolLifecycleTest`'s cold-start
+test and `DiagnosticsTest`, which start the `--local` Testcontainers
+PostgreSQL (Docker required, as for the persistence suite). `scripts/verify-test-results.sh` carries a
 floor for `backend/benchmark`; raise it when tests are added.
 
 ## Focused A′ measurement (`--focused`, never gate evidence)
@@ -470,22 +478,121 @@ Per scenario it adds `t1Steps` to the evidence (also available in any run with
   (`EXPLAIN (ANALYZE, BUFFERS)`, with `Heap Fetches` and the in-flight tables'
   `relpages`/`relallvisible`) [diagnostic].
 
-**Warm connections (every run, not only `--focused`).** Before each measured
-phase every connection of the scenario's pool executes T1's statement past
-pgjdbc's `prepareThreshold` under `force_generic_plan`, untimed and rolled
-back, so each holds the server-prepared statement and its generic plan, as a
-long-lived production pool does. A fresh pool of c + 6 connections otherwise
-planned inside the lock during the measurement (12–16 ms a plan on the staging
-host; 164–296 plans a minute at c100 in the 80482e6 diagnostic run). The pool's
-size is unchanged (it is part of §11's concurrency model). Plans still made
-during a phase are invalidations by autovacuum/analyze, which mode a must make
-inside the lock: a READ COMMITTED portal takes its snapshot at Bind.
+FOCUSED.md also carries the **connection lifecycle and in-lock planning**
+table (below).
+
+## Connection lifecycle (`--cold-pool`, `--warm-pool`, `--pool-max-lifetime`)
+
+**Production's lifecycle.** The ingestion gateway's `spring.datasource.hikari`
+sets only `maximum-pool-size` (`TESTINBOX_DB_POOL_SIZE`, default 8,
+`backend/ingestion/src/main/resources/application-deployed.yaml`) and the
+`ApplicationName` data-source property (`application.yaml`); the production
+document of `application-deployed.yaml` and the deployment files set no
+lifetime. So `maxLifetime` and `keepaliveTime` are **HikariCP 7.0.2's
+defaults: 30 min and 2 min** (`PoolLifecycle.PRODUCTION_SOURCE`, recorded in
+the evidence). Hikari retires each connection at a random point in the last
+quarter of its lifetime (75–100 %, so 22.5–30 min) and opens a new one. A new
+physical connection has no server-prepared statement: pgJDBC sends T1's
+snapshot unnamed on its first four executions and server-prepares it on the
+fifth (`prepareThreshold` 5, which no TestInbox configuration sets), and under
+T1's `SET LOCAL plan_cache_mode = force_generic_plan` PostgreSQL plans each of
+those five once and none after, unless an invalidation (an `ANALYZE`,
+autovacuum's included) forces a re-plan. Every snapshot runs after the
+admission lock is granted, so **every one of those plans is made inside the
+lock** (12–16 ms each on the staging host). An ingestion node does this for
+its whole pool after every deploy, and per connection at every retirement.
+(Ops could still set `SPRING_DATASOURCE_HIKARI_MAX_LIFETIME` in the host's
+environment, which this repository cannot see; the value above is the
+committed one.)
+
+- **`--cold-pool` (the default).** After the untimed event warm-up (JIT,
+  slots, the T1 probe), every connection of the scenario's pool is evicted and
+  the pool's full size is reopened as new physical connections that have
+  executed nothing (`PoolStart.renew`), then the measured phase starts: a
+  just-deployed ingestion node. The connection warm-up (`PoolStart.warm`) is
+  never called. Connection establishment itself is untimed (the pool is full
+  before traffic, as a node's is before readiness); the first five T1s on each
+  connection plan inside the lock during the phase.
+- **`--warm-pool`.** The behaviour before the review of 2026-11-06: every
+  connection executes T1's snapshot seven times under `force_generic_plan`
+  before the phase, so none plans inside the lock unless invalidated. Kept for
+  comparison with earlier focused runs (`--focused --warm-pool` reproduces
+  them). **Not ADR evidence.**
+- **`--pool-max-lifetime <duration>`** (`60s`, `30m`, `PT30M`, a bare number of
+  seconds). Hikari `maxLifetime` of every scenario pool; default 30 min,
+  production's. A short value (`60s` in a 60 s phase) makes Hikari retire and
+  replace connections *during* the phase, so recycling is measured too. **At
+  least 30 s**: HikariCP's minimum, below which it logs a warning and silently
+  uses its 30 min default, so the harness refuses it rather than measure the
+  wrong lifetime. Keepalive is production's 2 min, or off when that is not
+  below the lifetime (what Hikari would do itself). Any value other than 30 min
+  is **not ADR evidence**.
+
+The pool's size is unchanged by any of this (c + 6, part of §11's concurrency
+model). Note for whoever reads a cold result: production's ingestion pool is
+8 connections, so a cold c100 scenario (106 connections) pays up to 13 times
+the cold plans of one just-deployed production node; the per-T1 split below
+shows how much of the tail that is.
+
+**The faithfulness rule (gate evidence).** Gate evidence must follow
+production's pool lifecycle (the review condition of 2026-11-06), so
+`AdrConformance` records a run that warmed its pool (`--warm-pool`) or used a
+lifetime other than production's as `adrEvidence: false`, with the reason, and
+its verdict is `INCOMPLETE`; gate D (`check-storage-activation.sh`) blocks on
+`adrEvidence != true`. This is the existing pattern for every departure from
+§11's inputs (`--focused`, `--no-cohort-shares`, `--local`, ...): refused as
+evidence, never silently labelled. `GateEvaluator`'s criteria and thresholds
+are unchanged; a warmed run still shows what its criteria read. The default
+(cold, 30 min) is therefore what every future gate run uses unless told
+otherwise, and the evidence records which mode ran (`harness.coldPool`,
+`harness.poolMaxLifetime`, and each scenario's `pool`).
+
+### In-lock planning (`t1Planning`, FOCUSED.md)
+
+Per scenario, never a §11 criterion, from three sources labelled apart:
+
+- **Hikari [measured, every run]**: `pool.connectionsOpenedBeforePhase` and
+  `pool.connectionsOpenedInPhase`, from Hikari's own connection-created hook
+  (the one `hikaricp_connections_creation` reads). The in-phase figure is
+  exact (lifetime retirements); the before-phase one omits the pool's first
+  connection, which Hikari opens for its fail-fast check before it installs the
+  hook.
+- **client [measured, `--t1-steps` / `--focused` only]**: the step-timing JDBC
+  proxy counts every execution of the snapshot text on its *physical*
+  connection (the driver connection under Hikari's handle), whether or not an
+  event is on the thread, exactly as pgJDBC counts toward its threshold. An
+  execution among the first 5 on its connection is one cold-connection plan
+  inside the lock (`coldSnapshotExecutions`). Each completed T1 records its
+  snapshot's ordinal, so T1 (completion − due) is split into `coldT1` (first
+  5 executions on the connection) and `warmT1`, with each kind's mean snapshot
+  round trip; `physicalConnections` and `firstUsedInPhase` say how many
+  connections ran T1 and how many of them were new in the phase.
+- **server [measured, `pg_stat_statements` with `track_planning`]**: `plans`,
+  `totalPlanMs` and `meanPlanMs` of the snapshot statement over the phase,
+  cold-connection plans and invalidation re-plans together.
+- **derived**: `invalidationReplans` = server plans − client cold plans;
+  `coldPlanCostMs` = mean cold − mean warm snapshot round trip, the in-lock
+  cost of a cold plan (it includes a new backend's catalog-cache loading,
+  which is the same in-lock cost).
+
+Limits: a re-plan cannot be attributed to an individual T1 client side (Parse,
+Bind and Execute share one round trip, and the server reports plans only in
+aggregate), so the server's mean plan time is one kind's only when the other
+count is 0 (a warm run: all invalidations). Without step timing (a gate run)
+the per-T1 split is absent and the per-phase server counts and Hikari counts
+remain. Only the snapshot is counted; the reservation insert also plans on a
+cold connection, at a fraction of the cost.
 
 ```bash
 # On a quiet host, outside any gate window: a labelled NON-GATE focused run.
 TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK=I_UNDERSTAND_THIS_DESTROYS_THE_TARGET_DATABASE \
   scripts/storage-benchmark.sh --jdbc-url jdbc:postgresql://<db>:5432/testinbox_bench_focused \
     --username <user> --create-database --host-class "<host class>" --focused
+
+# The same, with Hikari recycling every connection inside the 60 s phase (cold by default):
+#   ... --focused --pool-max-lifetime 60s
+# and the pre-review warm pool, for comparison with earlier focused figures:
+#   ... --focused --warm-pool
 ```
 
 Laptop focused figures are indicative only; the dev host is about three
@@ -529,7 +636,12 @@ Written with Jackson (`tools.jackson`), keys in this order:
     "lockWaitDefinition": "lockWait is StorageProtocolMetrics.lockWait as GuardedStorage reports it: the whole admission call …, NOT the pg_advisory_xact_lock wait alone.",
     "cohortShares": 31,                       // the beta's shares beside each population; 0 with --no-cohort-shares
     "sustainedReferenceWindowSeconds": 30,    // sustained2x's terminal-lag allowance is this window's
-    "focused": false                          // true for --focused (never gate evidence)
+    "focused": false,                         // true for --focused (never gate evidence)
+    "coldPool": true,                         // false with --warm-pool (never gate evidence)
+    "poolMaxLifetime": "PT30M", "poolMaxLifetimeMs": 1800000,   // --pool-max-lifetime; production's by default
+    "poolKeepaliveMs": 120000,                // production's 2 min, 0 when not below the lifetime
+    "poolLifecycleSource": "HikariCP 7.0.2 defaults (…)",
+    "prepareThreshold": 5                     // pgJDBC's default: a cold connection plans its first 5 snapshots
   },
   "safety": {
     "databaseName": "testinbox_bench",
@@ -563,7 +675,20 @@ Written with Jackson (`tools.jackson`), keys in this order:
         "physicalFailures": { "LOCK_TIMEOUT": 1 } // StorageProtocolMetrics.physicalFailure kinds
       },
       "lockTimeouts": 1, "lockTimeoutRate": 0.0000641,
-      "deadlocks": 0, "deadlineMissesFromSlotQueueing": 0
+      "deadlocks": 0, "deadlineMissesFromSlotQueueing": 0,
+      "pool": {                        // the scenario pool's lifecycle (Connection lifecycle above)
+        "coldPool": true, "maxLifetimeMs": 1800000, "keepaliveMs": 120000, "poolSize": 16,
+        "connectionsOpenedBeforePhase": 32, "connectionsOpenedInPhase": 0
+      },
+      "t1Planning": {                  // or null; never a criterion
+        "definition": "…", "prepareThreshold": 5,
+        "client": {                    // null without --t1-steps / --focused
+          "snapshotExecutions": 15599, "coldSnapshotExecutions": 80, "physicalConnections": 16, "firstUsedInPhase": 16,
+          "coldT1": {…}, "warmT1": {…}, "coldSnapshotMeanMs": 14.0, "warmSnapshotMeanMs": 1.0
+        },
+        "server": { "plans": 95, "totalPlanMs": 1330.0, "meanPlanMs": 14.0 },   // null without pg_stat_statements
+        "derived": { "invalidationReplans": 15, "coldPlanCostMs": 13.0 }
+      }
     }
   ],
   "criteria": {                        // name → {pass, observed, threshold, detail}

@@ -5,6 +5,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.Test
+import java.time.Duration
 
 /** §11's constants are not loosenable through flags: every departure is named, and any one of them makes the run non-evidence. */
 class AdrConformanceTest {
@@ -51,6 +52,16 @@ class AdrConformanceTest {
             .reasons(
                 BenchmarkOptions.parse(listOf("--jdbc-url", "jdbc:postgresql://db/ti_bench", "--host-class", "h", "--focused")),
             ).any { it.startsWith("--focused") } shouldBe true
+    }
+
+    @Test
+    fun `gate evidence is faithful to production's pool lifecycle - cold, with production's maxLifetime`() {
+        // The default IS production's lifecycle; naming it explicitly changes nothing.
+        AdrConformance.reasons(conforming.copy(coldPool = true, poolMaxLifetime = Duration.ofMinutes(30))).shouldBeEmpty()
+        only(conforming.copy(coldPool = false)) shouldContain "--warm-pool: every connection was warmed past pgJDBC's prepareThreshold"
+        only(conforming.copy(poolMaxLifetime = Duration.ofSeconds(60))) shouldContain "--pool-max-lifetime PT1M is not production's PT30M"
+        only(conforming.copy(poolMaxLifetime = Duration.ofHours(1))) shouldContain "is not production's PT30M"
+        AdrConformance.reasons(conforming.copy(coldPool = false, poolMaxLifetime = Duration.ofSeconds(60))).size shouldBe 2
     }
 
     @Test

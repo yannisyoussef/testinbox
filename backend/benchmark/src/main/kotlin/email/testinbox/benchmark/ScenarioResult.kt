@@ -114,6 +114,10 @@ data class ScenarioResult(
     val t1Steps: T1StepsSummary? = null,
     /** `--focused` only: the T1 statement's generic plan from the statistics at the end of the measured phase ([Diagnostics.planNow]). */
     val planAtEnd: String? = null,
+    /** The scenario pool's lifecycle and the physical connections it opened around the measured phase ([PoolLifecycle]). */
+    val pool: PoolPhase? = null,
+    /** In-lock planning of T1's snapshot over the measured phase ([T1Planning]); null with neither step timing nor pg_stat_statements. */
+    val t1Planning: T1Planning? = null,
 ) {
     /** completed / scheduled: separate from the achieved rate, which also carries the terminal lag. */
     val completionRatio: Double get() = if (scheduledEvents == 0) 0.0 else completedEvents.toDouble() / scheduledEvents

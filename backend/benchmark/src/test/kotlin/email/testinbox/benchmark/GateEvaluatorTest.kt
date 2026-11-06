@@ -309,6 +309,27 @@ class GateEvaluatorTest {
     }
 
     @Test
+    fun `a gate run on a warmed pool or another maxLifetime is refused as ADR evidence, however well it measured`() {
+        // The review condition of 2026-11-06: gate evidence follows production's pool lifecycle (cold, 30 min maxLifetime).
+        val gateRun = listOf("--jdbc-url", "jdbc:postgresql://db/ti_bench", "--host-class", "staging-vm")
+        evaluator.evaluate(passingMatrix(), AdrConformance.reasons(BenchmarkOptions.parse(gateRun))).verdict shouldBe Verdict.PASS
+
+        val warm = evaluator.evaluate(passingMatrix(), AdrConformance.reasons(BenchmarkOptions.parse(gateRun + "--warm-pool")))
+        warm.verdict shouldBe Verdict.INCOMPLETE
+        warm.incompleteReasons.single() shouldContain "not ADR evidence: --warm-pool"
+        // The criteria and their thresholds are untouched: every one of them still passes on the same numbers.
+        warm.criteria.values.all { it.pass } shouldBe true
+
+        val short =
+            evaluator.evaluate(
+                passingMatrix(),
+                AdrConformance.reasons(BenchmarkOptions.parse(gateRun + listOf("--pool-max-lifetime", "60s"))),
+            )
+        short.verdict shouldBe Verdict.INCOMPLETE
+        short.incompleteReasons.single() shouldContain "not ADR evidence: --pool-max-lifetime PT1M is not production's PT30M"
+    }
+
+    @Test
     fun `an incomplete matrix still reports which criteria it would have failed`() {
         val smoke = listOf(scenario(AdmissionMode.CHOSEN, 1, 50.0, workspaces = 50, deadlocks = 1))
         val verdict = evaluator.evaluate(smoke)
