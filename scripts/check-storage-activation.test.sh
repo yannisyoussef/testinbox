@@ -75,7 +75,8 @@ good() {
         --qualification-dir "$FIX/qualification" --backend-identity "$FIX/identity/match.json" \
         --benchmark-evidence "$TMP/bench-pass.json" \
         --filesystem-evidence "$FIX/filesystem/evidence-good.json" --footprint-state "$FIX/filesystem/state-good.json" \
-        --cohort-check-output "$FIX/cohort/check-pass.txt" --cohort-pool-file "$FIX/cohort/pool.json"
+        --cohort-check-output "$FIX/cohort/check-pass.txt" --cohort-pool-file "$FIX/cohort/pool.json" \
+        --population-state "$FIX/population/pre-plan-within.json"
 }
 # with <flag> <value>: the good inputs with one flag's value replaced (removed when
 # value is ""), or the flag appended when the good inputs do not carry it.
@@ -127,9 +128,9 @@ only() {
 good > "$TMP/args-good"
 case_ "all gates satisfied → ACTIVATION READY" 0 '^ACTIVATION READY$' "$TMP/args-good" --json "$TMP/evidence.json"
 if [ -f "$TMP/evidence.json" ] && jq -e '.mode == "ALL" and .evaluatedAt == "2026-10-07T00:00:00Z" and .verdict == "READY"
-        and (.gates | length) == 11 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
+        and (.gates | length) == 12 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
         and (.cohortGate | startswith("storage-budget check"))' "$TMP/evidence.json" >/dev/null 2>&1; then
-    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 11 gates (gate L included)"
+    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 12 gates (gates L and W included)"
 else
     bad "the evidence JSON shape is wrong" "$(cat "$TMP/evidence.json" 2>/dev/null)"
 fi
@@ -342,6 +343,33 @@ with --benchmark-evidence "$TMP/bench-norate.json" > "$TMP/dr14"
 only "D: evidence that records no expected rate cannot be bound to R_gated" D-benchmark "records no harness.expectedRate" "$TMP/dr14"
 good | sed -e 's/^ALL$/TENANT_LIMITS/' -e "s#$M/ingestion-healthy.prom#$M/ingestion-no-rgated.prom#" > "$TMP/dr15"
 case_ "D: TENANT_LIMITS needs no R_gated (the gate is NOT REQUIRED there)" 0 '^ACTIVATION READY$' "$TMP/dr15"
+
+# ---------------------------------------------------------------------------
+# Gate W, ADR-035 amendment D: before a cohort plan exists every workspace
+# receives mail, so under ALL the database holds at most 30 + L of them. The
+# bound comes from every node (testinbox_storage_envelope_max_workspaces).
+# ---------------------------------------------------------------------------
+with --population-state "$FIX/population/pre-plan-over.json" > "$TMP/w1"
+only "W: no plan and one workspace over 30 + L blocks, with the count" W-workspace-envelope "no cohort plan exists and the database holds more than 31 workspaces \(counted 32\)" "$TMP/w1"
+with --population-state "$FIX/population/plan-exists.json" > "$TMP/w2"
+case_ "W: once a cohort plan exists the pool bounds the population (gate G), so the count does not block" 0 '^W-workspace-envelope[[:space:]]+PASS[[:space:]].*a cohort plan exists' "$TMP/w2"
+printf '{"cohortPlanExists": false, "workspaces": 31}\n' > "$TMP/pop-31.json"
+with --population-state "$TMP/pop-31.json" > "$TMP/w3"
+case_ "W: exactly 30 + L passes" 0 '^W-workspace-envelope[[:space:]]+PASS[[:space:]].*31 workspace\(s\), within the envelope.s 31' "$TMP/w3"
+with --population-state "" > "$TMP/w4"
+only "W: no population input under ALL → NOT RUN, and NOT RUN blocks" W-workspace-envelope "no population: set TESTINBOX_ACTIVATION_DB_URL or pass --population-state" "$TMP/w4"
+grep -v '^testinbox_storage_envelope_max_workspaces' "$M/ingestion-healthy.prom" > "$M/ingestion-no-envelope.prom"
+with --ingestion-metrics "$M/ingestion-no-envelope.prom" > "$TMP/w5"
+only "W: a node that declares no envelope blocks (UNKNOWN, never assumed)" W-workspace-envelope "envelope bound is UNKNOWN \(testinbox_storage_envelope_max_workspaces absent\)" "$TMP/w5"
+sed -E 's/^(testinbox_storage_envelope_max_workspaces\{[^}]*\}) .*/\1 30.0/' "$M/ingestion-healthy.prom" > "$M/ingestion-envelope-30.prom"
+with --ingestion-metrics "$M/ingestion-envelope-30.prom" > "$TMP/w6"
+only "W: nodes that disagree on the envelope block" W-workspace-envelope "declares an envelope of 30(\.0)? workspaces but another node declares 31" "$TMP/w6"
+printf '{"cohortPlanExists": "no", "workspaces": 2}\n' > "$TMP/pop-bad.json"
+with --population-state "$TMP/pop-bad.json" > "$TMP/w7"
+only "W: a malformed population state blocks" W-workspace-envelope "population-state must be" "$TMP/w7"
+good | sed -e 's/^ALL$/TENANT_LIMITS/' -e "s#$FIX/population/pre-plan-within.json#$FIX/population/pre-plan-over.json#" > "$TMP/w8"
+case_ "W: TENANT_LIMITS is NOT REQUIRED, whatever the population" 0 '^ACTIVATION READY$' "$TMP/w8"
+printf '%s\n' "$OUT" | grep -qE '^W-workspace-envelope[[:space:]]+NOT REQUIRED[[:space:]]' && ok "W: the TENANT_LIMITS verdict is literally NOT REQUIRED" || bad "W is not NOT REQUIRED for TENANT_LIMITS" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Gate E: rollback floors (throwaway history).
