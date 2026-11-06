@@ -79,6 +79,15 @@ data class IngestionProperties(
          */
         val admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
         /**
+         * T1's accounting (`testinbox.storage.admission-accounting`): GLOBAL, mode a,
+         * the default. ESCROW is the M1 prototype of the PROPOSED slot-lane escrow
+         * (ADR-038): `DeploymentSafety` refuses it outside the lab, and this
+         * deployable refuses to start with it anyway, because no deployable wires the
+         * prototype (its schema exists only in the storage benchmark's database).
+         */
+        val admissionAccounting: email.testinbox.application.storage.AdmissionAccounting =
+            email.testinbox.application.storage.AdmissionAccounting.GLOBAL,
+        /**
          * *R_gated*, events/s (`TESTINBOX_STORAGE_GATED_EXPECTED_RATE`): the §11
          * expected rate of the passing gate D evidence (ADR-035 amendment D).
          * `ALL` is refused while it is absent or below the configured INGEST
@@ -108,6 +117,7 @@ data class IngestionProperties(
             gatedExpectedRate = storage.gatedExpectedRate,
             declaredLegacyWorkspaces = storage.declaredLegacyWorkspaces,
             admissionLocking = storage.admissionLocking,
+            admissionAccounting = storage.admissionAccounting,
         )
 
     /**

@@ -213,7 +213,7 @@ class GuardedStorage(
         val guard = SlotGuard(acquireSlot(copies))
         try {
             hook.afterSlot()
-            val result = admit(bytesPerCopy, copies, envelopePositions)
+            val result = admit(bytesPerCopy, copies, envelopePositions, guard.slot.index)
             hook.afterAdmission()
             val admittedIds = result.admitted.map { it.candidate.messageId }.toSet()
             val admitted = copies.filter { it.messageId in admittedIds }
@@ -393,11 +393,13 @@ class GuardedStorage(
         bytesPerCopy: Long,
         copies: List<CopyPlan>,
         envelopePositions: List<Int>,
+        lane: Int,
     ) = try {
         val started = System.nanoTime()
         admission
-            .admit(StorageAdmissionRequest(bytesPerCopy, copies.map { it.candidate }, node.nodeId, node.generation, envelopePositions))
-            .also { result ->
+            .admit(
+                StorageAdmissionRequest(bytesPerCopy, copies.map { it.candidate }, node.nodeId, node.generation, envelopePositions, lane),
+            ).also { result ->
                 metrics.lockWait(Duration.ofNanos(System.nanoTime() - started))
                 result.decisions.forEach { decision ->
                     when (decision) {

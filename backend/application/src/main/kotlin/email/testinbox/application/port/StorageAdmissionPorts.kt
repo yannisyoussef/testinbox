@@ -106,6 +106,12 @@ data class InboxStorageUsage(
 data class StorageAdmissionPlan<R : Any>(
     val reservations: List<StorageReservationDraft>,
     val outcome: R,
+    /**
+     * Slot-lane escrow prototype only (ADR-038 PROPOSED): the slow path's readiness
+     * verdict on its snapshot, stamped on the lanes its regrant writes; null when
+     * ready. Mode a's store never reads it.
+     */
+    val escrowNotReady: String? = null,
 )
 
 /**

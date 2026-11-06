@@ -90,6 +90,21 @@ data class StorageBackendIdentity(
 enum class AdmissionLocking { GLOBAL, COHORT_PARTITIONED }
 
 /**
+ * How T1 accounts admissions (`testinbox.storage.admission-accounting`).
+ *
+ * - [GLOBAL] is ADR-035 mode a (with [AdmissionLocking]'s protocol), the default.
+ * - [ESCROW] is the slot-lane escrow of the PROPOSED ADR-038
+ *   (`docs/dev/structural-admission-design.md`), built here only as the M1
+ *   prototype: design and prototype work is authorized, production activation is
+ *   not. `DeploymentSafety` refuses it outside environment `lab` and outside `ALL`
+ *   with a declared filesystem and `GLOBAL` locking, and no deployable wires it:
+ *   its schema (V28-proto) exists only in the storage benchmark's disposable
+ *   database. Only `DeploymentSafety`, the wiring and the benchmark name it
+ *   (`EscrowRuleTest`).
+ */
+enum class AdmissionAccounting { GLOBAL, ESCROW }
+
+/**
  * Why a share-partitioned T1 was decided by mode a instead (closed set, a metric
  * label: `testinbox_storage_admission_partition_fallback_total{reason}`). Each
  * is a fallback, never a refusal: the event gets exactly mode a's outcome.
@@ -168,6 +183,8 @@ data class StorageDeclarations(
     val filesystem: FilesystemDeclarations = FilesystemDeclarations(),
     /** T1's lock protocol; [AdmissionLocking.GLOBAL] (mode a) unless explicitly declared. */
     val admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
+    /** T1's accounting; [AdmissionAccounting.GLOBAL] (mode a) unless explicitly declared (M1 prototype: lab only). */
+    val admissionAccounting: AdmissionAccounting = AdmissionAccounting.GLOBAL,
     /**
      * *R_gated* (`testinbox.storage.gated-expected-rate`), events/s: the §11
      * expected rate R at which the passing gate D evidence ran (ADR-035

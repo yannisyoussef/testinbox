@@ -350,8 +350,14 @@ class IngestionWiring(
         policy: StorageCapacityPolicy,
         declarations: StorageDeclarations,
         storageMetrics: StorageProtocolMetrics,
-    ): StorageAdmission =
-        FootprintWiring.admission(
+    ): StorageAdmission {
+        // The slot-lane escrow (PROPOSED ADR-038) is an M1 prototype measured by the storage
+        // benchmark only: its schema is never migrated here, so no deployable may claim it.
+        check(declarations.admissionAccounting == email.testinbox.application.storage.AdmissionAccounting.GLOBAL) {
+            "testinbox.storage.admission-accounting is ${declarations.admissionAccounting}: the slot-lane escrow is a " +
+                "benchmark-only prototype (ADR-038 PROPOSED) and no deployable wires it; run GLOBAL"
+        }
+        return FootprintWiring.admission(
             JdbcStorageAdmission(
                 jdbc,
                 template(transactionManager),
@@ -364,6 +370,7 @@ class IngestionWiring(
             policy,
             declarations,
         )
+    }
 
     /** A @Bean method's parameters are its dependencies: one per protocol collaborator. */
     @Bean

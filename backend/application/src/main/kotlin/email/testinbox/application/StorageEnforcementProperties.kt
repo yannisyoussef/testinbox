@@ -166,6 +166,8 @@ object StorageDeclarationsFactory {
         filesystem: FilesystemProperties = FilesystemProperties(),
         admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
         gatedExpectedRate: Double? = null,
+        admissionAccounting: email.testinbox.application.storage.AdmissionAccounting =
+            email.testinbox.application.storage.AdmissionAccounting.GLOBAL,
         declaredLegacyWorkspaces: Int? = null,
     ): StorageDeclarations =
         StorageDeclarations(
@@ -183,6 +185,7 @@ object StorageDeclarationsFactory {
             node = if (nodeId != null && nodeRole != null) DeclaredNode(nodeId, nodeRole) else null,
             filesystem = filesystem.toDeclarations(),
             admissionLocking = admissionLocking,
+            admissionAccounting = admissionAccounting,
             gatedExpectedRate = gatedExpectedRate,
             declaredLegacyWorkspaces = declaredLegacyWorkspaces,
         )

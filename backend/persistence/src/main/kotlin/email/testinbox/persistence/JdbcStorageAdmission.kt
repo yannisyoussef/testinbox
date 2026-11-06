@@ -89,8 +89,19 @@ open class JdbcStorageAdmission(
     val locking: AdmissionLocking = AdmissionLocking.GLOBAL,
     /** Told why each share-partitioned T1 was decided by mode a (the closed-label fallback metric). */
     private val onFallback: (PartitionFallbackReason) -> Unit = {},
+    /**
+     * The slot-lane escrow strategy (ADR-038 PROPOSED; M1 prototype), or null: mode a,
+     * byte for byte (`ModeASequenceTest`, B-7). With one, this store is the escrow's
+     * SLOW path: the drain fence instead of `(35, 1)` alone, the event's scope rows,
+     * mode a's snapshot statement byte-identical, mode a's decision, the insert, and
+     * THEN the regrant (H1), in one transaction. Only the storage benchmark passes one.
+     */
+    private val escrow: EscrowSlowPath? = null,
 ) : StorageAdmissionStore {
     init {
+        require(escrow == null || (locking == AdmissionLocking.GLOBAL && readsFootprint)) {
+            "the slot-lane escrow's slow path is mode a with GLOBAL locking and the footprint read"
+        }
         // Whole milliseconds: '0ms' would mean NO timeout, an unbounded wait.
         require(lockTimeout.toMillis() in 1..Int.MAX_VALUE.toLong()) { "the admission lock timeout must be 1 ms or more, was $lockTimeout" }
         require(locking == AdmissionLocking.GLOBAL || readsFootprint) {
@@ -133,6 +144,8 @@ open class JdbcStorageAdmission(
                 }
             }
         }
+        val slow = escrow
+        if (slow != null) return bounded { checkNotNull(transactions.execute { escrowSlowPath(slow, scope, decide) }) }
         return bounded {
             checkNotNull(
                 transactions.execute {
@@ -141,6 +154,50 @@ open class JdbcStorageAdmission(
                     val plan = decide(readSnapshot(scope))
                     insert(plan.reservations)
                     plan.outcome
+                },
+            )
+        }
+    }
+
+    /** The application inputs of this store's escrow strategy, or null under mode a. */
+    val escrowInputs: email.testinbox.application.port.EscrowInputs? get() = escrow?.inputs
+
+    /**
+     * The escrow's slow path (§4.4), steps 1–8 in one transaction: configure, the
+     * drain fence, the event's scope rows, mode a's snapshot statement and mode a's
+     * decision, the insert WITHOUT its batched COMMIT, then the regrant, whose truth
+     * includes that insert (H1). The template commits.
+     */
+    private fun <R : Any> escrowSlowPath(
+        slow: EscrowSlowPath,
+        scope: StorageAdmissionScope,
+        decide: (StorageUsageSnapshot) -> StorageAdmissionPlan<R>,
+    ): R {
+        configureTransaction()
+        slow.escrowDrainFence()
+        slow.escrowLockScopes(scope)
+        val plan = decide(readSnapshot(scope))
+        insert(plan.reservations, commit = false)
+        slow.escrowRegrant(scope, plan.escrowNotReady)
+        return plan.outcome
+    }
+
+    /**
+     * The keeper's refill-only slow path (§4.5): steps 1, 2, 4 and 7 with no event.
+     * Mode a's snapshot statement runs with no ids (its global row only), and
+     * [notReady] is the application's readiness verdict on it.
+     */
+    fun escrowRefillOnly(notReady: (StorageUsageSnapshot) -> String?): email.testinbox.application.port.EscrowRegrant {
+        val slow = checkNotNull(escrow) { "refill-only runs on the escrow's slow path" }
+        check(
+            !TransactionSynchronizationManager.isActualTransactionActive(),
+        ) { "the escrow refill must not run inside another transaction" }
+        return bounded {
+            checkNotNull(
+                transactions.execute {
+                    configureTransaction()
+                    slow.escrowDrainFence()
+                    slow.escrowRegrant(null, notReady(snapshot(readRows(emptyList(), emptyList()))))
                 },
             )
         }
@@ -453,16 +510,19 @@ open class JdbcStorageAdmission(
           LEFT JOIN ib_reserved r ON r.id = ib.id
         """.trimIndent()
 
-    protected open fun readSnapshot(scope: StorageAdmissionScope): StorageUsageSnapshot {
-        val rows =
-            jdbc
-                .sql(snapshotStatement)
-                .param("workspaces", uuidArray(scope.workspaceIds.map { it.value }), Types.ARRAY)
-                .param("inboxes", uuidArray(scope.inboxIds.map { it.value }), Types.ARRAY)
-                .query { rs, _ -> snapshotRow(rs) }
-                .list()
-        return snapshot(rows)
-    }
+    protected open fun readSnapshot(scope: StorageAdmissionScope): StorageUsageSnapshot =
+        snapshot(readRows(scope.workspaceIds.map { it.value }, scope.inboxIds.map { it.value }))
+
+    private fun readRows(
+        workspaces: List<UUID>,
+        inboxes: List<UUID>,
+    ): List<SnapshotRow> =
+        jdbc
+            .sql(snapshotStatement)
+            .param("workspaces", uuidArray(workspaces), Types.ARRAY)
+            .param("inboxes", uuidArray(inboxes), Types.ARRAY)
+            .query { rs, _ -> snapshotRow(rs) }
+            .list()
 
     /**
      * The partitioned statement, ONE snapshot: the figures, and the first guard
@@ -574,8 +634,13 @@ open class JdbcStorageAdmission(
      * the event closed, its reservations counting until cleanup releases them
      * (an over-count, never an under-count).
      */
-    private fun insert(reservations: List<StorageReservationDraft>) {
+    private fun insert(
+        reservations: List<StorageReservationDraft>,
+        /** False only on the escrow's slow path, whose regrant must follow the insert inside T1. */
+        commit: Boolean = true,
+    ) {
         if (reservations.isEmpty()) return
+        val end = if (commit) ";\n                COMMIT" else ""
         val values =
             reservations.indices.joinToString(",\n") { i ->
                 "(:m$i, :w$i, :i$i, ARRAY[:k$i]::text[], :b$i, 'RESERVED', :c$i, :d$i, :n$i, :g$i)"
@@ -586,8 +651,7 @@ open class JdbcStorageAdmission(
                 INSERT INTO storage_reservation
                     (message_id, workspace_id, inbox_id, object_keys, bytes, state, created_at, write_deadline_at, node_id, generation)
                 VALUES
-                $values;
-                COMMIT
+                $values$end
                 """.trimIndent(),
             )
         reservations.forEachIndexed { i, r ->

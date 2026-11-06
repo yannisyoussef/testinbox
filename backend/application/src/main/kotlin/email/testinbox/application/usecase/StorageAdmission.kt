@@ -1,6 +1,8 @@
 package email.testinbox.application.usecase
 
 import email.testinbox.application.ObjectKeys
+import email.testinbox.application.port.EscrowPath
+import email.testinbox.application.port.EscrowScope
 import email.testinbox.application.port.StorageAccountingOverflowException
 import email.testinbox.application.port.StorageAdmissionInputException
 import email.testinbox.application.port.StorageAdmissionPlan
@@ -77,8 +79,14 @@ data class StorageAdmissionRequest(
     val generation: UUID,
     /** Zero-based positions in the normalized distinct envelope, before resolution/rate filtering (ADR-037 A1). */
     val envelopePositions: List<Int> = candidates.indices.toList(),
+    /**
+     * The event's write-slot index (`WriteSlots.Slot.index`), which names its escrow
+     * lane (slot-lane escrow prototype, ADR-038 PROPOSED). Mode a never reads it.
+     */
+    val lane: Int? = null,
 ) {
     init {
+        require(lane == null || lane >= 0) { "a slot index is never negative, was $lane" }
         require(envelopePositions.size == candidates.size) { "one envelope position per candidate" }
         require(
             envelopePositions.all { it in 0 until MAX_CANDIDATES } &&
@@ -412,7 +420,30 @@ class StorageAdmission(
      * deployment declares no filesystem. Enforced under `ALL` only.
      */
     private val footprint: FootprintPolicy? = null,
+    /**
+     * The slot-lane escrow (ADR-038 PROPOSED; M1 prototype), or null: mode a,
+     * unchanged. Only the storage benchmark passes one. With it, under `ALL` with a
+     * declared filesystem and a slot index, THIS use case owns the sequence: the
+     * fast path, and on escalation the slow path through [store], whose escrow
+     * strategy inserts before it regrants (H1).
+     */
+    private val escrow: EscrowAdmission? = null,
 ) {
+    init {
+        require(escrow == null || (enforcement == StorageEnforcement.ALL && footprint != null)) {
+            "the slot-lane escrow runs only under ALL with a declared filesystem"
+        }
+        // The scope refills' application inputs are mode a's own policy, exactly (their binding hashes them).
+        require(
+            escrow == null ||
+                (
+                    escrow.inputs.maxStoredBytes == policy.workspaceLimitBytes &&
+                        escrow.inputs.inboxShare.compareTo(policy.inboxShare.value) == 0 &&
+                        escrow.inputs.model == footprint?.model
+                ),
+        ) { "the escrow's inputs must be mode a's policy and footprint model" }
+    }
+
     fun admit(request: StorageAdmissionRequest): StorageAdmissionResult {
         if (request.candidates.isEmpty()) return StorageAdmissionResult.NOTHING_TO_ADMIT
 
@@ -421,7 +452,24 @@ class StorageAdmission(
                 workspaceIds = request.candidates.mapTo(LinkedHashSet()) { it.workspaceId },
                 inboxIds = request.candidates.mapTo(LinkedHashSet()) { it.inboxId },
             )
-        return store.admit(scope) { snapshot ->
+        val lane = request.lane
+        if (escrow == null || lane == null || lane >= EscrowScope.MAX_LANES) return modeA(request, scope, slowPath = false)
+        val fast = escrow.fastPath(request, lane, checkNotNull(footprint))
+        if (fast != null) return fast
+        // Escalated: nothing was written. The slow path decides it as mode a does (§4.4).
+        return modeA(request, scope, slowPath = true).also { escrow.metrics.path(EscrowPath.SLOW) }
+    }
+
+    /**
+     * Mode a's decision through [store]. Under the escrow's slow path it also
+     * carries the readiness verdict on the same snapshot, for the regrant.
+     */
+    private fun modeA(
+        request: StorageAdmissionRequest,
+        scope: StorageAdmissionScope,
+        slowPath: Boolean,
+    ): StorageAdmissionResult =
+        store.admit(scope) { snapshot ->
             verifyOwnership(request, snapshot)
             // Lifecycle first, from the same snapshot: an inactive participant's copy
             // is never priced against its own scopes and never reserved.
@@ -481,9 +529,9 @@ class StorageAdmission(
             StorageAdmissionPlan(
                 reservations = decisions.filterIsInstance<StorageAdmissionDecision.Admitted>().map { it.reservation },
                 outcome = StorageAdmissionResult(decisions, snapshot.t0),
+                escrowNotReady = if (slowPath) footprint?.unavailability(snapshot.footprint)?.name?.lowercase() else null,
             )
         }
-    }
 
     /**
      * Recipient resolution supplies trusted ids. A mismatch here is a

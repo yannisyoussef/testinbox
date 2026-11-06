@@ -1,6 +1,7 @@
 package email.testinbox.application.deployment
 
 import email.testinbox.application.LimitsProperties
+import email.testinbox.application.storage.AdmissionAccounting
 import email.testinbox.application.storage.AdmissionLocking
 import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.FootprintWiring
@@ -625,9 +626,60 @@ object StorageEnforcementSafety {
 
     fun check(settings: DeploymentSettings): List<DeploymentViolation> {
         val storage = settings.storage
-        return labRecord(settings, storage) + admissionLocking(settings, storage) +
+        return labRecord(settings, storage) + admissionLocking(settings, storage) + admissionAccounting(settings, storage) +
             if (storage.enforced) enforced(settings, storage) else sanity(storage)
     }
+
+    private const val ACCOUNTING = "testinbox.storage.admission-accounting"
+
+    /**
+     * The slot-lane escrow (PROPOSED ADR-038; structural-admission-design.md §13.4
+     * item 2). The owner authorized design and prototype work, not production
+     * activation or participant admission, so, like the share-partitioned T1:
+     * - it is refused in EVERY environment but `lab`, production included;
+     * - in the lab it needs `ALL` with a declared filesystem (the lanes carry the
+     *   footprint rules' headroom) and `admission-locking = GLOBAL` (M4: escrow
+     *   replaces the global lock by its own fence; it never composes with the
+     *   partitioned protocol).
+     * Lifting the lab-only refusal is its own reviewed PR, after ADR-038 is
+     * accepted. GLOBAL (mode a) is the default and never refused here.
+     */
+    private fun admissionAccounting(
+        settings: DeploymentSettings,
+        storage: StorageDeclarations,
+    ): List<DeploymentViolation> =
+        buildList {
+            if (storage.admissionAccounting != AdmissionAccounting.ESCROW) return@buildList
+            if (settings.environment != LAB_ENVIRONMENT) {
+                add(
+                    DeploymentViolation(
+                        ACCOUNTING,
+                        "is ESCROW in environment '${settings.environment}'; the slot-lane escrow is the M1 prototype of the " +
+                            "PROPOSED ADR-038 (docs/adr/0038-slot-lane-escrow-admission.md), authorized for design and prototype " +
+                            "work in environment '$LAB_ENVIRONMENT' only; production activation and participant admission are not " +
+                            "authorized; every other environment runs GLOBAL (mode a)",
+                    ),
+                )
+            }
+            if (storage.enforcement != StorageEnforcement.ALL || !FootprintWiring.readsFootprint(storage)) {
+                add(
+                    DeploymentViolation(
+                        ACCOUNTING,
+                        "is ESCROW but enforcement is ${storage.enforcement}" +
+                            (if (FootprintWiring.readsFootprint(storage)) "" else " without a declared filesystem") +
+                            "; the lanes carry the global footprint headroom, which only ALL with a declared filesystem has",
+                    ),
+                )
+            }
+            if (storage.admissionLocking != AdmissionLocking.GLOBAL) {
+                add(
+                    DeploymentViolation(
+                        ACCOUNTING,
+                        "is ESCROW but admission-locking is ${storage.admissionLocking}; escrow needs admission-locking = GLOBAL",
+                    ),
+                )
+            }
+        }
 
     private const val LOCKING = "testinbox.storage.admission-locking"
 

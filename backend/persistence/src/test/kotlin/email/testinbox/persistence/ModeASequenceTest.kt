@@ -51,7 +51,10 @@ class ModeASequenceTest : PartitionedAdmissionFixture() {
             admission.admit(
                 fx.request(
                     COPY,
-                    listOf(fx.candidate(a, cohort.inboxes.getValue(a)[0], attachments = 1), fx.candidate(b, cohort.inboxes.getValue(b)[1], 1)),
+                    listOf(
+                        fx.candidate(a, cohort.inboxes.getValue(a)[0], attachments = 1),
+                        fx.candidate(b, cohort.inboxes.getValue(b)[1], 1),
+                    ),
                 ),
             )
         result.shape() shouldBe listOf("admitted", "admitted")
@@ -77,7 +80,12 @@ class ModeASequenceTest : PartitionedAdmissionFixture() {
         val recorder = SequenceRecorder(db.dataSource)
         val store = JdbcStorageAdmission(recorder.jdbc, recorder.transactions, readsFootprint = false)
         val tiny = AdmissionFixture.policy(workspace = COPY - 1, share = "1", global = 10 * gib)
-        val result = StorageAdmission(store, tiny, StorageEnforcement.TENANT_LIMITS).admit(fx.request(COPY, listOf(fx.candidate(ws, inbox))))
+        val result =
+            StorageAdmission(
+                store,
+                tiny,
+                StorageEnforcement.TENANT_LIMITS,
+            ).admit(fx.request(COPY, listOf(fx.candidate(ws, inbox))))
         result.shape() shouldBe listOf("INBOX_LIMIT")
         recorder.assertMatches("global-refused.txt")
     }

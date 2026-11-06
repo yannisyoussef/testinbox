@@ -63,10 +63,23 @@ class WriteSlots(
 
     /** Slots lost to an ambiguity that could not be persisted: held until the process ends. */
     private var poisoned = 0
+
+    /**
+     * Which slot indices are held, by a live event or by a poisoned slot (which keeps
+     * its index for the life of the process). Persisted ambiguity occupies capacity
+     * but no index. Because `inUse + poisoned < maxSlots` whenever a slot is handed
+     * out, a free index always exists then.
+     */
+    private val indexHeld = BooleanArray(maxSlots)
     private val perWorkspaceInUse = HashMap<WorkspaceId, Int>()
 
     inner class Slot internal constructor(
         val workspaces: Set<WorkspaceId>,
+        /**
+         * This slot's index in `0 until maxSlots`, unique among the node's in-flight
+         * events: it names the event's slot-lane escrow lane (ADR-038 PROPOSED, §2).
+         */
+        val index: Int,
     ) : AutoCloseable {
         private var closed = false
 
@@ -76,6 +89,7 @@ class WriteSlots(
                 if (closed) return@withLock
                 closed = true
                 inUse--
+                indexHeld[index] = false
                 returns++
                 workspaces.forEach { ws -> perWorkspaceInUse.merge(ws, -1) { a, b -> (a + b).takeIf { it > 0 } } }
                 released.signalAll()
@@ -111,7 +125,10 @@ class WriteSlots(
                 if (returns == seen && fits(persisted, workspaces)) {
                     inUse++
                     workspaces.forEach { perWorkspaceInUse.merge(it, 1, Int::plus) }
-                    return Slot(workspaces)
+                    val index = indexHeld.indexOfFirst { !it }
+                    check(index >= 0) { "no free slot index although a slot fits" }
+                    indexHeld[index] = true
+                    return Slot(workspaces, index)
                 }
                 val remaining = deadline - System.nanoTime()
                 if (remaining <= 0) {

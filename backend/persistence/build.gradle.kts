@@ -40,6 +40,11 @@ dependencies {
 // not a test: it measures, and asserts only what a pathology would break.
 // It runs only on request, and never counts toward the suite's floor.
 tasks.test {
+    // The slot-lane escrow PROTOTYPE's schema (ADR-038 PROPOSED, M1): benchmark-only, never in
+    // db/migration. The prototype tests apply it to their own throwaway databases after Flyway.
+    val escrowProto = rootProject.file("benchmark/src/main/resources/escrow-proto/v28-proto-slot-lane-escrow.sql")
+    inputs.file(escrowProto)
+    systemProperty("testinbox.escrowProtoSql", escrowProto.absolutePath)
     if (!project.hasProperty("storageBenchmark")) {
         exclude("**/StorageAdmissionBenchmark*")
     }

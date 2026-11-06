@@ -92,6 +92,22 @@ class WriteSlotsTest {
     }
 
     @Test
+    fun `every in-flight slot has its own index, a returned index is reused, and a poisoned one never is (escrow lanes)`() {
+        val slots = slots(max = 4, perWorkspace = 4)
+        val first = List(3) { slots.acquire(setOf(a)) }
+        first.map { it.index } shouldBe listOf(0, 1, 2)
+        first[1].close()
+        val again = slots.acquire(setOf(b))
+        again.index shouldBe 1
+        first[0].poison()
+        first[2].close()
+        again.close()
+        // Index 0 stays with the poisoned slot for the life of the process.
+        val later = List(3) { slots.acquire(setOf(a)) }
+        later.map { it.index }.toSet() shouldBe setOf(1, 2, 3)
+    }
+
+    @Test
     fun `a waiter gets a slot as soon as one is returned`() {
         val slots = slots(max = 1, perWorkspace = 1, wait = Duration.ofSeconds(10))
         val held = slots.acquire(setOf(a))
