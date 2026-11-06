@@ -93,6 +93,8 @@ data class BenchmarkOptions(
      * changes nothing about whether the run is ADR evidence.
      */
     val partitionedVariant: Boolean = false,
+    /** Repetitions of the variant's timing-probe runs (S-C1), at each of its two load points, in both modes. */
+    val probeRepetitions: Int = 4,
 ) {
     fun retentionRateFor(offered: Double): Double = retentionRate ?: (offered / RETENTION_RATIO)
 
@@ -228,6 +230,10 @@ data class BenchmarkOptions(
                         options = options.copy(partitionedVariant = true)
                     }
 
+                    "--probe-repetitions" -> {
+                        options = options.copy(probeRepetitions = value(flag).toIntOrNull() ?: throw UsageException("$flag needs a number"))
+                    }
+
                     "--help", "-h" -> {
                         throw UsageException(USAGE)
                     }
@@ -259,6 +265,10 @@ data class BenchmarkOptions(
             if (expectedRate <= 0) throw UsageException("--expected-rate must be positive")
             if (slotsPerWorkspace !in 1..slots) throw UsageException("--slots-per-workspace must be in 1..slots")
             if (inboxesPerWorkspace < 1) throw UsageException("--inboxes-per-workspace must be positive")
+            if (partitionedVariant && inboxesPerWorkspace <= ScenarioRunner.PROBE_HOT_INBOXES) {
+                throw UsageException("the timing probes reserve ${ScenarioRunner.PROBE_HOT_INBOXES} inboxes of the hot workspace")
+            }
+            if (probeRepetitions < 1) throw UsageException("--probe-repetitions must be at least 1")
             if (partitionedVariant && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
                 throw UsageException("the partitioned cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
             }
@@ -303,6 +313,7 @@ data class BenchmarkOptions(
                                               matrix point, over a closed cohort of 30 participants + 1 legacy share
                                               (the gate population is wiped first); reported under "variant", never
                                               part of the verdict
+              --probe-repetitions <n>         timing-probe runs per load point and mode in the variant (default 4)
 
             Output:
               --host-class <text>             operator-supplied host class, recorded in the evidence

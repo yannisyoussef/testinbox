@@ -47,10 +47,19 @@ data class ScenarioSpec(
      * Reported under `variant`, never gate D.
      */
     val probe: Boolean = false,
+    /**
+     * The probe scenario's paced point (S-C1 (b)): the flood sends maximum-size
+     * events (every flood inbox of the hot workspace) paced just under that
+     * workspace's INGEST refill, so it keeps its budget - the attacker's best case.
+     */
+    val paced: Boolean = false,
+    /** Probe repetitions are numbered so each run stays apart in the evidence. */
+    val repetition: Int = 0,
 ) {
     fun name(workspaces: Int): String =
         "${mode.name.lowercase()}-ws$workspaces-c$concurrency-r${Math.round(offeredRate)}" +
-            (if (hot) "-hot" else "") + (if (probe) "-probe" else "")
+            (if (hot) "-hot" else "") + (if (probe) "-probe" else "") + (if (paced) "-paced" else "") +
+            (if (repetition > 0) "-rep$repetition" else "")
 }
 
 /**
@@ -129,6 +138,9 @@ class ScenarioRunner(
             val protocol = ProtocolAssembly(pool, options, spec.mode, declarations, onClosedCohort = closedCohort != null)
             hotWorkspace = spec.hot || spec.probe
             probeMode = spec.probe
+            pacedMode = spec.paced
+            // S-C1 (c): every probe run starts from full INGEST buckets, whichever mode ran before it.
+            if (spec.probe) admin.sql("DELETE FROM rate_bucket").update()
             try {
                 val probe = prepare(protocol, name, spec.mode)
 
@@ -345,14 +357,32 @@ class ScenarioRunner(
             }
         if (!hotWorkspace) return inboxes
         val hot = inboxes.filter { it.workspaceId == inboxes.first().workspaceId }
-        // The probe scenario keeps the hot workspace's last inbox for its `inside` probe.
-        return if (probeMode) hot.dropLast(1) else hot
+        // The probe scenario keeps the hot workspace's last inboxes for its `inside` probe.
+        return if (probeMode) hot.dropLast(PROBE_HOT_INBOXES) else hot
+    }
+
+    /**
+     * S-C1 (b): the paced point's offered rate, in events per second, of maximum-size
+     * flood events (every flood inbox): 90 % of what production's workspace INGEST
+     * refill leaves beside the `inside` probe's hot copies. Each flood inbox then
+     * receives that rate, far under its per-inbox refill.
+     */
+    fun pacedProbeRate(): Double {
+        val refill =
+            email.testinbox.application
+                .LimitsProperties()
+                .ingest.refillPerSecond
+        val floodInboxes = options.inboxesPerWorkspace - PROBE_HOT_INBOXES
+        check(floodInboxes >= 1 && refill > PROBE_RATE) { "the paced probe point needs flood inboxes and INGEST headroom" }
+        return PACED_FRACTION * (refill - PROBE_RATE) / floodInboxes
     }
 
     /** Set per scenario: the variant's single-hot-workspace skew, and the timing-probe scenario. */
     @Volatile private var hotWorkspace = false
 
     @Volatile private var probeMode = false
+
+    @Volatile private var pacedMode = false
 
     /**
      * The S-C1 probe classes over the closed cohort: `inside` co-addresses the hot
@@ -365,11 +395,13 @@ class ScenarioRunner(
                 .groupBy { it.workspaceId }
                 .values
                 .toList()
+        // `inside` rotates over the hot workspace's reserved inboxes, so each stays under its
+        // per-inbox INGEST refill; the target copy is always the first recipient.
         val classes =
             mapOf(
-                "inside" to listOf(byWorkspace[0].last(), byWorkspace[1].first()),
-                "cold" to listOf(byWorkspace[2].first()),
-                "unknown" to emptyList(),
+                "inside" to byWorkspace[0].takeLast(PROBE_HOT_INBOXES).map { listOf(it, byWorkspace[1].first()) },
+                "cold" to listOf(listOf(byWorkspace[2].first())),
+                "unknown" to listOf(emptyList()),
             )
         return ProbeLoad(classes, PROBE_RATE, options.durationSeconds, options.seed + PROBE_SEED) { probeIngest(protocol, it) }
             .also { it.start() }
@@ -380,9 +412,10 @@ class ScenarioRunner(
     private fun probeIngest(
         protocol: ProtocolAssembly,
         inboxes: List<SeededInbox>,
-    ): ProbeOutcome {
+    ): ProbeResult {
         val admitted = admittedByIngest(protocol, inboxes)
-        if (admitted.isEmpty()) return ProbeOutcome.NO_T1
+        val target = inboxes.first() in admitted
+        if (admitted.isEmpty()) return ProbeResult(ProbeOutcome.NO_T1, false)
         val plans = admitted.map(::plan)
         val byMessage = admitted.zip(plans).associate { (inbox, plan) -> plan.messageId to inbox }
         return try {
@@ -395,9 +428,9 @@ class ScenarioRunner(
                         )
                 }
             }
-            ProbeOutcome.DELIVERED
+            ProbeResult(ProbeOutcome.DELIVERED, target)
         } catch (_: RuntimeException) {
-            ProbeOutcome.UNAVAILABLE
+            ProbeResult(ProbeOutcome.UNAVAILABLE, target)
         }
     }
 
@@ -427,7 +460,8 @@ class ScenarioRunner(
     ): Boolean {
         val inboxes = eventInboxes(protocol.mode)
         // A hot workspace has fewer inboxes than the largest event: an event then covers all of them.
-        val recipients = minOf(options.recipientMix.draw(random.nextDouble()), inboxes.size)
+        // The paced probe point sends maximum-size events: every flood inbox, every time.
+        val recipients = if (pacedMode) inboxes.size else minOf(options.recipientMix.draw(random.nextDouble()), inboxes.size)
         val start = random.nextInt(inboxes.size - recipients + 1)
         val drawn = inboxes.subList(start, start + recipients)
         // The probe scenario's flood goes through production INGEST limits, like its probes.
@@ -617,19 +651,29 @@ class ScenarioRunner(
     private fun isDeadlock(t: Throwable): Boolean =
         generateSequence(t) { it.cause }.filterIsInstance<SQLException>().any { it.sqlState == DEADLOCK_DETECTED }
 
-    private companion object {
-        val log = LoggerFactory.getLogger(ScenarioRunner::class.java)
-        const val DEADLOCK_DETECTED = "40P01"
-        const val POOL_MARGIN = 6
-        const val RETENTION_HEADROOM = 1.5
-        const val ERROR_SAMPLES = 5
-        const val DELTA_SAMPLE_MILLIS = 250L
+    companion object {
+        private val log = LoggerFactory.getLogger(ScenarioRunner::class.java)
+        private const val DEADLOCK_DETECTED = "40P01"
+        private const val POOL_MARGIN = 6
+        private const val RETENTION_HEADROOM = 1.5
+        private const val ERROR_SAMPLES = 5
+        private const val DELTA_SAMPLE_MILLIS = 250L
 
         /** StorageNodeRuntime's production heartbeat interval. */
-        const val HEARTBEAT_MILLIS = 10_000L
+        private const val HEARTBEAT_MILLIS = 10_000L
 
-        /** Events per second of each probe class: a light observer beside the flood. */
-        const val PROBE_RATE = 5.0
-        const val PROBE_SEED = 4_711L
+        /**
+         * Events per second of each probe class: a light observer beside the flood.
+         * 3/s for a 30 s run is 90 events per class per repetition; four
+         * repetitions pool 360, above [ProbePooling.MIN_TARGET_EVENTS].
+         */
+        const val PROBE_RATE = 3.0
+
+        /** The hot workspace's inboxes reserved for `inside`: 1/s each, under the 2/s per-inbox INGEST refill. */
+        const val PROBE_HOT_INBOXES = 3
+
+        /** The paced flood's share of the INGEST headroom: just under the refill, never over it. */
+        const val PACED_FRACTION = 0.9
+        private const val PROBE_SEED = 4_711L
     }
 }

@@ -103,20 +103,30 @@ under `variant` and left out of the informational criteria. The reviewers'
 recommended criteria for a partitioned T1 (not adopted) are in the PROPOSED
 note.
 
-Then the timing-channel probes (security review S-C1), twice at the same
-heaviest point and on the same closed cohort, once in mode a (`chosen-…-probe`,
-the declared ingestion node, GLOBAL) and once partitioned
-(`partitioned-…-probe`): a hot-workspace flood whose events, like the probes,
-pass production's ADR-027 INGEST limits (per inbox, then per workspace) before
-T1, production write slots, heartbeats on; beside it three probe classes at
-5 events/s each — `inside` (the hot workspace's reserved inbox co-addressed with
+Then the timing-channel probes (security review S-C1 and its re-check), on the
+closed cohort, in mode a (`chosen-…-probe…`, the declared ingestion node,
+GLOBAL) and partitioned (`partitioned-…-probe…`) under identical load, at two
+points: the matrix's heaviest, and a PACED point (`…-probe-paced…`) where the
+flood sends maximum-size events (every flood inbox of the hot workspace) at 90 %
+of what the hot workspace's INGEST refill leaves beside the probe, so it keeps
+its budget (the attacker's best case). Flood and probes alike pass production's
+ADR-027 INGEST limits (per inbox, then per workspace) before T1; production write
+slots; heartbeats on. Beside the flood, three classes at 3 events/s each:
+`inside` (one of three reserved hot-workspace inboxes, rotated, co-addressed with
 an observer's inbox in another workspace), `cold`, and `unknown` (resolution
-discards it; recorded `reachesT1 = false`). Each class reports its events,
-latency (due to completion) and 451 rate under `probes`. Every PARTITIONED
+discards it; `reachesT1 = false`). Each run repeats `--probe-repetitions` times
+(default 4), every run starting from reset INGEST buckets and the order of the
+two modes alternating between repetitions (`…-repN`). Per class, `probes`
+reports `events` and `targetReachedEvents` (the target copy passed INGEST and
+reached the guarded protocol); latency and the 451 rate are computed only over
+the latter. `variant.probePooled` pools the repetitions per point and mode, with
+the sample size, `minimumSampleMet` (300) and `insideMinusColdP99Ms`; no verdict
+(the proposed criterion is in the PROPOSED note, not adopted). Limit: uploads are
+instant here, so a write slot is held for T1 and T2 only. Every PARTITIONED
 scenario also reports `partitionFallbackReasons`; with the hot scenario's
 `t1Transaction.maxMs` that is the evidence for the lock-timeout fallback
 cascade (a T1 can take about two lock timeouts plus its statement when it
-falls back). None of this is gate D; the mode a probe scenario is reported
+falls back). None of this is gate D; the mode a probe scenarios are reported
 under `variant` too.
 
 Every variant scenario's probe must show the partitioned path

@@ -115,7 +115,7 @@ class Harness(
                 } else {
                     GateEvaluator(expectedRate = options.expectedRate).evaluate(
                         variantResults
-                            .filter { it.mode == AdmissionMode.PARTITIONED && !it.name.endsWith("-hot") && !it.name.endsWith("-probe") }
+                            .filter { it.mode == AdmissionMode.PARTITIONED && !it.name.contains("-hot") && !it.name.contains("-probe") }
                             .map { it.copy(mode = AdmissionMode.CHOSEN) } +
                             results.filter { it.mode == AdmissionMode.REFERENCE },
                         nonAdr,
@@ -250,9 +250,7 @@ class Harness(
                 // skew, then the timing-channel probes under the same load in mode a and partitioned (S-C1).
                 val heaviest = options.concurrency.max() to options.rates.max()
                 variantResults += variant.run(ScenarioSpec(AdmissionMode.PARTITIONED, heaviest.first, heaviest.second, hot = true))
-                for (mode in listOf(AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED)) {
-                    variantResults += variant.run(ScenarioSpec(mode, heaviest.first, heaviest.second, probe = true))
-                }
+                variantResults += probeRuns(variant, heaviest.first, heaviest.second)
             }
             diagnosticsRecords +=
                 linkedMapOf(
@@ -265,6 +263,33 @@ class Harness(
                 )
         }
     }
+
+    /**
+     * S-C1: the timing probes, `--probe-repetitions` times at two load points (the
+     * matrix's heaviest, and the paced attacker's best case), in mode a and
+     * partitioned under identical load. Every run starts from reset INGEST buckets,
+     * and the order of the two modes alternates between repetitions, so neither
+     * mode is systematically second. Reported under `variant`, never gate D.
+     */
+    private fun probeRuns(
+        variant: ScenarioRunner,
+        concurrency: Int,
+        heaviestRate: Double,
+    ): List<ScenarioResult> =
+        (1..options.probeRepetitions).flatMap { repetition ->
+            val modes =
+                if (repetition % 2 == 1) {
+                    listOf(AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED)
+                } else {
+                    listOf(AdmissionMode.PARTITIONED, AdmissionMode.CHOSEN)
+                }
+            listOf(false, true).flatMap { paced ->
+                modes.map { mode ->
+                    val rate = if (paced) variant.pacedProbeRate() else heaviestRate
+                    variant.run(ScenarioSpec(mode, concurrency, rate, probe = true, paced = paced, repetition = repetition))
+                }
+            }
+        }
 
     /** Between populations: every tenant and ledger row goes. The database is the harness's own by preflight. */
     private fun wipe(admin: JdbcClient) {

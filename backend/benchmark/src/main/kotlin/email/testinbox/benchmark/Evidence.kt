@@ -131,6 +131,8 @@ class Evidence(
                         "name" to "PARTITIONED",
                         "status" to VARIANT_STATUS,
                         "scenarios" to variantScenarios.map(::scenarioTree),
+                        // The timing probes pooled over their repetitions: figures only, no verdict.
+                        "probePooled" to ProbePooling.pool(variantScenarios).map(::pooledTree),
                         "criteria" to
                             v.criteria.mapValues { (_, c) ->
                                 linkedMapOf("pass" to c.pass, "observed" to c.observed, "threshold" to c.threshold, "detail" to c.detail)
@@ -309,6 +311,7 @@ class Evidence(
                 s.probes?.mapValues { (_, p) ->
                     linkedMapOf(
                         "events" to p.events,
+                        "targetReachedEvents" to p.targetReachedEvents,
                         "latency" to latency(p.latency),
                         "unavailableRate" to p.unavailableRate,
                         "reachesT1" to p.reachesT1,
@@ -367,6 +370,18 @@ class Evidence(
         s.t1Statement!!.let {
             "${s.name}: ${it.calls} calls, ${it.plans} plans, plan ${"%.3f".format(it.meanPlanMs)} ms, " +
                 "exec mean ${"%.3f".format(it.meanExecMs)} / max ${"%.1f".format(it.maxExecMs)} ms"
+        }
+
+    @Suppress("UNCHECKED_CAST") // ProbePooling's own shape
+    private fun pooledTree(pooled: Map<String, Any?>): Map<String, Any?> =
+        pooled.mapValues { (key, value) ->
+            if (key != "classes") {
+                value
+            } else {
+                (value as Map<String, Map<String, Any?>>).mapValues { (_, c) ->
+                    c.mapValues { (k, v) -> if (k == "latency") latency(v as LatencySummary?) else v }
+                }
+            }
         }
 
     private fun latency(l: LatencySummary?): Map<String, Any>? =
