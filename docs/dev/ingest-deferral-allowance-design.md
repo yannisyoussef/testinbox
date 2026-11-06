@@ -368,9 +368,12 @@ G-E (§7) must show S holds.
 - **Sustained:** at most R_T = R = 31 events/s.
 - **Bursts:** fresh ≤ σ′ (amendment D's accepted residual, plus `W_slot`'s
   R·W_slot term). Catch-up ≤ B_c on top, which needs G-C at R_T.
-- **Activation evidence:** gate D at R and 2R, per the owner's earlier
-  decision, plus G-C for B_c. **Gate D has not passed (run 3 FAILED), so
-  this cannot be activated today.**
+- **Evidence the mechanism needs:** only R_T = R evidence, plus G-C for
+  B_c at R_T. The carved design never relies on 2R.
+- **Amendment D's existing activation criterion** is separate. Gate D at R
+  **and** 2R gates `ALL` today, and run 3 FAILED it. Whether the 2R part
+  still gates activating this design is **the owner's decision** (§8(d)(ii)).
+  Either way, nothing can be activated today.
 
 ### R-REC, the recovery requirement
 
@@ -401,18 +404,37 @@ tokens above σ′, and those accrue at (R_T − ρ_f)·q ≤ B_c per scan.
 
 A *synchronized* backlog behaves differently. It arrived within about one
 scan, and the age-based backoff keeps it together, so the edge presents it
-once per P. It drains at ≤ B_c per presentation, so its term is
-240 + P·⌈Q/B_c⌉ instead. Since (R_T − ρ_f)·P ≥ B_c for ρ_f ≤ 25.8/s, tokens
-are not the limit at those demand levels. Both cases are tabulated below.
+together. Two corrections from the correctness reviewer apply to it.
 
-**Largest congestion D still delivered** (L − M = 12 600 s, R_T = 31):
+1. **Per-presentation refill.** A presentation admits at most
+   A = min(B_c, (R_T − ρ̄_f)·P) retries. The tokens above σ′ refill fully
+   (A = B_c) between presentations only while ρ̄_f ≤ 25.8/s, that is
+   31 − 3 720/720.
+2. **Presentation time.** The edge must also deliver each admitted batch,
+   and it starts from s₀ = `initial_destination_concurrency` = 5 sessions.
+   The next presentation is counted from each message's own attempt. So
+   presentations are P′ = P + B_c·t_s/s₀ apart. At t_s = 0.32 s that is
+   720 + 238 ≈ 958 s.
 
-| ρ̄_f during the drain | Drain rate R_T − ρ̄_f | Spread backlog (R-REC) | Synchronized backlog |
+The synchronized condition is therefore:
+
+> D + 240 + P′·⌈Q/A⌉ ≤ L − M
+
+In the spread column, R-REC's P is read as the same P′.
+
+**Largest congestion D still delivered.** L − M = 12 600 s, R_T = 31,
+B_c = 3 720, t_s = 0.32 s, so P′ = 958 s.
+
+| ρ̄_f during the drain | Drain rate R_T − ρ̄_f | Spread backlog (R-REC, P′) | Synchronized backlog |
 |---|---|---|---|
-| 0 | 31/s | ≈ 98 min | ≈ 28 min |
-| 15.5/s (R/2) | 15.5/s | ≈ 65 min | ≈ 28 min |
-| 24.8/s (0.8·R_T, the alert threshold) | 6.2/s | ≈ 32 min | ≈ 28 min |
+| 0 | 31/s | ≈ 96 min | ≈ 21 min (A = 3 720) |
+| 15.5/s (R/2) | 15.5/s | ≈ 64 min | ≈ 21 min (A = 3 720) |
+| 24.8/s (0.8·R_T, the alert threshold) | 6.2/s | ≈ 31 min | ≈ 21 min (A = 3 720) |
+| 28/s | 3/s | ≈ 16 min | ≈ 13 min (A = 2 160; refill no longer full) |
 | ≥ 31/s (full envelope) | 0 | **no drain** | **no drain** |
+
+At the S limit t_s = 0.65 s, P′ ≈ 1 204 s and the synchronized D falls to
+about 17 min for ρ̄_f ≤ 25.8/s. G-E's measured t_s replaces 0.32 s.
 
 With no congestion and ρ̄_f < R_T, each deferral is admitted at its first
 retry, within 240 s, as long as a scan's retries fit in the tokens above σ′.
@@ -422,8 +444,9 @@ retry, within 240 s, as long as a scan's retries fit in the tokens above σ′.
 - **Sustained ρ̄_f ≥ R_T.** This is the capacity limit. Mail is lost at 4 h
   (RL-3).
 - **D beyond the table.**
-- **G-C qualifies only a smaller B_c.** The synchronized column then shrinks
-  in proportion to B_c.
+- **G-C qualifies only a smaller B_c, or t_s is larger.** The synchronized
+  column then shrinks: through A when B_c is smaller, through P′ when t_s is
+  larger.
 - **S fails.**
 - **An edge assumption is violated** (§6).
 
@@ -690,20 +713,24 @@ an enforced check.
 
 - `xforward-peers` is empty or contains anything other than single hosts;
 - `trusted-clients` contains anything other than single hosts;
-- the scheduling pins (§2.3) do not hold, i.e. R_T, σ′ or B_c differ from the configuration that the recorded gate D (R and 2R) and G-C evidence covers;
+- the scheduling pins (§2.3) do not hold, i.e. R_T, σ′ or B_c differ from the configuration that the recorded R_T evidence (gate D at R) and G-C evidence covers, plus amendment D's 2R gate unless the owner decides otherwise (§8(d)(ii));
 - the hold inequality does not hold.
 
 ## 7. Evidence
 
-Nothing here is qualified today. Gate D **failed** (run 3). The carved
-bucket keeps T1 at R_T = R sustained.
+Nothing here is qualified today.
 
-- **Activation evidence:** gate D at R and 2R (per the owner's earlier
-  decision), plus G-C for B_c at R_T.
-- **A higher R_T** needs passing evidence at that R_T.
-- **`ALL` stays refused** until this evidence passes.
+- **The mechanism needs R_T = R evidence only.** The carved design's drain
+  bound needs evidence at R_T = R, plus G-C for B_c at R_T. It never relies
+  on 2R.
+- **The 2R requirement is separate.** It is amendment D's **existing** gate D
+  activation criterion (R and 2R), which run 3 FAILED. Whether gate D at 2R
+  still gates activating this design is **the owner's decision**
+  (§8(d)(ii)).
+- **A higher R_T** (the upgrade path) needs passing evidence at that R_T.
+- **`ALL` stays refused** until the evidence the owner requires passes.
 
-**G-D: gate D at R and 2R, with consume in T1** (focused remeasurement).
+**G-D: gate D with consume in T1** (focused remeasurement, at R and, under amendment D's existing criterion, 2R).
 
 - **Command.** The documented gate command (`docs/dev/storage-benchmark.md`)
   on the staging host class, at the implementing commit, with
@@ -873,14 +900,21 @@ A2.2). No object, upload, fence, MinIO or filesystem dependency changes.
       by scheduling.
 22. **I-22 Qualified capacity only.**
     - `ALL` is refused unless passing evidence covers R_T and B_c: gate D at
-      R and 2R, and G-C for B_c at R_T.
+      R_T = R and G-C for B_c at R_T.
+    - Amendment D's 2R activation gate also applies unless the owner decides
+      otherwise.
     - Any R_T above R needs passing evidence at that R_T.
     - A failed or pending run is never treated as qualification.
 23. **I-23 Recovery (R-REC, §3).**
-    - A deferred message reaches T1 within L − M whenever
-      D + Q(D)/(R_T − ρ̄_f) + P ≤ L − M.
-    - For a synchronized backlog the condition is
-      D + 240 + P·⌈Q/B_c⌉ ≤ L − M.
+    - **Spread backlog.** A deferred message reaches T1 within L − M whenever
+      D + Q(D)/(R_T − ρ̄_f) + P′ ≤ L − M.
+    - **Synchronized backlog.** The condition is
+      D + 240 + P′·⌈Q / min(B_c, (R_T − ρ̄_f)·P)⌉ ≤ L − M.
+    - **P′ = P + B_c·t_s/s₀**, with s₀ = `initial_destination_concurrency` = 5.
+      The edge needs time to deliver each admitted batch, and the next
+      presentation is counted from each message's own attempt.
+    - The tokens above σ′ refill fully between presentations only while
+      ρ̄_f ≤ 25.8/s.
     - Under sustained ρ̄_f ≥ R_T nothing drains. That is a stated capacity
       limit, not a guarantee.
 
@@ -1017,16 +1051,19 @@ They run on Testcontainers Postgres and MinIO, with the real
       gets no identity.
 
 20. **AT-20 Drain.** A simulation of the edge:
-    - It models scans every 120 s, age-based backoff from 120 to 600 s, a
-      ramp from 5 to 20 sessions, and a 4 h lifetime.
+    - It models scans every 120 s, age-based backoff from 120 to 600 s, and a
+      4 h lifetime.
+    - It models the edge's session ramp: concurrency starts at 5 and grows to
+      20, and each admitted batch is delivered at t_s per session before the
+      next attempt is counted.
     - It drives the real carved-bucket arithmetic with:
       - ρ_f swept from 0 to R_T;
       - the adversarial burst pattern;
       - repeated congestion episodes;
       - 31 competing workspaces;
       - spread and synchronized backlogs.
-    - Every message within R-REC (or its synchronized form) reaches T1
-      within L − M.
+    - Every message within I-23 (both forms, with P′ and the
+      per-presentation refill A) reaches T1 within L − M.
     - Beyond R-REC, and at ρ̄_f ≥ R_T, the simulation reproduces the
       predicted loss.
     - The measured drain rate is R_T − ρ_f.
@@ -1040,7 +1077,9 @@ They run on Testcontainers Postgres and MinIO, with the real
     - no G-C evidence;
     - evidence for a smaller B_c;
     - any R_T above what the evidence covers;
-    - failed or pending gate D evidence (I-22).
+    - failed or pending gate D evidence at R_T;
+    - failed or pending 2R evidence, while amendment D's 2R gate applies
+      (I-22).
 23. **AT-23 Edge schedule** (rehearsal image, then live by Ops).
     - Measures deferred messages' next-attempt times across
       `postfix reload`, `restart` and an operator flush, and reports the
@@ -1145,25 +1184,63 @@ session), and `SCHEDULE_WAIT` and `SLOT_WAIT` deferrals.
 
 ### (d) For the owner
 
-These are the delivery and privacy consequences, together. None is accepted.
+This is one list, with delivery and privacy consequences together. Nothing
+here is accepted.
 
-**Delivery.**
+**(i) The capacity limit (delivery).**
 
 - In-envelope fresh mail is never refused by scheduling.
-- Backlogs drain at R_T − ρ̄_f under R-REC.
-- **The trade-off for the owner is the capacity limit.** Under sustained
-  full-envelope fresh demand nothing drains, and deferred mail is lost at
-  4 h (RL-3, not accepted).
-- RL-9 (edge-delay bunching) is unchanged.
-- It can be activated on R evidence: gate D at R and 2R (the owner's earlier
-  decision), plus G-C for B_c. Gate D has not passed (run 3 FAILED).
-- Raising R_T, the upgrade path, needs passing evidence at the higher R_T.
+- Backlogs drain at R_T − ρ̄_f under I-23 (§3 table).
+- Under sustained full-envelope fresh demand (ρ̄_f ≥ R_T = 31/s) nothing
+  drains, and deferred mail is lost at 4 h.
+- This is RL-3, not accepted. Raising R_T, the upgrade path, needs passing
+  evidence at that R_T.
 
-**Privacy.**
+**(ii) Whether amendment D's 2R gate applies to activating this design.**
+
+- The carved design's drain bound needs only R_T = R evidence, plus G-C for
+  B_c.
+- Gate D at R **and** 2R is amendment D's existing activation criterion,
+  and run 3 FAILED it.
+- The owner decides whether 2R still gates activating this design. Either
+  way, nothing is activatable until the evidence the owner requires passes.
+
+**(iii) RL-9, edge-delay bunching (delivery).**
+
+- Mail held at the edge arrives at ingestion in a bunch. The hold comes from
+  catch-up work occupying relay sessions, outages, pre-resolution `451`s, or
+  operator holds.
+- It is charged on arrival, so it can exceed b and be discarded behind a
+  `250`.
+- Bound: per workspace per episode, at most r × the edge delay.
+- This is pre-existing for outages, and catch-up amplifies it.
+
+**(iv) The privacy acceptance, which stays conditional.**
 
 - Scheduling refusals are global, so they fall under I9 as written.
-- There is one delivery ordinal per paid probe: about 4.8 bits, ≤ 6.9
-  under the model, and ≤ 7.9 if reloads advance next-attempt times. The
-  7.9-bit case goes back to the owner.
-- All of this is conditional on Ops' live verifications: ETRN refused, no
-  delivery-status notice of any class, and the effect of reloads.
+- There is one delivery ordinal per paid probe:
+  - about 4.8 bits;
+  - at most 6.9 bits under the model;
+  - at most 7.9 bits if reloads advance next-attempt times. That case
+    returns to the owner.
+- It depends on Ops' live verifications:
+  - ETRN refused;
+  - no delivery-status notice of any class;
+  - the reload effect.
+
+**(v) The final residual list for explicit acceptance (§8(c)).**
+
+| Residual | Short description |
+|---|---|
+| RL-1 | Failure after T1 commits |
+| RL-2 | Second orphaning |
+| RL-3 | Edge expiry, including the capacity limit |
+| RL-4 | Transactions without identity |
+| RL-5 | Forfeit by design |
+| RL-6 | Database restore |
+| RL-7 | Short-ID transition |
+| RL-8 | Redemption after δ |
+| RL-9 | Edge-delay bunching |
+
+Each one is listed with its mechanism, bound or metric, and the
+minimisation done.
