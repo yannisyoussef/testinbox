@@ -55,6 +55,7 @@ object AdrConformance {
         if (options.focused) {
             reasons += "--focused: a focused A′ measurement, never gate evidence"
         }
+        options.poolSize?.let { reasons += "--pool-size $it: not §11's c + 6 pool; never gate evidence" }
         if (options.cohortParticipants != Seeder.PARTICIPANTS) {
             reasons +=
                 "--cohort-participants ${options.cohortParticipants}: a closed cohort of ${options.cohortParticipants + 1} " +

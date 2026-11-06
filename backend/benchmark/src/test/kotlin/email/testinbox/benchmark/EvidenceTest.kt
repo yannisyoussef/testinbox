@@ -58,6 +58,7 @@ class EvidenceTest {
         pool: PoolLifecycle = PoolLifecycle.of(BenchmarkOptions(local = true)),
         scenarios: List<ScenarioResult> = listOf(scenario),
         cohortParticipants: Int = Seeder.PARTICIPANTS,
+        poolSize: Int? = null,
     ) = Evidence(
         environment =
             Environment(
@@ -96,6 +97,7 @@ class EvidenceTest {
                 lockWaitDefinition = "the whole admission call",
                 pool = pool,
                 cohortParticipants = cohortParticipants,
+                poolSize = poolSize,
             ),
         safety =
             SafetyRecord(
@@ -189,6 +191,19 @@ class EvidenceTest {
         Evidence.MAPPER
             .readTree(evidence(gate, cohortParticipants = 10).toJson())["harness"]["cohortParticipants"]
             .asInt() shouldBe 10
+    }
+
+    @Test
+    fun `the pool size is recorded, null for the harness's c + 6, and named in FOCUSED md`() {
+        val gate = GateEvaluator().evaluate(listOf(scenario))
+        val default = Evidence.MAPPER.readTree(evidence(gate).toJson())["harness"]
+        default.has("poolSize") shouldBe true
+        default["poolSize"].isNull shouldBe true
+        Evidence.MAPPER.readTree(evidence(gate, poolSize = 8).toJson())["harness"]["poolSize"].asInt() shouldBe 8
+        FocusedReport.render(emptyList(), BenchmarkOptions.parse(listOf("--local", "--focused-cohort", "--pool-size", "8"))) shouldContain
+            "pool size 8 (--pool-size; production's TESTINBOX_DB_POOL_SIZE defaults to 8)"
+        FocusedReport.render(emptyList(), BenchmarkOptions.parse(listOf("--local", "--focused-cohort"))) shouldContain
+            "pool size c + 6 per scenario"
     }
 
     @Test

@@ -150,6 +150,7 @@ class Harness(
                             sustainedReferenceWindowSeconds = GateEvaluator.SUSTAINED_REFERENCE_WINDOW_SECONDS,
                             focused = options.focused,
                             cohortParticipants = options.cohortParticipants,
+                            poolSize = options.poolSize,
                             pool = PoolLifecycle.of(options),
                         ),
                     safety =

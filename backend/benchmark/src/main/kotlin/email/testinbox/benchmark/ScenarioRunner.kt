@@ -135,9 +135,7 @@ class ScenarioRunner(
             raw.size.toLong(),
             attachment.size.toLong(),
         )
-        // A probe run drives two event streams (the hot flood and the background), each with the scenario's workers.
-        val size = (if (spec.probe) 2 else 1) * spec.concurrency + POOL_MARGIN
-        ScenarioPool(target, size, PoolLifecycle.of(options), options.stepTiming).use { scenarioPool ->
+        ScenarioPool(target, poolSize(options, spec), PoolLifecycle.of(options), options.stepTiming).use { scenarioPool ->
             val pool = scenarioPool.dataSource
             val declarations =
                 HarnessDeclarations.of(
@@ -750,7 +748,18 @@ class ScenarioRunner(
     companion object {
         private val log = LoggerFactory.getLogger(ScenarioRunner::class.java)
         private const val DEADLOCK_DETECTED = "40P01"
-        private const val POOL_MARGIN = 6
+        const val POOL_MARGIN = 6
+
+        /**
+         * The scenario pool's size: `--pool-size` when given (focused runs only), so the scenario's
+         * clients contend for production's connection count; otherwise c + [POOL_MARGIN], and a probe
+         * run drives two event streams (the hot flood and the background), each with the scenario's workers.
+         */
+        fun poolSize(
+            options: BenchmarkOptions,
+            spec: ScenarioSpec,
+        ): Int = options.poolSize ?: ((if (spec.probe) 2 else 1) * spec.concurrency + POOL_MARGIN)
+
         private const val RETENTION_HEADROOM = 1.5
         private const val ERROR_SAMPLES = 5
         private const val DELTA_SAMPLE_MILLIS = 250L

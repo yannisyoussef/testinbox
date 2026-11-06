@@ -130,6 +130,15 @@ data class BenchmarkOptions(
      */
     val cohortParticipants: Int = Seeder.PARTICIPANTS,
     /**
+     * `--pool-size <N>` (with `--focused` / `--focused-cohort` only): the scenario pool's
+     * `maximumPoolSize`, instead of the harness's c + [ScenarioRunner.POOL_MARGIN]. Production's
+     * ingestion pool is `TESTINBOX_DB_POOL_SIZE` (default 8), so c clients then contend for N
+     * connections, as SMTP sessions do on a node; a client waits up to Hikari's 30 s
+     * `connectionTimeout` ([PoolLifecycle.PRODUCTION_CONNECTION_TIMEOUT]) and that wait is inside
+     * T1. Null keeps c + 6. Never gate evidence ([AdrConformance]).
+     */
+    val poolSize: Int? = null,
+    /**
      * `--cold-pool` (the default) / `--warm-pool`: whether each measured phase starts on new
      * physical connections that have executed nothing, as a just-deployed ingestion node does
      * ([PoolLifecycle]), or on connections warmed past pgJDBC's prepare threshold (the harness's
@@ -176,6 +185,9 @@ data class BenchmarkOptions(
         val FOCUSED_CONCURRENCY = listOf(10, 100)
         const val FOCUSED_WORKSPACES = 10_000
         const val FOCUSED_SECONDS = 60
+
+        /** `--pool-size`'s ceiling. */
+        const val MAX_POOL_SIZE = 200
 
         @Suppress("CyclomaticComplexMethod", "LongMethod") // one branch per flag
         fun parse(args: List<String>): BenchmarkOptions {
@@ -339,6 +351,10 @@ data class BenchmarkOptions(
                         options = options.copy(cohortParticipants = int(value(flag), flag))
                     }
 
+                    "--pool-size" -> {
+                        options = options.copy(poolSize = int(value(flag), flag))
+                    }
+
                     "--focused-cohort" -> {
                         options = focusedPreset(options).copy(focusedCohort = true)
                     }
@@ -359,6 +375,9 @@ data class BenchmarkOptions(
                 i++
             }
             if (poolFlags.size > 1) throw UsageException("--cold-pool and --warm-pool contradict each other")
+            if (options.poolSize != null && !options.focused) {
+                throw UsageException("--pool-size is a focused measurement's (--focused or --focused-cohort); the gate's pool is c + 6")
+            }
             if (cohortParticipantsGiven && !options.focusedCohort) {
                 throw UsageException("--cohort-participants sizes the closed cohort of --focused-cohort; it takes effect nowhere else")
             }
@@ -419,6 +438,9 @@ data class BenchmarkOptions(
 
         private fun BenchmarkOptions.validateFocused() {
             if (focused && partitionedVariant) throw UsageException("--focused measures CHOSEN only; it takes no --partitioned-variant")
+            poolSize?.let {
+                if (it > MAX_POOL_SIZE) throw UsageException("--pool-size must be in 1..$MAX_POOL_SIZE, got $it")
+            }
             if (cohortParticipants !in 1..Seeder.PARTICIPANTS) {
                 throw UsageException("--cohort-participants must be in 1..${Seeder.PARTICIPANTS}, got $cohortParticipants")
             }
@@ -485,6 +507,11 @@ data class BenchmarkOptions(
               --cohort-participants <n>       with --focused-cohort only: n participants (1..30, default 30) + 1 legacy,
                                               the pool still reserved for thirty places and REQUIRED, every event to those
                                               n + 1 workspaces; anything but 30 is not ADR evidence
+              --pool-size <n>                 with --focused/--focused-cohort only: the scenario pool's maximumPoolSize
+                                              (1..200) instead of c + 6, so c clients contend for n connections as on
+                                              a production node (TESTINBOX_DB_POOL_SIZE, default 8); a client waits up
+                                              to Hikari's 30 s connectionTimeout, inside T1; a timeout is an error.
+                                              Not ADR evidence
               --t1-steps                      time T1 step by step in any run (lock, snapshot, decision, insert, commit;
                                               `t1Steps` in the evidence), observing T1's statements without changing them,
                                               and attribute each T1 to a cold (first 5 executions on its physical
@@ -508,7 +535,7 @@ data class BenchmarkOptions(
               --out <dir>                     evidence directory (default build/benchmark-evidence)
 
             Any departure from the §11 matrix (rate, concurrency, backlog, population, --local, no --host-class,
-            no NO_LOCK reference, --cohort-participants other than 30) or from production's connection lifecycle (--warm-pool, a --pool-max-lifetime
+            no NO_LOCK reference, --cohort-participants other than 30, --pool-size) or from production's connection lifecycle (--warm-pool, a --pool-max-lifetime
             other than 30m) is recorded as adrEvidence=false and makes the verdict INCOMPLETE.
 
             Exit code: 0 PASS, 1 FAIL, 3 INCOMPLETE, 2 usage or safety refusal.

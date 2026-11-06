@@ -78,6 +78,11 @@ class AdrConformanceTest {
     }
 
     @Test
+    fun `a pool other than the harness's c + 6 is never gate evidence`() {
+        only(conforming.copy(poolSize = 8)) shouldContain "--pool-size 8: not §11's c + 6 pool; never gate evidence"
+    }
+
+    @Test
     fun `gate evidence is faithful to production's pool lifecycle - cold, with production's maxLifetime`() {
         // The default IS production's lifecycle; naming it explicitly changes nothing.
         AdrConformance.reasons(conforming.copy(coldPool = true, poolMaxLifetime = Duration.ofMinutes(30))).shouldBeEmpty()
