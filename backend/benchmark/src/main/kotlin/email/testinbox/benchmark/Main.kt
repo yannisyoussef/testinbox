@@ -149,6 +149,7 @@ class Harness(
                             cohortShares = if (options.cohortShares) Seeder.PARTICIPANTS + 1 else 0,
                             sustainedReferenceWindowSeconds = GateEvaluator.SUSTAINED_REFERENCE_WINDOW_SECONDS,
                             focused = options.focused,
+                            pool = PoolLifecycle.of(options),
                         ),
                     safety =
                         SafetyRecord(

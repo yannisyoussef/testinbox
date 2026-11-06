@@ -63,7 +63,7 @@ BACKEND_MODULES=(
   "backend/migrator:6"
   # TI-STORAGE-006: the ADR-035 §11 benchmark harness's own unit tests (the
   # gate evaluator, the open-loop scheduler, the safety preflight).
-  "backend/benchmark:57"
+  "backend/benchmark:107"
 )
 E2E_MODULES=(
   "backend/e2e:28"

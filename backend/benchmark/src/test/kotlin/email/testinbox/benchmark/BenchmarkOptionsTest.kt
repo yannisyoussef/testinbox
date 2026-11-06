@@ -4,6 +4,7 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.Test
+import java.time.Duration
 
 class BenchmarkOptionsTest {
     @Test
@@ -94,6 +95,39 @@ class BenchmarkOptionsTest {
         BenchmarkOptions.parse(listOf("--local", "--focused", "--concurrency", "10")).concurrency shouldBe listOf(10)
         shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--focused", "--partitioned-variant")) }
             .message shouldContain "CHOSEN only"
+    }
+
+    @Test
+    fun `the pool is cold with production's lifetime unless told otherwise`() {
+        val defaults = BenchmarkOptions.parse(listOf("--local"))
+        defaults.coldPool shouldBe true
+        defaults.poolMaxLifetime shouldBe null
+        defaults.effectivePoolMaxLifetime shouldBe Duration.ofMinutes(30)
+        BenchmarkOptions.parse(listOf("--local", "--cold-pool")).coldPool shouldBe true
+        BenchmarkOptions.parse(listOf("--local", "--warm-pool")).coldPool shouldBe false
+        // --focused keeps the default: a focused run is cold unless it asks for a warm pool.
+        BenchmarkOptions.parse(listOf("--local", "--focused")).coldPool shouldBe true
+        BenchmarkOptions.parse(listOf("--local", "--focused", "--warm-pool")).coldPool shouldBe false
+        shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--cold-pool", "--warm-pool")) }
+            .message shouldContain "contradict"
+    }
+
+    @Test
+    fun `--pool-max-lifetime takes a duration of at least Hikari's 30 s minimum`() {
+        val short = BenchmarkOptions.parse(listOf("--local", "--focused", "--pool-max-lifetime", "60s"))
+        short.poolMaxLifetime shouldBe Duration.ofSeconds(60)
+        short.effectivePoolMaxLifetime shouldBe Duration.ofSeconds(60)
+        BenchmarkOptions.parse(listOf("--local", "--pool-max-lifetime", "30s")).effectivePoolMaxLifetime shouldBe Duration.ofSeconds(30)
+        BenchmarkOptions.parse(listOf("--local", "--pool-max-lifetime", "PT30M")).effectivePoolMaxLifetime shouldBe Duration.ofMinutes(30)
+        // Below 30 s Hikari would silently use 30 min: refused, never passed on. 0 (Hikari's "forever") likewise.
+        listOf("29s", "29999ms", "0").forEach { value ->
+            shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--pool-max-lifetime", value)) }
+                .message shouldContain "at least 30 s"
+        }
+        shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--pool-max-lifetime")) }.message shouldContain
+            "needs a value"
+        shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--pool-max-lifetime", "soon")) }
+            .message shouldContain "not a duration"
     }
 
     @Test

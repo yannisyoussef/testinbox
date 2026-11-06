@@ -28,6 +28,12 @@ class T1StepClock {
 
     @Volatile var commitEnd: Long = 0
 
+    /**
+     * The T1 snapshot's 1-based execution count on its physical connection ([ConnectionLedger]);
+     * 0 = not observed. At most the prepare threshold: a cold-connection plan inside the lock.
+     */
+    @Volatile var snapshotOrdinal: Int = 0
+
     fun begin(now: Long) {
         if (start == 0L) start = now
     }
@@ -36,6 +42,7 @@ class T1StepClock {
         step: HoldTiming.Step,
         started: Long,
         ended: Long,
+        ordinal: Int = 0,
     ) {
         if (commitEnd != 0L) return // T1 is over: a later statement on this thread is T2's
         when (step) {
@@ -48,6 +55,7 @@ class T1StepClock {
                 if (lockEnd != 0L) {
                     snapshotStart = started
                     snapshotEnd = ended
+                    snapshotOrdinal = ordinal
                 }
             }
 

@@ -121,9 +121,21 @@ data class BenchmarkOptions(
      * gate evidence.
      */
     val focusedCohort: Boolean = false,
+    /**
+     * `--cold-pool` (the default) / `--warm-pool`: whether each measured phase starts on new
+     * physical connections that have executed nothing, as a just-deployed ingestion node does
+     * ([PoolLifecycle]), or on connections warmed past pgJDBC's prepare threshold (the harness's
+     * behaviour before the review of 2026-11-06; never ADR evidence).
+     */
+    val coldPool: Boolean = true,
+    /** `--pool-max-lifetime`: Hikari `maxLifetime` of the scenario pool; null is production's ([PoolLifecycle.PRODUCTION_MAX_LIFETIME]). */
+    val poolMaxLifetime: Duration? = null,
 ) {
     /** Whether T1's statements are observed for [T1StepsSummary]. */
     val stepTiming: Boolean get() = t1Steps || focused
+
+    /** The scenario pool's `maxLifetime`: `--pool-max-lifetime`, or production's. */
+    val effectivePoolMaxLifetime: Duration get() = poolMaxLifetime ?: PoolLifecycle.PRODUCTION_MAX_LIFETIME
 
     fun retentionRateFor(offered: Double): Double = retentionRate ?: (offered / RETENTION_RATIO)
 
@@ -161,6 +173,7 @@ data class BenchmarkOptions(
         fun parse(args: List<String>): BenchmarkOptions {
             var options = BenchmarkOptions()
             var i = 0
+            val poolFlags = mutableSetOf<String>()
 
             fun value(flag: String): String {
                 i++
@@ -303,6 +316,15 @@ data class BenchmarkOptions(
                         options = options.copy(cohortShares = false)
                     }
 
+                    "--cold-pool", "--warm-pool" -> {
+                        poolFlags += flag
+                        options = options.copy(coldPool = flag == "--cold-pool")
+                    }
+
+                    "--pool-max-lifetime" -> {
+                        options = options.copy(poolMaxLifetime = PoolLifecycle.parseDuration(value(flag)))
+                    }
+
                     "--focused-cohort" -> {
                         options = focusedPreset(options).copy(focusedCohort = true)
                     }
@@ -322,6 +344,7 @@ data class BenchmarkOptions(
                 }
                 i++
             }
+            if (poolFlags.size > 1) throw UsageException("--cold-pool and --warm-pool contradict each other")
             options.validate()
             return options
         }
@@ -360,6 +383,14 @@ data class BenchmarkOptions(
             }
             if (probeRepetitions < 1) throw UsageException("--probe-repetitions must be at least 1")
             if (probeDurationSeconds < 1) throw UsageException("--probe-duration-seconds must be at least 1")
+            poolMaxLifetime?.let {
+                if (it < PoolLifecycle.HIKARI_MIN_MAX_LIFETIME) {
+                    throw UsageException(
+                        "--pool-max-lifetime must be at least ${PoolLifecycle.HIKARI_MIN_MAX_LIFETIME.seconds} s: below it HikariCP " +
+                            "silently uses its 30 min default instead",
+                    )
+                }
+            }
             validateFocused()
             if (partitionedVariant && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
                 throw UsageException("the partitioned cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
@@ -430,14 +461,30 @@ data class BenchmarkOptions(
                                               participants + 1 legacy, pool reserved and approved, so REQUIRED), every
                                               event to those 31 workspaces, mode a
               --t1-steps                      time T1 step by step in any run (lock, snapshot, decision, insert, commit;
-                                              `t1Steps` in the evidence), observing T1's statements without changing them
+                                              `t1Steps` in the evidence), observing T1's statements without changing them,
+                                              and attribute each T1 to a cold (first 5 executions on its physical
+                                              connection) or warm connection (`t1Planning` in the evidence)
+
+            Connection lifecycle (production's by default; docs/dev/storage-benchmark.md):
+              --cold-pool                     the default: after the event warm-up every pool connection is replaced
+                                              by a new physical connection that has executed nothing, as on a
+                                              just-deployed ingestion node, so T1 plans inside the lock on each
+                                              connection's first 5 executions
+              --warm-pool                     the pre-review behaviour: every connection executes T1's snapshot past
+                                              pgJDBC's prepareThreshold before the phase (not ADR evidence)
+              --pool-max-lifetime <duration>  Hikari maxLifetime of the scenario pool (60s, 30m, PT30M; default 30m,
+                                              production's: HikariCP's default, which ingestion does not override).
+                                              At least 30s (HikariCP's minimum; below it Hikari silently uses 30m).
+                                              Anything but 30m is not ADR evidence. Keepalive is production's 2m, or
+                                              off when that is not below the lifetime
 
             Output:
               --host-class <text>             operator-supplied host class, recorded in the evidence
               --out <dir>                     evidence directory (default build/benchmark-evidence)
 
             Any departure from the §11 matrix (rate, concurrency, backlog, population, --local, no --host-class,
-            no NO_LOCK reference) is recorded as adrEvidence=false and makes the verdict INCOMPLETE.
+            no NO_LOCK reference) or from production's connection lifecycle (--warm-pool, a --pool-max-lifetime
+            other than 30m) is recorded as adrEvidence=false and makes the verdict INCOMPLETE.
 
             Exit code: 0 PASS, 1 FAIL, 3 INCOMPLETE, 2 usage or safety refusal.
             """.trimIndent()
