@@ -5,6 +5,7 @@ import email.testinbox.application.deployment.SchemaVersion
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.WorkspaceId
 import io.kotest.matchers.collections.shouldContainAll
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.flywaydb.core.Flyway
@@ -222,7 +223,64 @@ class SchemaUpgradeTest : PersistenceIntegrationTest() {
                 "24",
                 "25",
                 "26",
+                "27",
             )
+    }
+
+    @Test
+    fun `V27 gives the reservations a V26 schema already holds their stored object count and the covering index, and changes no row`() {
+        // Gate D A′: expand-only. The reservations written before it keep every column; object_count is
+        // computed by PostgreSQL from object_keys for them and for every later insert, including an older
+        // artifact's, which does not name the column.
+        val dataSource = freshDatabase()
+        val jdbc = JdbcClient.create(dataSource)
+        flyway(dataSource, target = "26").migrate()
+        val (workspace, inbox, _) = seedV1Data(jdbc)
+
+        fun reserve(keys: String) =
+            jdbc
+                .sql(
+                    """
+                    INSERT INTO storage_reservation (message_id, workspace_id, inbox_id, object_keys, bytes, state, created_at,
+                                                     write_deadline_at, node_id, generation)
+                    VALUES (gen_random_uuid(), ?, ?, string_to_array(?, ','), 10, 'RESERVED', now(), now() + interval '2 minutes', 'n',
+                            gen_random_uuid())
+                    """.trimIndent(),
+                ).params(workspace, inbox, keys)
+                .update()
+        reserve("a")
+        reserve("a,b,c")
+        // object_keys as text: a driver array compares by identity.
+        val columns =
+            "message_id, workspace_id, inbox_id, object_keys::text, bytes, state, created_at, write_deadline_at, node_id, generation"
+        val before = jdbc.sql("SELECT $columns FROM storage_reservation ORDER BY message_id").query().listOfRows()
+
+        flyway(dataSource).migrate()
+
+        jdbc.sql("SELECT $columns FROM storage_reservation ORDER BY message_id").query().listOfRows() shouldBe before
+        reserve("x,y") // the V26-era insert, unchanged
+        jdbc
+            .sql("SELECT count(*) FROM storage_reservation WHERE object_count IS DISTINCT FROM cardinality(object_keys)")
+            .query(Long::class.java)
+            .single() shouldBe 0
+        jdbc
+            .sql("SELECT array_agg(object_count ORDER BY object_count) FROM storage_reservation")
+            .query(String::class.java)
+            .single() shouldBe "{1,2,3}"
+        // Generated: no writer can set it to anything else.
+        runCatching {
+            jdbc.sql("UPDATE storage_reservation SET object_count = 7").update()
+        }.exceptionOrNull().shouldNotBeNull()
+        jdbc
+            .sql(
+                "SELECT is_generated || ':' || generation_expression FROM information_schema.columns WHERE table_name = 'storage_reservation' AND column_name = 'object_count'",
+            ).query(String::class.java)
+            .single() shouldBe "ALWAYS:cardinality(object_keys)"
+        jdbc
+            .sql("SELECT indexdef FROM pg_indexes WHERE tablename = 'storage_reservation' AND indexname = 'ix_storage_reservation_usage'")
+            .query(String::class.java)
+            .single() shouldBe
+            "CREATE INDEX ix_storage_reservation_usage ON public.storage_reservation USING btree (workspace_id) INCLUDE (bytes, object_count)"
     }
 
     @Test

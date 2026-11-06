@@ -1,0 +1,41 @@
+-- ADR-035 §11 gate D, mode a correction A′ (owner decision 2026-11-06, #124
+-- comment 6684712608: "approve A′"). Correctness-neutral.
+--
+-- T1's global reservation sum (g_reserved: Σ bytes and Σ cardinality(object_keys)
+-- over EVERY reservation) was a sequential scan of the whole storage_reservation
+-- heap under the global admission lock: about half of the statement at gate D
+-- run 3 (2.7-3.0 ms of ~6.6 ms, ~1 100 heap pages for ~1 000 live rows, the rest
+-- one autovacuum naptime of churn). No index could answer it, because the object
+-- count is an expression over a text[] that no index can carry.
+--
+-- * object_count: the reservation's object count, a STORED generated column
+--   (cardinality(object_keys), IMMUTABLE), so it is computed by PostgreSQL on every
+--   insert and can never disagree with object_keys. object_keys is NOT NULL, so
+--   object_count is never NULL; sum(object_count) is bigint exactly as
+--   sum(cardinality(object_keys)) is, so T1's figures are unchanged to the value
+--   (AdmissionStatementEquivalenceTest runs the old and new statements on the same
+--   states).
+-- * ix_storage_reservation_usage (workspace_id) INCLUDE (bytes, object_count): every
+--   reservation sum T1 reads (the global one, the involved workspaces', the cohort
+--   shares') is then answerable from the index alone where the visibility map allows;
+--   the standing reservations sit on pages no churn rewrites (fillfactor 70, V24).
+--   It is a fifth index on the table, so T1's own insert pays one more entry per row.
+--
+-- EXPAND ONLY: one generated column and one index; no table, function, trigger,
+-- grant, constraint or type change. Every writer names its columns, so the previous
+-- artifact's INSERT, which does not mention object_count, still works and gets the
+-- right value; its statements read the same rows. storage_reservation's grants are
+-- table-level (roles.reference.sql), so the new column needs none, and
+-- deploy/backup/scope.txt already classifies the table (`-`, never backed up).
+--
+-- Adding a STORED generated column rewrites the table under ACCESS EXCLUSIVE, which
+-- holds every T1, T2, cleanup and fence write of storage_reservation for that time.
+-- The table holds the in-flight reservations only (about a thousand rows), so the
+-- rewrite is short. Lock timeout (as V8, V24, V26): if a writer holds the table when
+-- the migrator starts, the migration fails instead of queueing every later writer
+-- behind it past their write deadlines, and is simply re-run (roll forward with the
+-- same candidate). statement_timeout bounds the rewrite and the build.
+SET LOCAL lock_timeout = '10s';
+SET LOCAL statement_timeout = '60s';
+ALTER TABLE storage_reservation ADD COLUMN object_count integer GENERATED ALWAYS AS (cardinality(object_keys)) STORED;
+CREATE INDEX ix_storage_reservation_usage ON storage_reservation (workspace_id) INCLUDE (bytes, object_count);

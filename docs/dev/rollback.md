@@ -623,3 +623,28 @@ one compaction interval of rows, so that is short. No new floor in
 `deploy/rollback-floors.txt`, no change to `roles.reference.sql` or
 `deploy/backup/scope.txt`. A failed V26 leaves V25 applied and is roll
 forward only, like V25 above.
+
+## T1 reservation usage index (gate D mode a correction A′, schema V27)
+
+V27 is expand-only: one STORED generated column,
+`storage_reservation.object_count = cardinality(object_keys)`, and one index,
+`ix_storage_reservation_usage (workspace_id) INCLUDE (bytes, object_count)`. No
+table, function, trigger, constraint, type or grant change. Every writer of
+`storage_reservation` names its columns, so an older artifact's insert, which
+does not mention `object_count`, still works and PostgreSQL computes the value;
+its statements read the same rows (`SchemaUpgradeTest`). The A′ T1 text, which
+reads `object_count`, is in the artifact: rolling the artifact back restores the
+A1–A3 statement, which returns the same figures
+(`AdmissionStatementEquivalenceTest`). An artifact at or after A′ needs V27 and
+refuses readiness on a V26 schema, as every artifact does on an older schema.
+
+Adding a STORED generated column rewrites the table under `ACCESS EXCLUSIVE`,
+which holds every T1, T2, cleanup and fence write of `storage_reservation` for
+that time; the table holds the in-flight reservations only, so that is short.
+`lock_timeout` 10 s and `statement_timeout` 60 s, as V26: a writer holding the
+table makes the migration fail instead of queueing every later writer behind
+it; re-run it with the same candidate. No new floor in
+`deploy/rollback-floors.txt`, no change to `roles.reference.sql` (the table's
+grants are table-level) or `deploy/backup/scope.txt` (`storage_reservation` is
+already classified, never backed up). A failed V27 leaves V26 applied and is
+roll forward only, like V26 above.

@@ -19,11 +19,14 @@ import java.security.MessageDigest
  * a, so mode a's text is now ASSEMBLED. A change here is a change to the
  * accepted T1, and needs its own review.
  *
- * - Without the footprint reads: the text the adapter sent at 9d06ab2.
+ * - Without the footprint reads: the text the adapter sent at 9d06ab2 until A′.
  * - With them: the 9d06ab2 text with gate D's mode a corrections A1 and A3
- *   (owner decision 2026-11-06, #124), reviewed as one change. The 9d06ab2 text
- *   (`199482a1…`) is kept as the OLD fixture of `AdmissionStatementEquivalenceTest`,
- *   which proves the two return the same rows on the same states.
+ *   (owner decision 2026-11-06, #124), reviewed as one change, and since A′
+ *   (owner decision 2026-11-06, #124 6684712608) the reservation object counts
+ *   read from V27's stored `object_count`. The 9d06ab2 text (`199482a1…`) and the
+ *   A1–A3 text (`01352274…`) are kept as OLD fixtures of
+ *   `AdmissionStatementEquivalenceTest`, which proves they return the same rows on
+ *   the same states.
  */
 class AdmissionStatementTextTest {
     private val jdbc = JdbcClient.create(SimpleDriverDataSource())
@@ -37,9 +40,19 @@ class AdmissionStatementTextTest {
     ) = JdbcStorageAdmission(jdbc, TransactionTemplate(), readsFootprint = readsFootprint, locking = locking)
 
     @Test
-    fun `mode a's statement is 9d06ab2's without the footprint reads, and 9d06ab2's with A1-A3 with them`() {
-        sha256(store(readsFootprint = false).snapshotStatement) shouldBe "6cc082aab4d6b1ea044fe0d56f8b4bf938c1b8b3c96950053ade3c8039d3d594"
-        sha256(store(readsFootprint = true).snapshotStatement) shouldBe A1_A3
+    fun `mode a's statement is A-prime's, with and without the footprint reads`() {
+        sha256(store(readsFootprint = false).snapshotStatement) shouldBe A_PRIME_WITHOUT_FOOTPRINT
+        sha256(store(readsFootprint = true).snapshotStatement) shouldBe A_PRIME
+    }
+
+    @Test
+    fun `the A-prime equivalence fixture is the A1-A3 text, the one A-prime replaced`() {
+        val fixture =
+            checkNotNull(
+                javaClass.getResourceAsStream("/admission-equivalence/t1-mode-a-9e46896.sql"),
+            ).use { it.readAllBytes().decodeToString() }
+        sha256(fixture) shouldBe A1_A3
+        sha256(store(readsFootprint = true).snapshotStatement) shouldNotBe A1_A3
     }
 
     @Test
@@ -56,7 +69,7 @@ class AdmissionStatementTextTest {
     fun `mode a builds no partitioned statement, and the partitioned store keeps mode a's for its fallback`() {
         store(readsFootprint = true).partitionedStatement.shouldBeNull()
         val partitioned = store(readsFootprint = true, locking = AdmissionLocking.COHORT_PARTITIONED)
-        sha256(partitioned.snapshotStatement) shouldBe A1_A3
+        sha256(partitioned.snapshotStatement) shouldBe A_PRIME
     }
 
     @Test
@@ -95,5 +108,14 @@ class AdmissionStatementTextTest {
     private companion object {
         /** Mode a with the footprint reads after gate D A1 and A3 (the 9d06ab2 text plus those two rewrites). */
         const val A1_A3 = "0135227453cb5afa256e598593e7d421f36a1c90174d816b7c98b92e59fd6b2a"
+
+        /** Mode a with the footprint reads after gate D A′: A1_A3 with the reservation objects read from V27's object_count. */
+        const val A_PRIME = "a422b636738ca64e0c2ed4393673f96f395271ac23b7932094391cf2c9a6afe9"
+
+        /**
+         * Mode a without the footprint reads after A′: 9d06ab2's `6cc082aa…` with g_reserved and ws_reserved reading
+         * object_count, and the GLOBAL row's NULL pool typed `json` (the fixture `t1-mode-a-no-footprint-9e46896.sql`).
+         */
+        const val A_PRIME_WITHOUT_FOOTPRINT = "6e54bd5b39dfc85e715478730db66b8bf33c368be830195947b47962589107fb"
     }
 }
