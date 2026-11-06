@@ -138,6 +138,9 @@ class ApiMetricsWiring {
             policy,
             declarations.enforcement,
             gatedExpectedRate = declarations.gatedExpectedRate,
+            envelopeWorkspaces =
+                email.testinbox.application.deployment.IngestEnvelopeSafety
+                    .mailReceivingWorkspaces(declarations),
         )
 
     /** Credential lifecycle audit trail (TI-002 §14) on its own `testinbox.audit` logger. */

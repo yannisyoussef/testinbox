@@ -135,9 +135,16 @@ class DeployedProfileLayeringTest {
             val limits = limits(context.environment)
             limits.ingest.refillPerSecond shouldBe 2.0
             context.environment.getProperty("testinbox.storage.gated-expected-rate") shouldBe "31"
+            // r is pinned at the owner's 1 copy/s: no R_gated, however declared, admits 2.0 under ALL.
             envelopeViolations(limits).map { it.setting } shouldContain IngestEnvelopeSafety.WORKSPACE_REFILL
-            envelopeViolations(limits, rGated = 62.0).shouldBeEmpty()
+            envelopeViolations(limits, rGated = 62.0).map { it.setting } shouldContain IngestEnvelopeSafety.WORKSPACE_REFILL
         }
+        // A LOWER refill is an override the envelope accepts as it is.
+        runner(
+            "spring.profiles.active=production",
+            "TESTINBOX_LIMITS_INGEST_REFILL_PER_SECOND=0.5",
+            "TESTINBOX_LIMITS_INGEST_PER_INBOX_REFILL_PER_SECOND=0.25",
+        ).run { context -> envelopeViolations(limits(context.environment)).shouldBeEmpty() }
     }
 
     @Test

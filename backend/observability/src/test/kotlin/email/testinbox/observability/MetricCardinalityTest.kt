@@ -211,7 +211,7 @@ class MetricCardinalityTest {
             "path" to ReleasePath.entries.map { it.name.lowercase() }.toSet(),
             "state" to setOf("reserved", "releasing"),
             // Only the two gates a node re-checks at run time are exported (ADR-035 §14 Phase 4).
-            "gate" to setOf("session_allowlist", "node_inventory"),
+            "gate" to setOf("session_allowlist", "node_inventory", "workspace_envelope"),
         )
 
     /**
@@ -437,6 +437,12 @@ class MetricCardinalityTest {
         val undeclared = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
         MicrometerStorageProtocolMetrics(undeclared, StorageCapacityPolicy.ADR_035_REFERENCE)
         undeclared.find("testinbox_storage_gated_expected_rate").gauges().size shouldBe 0
+        undeclared.find("testinbox_storage_envelope_max_workspaces").gauges().size shouldBe 0
+        // The pre-plan population bound, 30 + L, read by the activation barrier the same way.
+        val envelope = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(envelope, StorageCapacityPolicy.ADR_035_REFERENCE, envelopeWorkspaces = 31)
+        envelope.scrape() shouldContain "testinbox_storage_envelope_max_workspaces 31.0"
+        envelope.find("testinbox_storage_activation_gate_ready").gauges().size shouldBe 3
     }
 
     @Test

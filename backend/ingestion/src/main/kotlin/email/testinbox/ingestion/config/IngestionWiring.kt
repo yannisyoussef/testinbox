@@ -287,6 +287,8 @@ class IngestionWiring(
             declarations.enforcement,
             declarations.admissionLocking,
             declarations.gatedExpectedRate,
+            email.testinbox.application.deployment.IngestEnvelopeSafety
+                .mailReceivingWorkspaces(declarations),
         )
 
     /** TI-STORAGE-006 §22: the in-process fail-closed guard a broken activation invariant sets on a non-OFF node. */
@@ -305,9 +307,10 @@ class IngestionWiring(
         declarations: StorageDeclarations,
         guard: ActivationGuard,
         storageMetrics: StorageProtocolMetrics,
-    ): ActivationWatch =
-        ActivationWatch(
-            JdbcActivationInventory(jdbc),
+    ): ActivationWatch {
+        val inventory = JdbcActivationInventory(jdbc)
+        return ActivationWatch(
+            inventory,
             properties.storage.activation.toExpectedNodes(),
             declarations.enforcement,
             guard,
@@ -316,7 +319,12 @@ class IngestionWiring(
             partitionedAllowed =
                 properties.deployment.environment ==
                     email.testinbox.application.deployment.StorageEnforcementSafety.LAB_ENVIRONMENT,
+            // ADR-035 amendment D: before a cohort plan exists, at most 30 + L workspaces (451 for all if not).
+            envelope =
+                email.testinbox.application.deployment.IngestEnvelopeSafety
+                    .activationEnvelope(declarations, inventory),
         )
+    }
 
     /**
      * T1 with the deployment's enforcement mode (ADR-035 §14). OFF, the

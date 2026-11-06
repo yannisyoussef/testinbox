@@ -22,3 +22,6 @@ testinbox_storage_admission_locking{service="testinbox-ingestion",environment="s
 # HELP testinbox_storage_gated_expected_rate R_gated: the §11 expected rate of the passing gate D evidence (ADR-035 amendment D)
 # TYPE testinbox_storage_gated_expected_rate gauge
 testinbox_storage_gated_expected_rate{service="testinbox-ingestion",environment="staging"} 260.0
+# HELP testinbox_storage_envelope_max_workspaces 30 + L, the workspaces the gated envelope covers (ADR-035 amendment D)
+# TYPE testinbox_storage_envelope_max_workspaces gauge
+testinbox_storage_envelope_max_workspaces{service="testinbox-ingestion",environment="staging"} 31.0

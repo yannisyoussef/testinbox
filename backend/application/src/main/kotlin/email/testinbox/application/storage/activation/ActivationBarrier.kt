@@ -4,6 +4,8 @@ import email.testinbox.application.port.ActivationInventory
 import email.testinbox.application.port.DatabaseSession
 import email.testinbox.application.port.StorageNodeRow
 import email.testinbox.application.port.StorageProtocolMetrics
+import email.testinbox.application.port.WorkspacePopulation
+import email.testinbox.application.port.WorkspacePopulationReader
 import email.testinbox.application.storage.StorageProtocol
 import email.testinbox.domain.storage.StorageEnforcement
 import org.slf4j.LoggerFactory
@@ -19,6 +21,9 @@ enum class ActivationGate {
     GLOBAL_BENCHMARK,
     ROLLBACK_FLOOR,
     QUALIFICATION,
+
+    /** ADR-035 amendment D: before a cohort plan exists, at most 30 + L workspaces may receive mail. */
+    WORKSPACE_ENVELOPE,
 }
 
 /** A gate answers one of these; never a bare boolean, so "not required" and "not run" cannot read as PASS. */
@@ -234,6 +239,68 @@ object NodeInventoryCheck {
 }
 
 /**
+ * ADR-035 amendment D, the window before a cohort plan exists. Gate D's
+ * evidence covers r × (30 + L) events/s. Once a plan exists the pool bounds the
+ * population (every workspace holds a share, at most L legacy). Before that, no
+ * pool is required and every workspace in the database receives mail, so the
+ * population itself must stay within `30 + L`.
+ *
+ * A violation is a property of the whole deployment, never of a tenant: the
+ * watch answers it like a broken node inventory, `451` for every event on the
+ * node before any recipient resolves (I9). It never becomes a per-workspace
+ * refusal.
+ */
+object WorkspaceEnvelopeCheck {
+    /** What a node that does not run `ALL`, or declares no envelope, reports. */
+    val NOT_REQUIRED = GateResult(ActivationGate.WORKSPACE_ENVELOPE, GateVerdict.NOT_REQUIRED, "not ALL, or no envelope declared")
+
+    fun evaluate(
+        maxWorkspaces: Int,
+        population: WorkspacePopulation,
+    ): GateResult =
+        when {
+            population.cohortPlanExists -> {
+                GateResult(
+                    ActivationGate.WORKSPACE_ENVELOPE,
+                    GateVerdict.NOT_REQUIRED,
+                    "a cohort plan exists; the pool bounds the population (every workspace shared, at most L legacy shares)",
+                )
+            }
+
+            population.workspaces > maxWorkspaces -> {
+                GateResult(
+                    ActivationGate.WORKSPACE_ENVELOPE,
+                    GateVerdict.BLOCKED,
+                    "no cohort plan exists and the database holds more than $maxWorkspaces workspaces (counted " +
+                        "${population.workspaces}); gate D covers at most 30 participant places + L under ALL (ADR-035 amendment D)",
+                )
+            }
+
+            else -> {
+                GateResult(
+                    ActivationGate.WORKSPACE_ENVELOPE,
+                    GateVerdict.PASS,
+                    "no cohort plan yet; ${population.workspaces} workspace(s), within the envelope's $maxWorkspaces",
+                )
+            }
+        }
+}
+
+/** The pre-plan population bound a node under `ALL` re-checks ([WorkspaceEnvelopeCheck]). */
+data class ActivationEnvelope(
+    /** 30 + L. */
+    val maxWorkspaces: Int,
+    val population: WorkspacePopulationReader,
+) {
+    init {
+        require(maxWorkspaces > 0) { "the workspace envelope must be positive" }
+    }
+
+    /** One more than the bound: enough to tell "over", never a scan of the population. */
+    fun evaluate(): GateResult = WorkspaceEnvelopeCheck.evaluate(maxWorkspaces, population.read(maxWorkspaces + 1))
+}
+
+/**
  * The in-process fail-closed guard for a non-OFF node whose activation
  * invariant is broken at run time (TI-STORAGE-006 §22). Infrastructure, never
  * capacity: while violated, the guarded path answers `451` before the slot
@@ -279,15 +346,24 @@ class ActivationWatch(
     private val staleAfter: Duration = NodeInventoryCheck.DEFAULT_STALE_AFTER,
     /** Only the `lab` environment may run the share-partitioned T1 ([NodeInventoryCheck.problems]). */
     private val partitionedAllowed: Boolean = false,
+    /** ADR-035 amendment D: the pre-plan population bound, re-checked under `ALL` only ([WorkspaceEnvelopeCheck]). */
+    private val envelope: ActivationEnvelope? = null,
 ) {
     data class Outcome(
         val sessions: GateResult,
         val nodes: GateResult,
         /** Set when the evaluation itself could not complete (the inventory read threw); the gates are then unknown. */
         val evaluationFailure: String? = null,
+        val envelope: GateResult = WorkspaceEnvelopeCheck.NOT_REQUIRED,
     ) {
-        val holds: Boolean get() = evaluationFailure == null && sessions.verdict == GateVerdict.PASS && nodes.verdict == GateVerdict.PASS
+        val envelopeHolds: Boolean get() = envelope.verdict == GateVerdict.PASS || envelope.verdict == GateVerdict.NOT_REQUIRED
+
+        val holds: Boolean
+            get() = evaluationFailure == null && sessions.verdict == GateVerdict.PASS && nodes.verdict == GateVerdict.PASS && envelopeHolds
     }
+
+    /** Whether this node re-checks the envelope: only under `ALL`, where gate D's evidence is what admits. */
+    private val checksEnvelope: Boolean get() = envelope != null && enforcement == StorageEnforcement.ALL
 
     /**
      * Never throws. THE rule for an evaluation that cannot complete (a database
@@ -315,9 +391,20 @@ class ActivationWatch(
                 GateResult(ActivationGate.SESSION_ALLOWLIST, unknown, detail),
                 GateResult(ActivationGate.NODE_INVENTORY, unknown, detail),
                 evaluationFailure = detail,
+                envelope =
+                    if (checksEnvelope) {
+                        GateResult(
+                            ActivationGate.WORKSPACE_ENVELOPE,
+                            unknown,
+                            detail,
+                        )
+                    } else {
+                        WorkspaceEnvelopeCheck.NOT_REQUIRED
+                    },
             )
         metrics.activationGate(ActivationGate.SESSION_ALLOWLIST, false)
         metrics.activationGate(ActivationGate.NODE_INVENTORY, false)
+        metrics.activationGate(ActivationGate.WORKSPACE_ENVELOPE, !checksEnvelope)
         if (enforcement == StorageEnforcement.OFF) {
             metrics.activationViolation(false)
             guard.clear()
@@ -339,9 +426,11 @@ class ActivationWatch(
         val rows = inventory.nodes()
         val now = inventory.now()
         val nodes = NodeInventoryCheck.evaluate(expected, rows, now, staleAfter, partitionedAllowed)
-        val outcome = Outcome(sessions, nodes)
+        val envelopeResult = envelope?.takeIf { checksEnvelope }?.evaluate() ?: WorkspaceEnvelopeCheck.NOT_REQUIRED
+        val outcome = Outcome(sessions, nodes, envelope = envelopeResult)
         metrics.activationGate(ActivationGate.SESSION_ALLOWLIST, sessions.verdict == GateVerdict.PASS)
         metrics.activationGate(ActivationGate.NODE_INVENTORY, nodes.verdict == GateVerdict.PASS)
+        metrics.activationGate(ActivationGate.WORKSPACE_ENVELOPE, outcome.envelopeHolds)
         if (enforcement == StorageEnforcement.OFF) {
             // Observed, never refused: Phase 2 permits the overlap this would see.
             metrics.activationViolation(false)
@@ -360,8 +449,10 @@ class ActivationWatch(
         // Which mismatches turn mail away: a session outside the allowlist (an old
         // binary), an ingestion node missing/stale/wrong, or a node nobody
         // declared. An absent API node is raised and logged, never a 451.
+        // An envelope breach is a deployment-wide fact (I9): every event on this node gets the same 451.
         val stopsAdmission =
-            sessions.verdict != GateVerdict.PASS ||
+            !outcome.envelopeHolds ||
+                sessions.verdict != GateVerdict.PASS ||
                 nodes.verdict == GateVerdict.NOT_RUN ||
                 NodeInventoryCheck.problems(expected, rows, now, staleAfter, partitionedAllowed).any { it.stopsAdmission }
         if (stopsAdmission) {
@@ -380,8 +471,8 @@ class ActivationWatch(
     }
 
     private fun describe(outcome: Outcome): String =
-        listOf(outcome.sessions, outcome.nodes)
-            .filter { it.verdict != GateVerdict.PASS }
+        listOf(outcome.sessions, outcome.nodes, outcome.envelope)
+            .filter { it.verdict != GateVerdict.PASS && it.verdict != GateVerdict.NOT_REQUIRED }
             .joinToString("; ") { "${it.gate.name.lowercase()}: ${it.detail}" }
 
     private companion object {

@@ -88,38 +88,44 @@ class IngestEnvelopeSafetyTest {
         only(all(legacy = null), IngestEnvelopeSafety.LEGACY, "is not declared")
 
     @Test
-    fun `a refill whose r x N exceeds R_gated refuses ALL, with the arithmetic`() {
-        only(
-            all(ingest = beta.copy(refillPerSecond = 2.0)),
-            IngestEnvelopeSafety.WORKSPACE_REFILL,
-            "r × N = 2.0 × 31 (30 participant places + 1 legacy) = 62 events/s, above R_gated 31.0",
-        )
-        // Today's library default, 10/s, is exactly the 310/s worst case the decision paper measured against.
-        only(
-            all(ingest = beta.copy(refillPerSecond = 10.0), perInbox = betaPerInbox),
-            IngestEnvelopeSafety.WORKSPACE_REFILL,
-            "= 310 events/s",
-        )
+    fun `the pins imply the amendment's inequality - r x (30 + L) never exceeds R_gated`() {
+        val worst =
+            java.math
+                .BigDecimal(IngestEnvelopeSafety.APPROVED_WORKSPACE_REFILL.toString())
+                .multiply(java.math.BigDecimal(30 + IngestEnvelopeSafety.APPROVED_LEGACY_WORKSPACES))
+        worst.compareTo(java.math.BigDecimal(IngestEnvelopeSafety.APPROVED_GATED_RATE.toString())) shouldBe 0
+        IngestEnvelopeSafety.APPROVED_GATED_RATE shouldBe 31.0
     }
 
     @Test
-    fun `admitting one more legacy workspace than the gate covered refuses ALL until gate D runs at the new R`() {
-        only(all(legacy = 2), IngestEnvelopeSafety.WORKSPACE_REFILL, "1.0 × 32")
-        envelope(all(legacy = 2, rGated = 32.0)).shouldBeEmpty()
+    fun `a refill above the owner-approved r of 1 refuses ALL - raising it is an owner decision, never configuration`() {
+        only(
+            all(ingest = beta.copy(refillPerSecond = 1.0001)),
+            IngestEnvelopeSafety.WORKSPACE_REFILL,
+            "owner-approved per-workspace INGEST refill r is 1.0",
+        )
+        // The library default, 10/s: exactly the 310/s worst case the decision paper measured against.
+        only(all(ingest = beta.copy(refillPerSecond = 10.0)), IngestEnvelopeSafety.WORKSPACE_REFILL, "owner decision")
+        // Lowering r only lowers load: allowed, with no rerun.
+        envelope(all(ingest = beta.copy(refillPerSecond = 0.5), perInbox = betaPerInbox.copy(refillPerSecond = 0.25))).shouldBeEmpty()
     }
 
     @Test
-    fun `the inequality is exact at the boundary and immune to binary rounding`() {
+    fun `more than the one approved legacy workspace refuses ALL - no broader cohort is authorized`() {
+        only(all(legacy = 2), IngestEnvelopeSafety.LEGACY, "did not authorize a broader cohort")
+        only(all(legacy = 32), IngestEnvelopeSafety.LEGACY, "owner approved at most 1")
+        envelope(all(legacy = 0)).shouldBeEmpty()
+    }
+
+    @Test
+    fun `R_gated must be exactly the approved 31 - a looser or tighter declaration is refused`() {
+        for (loose in listOf(30.999, 31.001, 32.0, 62.0, 260.0, 30.0)) {
+            only(all(rGated = loose), IngestEnvelopeSafety.GATED_RATE, "owner approved R = 1.0 × (30 + 1) = 31.0")
+        }
         envelope(all(rGated = 31.0)).shouldBeEmpty()
-        only(all(rGated = 30.999), IngestEnvelopeSafety.WORKSPACE_REFILL, "above R_gated 30.999")
-        // 0.1 × 30 is 3.0000000000000004 in binary floating point; the declared 3.0 must still hold.
+        // Lowering r or L lowers load and keeps R_gated at the evidence's 31: no rerun is needed.
         envelope(
-            all(
-                legacy = 0,
-                rGated = 3.0,
-                ingest = beta.copy(refillPerSecond = 0.1),
-                perInbox = betaPerInbox.copy(refillPerSecond = 0.05),
-            ),
+            all(rGated = 31.0, legacy = 0, ingest = beta.copy(refillPerSecond = 0.1), perInbox = betaPerInbox.copy(refillPerSecond = 0.05)),
         ).shouldBeEmpty()
     }
 
@@ -197,9 +203,9 @@ class IngestEnvelopeSafetyTest {
                 found.map { it.setting } shouldContain IngestEnvelopeSafety.LEGACY
             }
         }
-        // 32 is the most a pool can hold (CohortStorageRuntime.MAX_LEGACY_WORKSPACES); 0 is a beta with no legacy workspace.
-        envelope(all(legacy = 32, rGated = 62.0)).shouldBeEmpty()
-        envelope(all(legacy = 0, rGated = 30.0)).shouldBeEmpty()
+        // Well-formed but outside the approved envelope is only ALL's business: OFF accepts it.
+        val off = all(legacy = 32, rGated = 62.0).let { it.copy(storage = it.storage.copy(enforcement = StorageEnforcement.OFF)) }
+        envelope(off).shouldBeEmpty()
     }
 
     @Test

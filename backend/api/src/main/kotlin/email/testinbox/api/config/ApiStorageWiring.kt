@@ -80,9 +80,10 @@ class ApiStorageWiring(
         jdbc: JdbcClient,
         declarations: StorageDeclarations,
         storageMetrics: StorageProtocolMetrics,
-    ): ActivationWatch =
-        ActivationWatch(
-            JdbcActivationInventory(jdbc),
+    ): ActivationWatch {
+        val inventory = JdbcActivationInventory(jdbc)
+        return ActivationWatch(
+            inventory,
             properties.storage.activation.toExpectedNodes(),
             declarations.enforcement,
             // The API admits no mail, so its guard is read by nothing; the gateway's
@@ -94,7 +95,12 @@ class ApiStorageWiring(
             partitionedAllowed =
                 properties.deployment.environment ==
                     email.testinbox.application.deployment.StorageEnforcementSafety.LAB_ENVIRONMENT,
+            // ADR-035 amendment D: observed here (the metric), enforced by the gateway's guard.
+            envelope =
+                email.testinbox.application.deployment.IngestEnvelopeSafety
+                    .activationEnvelope(declarations, inventory),
         )
+    }
 
     @Bean
     fun storageReservations(

@@ -3,6 +3,8 @@ package email.testinbox.persistence
 import email.testinbox.application.port.ActivationInventory
 import email.testinbox.application.port.DatabaseSession
 import email.testinbox.application.port.StorageNodeRow
+import email.testinbox.application.port.WorkspacePopulation
+import email.testinbox.application.port.WorkspacePopulationReader
 import org.springframework.jdbc.core.simple.JdbcClient
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -24,7 +26,8 @@ import java.time.OffsetDateTime
  */
 class JdbcActivationInventory(
     private val jdbc: JdbcClient,
-) : ActivationInventory {
+) : ActivationInventory,
+    WorkspacePopulationReader {
     override fun sessions(): List<DatabaseSession> =
         jdbc
             .sql(
@@ -52,6 +55,21 @@ class JdbcActivationInventory(
                     admissionLocking = rs.getString(5),
                 )
             }.list()
+
+    /**
+     * ADR-035 amendment D: whether a cohort plan exists, and the `workspace` rows
+     * counted up to [cap]. Every row counts, eligible or not, as the pool's own
+     * "unknown" check counts them: overcounting fails closed. Reads only `workspace(id)`
+     * and `storage_cohort_plan`, both already granted to the ingestion role for T1.
+     */
+    override fun read(cap: Int): WorkspacePopulation =
+        jdbc
+            .sql(
+                "SELECT EXISTS(SELECT 1 FROM storage_cohort_plan), " +
+                    "(SELECT count(*) FROM (SELECT id FROM workspace LIMIT :cap) w)",
+            ).param("cap", cap)
+            .query { rs, _ -> WorkspacePopulation(rs.getBoolean(1), rs.getLong(2)) }
+            .single()
 
     override fun applicationRole(): String =
         jdbc
