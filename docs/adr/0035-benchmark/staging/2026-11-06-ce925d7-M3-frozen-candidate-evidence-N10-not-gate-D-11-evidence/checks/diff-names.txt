@@ -1,0 +1,15 @@
+backend/benchmark/src/main/kotlin/email/testinbox/benchmark/AdrConformance.kt
+backend/benchmark/src/main/kotlin/email/testinbox/benchmark/BenchmarkOptions.kt
+backend/benchmark/src/main/kotlin/email/testinbox/benchmark/ClosedCohort.kt
+backend/benchmark/src/main/kotlin/email/testinbox/benchmark/Evidence.kt
+backend/benchmark/src/main/kotlin/email/testinbox/benchmark/FocusedReport.kt
+backend/benchmark/src/main/kotlin/email/testinbox/benchmark/Main.kt
+backend/benchmark/src/main/kotlin/email/testinbox/benchmark/PoolLifecycle.kt
+backend/benchmark/src/main/kotlin/email/testinbox/benchmark/ScenarioRunner.kt
+backend/benchmark/src/main/kotlin/email/testinbox/benchmark/Seeder.kt
+backend/benchmark/src/test/kotlin/email/testinbox/benchmark/AdrConformanceTest.kt
+backend/benchmark/src/test/kotlin/email/testinbox/benchmark/BenchmarkOptionsTest.kt
+backend/benchmark/src/test/kotlin/email/testinbox/benchmark/ClosedCohortTest.kt
+backend/benchmark/src/test/kotlin/email/testinbox/benchmark/EvidenceTest.kt
+backend/benchmark/src/test/kotlin/email/testinbox/benchmark/PoolSizeTest.kt
+docs/dev/storage-benchmark.md

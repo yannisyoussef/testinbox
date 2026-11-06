@@ -1,0 +1,16 @@
+ .../email/testinbox/benchmark/AdrConformance.kt    |  6 ++
+ .../email/testinbox/benchmark/BenchmarkOptions.kt  | 54 ++++++++++++-
+ .../email/testinbox/benchmark/ClosedCohort.kt      | 11 ++-
+ .../kotlin/email/testinbox/benchmark/Evidence.kt   |  9 +++
+ .../email/testinbox/benchmark/FocusedReport.kt     | 15 +++-
+ .../main/kotlin/email/testinbox/benchmark/Main.kt  |  8 +-
+ .../email/testinbox/benchmark/PoolLifecycle.kt     |  6 ++
+ .../email/testinbox/benchmark/ScenarioRunner.kt    | 17 +++-
+ .../kotlin/email/testinbox/benchmark/Seeder.kt     | 25 +++---
+ .../testinbox/benchmark/AdrConformanceTest.kt      | 28 +++++++
+ .../testinbox/benchmark/BenchmarkOptionsTest.kt    | 70 +++++++++++++++++
+ .../email/testinbox/benchmark/ClosedCohortTest.kt  | 80 +++++++++++++++++++
+ .../email/testinbox/benchmark/EvidenceTest.kt      | 34 ++++++++
+ .../email/testinbox/benchmark/PoolSizeTest.kt      | 90 ++++++++++++++++++++++
+ docs/dev/storage-benchmark.md                      | 32 +++++++-
+ 15 files changed, 458 insertions(+), 27 deletions(-)
