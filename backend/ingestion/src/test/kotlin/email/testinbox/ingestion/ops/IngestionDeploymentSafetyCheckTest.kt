@@ -3,6 +3,7 @@ package email.testinbox.ingestion.ops
 import email.testinbox.ingestion.config.IngestionProperties
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.types.shouldBeInstanceOf
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.boot.context.properties.EnableConfigurationProperties
@@ -32,6 +33,7 @@ class IngestionDeploymentSafetyCheckTest {
             properties: IngestionProperties,
             dataSourceProperties: DataSourceProperties,
             environment: Environment,
+            dataSource: org.springframework.beans.factory.ObjectProvider<javax.sql.DataSource>,
         ) = IngestionDeploymentSafetyCheck(
             properties,
             dataSourceProperties,
@@ -40,7 +42,20 @@ class IngestionDeploymentSafetyCheckTest {
                 email.testinbox.storage.QualificationRecords
                     .load(),
             ),
+            dataSource,
         )
+    }
+
+    /** A Hikari pool that is configured, never started: the check reads its size without a connection. */
+    @Configuration
+    class HikariPool {
+        @Bean(destroyMethod = "")
+        fun dataSource(
+            @org.springframework.beans.factory.annotation.Value("\${spring.datasource.hikari.maximum-pool-size:8}") size: Int,
+        ): javax.sql.DataSource =
+            com.zaxxer.hikari
+                .HikariDataSource()
+                .apply { maximumPoolSize = size }
     }
 
     private val runner = ApplicationContextRunner().withUserConfiguration(UnderTest::class.java)
@@ -309,6 +324,82 @@ class IngestionDeploymentSafetyCheckTest {
             message shouldContain "testinbox.storage.declared-legacy-workspaces is not declared"
             // The library default burst (300) is above the approved b = 60.
             message shouldContain "testinbox.limits.ingest.capacity is 300"
+        }
+    }
+
+    // --- The participant cap N and the gateway's pool size (M0) ------------------------------------
+
+    @Test
+    fun `N binds on the gateway too, defaults to thirty, and only a value in 1-30 starts`() {
+        runner.withPropertyValues(*deployed).run { context ->
+            assertThat(context).hasNotFailed()
+            context
+                .getBean(IngestionProperties::class.java)
+                .storageDeclarations(emptyList())
+                .participantCap.value shouldBe 30
+        }
+        runner.withPropertyValues(*deployed, "testinbox.beta.max-participants=10").run { context ->
+            assertThat(context).hasNotFailed()
+            context
+                .getBean(IngestionProperties::class.java)
+                .storageDeclarations(emptyList())
+                .participantCap.value shouldBe 10
+        }
+        for (bad in listOf("0", "31", "-1", "ten", "10.5")) {
+            runner.withPropertyValues(*deployed, "testinbox.beta.max-participants=$bad").run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure!!.stackTraceToString() shouldContain "testinbox.beta.max-participants"
+            }
+        }
+    }
+
+    @Test
+    fun `the gateway reads its effective Hikari pool size, and fails closed where it cannot`() {
+        IngestionDeploymentSafetyCheck.poolSize(
+            com.zaxxer.hikari
+                .HikariDataSource()
+                .apply { maximumPoolSize = 8 },
+        ) shouldBe
+            email.testinbox.application.deployment.IngestionPoolSize
+                .Known(8)
+        // Unset: Hikari's own default (10) is what the pool runs with, so that is the size reported, never 8.
+        IngestionDeploymentSafetyCheck.poolSize(com.zaxxer.hikari.HikariDataSource()) shouldBe
+            email.testinbox.application.deployment.IngestionPoolSize
+                .Known(10)
+        IngestionDeploymentSafetyCheck
+            .poolSize(null)
+            .shouldBeInstanceOf<email.testinbox.application.deployment.IngestionPoolSize.Unreadable>()
+        IngestionDeploymentSafetyCheck
+            .poolSize(
+                org.springframework.jdbc.datasource
+                    .DriverManagerDataSource(),
+            ).shouldBeInstanceOf<email.testinbox.application.deployment.IngestionPoolSize.Unreadable>()
+    }
+
+    @Test
+    fun `ALL on the gateway names the pool size - unapproved today, and unreadable without a Hikari pool`() {
+        // Every other declaration is missing too; only the pool line matters here.
+        runner
+            .withUserConfiguration(HikariPool::class.java)
+            .withPropertyValues(*deployed, "testinbox.storage.enforcement=ALL")
+            .run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure!!.stackTraceToString() shouldContain
+                    "spring.datasource.hikari.maximum-pool-size is 8 but the owner has approved no ingestion database pool size"
+            }
+        runner.withPropertyValues(*deployed, "testinbox.storage.enforcement=ALL").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain
+                "spring.datasource.hikari.maximum-pool-size is undetermined (no DataSource)"
+        }
+    }
+
+    @Test
+    fun `a lowered N under ALL is refused on the gateway, naming the missing owner approval`() {
+        runner.withPropertyValues(*deployed, "testinbox.storage.enforcement=ALL", "testinbox.beta.max-participants=10").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain
+                "testinbox.beta.max-participants is 10 but no owner-approved INGEST envelope covers N = 10"
         }
     }
 

@@ -7,6 +7,7 @@ import email.testinbox.application.port.StorageProtocolMetrics
 import email.testinbox.application.port.WorkspacePopulation
 import email.testinbox.application.port.WorkspacePopulationReader
 import email.testinbox.application.storage.StorageProtocol
+import email.testinbox.domain.identity.BetaCohortPolicy
 import email.testinbox.domain.storage.StorageEnforcement
 import org.slf4j.LoggerFactory
 import java.time.Duration
@@ -22,7 +23,7 @@ enum class ActivationGate {
     ROLLBACK_FLOOR,
     QUALIFICATION,
 
-    /** ADR-035 amendment D: before a cohort plan exists, at most 30 + L workspaces may receive mail. */
+    /** ADR-035 amendment D: before a cohort plan exists, at most N + L workspaces may receive mail (N ≤ 30, the participant cap). */
     WORKSPACE_ENVELOPE,
 }
 
@@ -240,10 +241,14 @@ object NodeInventoryCheck {
 
 /**
  * ADR-035 amendment D, the window before a cohort plan exists. Gate D's
- * evidence covers r × (30 + L) events/s. Once a plan exists the pool bounds the
- * population (every workspace holds a share, at most L legacy). Before that, no
- * pool is required and every workspace in the database receives mail, so the
- * population itself must stay within `30 + L`.
+ * evidence covers r × (N + L) events/s, N being the configured participant cap
+ * (`testinbox.beta.max-participants`, at most 30). Once a plan exists the pool
+ * bounds the population (every workspace holds a share, at most L legacy), but
+ * the pool always holds the full thirty participant shares: it bounds the
+ * population to N + L only while N is thirty. Before a plan, or with a lowered
+ * N, every workspace in the database counts, so the population itself must stay
+ * within `N + L`. A lowered N evicts nobody, so a cohort admitted before N was
+ * lowered can exceed the bound, and then this check fails closed.
  *
  * A violation is a property of the whole deployment, never of a tenant: the
  * watch answers it like a broken node inventory, `451` for every event on the
@@ -251,15 +256,19 @@ object NodeInventoryCheck {
  * refusal.
  */
 object WorkspaceEnvelopeCheck {
+    private const val LOWERED_N_AFTER_PLAN = "the cohort pool's thirty shares do not bound a lowered N, "
+
     /** What a node that does not run `ALL`, or declares no envelope, reports. */
     val NOT_REQUIRED = GateResult(ActivationGate.WORKSPACE_ENVELOPE, GateVerdict.NOT_REQUIRED, "not ALL, or no envelope declared")
 
     fun evaluate(
         maxWorkspaces: Int,
         population: WorkspacePopulation,
+        participants: Int = BetaCohortPolicy.MAX_PARTICIPANTS,
     ): GateResult =
         when {
-            population.cohortPlanExists -> {
+            // The pool's thirty participant shares bound the population to N + L only when N is thirty.
+            population.cohortPlanExists && participants >= BetaCohortPolicy.MAX_PARTICIPANTS -> {
                 GateResult(
                     ActivationGate.WORKSPACE_ENVELOPE,
                     GateVerdict.NOT_REQUIRED,
@@ -271,8 +280,10 @@ object WorkspaceEnvelopeCheck {
                 GateResult(
                     ActivationGate.WORKSPACE_ENVELOPE,
                     GateVerdict.BLOCKED,
-                    "no cohort plan exists and the database holds more than $maxWorkspaces workspaces (counted " +
-                        "${population.workspaces}); gate D covers at most 30 participant places + L under ALL (ADR-035 amendment D)",
+                    (if (population.cohortPlanExists) LOWERED_N_AFTER_PLAN else "no cohort plan exists ") +
+                        "and the database holds more than $maxWorkspaces workspaces (counted " +
+                        "${population.workspaces}); gate D covers at most $participants participant places + L under ALL " +
+                        "(ADR-035 amendment D)",
                 )
             }
 
@@ -286,18 +297,21 @@ object WorkspaceEnvelopeCheck {
         }
 }
 
-/** The pre-plan population bound a node under `ALL` re-checks ([WorkspaceEnvelopeCheck]). */
+/** The population bound a node under `ALL` re-checks ([WorkspaceEnvelopeCheck]). */
 data class ActivationEnvelope(
-    /** 30 + L. */
+    /** N + L. */
     val maxWorkspaces: Int,
     val population: WorkspacePopulationReader,
+    /** N, the configured participant cap (`testinbox.beta.max-participants`). */
+    val participants: Int = BetaCohortPolicy.MAX_PARTICIPANTS,
 ) {
     init {
         require(maxWorkspaces > 0) { "the workspace envelope must be positive" }
+        require(participants in 1..BetaCohortPolicy.MAX_PARTICIPANTS) { "N must be in 1..${BetaCohortPolicy.MAX_PARTICIPANTS}" }
     }
 
     /** One more than the bound: enough to tell "over", never a scan of the population. */
-    fun evaluate(): GateResult = WorkspaceEnvelopeCheck.evaluate(maxWorkspaces, population.read(maxWorkspaces + 1))
+    fun evaluate(): GateResult = WorkspaceEnvelopeCheck.evaluate(maxWorkspaces, population.read(maxWorkspaces + 1), participants)
 }
 
 /**

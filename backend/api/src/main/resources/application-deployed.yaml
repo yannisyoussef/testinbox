@@ -56,13 +56,21 @@ logging:
 testinbox:
   mail-domain: ${TESTINBOX_MAIL_DOMAIN}
   wait-window-cap: ${TESTINBOX_WAIT_WINDOW_CAP:60s}
+  # N, the closed beta's participant cap (docs/dev/beta-limits.md): 1..30, and
+  # 30 when unset. It may only LOWER the cohort's thirty places; lowering it
+  # evicts nobody, it only stops new admissions. The API admits to it and both
+  # deployables compute the INGEST envelope r x (N + L) from it, so set it
+  # identically on both. Under ALL an N the owner approved no envelope for is
+  # refused at startup (IngestEnvelopeSafety).
+  beta:
+    max-participants: ${TESTINBOX_BETA_MAX_PARTICIPANTS:30}
   # The closed-beta INGEST envelope (ADR-035 amendment D, owner decision
   # 2026-11-06; docs/dev/beta-limits.md). INCOMING recipient copies, charged
   # per inbox first, then per workspace; TestInbox sends no mail. A copy over
   # budget is discarded with the uniform SMTP 250 and counted as
   # ingest_rate_limited, never queued. Shared by staging and production so
   # staging rehearses the production envelope. Under ALL, DeploymentSafety
-  # refuses a burst above 60, a refill whose r x (30 + L) exceeds
+  # refuses a burst above 60, a refill whose r x (N + L) exceeds
   # TESTINBOX_STORAGE_GATED_EXPECTED_RATE, and a per-inbox value above the
   # workspace's. The library defaults (300/10 and 60/2) stay for development.
   limits:
@@ -97,7 +105,7 @@ testinbox:
     inbox-share: ${TESTINBOX_STORAGE_INBOX_SHARE:}
     measured-quota-lag-churn-bytes: ${TESTINBOX_STORAGE_MEASURED_QUOTA_LAG_CHURN_BYTES:}
     # ADR-035 amendment D: R_gated, the §11 expected rate (events/s) of the
-    # passing gate D evidence, and L, the legacy-share workspaces beside the 30
+    # passing gate D evidence, and L, the legacy-share workspaces beside the N
     # participant places. No defaults: ALL is refused while either is unset.
     gated-expected-rate: ${TESTINBOX_STORAGE_GATED_EXPECTED_RATE:}
     declared-legacy-workspaces: ${TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES:}

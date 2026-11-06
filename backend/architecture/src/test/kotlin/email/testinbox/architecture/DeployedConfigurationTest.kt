@@ -327,4 +327,34 @@ class DeployedConfigurationTest {
                 },
         )
     }
+
+    @Test
+    fun `both deployables and the staging topology read the same participant cap N, defaulting to thirty (M0)`() {
+        // The API admits to N and both deployables compute the INGEST envelope r x (N + L) from it,
+        // so it is one variable, passed to both services, with the same default everywhere.
+        val compose = File(repoRoot, "deploy/staging/compose.yaml").readText()
+        val shared = compose.substringAfter("environment: &jvm-env").substringBefore("\n  logging:")
+        assertAll(
+            deployedProfiles.map { file ->
+                {
+                    val first = file.readText().split(Regex("(?m)^---\\s*$")).first()
+                    assertTrue(
+                        first.contains("  beta:\n    max-participants: \${TESTINBOX_BETA_MAX_PARTICIPANTS:30}"),
+                        "${file.name}: the shared deployed layer must bind testinbox.beta.max-participants from " +
+                            "TESTINBOX_BETA_MAX_PARTICIPANTS, default 30",
+                    )
+                    assertFalse(productionDocument(file).contains("beta:"), "${file.name}: N must not have a production-only copy")
+                }
+            } +
+                {
+                    assertTrue(
+                        shared.contains("TESTINBOX_BETA_MAX_PARTICIPANTS: \${TESTINBOX_BETA_MAX_PARTICIPANTS:-30}"),
+                        "compose must pass TESTINBOX_BETA_MAX_PARTICIPANTS to both services (the shared jvm-env), default 30",
+                    )
+                } +
+                baseProfiles.map { base ->
+                    { assertFalse(base.readText().contains("max-participants"), "${base.path}: development keeps the code default") }
+                },
+        )
+    }
 }

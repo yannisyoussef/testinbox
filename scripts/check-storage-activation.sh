@@ -110,7 +110,8 @@ HEARTBEAT_MAX_AGE=300
 # (2026-11-06) R is R_gated: the rate every node declares
 # (testinbox.storage.gated-expected-rate, exported as
 # testinbox_storage_gated_expected_rate), under which DeploymentSafety holds the
-# INGEST envelope r x (30 + L). Gate D reads it from the nodes and refuses
+# INGEST envelope r x (N + L), N the participant cap (testinbox.beta.max-participants,
+# 30 unless lowered). Gate D reads it from the nodes and refuses
 # evidence run at any other rate. There is no default.
 EXPECTED_RATE=""
 EXPECTED_RATE_ARG=""
@@ -633,10 +634,13 @@ gate_benchmark() {
 
 # ---------------------------------------------------------------------------
 # Gate W: ADR-035 amendment D, the window before a cohort plan exists. Gate D's
-# evidence covers r x (30 + L) events/s; once a plan exists the pool bounds the
-# population (gate G), but before it every workspace in the database receives
-# mail. So under ALL the database must hold at most 30 + L workspaces while no
-# plan exists. The bound is read from every node
+# evidence covers r x (N + L) events/s (N: testinbox.beta.max-participants, 30
+# unless lowered); once a plan exists the pool bounds the population (gate G),
+# but before it every workspace in the database receives mail. So under ALL the
+# database must hold at most N + L workspaces while no plan exists. (A node with a
+# LOWERED N also keeps counting after the plan, because the pool's thirty
+# participant shares do not bound it; this script reads only N + L, so that
+# post-plan case is the nodes' own run-time check.) The bound is read from every node
 # (testinbox_storage_envelope_max_workspaces, which they must agree on), the
 # population from the live database or --population-state. The nodes enforce
 # the same rule at run time (a uniform 451 for every event, never per tenant).
@@ -654,7 +658,7 @@ gate_envelope() {
         checked=$((checked + 1))
         value="$(metric_value "$path" testinbox_storage_envelope_max_workspaces)"
         if ! is_number "$value" || ! num_gt "$value" 0; then
-            problem "$label ($role): the envelope bound is UNKNOWN (testinbox_storage_envelope_max_workspaces absent); every node must declare testinbox.storage.declared-legacy-workspaces"
+            problem "$label ($role): the envelope bound is UNKNOWN (testinbox_storage_envelope_max_workspaces absent); every node must declare testinbox.storage.declared-legacy-workspaces (and the same testinbox.beta.max-participants)"
         elif [ -z "$seen" ]; then
             seen="$value"
         elif ! num_eq "$value" "$seen"; then
@@ -693,9 +697,9 @@ EOF
             record "$gate" PASS "a cohort plan exists; the pool bounds the population (every workspace shared, at most L legacy: gate G)" ;;
         *)
             if num_gt "$workspaces" "$max"; then
-                record "$gate" BLOCKED "no cohort plan exists and the database holds more than $max workspaces (counted $workspaces); before the plan every workspace receives mail, and gate D covers at most 30 + L under ALL (ADR-035 amendment D)"
+                record "$gate" BLOCKED "no cohort plan exists and the database holds more than $max workspaces (counted $workspaces); before the plan every workspace receives mail, and gate D covers at most N + L under ALL (ADR-035 amendment D)"
             else
-                record "$gate" PASS "no cohort plan yet; $workspaces workspace(s), within the envelope's $max (30 + L)"
+                record "$gate" PASS "no cohort plan yet; $workspaces workspace(s), within the envelope's $max (N + L)"
             fi ;;
     esac
 }

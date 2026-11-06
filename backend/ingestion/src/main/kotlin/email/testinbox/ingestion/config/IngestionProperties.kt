@@ -2,6 +2,7 @@ package email.testinbox.ingestion.config
 
 import email.testinbox.application.ActivationProperties
 import email.testinbox.application.BackendIdentityProperties
+import email.testinbox.application.BetaProperties
 import email.testinbox.application.LimitsProperties
 import email.testinbox.application.StorageDeclarationsFactory
 import email.testinbox.application.TestInboxConfig
@@ -25,6 +26,8 @@ data class IngestionProperties(
     val smtp: Smtp = Smtp(),
     val storage: Storage = Storage(),
     val deployment: Deployment = Deployment(),
+    /** `testinbox.beta.*`: N, the participant cap (shared with the API; see [BetaProperties]). */
+    val beta: BetaProperties = BetaProperties(),
 ) {
     data class Smtp(
         val port: Int = 2525,
@@ -85,7 +88,7 @@ data class IngestionProperties(
          * envelope (`IngestEnvelopeSafety`).
          */
         val gatedExpectedRate: Double? = null,
-        /** *L* (`TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES`): legacy-share workspaces beside the thirty participant places. */
+        /** *L* (`TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES`): legacy-share workspaces beside the N participant places. */
         val declaredLegacyWorkspaces: Int? = null,
     )
 
@@ -107,6 +110,7 @@ data class IngestionProperties(
             filesystem = storage.filesystem,
             gatedExpectedRate = storage.gatedExpectedRate,
             declaredLegacyWorkspaces = storage.declaredLegacyWorkspaces,
+            participantCap = beta.cap,
             admissionLocking = storage.admissionLocking,
         )
 

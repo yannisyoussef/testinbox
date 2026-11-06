@@ -199,6 +199,7 @@ restart would.
 | `TESTINBOX_LIMITS_INGEST_PER_INBOX_REFILL_PER_SECOND` | `0.5` | default in the deployed profile; ≤ r |
 | `TESTINBOX_STORAGE_GATED_EXPECTED_RATE` | `31` | R_gated: the passing gate D evidence's `harness.expectedRate`; no default; required, and exactly 31, under `ALL`; pin it in `check-testinbox-prod` |
 | `TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES` | `1` | L; no default; required, and at most 1, under `ALL`; pin it in `check-testinbox-prod` |
+| `TESTINBOX_BETA_MAX_PARTICIPANTS` | `30` | N; default 30; 1..30; only lowers admissions; under `ALL` only an owner-approved N starts (today: 30) |
 
 Set them identically on the API and the ingestion gateway: both run the same
 startup check. The reference staging topology (`deploy/staging/compose.yaml`)
@@ -241,10 +242,65 @@ The repository's own traffic stays well inside it:
   `451` has already been charged, so each retry is charged again (see the
   table above).
 
+## The participant cap N, and the gateway's pool size (M0, 2026-11-06)
+
+**N** (`testinbox.beta.max-participants`, `TESTINBOX_BETA_MAX_PARTICIPANTS`)
+is how many of the cohort's places new admissions may consume: an integer
+**1..30**, default **30**, so an unset variable changes nothing. It may only
+**lower** the thirty places. The database guard (V12, `place BETWEEN 1 AND 30`)
+and the cohort pool (thirty participant shares) stay at thirty as the hard
+upper bound.
+
+- **Where it is enforced.** `AdmitBetaParticipant`, after the cohort row lock
+  (`SELECT … FROM beta_cohort FOR UPDATE`) that already serialises every
+  admission, and in the same transaction: the place it reads cannot be taken by
+  another admission before its insert commits. A place beyond N is the existing
+  `Full` outcome: the same `FULL` reply, nothing created, nothing spent.
+- **Lowering N evicts nobody.** Participants already admitted keep their
+  workspace and get their admission back on sign-in; only **new** admissions
+  stop. Places are never recycled, so raising N again resumes at the next
+  unconsumed place.
+- **Validation.** `0`, `31`, a negative number, an empty value or a
+  non-integer fails binding, and the process refuses to start in every
+  environment.
+- **Both deployables read it.** The API admits to N; both compute the INGEST
+  envelope r × (N + L) from it. Set it identically on both, as for L and
+  R_gated; `deploy/staging/compose.yaml` passes it to both services.
+  Disagreement under `ALL` is visible in gate W
+  (`testinbox_storage_envelope_max_workspaces`, which is N + L) and gate D
+  (R_gated, which must equal the approved R for N).
+- **Under `ALL`, N selects an owner-approved envelope.** The approved
+  envelopes are one list, `IngestEnvelopeSafety.APPROVED_ENVELOPES`. It holds
+  **one** entry today: amendment D's N = 30, r = 1, b = 60, L = 1, so R = 31.
+  An N without an entry (any N below 30 today) is **refused at startup** with
+  `testinbox.beta.max-participants is N but no owner-approved INGEST envelope
+  covers N = …`. A smaller first cohort (e.g. N = 10, so R = 1 × (10 + 1) = 11)
+  needs the owner's decision and a passing gate D at that R first, then one
+  reviewed line in that list. Outside `ALL` a lowered N needs no envelope: it
+  only lowers admissions.
+- **At run time under `ALL`, with a lowered N,** the activation watch keeps
+  counting the workspace population against N + L even after a cohort plan
+  exists. The pool's thirty participant shares bound the population only while
+  N is 30, and a cohort admitted before N was lowered stays. Over the bound,
+  every event gets the uniform `451`, as before a plan.
+- **The gateway's database pool.** Under `ALL` the ingestion gateway also
+  refuses to start unless Hikari's effective `maximumPoolSize`
+  (`TESTINBOX_DB_POOL_SIZE`, default 8) equals the pool size the approved
+  entry's evidence covers. It fails closed if the size cannot be read. Amendment
+  D names **no** pool size, and the committed gate D harness sizes each
+  scenario's pool c + 6, not the gateway's 8 (`docs/dev/storage-benchmark.md`).
+  So the N = 30 entry records the pool size as **unapproved**, and **`ALL` is
+  refused on every ingestion gateway**, the lab included, until the owner
+  approves an entry with a pool size. The API runs no SMTP T1 and is not
+  affected.
+- **Not changed.** The offline `admission status` command still prints
+  `consumed_places=…/30`: it runs before Spring and reads no deployable's
+  configuration, so it reports the hard bound, not N.
+
 ## Changing the envelope
 
-Changing r, b or L, the cohort size, or R is an **owner decision**, followed by
-a new passing gate D at the new R, and then a code change to the pins in
-`IngestEnvelopeSafety`. No configuration can do it: under `ALL` the deployment
+Changing r, b or L, the cohort size N, the gateway's pool size, or R is an
+**owner decision**, followed by a new passing gate D at the new R, and then a
+code change to `IngestEnvelopeSafety.APPROVED_ENVELOPES`. No configuration can do it: under `ALL` the deployment
 refuses r > 1, b > 60, L > 1 and any R_gated but 31. The decision of
 2026-11-06 authorizes none of these changes, and no broader cohort.

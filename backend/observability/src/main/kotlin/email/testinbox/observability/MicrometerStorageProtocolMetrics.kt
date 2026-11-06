@@ -47,7 +47,8 @@ class MicrometerStorageProtocolMetrics(
      */
     gatedExpectedRate: Double? = null,
     /**
-     * 30 + L, the workspaces the gated envelope covers (ADR-035 amendment D):
+     * N + L, the workspaces the gated envelope covers (ADR-035 amendment D;
+     * N is `testinbox.beta.max-participants`, 30 unless lowered):
      * exported so the activation barrier can hold the pre-plan population to it.
      * No series while L is undeclared.
      */

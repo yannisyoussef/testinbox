@@ -36,6 +36,40 @@ data class BetaCohortPolicy(
     }
 }
 
+/**
+ * The configured participant cap N (`testinbox.beta.max-participants`): how many
+ * of the cohort's places new admissions may consume. It may only LOWER
+ * [BetaCohortPolicy.MAX_PARTICIPANTS], which stays the hard bound the database
+ * guard (V12 `place BETWEEN 1 AND 30`) and the cohort pool are sized for.
+ *
+ * Lowering N below the places already consumed evicts nobody: it only stops
+ * NEW admissions, which answer `Full` exactly as at thirty.
+ */
+@JvmInline
+value class BetaParticipantCap(
+    val value: Int,
+) {
+    init {
+        require(value in 1..BetaCohortPolicy.MAX_PARTICIPANTS) {
+            "$PROPERTY must be in 1..${BetaCohortPolicy.MAX_PARTICIPANTS} (it may only lower the cohort's " +
+                "${BetaCohortPolicy.MAX_PARTICIPANTS} places), but is $value"
+        }
+    }
+
+    /** Whether a new admission may take [place] (places are consumed in order, 1, 2, ...). */
+    fun admits(place: Int): Boolean = place <= value
+
+    /** Whether this is the hard bound itself, i.e. nothing was lowered. */
+    val unlowered: Boolean get() = value == BetaCohortPolicy.MAX_PARTICIPANTS
+
+    companion object {
+        const val PROPERTY: String = "testinbox.beta.max-participants"
+
+        /** The default: the cohort's full thirty places, so an unset property changes nothing. */
+        val HARD_LIMIT: BetaParticipantCap = BetaParticipantCap(BetaCohortPolicy.MAX_PARTICIPANTS)
+    }
+}
+
 data class BetaAdmission(
     val accountId: HumanAccountId,
     val workspaceId: WorkspaceId,

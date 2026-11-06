@@ -107,7 +107,27 @@ data class DeploymentSettings(
      * [DriverProtocolSafety] for these AND the URL's own parameters.
      */
     val databaseDriverProperties: Map<String, String>? = null,
+    /**
+     * The effective Hikari `maximumPoolSize` of the deployable that runs T1 for
+     * SMTP mail (the gateway), or [IngestionPoolSize.Unreadable]; null where it
+     * does not (the API). Under `ALL` it must equal the pool size the approved
+     * INGEST envelope's evidence covers ([IngestEnvelopeSafety]).
+     */
+    val ingestionPoolSize: IngestionPoolSize? = null,
 )
+
+/** What the ingestion gateway could establish about its own database pool's size. */
+sealed interface IngestionPoolSize {
+    /** Hikari's `maximumPoolSize`, as the running pool reports it. */
+    data class Known(
+        val size: Int,
+    ) : IngestionPoolSize
+
+    /** Not a Hikari pool, or a size Hikari would replace at start: never guessed, so `ALL` fails closed. */
+    data class Unreadable(
+        val reason: String,
+    ) : IngestionPoolSize
+}
 
 /**
  * The facts about production that are decided, not configured (ADR-034).

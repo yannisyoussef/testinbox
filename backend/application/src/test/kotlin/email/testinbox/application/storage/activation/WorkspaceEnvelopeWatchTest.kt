@@ -145,6 +145,54 @@ class WorkspaceEnvelopeWatchTest {
     }
 
     @Test
+    fun `with N = 10 the bound is N + L = 11, before a plan`() {
+        val reader = Population(WorkspacePopulation(false, 11))
+        val declared =
+            StorageDeclarations(
+                enforcement = StorageEnforcement.ALL,
+                declaredLegacyWorkspaces = 1,
+                participantCap =
+                    email.testinbox.domain.identity
+                        .BetaParticipantCap(10),
+            )
+        val envelope = IngestEnvelopeSafety.activationEnvelope(declared, reader).shouldNotBeNull()
+        envelope.maxWorkspaces shouldBe 11
+        envelope.participants shouldBe 10
+        val guard = ActivationGuard()
+        val watch = ActivationWatch(healthy, expected, StorageEnforcement.ALL, guard, RecordingMetrics(), envelope = envelope)
+        watch.run().envelope.verdict shouldBe GateVerdict.PASS
+        reader.lastCap shouldBe 12
+        reader.population = WorkspacePopulation(false, 12)
+        val over = watch.run()
+        over.envelope.verdict shouldBe GateVerdict.BLOCKED
+        over.envelope.detail shouldContain "gate D covers at most 10 participant places + L"
+        guard.violated().shouldNotBeNull() shouldContain "more than 11 workspaces"
+    }
+
+    @Test
+    fun `with N = 10 a cohort plan does not bound the population - the pool holds thirty shares, so the count still applies`() {
+        // A lowered N evicts nobody: twelve participants admitted at N = 30 stay, and the envelope fails closed.
+        val reader = Population(WorkspacePopulation(true, 13))
+        val guard = ActivationGuard()
+        val outcome =
+            ActivationWatch(
+                healthy,
+                expected,
+                StorageEnforcement.ALL,
+                guard,
+                RecordingMetrics(),
+                envelope = ActivationEnvelope(11, reader, participants = 10),
+            ).run()
+        outcome.envelope.verdict shouldBe GateVerdict.BLOCKED
+        outcome.envelope.detail shouldContain "the cohort pool's thirty shares do not bound a lowered N"
+        guard.violated().shouldNotBeNull()
+        reader.population = WorkspacePopulation(true, 11)
+        WorkspaceEnvelopeCheck.evaluate(11, reader.population, participants = 10).verdict shouldBe GateVerdict.PASS
+        // At N = 30 the plan still bounds it, exactly as before.
+        WorkspaceEnvelopeCheck.evaluate(31, WorkspacePopulation(true, 10_001)).verdict shouldBe GateVerdict.NOT_REQUIRED
+    }
+
+    @Test
     fun `the deployment builds the envelope as 30 + L, only under ALL`() {
         val reader = Population(WorkspacePopulation(false, 0))
         val all = StorageDeclarations(enforcement = StorageEnforcement.ALL, declaredLegacyWorkspaces = 1)
