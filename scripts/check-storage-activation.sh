@@ -7,7 +7,8 @@
 # carries the storage-v1 capability and the node inventory is exact, (b) a
 # full orphan sweep has completed and physical bytes are within the covered
 # total plus the finalize budget H, (c) every node's clock offset is bounded,
-# (d) the §11 benchmark has passed before the GLOBAL ceiling, (e) the ADR-035
+# (d) the §11 benchmark has passed before the GLOBAL ceiling (for a closed first
+# cohort, N < 30, its owner-approved first-cohort profile instead), (e) the ADR-035
 # rollback floors are on master and under the running artifact, and (§9a) the
 # deployed MinIO combination has a committed qualification record. This script
 # evaluates each of those from inputs Ops hand it and writes the verdict down.
@@ -42,11 +43,15 @@
 #   --qualification-dir <dir>          default backend/storage/src/main/resources/adr035-qualification
 #   --backend-identity <json>          the Ops-declared backend identity (non-secret)
 #   --qualification-valid-metric 0|1   the Ops qualification-check's testinbox_storage_qualification_valid
-#   --benchmark-evidence <json>        the §11 benchmark result (docs/dev/storage-benchmark.md)
+#   --benchmark-evidence <json>        gate D: the benchmark result (docs/dev/storage-benchmark.md). Where every node
+#                                      declares N = 30 it is the §11 matrix; where they declare N < 30 it is the
+#                                      --focused-cohort run of the owner-approved first-cohort profile for N, bound
+#                                      to the deployed git_sha by production-code identity (in --repo)
 #   --expected-rate <events/s>         gate D: OPTIONAL cross-check. §11's expected rate R is R_gated, read from
 #                                      every node's testinbox_storage_gated_expected_rate (ADR-035 amendment D);
 #                                      this value must EQUAL it, and the evidence must have run at it
-#   --repo <dir>                       the checkout whose history evaluates floors (default: this repository)
+#   --repo <dir>                       the checkout whose history evaluates floors and gate D's first-cohort binding
+#                                      (default: this repository)
 #   --floors-file <file>               default <repo>/deploy/rollback-floors.txt
 #   --fetch                            `git fetch origin master` before evaluating gate E
 #   --max-clock-offset-seconds <n>     ε_max, default 30
@@ -144,6 +149,31 @@ REQUIRED_CONCURRENCY="1,10,25,50,100"
 # the retention ratio (relative to a reference at the same offered load) and the integrity criteria
 # are read at every scenario.
 LOAD_GATED_CONCURRENCY="10,25,50,100"
+# Gate D's PATH is chosen by the participant cap N every node exports
+# (testinbox_storage_envelope_participants, as gate W reads it). N = 30 is the §11
+# matrix above, unchanged. N < 30 is a closed first cohort, judged against an
+# owner-approved first-cohort profile, and only an N listed here has one: any
+# other N blocks. One entry per approved envelope, mirroring
+# IngestEnvelopeSafety.APPROVED_ENVELOPES (ADR-035, "Amendment note (2026-11-06,
+# owner decision): closed first-cohort MVP envelope", D1): R = r x (N + L) with
+# r = 1, the criteria for that cohort only, and the measurement profile (pool
+# size 8, production's pool lifetime, cold start, concurrency 10/25/50/100).
+# Like the §11 constants these are PINNED and never read from the evidence.
+#   N|L|R|2R|pool|t1p99_max_ms|concurrency|sustained_min
+FIRST_COHORT_PROFILES="10|1|11|22|8|500|10,25,50,100|0.995"
+# Production's ingestion pool lifetime (HikariCP's default, not overridden), as the
+# harness records it: harness.poolMaxLifetime (ISO-8601) and per scenario pool.maxLifetimeMs.
+FIRST_COHORT_POOL_MAX_LIFETIME="PT30M"
+FIRST_COHORT_POOL_MAX_LIFETIME_MS="1800000"
+# Production code, for binding first-cohort evidence to the deployment: the main
+# sources (code and resources, migrations included) of every backend module, and
+# of no other. Every deployable (api, ingestion, migrator) and every module they
+# link (domain, application, persistence, storage, notification, observability)
+# is a direct child of backend/; `**` also covers a module nested deeper. Only the
+# harness is excluded: it is never deployed. `glob` magic is explicit because a
+# bare 'backend/*/src/main' matches no FILE in a tree diff (git compares the
+# whole path, so it selects nothing and the comparison would be vacuous).
+PRODUCTION_CODE_PATHSPEC=(':(glob)backend/**/src/main/**' ':(glob,exclude)backend/benchmark/**')
 
 usage() {
     sed -n '/^# Usage:/,/^# Exit:/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
@@ -488,6 +518,15 @@ EOF
 # scenarios as docs/dev/storage-benchmark.md defines them, and a disagreement
 # blocks. A CHOSEN 2× scenario with no matching REFERENCE run cannot be judged
 # and blocks; an INCOMPLETE run blocks with its reasons.
+#
+# Two paths, chosen by the participant cap N every node exports
+# (testinbox_storage_envelope_participants); absent or disagreeing N blocks.
+# N = 30: the §11 matrix above, unchanged. N < 30: the owner-approved
+# first-cohort profile for N (FIRST_COHORT_PROFILES; ADR-035, "Amendment note
+# (2026-11-06, owner decision): closed first-cohort MVP envelope"): a
+# --focused-cohort run matching the profile exactly, its criteria recomputed
+# from the numbers (never its own INCOMPLETE verdict or adrEvidence: false),
+# measured on production code identical to every node's deployed git_sha.
 # ---------------------------------------------------------------------------
 # Sets EXPECTED_RATE to the R_gated every metrics endpoint declares, or leaves it
 # empty and records why. --expected-rate, when given, must equal it.
@@ -516,8 +555,65 @@ EOF
     [ -n "$PROBLEMS" ] || EXPECTED_RATE="$seen"
 }
 
+# Sets PARTICIPANTS_N to the participant cap N every metrics endpoint declares
+# (testinbox_storage_envelope_participants, read as gate W reads it), or leaves it
+# empty and records why. N picks gate D's path, so absent, out of range or
+# disagreeing N blocks: there is no default path to fall back to.
+declared_participants() {
+    local role label path err value seen="" checked=0
+    PARTICIPANTS_N=""
+    while IFS="$TAB" read -r role label path err; do
+        [ -n "$role" ] || continue
+        [ -z "$err" ] || { problem "$err"; continue; }
+        checked=$((checked + 1))
+        value="$(metric_value "$path" testinbox_storage_envelope_participants)"
+        if ! is_number "$value" || ! num_gt "$value" 0 || num_gt "$value" 30; then
+            problem "$label ($role): the participant cap N is UNKNOWN (testinbox_storage_envelope_participants absent or outside 1..30); gate D cannot choose between the §11 matrix (N = 30) and a first-cohort profile (N < 30), and never assumes one"
+        elif [ -z "$seen" ]; then
+            seen="$value"
+        elif ! num_eq "$value" "$seen"; then
+            problem "$label ($role): declares a participant cap N of $value but another node declares $seen; the nodes must agree before gate D can choose its path"
+        fi
+    done <<EOF
+$METRICS_INDEX
+EOF
+    [ "$checked" -gt 0 ] || problem "no metrics endpoint: the participant cap N (testinbox_storage_envelope_participants) is unobserved, so gate D cannot choose its path"
+    if [ -z "$PROBLEMS" ] && ! awk -v a="$seen" 'BEGIN { exit !((a + 0) == int(a + 0)) }'; then
+        problem "the nodes declare a participant cap N of $seen, which is not a whole number"
+    fi
+    [ -n "$PROBLEMS" ] || PARTICIPANTS_N="$(awk -v a="$seen" 'BEGIN { printf "%d", a }')"
+}
+
+# The sustained reading and the integrity counters, ONE definition for both gate D
+# paths (the §11 matrix and a first-cohort profile read them identically). The
+# caller binds $tol (the sustained minimum) and $window (SUSTAIN_WINDOW_SECONDS);
+# $label names the criterion in the message (sustained2x on the §11 path).
+# shellcheck disable=SC2016 # jq source: the $ names are jq's, not the shell's
+JQ_GATE_D_DEFS='
+    def dl: (.errors.deadlocks // .deadlocks // 0);
+    def misses: (.errors.deadlineMissesFromSlotQueueing // .deadlineMissesFromSlotQueueing // 0);
+    def others: (.errors.other // 0);
+    def starved: (.retentionStarvedTicks // 0);
+    # The events a 30 s window holds at this rate; a scenario that scheduled more, or measured
+    # more than 30 s, is read over 30 s as well (only ever stricter: the lower reading counts).
+    def refEvents: ((.offeredRate * $window) | floor);
+    def longWindow: ((.scheduledEvents // 0) > refEvents or (.durationSeconds // 0) > $window) and refEvents >= 2;
+    # The same completion fraction and terminal lag over a 30 s window (GateEvaluator.sustainedRatio).
+    def over30: ((.completedEvents / .scheduledEvents) * refEvents) / ((refEvents - 1) + .offeredRate * .terminalLagMs / 1000);
+    def sustainedRatioFailure($label): select(.achievedRate == null or .achievedRate / .offeredRate < $tol)
+        | "\($label): \(.name) achieved \(.achievedRate // "nothing") of \(.offeredRate)/s offered (ratio below \($tol))";
+    def unscheduledFailure($label): select(.scheduledEvents == null)
+        | "\($label): \(.name) records no scheduledEvents, so the window it measured cannot be read over \($window) s (fail closed)";
+    def windowFailure($label): select(.achievedRate != null and .achievedRate / .offeredRate >= $tol and .scheduledEvents != null and longWindow)
+        | if .completedEvents == null or .terminalLagMs == null
+          then "\($label): \(.name) measured \(.scheduledEvents) events over \(.durationSeconds // "an unrecorded") s, a window that must be read over \($window) s, but records no completedEvents or terminalLagMs to read it"
+          elif over30 < $tol
+          then "\($label): \(.name) terminal lag \(.terminalLagMs) ms is past the \($window) s allowance (ratio \(over30) read over \($window) s, below \($tol))"
+          else empty end;
+'
+
 gate_benchmark() {
-    local gate="D-benchmark" verdict recomputed bench_sha api_sha bench_rate warn=""
+    local gate="D-benchmark"
     reset_problems
     if [ "$MODE" = TENANT_LIMITS ]; then
         record "$gate" NOT_REQUIRED "NOT REQUIRED FOR TENANT_LIMITS: the global ceiling is not enabled in this mode (§14 phase 4)"
@@ -528,6 +624,22 @@ gate_benchmark() {
         return
     fi
     jq -e . "$BENCH" >/dev/null 2>&1 || { record "$gate" BLOCKED "benchmark evidence is not valid JSON"; return; }
+    # The path: N = 30 is the §11 matrix, unchanged; N < 30 a first-cohort profile.
+    declared_participants
+    if [ -z "$PARTICIPANTS_N" ]; then
+        record "$gate" BLOCKED "$PROBLEMS"
+        return
+    fi
+    if [ "$PARTICIPANTS_N" -eq 30 ]; then
+        benchmark_section11 "$gate"
+    else
+        benchmark_first_cohort "$gate" "$PARTICIPANTS_N"
+    fi
+}
+
+# Gate D at N = 30: the §11 matrix.
+benchmark_section11() {
+    local gate="$1" verdict recomputed bench_sha api_sha bench_rate warn=""
     # ADR-035 amendment D: R is R_gated, as every node declares it. Unknown or
     # inconsistent blocks: the criteria cannot be recomputed against a rate no
     # node is proven to run under.
@@ -553,7 +665,7 @@ gate_benchmark() {
     recomputed="$(jq -r --argjson expected "$EXPECTED_RATE" --argjson tol "$SUSTAIN_TOLERANCE" --argjson window "$SUSTAIN_WINDOW_SECONDS" \
                      --argjson t1max "$T1_P99_MS" \
                      --argjson ratio "$RETENTION_RATIO" --argjson ltr "$LOCK_TIMEOUT_RATE" --argjson minws "$MIN_WORKSPACES" \
-                     --argjson minres "$MIN_RESERVATION_BACKLOG" --arg conc "$REQUIRED_CONCURRENCY" --arg gated "$LOAD_GATED_CONCURRENCY" '
+                     --argjson minres "$MIN_RESERVATION_BACKLOG" --arg conc "$REQUIRED_CONCURRENCY" --arg gated "$LOAD_GATED_CONCURRENCY" "$JQ_GATE_D_DEFS"'
         (.scenarios // []) as $s
         | ($conc | split(",") | map(tonumber)) as $required
         | ($gated | split(",") | map(tonumber)) as $loadgated
@@ -561,31 +673,14 @@ gate_benchmark() {
         | [ $chosen2x[] | select(.concurrency as $c | $loadgated | index($c) != null) ] as $gated2x
         | def ref($c): [ $s[] | select(.mode == "REFERENCE" and .workspaceCount == $c.workspaceCount and .concurrency == $c.concurrency
                                         and .offeredRate != null and (.offeredRate | round) == ($c.offeredRate | round)) ] | first;
-          def dl: (.errors.deadlocks // .deadlocks // 0);
-          def misses: (.errors.deadlineMissesFromSlotQueueing // .deadlineMissesFromSlotQueueing // 0);
-          def others: (.errors.other // 0);
-          def starved: (.retentionStarvedTicks // 0);
-          # The events a 30 s window holds at this rate; a scenario that scheduled more, or measured
-          # more than 30 s, is read over 30 s as well (only ever stricter: the lower reading counts).
-          def refEvents: ((.offeredRate * $window) | floor);
-          def longWindow: ((.scheduledEvents // 0) > refEvents or (.durationSeconds // 0) > $window) and refEvents >= 2;
-          # The same completion fraction and terminal lag over a 30 s window (GateEvaluator.sustainedRatio).
-          def over30: ((.completedEvents / .scheduledEvents) * refEvents) / ((refEvents - 1) + .offeredRate * .terminalLagMs / 1000);
         ( if .adrEvidence != true then ["not ADR evidence (the harness departed from §11): " + ((.adrEvidenceReasons // []) | join("; ") | if . == "" then "no reason recorded" else . end)] else [] end )
         + ( if ($s | length) == 0 then ["no scenarios recorded"] else [] end )
         + ( if ($chosen2x | length) == 0 then ["no CHOSEN scenario offered 2× the expected rate (\(2 * $expected)/s)"] else [] end )
         + [ ($required - ([ $chosen2x[] | select(.workspaceCount >= $minws and (.reservationBacklog // 0) >= $minres) | .concurrency ]))[]
               | "coverage: no CHOSEN 2× scenario at concurrency \(.) with ≥ \($minws) workspaces and ≥ \($minres) live reservations" ]
-        + [ $gated2x[] | select(.achievedRate == null or .achievedRate / .offeredRate < $tol)
-              | "sustained2x: \(.name) achieved \(.achievedRate // "nothing") of \(.offeredRate)/s offered (ratio below \($tol))" ]
-        + [ $chosen2x[] | select(.scheduledEvents == null)
-              | "sustained2x: \(.name) records no scheduledEvents, so the window it measured cannot be read over \($window) s (fail closed)" ]
-        + [ $gated2x[] | select(.achievedRate != null and .achievedRate / .offeredRate >= $tol and .scheduledEvents != null and longWindow)
-              | if .completedEvents == null or .terminalLagMs == null
-                then "sustained2x: \(.name) measured \(.scheduledEvents) events over \(.durationSeconds // "an unrecorded") s, a window that must be read over \($window) s, but records no completedEvents or terminalLagMs to read it"
-                elif over30 < $tol
-                then "sustained2x: \(.name) terminal lag \(.terminalLagMs) ms is past the \($window) s allowance (ratio \(over30) read over \($window) s, below \($tol))"
-                else empty end ]
+        + [ $gated2x[] | sustainedRatioFailure("sustained2x") ]
+        + [ $chosen2x[] | unscheduledFailure("sustained2x") ]
+        + [ $gated2x[] | windowFailure("sustained2x") ]
         + [ $chosen2x[] | select(.percentiles.t1.p99Ms == null) | "t1P99: \(.name) has no T1 samples" ]
         + [ $gated2x[] | select(.percentiles.t1.p99Ms != null and .percentiles.t1.p99Ms > $t1max)
               | "t1P99: \(.name) T1 p99 \(.percentiles.t1.p99Ms) ms > \($t1max) ms" ]
@@ -629,6 +724,160 @@ gate_benchmark() {
         record "$gate" BLOCKED "$PROBLEMS${warn:+; $warn}"
     else
         record "$gate" PASS "recorded PASS at the declared R_gated $EXPECTED_RATE events/s and the §11 criteria recompute from the numbers${warn:+; $warn}"
+    fi
+}
+
+# git with the pathspec semantics PRODUCTION_CODE_PATHSPEC is written for: an
+# inherited GIT_LITERAL_PATHSPECS would turn its globs into literals that match
+# nothing, and the identity check would pass vacuously.
+git_pathspec() {
+    GIT_LITERAL_PATHSPECS=0 GIT_GLOB_PATHSPECS=0 GIT_NOGLOB_PATHSPECS=0 GIT_ICASE_PATHSPECS=0 git -C "$REPO" "$@"
+}
+
+# production_code_binding EVIDENCE_SHA: the evidence must have been measured on
+# production code IDENTICAL to what every node runs (testinbox_build git_sha).
+# Commits that differ only outside it (the harness, docs, scripts) are the same
+# production code. Fail closed: no repository, an unknown or unresolvable SHA, a
+# vacuous pathspec or a git error all block. Problems are recorded; prints the
+# deployed SHA(s) it bound to.
+production_code_binding() {
+    local ev="$1" role label path err sha deployed="" checked=0 empty rc
+    if ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+        problem "binding: $REPO is not a git repository, so production-code identity with the deployment cannot be established (fail closed; pass --repo)"
+        return
+    fi
+    if [[ ! "$ev" =~ ^[0-9a-f]{40}$ ]]; then
+        problem "binding: the evidence gitSha '${ev:-<absent>}' is not a 40-hex commit SHA, so it cannot be bound to the deployment"
+        ev=""
+    elif ! git -C "$REPO" cat-file -e "${ev}^{commit}" 2>/dev/null; then
+        problem "binding: the evidence gitSha ${ev:0:12} cannot be resolved to a commit in $REPO (fetch full history)"
+        ev=""
+    fi
+    while IFS="$TAB" read -r role label path err; do
+        [ -n "$role" ] || continue
+        [ -z "$err" ] || { problem "$err"; continue; }
+        checked=$((checked + 1))
+        sha="$(build_git_sha "$path")"
+        if [ -z "$sha" ]; then
+            problem "binding: $label ($role): testinbox_build carries no 40-hex git_sha, so the deployed SHA is unknown"
+        elif ! git -C "$REPO" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+            problem "binding: $label ($role): the deployed git_sha ${sha:0:12} cannot be resolved to a commit in $REPO (fetch full history)"
+        else
+            printf '%s\n' "$deployed" | grep -qx -- "$sha" || deployed="$deployed${deployed:+$'\n'}$sha"
+        fi
+    done <<EOF
+$METRICS_INDEX
+EOF
+    [ "$checked" -gt 0 ] || problem "binding: no metrics endpoint, so the deployed SHA (testinbox_build) is unknown"
+    [ -n "$ev" ] || return
+    empty="$(git -C "$REPO" hash-object -t tree /dev/null 2>/dev/null)"
+    while IFS= read -r sha; do
+        [ -n "$sha" ] || continue
+        # Non-vacuity: the pathspec must select the deployed artifact's production code.
+        if [ -z "$empty" ] || [ -z "$(git_pathspec diff --no-ext-diff --name-only "$empty" "$sha" -- "${PRODUCTION_CODE_PATHSPEC[@]}" 2>/dev/null | head -1)" ]; then
+            problem "binding: the production-code pathspec (${PRODUCTION_CODE_PATHSPEC[*]}) selects no file in the deployed ${sha:0:12}; an identity over nothing proves nothing (fail closed)"
+            continue
+        fi
+        git_pathspec diff --no-ext-diff --quiet "$ev" "$sha" -- "${PRODUCTION_CODE_PATHSPEC[@]}" 2>/dev/null
+        rc=$?
+        if [ "$rc" -eq 1 ]; then
+            problem "binding: the evidence gitSha ${ev:0:12} and the deployed ${sha:0:12} differ in production code ($(git_pathspec diff --no-ext-diff --name-only "$ev" "$sha" -- "${PRODUCTION_CODE_PATHSPEC[@]}" 2>/dev/null | head -3 | paste -sd, -)...); the evidence measured another artifact"
+        elif [ "$rc" -ne 0 ]; then
+            problem "binding: git diff of ${ev:0:12} against the deployed ${sha:0:12} failed (exit $rc); fail closed"
+        fi
+    done <<EOF
+$deployed
+EOF
+    BOUND_DEPLOYED="$(printf '%s' "$deployed" | cut -c1-12 | paste -sd, -)"
+}
+
+# Gate D at N < 30: the owner-approved first-cohort profile for N (FIRST_COHORT_PROFILES).
+# The evidence is a --focused-cohort run, so it is never ADR §11 evidence and the
+# harness's own verdict is INCOMPLETE by construction: neither verdict, adrEvidence
+# nor criteria is read. Every condition is checked here, from the numbers.
+benchmark_first_cohort() {
+    local gate="$1" n="$2" entry l r r2 pool t1max conc sustain label bench_rate bench_sha problems
+    label="first-cohort profile N=$n (owner D1)"
+    entry="$(printf '%s\n' "$FIRST_COHORT_PROFILES" | awk -F'|' -v n="$n" '$1 == n { print; exit }')"
+    if [ -z "$entry" ]; then
+        record "$gate" BLOCKED "$label: no owner-approved first-cohort profile for N = $n (the nodes declare testinbox_storage_envelope_participants $n; profiles exist for N = $(printf '%s\n' "$FIRST_COHORT_PROFILES" | cut -d'|' -f1 | paste -sd, -) and N = 30 is the §11 matrix)"
+        return
+    fi
+    IFS='|' read -r _ l r r2 pool t1max conc sustain <<EOF
+$entry
+EOF
+    # R is R_gated, as every node declares it, and must be this profile's R.
+    declared_gated_rate
+    if [ -z "$EXPECTED_RATE" ]; then
+        record "$gate" BLOCKED "$label: $PROBLEMS"
+        return
+    fi
+    num_eq "$EXPECTED_RATE" "$r" ||
+        problem "the nodes declare R_gated $EXPECTED_RATE events/s but the profile for N = $n has R = $r (r x (N + L)); the deployment is not the approved envelope"
+    bench_rate="$(jq -r '.harness.expectedRate // empty' "$BENCH")"
+    if ! is_number "$bench_rate"; then
+        problem "the evidence records no harness.expectedRate, so it cannot be bound to R = $r events/s"
+    elif ! num_eq "$bench_rate" "$r"; then
+        problem "harness.expectedRate is $bench_rate events/s, not the profile's R = $r"
+    fi
+    problems="$(jq -r --argjson n "$n" --argjson l "$l" --argjson r "$r" --argjson r2 "$r2" --argjson pool "$pool" \
+                   --argjson t1max "$t1max" --arg conc "$conc" --argjson tol "$sustain" --argjson window "$SUSTAIN_WINDOW_SECONDS" \
+                   --argjson ltr "$LOCK_TIMEOUT_RATE" --arg lifetime "$FIRST_COHORT_POOL_MAX_LIFETIME" \
+                   --argjson lifetimeMs "$FIRST_COHORT_POOL_MAX_LIFETIME_MS" "$JQ_GATE_D_DEFS"'
+        def shown: if . == null then "absent" else tostring end;
+        (.harness // {}) as $h
+        | (.scenarios // []) as $s
+        | ($conc | split(",") | map(tonumber)) as $required
+        | def at($rate; $c): [ $s[] | select(.mode == "CHOSEN" and (.offeredRate | type) == "number"
+                                             and (.offeredRate | round) == ($rate | round) and .concurrency == $c) ];
+        [ [$r, $r2][] as $rate | $required[] as $c | at($rate; $c) | select(length == 1) | .[0] ] as $req
+        # The run: --focused-cohort. The harness records harness.focusedCohort where it
+        # writes one (it must then be true); otherwise its own record of that run is
+        # focused = true with the cohort size and population checked below, which only
+        # --focused-cohort produces (--cohort-participants is refused without it).
+        | ( if ($h | has("focusedCohort")) then
+                (if $h.focusedCohort == true then [] else ["harness.focusedCohort is \($h.focusedCohort | shown), not true: not the --focused-cohort run"] end)
+            elif $h.focused != true then ["the harness records neither focusedCohort nor focused = true: not the --focused-cohort run"]
+            else [] end )
+        + ( if $h.cohortParticipants != $n then ["harness.cohortParticipants is \($h.cohortParticipants | shown), not N = \($n)"] else [] end )
+        + ( if $h.poolSize != $pool then ["harness.poolSize is \($h.poolSize | shown), not production'"'"'s pool \($pool)"] else [] end )
+        + ( if $h.coldPool != true then ["harness.coldPool is \($h.coldPool | shown): the profile starts cold"] else [] end )
+        + ( if $h.poolMaxLifetime != $lifetime then ["harness.poolMaxLifetime is \($h.poolMaxLifetime | shown), not production'"'"'s \($lifetime)"] else [] end )
+        # Coverage: exactly one CHOSEN scenario at R and at 2R, at every concurrency of the profile.
+        + [ [$r, $r2][] as $rate | $required[] as $c | at($rate; $c)
+              | if length == 0 then "coverage: no CHOSEN scenario at \($rate)/s, concurrency \($c)"
+                elif length > 1 then "coverage: \(length) CHOSEN scenarios at \($rate)/s, concurrency \($c) (\([.[].name] | join(", "))); the profile is run once, so which one counts is ambiguous"
+                else empty end ]
+        # The measurement profile, per scenario as the harness recorded it.
+        + [ $req[] | select(.workspaceCount != ($n + $l)) | "population: \(.name) ran over \(.workspaceCount | shown) workspaces, not the cohort'"'"'s N + L = \($n + $l)" ]
+        + [ $req[] | select(.pool.poolSize != $pool) | "pool: \(.name) ran with a pool of \(.pool.poolSize | shown), not \($pool)" ]
+        + [ $req[] | select(.pool.coldPool != true) | "pool: \(.name) did not start cold (pool.coldPool \(.pool.coldPool | shown))" ]
+        + [ $req[] | select(.pool.maxLifetimeMs != $lifetimeMs) | "pool: \(.name) pool.maxLifetimeMs \(.pool.maxLifetimeMs | shown), not production'"'"'s \($lifetimeMs)" ]
+        # D1, recomputed from the numbers.
+        + [ $req[] | select(.percentiles.t1.p99Ms == null) | "t1P99: \(.name) has no T1 samples" ]
+        + [ $req[] | select(.percentiles.t1.p99Ms != null and .percentiles.t1.p99Ms > $t1max)
+              | "t1P99: \(.name) T1 p99 \(.percentiles.t1.p99Ms) ms > \($t1max) ms" ]
+        + [ $req[] | sustainedRatioFailure("sustained") ]
+        + [ $req[] | unscheduledFailure("sustained") ]
+        + [ $req[] | windowFailure("sustained") ]
+        # Integrity, unchanged, at every scenario in the file; counts that are not recorded block.
+        + [ $s[] | select(.errors == null or (.lockTimeoutRate | type) != "number")
+              | "integrity: \(.name) records no error counts (errors, lockTimeoutRate), fail closed" ]
+        + [ $s[] | select(dl != 0) | "deadlocks: \(.name) \(dl)" ]
+        + [ $s[] | select((.lockTimeoutRate // 0) >= $ltr) | "lockTimeoutRate: \(.name) \(.lockTimeoutRate) ≥ \($ltr) (0.1 %)" ]
+        + [ $s[] | select(misses != 0) | "slotQueueingDeadlineMisses: \(.name) \(misses)" ]
+        + [ $s[] | select(others != 0) | "otherErrors: \(.name) \(others)" ]
+        | join("; ")' "$BENCH" 2>/dev/null)" ||
+        { record "$gate" BLOCKED "$label: benchmark evidence does not have the documented shape (docs/dev/storage-benchmark.md)"; return; }
+    [ -z "$problems" ] || problem "$problems"
+    # Binding: measured on the production code every node runs.
+    bench_sha="$(jq -r '.gitSha // ""' "$BENCH")"
+    BOUND_DEPLOYED=""
+    production_code_binding "$bench_sha"
+    if [ -n "$PROBLEMS" ]; then
+        record "$gate" BLOCKED "$label: $PROBLEMS"
+    else
+        record "$gate" PASS "$label: R = $r and 2R = $r2 events/s (the declared R_gated $EXPECTED_RATE) x concurrency $conc, pool $pool, cold, $FIRST_COHORT_POOL_MAX_LIFETIME, $((n + l)) workspaces; T1 p99 ≤ $t1max ms, sustained ≥ $sustain (30 s reading) and zero integrity errors recompute from the numbers (the evidence's own verdict is not read); production code of ${bench_sha:0:12} identical to the deployed $BOUND_DEPLOYED"
     fi
 }
 

@@ -499,6 +499,84 @@ a 60 s schedule. `GateEvaluatorTest` decides the same 30 s boundary (and one
 missing event at 30 s, ±0.01 ms around 150.67 ms) for the harness, holds it
 at 33, 60 and 120 s, and carries a-prime's `sustainedRatio` tests verbatim.
 
+### Gate D's first-cohort path (N < 30)
+
+Everything above is the §11 matrix, which gate D requires where the nodes
+declare the participant cap N = 30. For a closed first cohort the owner
+approved a different criterion and measurement profile (ADR-035, "Amendment
+note (2026-11-06, owner decision): closed first-cohort MVP envelope"), and
+gate D judges it on its own path. The nodes choose the path: every metrics
+endpoint exports `testinbox_storage_envelope_participants`, and they must
+agree; absent, out of range, fractional or disagreeing N blocks, never a
+fallback. Below 30, only an N with an entry in the script's pinned
+`FIRST_COHORT_PROFILES` table has a profile; today that is the one approved
+envelope (`IngestEnvelopeSafety.APPROVED_ENVELOPES`):
+
+| N | L | R | 2R | pool | T1 p99 | concurrency | sustained |
+|---|---|---|---|---|---|---|---|
+| 10 | 1 | 11/s | 22/s | 8 | ≤ 500 ms | 10, 25, 50, 100 | ≥ 0.995 |
+
+**The evidence it accepts** is the harness's focused closed-cohort run, as
+measured with:
+
+```bash
+... --focused-cohort --cohort-participants 10 --expected-rate 11 --rates 11,22 \
+    --pool-size 8 --concurrency 10,25,50,100 --duration-seconds 60
+```
+
+Such a run is `adrEvidence: false` and `INCOMPLETE` by construction (it is
+`--focused`, its pool is not c + 6, its cohort is not thirty), and its own
+`criteria` are the §11 ones. Gate D reads **none** of `verdict`,
+`adrEvidence`, `adrEvidenceReasons` or `criteria` on this path. It checks,
+against the profile and never against anything the evidence says about
+itself:
+
+- **the run:** `harness.focusedCohort` is `true` where the harness records it;
+  otherwise `harness.focused` is `true`, which together with the next two
+  checks only `--focused-cohort` produces (the harness refuses
+  `--cohort-participants` without it). `harness.cohortParticipants` = N,
+  `harness.poolSize` = 8 (`null`, the harness's c + 6, blocks),
+  `harness.coldPool` = `true`, `harness.poolMaxLifetime` = `PT30M`
+  (production's), `harness.expectedRate` = R, and R = the R_gated every node
+  declares;
+- **coverage:** exactly one CHOSEN scenario at R **and** at 2R (rounded, as on
+  the §11 path) at **every** concurrency of the profile. A missing one blocks;
+  two at the same point block as ambiguous (the profile is run once);
+- **per required scenario, as recorded:** `workspaceCount` = N + L (the closed
+  cohort, 11), and the Hikari `pool` it ran on: `poolSize` 8, `coldPool`
+  true, `maxLifetimeMs` 1 800 000;
+- **D1, recomputed from the numbers** at every required scenario:
+  `percentiles.t1.p99Ms` ≤ 500 (absent blocks); sustained ≥ 0.995 with the
+  **same** jq definitions as `sustained2x` on the §11 path, applied at R as
+  well as 2R: achieved / offered, and for a window longer than 30 s (a 60 s
+  run is one) the 30 s terminal-allowance reading of the section above, so
+  the longer window does not widen the allowance; a scenario without
+  `scheduledEvents` blocks;
+- **integrity, unchanged,** at every scenario in the file: zero deadlocks,
+  `lockTimeoutRate` < 0.001, zero `deadlineMissesFromSlotQueueing`, zero
+  `errors.other` (a pool connection timeout is counted there). A scenario that
+  records no `errors` or `lockTimeoutRate` blocks;
+- **binding:** the evidence `gitSha` must be production code **identical** to
+  every node's deployed `git_sha` (`testinbox_build`), in the `--repo`
+  checkout: `git diff --quiet <gitSha> <deployed> --
+  ':(glob)backend/**/src/main/**' ':(glob,exclude)backend/benchmark/**'`.
+  That covers the main sources and resources (migrations included) of every
+  backend module: the api, ingestion and migrator deployables and every
+  module they link. Only the harness is excluded, so evidence measured on a
+  later harness commit over the frozen candidate binds, and a difference in
+  docs, scripts or tests does not matter. Any production-code difference
+  blocks, and so does each way the binding cannot be established: no git
+  repository, an evidence or deployed SHA that is absent, not 40-hex or not
+  resolvable, a git error, or a pathspec that selects no file in the deployed
+  tree. The `glob` magic is deliberate: a bare `'backend/*/src/main'` selects
+  no file in a tree diff, so it would compare nothing and always agree.
+
+The gate's line names `first-cohort profile N=10 (owner D1)` and every
+failing scenario. Nothing on this path changes the §11 path: at N = 30 the
+same file is judged as §11 evidence, and blocks there as not ADR evidence.
+Build scripts and the dependency catalogue are outside the identity
+pathspec, which implements "production code" as the main sources only.
+
 ### `adrEvidence`: the constants are not loosenable through flags
 
 Every flag exists for exploration (a smoke, a shorter matrix, a different

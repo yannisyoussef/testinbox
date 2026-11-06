@@ -1,0 +1,588 @@
+{
+  "schemaVersion": 1,
+  "gitSha": "@GIT_SHA@",
+  "timestamp": "2026-11-06T12:00:00Z",
+  "architecture": "amd64",
+  "kernel": "fixture",
+  "hostClass": "fixture-staging-host-class",
+  "postgresVersion": "16.4",
+  "jvmVersion": "25",
+  "harness": {
+    "measures": "fixture",
+    "arrivals": "POISSON",
+    "durationSeconds": 60,
+    "warmupSeconds": 3,
+    "expectedRate": 11.0,
+    "referenceMode": null,
+    "recipientMix": "fixture",
+    "bytesPerCopy": 4096,
+    "slots": 64,
+    "slotsPerWorkspace": 8,
+    "compactionIntervalSeconds": 10,
+    "retentionMessagesPerInbox": 20,
+    "inboxesPerWorkspace": 2,
+    "sustainedTolerance": 0.995,
+    "seed": 1,
+    "rates": [
+      11.0,
+      22.0
+    ],
+    "concurrency": [
+      10,
+      25,
+      50,
+      100
+    ],
+    "workspaces": [
+      10000
+    ],
+    "reservationBacklog": 1000,
+    "deltaBacklog": 500,
+    "target": {
+      "kind": "remote",
+      "databaseName": "fixture"
+    },
+    "lockWaitDefinition": "fixture",
+    "cohortShares": 31,
+    "sustainedReferenceWindowSeconds": 30,
+    "focused": true,
+    "cohortParticipants": 10,
+    "poolSize": 8,
+    "coldPool": true,
+    "poolMaxLifetime": "PT30M",
+    "poolMaxLifetimeMs": 1800000,
+    "poolKeepaliveMs": 120000,
+    "poolLifecycleSource": "fixture",
+    "prepareThreshold": 5
+  },
+  "safety": {
+    "databaseName": "fixture",
+    "createdByHarness": true,
+    "tenantRowCountsAtStart": {},
+    "acknowledgementVariable": "fixture"
+  },
+  "scenarios": [
+    {
+      "name": "chosen-ws11-c10-r11",
+      "mode": "CHOSEN",
+      "referenceMode": null,
+      "workspaceCount": 11,
+      "inboxCount": 22,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 10,
+      "offeredRate": 11,
+      "achievedRate": 11.010994310986273,
+      "durationSeconds": 59.940090909090905,
+      "scheduledEvents": 660,
+      "completedEvents": 660,
+      "completionRatio": 1.0,
+      "terminalLagMs": 31.0,
+      "copiesCommitted": 1320,
+      "percentiles": {
+        "t1": {
+          "samples": 660,
+          "p50Ms": 16.066666666666666,
+          "p95Ms": 48.2,
+          "p99Ms": 96.4,
+          "maxMs": 134.96
+        },
+        "event": {
+          "samples": 660,
+          "p50Ms": 19.28,
+          "p95Ms": 53.55555555555556,
+          "p99Ms": 106.04000000000002,
+          "maxMs": 154.24
+        },
+        "retention": {
+          "samples": 66,
+          "p50Ms": 12.0,
+          "p95Ms": 30.0,
+          "p99Ms": 41.0,
+          "maxMs": 52.0
+        }
+      },
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 0,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [],
+        "physicalFailures": 0
+      },
+      "lockTimeouts": 0,
+      "lockTimeoutRate": 0.0,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0,
+      "pool": {
+        "coldPool": true,
+        "maxLifetimeMs": 1800000,
+        "keepaliveMs": 120000,
+        "poolSize": 8,
+        "connectionsOpenedBeforePhase": 8,
+        "connectionsOpenedInPhase": 0
+      }
+    },
+    {
+      "name": "chosen-ws11-c25-r11",
+      "mode": "CHOSEN",
+      "referenceMode": null,
+      "workspaceCount": 11,
+      "inboxCount": 22,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 25,
+      "offeredRate": 11,
+      "achievedRate": 11.009616733404254,
+      "durationSeconds": 59.947590909090906,
+      "scheduledEvents": 660,
+      "completedEvents": 660,
+      "completionRatio": 1.0,
+      "terminalLagMs": 38.5,
+      "copiesCommitted": 1320,
+      "percentiles": {
+        "t1": {
+          "samples": 660,
+          "p50Ms": 23.53333333333333,
+          "p95Ms": 70.6,
+          "p99Ms": 141.2,
+          "maxMs": 197.67999999999998
+        },
+        "event": {
+          "samples": 660,
+          "p50Ms": 28.24,
+          "p95Ms": 78.44444444444444,
+          "p99Ms": 155.32,
+          "maxMs": 225.92
+        },
+        "retention": {
+          "samples": 66,
+          "p50Ms": 12.0,
+          "p95Ms": 30.0,
+          "p99Ms": 41.0,
+          "maxMs": 52.0
+        }
+      },
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 0,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [],
+        "physicalFailures": 0
+      },
+      "lockTimeouts": 0,
+      "lockTimeoutRate": 0.0,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0,
+      "pool": {
+        "coldPool": true,
+        "maxLifetimeMs": 1800000,
+        "keepaliveMs": 120000,
+        "poolSize": 8,
+        "connectionsOpenedBeforePhase": 8,
+        "connectionsOpenedInPhase": 0
+      }
+    },
+    {
+      "name": "chosen-ws11-c50-r11",
+      "mode": "CHOSEN",
+      "referenceMode": null,
+      "workspaceCount": 11,
+      "inboxCount": 22,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 50,
+      "offeredRate": 11,
+      "achievedRate": 11.008606728897139,
+      "durationSeconds": 59.9530909090909,
+      "scheduledEvents": 660,
+      "completedEvents": 660,
+      "completionRatio": 1.0,
+      "terminalLagMs": 44.0,
+      "copiesCommitted": 1320,
+      "percentiles": {
+        "t1": {
+          "samples": 660,
+          "p50Ms": 33.949999999999996,
+          "p95Ms": 101.85,
+          "p99Ms": 203.7,
+          "maxMs": 285.17999999999995
+        },
+        "event": {
+          "samples": 660,
+          "p50Ms": 40.739999999999995,
+          "p95Ms": 113.16666666666666,
+          "p99Ms": 224.07,
+          "maxMs": 325.92
+        },
+        "retention": {
+          "samples": 66,
+          "p50Ms": 12.0,
+          "p95Ms": 30.0,
+          "p99Ms": 41.0,
+          "maxMs": 52.0
+        }
+      },
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 0,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [],
+        "physicalFailures": 0
+      },
+      "lockTimeouts": 0,
+      "lockTimeoutRate": 0.0,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0,
+      "pool": {
+        "coldPool": true,
+        "maxLifetimeMs": 1800000,
+        "keepaliveMs": 120000,
+        "poolSize": 8,
+        "connectionsOpenedBeforePhase": 8,
+        "connectionsOpenedInPhase": 0
+      }
+    },
+    {
+      "name": "chosen-ws11-c100-r11",
+      "mode": "CHOSEN",
+      "referenceMode": null,
+      "workspaceCount": 11,
+      "inboxCount": 22,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 100,
+      "offeredRate": 11,
+      "achievedRate": 11.007046177287734,
+      "durationSeconds": 59.96159090909091,
+      "scheduledEvents": 660,
+      "completedEvents": 660,
+      "completionRatio": 1.0,
+      "terminalLagMs": 52.5,
+      "copiesCommitted": 1320,
+      "percentiles": {
+        "t1": {
+          "samples": 660,
+          "p50Ms": 48.15,
+          "p95Ms": 144.45,
+          "p99Ms": 288.9,
+          "maxMs": 404.4599999999999
+        },
+        "event": {
+          "samples": 660,
+          "p50Ms": 57.779999999999994,
+          "p95Ms": 160.49999999999997,
+          "p99Ms": 317.79,
+          "maxMs": 462.24
+        },
+        "retention": {
+          "samples": 66,
+          "p50Ms": 12.0,
+          "p95Ms": 30.0,
+          "p99Ms": 41.0,
+          "maxMs": 52.0
+        }
+      },
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 0,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [],
+        "physicalFailures": 0
+      },
+      "lockTimeouts": 0,
+      "lockTimeoutRate": 0.0,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0,
+      "pool": {
+        "coldPool": true,
+        "maxLifetimeMs": 1800000,
+        "keepaliveMs": 120000,
+        "poolSize": 8,
+        "connectionsOpenedBeforePhase": 8,
+        "connectionsOpenedInPhase": 0
+      }
+    },
+    {
+      "name": "chosen-ws11-c10-r22",
+      "mode": "CHOSEN",
+      "referenceMode": null,
+      "workspaceCount": 11,
+      "inboxCount": 22,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 10,
+      "offeredRate": 22,
+      "achievedRate": 22.00383400137903,
+      "durationSeconds": 59.98954545454545,
+      "scheduledEvents": 1320,
+      "completedEvents": 1320,
+      "completionRatio": 1.0,
+      "terminalLagMs": 35.0,
+      "copiesCommitted": 2640,
+      "percentiles": {
+        "t1": {
+          "samples": 1320,
+          "p50Ms": 22.133333333333336,
+          "p95Ms": 66.4,
+          "p99Ms": 132.8,
+          "maxMs": 185.92000000000002
+        },
+        "event": {
+          "samples": 1320,
+          "p50Ms": 26.560000000000002,
+          "p95Ms": 73.77777777777779,
+          "p99Ms": 146.08,
+          "maxMs": 212.48000000000002
+        },
+        "retention": {
+          "samples": 66,
+          "p50Ms": 12.0,
+          "p95Ms": 30.0,
+          "p99Ms": 41.0,
+          "maxMs": 52.0
+        }
+      },
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 0,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [],
+        "physicalFailures": 0
+      },
+      "lockTimeouts": 0,
+      "lockTimeoutRate": 0.0,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0,
+      "pool": {
+        "coldPool": true,
+        "maxLifetimeMs": 1800000,
+        "keepaliveMs": 120000,
+        "poolSize": 8,
+        "connectionsOpenedBeforePhase": 8,
+        "connectionsOpenedInPhase": 0
+      }
+    },
+    {
+      "name": "chosen-ws11-c25-r22",
+      "mode": "CHOSEN",
+      "referenceMode": null,
+      "workspaceCount": 11,
+      "inboxCount": 22,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 25,
+      "offeredRate": 22,
+      "achievedRate": 22.00145009557448,
+      "durationSeconds": 59.99604545454545,
+      "scheduledEvents": 1320,
+      "completedEvents": 1320,
+      "completionRatio": 1.0,
+      "terminalLagMs": 41.5,
+      "copiesCommitted": 2640,
+      "percentiles": {
+        "t1": {
+          "samples": 1320,
+          "p50Ms": 32.93333333333333,
+          "p95Ms": 98.8,
+          "p99Ms": 197.6,
+          "maxMs": 276.64
+        },
+        "event": {
+          "samples": 1320,
+          "p50Ms": 39.519999999999996,
+          "p95Ms": 109.77777777777777,
+          "p99Ms": 217.36,
+          "maxMs": 316.16
+        },
+        "retention": {
+          "samples": 66,
+          "p50Ms": 12.0,
+          "p95Ms": 30.0,
+          "p99Ms": 41.0,
+          "maxMs": 52.0
+        }
+      },
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 0,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [],
+        "physicalFailures": 0
+      },
+      "lockTimeouts": 0,
+      "lockTimeoutRate": 0.0,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0,
+      "pool": {
+        "coldPool": true,
+        "maxLifetimeMs": 1800000,
+        "keepaliveMs": 120000,
+        "poolSize": 8,
+        "connectionsOpenedBeforePhase": 8,
+        "connectionsOpenedInPhase": 0
+      }
+    },
+    {
+      "name": "chosen-ws11-c50-r22",
+      "mode": "CHOSEN",
+      "referenceMode": null,
+      "workspaceCount": 11,
+      "inboxCount": 22,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 50,
+      "offeredRate": 22,
+      "achievedRate": 21.995767481105908,
+      "durationSeconds": 60.011545454545455,
+      "scheduledEvents": 1320,
+      "completedEvents": 1320,
+      "completionRatio": 1.0,
+      "terminalLagMs": 57.0,
+      "copiesCommitted": 2640,
+      "percentiles": {
+        "t1": {
+          "samples": 1320,
+          "p50Ms": 50.21666666666667,
+          "p95Ms": 150.65,
+          "p99Ms": 301.3,
+          "maxMs": 421.82
+        },
+        "event": {
+          "samples": 1320,
+          "p50Ms": 60.260000000000005,
+          "p95Ms": 167.38888888888889,
+          "p99Ms": 331.43000000000006,
+          "maxMs": 482.08000000000004
+        },
+        "retention": {
+          "samples": 66,
+          "p50Ms": 12.0,
+          "p95Ms": 30.0,
+          "p99Ms": 41.0,
+          "maxMs": 52.0
+        }
+      },
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 0,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [],
+        "physicalFailures": 0
+      },
+      "lockTimeouts": 0,
+      "lockTimeoutRate": 0.0,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0,
+      "pool": {
+        "coldPool": true,
+        "maxLifetimeMs": 1800000,
+        "keepaliveMs": 120000,
+        "poolSize": 8,
+        "connectionsOpenedBeforePhase": 8,
+        "connectionsOpenedInPhase": 0
+      }
+    },
+    {
+      "name": "chosen-ws11-c100-r22",
+      "mode": "CHOSEN",
+      "referenceMode": null,
+      "workspaceCount": 11,
+      "inboxCount": 22,
+      "reservationBacklog": 1000,
+      "deltaBacklog": 500,
+      "concurrency": 100,
+      "offeredRate": 22,
+      "achievedRate": 21.989355153073625,
+      "durationSeconds": 60.029045454545454,
+      "scheduledEvents": 1320,
+      "completedEvents": 1320,
+      "completionRatio": 1.0,
+      "terminalLagMs": 74.5,
+      "copiesCommitted": 2640,
+      "percentiles": {
+        "t1": {
+          "samples": 1320,
+          "p50Ms": 68.76666666666667,
+          "p95Ms": 206.3,
+          "p99Ms": 412.6,
+          "maxMs": 577.64
+        },
+        "event": {
+          "samples": 1320,
+          "p50Ms": 82.52000000000001,
+          "p95Ms": 229.22222222222223,
+          "p99Ms": 453.86000000000007,
+          "maxMs": 660.1600000000001
+        },
+        "retention": {
+          "samples": 66,
+          "p50Ms": 12.0,
+          "p95Ms": 30.0,
+          "p99Ms": 41.0,
+          "maxMs": 52.0
+        }
+      },
+      "retentionStarvedTicks": 0,
+      "errors": {
+        "lockTimeouts": 0,
+        "deadlocks": 0,
+        "deadlineMissesFromSlotQueueing": 0,
+        "other": 0,
+        "samples": [],
+        "physicalFailures": 0
+      },
+      "lockTimeouts": 0,
+      "lockTimeoutRate": 0.0,
+      "deadlocks": 0,
+      "deadlineMissesFromSlotQueueing": 0,
+      "pool": {
+        "coldPool": true,
+        "maxLifetimeMs": 1800000,
+        "keepaliveMs": 120000,
+        "poolSize": 8,
+        "connectionsOpenedBeforePhase": 8,
+        "connectionsOpenedInPhase": 0
+      }
+    }
+  ],
+  "criteria": {
+    "t1P99": {
+      "pass": false,
+      "observed": 412.6,
+      "threshold": "<= 50 ms",
+      "detail": "the §11 threshold, not this cohort's"
+    }
+  },
+  "adrEvidence": false,
+  "adrEvidenceReasons": [
+    "concurrency [10, 25, 50, 100] does not include §11's [1, 10, 25, 50, 100]",
+    "--focused: a focused A′ measurement, never gate evidence",
+    "--pool-size 8: not §11's c + 6 pool; never gate evidence",
+    "--cohort-participants 10: a closed cohort of 11 workspaces, not the beta's 30 participants + 1 legacy; never gate evidence"
+  ],
+  "incompleteReasons": [
+    "not ADR evidence"
+  ],
+  "verdict": "INCOMPLETE",
+  "diagnostics": [
+    {
+      "workspaces": 11,
+      "file": "diagnostics-cohort.txt"
+    }
+  ],
+  "variant": null
+}

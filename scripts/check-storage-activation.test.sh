@@ -129,6 +129,20 @@ only() {
     printf '%s\n' "$OUT" | grep -q '^ACTIVATION BLOCKED$' || { bad "$name (overall verdict is not ACTIVATION BLOCKED)" "$OUT"; return 1; }
     ok "$name"
 }
+# both <name> <gate1> <detail1-regex> <gate2> <detail2-regex> <argfile>: exit 1, BOTH gates
+# BLOCKED with their details, and every other gate PASS or NOT REQUIRED. For an input two
+# gates read (the participant cap N picks gate D's path and bounds gate W's population).
+both() {
+    local name="$1" g1="$2" p1="$3" g2="$4" p2="$5" argfile="$6" others
+    run_args "$argfile"
+    if [ "$STATUS" != 1 ]; then bad "$name (expected exit 1, got $STATUS)" "$OUT"; return 1; fi
+    printf '%s\n' "$OUT" | grep -qE -- "^$g1[[:space:]]+BLOCKED[[:space:]].*$p1" || { bad "$name ($g1 is not blocked, or the detail does not match /$p1/)" "$OUT"; return 1; }
+    printf '%s\n' "$OUT" | grep -qE -- "^$g2[[:space:]]+BLOCKED[[:space:]].*$p2" || { bad "$name ($g2 is not blocked, or the detail does not match /$p2/)" "$OUT"; return 1; }
+    others="$(printf '%s\n' "$OUT" | grep -E '^[A-Z]-[a-z-]+[[:space:]]' | grep -vE "^($g1|$g2)[[:space:]]" | grep -vE '^[A-Z]-[a-z-]+[[:space:]]+(PASS|NOT REQUIRED)[[:space:]]')"
+    if [ -n "$others" ]; then bad "$name (a third gate also failed)" "$others"; return 1; fi
+    printf '%s\n' "$OUT" | grep -q '^ACTIVATION BLOCKED$' || { bad "$name (overall verdict is not ACTIVATION BLOCKED)" "$OUT"; return 1; }
+    ok "$name"
+}
 
 # ---------------------------------------------------------------------------
 # All healthy, and the evidence record.
@@ -507,6 +521,241 @@ only "D: a 30 s schedule measured over more than 30 s without its terminal lag b
     "records no completedEvents or terminalLagMs" "$TMP/dbg5"
 
 # ---------------------------------------------------------------------------
+# Gate D, the first-cohort path (ADR-035, "Amendment note (2026-11-06, owner
+# decision): closed first-cohort MVP envelope"). The nodes' N picks the path:
+# N = 30 is the §11 matrix above, N < 30 the owner-approved profile for N. For
+# N = 10: R = 11 and 2R = 22 at concurrency 10/25/50/100, pool 8, cold,
+# production's lifetime; T1 p99 <= 500 ms, sustained >= 0.995 (the 30 s reading),
+# integrity unchanged; the evidence measured production code identical to the
+# deployed git_sha. The fixture is a --focused-cohort run (60 s window) as the
+# harness writes it: INCOMPLETE, adrEvidence false, its own §11 criteria failing.
+# ---------------------------------------------------------------------------
+# A throwaway history WITH production code: the deployed candidate; the harness
+# commit the evidence ran on (benchmark, docs and test changes only); and two
+# production-code changes (ingestion code, a persistence migration).
+cp -R "$TMP/repo" "$TMP/repo-fc"
+REPO_FC="$TMP/repo-fc"
+fc_commit() { git -C "$REPO_FC" -c user.name=t -c user.email=t@t add -A >/dev/null 2>&1; git -C "$REPO_FC" -c user.name=t -c user.email=t@t commit -q -m "$1"; git -C "$REPO_FC" rev-parse HEAD; }
+fc_write() { mkdir -p "$(dirname "$REPO_FC/$1")"; printf '%s\n' "$2" > "$REPO_FC/$1"; }
+fc_write backend/api/src/main/kotlin/Api.kt 'api v1'
+fc_write backend/ingestion/src/main/kotlin/Ingestion.kt 'ingestion v1'
+fc_write backend/persistence/src/main/resources/db/migration/V1__fixture.sql 'SELECT 1;'
+fc_write backend/benchmark/src/main/kotlin/Harness.kt 'harness v1'
+fc_write backend/api/src/test/kotlin/ApiTest.kt 'test v1'
+FC_DEPLOYED="$(fc_commit "candidate (fixture)")"
+fc_write backend/benchmark/src/main/kotlin/Harness.kt 'harness v2: --cohort-participants, --pool-size'
+fc_write docs/dev/storage-benchmark.md 'harness docs'
+fc_write backend/api/src/test/kotlin/ApiTest.kt 'test v2'
+FC_BENCH_ONLY="$(fc_commit "harness (fixture)")"
+fc_write backend/ingestion/src/main/kotlin/Ingestion.kt 'ingestion v2'
+FC_PROD_CODE="$(fc_commit "ingestion change (fixture)")"
+git -C "$REPO_FC" reset -q --hard "$FC_BENCH_ONLY"
+fc_write backend/persistence/src/main/resources/db/migration/V2__fixture.sql 'SELECT 2;'
+FC_PROD_RESOURCE="$(fc_commit "a migration (fixture)")"
+# The nodes of the approved N = 10 envelope: N 10, N + L 11, R_gated 11, running FC_DEPLOYED.
+# fc_metrics <role> <out> <N> <R_gated> <git_sha>
+fc_metrics() {
+    sed -E -e "s/@GIT_SHA@/$5/g" \
+        -e 's/^(testinbox_storage_envelope_max_workspaces\{[^}]*\}) .*/\1 11.0/' \
+        -e "s/^(testinbox_storage_envelope_participants\{[^}]*\}) .*/\1 $3/" \
+        -e "s/^(testinbox_storage_gated_expected_rate\{[^}]*\}) .*/\1 $4/" "$FIX/metrics/$1-healthy.prom" > "$M/$2"
+}
+fc_metrics api api-fc.prom 10.0 11.0 "$FC_DEPLOYED"
+fc_metrics ingestion ingestion-fc.prom 10.0 11.0 "$FC_DEPLOYED"
+sed "s/@GIT_SHA@/$FC_BENCH_ONLY/g" "$FIX/benchmark/first-cohort-pass.json" > "$TMP/fc-pass.json"
+# fc <evidence>: the good inputs on the N = 10 deployment, judged against <evidence>.
+fc() {
+    good | swap --api-metrics "$M/api-fc.prom" | swap --ingestion-metrics "$M/ingestion-fc.prom" \
+        | swap --benchmark-evidence "$1" | swap --repo "$REPO_FC"
+}
+# fcj <name> <jq filter>: the passing evidence with one change, and its argument file.
+fcj() { jq "$2" "$TMP/fc-pass.json" > "$TMP/fc-$1.json"; fc "$TMP/fc-$1.json" > "$TMP/fca-$1"; }
+FC_LABEL='first-cohort profile N=10 \(owner D1\)'
+
+fc "$TMP/fc-pass.json" > "$TMP/fca-pass"
+case_ "D first cohort: the --focused-cohort evidence of the N = 10 profile → ACTIVATION READY" 0 '^ACTIVATION READY$' "$TMP/fca-pass"
+printf '%s\n' "$OUT" | grep -qE "^D-benchmark[[:space:]]+PASS[[:space:]]+$FC_LABEL: R = 11 and 2R = 22 events/s.*production code of ${FC_BENCH_ONLY:0:12} identical to the deployed ${FC_DEPLOYED:0:12}" \
+    && ok "D first cohort: the PASS names the profile (owner D1) and the binding of the evidence to the deployed SHA" \
+    || bad "D first cohort: the PASS line does not name the profile and the binding" "$OUT"
+jq -e '.verdict == "INCOMPLETE" and .adrEvidence == false and .criteria.t1P99.pass == false and (.harness | has("focusedCohort") | not)' "$TMP/fc-pass.json" >/dev/null \
+    && ok "D first cohort: (that evidence says INCOMPLETE, adrEvidence false and a failing §11 criterion: the path never reads them)" \
+    || bad "D first cohort: the passing fixture does not carry the harness's own focused verdict, so it proves nothing"
+fcj focusedcohort-true '.harness.focusedCohort = true'
+case_ "D first cohort: harness.focusedCohort true, where the harness records it, passes" 0 '^D-benchmark[[:space:]]+PASS' "$TMP/fca-focusedcohort-true"
+fcj focusedcohort-false '.harness.focusedCohort = false'
+only "D first cohort: harness.focusedCohort false blocks" D-benchmark "$FC_LABEL: .*harness.focusedCohort is false, not true" "$TMP/fca-focusedcohort-false"
+fcj not-focused '.harness.focused = false'
+only "D first cohort: a run that is not focused (and records no focusedCohort) blocks" D-benchmark "$FC_LABEL: .*records neither focusedCohort nor focused = true" "$TMP/fca-not-focused"
+fcj population '(.scenarios[] | select(.name == "chosen-ws11-c50-r22") | .workspaceCount) = 10000'
+only "D first cohort: a scenario over another population than the cohort's N + L blocks" D-benchmark "$FC_LABEL: .*population: chosen-ws11-c50-r22 ran over 10000 workspaces, not the cohort.s N \+ L = 11" "$TMP/fca-population"
+
+# D1's T1 criterion, recomputed: <= 500 ms at every required scenario, the boundary included.
+fcj t1-500 '(.scenarios[] | select(.name == "chosen-ws11-c50-r22") | .percentiles.t1.p99Ms) = 500'
+case_ "D first cohort: T1 p99 = 500 ms passes (≤ 500)" 0 '^D-benchmark[[:space:]]+PASS' "$TMP/fca-t1-500"
+fcj t1-501 '(.scenarios[] | select(.name == "chosen-ws11-c50-r22") | .percentiles.t1.p99Ms) = 501'
+only "D first cohort: T1 p99 = 501 ms in one scenario blocks, naming it" D-benchmark "$FC_LABEL: t1P99: chosen-ws11-c50-r22 T1 p99 501 ms > 500 ms" "$TMP/fca-t1-501"
+fcj t1-two '(.scenarios[] | select(.name == "chosen-ws11-c10-r11" or .name == "chosen-ws11-c100-r22") | .percentiles.t1.p99Ms) = 612.5'
+only "D first cohort: every failing scenario is named" D-benchmark "t1P99: chosen-ws11-c10-r11 T1 p99 612.5 ms > 500 ms; t1P99: chosen-ws11-c100-r22 T1 p99 612.5 ms > 500 ms" "$TMP/fca-t1-two"
+fcj t1-none '(.scenarios[] | select(.name == "chosen-ws11-c25-r11") | .percentiles.t1) = null'
+only "D first cohort: a required scenario without T1 samples blocks" D-benchmark "t1P99: chosen-ws11-c25-r11 has no T1 samples" "$TMP/fca-t1-none"
+
+# Sustained >= 0.995 at R and at 2R, read as the §11 path reads it (the same jq definitions).
+fcj sustained-low '(.scenarios[] | select(.name == "chosen-ws11-c25-r11") | .achievedRate) = (11 * 0.9949)'
+only "D first cohort: sustained just below 0.995 (at R) blocks" D-benchmark "$FC_LABEL: sustained: chosen-ws11-c25-r11 achieved 10.94[0-9]* of 11(\.0)?/s offered \(ratio below 0.995\)" "$TMP/fca-sustained-low"
+fcj sustained-edge '(.scenarios[] | select(.name == "chosen-ws11-c25-r22") | .achievedRate) = (22 * 0.995)'
+case_ "D first cohort: sustained exactly 0.995 passes" 0 '^D-benchmark[[:space:]]+PASS' "$TMP/fca-sustained-edge"
+# The 30 s terminal-lag allowance holds over the 60 s window: at 22/s, lag_max = (1 + 660 x (1/0.995 - 1)) / 22.
+FC_LAG_MAX_22="$(jq -n '((1 + 660 * (1 / 0.995 - 1)) / 22) * 1000')"
+fc_lag() {
+    jq --argjson lag "$2" '(.scenarios[] | select(.name == "chosen-ws11-c100-r22"))
+        |= (.terminalLagMs = $lag | .durationSeconds = ((.scheduledEvents - 1) / .offeredRate + $lag / 1000)
+            | .achievedRate = (.completedEvents / .durationSeconds))' "$TMP/fc-pass.json" > "$TMP/fc-$1.json"
+    fc "$TMP/fc-$1.json" > "$TMP/fca-$1"
+}
+fc_lag lag-above "$(jq -n --argjson m "$FC_LAG_MAX_22" '$m + 0.001')"
+jq -e '[.scenarios[] | select(.name == "chosen-ws11-c100-r22") | .achievedRate / .offeredRate >= 0.995] | first' "$TMP/fc-lag-above.json" >/dev/null \
+    || bad "D first cohort: the 60 s / lag_max + 1 us fixture fails achieved/offered alone, so it does not show the widening"
+only "D first cohort: a 60 s window does not widen the 30 s terminal-lag allowance: lag_max + 1 us blocks" D-benchmark \
+    "$FC_LABEL: sustained: chosen-ws11-c100-r22 terminal lag [0-9.]+ ms is past the 30 s allowance" "$TMP/fca-lag-above"
+fc_lag lag-below "$(jq -n --argjson m "$FC_LAG_MAX_22" '$m - 0.001')"
+case_ "D first cohort: ...and lag_max - 1 us passes" 0 '^D-benchmark[[:space:]]+PASS' "$TMP/fca-lag-below"
+fcj unscheduled '(.scenarios[] | select(.name == "chosen-ws11-c10-r22")) |= del(.scheduledEvents)'
+only "D first cohort: a required scenario without scheduledEvents blocks (fail closed)" D-benchmark "sustained: chosen-ws11-c10-r22 records no scheduledEvents" "$TMP/fca-unscheduled"
+
+# Coverage: CHOSEN at R and 2R, at every concurrency of the profile, exactly once.
+fcj no-2r 'del(.scenarios[] | select(.name == "chosen-ws11-c100-r22"))'
+only "D first cohort: a missing 2R scenario blocks" D-benchmark "$FC_LABEL: coverage: no CHOSEN scenario at 22/s, concurrency 100" "$TMP/fca-no-2r"
+fcj no-c25 'del(.scenarios[] | select(.concurrency == 25))'
+only "D first cohort: a missing concurrency blocks, at R and at 2R" D-benchmark "coverage: no CHOSEN scenario at 11/s, concurrency 25; coverage: no CHOSEN scenario at 22/s, concurrency 25" "$TMP/fca-no-c25"
+fcj no-r 'del(.scenarios[] | select(.offeredRate == 11))'
+only "D first cohort: a run without the R scenarios blocks" D-benchmark "coverage: no CHOSEN scenario at 11/s, concurrency 10" "$TMP/fca-no-r"
+fcj reference '(.scenarios[] | select(.name == "chosen-ws11-c50-r11") | .mode) = "REFERENCE"'
+only "D first cohort: only CHOSEN scenarios count" D-benchmark "coverage: no CHOSEN scenario at 11/s, concurrency 50" "$TMP/fca-reference"
+fcj twice '.scenarios += [.scenarios[] | select(.name == "chosen-ws11-c50-r22") | .percentiles.t1.p99Ms = 120]'
+only "D first cohort: two runs of one scenario block (run once: which one counts is ambiguous)" D-benchmark "coverage: 2 CHOSEN scenarios at 22/s, concurrency 50" "$TMP/fca-twice"
+
+# The measurement profile must match exactly.
+fcj poolsize '.harness.poolSize = 10'
+only "D first cohort: a wrong harness.poolSize blocks" D-benchmark "$FC_LABEL: harness.poolSize is 10, not production.s pool 8" "$TMP/fca-poolsize"
+fcj poolsize-null '.harness.poolSize = null'
+only "D first cohort: the harness's c + 6 pool (poolSize null) blocks" D-benchmark "harness.poolSize is absent, not production.s pool 8" "$TMP/fca-poolsize-null"
+fcj scenario-pool '(.scenarios[] | select(.name == "chosen-ws11-c100-r11") | .pool.poolSize) = 106'
+only "D first cohort: a scenario whose Hikari pool was not 8 blocks" D-benchmark "pool: chosen-ws11-c100-r11 ran with a pool of 106, not 8" "$TMP/fca-scenario-pool"
+fcj participants '.harness.cohortParticipants = 30'
+only "D first cohort: a wrong harness.cohortParticipants blocks" D-benchmark "$FC_LABEL: harness.cohortParticipants is 30, not N = 10" "$TMP/fca-participants"
+fcj coldpool '.harness.coldPool = false'
+only "D first cohort: a warm pool (harness.coldPool false) blocks" D-benchmark "$FC_LABEL: harness.coldPool is false: the profile starts cold" "$TMP/fca-coldpool"
+fcj scenario-warm '(.scenarios[] | select(.name == "chosen-ws11-c25-r22") | .pool.coldPool) = false'
+only "D first cohort: a scenario that did not start cold blocks" D-benchmark "pool: chosen-ws11-c25-r22 did not start cold" "$TMP/fca-scenario-warm"
+fcj lifetime '.harness.poolMaxLifetime = "PT1M"'
+only "D first cohort: a pool lifetime other than production's blocks" D-benchmark "harness.poolMaxLifetime is PT1M, not production.s PT30M" "$TMP/fca-lifetime"
+fcj expected-rate '.harness.expectedRate = 31.0'
+only "D first cohort: a wrong harness.expectedRate blocks" D-benchmark "$FC_LABEL: harness.expectedRate is 31(\.0)? events/s, not the profile.s R = 11" "$TMP/fca-expected-rate"
+fc_metrics api api-fc-r260.prom 10.0 260.0 "$FC_DEPLOYED"
+fc_metrics ingestion ingestion-fc-r260.prom 10.0 260.0 "$FC_DEPLOYED"
+fc "$TMP/fc-pass.json" | swap --api-metrics "$M/api-fc-r260.prom" | swap --ingestion-metrics "$M/ingestion-fc-r260.prom" > "$TMP/fca-rgated"
+only "D first cohort: nodes whose R_gated is not the profile's R block" D-benchmark "$FC_LABEL: the nodes declare R_gated 260(\.0)? events/s but the profile for N = 10 has R = 11" "$TMP/fca-rgated"
+fc_metrics ingestion ingestion-fc-r12.prom 10.0 12.0 "$FC_DEPLOYED"
+fc "$TMP/fc-pass.json" | swap --ingestion-metrics "$M/ingestion-fc-r12.prom" > "$TMP/fca-rgated-disagree"
+only "D first cohort: nodes that disagree on R_gated block" D-benchmark "$FC_LABEL: .*declares R_gated 12(\.0)? but another node declares 11" "$TMP/fca-rgated-disagree"
+case_ "D first cohort: --expected-rate 11 confirms the declared R_gated" 0 '^D-benchmark[[:space:]]+PASS' "$TMP/fca-pass" --expected-rate 11
+case_ "D first cohort: --expected-rate 22 contradicts it and blocks" 1 '^D-benchmark[[:space:]]+BLOCKED[[:space:]].*--expected-rate 22 differs from the R_gated 11' "$TMP/fca-pass" --expected-rate 22
+
+# Integrity, unchanged: zero deadlocks, lock_timeout < 0.1 %, no slot-queueing miss, no other error.
+fcj deadlock '(.scenarios[] | select(.name == "chosen-ws11-c10-r11") | .errors.deadlocks) = 1 | (.scenarios[] | select(.name == "chosen-ws11-c10-r11") | .deadlocks) = 1'
+only "D first cohort: one deadlock blocks, naming the scenario" D-benchmark "$FC_LABEL: deadlocks: chosen-ws11-c10-r11 1" "$TMP/fca-deadlock"
+fcj lock-timeout '(.scenarios[] | select(.name == "chosen-ws11-c50-r11") | .lockTimeoutRate) = 0.001'
+only "D first cohort: lockTimeoutRate 0.001 (not < 0.1 %) blocks" D-benchmark "lockTimeoutRate: chosen-ws11-c50-r11 0.001 ≥ 0.001" "$TMP/fca-lock-timeout"
+fcj slot-miss '(.scenarios[] | select(.name == "chosen-ws11-c100-r22") | .errors.deadlineMissesFromSlotQueueing) = 2'
+only "D first cohort: a slot-queueing deadline miss blocks" D-benchmark "slotQueueingDeadlineMisses: chosen-ws11-c100-r22 2" "$TMP/fca-slot-miss"
+fcj other '(.scenarios[] | select(.name == "chosen-ws11-c25-r11") | .errors.other) = 1'
+only "D first cohort: an other error (a pool connection timeout counts here) blocks" D-benchmark "otherErrors: chosen-ws11-c25-r11 1" "$TMP/fca-other"
+fcj no-errors '(.scenarios[] | select(.name == "chosen-ws11-c25-r11")) |= del(.errors, .lockTimeoutRate)'
+only "D first cohort: a scenario that records no error counts blocks (fail closed)" D-benchmark "integrity: chosen-ws11-c25-r11 records no error counts" "$TMP/fca-no-errors"
+
+# The path: N from every node, agreeing; N = 30 is the §11 matrix, unchanged.
+grep -v '^testinbox_storage_envelope_participants' "$M/ingestion-fc.prom" > "$M/ingestion-fc-no-n.prom"
+fc "$TMP/fc-pass.json" | swap --ingestion-metrics "$M/ingestion-fc-no-n.prom" > "$TMP/fca-no-n"
+both "D first cohort: N undeclared on one node blocks D (no path is assumed) as well as W" \
+    D-benchmark "\(ingestion\): the participant cap N is UNKNOWN .*gate D cannot choose between the §11 matrix \(N = 30\) and a first-cohort profile" \
+    W-workspace-envelope "participant cap N is UNKNOWN" "$TMP/fca-no-n"
+grep -v '^testinbox_storage_envelope_participants' "$M/api-fc.prom" > "$M/api-fc-no-n.prom"
+fc "$TMP/fc-pass.json" | swap --api-metrics "$M/api-fc-no-n.prom" | swap --ingestion-metrics "$M/ingestion-fc-no-n.prom" > "$TMP/fca-no-n-any"
+both "D first cohort: N undeclared on every node blocks D, never falling back to §11" \
+    D-benchmark "\(api\): the participant cap N is UNKNOWN.*\(ingestion\): the participant cap N is UNKNOWN" \
+    W-workspace-envelope "participant cap N is UNKNOWN" "$TMP/fca-no-n-any"
+fc_metrics ingestion ingestion-fc-n30.prom 30.0 11.0 "$FC_DEPLOYED"
+fc "$TMP/fc-pass.json" | swap --ingestion-metrics "$M/ingestion-fc-n30.prom" > "$TMP/fca-n-disagree"
+both "D first cohort: nodes disagreeing on N block D (no path is chosen) as well as W" \
+    D-benchmark "\(ingestion\): declares a participant cap N of 30(\.0)? but another node declares 10(\.0)?; the nodes must agree before gate D can choose its path" \
+    W-workspace-envelope "declares a participant cap N of 30(\.0)? but another node declares 10" "$TMP/fca-n-disagree"
+fc_metrics api api-fc-n20.prom 20.0 11.0 "$FC_DEPLOYED"
+fc_metrics ingestion ingestion-fc-n20.prom 20.0 11.0 "$FC_DEPLOYED"
+fc "$TMP/fc-pass.json" | swap --api-metrics "$M/api-fc-n20.prom" | swap --ingestion-metrics "$M/ingestion-fc-n20.prom" > "$TMP/fca-n20"
+only "D first cohort: an N without an owner-approved profile blocks" D-benchmark "first-cohort profile N=20 \(owner D1\): no owner-approved first-cohort profile for N = 20" "$TMP/fca-n20"
+fc_metrics api api-fc-n105.prom 10.5 11.0 "$FC_DEPLOYED"
+fc_metrics ingestion ingestion-fc-n105.prom 10.5 11.0 "$FC_DEPLOYED"
+fc "$TMP/fc-pass.json" | swap --api-metrics "$M/api-fc-n105.prom" | swap --ingestion-metrics "$M/ingestion-fc-n105.prom" > "$TMP/fca-n105"
+only "D first cohort: a fractional N blocks (no profile, never rounded)" D-benchmark "participant cap N of 10.5, which is not a whole number" "$TMP/fca-n105"
+with --benchmark-evidence "$TMP/fc-pass.json" > "$TMP/fca-n30"
+only "D first cohort: where the nodes declare N = 30 the same evidence is judged on the §11 path (not ADR evidence)" D-benchmark \
+    "benchmark verdict is INCOMPLETE.*not ADR evidence \(the harness departed from §11\)" "$TMP/fca-n30"
+printf '%s\n' "$OUT" | grep -q 'first-cohort profile' && bad "D first cohort: N = 30 mentioned a first-cohort profile" "$OUT" \
+    || ok "D first cohort: at N = 30 nothing of the first-cohort path is read (the §11 matrix fixtures above are unchanged)"
+
+# Binding: production code identical to every node's deployed git_sha (benchmark/docs/tests excluded).
+sed "s/@GIT_SHA@/$FC_DEPLOYED/g" "$FIX/benchmark/first-cohort-pass.json" > "$TMP/fc-at-deployed.json"
+fc "$TMP/fc-at-deployed.json" > "$TMP/fca-at-deployed"
+case_ "D first cohort binding: evidence at the deployed SHA itself passes" 0 '^D-benchmark[[:space:]]+PASS' "$TMP/fca-at-deployed"
+[ -n "$(git -C "$REPO_FC" diff --name-only "$FC_DEPLOYED" "$FC_BENCH_ONLY" -- backend/benchmark)" ] \
+    && ok "D first cohort binding: (the passing evidence's SHA differs from the deployed one in the harness, docs and tests: a benchmark-only diff passes the binding)" \
+    || bad "D first cohort binding: the fixture's harness commit does not change the harness, so the benchmark-only case proves nothing"
+sed "s/@GIT_SHA@/$FC_PROD_CODE/g" "$FIX/benchmark/first-cohort-pass.json" > "$TMP/fc-prod-code.json"
+fc "$TMP/fc-prod-code.json" > "$TMP/fca-prod-code"
+only "D first cohort binding: a production-code diff (ingestion main source) blocks" D-benchmark \
+    "$FC_LABEL: binding: the evidence gitSha ${FC_PROD_CODE:0:12} and the deployed ${FC_DEPLOYED:0:12} differ in production code \(backend/ingestion/src/main/kotlin/Ingestion.kt" "$TMP/fca-prod-code"
+sed "s/@GIT_SHA@/$FC_PROD_RESOURCE/g" "$FIX/benchmark/first-cohort-pass.json" > "$TMP/fc-prod-resource.json"
+fc "$TMP/fc-prod-resource.json" > "$TMP/fca-prod-resource"
+only "D first cohort binding: a main resource (a migration) is production code too" D-benchmark \
+    "differ in production code \(backend/persistence/src/main/resources/db/migration/V2__fixture.sql" "$TMP/fca-prod-resource"
+GIT_LITERAL_PATHSPECS=1 run_args "$TMP/fca-prod-code"
+printf '%s\n' "$OUT" | grep -qE '^D-benchmark[[:space:]]+BLOCKED[[:space:]].*differ in production code' \
+    && ok "D first cohort binding: an inherited GIT_LITERAL_PATHSPECS=1 cannot make the comparison vacuous" \
+    || bad "D first cohort binding: GIT_LITERAL_PATHSPECS=1 let a production-code diff through" "$OUT"
+sed "s/@GIT_SHA@/$(printf 'f%.0s' $(seq 1 40))/g" "$FIX/benchmark/first-cohort-pass.json" > "$TMP/fc-unknown-sha.json"
+fc "$TMP/fc-unknown-sha.json" > "$TMP/fca-unknown-sha"
+only "D first cohort binding: an evidence SHA git cannot resolve blocks (fail closed, never a warning)" D-benchmark \
+    "binding: the evidence gitSha ffffffffffff cannot be resolved to a commit" "$TMP/fca-unknown-sha"
+fcj not-a-sha '.gitSha = "unknown"'
+only "D first cohort binding: an evidence gitSha that is not a SHA blocks" D-benchmark "binding: the evidence gitSha 'unknown' is not a 40-hex commit SHA" "$TMP/fca-not-a-sha"
+fcj no-sha 'del(.gitSha)'
+only "D first cohort binding: an evidence without gitSha blocks" D-benchmark "binding: the evidence gitSha '<absent>' is not a 40-hex commit SHA" "$TMP/fca-no-sha"
+grep -v '^testinbox_build' "$M/ingestion-fc.prom" > "$M/ingestion-fc-no-build.prom"
+fc "$TMP/fc-pass.json" | swap --ingestion-metrics "$M/ingestion-fc-no-build.prom" > "$TMP/fca-no-build"
+case_ "D first cohort binding: a node with no testinbox_build git_sha (deployed SHA unknown) blocks" 1 \
+    "^D-benchmark[[:space:]]+BLOCKED[[:space:]].*binding: .*\(ingestion\): testinbox_build carries no 40-hex git_sha, so the deployed SHA is unknown" "$TMP/fca-no-build"
+fc_metrics ingestion ingestion-fc-unknown-build.prom 10.0 11.0 "$(printf 'e%.0s' $(seq 1 40))"
+fc "$TMP/fc-pass.json" | swap --ingestion-metrics "$M/ingestion-fc-unknown-build.prom" > "$TMP/fca-unknown-build"
+case_ "D first cohort binding: a deployed SHA git cannot resolve blocks" 1 \
+    "^D-benchmark[[:space:]]+BLOCKED[[:space:]].*binding: .*\(ingestion\): the deployed git_sha eeeeeeeeeeee cannot be resolved" "$TMP/fca-unknown-build"
+fc_metrics ingestion ingestion-fc-other-build.prom 10.0 11.0 "$FC_PROD_CODE"
+fc "$TMP/fc-pass.json" | swap --ingestion-metrics "$M/ingestion-fc-other-build.prom" > "$TMP/fca-other-build"
+only "D first cohort binding: every node's git_sha is bound, not only the first API node's" D-benchmark \
+    "the evidence gitSha ${FC_BENCH_ONLY:0:12} and the deployed ${FC_PROD_CODE:0:12} differ in production code" "$TMP/fca-other-build"
+mkdir -p "$TMP/not-a-repo/deploy"; cp "$REPO_FC/deploy/rollback-floors.txt" "$TMP/not-a-repo/deploy/"
+fc "$TMP/fc-pass.json" | swap --repo "$TMP/not-a-repo" > "$TMP/fca-no-repo"
+case_ "D first cohort binding: no git repository blocks (fail closed)" 1 \
+    "^D-benchmark[[:space:]]+BLOCKED[[:space:]].*binding: $TMP/not-a-repo is not a git repository" "$TMP/fca-no-repo"
+fc_metrics api api-fc-head.prom 10.0 11.0 "$HEAD_SHA"
+fc_metrics ingestion ingestion-fc-head.prom 10.0 11.0 "$HEAD_SHA"
+sed "s/@GIT_SHA@/$HEAD_SHA/g" "$FIX/benchmark/first-cohort-pass.json" > "$TMP/fc-head.json"
+fc "$TMP/fc-head.json" | swap --api-metrics "$M/api-fc-head.prom" | swap --ingestion-metrics "$M/ingestion-fc-head.prom" > "$TMP/fca-vacuous"
+only "D first cohort binding: a deployed tree without production code is not an identity (vacuous, blocks)" D-benchmark \
+    "selects no file in the deployed ${HEAD_SHA:0:12}" "$TMP/fca-vacuous"
+fc "$TMP/fc-pass.json" | sed 's/^ALL$/TENANT_LIMITS/' > "$TMP/fca-tl"
+case_ "D first cohort: TENANT_LIMITS stays NOT REQUIRED" 0 '^D-benchmark[[:space:]]+NOT REQUIRED[[:space:]]' "$TMP/fca-tl"
+
+# ---------------------------------------------------------------------------
 # Gate W, ADR-035 amendment D: before a cohort plan exists every workspace
 # receives mail, so under ALL the database holds at most N + L of them (and, with
 # a lowered N, after the plan too). The bound comes from every node
@@ -529,25 +778,26 @@ with --ingestion-metrics "$M/ingestion-envelope-30.prom" > "$TMP/w6"
 only "W: nodes that disagree on the envelope block" W-workspace-envelope "declares an envelope of 30(\.0)? workspaces but another node declares 31" "$TMP/w6"
 # M0: a lowered N. The pool's thirty participant shares bound the population only at N = 30,
 # so with N < 30 the count applies after the plan too, exactly as on the nodes (WorkspaceEnvelopeCheck).
-for node in api ingestion; do
-    sed -E -e 's/^(testinbox_storage_envelope_max_workspaces\{[^}]*\}) .*/\1 11.0/' \
-        -e 's/^(testinbox_storage_envelope_participants\{[^}]*\}) .*/\1 10.0/' "$M/$node-healthy.prom" > "$M/$node-n10.prom"
-done
+# N = 10 nodes are the approved envelope (R_gated 11), so gate D judges them on the first-cohort
+# path: these cases use its passing inputs (fc, above) and vary only the population.
 printf '{"cohortPlanExists": true, "workspaces": 12}\n' > "$TMP/pop-plan-12.json"
 printf '{"cohortPlanExists": true, "workspaces": 11}\n' > "$TMP/pop-plan-11.json"
-good | swap --api-metrics "$M/api-n10.prom" | swap --ingestion-metrics "$M/ingestion-n10.prom" | swap --population-state "$TMP/pop-plan-12.json" > "$TMP/w9"
+fc "$TMP/fc-pass.json" | swap --population-state "$TMP/pop-plan-12.json" > "$TMP/w9"
 only "W: a plan with N = 10 and 12 workspaces blocks (admissions under a larger N; the pool does not bound a lowered N)" W-workspace-envelope \
     "a cohort plan exists but N = 10 is below 30.*more than 11 workspaces \(counted 12\)" "$TMP/w9"
-good | swap --api-metrics "$M/api-n10.prom" | swap --ingestion-metrics "$M/ingestion-n10.prom" | swap --population-state "$TMP/pop-plan-11.json" > "$TMP/w10"
+fc "$TMP/fc-pass.json" | swap --population-state "$TMP/pop-plan-11.json" > "$TMP/w10"
 case_ "W: a plan with N = 10 and 11 workspaces (N + L) passes" 0 '^W-workspace-envelope[[:space:]]+PASS[[:space:]].*N = 10 is below 30; 11 workspace\(s\), within the envelope.s 11' "$TMP/w10"
 with --population-state "$TMP/pop-plan-12.json" > "$TMP/w11"
 case_ "W: N = 30 with a plan is unchanged - the pool bounds the population" 0 '^W-workspace-envelope[[:space:]]+PASS[[:space:]].*a cohort plan exists; the pool bounds the population' "$TMP/w11"
 sed -E 's/^(testinbox_storage_envelope_participants\{[^}]*\}) .*/\1 10.0/' "$M/ingestion-healthy.prom" > "$M/ingestion-n-disagrees.prom"
 with --ingestion-metrics "$M/ingestion-n-disagrees.prom" > "$TMP/w12"
-only "W: nodes that disagree on N block" W-workspace-envelope "declares a participant cap N of 10(\.0)? but another node declares 30" "$TMP/w12"
+# N is read by gate D too (it picks D's path), so here both gates block, each saying why.
+both "W: nodes that disagree on N block (and gate D cannot choose its path)" W-workspace-envelope "declares a participant cap N of 10(\.0)? but another node declares 30" \
+    D-benchmark "declares a participant cap N of 10(\.0)? but another node declares 30.*before gate D can choose its path" "$TMP/w12"
 grep -v '^testinbox_storage_envelope_participants' "$M/ingestion-healthy.prom" > "$M/ingestion-no-n.prom"
 with --ingestion-metrics "$M/ingestion-no-n.prom" > "$TMP/w13"
-only "W: a node that exports no N blocks (UNKNOWN, never assumed 30)" W-workspace-envelope "participant cap N is UNKNOWN" "$TMP/w13"
+both "W: a node that exports no N blocks (UNKNOWN, never assumed 30), in gate D too" W-workspace-envelope "participant cap N is UNKNOWN" \
+    D-benchmark "participant cap N is UNKNOWN.*never assumes one" "$TMP/w13"
 printf '{"cohortPlanExists": "no", "workspaces": 2}\n' > "$TMP/pop-bad.json"
 with --population-state "$TMP/pop-bad.json" > "$TMP/w7"
 only "W: a malformed population state blocks" W-workspace-envelope "population-state must be" "$TMP/w7"
