@@ -303,4 +303,28 @@ class DeployedConfigurationTest {
                 },
         )
     }
+
+    @Test
+    fun `the staging topology passes the INGEST envelope to both services with the deployed layer's own defaults`() {
+        // A variable compose does not pass is inert in the topology; a compose default that
+        // differs from the profile's would silently change staging's envelope.
+        val compose = File(repoRoot, "deploy/staging/compose.yaml").readText()
+        val deployed = deployedProfiles.first().readText()
+        val placeholder = Regex("""\$\{(TESTINBOX_LIMITS_INGEST_[A-Z_]+):([^}]+)}""")
+        val profileDefaults = placeholder.findAll(deployed).associate { it.groupValues[1] to it.groupValues[2] }
+        assertEquals(4, profileDefaults.size, "the deployed layer declares four INGEST envelope variables")
+        assertAll(
+            profileDefaults.map { (name, default) ->
+                {
+                    assertTrue(
+                        compose.contains("$name: \${$name:-$default}"),
+                        "deploy/staging/compose.yaml must pass $name with the deployed default $default",
+                    )
+                }
+            } +
+                listOf("TESTINBOX_STORAGE_GATED_EXPECTED_RATE", "TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES").map { name ->
+                    { assertTrue(compose.contains("$name: \${$name:-}"), "compose must pass $name, with no default") }
+                },
+        )
+    }
 }
