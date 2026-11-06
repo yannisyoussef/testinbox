@@ -28,5 +28,12 @@
 -- (storage_delta stays `-`, never backed up). An older artifact runs on this
 -- schema unchanged: its statements read the same rows, the planner may simply
 -- pick the index.
+-- Lock timeout (as V8 and V24): if a writer holds ROW EXCLUSIVE on storage_delta
+-- when the migrator starts, the build would wait for SHARE and every later ledger
+-- trigger insert (T2, retention, cleanup) would queue behind it, past their write
+-- deadlines. With lock_timeout the migration fails instead and is simply re-run
+-- (roll forward with the same candidate). statement_timeout bounds the build.
+SET LOCAL lock_timeout = '10s';
+SET LOCAL statement_timeout = '60s';
 CREATE INDEX ix_storage_delta_workspace ON storage_delta (workspace_id) INCLUDE (bytes, objects);
 CREATE INDEX ix_storage_delta_inbox ON storage_delta (inbox_id) INCLUDE (bytes, objects);
