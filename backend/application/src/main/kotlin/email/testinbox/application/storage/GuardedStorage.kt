@@ -63,6 +63,36 @@ data class GuardedIngestReport(
 )
 
 /**
+ * How one event left the guarded path, split at the one boundary a refund may
+ * depend on: whether T1 was invoked (owner decision 2026-11-06, ADR-027 §4 as
+ * amended; `docs/dev/beta-limits.md` classifies every `451`).
+ *
+ * Anything thrown once T1 was invoked is NOT an outcome here: it is rethrown
+ * unchanged by [GuardedStorage.attempt], because from that point a
+ * reservation, an upload, a refusal record or a commit may exist or be in
+ * doubt (a lock timeout, a missed write deadline, an ambiguous upload, a
+ * fenced or failed T2).
+ */
+sealed interface GuardedOutcome {
+    /** The protocol ran to its report: copies appended, duplicates, refusals, inactive. */
+    class Completed(
+        val report: GuardedIngestReport,
+    ) : GuardedOutcome
+
+    /**
+     * Refused BEFORE T1 was invoked: the latch, the activation guard, an open
+     * breaker or a failed half-open probe, no write slot within `W_slot`, or
+     * any other exception raised before the T1 call. No reservation, upload,
+     * refusal record or row exists for any copy of the event, so the caller
+     * answers the same `451` with [cause] and may give back what it charged.
+     * Constructed only by [GuardedStorage.attempt] (an ArchUnit rule).
+     */
+    class RefusedBeforeT1 internal constructor(
+        val cause: Exception,
+    ) : GuardedOutcome
+}
+
+/**
  * ADR-035's guarded ingest protocol for one inbound event (§4–§8):
  *
  * ```
@@ -126,14 +156,57 @@ class GuardedStorage(
         copies: List<CopyPlan>,
         envelopePositions: List<Int> = copies.indices.toList(),
         persist: (List<CopyPlan>) -> Map<MessageId, Boolean>,
-    ): GuardedIngestReport {
+    ): GuardedIngestReport =
+        when (val outcome = attempt(bytesPerCopy, copies, envelopePositions, persist)) {
+            is GuardedOutcome.Completed -> outcome.report
+            is GuardedOutcome.RefusedBeforeT1 -> throw outcome.cause
+        }
+
+    /**
+     * [ingest], with a refusal raised before T1 was invoked returned as
+     * [GuardedOutcome.RefusedBeforeT1] instead of thrown. The protocol, its
+     * order and every exception are exactly [ingest]'s; only the pre-T1 ones
+     * are handed back. Anything thrown once T1 was invoked, and every
+     * [Error], propagates unchanged.
+     */
+    @Suppress("TooGenericExceptionCaught") // every Exception: the boundary is where it was raised, not what it is
+    fun attempt(
+        bytesPerCopy: Long,
+        copies: List<CopyPlan>,
+        envelopePositions: List<Int> = copies.indices.toList(),
+        persist: (List<CopyPlan>) -> Map<MessageId, Boolean>,
+    ): GuardedOutcome {
         require(copies.isNotEmpty()) { "an event with no candidate never reaches storage" }
         require(copies.all { it.bytes == bytesPerCopy }) { "every copy of an event has the same exact footprint" }
+        val progress = T1Progress()
+        return try {
+            GuardedOutcome.Completed(runProtocol(bytesPerCopy, copies, envelopePositions, persist, progress))
+        } catch (e: Exception) {
+            // Positional, not by reason: the flag is set immediately BEFORE
+            // the T1 call, so an exception seen with it unset was raised by a
+            // step that runs before T1 and persists nothing for this event.
+            if (progress.t1Invoked) throw e
+            GuardedOutcome.RefusedBeforeT1(e)
+        }
+    }
+
+    /** Set immediately before T1 is invoked, and never unset. */
+    private class T1Progress {
+        var t1Invoked = false
+    }
+
+    private fun runProtocol(
+        bytesPerCopy: Long,
+        copies: List<CopyPlan>,
+        envelopePositions: List<Int>,
+        persist: (List<CopyPlan>) -> Map<MessageId, Boolean>,
+        progress: T1Progress,
+    ): GuardedIngestReport {
         ensureOpen()
         val trial = admitThroughBreaker()
         var trialEnded = trial == null
         try {
-            val report = ingestHoldingSlot(bytesPerCopy, copies, envelopePositions, persist, trialEvent = trial != null)
+            val report = ingestHoldingSlot(bytesPerCopy, copies, envelopePositions, persist, trialEvent = trial != null, progress)
             if (trial != null) {
                 if (report.appended.isEmpty() && report.duplicates.isEmpty()) {
                     breaker.abandonTrial()
@@ -209,10 +282,13 @@ class GuardedStorage(
         persist: (List<CopyPlan>) -> Map<MessageId, Boolean>,
         /** This event is the breaker's half-open real-event trial. */
         trialEvent: Boolean,
+        progress: T1Progress,
     ): GuardedIngestReport {
         val guard = SlotGuard(acquireSlot(copies))
         try {
             hook.afterSlot()
+            // The pre-T1 boundary (GuardedOutcome): from here on nothing is refundable.
+            progress.t1Invoked = true
             val result = admit(bytesPerCopy, copies, envelopePositions)
             hook.afterAdmission()
             val admittedIds = result.admitted.map { it.candidate.messageId }.toSet()

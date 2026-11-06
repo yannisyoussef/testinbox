@@ -102,6 +102,14 @@ class GuardedIngestHarness(
      */
     cohortMode: StorageEnforcement = StorageEnforcement.OFF,
     cohortBinding: String? = null,
+    /**
+     * ADR-027 `INGEST` as production charges it, on this database: the
+     * (per-workspace, per-inbox) policies of a real `JdbcRateLimiter`. Null
+     * charges nothing ([ALLOW_ALL]), as every scenario that is not about the
+     * budget does.
+     */
+    ingestLimits: Pair<email.testinbox.domain.limits.RatePolicy, email.testinbox.domain.limits.RatePolicy>? = null,
+    val limitMetrics: email.testinbox.application.port.LimitMetrics = email.testinbox.application.port.LimitMetrics.NOOP,
 ) : AutoCloseable {
     val dbName: String = shared?.dbName ?: "guarded_${UUID.randomUUID().toString().replace("-", "")}"
     val bucket: String = shared?.bucket ?: "g-${UUID.randomUUID().toString().take(12)}"
@@ -219,14 +227,19 @@ class GuardedIngestHarness(
         )
 
     val messages = JdbcMessageRepository(jdbc)
+    val rateLimiter: RateLimiter =
+        ingestLimits?.let { (workspace, inbox) ->
+            email.testinbox.persistence.JdbcRateLimiter(jdbc, transactionManager) { _, perInbox -> if (perInbox) inbox else workspace }
+        } ?: ALLOW_ALL
     val receive =
         ReceiveInboundDelivery(
             JdbcInboxRepository(jdbc),
             messages,
             guarded,
             JakartaMimeParser(),
-            ALLOW_ALL,
+            rateLimiter,
             Clock.systemUTC(),
+            metrics = limitMetrics,
             eligibility = email.testinbox.persistence.JdbcWorkspaceEligibility(jdbc),
         )
 
@@ -433,6 +446,9 @@ class GuardedIngestHarness(
                     category: RateCategory,
                     inboxId: InboxId?,
                 ) = RateDecision(category, allowed = true, limit = Long.MAX_VALUE, remaining = Long.MAX_VALUE, retryAfter = null)
+
+                // Nothing was taken, so there is nothing to give back.
+                override fun refund(charges: List<email.testinbox.application.port.RateCharge>) = Unit
             }
 
         /** A two-part message: raw MIME plus one extracted attachment (counted twice, ADR-035 §2). */

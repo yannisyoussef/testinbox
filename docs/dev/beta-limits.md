@@ -86,16 +86,126 @@ only to copies that **passed** their budgets, and they delay rather than drop.
 | Wait | none | up to `W_slot` = 10 s on that node |
 | SMTP reply | `250` (uniform, unchanged) | `451` for the whole `DATA`; nothing is committed |
 | The message | discarded, never stored | kept by the mail edge, which retries it no sooner than 120 s later (`minimal_backoff_time`) and keeps retrying for up to its 4 h queue lifetime (`maximal_queue_lifetime`, `deploy/mail-edge/contract.yaml`) |
-| Lost? | yes, that copy | if the condition outlives the edge's 4 h queue (ADR-035 §12; queue-age alerting is an Ops prerequisite before public MX), or if a retry finds the budget empty and is discarded |
-| Budget spent? | an inbox token, if the inbox budget admitted the copy and the workspace budget then refused it | the event's copies were charged **before** the slot wait, so the edge's retry is charged **again** |
-| Signal | `testinbox_rate_decision_total{category="INGEST",outcome="rejected"}`, `smtp_discard` log | `testinbox_storage_slot_wait_seconds`, and the edge's deferred queue |
+| Lost? | yes, that copy | only if the condition outlives the edge's 4 h queue (ADR-035 §12; queue-age alerting is an Ops prerequisite before public MX). The deferred attempt does not spend the budget its retry needs (next row) |
+| Budget spent? | an inbox token, if the inbox budget admitted the copy and the workspace budget then refused it | **no, net.** The event's copies were charged before the slot wait, and because the event was refused before T1 those charges are **refunded**. The edge's retry is then charged once, like any delivery |
+| Signal | `testinbox_rate_decision_total{category="INGEST",outcome="rejected"}`, `smtp_discard` log | `testinbox_storage_slot_wait_seconds`, `testinbox_rate_refund_total{category="INGEST",outcome="refunded"}`, the `ingest_refund` log line, and the edge's deferred queue |
 
-Because a slot-wait `451` has already spent the event's budget, its retry
-competes for the budget again. A workspace that sustains bursts near b can
-therefore have retried copies **discarded** on a later attempt rather than
-delivered late. This is part of the burst residual below. A `451` from an open
-breaker, the latch or the activation guard is decided before any recipient
-resolves and spends nothing.
+**Refund on a pre-T1 `451` (owner decision 2026-11-06, #124 comment
+[6678047827](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6678047827)).**
+A slot-wait `451` is decided before T1 starts, so nothing of the event was
+reserved, uploaded or committed. The `INGEST` tokens the attempt took, at the
+inbox and at the workspace, are given back, and a within-budget message that
+is deferred is not later discarded because of its own failed attempt. A
+`451` from T1 on (a lock timeout, a missed write deadline, a failed or
+ambiguous upload, a fenced or failed T2) **keeps its charges, exactly as
+before**: from that point a reservation, an object or a commit may exist or be
+in doubt. The SMTP reply is the same `451` either way; a refund is invisible
+to the sender (ADR-027 §1, CLAUDE.md invariant 8).
+
+Two qualifications, both bounded:
+
+- While a deferred attempt waits for a slot (at most `W_slot` = 10 s), its
+  charges are held. A copy for the same inbox or workspace arriving in that
+  window can be refused for budget the deferred message is holding, exactly
+  as it would be had the deferred message been delivered. The refund returns
+  that budget afterwards; it never creates more.
+- A refund that cannot be applied (its database transaction fails or its
+  commit is uncertain) is never retried. The charges then stand, which is the
+  behaviour before refunds existed, and
+  `testinbox_rate_refund_total{outcome="failed"}` counts it.
+
+A `451` from an open breaker, the latch or the activation guard that is
+decided **before any recipient resolves** charges nothing, so there is nothing
+to refund. The same refusals arriving between the charges and the slot (a race
+with the pre-resolution check) are refused before T1 and refunded.
+
+### Which `451`s are refunded
+
+Every path that answers the `DATA` with `451`, in the order the gateway and
+`ReceiveInboundDelivery` meet them. "Before T1" is decided positionally by
+`GuardedStorage.attempt`: a flag set immediately **before** T1 is invoked.
+Anything raised with the flag unset is `GuardedOutcome.RefusedBeforeT1`;
+everything raised once it is set is rethrown unchanged and never refunded.
+
+| `451` path | Where | Charged? | Refunded? |
+|---|---|---|---|
+| Schema not compatible | `SmtpGateway.data`, before the use case | no | nothing to refund |
+| Latched, activation guard (inventory, session allowlist, workspace envelope), breaker open, slots exhausted by ambiguity, footprint not evaluable | `storage.unavailable()`, before any recipient resolves | no | nothing to refund |
+| More than 50 distinct recipients | `require`, before resolution (the gateway already caps at 50) | no | nothing to refund |
+| Recipient lookup, eligibility read or a limiter spend fails mid-resolution | resolution loop | the copies charged before it | **yes**, the tokens recorded so far. A spend that threw is never recorded, so it is never refunded |
+| Latched or activation guard, raced in after the pre-check | `GuardedStorage.ensureOpen`, before the slot | yes | **yes** (before T1) |
+| Breaker open, or its half-open probe fails | `admitThroughBreaker`, before the slot | yes | **yes** (before T1) |
+| No write slot within `W_slot` (`SLOT_WAIT`) | `WriteSlots.acquire` | yes | **yes** (before T1) |
+| Any other exception before T1 is invoked (e.g. the ambiguity count read fails) | slot acquisition | yes | **yes** (before T1) |
+| T1 cannot take the admission lock (`LOCK_TIMEOUT`) | T1 | yes | no: T1 started |
+| T1 finds the footprint rules not evaluable (`FOOTPRINT_UNAVAILABLE` at T1) | T1 | yes | no: T1 started |
+| T1 fails otherwise, its commit status unknown | T1 | yes | no: T1 started, outcome uncertain |
+| The refusal-record transaction fails (every copy refused) | after T1 | yes | no |
+| A reservation fenced before its first byte (`COMMIT_FENCED`) | uploads | yes | no |
+| An upload refused (missed write deadline, quota), not started, or ambiguous (`UPLOAD_FAILED`) | uploads | yes | no: an object may exist (ambiguous), or capacity was reserved |
+| A reservation, key set or inbox changed under T2 (`COMMIT_FENCED`) | T2 | yes | no |
+| T2 fails: deadlock loser, database blip, commit uncertainty | T2 | yes | no: commit status may be unknown |
+| A JVM `Error` anywhere | anywhere | as reached | never: an `Error` is not caught for a refund |
+
+With one T1 per event (ADR-026), an event refused before T1 stored nothing
+for **any** of its copies, so every charge it took is eligible, and no copy
+processed successfully in the same transaction can ever be refunded. An event
+that completes (the uniform `250`) is never refunded, whatever its copies'
+individual outcomes.
+
+**What is given back, exactly.** Each copy is recorded only once its spend
+returned allowed: its inbox token, and its workspace token when that spend was
+allowed too. A copy refused by its inbox budget took nothing; one refused by
+its workspace budget took its inbox token only, and only that comes back.
+Unknown and inactive recipients never reach the limiter.
+
+**How the refund is applied (`JdbcRateLimiter.refund`).**
+- *Duplicate execution.* One `IngestCharges` per attempt is the refund token.
+  It settles once, by compare-and-set: refunded, or kept (T1 invoked, or the
+  event completed). A second claim, from any thread, gets nothing. The refund
+  is never retried, so an uncertain commit can never be applied twice.
+- *Concurrent requests.* One `REQUIRES_NEW` transaction per attempt, taking
+  each bucket row `FOR UPDATE`, the lock a spend takes, in one global order
+  (workspace, category, inbox). A spend holds one row at a time, so refunds
+  and spends serialize per bucket and cannot deadlock each other. All of an
+  attempt's buckets commit together or none does.
+- *Overflow.* Per bucket, `tokens = min(capacity, refill(tokens, now()) + n)`,
+  where `n` is the number of that bucket's recorded charges and the refill is
+  the spend's own refill to the database's `now()`. Never above capacity,
+  never more than was taken. A bucket that no longer exists (its inbox or
+  workspace was deleted) is skipped, never recreated, and `updated_at` never
+  moves backwards.
+- *The refill clock.* Refill is a clamped sum, so a spend followed by its
+  refund leaves the bucket exactly where an untouched bucket would be:
+  `min(C, min(C, x + g₁) − 1 + g₂ + 1) = min(C, x + g₁ + g₂)` (a property test
+  in `TokenBucketTest`). When another copy was refused in between because of
+  the held charge, the bucket afterwards holds that one token more than an
+  untouched bucket, and the refused copy took none: tokens plus kept charges
+  never exceed the untouched bucket's. The bound below is stated on kept
+  charges for that reason.
+
+### Why the admitted T1 rate stays inside the approved envelope
+
+Take one bucket, capacity C and refill r, and let *kept* be its charges that
+were not refunded. Define Φ = tokens + charges still outstanding (taken by an
+attempt that has not yet settled). A spend leaves Φ unchanged (one token moves
+to outstanding). Keeping a charge lowers Φ by one. A refund lowers outstanding
+by one and adds at most one token (the clamp may absorb it), so it never
+raises Φ. Only refill raises Φ, by at most r per second. Hence, over any
+interval starting at an instant t₀ with no outstanding charge (from the
+bucket's creation, for example):
+
+> kept charges in (t₀, t₀ + T] ≤ C + r·T,
+
+and in general the bound gains the charges outstanding at t₀, the same
+in-flight term the limiter had before refunds. A copy reaches T1 only with its
+charges kept: they settle as kept at the moment T1 is invoked, and a refunded
+event never reached T1. So the copies a workspace brings to T1 are at most
+b + r·T, and the sustained T1 event rate is at most r × N = 1 × (30 + L) = 31
+events/s, because every admitted event keeps at least one workspace charge.
+That is exactly the rate gate D measures (R = 31, 2R = 62). A refund returns
+budget that a refused-before-T1 event borrowed; it never adds budget, so it
+cannot raise R, the burst b, or anything gate D's evidence covers.
 
 The edge never forwards either outcome to an external sender. It is
 store-and-forward and sends no DSN (ADR-035 §12). A `451` only delays
@@ -119,7 +229,10 @@ prove burst performance.** Each workspace may present up to b = 60 copies at
 once, 1 860 across the cohort. **Nothing guarantees that a burst of 60, or any
 burst, is delivered within `W_slot`.** Part of a burst may wait the full 10 s,
 be answered `451`, and arrive only after the edge's retry, two minutes or more
-later. The owner accepted this residual explicitly.
+later. The owner accepted this residual explicitly. It is a **delay**, not a
+loss: the deferred attempt's `INGEST` charges are refunded (above), so a
+within-budget message is not discarded on its retry because of its own failed
+attempt. Deferred-then-discarded mail is not part of the residual.
 
 ## Enforcement: how a deployment is held to the envelope
 
@@ -154,6 +267,14 @@ node under `ALL` re-checks, on its activation watch's cadence, that the
 database holds at most 30 + L `workspace` rows (31). It counts only up to that
 bound and reads `workspace(id)` and `storage_cohort_plan`, both already granted
 for T1.
+
+The bound is checked at startup, before the gateway accepts anything, and on
+every activation-watch pass, which runs on the node's 10 s heartbeat
+(`StorageNodeRuntime`). A workspace created between two passes can therefore
+receive mail for up to 10 s before the guard answers the global `451`. The
+window is narrow because workspaces are created by beta admission, which
+serializes on the global admission lock `(35, 1)`, the fence T1 decides under,
+and refuses with `CAPACITY_UNAVAILABLE` while cohort capacity is not ready.
 
 If the population is above the bound, the node's activation guard answers
 `451` for **every** event, before any recipient resolves, exactly as a broken
@@ -238,8 +359,9 @@ The repository's own traffic stays well inside it:
   synthetic runs refill 3 copies in 3 seconds.
 - **Edge retries:** a `451` decided before recipients resolve (an open
   breaker, the latch, the activation guard) charges nothing. A slot-wait
-  `451` has already been charged, so each retry is charged again (see the
-  table above).
+  `451` was charged, but it is refused before T1, so its charges are refunded
+  and the retry is charged once. A `451` from T1 on keeps its charges, as
+  before (see "Which `451`s are refunded" above).
 
 ## Changing the envelope
 

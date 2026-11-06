@@ -1,6 +1,6 @@
 # ADR-027: Rate Limiting and Resource Quota Strategy
 
-**Status:** Accepted (§6 amended by [ADR-033](0033-idempotent-mutations.md); §2, §4, §5, Alternatives and Consequences amended by [ADR-035](0035-physical-storage-bound-at-ingest.md), 2026-09-29)
+**Status:** Accepted (§6 amended by [ADR-033](0033-idempotent-mutations.md); §2, §4, §5, Alternatives and Consequences amended by [ADR-035](0035-physical-storage-bound-at-ingest.md), 2026-09-29; §4 amended by the owner decision of 2026-11-06, the pre-T1 `INGEST` refund)
 > Accepted after architecture and security review of the design. The first
 > draft deferred inbound mail with `452` when a recipient's workspace was over
 > quota; both reviews independently rejected that, and §1 records why. The
@@ -198,6 +198,42 @@ happens only under a sustained flood, never merely because a workspace sits
 at its storage quota.
 
 > **Amended by [ADR-035](0035-physical-storage-bound-at-ingest.md) (2026-09-29).** The closing sentence of §4 above ("the one place mail addressed to a live inbox is dropped") no longer holds: a storage-ceiling refusal is a second in-process discard behind the same uniform `250`, and unlike `INGEST` it is visible to the authenticated tenant (ADR-035 §12–§13).
+
+> **Amended by owner decision (2026-11-06): the pre-T1 `INGEST` refund.**
+> Authority: #124 comment
+> [6678047827](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6678047827),
+> quoted exactly:
+>
+> > "I authorize option 1: implement refunds for retryable 451 outcomes proven to occur before T1 starts.
+> > Requirements:
+> > - Refund only charges actually taken for the deferred recipient copies, covering both workspace and per-inbox budgets.
+> > - Make refunds safe against duplicate execution, concurrent requests and bucket-capacity overflow.
+> > - Do not refund charges for copies successfully processed in the same transaction.
+> > - Do not refund after T1 starts, or where its execution/commit status is uncertain, under this authorization.
+> > Add focused regression tests proving:
+> > 1. A within-budget message receives a pre-T1 451, retries through the edge, and is stored exactly once without losing its allowance to the failed attempt.
+> > 2. Repeated deferrals and concurrent refunds cannot create additional admission capacity.
+> > 3. Post-T1 and uncertain outcomes retain their existing charging behavior.
+> > 4. Multi-recipient handling refunds precisely the eligible charges.
+> > Obtain focused independent review and include the fix in the release candidate. Do not accept deferred-then-discarded mail as the burst residual.
+> > Document why the admitted T1 rate remains bounded by the approved envelope. Reuse run 3 evidence if that dependency assessment confirms it remains valid; do not automatically rerun unrelated benchmarks or storage experiments.
+> > This authorizes the scoped fix and review, not broader refund semantics or opening admission."
+>
+> *The team's reading (not the owner's words).* The bullet "The spend commits
+> independently of the request it governs" still holds: every spend commits
+> in its own transaction before the request proceeds. A refund is a separate,
+> compensating transaction, and only `ReceiveInboundDelivery` may issue it,
+> only for an `INGEST` event that ADR-035's guarded path proves was refused
+> before T1 was invoked (or that failed during recipient resolution, before
+> storage was reached), at most once per attempt, under the spend's row
+> lock, and clamped at capacity. It gives back only tokens whose spend
+> returned allowed. A failure an attacker can force from T1 on stays charged.
+> A failure before T1 stores nothing, so refunding it frees no storage or T1
+> work; the budget keeps bounding what it exists to bound, copies admitted to
+> T1. No other category, no HTTP request and no post-T1 outcome is ever
+> refunded. Mechanics, the classification of every `451` and the envelope
+> argument: [`docs/dev/beta-limits.md`](../dev/beta-limits.md) and ADR-035's
+> amendment D note.
 
 ### 5. Quota usage is derived, never accounted
 

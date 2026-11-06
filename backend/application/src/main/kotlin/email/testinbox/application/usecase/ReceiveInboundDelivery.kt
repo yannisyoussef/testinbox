@@ -13,7 +13,9 @@ import email.testinbox.application.port.MimeParser
 import email.testinbox.application.port.RateLimiter
 import email.testinbox.application.port.WorkspaceEligibility
 import email.testinbox.application.storage.CopyPlan
+import email.testinbox.application.storage.GuardedOutcome
 import email.testinbox.application.storage.GuardedStorage
+import email.testinbox.application.storage.StorageUnavailableException
 import email.testinbox.domain.AttachmentId
 import email.testinbox.domain.MessageId
 import email.testinbox.domain.inbox.Inbox
@@ -123,6 +125,7 @@ class ReceiveInboundDelivery(
             )
     }
 
+    @Suppress("TooGenericExceptionCaught") // both catches settle the attempt's charges and rethrow unchanged
     fun execute(command: Command): Result {
         // Storage health first, before any recipient resolves: while storage
         // is latched or its breaker is open, EVERY event gets the same 451,
@@ -147,6 +150,93 @@ class ReceiveInboundDelivery(
         // takes seconds shows up here and nowhere else.
         inboundMetrics.parseCompleted(Duration.ofNanos(System.nanoTime() - parseStartedAt), parseStatus)
 
+        // The refund token bound to this attempt: every INGEST token it takes,
+        // given back at most once, and only if the event is proven refused
+        // before T1 (owner decision 2026-11-06, ADR-027 §4 as amended).
+        val charges = IngestCharges()
+        val resolved =
+            try {
+                resolveAndCharge(command, recipients, now, parseResult, charges)
+            } catch (e: Exception) {
+                // Resolution, the limiter or planning failed: storage was never
+                // reached, so T1 was not invoked. The tokens recorded so far are
+                // given back; one whose own outcome is unknown was never recorded.
+                refundBeforeT1(charges, e)
+                throw e
+            }
+        if (resolved.prepared.isEmpty()) {
+            charges.keep()
+            return Result(emptyList(), resolved.discarded, 0, resolved.rateLimited, inactiveRecipients = resolved.inactive)
+        }
+
+        val prepared = resolved.prepared
+        val byMessage = prepared.associateBy { it.messageId }
+        val outcome =
+            try {
+                storage.attempt(resolved.plans.first().bytes, resolved.plans, resolved.envelopePositions) { admitted ->
+                    // Inside T2, after the reservation fence and the inbox locks: all
+                    // of this event's rows and notifications commit together (ADR-026).
+                    admitted.associate { plan ->
+                        val copy = byMessage.getValue(plan.messageId)
+                        plan.messageId to (messages.appendVisible(copy.toMessage(command, fingerprint, now)) == AppendOutcome.Appended)
+                    }
+                }
+            } catch (t: Throwable) {
+                // T1 was invoked (or an Error escaped): a reservation, an upload or
+                // a commit may exist or be in doubt. The charges stand, exactly as
+                // before refunds existed.
+                charges.keep()
+                throw t
+            }
+        val report =
+            when (outcome) {
+                is GuardedOutcome.Completed -> {
+                    charges.keep()
+                    outcome.report
+                }
+
+                is GuardedOutcome.RefusedBeforeT1 -> {
+                    // The same exception, so the same 451 (ADR-035 §12): the refund
+                    // is invisible over SMTP (ADR-027 §1). With one T1 per event
+                    // (ADR-026), nothing of ANY copy was reserved, stored or
+                    // committed, so every charge this attempt took is eligible.
+                    refundBeforeT1(charges, outcome.cause)
+                    throw outcome.cause
+                }
+            }
+
+        for (id in report.appended) inboundMetrics.messageReceived(byMessage.getValue(id).parseStatus)
+        // Reprocessed event (ADR-026): no new row. Its reservation went to
+        // RELEASING in the same commit, and cleanup deletes its objects.
+        repeat(report.duplicates.size) { inboundMetrics.duplicateProviderEventNoop() }
+        reportStorageDiscards(report, prepared, command)
+        return Result(
+            report.appended,
+            resolved.discarded,
+            report.duplicates.size,
+            resolved.rateLimited,
+            report.refused.size,
+            inactiveRecipients = resolved.inactive + report.inactive.size,
+        )
+    }
+
+    /** The event's recipients after resolution and charging: the copies to store, and the ones discarded. */
+    private class Resolution(
+        val prepared: List<Prepared>,
+        val plans: List<CopyPlan>,
+        val envelopePositions: List<Int>,
+        val discarded: Int,
+        val rateLimited: Int,
+        val inactive: Int,
+    )
+
+    private fun resolveAndCharge(
+        command: Command,
+        recipients: List<String>,
+        now: java.time.Instant,
+        parseResult: MimeParseResult,
+        charges: IngestCharges,
+    ): Resolution {
         var discarded = 0
         var rateLimited = 0
         var inactive = 0
@@ -175,19 +265,7 @@ class ReceiveInboundDelivery(
             // already distinct and an inbox has one address, so this never fires
             // today; it keeps the invariant local rather than implied.
             if (prepared.any { it.inbox.id == inbox.id }) continue
-            // ADR-027 §4: the inbound budget is charged per workspace AND per
-            // inbox, so a flood against one guessed EXACT address cannot consume
-            // the whole workspace's allowance. Charged only after the recipient
-            // resolves, so the ADR-025 unknown path never reaches the limiter.
-            // Narrow scope FIRST, and short-circuit. Spending both unconditionally
-            // would let a flood against one guessed address keep draining the
-            // workspace token after its own bucket is empty — starving every
-            // other inbox in that workspace, which is precisely what the
-            // per-inbox key exists to prevent.
-            val inboxBudget = rateLimiter.tryConsume(inbox.workspaceId, RateCategory.INGEST, inbox.id)
-            val workspaceBudget =
-                if (inboxBudget.allowed) rateLimiter.tryConsume(inbox.workspaceId, RateCategory.INGEST) else null
-            if (!inboxBudget.allowed || workspaceBudget?.allowed != true) {
+            if (!charge(inbox, charges)) {
                 // Discarded in-process, exactly as ADR-025 discards unknown
                 // recipients. The SMTP reply is unchanged (ADR-027 §1): making a
                 // refusal visible here would rebuild the enumeration oracle.
@@ -202,36 +280,72 @@ class ReceiveInboundDelivery(
             prepared += prepare(inbox, recipient, parseResult)
             envelopePositions += position
         }
-        if (prepared.isEmpty()) return Result(emptyList(), discarded, 0, rateLimited, inactiveRecipients = inactive)
-
         // ADR-035 §2: every copy costs exactly its raw.eml plus every extracted
         // attachment object (attachments count twice). The size is exact and
         // known before any write: one parse, the same bytes for every copy.
         val plans = prepared.map { it.plan(command.raw) }
-        val byMessage = prepared.associateBy { it.messageId }
-        val report =
-            storage.ingest(plans.first().bytes, plans, envelopePositions) { admitted ->
-                // Inside T2, after the reservation fence and the inbox locks: all
-                // of this event's rows and notifications commit together (ADR-026).
-                admitted.associate { plan ->
-                    val copy = byMessage.getValue(plan.messageId)
-                    plan.messageId to (messages.appendVisible(copy.toMessage(command, fingerprint, now)) == AppendOutcome.Appended)
-                }
-            }
+        return Resolution(prepared, plans, envelopePositions, discarded, rateLimited, inactive)
+    }
 
-        for (id in report.appended) inboundMetrics.messageReceived(byMessage.getValue(id).parseStatus)
-        // Reprocessed event (ADR-026): no new row. Its reservation went to
-        // RELEASING in the same commit, and cleanup deletes its objects.
-        repeat(report.duplicates.size) { inboundMetrics.duplicateProviderEventNoop() }
-        reportStorageDiscards(report, prepared, command)
-        return Result(
-            report.appended,
-            discarded,
-            report.duplicates.size,
-            rateLimited,
-            report.refused.size,
-            inactiveRecipients = inactive + report.inactive.size,
-        )
+    /**
+     * ADR-027 §4: the inbound budget is charged per workspace AND per inbox, so
+     * a flood against one guessed EXACT address cannot consume the whole
+     * workspace's allowance. Charged only after the recipient resolves, so the
+     * ADR-025 unknown path never reaches the limiter.
+     *
+     * Narrow scope FIRST, and short-circuit. Spending both unconditionally
+     * would let a flood against one guessed address keep draining the
+     * workspace token after its own bucket is empty — starving every other
+     * inbox in that workspace, which is precisely what the per-inbox key
+     * exists to prevent.
+     *
+     * Each token is recorded in [charges] only once its spend returned
+     * allowed: exactly what was taken, nothing whose outcome is unknown.
+     */
+    @Suppress("TooGenericExceptionCaught") // records the taken inbox token, then rethrows unchanged
+    private fun charge(
+        inbox: Inbox,
+        charges: IngestCharges,
+    ): Boolean {
+        val inboxBudget = rateLimiter.tryConsume(inbox.workspaceId, RateCategory.INGEST, inbox.id)
+        if (!inboxBudget.allowed) return false
+        val workspaceBudget =
+            try {
+                rateLimiter.tryConsume(inbox.workspaceId, RateCategory.INGEST)
+            } catch (e: Exception) {
+                // The inbox token was taken; the workspace spend's outcome is unknown.
+                charges.took(IngestCharges.CopyCharge(inbox.workspaceId, inbox.id, workspaceTaken = false))
+                throw e
+            }
+        charges.took(IngestCharges.CopyCharge(inbox.workspaceId, inbox.id, workspaceTaken = workspaceBudget.allowed))
+        return workspaceBudget.allowed
+    }
+
+    /**
+     * Gives back what this attempt took, for an event proven refused before
+     * T1. At most once per attempt ([IngestCharges.claimRefund]); never
+     * retried, so a refund whose commit is uncertain can never be applied
+     * twice, and a failed one leaves the charges standing (the behaviour
+     * before refunds existed). Never changes what the caller throws, so the
+     * SMTP reply is the same `451` either way.
+     */
+    @Suppress("TooGenericExceptionCaught") // a refund failure must never replace the 451's own cause
+    private fun refundBeforeT1(
+        charges: IngestCharges,
+        cause: Exception,
+    ) {
+        val taken = charges.claimRefund() ?: return
+        val reason = (cause as? StorageUnavailableException)?.reason?.name ?: "BEFORE_STORAGE"
+        try {
+            rateLimiter.refund(taken)
+        } catch (e: Exception) {
+            cause.addSuppressed(e)
+            metrics.rateRefund(RateCategory.INGEST, refunded = false, tokens = taken.size)
+            log.warn("ingest_refund outcome=failed reason={} tokens={} error={}", reason, taken.size, e.javaClass.simpleName)
+            return
+        }
+        metrics.rateRefund(RateCategory.INGEST, refunded = true, tokens = taken.size)
+        log.info("ingest_refund outcome=refunded reason={} tokens={}", reason, taken.size)
     }
 
     /** Logs and counts the copies T1 discarded; the SMTP reply never shows either kind. */
