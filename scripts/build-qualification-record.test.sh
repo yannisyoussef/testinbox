@@ -49,9 +49,9 @@ gen() {
         --out-root "$TMP/$n/out" "$@" 2>&1)"; STATUS=$?
 }
 # refused <case> <name> <regex>: exit 1, the regex in the output, and no record directory written
-refused() {
-    local c="$1" n="$2" re="$3"
-    gen "$n"
+refused() {  # refused <case> <name> <regex> [extra generator args]
+    local c="$1" n="$2" re="$3"; shift 3
+    gen "$n" "$@"
     if [ "$STATUS" != 1 ]; then bad "$c (expected exit 1, got $STATUS)" "$OUT"; return; fi
     if ! printf '%s\n' "$OUT" | grep -qE -- "$re"; then bad "$c (output does not match /$re/)" "$OUT"; return; fi
     if [ -n "$(ls -A "$TMP/$n/out")" ]; then bad "$c (a refused build wrote $(ls "$TMP/$n/out"))"; return; fi
@@ -265,6 +265,49 @@ fresh contra; edit contra qualification-9a/venue.json 'd["9a"] = "loop-image-on-
 refused "the final filesystem's uuid labelled as Ops' own image → refuse" contra "names the final filesystem .* but labels the venue"
 fresh vkern --venue-9a own-image; edit vkern qualification-9a/venue.json 'd["kernelRelease"] = "0.0.1-other"'
 refused "an own-image venue on another kernel → refuse" vkern "qualification-9a/venue.json kernelRelease is '0.0.1-other'"
+
+# ------------------------------------- A1 (vi) census: summary committed, raw listing off-repo (#124 6668986543 item 3)
+# The default fake bundle carries census/summary.json with an Ops attestation; the raw listing is <out>/census-raw.txt,
+# OUTSIDE the bundle, as Ops holds it.
+if [ "$(jq -r '.filesystem.inodeCensus | [.listingCustody, .verification, .blocklessInodes, .reconciliationGap] | @tsv' "$REC")" = \
+     "$(printf 'held by FAKE Ops off-repo, 0700, retained until 30 days after the record PR merges\tsummary attested by FAKE Ops at 2000-01-01T22:30:00Z (listing not re-verified here)\t0\t0')" ] \
+   && ! grep -rqE '^[0-9]+ [0-9]+ [0-9]+ [0-9]+ [a-z] /' "$TMP/good/out/production-2000-01-01"; then
+    ok "the record references the census listing by sha256 and custody only; no listing line is in the written record directory"
+else bad "census reference in the record" "$(jq -c .filesystem.inodeCensus "$REC")"; fi
+fresh craw; gen craw --census-raw "$TMP/craw/census-raw.txt"
+if [ "$STATUS" = 0 ] && [ "$(jq -r .filesystem.inodeCensus.verification "$TMP/craw/out/production-2000-01-01/record.json")" = "listing verified at cut (--census-raw)" ]; then
+    ok "at cut, --census-raw verifies the off-repo listing (sha256, size, recomputed counts) and the record says so"
+else bad "census verified at cut (exit $STATUS)" "$OUT"; fi
+fresh crawsha; printf '1 1 8 4096 d /x\n' >> "$TMP/crawsha/census-raw.txt"
+refused "a --census-raw listing whose sha256 is not the summary's → refuse" crawsha "--census-raw sha256/size .* is not the summary's" --census-raw "$TMP/crawsha/census-raw.txt"
+fresh crawcnt; edit crawcnt census/summary.json 'd["census"]["distinctInodes"] = 16; d["reconciliation"]["inodesUsed"] = 26'
+refused "a summary whose counts differ from the listing recomputed at cut → refuse" crawcnt "recomputed from --census-raw .* differs from the summary" --census-raw "$TMP/crawcnt/census-raw.txt"
+fresh cinb; cp "$TMP/cinb/census-raw.txt" "$TMP/cinb/bundle/census-raw.txt"; resum "$TMP/cinb/bundle"
+refused "a raw census listing committed in the bundle (by name) → refuse" cinb "census-raw.txt is a raw census listing path"
+fresh cdir; cp "$TMP/cdir/census-raw.txt" "$TMP/cdir/bundle/census/find-output.txt"; resum "$TMP/cdir/bundle"
+refused "any file under census/ other than summary.json → refuse" cdir "census/find-output.txt is a raw census listing path"
+fresh csniff; cp "$TMP/csniff/census-raw.txt" "$TMP/csniff/bundle/experiments/E7/end-of-run.log"; resum "$TMP/csniff/bundle"
+refused "a listing hidden under another name (content: find -printf lines) → refuse" csniff "experiments/E7/end-of-run.log contains .find -printf"
+fresh cnorun; edit cnorun census/summary.json 'del(d["attestation"])'
+refused "no --census-raw and no Ops attestation: (vi) is NOT RUN → refuse" cnorun "\(vi\) census NOT RUN: no --census-raw"
+fresh catt; edit catt census/summary.json 'd["attestation"]["listingSha256"] = "0" * 64'
+refused "an Ops attestation bound to another sha256 → (vi) NOT RUN → refuse" catt "\(vi\) census NOT RUN"
+fresh cmiss; rm "$TMP/cmiss/bundle/census/summary.json"; resum "$TMP/cmiss/bundle"
+refused "no census summary → (vi) NOT RUN → refuse" cmiss "\(vi\) census NOT RUN: census/summary.json is missing"
+fresh cblk; edit cblk census/summary.json 'd["census"]["blocklessInodes"] = 1'
+refused "a census with a blockless inode → refuse" cblk "\(vi\) census: 1 blockless inodes, not 0"
+fresh cgap; edit cgap census/summary.json 'd["reconciliation"]["inodesUsed"] = 40'
+refused "a reconciliation gap beyond the in-flight tmp/multipart entries → refuse (C2)" cgap "differs from the listed 17 \+ 10 reserved by 13, beyond the 1 in-flight"
+fresh cfirst; edit cfirst census/summary.json 'd["reconciliation"]["inodesBelowFirstInode"] = 11'
+refused "reserved inodes that are not dumpe2fs First inode − 1 → refuse" cfirst "inodesBelowFirstInode 11 is not dumpe2fs First inode − 1"
+fresh cboot; edit cboot census/summary.json 'd["steps"][3]["bootId"] = "other-boot"'
+refused "census steps on two boot ids → refuse (C3)" cboot "boot ids .* are not one \(C3"
+fresh cuuid; edit cuuid census/summary.json 'd["steps"][5]["filesystemUuid"] = "11111111-0000-4000-8000-000000000000"'
+refused "a census step on another filesystem → refuse (C3)" cuuid "a step's filesystemUuid is not"
+fresh ccust; edit ccust census/summary.json 'd["listing"]["custody"]["mode"] = "0755"'
+refused "a listing custody other than off-repo 0700 with a retention → refuse" ccust "listing.custody must be heldBy"
+fresh clate; edit clate census/summary.json 'd["takenAt"] = "2000-01-01T23:30:00Z"'
+refused "a census taken after the cleanup baseline → refuse (C2)" clate "census was taken after the post-cleanup baseline"
 
 # ------------------------------------------------------------------- E7 carried (W3 A5): both outcomes
 fresh carry --e7 carried

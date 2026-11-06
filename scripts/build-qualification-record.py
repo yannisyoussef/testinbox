@@ -24,6 +24,10 @@ It REFUSES (exit 1, nothing written) when
     present in ADR-035's text (W3 question A5: both outcomes are supported, neither is silent);
   - a metadata figure (E7 inodes; E2 and E7 bytes; the gate F evidence) is not counted by the one definition
     (scopes minio-sys and minio-sys+unattributed), or a declared budget is below its measurement;
+  - a raw (vi) census listing is anywhere in the bundle (by path, or by `find -printf` content): it names object keys
+    and stays with Ops off-repo; the bundle carries census/summary.json only, and (vi) is NOT RUN unless the listing
+    is verified at cut (--census-raw, sha256 and recomputed counts) or the summary carries an Ops attestation bound to
+    its sha256;
   - the §9a venue is neither the final filesystem nor Ops' own loop image on / under dm-delay, labelled
     "loop-image-on-root + dm-delay(slow-W)" and equal to the final filesystem in type, features, block and inode size
     (verdict R3).
@@ -32,6 +36,7 @@ rule stated in PROVENANCE.md, or is a constant of the artifact (CODE). Exit 2 is
 
 Usage:
   scripts/build-qualification-record.py --bundle <dir> [--expected <json>] [--out-root <dir>] [--repo <dir>] [--check]
+                                         [--census-raw <off-repo listing>]
   scripts/build-qualification-record.py --evaluate-9a <dir>     (recompute a §9a sweep verdict only; prints JSON)
 """
 import argparse, datetime, hashlib, json, os, re, shlex, shutil, sys
@@ -125,6 +130,62 @@ def sha256_file(path):
 
 
 # ---------------------------------------------------------------------------------------------- SHA256SUMS (first)
+# --------------------------------------------------------------------------- A1 (vi) inode census (C2), off-repo listing
+# The raw census listing (`find <mount> -xdev -printf '%i %n %b %s %y %p\n'`) names production object keys, and with
+# participants it would carry tenant workspace/inbox identifiers. It NEVER enters the bundle, so it never enters the
+# repository: the committed bundle carries census/summary.json only (counts, the reconciliation, the C3 steps, and the
+# listing's sha256 and size). The listing stays with Ops off-repo (0700) and is verified at cut time with --census-raw;
+# without that, the summary must carry an Ops attestation bound to the listing's sha256. Neither -> (vi) NOT RUN.
+CENSUS_SUMMARY = "census/summary.json"
+CENSUS_SCHEMA = "testinbox.n1-census-summary/1"
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+RAW_LISTING_PATH = re.compile(r"(^|/)census/(?!summary\.json$)|(^|/)[^/]*census[^/]*(raw|listing|find)[^/]*$", re.I)
+RAW_LISTING_LINE = re.compile(rb"^\d+ \d+ \d+ \d+ [fdlpscbD] /", re.M)
+RAW_SNIFF_BYTES = 1 << 16
+
+
+def refuse_raw_listings(bundle):
+    """No raw census listing (by path or by content) may sit in the bundle: everything in it is committed."""
+    bad = []
+    for root, _, files in os.walk(bundle):
+        for f in files:
+            rel = os.path.relpath(os.path.join(root, f), bundle)
+            if rel == "SHA256SUMS":
+                continue
+            if RAW_LISTING_PATH.search(rel):
+                bad.append(f"{rel} is a raw census listing path: the listing stays with Ops off-repo, never in the bundle")
+                continue
+            with open(os.path.join(root, f), "rb") as fh:
+                head = fh.read(RAW_SNIFF_BYTES)
+            if len(RAW_LISTING_LINE.findall(head)) >= 3:
+                bad.append(f"{rel} contains `find -printf '%i %n %b %s %y %p'` lines: a raw census listing (object-key "
+                           "paths) must never be committed")
+    if bad:
+        raise Refusal("\n".join(f"  ✗ {x}" for x in bad))
+
+
+def census_from_listing(path):
+    """(sha256, bytes, distinct inodes, blockless inodes, {tmp, trash, multipart}) recomputed from the raw listing."""
+    inodes, blockless, entries = set(), set(), {"tmp": 0, "trash": 0, "multipart": 0}
+    with open(path, "rb") as f:
+        data = f.read()
+    for n, line in enumerate(data.decode("utf-8", "surrogateescape").splitlines(), 1):
+        parts = line.split(" ", 5)
+        if len(parts) != 6 or not all(x.isdigit() for x in parts[:4]):
+            raise Refusal(f"  ✗ --census-raw line {n} is not `%i %n %b %s %y %p`")
+        ino, blocks, p = parts[0], int(parts[2]), parts[5]
+        inodes.add(ino)
+        if blocks == 0:
+            blockless.add(ino)
+        if "/.minio.sys/tmp/.trash/" in p:
+            entries["trash"] += 1
+        elif "/.minio.sys/tmp/" in p and not p.endswith("/.minio.sys/tmp/.trash"):
+            entries["tmp"] += 1  # entries inside tmp, neither .trash itself nor anything under it
+        elif "/.minio.sys/multipart/" in p:
+            entries["multipart"] += 1
+    return hashlib.sha256(data).hexdigest(), len(data), len(inodes), len(blockless), entries
+
+
 def verify_sums(bundle):
     sums = os.path.join(bundle, "SHA256SUMS")
     if not os.path.isfile(sums):
@@ -363,7 +424,7 @@ def evaluate_9a(q):
 
 
 # ---------------------------------------------------------------------------------------------------- the build
-def build(bundle_dir, expected, repo):
+def build(bundle_dir, expected, repo, census_raw=None):
     p = Problems()
     b = Bundle(bundle_dir, p)
     X = expected
@@ -638,6 +699,85 @@ def build(bundle_dir, expected, repo):
     for done in completions:
         p.check(cleanup_at is None or cleanup_at >= done, f"an experiment completed {fmt(done)}, after the post-cleanup baseline")
 
+    # --- A1 (vi) inode census (C2, C3), summary committed, listing off-repo
+    cs = b.json(CENSUS_SUMMARY) or {}
+    census = None
+    if cs:
+        p.check(cs.get("schema") == CENSUS_SCHEMA, f"{CENSUS_SUMMARY}: schema is not {CENSUS_SCHEMA}")
+        lst, cnt, rec_ = cs.get("listing") or {}, cs.get("census") or {}, cs.get("reconciliation") or {}
+        cust = lst.get("custody") or {}
+        taken = need(p, cs, "takenAt", "iso", CENSUS_SUMMARY)
+        sha = lst.get("sha256")
+        p.check(isinstance(sha, str) and HEX64.match(sha), f"{CENSUS_SUMMARY}: listing.sha256 is not 64 hex")
+        need(p, lst, "bytes", "pos", f"{CENSUS_SUMMARY} listing")
+        p.check(cust.get("location") == "off-repo" and cust.get("mode") == "0700" and isinstance(cust.get("heldBy"), str)
+                and cust.get("heldBy") and isinstance(cust.get("retainedUntil"), str) and cust.get("retainedUntil"),
+                f"{CENSUS_SUMMARY}: listing.custody must be heldBy <Ops>, location off-repo, mode 0700, retainedUntil <when>")
+        distinct = need(p, cnt, "distinctInodes", "pos", f"{CENSUS_SUMMARY} census")
+        blk = need(p, cnt, "blocklessInodes", "int", f"{CENSUS_SUMMARY} census")
+        ent = cnt.get("entries") or {}
+        for k in ("tmp", "trash", "multipart"):
+            need(p, ent, k, "int", f"{CENSUS_SUMMARY} census.entries")
+        used = need(p, rec_, "inodesUsed", "pos", f"{CENSUS_SUMMARY} reconciliation")
+        below = need(p, rec_, "inodesBelowFirstInode", "int", f"{CENSUS_SUMMARY} reconciliation")
+        p.check(blk == 0, f"(vi) census: {blk} blockless inodes, not 0 (A1 (vi))")
+        first = dumpe2fs_field(d2 or "", "First inode")
+        p.check(first is not None and first.isdigit() and below == int(first) - 1,
+                f"{CENSUS_SUMMARY}: inodesBelowFirstInode {below} is not dumpe2fs First inode − 1 ({first})")
+        gap = None
+        if None not in (distinct, used, below) and all(isinstance(ent.get(k), int) for k in ("tmp", "multipart")):
+            gap = used - (distinct + below)
+            allowance = ent["tmp"] + ent["multipart"]
+            p.check(abs(gap) <= allowance,
+                    f"(vi) census: f_files − f_ffree {used} differs from the listed {distinct} + {below} reserved by {gap}, "
+                    f"beyond the {allowance} in-flight tmp/multipart entries (C2)")
+        steps = cs.get("steps")
+        if p.check(isinstance(steps, list) and steps, f"{CENSUS_SUMMARY}: steps must list (i)–(vi) with kernel, boot id, uuid (C3)"):
+            boots = {st.get("bootId") for st in steps if isinstance(st, dict)}
+            p.check(all(isinstance(st, dict) and st.get("kernelRelease") == X["kernelRelease"] for st in steps),
+                    f"{CENSUS_SUMMARY}: a step's kernelRelease is not {X['kernelRelease']} (C3)")
+            p.check(all(isinstance(st, dict) and st.get("filesystemUuid") == xf["uuid"] for st in steps),
+                    f"{CENSUS_SUMMARY}: a step's filesystemUuid is not {xf['uuid']} (C3)")
+            p.check(len(boots) == 1 and None not in boots and "" not in boots,
+                    f"{CENSUS_SUMMARY}: the steps' boot ids {sorted(map(str, boots))} are not one (C3: boot id unchanged)")
+        if taken and ISO_RE.match(taken):
+            t = iso(taken)
+            p.check(reboot_at is None or t >= reboot_at, "(vi) census was taken before the post-reboot baseline")
+            p.check(cleanup_at is None or t <= cleanup_at, "(vi) census was taken after the post-cleanup baseline (C2: before any cleanup)")
+            e2c = (exps.get("E2") or {}).get("completedAt")
+            p.check(not (isinstance(e2c, str) and ISO_RE.match(e2c)) or t >= iso(e2c),
+                    "(vi) census was taken before E2 completed (it runs on the E2/E7 population)")
+        verification = None
+        if census_raw:
+            if os.path.realpath(census_raw).startswith(os.path.realpath(bundle_dir) + os.sep):
+                p.add("--census-raw lies inside the bundle: the listing must stay off-repo, outside the bundle")
+            elif not os.path.isfile(census_raw):
+                p.add(f"--census-raw {census_raw} is not a file")
+            else:
+                try:
+                    rsha, rbytes, rdistinct, rblk, rent = census_from_listing(census_raw)
+                    p.check(rsha == sha and rbytes == lst.get("bytes"),
+                            f"--census-raw sha256/size {rsha}/{rbytes} is not the summary's {sha}/{lst.get('bytes')}")
+                    p.check((rdistinct, rblk, rent) == (distinct, blk, {k: ent.get(k) for k in ("tmp", "trash", "multipart")}),
+                            f"(vi) census recomputed from --census-raw (distinct {rdistinct}, blockless {rblk}, entries {rent}) "
+                            f"differs from the summary (distinct {distinct}, blockless {blk}, entries {ent})")
+                    verification = "listing verified at cut (--census-raw)"
+                except Refusal as e:
+                    p.add(str(e).strip().lstrip("✗ "))
+        else:
+            att = cs.get("attestation") or {}
+            if p.check(isinstance(att.get("by"), str) and att.get("by") and isinstance(att.get("at"), str) and ISO_RE.match(att.get("at") or "")
+                       and att.get("listingSha256") == sha,
+                       "(vi) census NOT RUN: no --census-raw to verify the listing, and no Ops attestation bound to its sha256 "
+                       f"({CENSUS_SUMMARY} attestation.by, .at, .listingSha256)"):
+                verification = f"summary attested by {att['by']} at {att['at']} (listing not re-verified here)"
+        if verification:
+            census = {"listingSha256": sha, "listingBytes": lst.get("bytes"),
+                      "listingCustody": f"held by {cust.get('heldBy')} off-repo, 0700, retained until {cust.get('retainedUntil')}",
+                      "verification": verification, "takenAt": taken, "blocklessInodes": blk, "reconciliationGap": gap}
+    else:
+        p.add(f"(vi) census NOT RUN: {CENSUS_SUMMARY} is missing (A1 (vi); the raw listing itself is never in the bundle)")
+
     # O_max from E1-E3: the value their PASS criterion was evaluated against; every worst case within it.
     omax_vals, worst = set(), []
     for name in OMAX_EXPERIMENTS:
@@ -812,6 +952,7 @@ def build(bundle_dir, expected, repo):
             "metadataInodesBasis": ("E7 on the final filesystem" if e7_mode == "final-filesystem"
                                     else f"E7 carried under {e7['amendment']}"),
             **({"inodeHeadroomLatchDrill": drill} if drill else {}),
+            "inodeCensus": census,
             "metadataBytesMeasured": metadata_bytes_max,
             "metadataBytesScope": METADATA_BYTES_SCOPE,
             "experiments": {n: exps[n]["verdict"] for n in EXPERIMENTS},
@@ -861,6 +1002,8 @@ def build(bundle_dir, expected, repo):
         carried = n == "E7" and e7_mode == "carried"
         label(f"`filesystem.experiments.{n}`", e["verdict"], "CARRIED-AMENDMENT" if carried else PQ,
               f"`{ev}experiments/{n}.json` ({e['startedAt']} → {e['completedAt']}" + (f", artifact {e['artifact']['sourceSha'][:12]}" if n in APP_EXPERIMENTS else "") + ")")
+    label("`filesystem.inodeCensus`", f"{census['listingSha256'][:12]}…, {census['verification']}", PQ,
+          f"`{ev}{CENSUS_SUMMARY}` (A1 (vi), C2, C3). The raw listing is NOT in the evidence: {census['listingCustody']}")
     label("`enablementEligible`, `ineligibilityReasons`", "true, []", DV, "every check of scripts/build-qualification-record.py passed")
 
     prov = [f"# Production-host qualification record `{record_id}` — provenance",
@@ -912,6 +1055,8 @@ def main():
     ap.add_argument("--out-root", help=f"default <repo>/{QUAL_REL}")
     ap.add_argument("--repo", default=REPO_DEFAULT)
     ap.add_argument("--check", action="store_true", help="verify and print the record; write nothing")
+    ap.add_argument("--census-raw", metavar="FILE", help="the raw (vi) census listing, held by Ops off-repo (never inside the "
+                                                         "bundle): verified against census/summary.json at cut time")
     ap.add_argument("--evaluate-9a", metavar="DIR", help="recompute a §9a sweep verdict from raw harness output and exit")
     a = ap.parse_args()
     try:
@@ -937,7 +1082,8 @@ def main():
             print("error: --expected has no positive declared.metadataBudgetBytes (the production M)", file=sys.stderr)
             return 2
         n = verify_sums(a.bundle)
-        record, prov, date = build(a.bundle, expected, a.repo)
+        refuse_raw_listings(a.bundle)
+        record, prov, date = build(a.bundle, expected, a.repo, a.census_raw)
         if a.check:
             print(json.dumps(record, indent=2, ensure_ascii=False))
             print(f"build-qualification-record: OK ({n} files verified), recordId {record['recordId']} (--check: nothing written)", file=sys.stderr)
