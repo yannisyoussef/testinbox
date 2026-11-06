@@ -1,0 +1,4 @@
+workspace                              class            payload  objects  resv    cleanup   pool share (payload/footprint)
+00000000-0000-0000-0000-000000000001   legacy                 0        0     0          0      1,073,741,824/2,147,483,648
+1 workspace(s); 1 legacy; OK
+  [rc=0]

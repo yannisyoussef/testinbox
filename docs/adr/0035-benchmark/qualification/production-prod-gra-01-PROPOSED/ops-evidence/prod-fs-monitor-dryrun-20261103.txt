@@ -1,0 +1,7 @@
+== good
+fs-monitor: {"ok": 1, "observation": null, "checks": {"filesystem_identity": 1, "preallocation": 1, "model": 1, "metadata": 1, "headroom": 1, "inode_headroom": 1}, "latched": [], "used_bytes": 270336, "avail_bytes": 47991631872, "trash_bytes": 61440, "minio_sys_bytes": 176128, "bucket_directory_bytes": 4096, "metadata_inodes": 57}
+  [rc=0]
+== negative: wrong UUID and C_fs one block larger than the fs
+fs-monitor: {"ok": 0, "observation": null, "checks": {"filesystem_identity": 0, "preallocation": 1}, "latched": []}
+fs-monitor: ERROR identity: uuid c33e14fd-6b6f-4f05-881e-dbc4db22c964 != 00000000-0000-0000-0000-000000000000; capacity 47991902208 < 47991906304
+  [rc=1]

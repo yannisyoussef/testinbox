@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "recordId": "production-amd64-prod-gra-01-PENDING-v2",
+  "qualifiedAt": null,
+  "minio": {
+    "imageIndexDigest": "sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d",
+    "platformMemberDigest": "sha256:3f97c5651cb6662b880c787a232b6b34fec8d8922e08d6617b25d241a21164bb",
+    "platform": "linux/amd64",
+    "release": "RELEASE.2025-04-22T22-12-26Z",
+    "commitId": "0d7408fc9969caf07de6a8c3a84f9fbb10a6739e",
+    "binarySha256": "53e2a2cb16c5366ea6fbbc479c19ddb4c6a0948273e752f740fb1fbf27bb817c",
+    "mode": "single-node-single-drive",
+    "driveCount": 1,
+    "timeoutEnvironment": {},
+    "timeoutCliFlags": [],
+    "runtimeConfig": {
+      "normalized": "ti-qc-runtime-config-v1",
+      "hash": "sha256:b0821e88cbdb913fb2837554c715d3c32da21efe7f9bcaed7b6b62cae443c558"
+    },
+    "storageClassInlineDefaults": "release-defaults",
+    "storageClassInlineDefaultsBasis": "fresh data directory, no MINIO_STORAGE_CLASS_* / inline variables; single-drive MinIO exposes no storage_class admin subsystem (captured as <unknown-subsystem> in the hashed configuration)"
+  },
+  "host": {
+    "kernelRelease": "6.8.0-147-generic",
+    "architecture": "x86_64",
+    "filesystemType": "ext4",
+    "mountOptions": "rw,relatime",
+    "device": "ext4 (-b 4096 -i 4096 -I 256 -m 5, nodiscard, no lazy init) on /dev/loop0 backed by the preallocated 48 GiB image /var/lib/testinbox-minio/ext4.img (0 FIEMAP holes, discard_max_bytes 0), mounted rw,relatime at /srv/testinbox/minio"
+  },
+  "network": {
+    "directPath": true,
+    "proxy": "none",
+    "tls": false
+  },
+  "uploadImplementationVersion": "adr035-presigned-put-v2",
+  "uploadImplementationNote": "harness.py implements the ADR \u00a75 shape (presigned single-part PUT, signed content-length and If-None-Match: *, one attempt, abort by RST after TIOCOUTQ=0); the application FencedUploader v2 (579af4b; byte-identical through 4f79b6e) keeps this wire shape for every 2xx PUT and additionally aborts by RST when MINIO answers non-2xx before the body ends (no commit possible); its ENOSPC classification is qualified separately by E8 v2 (lab, kernel 6.8.0-147). App team to confirm this label.",
+  "qualification": {
+    "platformClass": "production-host",
+    "platform": "PROPOSED, NOT YET TRUE AS STATED: the identity elements are production-gra-01's (OVH Supermicro X10SRi-F, x86_64, Ubuntu 24.04, md RAID1 NVMe; MinIO on the dedicated loop ext4); the \u00a79a sweep (129 trials) and E1-E11 ran on the staging host vmi2932906 with the identical combination (kernel 6.8.0-147, the production MinIO member and binary, production mkfs geometry, default config). platformClass production-host requires the owner/app-team acceptance of that venue (PACKET O1) or window W1 on prod-gra-01",
+    "evidenceReference": "docs/adr/0035-benchmark/qualification/production-prod-gra-01-PROPOSED/ (PROVENANCE.md; ops-evidence/)",
+    "procedure": "docs/adr/0035-benchmark/minio-probes/QUALIFICATION.md; qualification/run-slow.sh --mode dm with plan.json, plan3.json and plan-slow.json, each swept after >= 17 min",
+    "scenarios": [
+      "base-R100ms",
+      "base-W",
+      "freeze120-R2s",
+      "freeze120-W",
+      "freeze45-R2s",
+      "freeze45-W",
+      "phase10ms-R2s",
+      "phase1ms-R2s",
+      "phase20ms-R2s",
+      "phase3ms-R2s",
+      "phase5ms-R2s",
+      "slow-dm2000ms-before-W",
+      "slow-dm500ms-W",
+      "slow-dm500ms-after5ms-W",
+      "slow-dm500ms-before-W",
+      "v3-freeze120-R2s",
+      "v3-freeze120-W",
+      "v3-freeze45-R2s",
+      "v3-freeze45-W"
+    ],
+    "trials": 129,
+    "lateCommits": 0,
+    "slowWExecuted": true,
+    "slowWMechanism": "dm-delay (device-mapper delay target over the loop device), write delay 500 ms / 2000 ms",
+    "slowWMaxCommitLagAfterCompletedWitnessS": 4.607,
+    "cMaxSeconds": 900
+  },
+  "filesystem": {
+    "uuid": "c33e14fd-6b6f-4f05-881e-dbc4db22c964",
+    "type": "ext4",
+    "mountOptions": "rw,relatime",
+    "mountSource": "/var/lib/testinbox-minio/ext4.img",
+    "objectOverheadMaxBytes": 24576,
+    "metadataInodesMeasured": 157,
+    "experiments": {
+      "E1": "PASS",
+      "E2": "PASS",
+      "E3": "PASS",
+      "E4": "PASS",
+      "E5": "PASS",
+      "E6": "PASS",
+      "E7": "PASS",
+      "E8": "PASS",
+      "E9": "PASS",
+      "E10": "PASS",
+      "E11": "PASS"
+    }
+  },
+  "enablementEligible": false,
+  "ineligibilityReasons": [
+    "post-reboot evidence pending: prod-gra-01 runs 6.8.0-142-generic; host.kernelRelease 6.8.0-147-generic is valid only after the reboot (PACKET O2) and its read-only re-measurement",
+    "venue (PACKET O1 + app production.md 'Storage activation'): the \u00a79a sweep and E1-E11 ran on the staging host with the identical combination, not on prod-gra-01 and not on the final production filesystem; the app contract requires E1-E11 on the final production filesystem, or an explicitly reviewed and documented amendment; copied staging PASS results are not a substitute",
+    "E5, E6c, E6d, E9 v2, E10, E11 ran on 201ce6cf (V10), before ADR-037 and V19-V23; admission/cleanup code changed since",
+    "gate D (ADR-035 \u00a711 global benchmark) has no PASS on the staging host class yet",
+    "the Ops production qualification-check (--environment production) has not yet reported valid=1 against this record",
+    "app-team review: uploadImplementationVersion adr035-presigned-put-v2 stamped on the harness corpus plus E8 v2 (as the shipped v1 record did for v1)"
+  ]
+}

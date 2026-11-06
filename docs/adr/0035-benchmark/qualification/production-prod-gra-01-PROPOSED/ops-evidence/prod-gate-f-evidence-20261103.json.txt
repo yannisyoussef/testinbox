@@ -1,0 +1,68 @@
+{
+  "schema": "testinbox.filesystem-evidence/1",
+  "collectedAt": "2026-11-03T03:20:29Z",
+  "qualificationRecordId": "PROPOSED-production-host-amd64-prod-gra-01-v2 (not shipped)",
+  "qualificationValid": null,
+  "filesystem": {
+    "uuid": "c33e14fd-6b6f-4f05-881e-dbc4db22c964",
+    "type": "ext4",
+    "mountOptions": "rw,relatime",
+    "mountSource": "/var/lib/testinbox-minio/ext4.img"
+  },
+  "mount": {
+    "mountsOfSource": 1,
+    "minioDataDirOnMount": true,
+    "otherDataOnMount": false
+  },
+  "statvfs": {
+    "frsize": 4096,
+    "blocks": 11716773,
+    "files": 12582912
+  },
+  "preallocation": {
+    "blockDevice": false,
+    "allocatedBytes": 51539640320,
+    "apparentBytes": 51539607552,
+    "holeBytes": 0,
+    "thinPool": false,
+    "fstrimExcluded": true
+  },
+  "isolation": {
+    "dedicatedDevice": false,
+    "hostFreeAtCreationBytes": 391621394432,
+    "imageBytes": 51539607552
+  },
+  "minio": {
+    "bucketDirectoryBytes": 4096,
+    "metadataInodes": 113
+  },
+  "database": {
+    "allConnectionsToPrimary": true
+  },
+  "declared": {
+    "capacityBytes": 47991902208,
+    "blockSizeBytes": 4096,
+    "inodes": 12582912,
+    "globalFootprintLimitBytes": 17179869184,
+    "metadataBudgetBytes": 268435456,
+    "operationalReserveBytes": 4294967296,
+    "objectOverheadBytes": 24576,
+    "deletionDebtBudgetBytes": 8589934592,
+    "observationMaxAgeSeconds": 900,
+    "monitorRole": "testinbox_monitor",
+    "applicationRoles": [
+      "testinbox_app",
+      "testinbox_ingestion"
+    ],
+    "procs": 1,
+    "metadataBudgetInodes": 100000
+  },
+  "basis": {
+    "isolation.hostFreeAtCreationBytes": "reconstructed: host filesystem avail now + the image's allocation now",
+    "preallocation.fstrimExcluded": "loop discard_max_bytes=0, mount options rw,relatime",
+    "database.allConnectionsToPrimary": "one PostgreSQL (testinbox-data-postgres-1), no replica, no pooler",
+    "preallocation.allocatedBytes": "st_blocks x 512, extent-tree blocks included; holes (FIEMAP) in holeBytes"
+  },
+  "otherEntriesOnMount": []
+}
+  [rc=0]

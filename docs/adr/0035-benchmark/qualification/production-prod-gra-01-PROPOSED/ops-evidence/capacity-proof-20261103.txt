@@ -1,0 +1,17 @@
+B = 4096, eps = 1/256, O_max = 24,576; F(0,1) = 28,688; F(15 MiB,1) = 15,818,768
+declared max ingestion processes = 1: H = 251,658,240, H_F = 253,100,288
+worst envelope: 50 recipients x 2 x 15 MiB = 1,572,864,000 B in 25,050 objects, F = 2,297,642,303
+C_fs = 47,991,902,208 (44.696 GiB); I_fs = 12,582,912; the 30 footprint shares use 16.8 % of C_fs
+[PAYLOAD] 30 x 128 MiB 4,026,531,840 + legacy 1,073,741,824 + envelope 1,572,864,000 + H 251,658,240 = 6,924,795,904 <= G 8,589,934,592  slack 1,665,138,688  OK
+[GLOBAL_F] 30 x 256 MiB 8,053,063,680 + legacy 2,147,483,648 + F(envelope) 2,297,642,303 + H_F 253,100,288 = 12,751,289,919 <= G_F 17,179,869,184  slack 4,428,579,265  OK
+[FS] 12,751,289,919 + unattributed 268,435,456 + trash 4,294,967,296 + P_F 67,108,864 + M 268,435,456 + R_ops 4,294,967,296 = 21,945,204,287 <= C_fs 47,991,902,208  slack 26,046,697,921  OK
+[I-C] G_F 17,179,869,184 + D_budget 8,589,934,592 + P_F + M + R_ops = 30,400,315,392 <= C_fs 47,991,902,208  slack 17,591,586,816  OK
+[R_ops] 4,294,967,296 >= max(C_fs/20, 2 GiB) = 2,399,595,110  slack 1,895,372,186  OK
+[P_F] 67,108,864 >= F(15 MiB,1) + F(0,1) = 15,847,456  slack 51,261,408  OK
+[INODES] I_fs 12,582,912 >= C_fs/B 11,716,773  slack 866,139  OK
+[G_F>H_F] 17,179,869,184 > 253,100,288  slack 16,926,768,896  OK
+[DEBT] F(unattributed debt today 49,595,918 B / 193 obj) = 55,326,436 <= unattributed allowance 268,435,456  slack 213,109,020  OK
+[R_ops+M>=root reserve] R_ops + M = 4,563,402,752 >= ext4 root reserve 2,576,977,920 (admission stops before MinIO's own f_bavail = 0)  slack 1,986,424,832  OK
+minima with this legacy inventory: G >= 6,924,795,904, G_F >= 12,751,289,919
+[CONSISTENCY] pool file, env declarations, fs-monitor config and measured facts agree
+VERDICT: FITS (no overcommit)
