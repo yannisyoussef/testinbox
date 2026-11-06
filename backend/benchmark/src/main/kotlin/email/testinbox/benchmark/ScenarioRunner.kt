@@ -168,28 +168,7 @@ class ScenarioRunner(
                 val heartbeats = startHeartbeats(protocol)
                 val retentionEvents = Math.ceil(retentionRate * duration).toInt()
                 val retentionThread =
-                    Thread({
-                        val report =
-                            OpenLoopScheduler(retentionRate, options.arrivals, options.seed + 1).run(retentionEvents, 1) { due ->
-                                val deleted =
-                                    try {
-                                        protocol.retention.sweep().hardDeleted
-                                    } catch (
-                                        @Suppress("TooGenericExceptionCaught") e: RuntimeException,
-                                    ) {
-                                        retentionFailures += e
-                                        throw e
-                                    }
-                                if (deleted == 0) {
-                                    retentionStarved.incrementAndGet()
-                                    false
-                                } else {
-                                    retentionLatencies += System.nanoTime() - due.scheduledNanos
-                                    true
-                                }
-                            }
-                        retentionAchieved.set(java.lang.Double.doubleToLongBits(report.achievedPerSecond))
-                    }, "bench-retention")
+                    retentionThread(protocol, retentionRate, retentionEvents, retentionLatencies, retentionStarved, retentionFailures)
                 val events = (spec.offeredRate * duration).toInt()
                 val scheduler = OpenLoopScheduler(spec.offeredRate, options.arrivals, options.seed)
                 retentionThread.start()
@@ -257,6 +236,39 @@ class ScenarioRunner(
             }
         }
     }
+
+    /** Retention sweeps, open loop on their own thread: a starved sweep is counted, never a sample. */
+    @Suppress("LongParameterList") // the measured phase's own collectors
+    private fun retentionThread(
+        protocol: ProtocolAssembly,
+        retentionRate: Double,
+        retentionEvents: Int,
+        retentionLatencies: MutableList<Long>,
+        retentionStarved: AtomicInteger,
+        retentionFailures: MutableList<Throwable>,
+    ): Thread =
+        Thread({
+            val report =
+                OpenLoopScheduler(retentionRate, options.arrivals, options.seed + 1).run(retentionEvents, 1) { due ->
+                    val deleted =
+                        try {
+                            protocol.retention.sweep().hardDeleted
+                        } catch (
+                            @Suppress("TooGenericExceptionCaught") e: RuntimeException,
+                        ) {
+                            retentionFailures += e
+                            throw e
+                        }
+                    if (deleted == 0) {
+                        retentionStarved.incrementAndGet()
+                        false
+                    } else {
+                        retentionLatencies += System.nanoTime() - due.scheduledNanos
+                        true
+                    }
+                }
+            retentionAchieved.set(java.lang.Double.doubleToLongBits(report.achievedPerSecond))
+        }, "bench-retention")
 
     /** Warm-up: plans, pool connections and the JIT, untimed and discarded. */
     private fun warmUp(

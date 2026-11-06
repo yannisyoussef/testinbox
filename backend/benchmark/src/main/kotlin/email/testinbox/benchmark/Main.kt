@@ -96,14 +96,7 @@ class Harness(
             val directory = options.outputDirectory.resolve(STAMP.format(environmentRecord.timestamp))
             Files.createDirectories(directory)
             val matrix = Matrix(target, adminPool, directory)
-            if (options.focusedCohort) {
-                matrix.closedCohortChosen()
-            } else {
-                options.workspaces.forEachIndexed { index, workspaces ->
-                    if (index > 0) wipe(admin)
-                    matrix.population(workspaces)
-                }
-            }
+            runMatrix(matrix, admin)
             val results = matrix.results
             val variantResults = matrix.variantResults
             val bytesPerCopy = matrix.bytesPerCopy
@@ -187,6 +180,21 @@ class Harness(
                 Verdict.FAIL -> EXIT_FAIL
                 Verdict.INCOMPLETE -> EXIT_INCOMPLETE
             }
+        }
+    }
+
+    /** The populations, one after another (wiped between), or the loaded closed cohort of `--focused-cohort`. */
+    private fun runMatrix(
+        matrix: Matrix,
+        admin: JdbcClient,
+    ) {
+        if (options.focusedCohort) {
+            matrix.closedCohortChosen()
+            return
+        }
+        options.workspaces.forEachIndexed { index, workspaces ->
+            if (index > 0) wipe(admin)
+            matrix.population(workspaces)
         }
     }
 

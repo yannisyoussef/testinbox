@@ -360,15 +360,19 @@ data class BenchmarkOptions(
             }
             if (probeRepetitions < 1) throw UsageException("--probe-repetitions must be at least 1")
             if (probeDurationSeconds < 1) throw UsageException("--probe-duration-seconds must be at least 1")
-            if (focused && partitionedVariant) throw UsageException("--focused measures CHOSEN only; it takes no --partitioned-variant")
-            if (focusedCohort && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
-                throw UsageException("the closed cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
-            }
+            validateFocused()
             if (partitionedVariant && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
                 throw UsageException("the partitioned cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
             }
             if (workspaces.any { it * inboxesPerWorkspace < recipientMix.maxRecipients }) {
                 throw UsageException("every population needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
+            }
+        }
+
+        private fun BenchmarkOptions.validateFocused() {
+            if (focused && partitionedVariant) throw UsageException("--focused measures CHOSEN only; it takes no --partitioned-variant")
+            if (focusedCohort && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
+                throw UsageException("the closed cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
             }
         }
 
