@@ -33,6 +33,15 @@ failure answers uniform 451 before recipient resolution. Diagnostic refusal
 counts/reasons remain private to that workspace; the accepted cross-event
 capacity inference risk in ADR-037 is unchanged.
 
+*Dated note (2026-11-06):* one `451` is neither uniform nor before
+resolution: a write-slot wait beyond `W_slot` depends on the load of the
+workspaces the event involves. The resulting workspace-membership timing
+channel, observable by an authenticated participant, is a separate dated
+exception to ADR-035 I9 for the initial beta of at most 30 admitted accounts
+(mitigation tracked in #139), not part of the ADR-037 capacity acceptance. See
+ADR-035, "Owner decision note (2026-11-06)", and
+`docs/security/abuse-model.md`.
+
 Deleting rows does not immediately free the physical share. V20 attributes
 message/attachment cascades, releasing reservations and canonical orphan keys
 to a transient workspace cleanup mirror. The mirror survives global debt

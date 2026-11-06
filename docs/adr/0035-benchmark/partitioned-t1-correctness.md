@@ -332,18 +332,29 @@ deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:286`.
    `(38, k)` up to `lock_timeout` and then falls back to mode a, so the delivery
    is slower; it is never a partition-specific `451`.
 
-   **The baseline, and its status.** Mode a already has a channel of the same
-   kind: the per-workspace fair write slots and the `W_slot` wait that answers
-   `451` as "a load failure" are SPECIFIED by ADR-035 §5 step 5 (Accepted)
-   (4 slots per workspace per node, 10 s; `StorageProtocol.kt:42`, `:45`). Their
-   consequence for a tenant observer (membership of an address in a saturated
-   workspace, from the delay or the `451`) was NOT analysed by any ADR; it is
-   pre-existing, accepted by no ADR, in tension with I9 ("a `451` … is never
-   chosen per tenant", ADR-035 §1) and CLAUDE.md invariant 8, and escalated to
-   the owner (#124) as a possible I9 tension (`docs/security/abuse-model.md`).
-   The partitioned residual is measured against that baseline, pending the
-   owner's decision. The security review found it no worse than the baseline,
-   subject to its conditions; it did not, and cannot, accept it.
+   **The baseline, and its status (updated 2026-11-06).** Mode a already has a
+   channel of the same kind: the per-workspace fair write slots and the
+   `W_slot` wait that answers `451` as "a load failure" are SPECIFIED by
+   ADR-035 §4 step 5, with the slots of §5 (Accepted; cited in #124 as "§5
+   step 5") (4 slots per workspace per node, 10 s; `StorageProtocol.kt:42`,
+   `:45`). Their consequence for a tenant observer (membership of an address
+   in a saturated workspace, from the delay or the `451`) was not analysed by
+   any ADR. It was escalated to the owner (#124) as an I9 tension. On
+   2026-11-06 the owner **accepted it as a dated exception to I9, for the
+   initial beta of at most 30 admitted accounts only**, with mitigation
+   tracked in #139 and reviewed before any expansion (ADR-035, "Owner decision
+   note (2026-11-06)"; `docs/security/abuse-model.md`).
+
+   **The partitioned residual is NOT covered by that acceptance.** The owner's
+   decision states that it does not waive the partitioned-mode timing
+   assessment. The partitioned residual is still measured against the mode a
+   baseline, but "no worse than the baseline" is a comparison, not an
+   acceptance: the baseline's acceptance is a scoped exception, not a
+   threshold that other channels inherit. The partitioned residual still needs
+   its own assessment, its criterion (criterion 8 of the PROPOSED note, not
+   adopted) and its own owner decision. The security review found it no worse
+   than the baseline, subject to its conditions; it did not, and cannot,
+   accept it.
 
    **Conditions.** (a) The benchmark measures the channel against mode a under
    identical load: the `*-probe` scenarios at the heaviest matrix point and at a
@@ -396,5 +407,5 @@ deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:286`.
 | per-metric reasons | `MetricCardinalityTest` keeps one `reason` set per metric |
 | S-C1 probes | `*-probe` scenarios in mode a and partitioned (`ProbeLoad`); then target-copy accounting, a paced point, repetitions with bucket reset and alternating order, pooled samples (security re-check) |
 | S-C2 Ops precondition | PROPOSED note and production.md |
-| S-C3 §7.2 and abuse model | §7.2 above; abuse-model.md slot-channel baseline (behaviour specified by ADR-035 §5 step 5; its oracle consequence accepted by no ADR, escalated to the owner) and partitioned-timing entry |
+| S-C3 §7.2 and abuse model | §7.2 above; abuse-model.md slot-channel baseline (behaviour specified by ADR-035 §4 step 5 and §5; its oracle consequence escalated to the owner, then accepted on 2026-11-06 as a dated I9 exception for the beta of at most 30 accounts, #139) and partitioned-timing entry (not accepted) |
 | S-REC lock order | `(38,·)` before shared `(35,1)` (`JSA:204`), argument in §3, `PRT:137` (failed before) |
