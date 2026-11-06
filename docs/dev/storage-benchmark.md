@@ -139,9 +139,34 @@ default 4 repetitions send 960 per class, point and mode. `cold` targets always
 pass INGEST. `inside` targets compete with the flood for the hot workspace's
 10/s refill: assuming only 50 % pass, 480 target-reached events pool, 1.6 × the
 300 minimum (300 is still met at 31 %). Staging recommendation: the defaults,
-`--probe-repetitions 4 --probe-duration-seconds 60`. Added wall time per
-population: 2 points × 2 modes × 4 repetitions = 16 runs of about 60 s + warm-up +
-reset/restore (≈ 85 s each), so about 23 minutes.
+`--probe-repetitions 4 --probe-duration-seconds 60`.
+
+**Wall time (corrected after the staging run of #136 at 1023af5).** A probe run
+is open loop: it SCHEDULES `rate × probe duration` events for each of its two
+streams (the hot flood at the matrix rate at the heaviest point, and the
+background at the matrix rate at both points: 520/s × 60 s = 31 200 events each)
+and ends only when every scheduled event has completed. So a run lasts
+`max(scheduled / achieved rate)` over its streams, not 60 s. At r520 the
+streams cannot keep up: every flood copy is charged to the hot workspace's
+INGEST buckets, which are single `rate_bucket` rows taken `FOR UPDATE` in their
+own transactions, so the whole flood serializes on those rows, and the
+background's admitted copies queue on T1 and the write slots. The backlog drains
+at that saturated rate, which on the staging host made one probe run take about
+45 minutes, not the ≈ 85 s first estimated here (that estimate holds only where
+both streams keep up, as at the laptop smoke's 40/s). With 16 runs per
+population that is on the order of 12 hours at r520.
+
+A cheap way to bound it without changing what the probes measure (proposed,
+NOT the default): give the probe runs a deadline - stop DISPATCHING flood and
+background events at the probe duration (plus a short grace) and count the
+undispatched ones as not run, instead of draining a backlog that only repeats
+the same saturated steady state. The probe classes, the reset buckets, the
+repetitions and the 60 s of load the probes sit in are unchanged; `achievedRate`
+then describes the 60 s window. A second option, a probe-only offered rate equal
+to what INGEST can admit (the background's ceiling ≈ 270 copies/s ≈ 67 events/s
+at the mix's mean of about 4 copies; the hot flood's ≈ 10 copies/s), would also
+bound it, but it removes the INGEST-discarded events, which are real load on the
+`rate_bucket` rows, so it changes what is measured. Neither is adopted yet.
 
 `variant.probePooled` pools the repetitions per point and mode, with
 the sample size, `minimumSampleMet` (300) and `insideMinusColdP99Ms`; no verdict

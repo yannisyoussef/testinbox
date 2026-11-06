@@ -306,6 +306,7 @@ class Evidence(
                     )
                 },
             "partitionFallbacks" to s.partitionFallbacks,
+            "eventsWithoutT1" to s.eventsWithoutT1,
             "partitionFallbackReasons" to s.partitionFallbackReasons,
             "background" to
                 s.background?.let {

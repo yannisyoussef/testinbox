@@ -638,6 +638,8 @@ class ScenarioRunner(
         val lockTimeouts = records.count { it.failure == Failure.LOCK_TIMEOUT }
         val deadlocks = records.count { it.failure == Failure.DEADLOCK } + retentionFailures.count(::isDeadlock)
         val slotMisses = records.count { it.failure == Failure.SLOT_WAIT }
+        // Only events whose T1 ran enter a latency (an INGEST-discarded probe flood event never does).
+        val latencies = EventLatencyStats.of(ok.map { TimedEvent(it.dueNanos, it.timings) })
         val other = records.count { it.failure == Failure.OTHER } + retentionFailures.count { !isDeadlock(it) }
         return ScenarioResult(
             name = name,
@@ -657,16 +659,17 @@ class ScenarioRunner(
             completedEvents = report.completed,
             terminalLagMs = o.terminalLagNanos / 1e6,
             copiesCommitted = ok.sumOf { it.copies.toLong() },
-            t1 = LatencySummary.ofNanos(ok.map { it.timings.t1EndNanos - it.dueNanos }),
-            t1Transaction = LatencySummary.ofNanos(ok.map { it.timings.t1Nanos }),
-            t2 = LatencySummary.ofNanos(ok.map { it.timings.t2Nanos }),
+            t1 = latencies.t1,
+            t1Transaction = latencies.t1Transaction,
+            t2 = latencies.t2,
             event = LatencySummary.ofNanos(report.latencyNanos),
             retention = LatencySummary.ofNanos(o.retentionLatencies),
             retentionOfferedRate = o.retentionRate,
             retentionAchievedRate = java.lang.Double.longBitsToDouble(retentionAchieved.get()),
             retentionStarvedTicks = o.retentionStarved,
-            lockWait = LatencySummary.ofNanos(ok.map { it.timings.lockWaitNanos }),
-            slotWait = LatencySummary.ofNanos(ok.map { it.timings.slotWaitNanos }),
+            lockWait = latencies.lockWait,
+            slotWait = latencies.slotWait,
+            eventsWithoutT1 = latencies.withoutT1,
             lockTimeouts = lockTimeouts,
             lockTimeoutRate = if (report.scheduled == 0) 0.0 else lockTimeouts.toDouble() / report.scheduled,
             deadlocks = deadlocks,
