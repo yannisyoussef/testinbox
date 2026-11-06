@@ -105,6 +105,11 @@ data class ScenarioResult(
     val probes: Map<String, ProbeSummary>? = null,
     /** The timing-probe scenario only: what its background traffic achieved (the system was loaded). */
     val background: BackgroundSummary? = null,
+    /**
+     * Completed events that never reached T1 (every copy discarded by INGEST before it:
+     * probe floods only) and so enter no latency figure; 0 everywhere else.
+     */
+    val eventsWithoutT1: Int = 0,
 ) {
     /** completed / scheduled: separate from the achieved rate, which also carries the terminal lag. */
     val completionRatio: Double get() = if (scheduledEvents == 0) 0.0 else completedEvents.toDouble() / scheduledEvents
