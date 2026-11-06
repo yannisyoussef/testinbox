@@ -2704,8 +2704,11 @@ and changes no text before it. It is recorded before the frozen-candidate run.
   gateway's **production pool size, 8**, and its production pool lifetime;
   cold start included; concurrency 10, 25, 50 and 100; on the frozen
   candidate.
-- **(d) No re-run until pass.** The run is not repeated until it passes, and
-  no threshold changes after it, without a new owner decision.
+- **(d) Freeze, then run once.** The candidate and these criteria are frozen
+  before the evidence run. A valid failure remains FAIL. Repeated attempts
+  to obtain a favourable result are not allowed, and no threshold changes
+  after the run without a new owner decision. A rerun is permitted only
+  after a documented correction, under the review process.
 - **(e) Nothing else changes.** §11's own criteria and concurrency model are
   unchanged for anything beyond this cohort, including the thirty-place
   envelope of amendment D.
