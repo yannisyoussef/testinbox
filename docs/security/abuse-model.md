@@ -226,6 +226,17 @@
        repeated observations give a busy/idle time series, no finer. The
        sampling rate is bounded by the same `INGEST` budgets, which the probes
        spend from W's own budget.
+       *Note (2026-11-06), the pre-T1 `INGEST` refund (ADR-027 §4 as
+       amended; `docs/dev/beta-limits.md`):* a probe attempt answered `451`
+       before T1 (no write slot within `W_slot`) now has its charges given
+       back. The edge retries it no sooner than 120 s later, and the attempt
+       that is delivered is charged once. The budget is therefore spent once
+       per **delivered probe event**, no longer once per attempt; the observer
+       still sees one delivery time per event, at the edge's retry cadence
+       (no DSN). A probe that reaches a slot is charged as before, so the
+       flood of consequence 1 is unchanged. Whether consequence 2's sampling
+       bound holds as accepted with this change is put to the security review
+       of the refund. This note does not assert it.
   - **Preconditions common to both.** Storage enforcement running the guarded
     protocol (`ALL`). Production is `OFF` today, so neither is live; both
     become live when `ALL` is enabled for the beta.
