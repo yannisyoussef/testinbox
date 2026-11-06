@@ -75,8 +75,12 @@ object EscrowReport {
                 appendLine("- inline refills by kind:cause: ${r.inlineRefills}; duration ${summary(r.inlineRefillDuration)}")
                 appendLine("- scope-row lock statement: ${summary(r.scopeLock)}; waits >= 1 ms: ${r.scopeLockWaitsOver1ms}")
                 appendLine(
-                    "- regrants: ${r.regrants} (not granted: ${r.regrantsNotGranted}); durations " +
+                    "- keeper refill-only transactions (fence + mode a snapshot + regrant): ${r.regrants}; " +
                         r.regrantDuration.entries.joinToString { "${it.key} ${summary(it.value)}" },
+                )
+                appendLine(
+                    "- regrant statement alone (slow path = paths.slow, plus the keeper's): ${summary(r.regrantStatement)}; " +
+                        "not granted: ${r.regrantsNotGranted}",
                 )
                 appendLine("- background scope refills (keeper): ${r.backgroundScopeRefills}; keeper ${r.keeper}")
                 appendLine(

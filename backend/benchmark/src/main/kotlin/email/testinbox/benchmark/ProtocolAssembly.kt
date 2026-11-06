@@ -3,7 +3,6 @@ package email.testinbox.benchmark
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.port.EscrowInputs
-import email.testinbox.application.port.EscrowRegrantKind
 import email.testinbox.application.port.IncompleteUpload
 import email.testinbox.application.port.PhysicalFailureKind
 import email.testinbox.application.port.ReservedUpload
@@ -312,9 +311,9 @@ class ProtocolAssembly(
             options.referenceMode,
             declarations,
             escrowInputs?.let { inputs ->
-                EscrowSlowPath(jdbc, inputs) { regrant, duration ->
-                    escrowMetrics.regrant(EscrowRegrantKind.SLOW_PATH, duration, regrant.granted)
-                }
+                // The strategy's regrant STATEMENT, from either caller (the slow path, or the keeper's
+                // refill-only transaction); the keeper's whole transaction is RefillStorageEscrow's KEEPER.
+                EscrowSlowPath(jdbc, inputs) { regrant, duration -> escrowMetrics.regrantStatement(duration, regrant.granted) }
             },
         ) { reason ->
             fallbackReasons

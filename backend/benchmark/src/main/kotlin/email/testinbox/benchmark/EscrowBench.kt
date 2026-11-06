@@ -201,6 +201,18 @@ class RecordingEscrowMetrics : StorageEscrowMetrics {
     val regrants = ConcurrentHashMap<EscrowRegrantKind, AtomicLong>()
     val regrantNanos = ConcurrentHashMap<EscrowRegrantKind, MutableList<Long>>()
     val regrantsNotGranted = AtomicLong()
+
+    /** The one regrant statement's round trip, whichever transaction issued it (slow path or keeper). */
+    val regrantStatementNanos: MutableList<Long> = Collections.synchronizedList(ArrayList())
+
+    fun regrantStatement(
+        duration: Duration,
+        granted: Boolean,
+    ) {
+        regrantStatementNanos += duration.toNanos()
+        if (!granted) regrantsNotGranted.incrementAndGet()
+    }
+
     val backgroundRefills = AtomicLong()
 
     override fun path(path: EscrowPath) {
@@ -231,7 +243,6 @@ class RecordingEscrowMetrics : StorageEscrowMetrics {
     ) {
         regrants.computeIfAbsent(kind) { AtomicLong() }.incrementAndGet()
         regrantNanos.computeIfAbsent(kind) { Collections.synchronizedList(ArrayList()) } += duration.toNanos()
-        if (!granted) regrantsNotGranted.incrementAndGet()
     }
 
     override fun backgroundRefill(count: Int) {
@@ -247,6 +258,7 @@ class RecordingEscrowMetrics : StorageEscrowMetrics {
         regrants.clear()
         regrantNanos.clear()
         regrantsNotGranted.set(0)
+        regrantStatementNanos.clear()
         backgroundRefills.set(0)
     }
 }
@@ -281,8 +293,11 @@ data class EscrowScenarioReport(
     val inlineRefillDuration: LatencySummary?,
     val scopeLock: LatencySummary?,
     val scopeLockWaitsOver1ms: Int,
+    /** Keeper refill-only TRANSACTIONS (fence, snapshot, regrant), count and duration; slow-path regrants = `paths.slow`. */
     val regrants: Map<String, Long>,
     val regrantDuration: Map<String, LatencySummary?>,
+    /** The regrant statement alone, from the slow path and the keeper alike. */
+    val regrantStatement: LatencySummary?,
     val regrantsNotGranted: Long,
     val backgroundScopeRefills: Long,
     val keeper: Map<String, Long>,
@@ -373,6 +388,7 @@ data class EscrowScenarioReport(
                         it.key.name.lowercase() to
                             LatencySummary.ofNanos(it.value.toList())
                     },
+                regrantStatement = LatencySummary.ofNanos(metrics.regrantStatementNanos.toList()),
                 regrantsNotGranted = metrics.regrantsNotGranted.get(),
                 backgroundScopeRefills = metrics.backgroundRefills.get(),
                 keeper = keeper,
