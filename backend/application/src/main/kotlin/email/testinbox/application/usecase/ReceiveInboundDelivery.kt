@@ -130,8 +130,22 @@ class ReceiveInboundDelivery(
         // events with a known recipient would get it, and the 451/250 split
         // would be a recipient-existence oracle (ADR-025). That includes
         // recovery: a half-open breaker's trial is the non-tenant witness, run
-        // in this same check, never a tenant event's upload.
-        storage.unavailable()?.let { throw it }
+        // in this same check, never a tenant event's upload, and a real-event
+        // trial is claimed here, by one event at a time.
+        val admission = storage.admitEvent()
+        admission.refusal?.let { throw it }
+        try {
+            return deliver(command, admission)
+        } finally {
+            // A real-event trial this event claimed and never used (no copy reached an upload) goes back.
+            storage.release(admission)
+        }
+    }
+
+    private fun deliver(
+        command: Command,
+        admission: email.testinbox.application.storage.EventAdmission,
+    ): Result {
         val now = clock.instant()
         val recipients = command.recipients.map { it.trim().lowercase() }.distinct()
         require(recipients.size <= StorageAdmissionRequest.MAX_CANDIDATES) { "an event has at most 50 distinct envelope recipients" }
@@ -212,7 +226,7 @@ class ReceiveInboundDelivery(
         val plans = prepared.map { it.plan(command.raw) }
         val byMessage = prepared.associateBy { it.messageId }
         val report =
-            storage.ingest(plans.first().bytes, plans, envelopePositions) { admitted ->
+            storage.ingest(plans.first().bytes, plans, envelopePositions, admission) { admitted ->
                 // Inside T2, after the reservation fence and the inbox locks: all
                 // of this event's rows and notifications commit together (ADR-026).
                 admitted.associate { plan ->

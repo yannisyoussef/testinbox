@@ -44,10 +44,16 @@ import java.time.Duration
  * (the witness, a clock measurement, the evidence) run on that path, whatever
  * the event's recipients. A tenant event never runs it. When the proof
  * passes, the kinds a probe can prove close at once; the kinds that need a
- * real event ([Admission.Trial.needsRealEvent]) become [Admission.Proven]:
- * events pass the gate again, and the first one that reaches an upload takes
- * the real-event trial through [admitRealEvent]. A failed proof is a failed
- * trial: the doubled backoff, and the same `451` for everyone.
+ * real event ([Admission.Trial.needsRealEvent]) become proven, and the
+ * real-event trial is CLAIMED at the gate too ([Admission.Proven]): one event
+ * at a time, before resolution, while every other event gets the same
+ * pre-resolution `451`. A claimant that stores nothing gives the claim back.
+ * A failed proof is a failed trial: the doubled backoff, and the same `451`
+ * for everyone.
+ *
+ * Every trial is bound to its trip generation: ending a trial of an older
+ * generation ([abandonTrial], [close], [trip] with the trial) never ends,
+ * closes or fails a newer one, so two trials can never run at once.
  */
 class StorageBreaker(
     private val initialBackoff: Duration = Duration.ofSeconds(15),
@@ -89,11 +95,15 @@ class StorageBreaker(
         ) : Admission
 
         /**
-         * Still open, but this trip generation's non-tenant proof passed and
-         * no real-event trial is running: the event may go on to resolve its
-         * recipients. Only kinds that need a real event ever get here.
+         * Still open, but this trip generation's non-tenant proof passed, and
+         * THIS caller now holds its real-event [trial]: it may go on to
+         * resolve its recipients, and must end the trial ([close], [trip] or
+         * [abandonTrial]) whether or not it reaches an upload. Only kinds that
+         * need a real event ever get here.
          */
-        data object Proven : Admission
+        data class Proven(
+            val trial: Trial,
+        ) : Admission
 
         /**
          * This caller runs the half-open trial for [kinds]. It must end in
@@ -138,13 +148,18 @@ class StorageBreaker(
     /**
      * The pre-resolution gate. [Admission.Trial] means the caller runs the
      * half-open proof NOW, before any recipient resolves, and ends it with
-     * [proven], [trip] or [abandonTrial].
+     * [proven], [trip] or [abandonTrial]. [Admission.Proven] means the caller
+     * holds the real-event trial.
      */
     fun admit(): Admission {
         val evidence = evidenceIfNeeded()
         synchronized(this) {
             if (kinds.isEmpty()) return Admission.Closed
-            if (proven) return if (trialInFlight) Admission.Blocked(kinds.toSet()) else Admission.Proven
+            if (proven) {
+                if (trialInFlight) return Admission.Blocked(kinds.toSet())
+                trialInFlight = true
+                return Admission.Proven(Admission.Trial(kinds.toSet(), epoch))
+            }
             if (trialInFlight || nanoTime() - retryAt < 0) return Admission.Blocked(kinds.toSet())
             // No trial, and no trial consumed, while a full (or possibly full) filesystem has
             // no evidence of recovery FOR THIS trip generation: evidence read before a later
@@ -210,8 +225,30 @@ class StorageBreaker(
     fun trip(
         kind: Kind,
         fromTrialEvent: Boolean = false,
+    ) = tripLocked(kind, fromTrialEvent, failedTrial = kinds.isNotEmpty() && trialInFlight)
+
+    /**
+     * A physical failure met by the caller holding [trial]: its [realEvent]
+     * (an upload), or its proof. Only a trial of the CURRENT generation fails
+     * here: a stale one (a trip overtook it) is reported like any concurrent
+     * event's failure, and never counts as the newer trial's failure, never
+     * doubles its backoff and never escalates.
+     */
+    @Synchronized
+    fun trip(
+        kind: Kind,
+        trial: Admission.Trial,
+        realEvent: Boolean,
     ) {
-        val failedTrial = kinds.isNotEmpty() && trialInFlight
+        val current = trial.epoch == epoch && trialInFlight
+        tripLocked(kind, fromTrialEvent = current && realEvent, failedTrial = current)
+    }
+
+    private fun tripLocked(
+        kind: Kind,
+        fromTrialEvent: Boolean,
+        failedTrial: Boolean,
+    ) {
         backoff =
             if (failedTrial) {
                 minOf(backoff.multipliedBy(2), maxBackoff)
@@ -243,55 +280,47 @@ class StorageBreaker(
     val openKinds: Set<Kind> get() = kinds.toSet()
 
     /**
-     * The non-tenant proof of [trial] passed. Kinds a probe proves close now;
-     * kinds that need a real event become [Admission.Proven]. Returns whether
-     * events may pass the gate: false when a trip overtook the proof (that
-     * trip already ended the trial, and may have issued a newer one).
+     * The non-tenant proof of [trial] passed. Kinds a probe proves close now
+     * ([Admission.Closed]). For kinds that need a real event the generation
+     * becomes proven, and the prover keeps the trial as its real-event claim
+     * ([Admission.Proven]). [Admission.Blocked] when a trip overtook the proof:
+     * that trip already ended it, and may since have issued a newer trial.
      */
     @Synchronized
-    fun proven(trial: Admission.Trial): Boolean {
-        if (trial.epoch != epoch) return kinds.isEmpty()
+    fun proven(trial: Admission.Trial): Admission {
+        if (trial.epoch != epoch) return if (kinds.isEmpty()) Admission.Closed else Admission.Blocked(kinds.toSet())
         if (!trial.needsRealEvent) {
             close()
-        } else {
-            proven = true
-            trialInFlight = false
+            return Admission.Closed
         }
-        return true
-    }
-
-    /**
-     * The real-event trial, for an event that has resolved its recipients and
-     * is about to reserve and upload. Only after the proof ([Admission.Proven]),
-     * and one at a time; anything else is [Admission.Blocked]. It ends in
-     * [close], [trip] or [abandonTrial] like any trial.
-     */
-    @Synchronized
-    fun admitRealEvent(): Admission {
-        if (kinds.isEmpty()) return Admission.Closed
-        if (!proven || trialInFlight) return Admission.Blocked(kinds.toSet())
-        trialInFlight = true
-        return Admission.Trial(kinds.toSet(), epoch)
+        proven = true // trialInFlight stays set: the prover now holds the real-event claim
+        return Admission.Proven(trial)
     }
 
     /** Whether the proof passed and a real-event trial is due or running (for metrics, logs and tests). */
     @get:Synchronized
     val awaitsRealEvent: Boolean get() = proven
 
-    /** The trial ended without an answer (the event stored nothing): the next caller trials instead. */
+    /**
+     * [trial] ended without an answer (its event stored nothing): the next
+     * caller trials instead. A trial of an older generation frees nothing: a
+     * trip already ended it, and the slot may belong to a newer trial.
+     */
     @Synchronized
-    fun abandonTrial() {
-        trialInFlight = false
+    fun abandonTrial(trial: Admission.Trial) {
+        if (trial.epoch == epoch) trialInFlight = false
     }
 
     /**
      * [trial] succeeded. It closes the breaker only if nothing tripped since
      * it was issued: a quota trial is a whole real event, and an ambiguous
-     * outcome or a clock offset reported meanwhile needs its own trial.
+     * outcome or a clock offset reported meanwhile needs its own trial. A
+     * stale trial touches nothing: the trip already ended it, and the slot
+     * may belong to a newer trial.
      */
     @Synchronized
     fun close(trial: Admission.Trial) {
-        if (trial.epoch == epoch) close() else trialInFlight = false
+        if (trial.epoch == epoch) close()
     }
 
     /** Closes unconditionally (a success no later trip can have overtaken). */

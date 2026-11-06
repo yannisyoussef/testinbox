@@ -2627,34 +2627,50 @@ mapping.
 
 - **The property.** A global storage fault gets the same reply for every
   event, decided before any recipient resolves, for as long as the fault lasts
-  and **while it recovers**. The breaker's half-open trial is no longer run by
-  the first event that reaches an upload. It is the non-tenant proof (the
-  witness, a fresh clock measurement, the Ops evidence), run on the
-  pre-resolution path by whichever event arrives first. A failed proof
-  re-trips with the §8 backoff, and every event in the window gets the same
-  `451`. The backoff schedule is unchanged.
-- **§8, opening causes.** A `403` refusal of the fenced upload
-  (`AccessDenied`, `SignatureDoesNotMatch`) opens the breaker with its own
-  kind. Credentials, bucket policy and a missed deadline say nothing about a
-  recipient. Only the witness reopens it, after the normal backoff, so one
-  spurious `403` costs one backoff and never a latch. The §16 metric keeps
-  `kind=deadline`.
-- **§8, quota.** The quota trial is the witness and then one real event. A
-  bucket at or over its hard quota refuses even the zero-byte witness. The
-  real-event confirmation of quota, a full filesystem and an ambiguous upload
-  (§8, issue #102) stays. It only starts once the non-tenant proof has passed.
-- **Residual (not closed by this note).** Once that proof has passed, the
-  first real upload can still fail. This happens with a quota that is lagging
-  within one message of its limit, or with evidence that is wrong. Until that
-  upload re-trips the breaker, events that reach an upload and events that do
-  not can be answered differently. This is the same transient split as a
-  fault's onset. A full filesystem needs a newer observation for each such
-  trial. Under `OFF`, an ambiguous upload escalates after one. A quota that
-  keeps passing the witness can reopen the window at every backoff (at most
-  every 2 min) for as long as it lasts. Closing that is an owner decision,
-  for example an evidence gate for quota or a sized non-tenant probe.
-  Write-slot, lock-timeout and other after-resolution `451`s are unchanged:
-  the slot cap is the owner-accepted I9 exception above.
+  and **while it recovers**. The breaker's half-open trial is the non-tenant
+  proof (the witness, a fresh clock measurement, the Ops evidence), run on the
+  pre-resolution path by whichever event arrives first, never by an event's
+  upload. A failed proof re-trips with the §8 backoff, and every event in the
+  window gets the same `451`. The backoff schedule is unchanged.
+- **The real-event trial is claimed before resolution.** Quota, a full
+  filesystem and an ambiguous upload keep their real-event confirmation (§8,
+  issue #102). It starts only once the non-tenant proof has passed, and it is
+  held by one event at a time, chosen before resolution. Every other event
+  gets the same pre-resolution `451` until that event is over. If it reaches no
+  upload, the next event takes the claim.
+- **One trial at a time, per trip.** Every trial is bound to the trip it was
+  issued for. A trial that a later trip overtook can no longer end, close or
+  fail a newer one. So two trials, and two real-event uploads to a possibly
+  full store, never run at once.
+- **§8, opening causes.** A `403` refusal of a fenced upload that comes
+  **before the copy's write deadline** opens the breaker with its own kind.
+  Credentials and bucket policy say nothing about a recipient. Only the
+  witness reopens it, after the normal backoff, so one spurious `403` costs one
+  backoff and never a latch. A `403` at or after the deadline is an expired
+  URL from one slow upload: that event's own `451`, and no trip. The §16 metric
+  keeps `kind=deadline` for both.
+- **§8, quota.** The quota trial is the witness and then the claimed real
+  event. A bucket at or over its hard quota refuses even the zero-byte witness.
+- **Remaining split: the trial event itself** (inherent to #102). While the
+  real-event trial is in flight, its own event's reply depends on whether it
+  reached an upload. A full filesystem needs a newer observation for each such
+  trial. Under `OFF`, an ambiguous upload escalates after one.
+- **Quota precondition.** Under `ALL`, admitted payload and footprint are
+  bounded by the ceilings. So the quota residual (a bucket quota that keeps
+  passing the witness while real uploads fail) is **unreachable while the
+  bucket hard quota is at least *G_F* with margin**. That precondition is
+  **verified at activation**, not assumed. **Under `OFF`, or if the
+  precondition fails**, a persistent split is possible. It is observable only
+  if a delivery notice reaches a sender; closing that path is tracked as EP-8.
+- **Unchanged.** Write-slot, lock-timeout and other after-resolution `451`s.
+  The slot cap is the owner-accepted I9 exception above.
+- **Verification.**
+  - Byte-identical SMTP transcripts for known, unknown and at-ceiling
+    recipients through the open, half-open and real-event phases, and for
+    concurrent events while the real-event trial is claimed.
+  - Qualification criterion: **zero `DENIED` trips at 2R with healthy
+    credentials.**
+  - At activation: bucket hard quota ≥ *G_F* plus margin.
 
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 

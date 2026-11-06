@@ -58,8 +58,7 @@ class StorageBreakerTest {
     fun `an abandoned trial lets the next caller trial instead, with no new backoff`() {
         breaker.trip(Kind.QUOTA)
         advance(Duration.ofSeconds(15))
-        breaker.admit().shouldBeInstanceOf<Admission.Trial>()
-        breaker.abandonTrial()
+        breaker.abandonTrial(breaker.admit().shouldBeInstanceOf<Admission.Trial>())
         breaker.admit() shouldBe Admission.Trial(setOf(Kind.QUOTA), 1)
     }
 
@@ -410,27 +409,22 @@ class StorageBreakerTest {
     // --- the pre-resolution gate and the non-tenant proof (ADR-025, 2026-11-06) ---------------------
 
     @Test
-    fun `a proof that passes for a real-event kind admits events, then exactly one real-event trial`() {
+    fun `a proof that passes for a real-event kind hands the prover the claim, and the gate one claim at a time`() {
         breaker.trip(Kind.QUOTA)
-        breaker.admitRealEvent() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) // never before the proof
         advance(breaker.currentBackoff)
         val proof = breaker.admit() as Admission.Trial
-        breaker.admitRealEvent() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) // the proof is still running
-        breaker.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA))
+        breaker.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) // the proof is still running
 
-        breaker.proven(proof) shouldBe true
+        breaker.proven(proof) shouldBe Admission.Proven(proof) // the prover keeps it as its real-event claim
         breaker.isOpen shouldBe true // a real event still has to confirm it (ADR-035 §8)
         breaker.awaitsRealEvent shouldBe true
-        repeat(3) { breaker.admit() shouldBe Admission.Proven } // every gate passes: no second proof
+        repeat(3) { breaker.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) } // everyone else, at the gate
 
-        val real = breaker.admitRealEvent()
-        real shouldBe Admission.Trial(setOf(Kind.QUOTA), 1)
-        breaker.admitRealEvent() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) // one at a time
-        breaker.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) // and the gate refuses everyone meanwhile
-
-        breaker.abandonTrial() // that event stored nothing (refused by its ceiling): the proof still stands
-        breaker.admit() shouldBe Admission.Proven
-        breaker.close(breaker.admitRealEvent() as Admission.Trial)
+        breaker.abandonTrial(proof) // that event stored nothing: the claim goes back, the proof still stands
+        val next = breaker.admit()
+        next shouldBe Admission.Proven(Admission.Trial(setOf(Kind.QUOTA), 1)) // no second proof
+        breaker.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA))
+        breaker.close((next as Admission.Proven).trial)
         breaker.isOpen shouldBe false
         breaker.awaitsRealEvent shouldBe false
     }
@@ -439,9 +433,8 @@ class StorageBreakerTest {
     fun `a failed real-event trial after the proof is a failed trial - doubled backoff, and the gate shuts again`() {
         breaker.trip(Kind.QUOTA)
         advance(breaker.currentBackoff)
-        breaker.proven(breaker.admit() as Admission.Trial)
-        breaker.admitRealEvent().shouldBeInstanceOf<Admission.Trial>()
-        breaker.trip(Kind.QUOTA)
+        val claim = (breaker.proven(breaker.admit() as Admission.Trial) as Admission.Proven).trial
+        breaker.trip(Kind.QUOTA, claim, realEvent = true)
         breaker.currentBackoff shouldBe Duration.ofSeconds(30)
         breaker.awaitsRealEvent shouldBe false
         breaker.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA))
@@ -454,7 +447,7 @@ class StorageBreakerTest {
         advance(breaker.currentBackoff)
         val proof = breaker.admit() as Admission.Trial
         proof.needsRealEvent shouldBe false
-        breaker.proven(proof) shouldBe true
+        breaker.proven(proof) shouldBe Admission.Closed
         breaker.isOpen shouldBe false
     }
 
@@ -464,7 +457,7 @@ class StorageBreakerTest {
         advance(breaker.currentBackoff)
         val proof = breaker.admit() as Admission.Trial
         breaker.trip(Kind.DENIED) // a heartbeat or an older event tripped while the witness ran
-        breaker.proven(proof) shouldBe false
+        breaker.proven(proof) shouldBe Admission.Blocked(setOf(Kind.UNAVAILABLE, Kind.DENIED))
         breaker.openKinds shouldBe setOf(Kind.UNAVAILABLE, Kind.DENIED)
         breaker.admit() shouldBe Admission.Blocked(setOf(Kind.UNAVAILABLE, Kind.DENIED))
     }
@@ -474,9 +467,59 @@ class StorageBreakerTest {
         full.trip(Kind.STORAGE_FULL)
         advance(Duration.ofMinutes(1))
         evidence = true
-        full.proven(full.admit() as Admission.Trial) shouldBe true
+        val claim = (full.proven(full.admit() as Admission.Trial) as Admission.Proven).trial
+        full.abandonTrial(claim)
         val checks = evidenceChecks
-        repeat(3) { full.admit() shouldBe Admission.Proven }
+        full.admit().shouldBeInstanceOf<Admission.Proven>()
         evidenceChecks shouldBe checks // no database read per event while the real event is awaited
+    }
+
+    // --- trials are bound to their generation (review of 95d3cea: two trials must never run at once) ---
+
+    /** A quota trip whose proof passed, and whose real-event claim is now uploading. */
+    private fun realTrialInFlight(): Admission.Trial {
+        breaker.trip(Kind.QUOTA)
+        advance(Duration.ofSeconds(16))
+        val proof = breaker.admit().shouldBeInstanceOf<Admission.Trial>()
+        return (breaker.proven(proof) as Admission.Proven).trial
+    }
+
+    @Test
+    fun `a stale real-event trial ending in abandon never frees a newer proof's slot`() {
+        val old = realTrialInFlight()
+        breaker.trip(Kind.CLOCK_OFFSET) // from elsewhere, while the real event is still uploading
+        advance(Duration.ofSeconds(31))
+        breaker.admit().shouldBeInstanceOf<Admission.Trial>() // the new generation's proof, in flight
+        breaker.abandonTrial(old) // the OLD real event stored nothing and ends its stale trial
+        breaker.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA, Kind.CLOCK_OFFSET)) // never a second trial
+    }
+
+    @Test
+    fun `a stale real-event trial closing successfully never frees the newer proof's slot, nor closes the breaker`() {
+        val old = realTrialInFlight()
+        breaker.trip(Kind.CLOCK_OFFSET)
+        advance(Duration.ofSeconds(31))
+        breaker.admit().shouldBeInstanceOf<Admission.Trial>()
+        breaker.close(old) // a stale success
+        breaker.isOpen shouldBe true
+        breaker.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA, Kind.CLOCK_OFFSET))
+    }
+
+    @Test
+    fun `a stale trial's failure is not the newer trial's - no doubled backoff and no escalation`() {
+        val ambiguous = StorageBreaker(Duration.ofSeconds(15), Duration.ofMinutes(2), nanoTime = { now })
+        ambiguous.trip(Kind.AMBIGUOUS)
+        advance(Duration.ofSeconds(15))
+        val old = (ambiguous.proven(ambiguous.admit() as Admission.Trial) as Admission.Proven).trial
+        ambiguous.trip(Kind.CLOCK_OFFSET) // the old real event is still uploading
+        advance(ambiguous.currentBackoff)
+        val newer = ambiguous.admit().shouldBeInstanceOf<Admission.Trial>()
+        val backoff = ambiguous.currentBackoff
+
+        ambiguous.trip(Kind.AMBIGUOUS, old, realEvent = true) // the OLD upload comes back ambiguous again
+        ambiguous.isEscalated shouldBe false
+        ambiguous.currentBackoff shouldBe backoff
+        // The trip itself still counts (a new generation): the newer proof is stale now, and ends as such.
+        ambiguous.proven(newer).shouldBeInstanceOf<Admission.Blocked>()
     }
 }

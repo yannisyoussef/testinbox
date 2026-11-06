@@ -94,6 +94,8 @@ class GuardedIngestHarness(
      * sent), which the one-way `proxy.close()` cannot give.
      */
     private val uploadFault: () -> UploadOutcome? = { null },
+    /** Wraps the inbound path's inbox lookups (e.g. to hold an event while it resolves its recipients). */
+    inboxWrapper: (email.testinbox.application.port.InboxRepository) -> email.testinbox.application.port.InboxRepository = { it },
     /** TI-STORAGE-006 §22: the activation guard the guarded path consults before the slot and T1. */
     val activation: email.testinbox.application.storage.activation.ActivationGuard =
         email.testinbox.application.storage.activation
@@ -228,7 +230,7 @@ class GuardedIngestHarness(
     val messages = JdbcMessageRepository(jdbc)
     val receive =
         ReceiveInboundDelivery(
-            JdbcInboxRepository(jdbc),
+            inboxWrapper(JdbcInboxRepository(jdbc)),
             messages,
             guarded,
             JakartaMimeParser(),

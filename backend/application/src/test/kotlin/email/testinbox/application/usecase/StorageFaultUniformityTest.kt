@@ -13,7 +13,9 @@ import email.testinbox.application.port.UploadOutcome
 import email.testinbox.application.port.UploadRefusal
 import email.testinbox.application.port.WorkspaceEligibility
 import email.testinbox.application.port.WorkspaceStatus
+import email.testinbox.application.storage.IngestSyncHook
 import email.testinbox.application.storage.StorageBreaker
+import email.testinbox.application.storage.StorageProtocol
 import email.testinbox.application.storage.StorageUnavailableException
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.ProjectId
@@ -31,6 +33,10 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * ADR-025 with ADR-035 §8 and §12: a global storage fault is answered the
@@ -94,9 +100,12 @@ class StorageFaultUniformityTest {
         ).also { inboxes.insert(it) }
 
     /** `250`, or `451` with the internal reason (never on the wire: every 451 is the same bytes). */
-    private fun reply(recipient: String): String =
+    private fun reply(
+        recipient: String,
+        via: ReceiveInboundDelivery = receive,
+    ): String =
         try {
-            receive.execute(ReceiveInboundDelivery.Command("s@example.com", listOf(recipient), "MIME".toByteArray(), "local-smtp"))
+            via.execute(ReceiveInboundDelivery.Command("s@example.com", listOf(recipient), "MIME".toByteArray(), "local-smtp"))
             "250"
         } catch (e: StorageUnavailableException) {
             "451 ${e.reason}"
@@ -224,6 +233,160 @@ class StorageFaultUniformityTest {
         // And the gate is uniform again at once.
         setOf(reply(unknown), reply(known.address), reply(atCeiling.address)) shouldBe setOf("451 BREAKER_OPEN")
         storage.inspection.witnessKeys.shouldNotBeEmpty()
+    }
+
+    // --- a 403 trips only inside the write window (review of 95d3cea) -----------------------------
+
+    /** The fake storage answers a 403 at [offset] from T1's `t0` (the reservation's write deadline is `t0 + E`). */
+    private fun deniedAt(offset: Duration) {
+        storage.blobs.onPut = { upload -> clock.now = upload.signedAt.plus(offset) }
+        storage.blobs.nextOutcomes += UploadOutcome.Refused(UploadRefusal.DENIED)
+    }
+
+    @Test
+    fun `a 403 just inside the write window is credentials or policy - it trips, and everyone gets the same 451`() {
+        deniedAt(StorageProtocol.WRITE_WINDOW.minusMillis(1))
+        reply(known.address) shouldBe "451 UPLOAD_FAILED"
+        breaker.openKinds shouldBe setOf(StorageBreaker.Kind.DENIED)
+        setOf(reply(unknown), reply(known.address)) shouldBe setOf("451 BREAKER_OPEN")
+    }
+
+    @Test
+    fun `a 403 at the write deadline is the expired URL of one slow upload - that event's 451, and no global trip`() {
+        deniedAt(StorageProtocol.WRITE_WINDOW)
+        reply(known.address) shouldBe "451 UPLOAD_FAILED"
+        breaker.isOpen shouldBe false
+        reply(unknown) shouldBe "250"
+        reply(known.address) shouldBe "250"
+    }
+
+    // --- the real-event trial is claimed at the gate (review of 95d3cea) ---------------------------
+
+    @Test
+    fun `in the real-event phase one event claims the trial at the gate, and every concurrent event gets the same 451`() {
+        val otherKnown = provision("other@testinbox.local", WorkspaceId(UUID.randomUUID()))
+        val holding = AtomicBoolean(false)
+        val uploading = CountDownLatch(1)
+        val proceed = CountDownLatch(1)
+        val held =
+            ReceiveInboundDelivery(
+                inboxes,
+                messages,
+                storage.guarded(
+                    RollbackTx(messages),
+                    StorageEnforcement.ALL,
+                    policy,
+                    hook =
+                        object : IngestSyncHook {
+                            override fun beforeUpload(key: String) {
+                                if (holding.getAndSet(false)) {
+                                    uploading.countDown()
+                                    proceed.await(10, TimeUnit.SECONDS) shouldBe true
+                                }
+                            }
+                        },
+                ),
+                parser,
+                FakeRateLimiter(),
+                clock,
+                eligibility = WorkspaceEligibility { WorkspaceStatus.ACTIVE_PARTICIPANT },
+            )
+        storage.blobs.nextOutcomes += UploadOutcome.Refused(UploadRefusal.QUOTA)
+        reply(known.address, held) shouldBe "451 UPLOAD_FAILED"
+        backoffExpires() // the witness will pass: the real-event phase begins with the next event
+
+        holding.set(true)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val claimant = pool.submit<String> { reply(known.address, held) }
+            uploading.await(10, TimeUnit.SECONDS) shouldBe true // it holds the claim, and is uploading now
+            val others = listOf(otherKnown.address, unknown).associateWith { reply(it, held) }
+            others shouldBe mapOf(otherKnown.address to "451 BREAKER_OPEN", unknown to "451 BREAKER_OPEN")
+            proceed.countDown()
+            claimant.get(10, TimeUnit.SECONDS) shouldBe "250"
+        } finally {
+            proceed.countDown()
+            pool.shutdownNow()
+        }
+        breaker.isOpen shouldBe false
+        setOf(reply(otherKnown.address, held), reply(unknown, held)) shouldBe setOf("250")
+    }
+
+    @Test
+    fun `an event that passed the gate is never overtaken by a later claimant - the race of the real-event phase`() {
+        // Each event is held while it resolves its recipients (between the gate and the upload), so the
+        // order is forced: A reaches the gate first, then C, then B; A uploads only after C resolved.
+        val otherKnown = provision("other@testinbox.local", WorkspaceId(UUID.randomUUID()))
+        val resolving = mapOf(known.address to CountDownLatch(1), otherKnown.address to CountDownLatch(1))
+        val resume = mapOf(known.address to CountDownLatch(1), otherKnown.address to CountDownLatch(1))
+        val holdA = AtomicBoolean(false)
+        val holdC = AtomicBoolean(false)
+        val holding =
+            object : email.testinbox.application.port.InboxRepository by inboxes {
+                override fun findReceivableByAddress(address: String): Inbox? {
+                    val hold =
+                        if (address == known.address) {
+                            holdA
+                        } else if (address == otherKnown.address) {
+                            holdC
+                        } else {
+                            null
+                        }
+                    if (hold?.getAndSet(false) == true) {
+                        resolving.getValue(address).countDown()
+                        resume.getValue(address).await(10, TimeUnit.SECONDS) shouldBe true
+                    }
+                    return inboxes.findReceivableByAddress(address)
+                }
+            }
+        val raced =
+            ReceiveInboundDelivery(
+                holding,
+                messages,
+                storage.guarded(RollbackTx(messages), StorageEnforcement.ALL, policy),
+                parser,
+                FakeRateLimiter(),
+                clock,
+                eligibility = WorkspaceEligibility { WorkspaceStatus.ACTIVE_PARTICIPANT },
+            )
+        storage.blobs.nextOutcomes += UploadOutcome.Refused(UploadRefusal.QUOTA)
+        reply(known.address, raced) shouldBe "451 UPLOAD_FAILED"
+        backoffExpires() // the next event's witness passes: the real-event phase begins
+
+        holdA.set(true)
+        holdC.set(true)
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val a = pool.submit<String> { reply(known.address, raced) }
+            resolving.getValue(known.address).await(10, TimeUnit.SECONDS) shouldBe true // A passed the gate
+            val gateOfC = CountDownLatch(1)
+            val c =
+                pool.submit<String> {
+                    try {
+                        reply(otherKnown.address, raced)
+                    } finally {
+                        gateOfC.countDown()
+                    }
+                }
+            // C is either refused at the gate (done) or resolving (held): either way, past its gate.
+            val cAtGate =
+                java.util.concurrent.CompletableFuture.anyOf(
+                    java.util.concurrent.CompletableFuture
+                        .runAsync { resolving.getValue(otherKnown.address).await(10, TimeUnit.SECONDS) },
+                    java.util.concurrent.CompletableFuture
+                        .runAsync { gateOfC.await(10, TimeUnit.SECONDS) },
+                )
+            cAtGate.get(10, TimeUnit.SECONDS)
+            val b = reply(unknown, raced) // an unknown-only event at the same moment
+            resume.getValue(known.address).countDown() // A goes on to its upload
+            resume.getValue(otherKnown.address).countDown()
+            val replies = mapOf("C" to c.get(10, TimeUnit.SECONDS), "B" to b)
+            withClue("$replies") { replies.values.toSet() shouldBe setOf("451 BREAKER_OPEN") }
+            a.get(10, TimeUnit.SECONDS) shouldBe "250" // the claimant: the real event that confirmed recovery
+        } finally {
+            resume.values.forEach { it.countDown() }
+            pool.shutdownNow()
+        }
     }
 
     private companion object {

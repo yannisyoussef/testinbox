@@ -63,6 +63,25 @@ data class GuardedIngestReport(
 )
 
 /**
+ * One event's pre-resolution decision ([GuardedStorage.admitEvent]): the
+ * `451` it gets before any recipient resolves, or none. While the breaker
+ * awaits a real event, an admitted event may also hold the breaker's
+ * real-event trial, claimed at the gate; [GuardedStorage.ingest] consumes it,
+ * and [GuardedStorage.release] gives it back if the event never reaches an
+ * upload.
+ */
+class EventAdmission internal constructor(
+    val refusal: StorageUnavailableException?,
+    private var claim: StorageBreaker.Admission.Trial?,
+) {
+    /** The claimed trial, handed out once. */
+    internal fun take(): StorageBreaker.Admission.Trial? = claim.also { claim = null }
+
+    /** Whether this event holds the breaker's real-event trial (for tests). */
+    val holdsRealEventTrial: Boolean get() = claim != null
+}
+
+/**
  * ADR-035's guarded ingest protocol for one inbound event (§4–§8):
  *
  * ```
@@ -125,23 +144,45 @@ class GuardedStorage(
         bytesPerCopy: Long,
         copies: List<CopyPlan>,
         envelopePositions: List<Int> = copies.indices.toList(),
+        /**
+         * The event's own [admitEvent], taken before its recipients resolved.
+         * Null for a caller that did not take one: the gate is then passed here.
+         */
+        admission: EventAdmission? = null,
         persist: (List<CopyPlan>) -> Map<MessageId, Boolean>,
     ): GuardedIngestReport {
         require(copies.isNotEmpty()) { "an event with no candidate never reaches storage" }
         require(copies.all { it.bytes == bytesPerCopy }) { "every copy of an event has the same exact footprint" }
-        ensureOpen()
-        // Normally a no-op: the use case already passed this gate before resolving recipients.
-        // A caller that did not still never meets a half-open breaker it cannot recover.
-        breakerGate()?.let { throw it }
-        val trial = admitThroughBreaker()
-        var trialEnded = trial == null
+        val own = if (admission == null) admitEvent() else null
         try {
-            val report = ingestHoldingSlot(bytesPerCopy, copies, envelopePositions, persist, trialEvent = trial != null)
-            if (trial != null) {
+            (admission ?: own)?.refusal?.let { throw it }
+            ensureOpen()
+            return ingestAdmitted(bytesPerCopy, copies, envelopePositions, (admission ?: checkNotNull(own)).take(), persist)
+        } finally {
+            own?.let(::release)
+        }
+    }
+
+    private fun ingestAdmitted(
+        bytesPerCopy: Long,
+        copies: List<CopyPlan>,
+        envelopePositions: List<Int>,
+        claim: StorageBreaker.Admission.Trial?,
+        persist: (List<CopyPlan>) -> Map<MessageId, Boolean>,
+    ): GuardedIngestReport {
+        // Without the claim, only a closed breaker lets an event upload: one that passed the gate
+        // while closed and met a trip (or a proof) since gets the 451 after resolution.
+        if (claim == null && breaker.isOpen) {
+            throw StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open")
+        }
+        var trialEnded = claim == null
+        try {
+            val report = ingestHoldingSlot(bytesPerCopy, copies, envelopePositions, persist, claim)
+            if (claim != null) {
                 if (report.appended.isEmpty() && report.duplicates.isEmpty()) {
-                    breaker.abandonTrial()
+                    breaker.abandonTrial(claim)
                 } else {
-                    breaker.close(trial)
+                    breaker.close(claim)
                     metrics.breakerOpen(breaker.isOpen)
                     metrics.breakerEscalated(breaker.isEscalated)
                 }
@@ -149,37 +190,57 @@ class GuardedStorage(
             }
             return report
         } finally {
-            // A failure that tripped the breaker already ended the trial; any
-            // other failure, an Error included, leaves it to the next caller.
-            if (!trialEnded) breaker.abandonTrial()
+            // A failure that tripped the breaker already ended the trial (abandoning it
+            // again is a no-op for its generation); any other failure, an Error
+            // included, gives it back to the next caller.
+            if (!trialEnded) breaker.abandonTrial(claim!!)
         }
     }
 
     /**
-     * Whether storage would refuse this event before T1 (latch, activation, an
-     * open OR half-open breaker, slots, footprint), checked BEFORE recipients
+     * Whether storage refuses this event before T1 (latch, activation, an
+     * open OR half-open breaker, slots, footprint), decided BEFORE recipients
      * are resolved. The SMTP reply for an unhealthy storage is then the same
      * `451` whatever the recipients are: known or not, inside a limit or not.
      *
      * A half-open breaker's trial runs HERE, on this pre-resolution path: the
-     * non-tenant witness (and clock measurement) decides recovery, so the
-     * answer during recovery does not depend on the recipients either
-     * ([breakerGate]).
+     * non-tenant witness (and clock measurement) decides recovery, and a
+     * real-event trial is claimed here too, so the answer during recovery
+     * does not depend on the recipients either ([breakerGate]). The caller
+     * must [release] the admission once the event is over.
      */
-    fun unavailable(): StorageUnavailableException? =
-        latch.latched()?.let { reason ->
-            metrics.latched(true)
-            StorageUnavailableException(StorageUnavailableReason.LATCHED, "storage admission is latched: $reason")
-        } ?: activation.violated()?.let { detail ->
-            StorageUnavailableException(StorageUnavailableReason.ACTIVATION_VIOLATED, "storage activation invariant broken: $detail")
-        } ?: breakerGate() ?: if (slots.exhaustedBeforeResolution()) {
-            StorageUnavailableException(StorageUnavailableReason.SLOT_WAIT, "every write slot is held by unresolved ambiguity")
-        } else {
-            footprint.unavailable()?.let { reason ->
-                metrics.footprintUnavailable(reason)
-                StorageUnavailableException(StorageUnavailableReason.FOOTPRINT_UNAVAILABLE, "global footprint rules not evaluable: $reason")
+    fun admitEvent(): EventAdmission {
+        val refusal =
+            latch.latched()?.let { reason ->
+                metrics.latched(true)
+                StorageUnavailableException(StorageUnavailableReason.LATCHED, "storage admission is latched: $reason")
+            } ?: activation.violated()?.let { detail ->
+                StorageUnavailableException(StorageUnavailableReason.ACTIVATION_VIOLATED, "storage activation invariant broken: $detail")
             }
-        }
+        if (refusal != null) return EventAdmission(refusal, null)
+        val gate = breakerGate()
+        if (gate.refusal != null) return gate
+        val later =
+            if (slots.exhaustedBeforeResolution()) {
+                StorageUnavailableException(StorageUnavailableReason.SLOT_WAIT, "every write slot is held by unresolved ambiguity")
+            } else {
+                footprint.unavailable()?.let { reason ->
+                    metrics.footprintUnavailable(reason)
+                    StorageUnavailableException(
+                        StorageUnavailableReason.FOOTPRINT_UNAVAILABLE,
+                        "global footprint rules not evaluable: $reason",
+                    )
+                }
+            }
+        if (later == null) return gate
+        release(gate)
+        return EventAdmission(later, null)
+    }
+
+    /** The event is over: a real-event trial it claimed and never consumed goes back, for its generation only. */
+    fun release(admission: EventAdmission) {
+        admission.take()?.let(breaker::abandonTrial)
+    }
 
     /**
      * The event's write slot, and whether an upload is in doubt: begun, with
@@ -213,8 +274,8 @@ class GuardedStorage(
         copies: List<CopyPlan>,
         envelopePositions: List<Int>,
         persist: (List<CopyPlan>) -> Map<MessageId, Boolean>,
-        /** This event is the breaker's half-open real-event trial. */
-        trialEvent: Boolean,
+        /** The breaker's real-event trial this event holds, or null. */
+        trial: StorageBreaker.Admission.Trial?,
     ): GuardedIngestReport {
         val guard = SlotGuard(acquireSlot(copies))
         try {
@@ -235,7 +296,7 @@ class GuardedStorage(
                 }
                 return GuardedIngestReport(emptyList(), emptyList(), refused, inactive)
             }
-            uploadAll(admitted, checkNotNull(result.t0), guard, trialEvent)
+            uploadAll(admitted, checkNotNull(result.t0), guard, trial)
             hook.afterUploads()
             hook.beforeCommit()
             val outcomes = commit(bytesPerCopy, admitted, refused, persist)
@@ -255,7 +316,7 @@ class GuardedStorage(
         admitted: List<CopyPlan>,
         t0: java.time.Instant,
         guard: SlotGuard,
-        trialEvent: Boolean,
+        trial: StorageBreaker.Admission.Trial?,
     ) {
         val attempts = mutableListOf<Attempt>()
         for (copy in admitted) {
@@ -276,9 +337,11 @@ class GuardedStorage(
                     guard.inDoubt = false
                     continue
                 }
+                // A 403 after the copy's write deadline is the deadline, not storage (fix 2, below).
+                val deniedInWindow = outcome == UploadOutcome.Refused(UploadRefusal.DENIED) && refusedBeforeDeadline(t0)
                 guard.poisoned =
                     try {
-                        abandon(attempts, admitted, guard.slot, trialEvent)
+                        abandon(attempts, admitted, guard.slot, trial, deniedInWindow)
                     } catch (t: Throwable) {
                         // The upload's own Error stays the primary one.
                         fatal?.let {
@@ -310,6 +373,16 @@ class GuardedStorage(
             UploadOutcome.Ambiguous(AmbiguityKind.UNEXPECTED_RESPONSE) to (e as? Error)
         }
 
+    /**
+     * Whether a `403` came while the copy's write window was still open
+     * (database clock `< t0 + E`, the reservation's `write_deadline_at`).
+     * Inside it, the refusal is about credentials or policy; at or after it,
+     * the URL simply expired. Unknown (the clock cannot be read) counts as
+     * inside: the breaker's uniform `451` is the safe side.
+     */
+    private fun refusedBeforeDeadline(t0: java.time.Instant): Boolean =
+        runCatching { clock.now().isBefore(t0.plus(StorageProtocol.WRITE_WINDOW)) }.getOrDefault(true)
+
     private fun releaseAbandoned(admitted: List<CopyPlan>) {
         runCatching { reservations.releaseAbandoned(admitted.map { it.messageId }) }
             .onFailure {
@@ -328,81 +401,53 @@ class GuardedStorage(
     }
 
     /**
-     * The breaker, decided before any recipient resolves (ADR-025): null when
-     * the event may go on, the `451` otherwise. An open breaker, or one whose
-     * trial is running, refuses. A half-open one hands THIS caller its trial,
-     * and the trial is the non-tenant proof ([probe]) run right here, never a
-     * tenant event: so every event of the half-open window, known recipients
-     * or not, inside a limit or not, gets the same answer. A failed proof
-     * re-trips with the doubled backoff; a passed one closes the kinds a probe
-     * can prove, and leaves quota, a full filesystem and an ambiguous upload
-     * to their real-event trial (ADR-035 §8, issue #102) in
-     * [admitThroughBreaker].
+     * The breaker, decided before any recipient resolves (ADR-025). An open
+     * breaker, or one whose trial is running, refuses. A half-open one hands
+     * THIS caller its trial, and the trial is the non-tenant proof ([probe])
+     * run right here, never a tenant event: so every event of the half-open
+     * window, known recipients or not, inside a limit or not, gets the same
+     * answer. A failed proof re-trips with the doubled backoff; a passed one
+     * closes the kinds a probe can prove. Quota, a full filesystem and an
+     * ambiguous upload keep their real-event trial (ADR-035 §8, issue #102),
+     * and it is claimed HERE too, by one event at a time: every other event
+     * gets the same pre-resolution `451` until the claimant's event is over.
      */
-    private fun breakerGate(): StorageUnavailableException? =
+    private fun breakerGate(): EventAdmission =
         when (val admission = breaker.admit()) {
-            StorageBreaker.Admission.Closed, StorageBreaker.Admission.Proven -> {
-                null
-            }
-
-            is StorageBreaker.Admission.Blocked -> {
-                StorageUnavailableException(
-                    StorageUnavailableReason.BREAKER_OPEN,
-                    "storage breaker open",
-                )
-            }
-
-            is StorageBreaker.Admission.Trial -> {
-                proveRecovery(admission)
-            }
+            StorageBreaker.Admission.Closed -> EventAdmission(null, null)
+            is StorageBreaker.Admission.Proven -> EventAdmission(null, admission.trial)
+            is StorageBreaker.Admission.Blocked -> EventAdmission(breakerOpen(), null)
+            is StorageBreaker.Admission.Trial -> proveRecovery(admission)
         }
 
-    /** The half-open proof of [trial], before resolution. Ends the trial whatever happens. */
-    private fun proveRecovery(trial: StorageBreaker.Admission.Trial): StorageUnavailableException? {
+    private fun breakerOpen() = StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open")
+
+    /** The half-open proof of [trial], before resolution. Ends the trial, or hands it on as the real-event claim. */
+    private fun proveRecovery(trial: StorageBreaker.Admission.Trial): EventAdmission {
         var ended = false
         try {
             val failed = probe(trial.kinds)
-            val admitted =
+            val outcome =
                 if (failed != null) {
-                    breaker.trip(failed)
-                    false
+                    // A failed witness is never the real event: it does not escalate (issue #102).
+                    breaker.trip(failed, trial, realEvent = false)
+                    EventAdmission(breakerOpen(), null)
                 } else {
-                    breaker.proven(trial)
+                    when (val after = breaker.proven(trial)) {
+                        StorageBreaker.Admission.Closed -> EventAdmission(null, null)
+                        is StorageBreaker.Admission.Proven -> EventAdmission(null, after.trial)
+                        else -> EventAdmission(breakerOpen(), null)
+                    }
                 }
             ended = true
             metrics.breakerOpen(breaker.isOpen)
             metrics.breakerEscalated(breaker.isEscalated)
-            return if (admitted) {
-                null
-            } else {
-                StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker half-open probe failed")
-            }
+            return outcome
         } finally {
             // Only an Error escaping the probe gets here unended: the next caller proves instead.
-            if (!ended) breaker.abandonTrial()
+            if (!ended) breaker.abandonTrial(trial)
         }
     }
-
-    /**
-     * The real-event trial (quota, storage-full or ambiguous) this event is,
-     * or null. Reached only after [breakerGate]: an event here never runs a
-     * probe, and a breaker that is not [StorageBreaker.Admission.Proven] for
-     * it is a `451` (a trip or another event's trial since its gate).
-     */
-    private fun admitThroughBreaker(): StorageBreaker.Admission.Trial? =
-        when (val admission = breaker.admitRealEvent()) {
-            is StorageBreaker.Admission.Trial -> {
-                admission
-            }
-
-            is StorageBreaker.Admission.Blocked -> {
-                throw StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open (${admission.kinds})")
-            }
-
-            StorageBreaker.Admission.Closed, StorageBreaker.Admission.Proven -> {
-                null
-            }
-        }
 
     /**
      * The half-open probes: a fresh clock-offset measurement for a clock
@@ -501,7 +546,9 @@ class GuardedStorage(
         attempts: List<Attempt>,
         admitted: List<CopyPlan>,
         slot: WriteSlots.Slot,
-        trialEvent: Boolean,
+        trial: StorageBreaker.Admission.Trial?,
+        /** The last outcome is a `403` met before the write deadline. */
+        deniedInWindow: Boolean,
     ): Boolean {
         val ambiguous = attempts.filter { !it.outcome.definitive }
         // Ambiguous: the reservation stays RESERVED and charged until cleanup
@@ -529,8 +576,8 @@ class GuardedStorage(
 
                 last == UploadOutcome.Refused(UploadRefusal.QUOTA) -> PhysicalFailureKind.QUOTA
 
-                // A 403 refuses the fenced upload itself (credentials, policy, deadline): the metric keeps
-                // its ADR-035 §16 label, the breaker its own kind.
+                // A 403 refuses the fenced upload itself (credentials, policy, or the deadline): the metric
+                // keeps its ADR-035 §16 label; the breaker trips only inside the write window (below).
                 last == UploadOutcome.Refused(UploadRefusal.DENIED) -> PhysicalFailureKind.DEADLINE
 
                 last == UploadOutcome.NotStarted -> PhysicalFailureKind.UNAVAILABLE
@@ -539,22 +586,27 @@ class GuardedStorage(
             }
         metrics.physicalFailure(kind)
         val escalatedBefore = breaker.isEscalated
+
+        // Only the trial's own real event, of the current generation, may fail the trial or escalate
+        // an ambiguity (issue #102); a stale trial's trip is any concurrent event's.
+        fun trip(breakerKind: StorageBreaker.Kind) =
+            if (trial != null) breaker.trip(breakerKind, trial, realEvent = true) else breaker.trip(breakerKind)
         when (kind) {
-            // Only the trial's own real event may escalate an ambiguity (issue #102).
-            PhysicalFailureKind.AMBIGUOUS -> breaker.trip(StorageBreaker.Kind.AMBIGUOUS, fromTrialEvent = trialEvent)
+            PhysicalFailureKind.AMBIGUOUS -> trip(StorageBreaker.Kind.AMBIGUOUS)
 
-            PhysicalFailureKind.STORAGE_FULL -> breaker.trip(StorageBreaker.Kind.STORAGE_FULL)
+            PhysicalFailureKind.STORAGE_FULL -> trip(StorageBreaker.Kind.STORAGE_FULL)
 
-            PhysicalFailureKind.QUOTA -> breaker.trip(StorageBreaker.Kind.QUOTA)
+            PhysicalFailureKind.QUOTA -> trip(StorageBreaker.Kind.QUOTA)
 
-            PhysicalFailureKind.UNAVAILABLE -> breaker.trip(StorageBreaker.Kind.UNAVAILABLE)
+            PhysicalFailureKind.UNAVAILABLE -> trip(StorageBreaker.Kind.UNAVAILABLE)
 
-            // Revoked or rotated credentials, a bucket policy, or a missed deadline: definitive, and
-            // nothing about the recipient. Untripped, only events that reach an upload (known,
-            // under-ceiling recipients) would get this 451, for as long as it lasts (ADR-025). Tripped,
-            // it is the pre-resolution 451 for everyone until the witness proves storage writable
-            // again; the normal backoff, so one spurious 403 costs one backoff, never a latch.
-            PhysicalFailureKind.DEADLINE -> breaker.trip(StorageBreaker.Kind.DENIED)
+            // A 403 inside the write window: revoked or rotated credentials, a bucket policy. Nothing
+            // about the recipient. Untripped, only events that reach an upload (known, under-ceiling
+            // recipients) would get this 451, for as long as it lasts (ADR-025). Tripped, it is the
+            // pre-resolution 451 for everyone until the witness proves storage writable again, with the
+            // normal backoff, so one spurious 403 costs one backoff, never a latch. At or after the
+            // deadline the URL merely expired (one slow upload): that event's own 451, no trip.
+            PhysicalFailureKind.DEADLINE -> if (deniedInWindow) trip(StorageBreaker.Kind.DENIED)
 
             else -> Unit
         }

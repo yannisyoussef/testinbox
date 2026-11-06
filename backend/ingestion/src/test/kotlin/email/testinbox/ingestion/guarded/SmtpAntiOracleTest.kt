@@ -1,8 +1,10 @@
 package email.testinbox.ingestion.guarded
 
 import email.testinbox.application.deployment.SchemaCompatibility
+import email.testinbox.application.port.InboxRepository
 import email.testinbox.application.port.StorageInspection
 import email.testinbox.application.port.UploadOutcome
+import email.testinbox.application.storage.IngestSyncHook
 import email.testinbox.application.storage.StorageBreaker
 import email.testinbox.domain.storage.InboxShare
 import email.testinbox.domain.storage.StorageCapacityPolicy
@@ -20,6 +22,9 @@ import java.io.InputStreamReader
 import java.net.ServerSocket
 import java.net.Socket
 import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -68,6 +73,8 @@ class SmtpAntiOracleTest {
         viaProxy: Boolean = false,
         inspectionOverride: ((StorageInspection) -> StorageInspection)? = null,
         uploadFault: () -> UploadOutcome? = { null },
+        hook: IngestSyncHook = IngestSyncHook.NONE,
+        inboxWrapper: (InboxRepository) -> InboxRepository = { it },
     ): Scenario {
         val harness =
             if (breaker == null) {
@@ -80,6 +87,8 @@ class SmtpAntiOracleTest {
                     viaProxy = viaProxy,
                     inspectionOverride = inspectionOverride,
                     uploadFault = uploadFault,
+                    hook = hook,
+                    inboxWrapper = inboxWrapper,
                 )
             }
         val port = ServerSocket(0).use { it.localPort }
@@ -340,6 +349,103 @@ class SmtpAntiOracleTest {
             s.identical("recovered", listOf(r.unknown, r.admitted)).dataReply().startsWith("250") shouldBe true
             breaker.isOpen shouldBe false
             s.harness.messageCount() shouldBe 1
+        }
+    }
+
+    @Test
+    fun `real-event phase - one event claims the trial at the gate, and concurrent known and unknown get byte-identical transcripts`() {
+        val holding = AtomicBoolean(false)
+        val uploading = CountDownLatch(1)
+        val proceed = CountDownLatch(1)
+        val hold =
+            object : IngestSyncHook {
+                override fun beforeUpload(key: String) {
+                    if (holding.getAndSet(false)) {
+                        uploading.countDown()
+                        check(proceed.await(20, TimeUnit.SECONDS)) { "the test never released the claimant" }
+                    }
+                }
+            }
+        scenario(roomy(), breaker, viaProxy = true, inspectionOverride = witnessFollowsStore, hook = hold).use { s ->
+            val r = recipients(s.harness)
+            val (_, otherKnown) = s.harness.inbox(s.harness.workspace())
+            s.proxyAnswers("400 Bad Request", "XMinioAdminBucketQuotaExceeded")
+            transcript(s.port, listOf(r.admitted)).dataReply().startsWith("451") shouldBe true
+            s.harness.proxy!!.mode = TcpFaultProxy.Mode.PASS
+            backoffExpires() // the next event's witness passes: the real-event phase begins
+
+            holding.set(true)
+            val pool = Executors.newSingleThreadExecutor()
+            try {
+                val claimant = pool.submit<List<String>> { transcript(s.port, listOf(r.admitted)) }
+                uploading.await(20, TimeUnit.SECONDS) shouldBe true // it claimed the trial and is uploading
+                s.identical("claimed", listOf(otherKnown, r.unknown, r.workspaceFull)).dataReply().startsWith("451") shouldBe true
+                proceed.countDown()
+                claimant.get(30, TimeUnit.SECONDS).dataReply().startsWith("250") shouldBe true
+            } finally {
+                proceed.countDown()
+                pool.shutdownNow()
+            }
+            breaker.isOpen shouldBe false
+            s.identical("recovered", listOf(otherKnown, r.unknown)).dataReply().startsWith("250") shouldBe true
+            s.harness.messageCount() shouldBe 2
+        }
+    }
+
+    @Test
+    fun `real-event phase - an event past the gate is never overtaken by a later claimant, so known and unknown stay identical`() {
+        // Events are held while they resolve recipients (after the gate, before any upload), forcing the
+        // order: A reaches the gate first, then C (known), then B (unknown); A uploads only after that.
+        val holds = java.util.concurrent.ConcurrentHashMap<String, Pair<CountDownLatch, CountDownLatch>>()
+        val wrapper = { real: InboxRepository ->
+            object : InboxRepository by real {
+                override fun findReceivableByAddress(address: String) =
+                    real.findReceivableByAddress(address).also {
+                        holds.remove(address)?.let { (resolving, resume) ->
+                            resolving.countDown()
+                            check(resume.await(20, TimeUnit.SECONDS)) { "never resumed" }
+                        }
+                    }
+            }
+        }
+        scenario(roomy(), breaker, viaProxy = true, inspectionOverride = witnessFollowsStore, inboxWrapper = wrapper).use { s ->
+            val r = recipients(s.harness)
+            val (_, otherKnown) = s.harness.inbox(s.harness.workspace())
+            s.proxyAnswers("400 Bad Request", "XMinioAdminBucketQuotaExceeded")
+            transcript(s.port, listOf(r.admitted)).dataReply().startsWith("451") shouldBe true
+            s.harness.proxy!!.mode = TcpFaultProxy.Mode.PASS
+            backoffExpires()
+
+            val a = CountDownLatch(1) to CountDownLatch(1)
+            val c = CountDownLatch(1) to CountDownLatch(1)
+            holds[r.admitted] = a
+            holds[otherKnown] = c
+            val pool = Executors.newFixedThreadPool(2)
+            try {
+                val first = pool.submit<List<String>> { transcript(s.port, listOf(r.admitted)) }
+                a.first.await(20, TimeUnit.SECONDS) shouldBe true // A passed the gate and is resolving
+                val third =
+                    pool.submit<List<String>> {
+                        try {
+                            transcript(s.port, listOf(otherKnown))
+                        } finally {
+                            c.first.countDown() // refused at the gate: done without resolving
+                        }
+                    }
+                // C is refused at its gate, or resolving (held): either way past its gate before B goes.
+                c.first.await(20, TimeUnit.SECONDS) shouldBe true
+                val unknownTranscript = transcript(s.port, listOf(r.unknown))
+                a.second.countDown()
+                c.second.countDown()
+                withClue("C (known) vs B (unknown)") { third.get(30, TimeUnit.SECONDS) shouldBe unknownTranscript }
+                unknownTranscript.dataReply().startsWith("451") shouldBe true
+                first.get(30, TimeUnit.SECONDS).dataReply().startsWith("250") shouldBe true
+            } finally {
+                a.second.countDown()
+                c.second.countDown()
+                pool.shutdownNow()
+            }
+            breaker.isOpen shouldBe false
         }
     }
 }
