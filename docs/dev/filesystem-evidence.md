@@ -137,8 +137,13 @@ file is `NOT RUN`. Every field is required. A missing or mistyped field is
 | `preallocation.fstrimExcluded` | the `fstrim.timer` and `discard` exclusion for this device, as recorded in the host runbook | preallocation: `true` |
 | `isolation.dedicatedDevice` | `true` when the filesystem has its own device | isolation |
 | `isolation.hostFreeAtCreationBytes`, `.imageBytes` | recorded when the image was created (`df -B1 --output=avail` of its host filesystem, and its size) | isolation: free ≥ image |
-| `minio.bucketDirectoryBytes` | `du -sB1 --apparent-size=false <data dir>/<bucket>` minus the objects' own blocks, as the monitor computes it | MinIO metadata: with `minio_sys_bytes` ≤ *M* |
-| `minio.metadataInodes` | inodes under `.minio.sys` plus the bucket's directories (`find <data dir>/.minio.sys <data dir>/<bucket> -type d \| wc -l` plus `find <data dir>/.minio.sys -type f \| wc -l`) | MinIO metadata: ≤ `declared.metadataBudgetInodes` |
+| `minio.bucketDirectoryBytes` | `unattributedBytes` of `scripts/adr035-metadata-accounting.py --mount <mountpoint> --data-dir <data dir> --bucket <bucket>`: every allocation outside `.minio.sys` that no object is charged for. That is the bucket root, the blocks beyond the first of every bucket directory that is, is inside or contains an object directory (shared growth, post-drain residue), every block of a bucket directory holding no object, stray files, and the mount root, `lost+found` and the data directory. Per-object directory blocks are in *O_max* (contract §3.1) and are **not** counted here (ADR-035 amendment note of 2026-11-05, metadata; bytes) | MinIO metadata: with the observation's `minio_sys_bytes` (`.minio.sys` without `.trash`) ≤ *M* |
+| `minio.metadataBytesScope` | the literal `minio-sys+unattributed`, stating the definition above | MinIO metadata: any other scope blocks; absent is `NOT RUN`. The matched record must state the same scope in `filesystem.metadataBytesScope`, and carry `filesystem.metadataBytesMeasured` (the larger of E2's post-drain and E7's peak figure) no greater than `declared.metadataBudgetBytes` |
+| `minio.metadataInodes` | every inode under `.minio.sys` and nothing else: `find <data dir>/.minio.sys -xdev \| wc -l` (the directory, its subdirectories and its files). Bucket directories are per-object inodes charged by *i_max* = 6 (contract §3.5) and are **not** counted here; they are bounded by the starting-headroom inode row. This is the one definition E7's `metadataInodesMeasured` and `declared.metadataBudgetInodes` use (ADR-035 amendment note of 2026-11-05, accepted; [`0035-amendment-note-metadata-inodes-PROPOSED.md`](../adr/0035-amendment-note-metadata-inodes-PROPOSED.md)) | MinIO metadata: ≤ `declared.metadataBudgetInodes` |
+| `minio.metadataInodesScope` | the literal `minio-sys`, stating the definition above; or `minio-sys-excl-trash` when `metadataInodes` is the script's `metadataInodesExclTrash` (`.trash` contents left out), which is valid **only** when the matched record carries a `PASS` E10 drill of the inode-headroom latch (`filesystem.inodeHeadroomLatchDrill`) whose `fsMonitorSha256` equals `monitor.fsMonitorSha256` | MinIO metadata: any other scope blocks; absent is `NOT RUN`; `minio-sys-excl-trash` without that proof blocks. It must equal the matched record's `filesystem.metadataInodesScope` |
+| `monitor.fsMonitorSha256` | `sha256sum` of the running `fs-monitor.py` (64 hex) | with `minio-sys-excl-trash`: must equal the record's E10 drill `fsMonitorSha256` (the proof, note §8.2) |
+| `monitor.inodeHeadroomLatchArmed` | `true` when the Ops fs-monitor's `inode-headroom` latch (`inodes_total − inodes_used ≥ ⌈avail / B⌉` every cycle, gated like the other latches) is armed; an Ops declaration | required as well with `minio-sys-excl-trash`; never the proof on its own |
+| `minio.bucketPresent` | the script's `bucketPresent` | MinIO metadata: `false` blocks (production pre-provisions the bucket, so the walk measured the wrong directory); absent is `NOT RUN` |
 | `database.allConnectionsToPrimary` | the datasource URLs of every deployable and of the monitor name the primary | ordering |
 | `declared.*` | the deployed values, each copied from its real source. The `TESTINBOX_STORAGE_FS_*` variables (`deploy/staging/.env.example`) give `capacityBytes` (*C_fs*), `blockSizeBytes` (*B*), `inodes` (*I_fs*), `globalFootprintLimitBytes` (*G_F*), `metadataBudgetBytes` (*M*), `operationalReserveBytes` (*R_ops*), `objectOverheadBytes` (*O_max*), `deletionDebtBudgetBytes` (*D_budget*), `metadataBudgetInodes` (the inode half of *M*; at least the record's E7 measurement), `observationMaxAgeSeconds` (*A_obs*, at most 3600) and `monitorRole`. `procs` is the declared maximum ingestion processes (`TESTINBOX_STORAGE_DECLARED_MAX_INGESTION_PROCESSES`). `applicationRoles` is the database user of every deployable's datasource; the gate also adds every role it sees connected. ε and H_F are not inputs. | every row |
 
@@ -172,6 +177,10 @@ the schema owner there, so every V8 privilege boundary is void. That is why
 staging can qualify `TENANT_LIMITS` in the dark, but never `ALL`.
 
 ## Before `ALL` can pass
+
+*2026-11-05 (ADR-035 amendment note "WS-N1 A1", effective with C1–C6):* on a `production-host` record, E4 in step 3
+passes by the A1 route ((i)–(vi) and C1–C6 evidenced). E10 includes the inode-headroom latch (C4), and the census
+(vi) uses the E2/E7 population. Lab and staging records keep the full-scale E4.
 
 1. PR D merges, and its `TI-STORAGE-006E` containment rollback floor is added
    to `deploy/rollback-floors.txt` (the mixed-versions row). Gate E then
@@ -249,6 +258,7 @@ TESTINBOX_STORAGE_QUALIFICATION_LAB_RECORD_PATH=/etc/testinbox/lab-record.json
   `written_by` alone.** The preflight skips the observation-writer and
   privileges rows, because staging connects as the owner, so the owner
   could also write an observation.
+- **Unattributed bytes and metadata inodes are counted by Ops.** Both come from the evidence, computed by the one reference implementation (`scripts/adr035-metadata-accounting.py`) the fs-monitor vendors.
 - **Metadata inodes are counted by Ops.** The monitor's observation carries
   no metadata-inode figure, so the count comes from the evidence. It is
   bounded by a budget that must cover the E7 measurement in the committed

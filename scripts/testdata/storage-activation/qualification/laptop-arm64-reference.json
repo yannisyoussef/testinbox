@@ -51,6 +51,9 @@
     "mountSource": "/var/lib/testinbox/minio-data.img",
     "objectOverheadMaxBytes": 24576,
     "metadataInodesMeasured": 20000,
+    "metadataInodesScope": "minio-sys",
+    "metadataBytesMeasured": 125829120,
+    "metadataBytesScope": "minio-sys+unattributed",
     "experiments": {
       "E1": "PASS",
       "E2": "PASS",

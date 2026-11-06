@@ -1836,6 +1836,9 @@ Everything else in ADR-035 is unchanged.
   combination (E1–E3), with *O_max* measured into the qualification record.
 - ε covers the extent-tree metadata (E3), and blocks run out before inodes
   at `-i 4096` (E4).
+  *2026-11-05 (A1):* a `production-host` record may pass E4 by geometry proof
+  plus bounded measurement; see the amendment note "WS-N1 A1" below. Lab and
+  staging records keep the full-scale route.
 - Trash is bounded by D_est plus the measured residue (E5–E6).
 - MinIO metadata stays within *M*, in **bytes and inodes** (E7).
 - The ENOSPC classifier, and the breaker under a real full disk (E8–E10).
@@ -1941,6 +1944,10 @@ The base case's orderings come from database records:
 
 The containment rollback floor must also be declared, and every running
 artifact must contain it (gate E). E1–E11 must be recorded as PASS.
+
+*2026-11-05 (A1):* for a `production-host` record, E4's PASS is the route of
+the amendment note "WS-N1 A1" below ((i)–(vi) and C1–C6 evidenced). E10's PASS
+includes the inode-headroom latch as an injected fault (A1 C4).
 
 ### A2.7 Production and public activation restrictions
 
@@ -2149,6 +2156,131 @@ admission, or any §11 parameter, threshold or criterion change. Whether the mod
 and on which criteria, is the PROPOSED note
 [`0035-amendment-note-partitioned-t1-PROPOSED.md`](0035-amendment-note-partitioned-t1-PROPOSED.md),
 which lists both passages above as text it would amend.
+
+## Amendment note (2026-11-05, WS-N1): one definition of MinIO metadata, in inodes and bytes
+
+Authority: the owner's acceptance of `docs/adr/0035-amendment-note-metadata-inodes-PROPOSED.md`, relayed on #124
+(comments 6665820491 and 6671007334; owner decision of 2026-11-05: double counting removed, conservative coverage of every allocation kept; application, monitor and
+qualification agree; no safety control disabled).
+
+**Inodes.** Wherever this ADR or its annex (Amendment 2) speaks of MinIO metadata inodes, *M*'s inode budget or the
+inodes of MinIO's metadata, the counted set is every inode under the MinIO data directory's `.minio.sys` (scope
+`minio-sys`). This applies to:
+
+- annex §3.5;
+- the §6 monitor row "or their inodes > *M*'s inode budget";
+- the §10 E7 criterion "inodes ≤ budget";
+- the record's `filesystem.metadataInodesMeasured`;
+- the declared `metadataBudgetInodes`;
+- gate F.
+
+Directories under the bucket are per-object inodes charged by `i_max` (annex §3.5).
+
+The same count without the contents of `.minio.sys/tmp/.trash` (scope `minio-sys-excl-trash`) may be used **only
+while** the Ops monitor's scope-independent inode-headroom latch (`inodes_total − inodes_used ≥ ⌈avail / B⌉`) is
+armed. Trashed objects' inodes are covered by that latch once their debt rows are superseded, because each holds a
+block and `I_fs ≥ C_fs / B`. Gate F refuses that scope unless the record carries a `PASS` E10 drill of that latch
+on the fs-monitor build the evidence names. Gate F also refuses evidence and a record that count inodes over
+different scopes.
+
+**Bytes.** Wherever this ADR or its annex speaks of *M*'s bytes, the counted figure is `metadataBytes` (scope
+`minio-sys+unattributed`): the allocated bytes under `.minio.sys` except the contents of `.minio.sys/tmp/.trash`
+(which are *W*; the `.trash` directory's own blocks stay in *M*, as annex §3.6 puts them), plus every allocation
+on the mount outside `.minio.sys` that no object is charged for. The second term is:
+
+- the bucket root;
+- every block beyond the first of a bucket directory that is, is inside, or contains an object directory (a
+  directory holding `xl.meta`);
+- every block of a bucket directory holding no object;
+- every file under the bucket that is not part of an object;
+- every subdirectory of an object directory that its `xl.meta` does not reference;
+- every inode outside `.minio.sys` and the bucket.
+
+This applies to annex §2.2 class (e), the §6 monitor row, the §9 gate F row, E2's drain clause and E7's criterion.
+E7's "probe residue" is inside it.
+
+The first block of each directory leading to an object, and the object's own files, are in *O_max* (annex §3.1–§3.3,
+verified in aggregate by E2's `total delta ≤ Σφ`). They are never also in *M*. The reference implementation is
+`scripts/adr035-metadata-accounting.py`.
+
+**Records and gate F.** The qualification record carries `filesystem.metadataBytesMeasured`, the larger of E2's
+post-drain and E7's peak `metadataBytes`, with `metadataBytesScope`. Gate F requires the evidence's
+`minio.metadataBytesScope` and the record's `filesystem.metadataBytesScope` to be `minio-sys+unattributed`, and the
+declared *M* to be at least the record's measurement.
+
+The walk fails closed: no figure for a missing or foreign `.minio.sys` or data directory. Evidence collected with
+no bucket directory (`bucketPresent: false`) does not pass gate F.
+
+**What does not change.** The inode budget and every other criterion are unchanged. *M* is a declaration: 1 GiB
+for production by the owner's decision of 2026-11-05 (subject to the capacity proof, which passes), and 256 MiB on
+staging. Post-drain residue has no
+declared bound (ext4 keeps each directory's historical peak). *M* bounds it through the monitor's alert, and the
+operator acts on the runbook, never by changing a latch. In-flight upload staging
+under `.minio.sys/tmp` stays in *M* and is also charged in *F_r*/*H_F*: a deliberate, conservative overlap, sized
+in the note's §7.
+
+## Amendment note (2026-11-05, WS-N1 A1): E4 on a `production-host` record by geometry proof plus bounded measurement
+
+**Authority: owner acceptance (P9), 2026-11-05.** This changes the PASS route of annex §10 row E4 for `production-host` records only. Lab and staging records keep the full-scale route. No other criterion changes. Pointers: §A2.2 (E4), §A2.6, annex §10 row E4, production.md "The production qualification record Ops must evidence", filesystem-evidence.md "Before `ALL` can pass", STATUS item 19.
+
+**E4 (production-host) is PASS when (i)–(vi) all hold on the final filesystem, after the reboot, in the qualification window:**
+
+**(i) Geometry.** `dumpe2fs -h` shows inode count ≥ block count at B = 4096 (`f_files ≥ f_blocks`), and no `inline_data` and no `bigalloc`. The full feature list is committed and is byte-identical to the (v) lab filesystem's.
+
+**(ii) Margin after baseline.** Measure e₀ = max(0, (f_files − f_ffree) − (f_blocks − f_bfree)). PASS requires m = f_files − f_blocks − e₀ > 0, with *m* and m / f_blocks recorded.
+
+Why this suffices: without inline data, every new inode owns at least one block counted in `f_blocks`. So at block exhaustion f_ffree ≥ m, whether ENOSPC comes at `f_bavail` = 0 or, with MinIO as root, at `f_bfree` = 0.
+
+**(iii) Bounded measurement.** At least 20,000 objects through a qualification MinIO of the qualified member:
+- including 0 B and 1 B objects, and objects up to 512 B;
+- as single-object messages and as attachments;
+- across fresh inboxes and messages.
+
+The ratio Δ(f_files − f_ffree) / Δ(f_blocks − f_bfree) is recorded and must be ≤ 1.
+
+**(iv) Failure shape (evidence only).** A bounded ENOSPC run under the A2 procedure records `f_ffree > 0` at ENOSPC, whether ENOSPC came at `f_bavail` = 0 or `f_bfree` = 0, the 507/ENOSPC answers and the MinIO uid. The ballast uses no inodes, so (iv) proves nothing about the inode ratio.
+
+**(v) Lab full-scale E4.** A full-scale E4 has PASSED on a lab filesystem with the identical feature list, kernel `6.8.0-147-generic` and member `3f97c565…`. It is committed in this repository and cited by evidence reference.
+
+**(vi) Blockless-inode census.** After (iii), and on the E2/E7 (or A5 P2) population, `find <mount> -xdev` shows **zero** inodes with zero allocated blocks, `.minio.sys` included.
+
+**MinIO at `0d7408fc9969caf07de6a8c3a84f9fbb10a6739e`** (`cmd/xl-storage.go:1219–1230`):
+
+`diskAlmostFilled() ⇔ Free/Used < 0.05 ∨ FreeInodes/UsedInodes < 0.05`
+
+It only switches trash to immediate purge. The inode check in `hasSpaceFor` (`cmd/object-api-utils.go:1276`) is skipped in SD mode, and a single pool bypasses `hasSpaceFor` anyway.
+
+Before block exhaustion, FreeInodes/UsedInodes ≥ m / (f_blocks + e₀). On prod-gra-01, f_files − f_blocks = 866,139 against f_blocks = 11,716,773 (7.39 %), so the inode branch cannot fire early while e₀ ≤ 266,952. The recorded e₀ must satisfy this. Otherwise the record states that it can fire early, and E5 is evaluated with it.
+
+**Monitor.** The inode-headroom latch (`inodes_total − inodes_used ≥ ⌈avail / B⌉`) is active in production, and E10 exercises it.
+
+**Residual risk.** Full-scale exhaustion is not observed on this instance. (v) shows it on an identical-feature filesystem, and (i)–(iii) and (vi) check every premise of the bound on this one.
+
+**Effective 2026-11-05 with C1–C6.** The owner accepted A1 (P9) "subject to app/storage and independent security
+acceptance of the exact amendment" (#124 comment 6665820491). Both acceptances exist for A1 with C1–C6 (#124 comment
+6667671578: the app/storage acceptance and the independent security acceptance). The owner recorded A1 effective with
+C1–C6 (#124 comment 6671007334). The six-hour full-capacity fallback is not authorized. **E4 is PASS only when
+(i)–(vi) and C1–C6 are evidenced.**
+
+**Evidence conditions (C1–C6), verbatim:**
+
+- **C1.** "The (iii) ratio covers only objects ≤ 512 B and is recorded per class (0 B, 1 B, ≤ 512 B), each ≤ 1. The MinIO runs at the record's runtime-config hash."
+- **C2.** "(vi) runs before any deletion or cleanup of the (iii), E2 and E7 objects, and before MinIO's own trash or stale-upload purge. It records the entry counts of `.minio.sys/tmp`, `.minio.sys/tmp/.trash` and `.minio.sys/multipart`. Its raw output `find <mount> -xdev -printf '%i %n %b %s %y %p\n'` is committed. The distinct inodes it lists, plus the inodes below `First inode` (`dumpe2fs -h`), equal `f_files − f_ffree` read straight after. Any gap beyond in-flight uploads fails (vi)."
+- **C3.** "Every step of (i)–(vi) records `uname -r` = `6.8.0-147-generic`, `/proc/sys/kernel/random/boot_id` and `findmnt -no UUID <mount>`. All are equal across steps, and the UUID equals the record's `filesystem.uuid`. 'After the reboot' means that boot id."
+- **C4.** "E10's PASS includes the inode-headroom latch as an injected fault: the latch fires, and every node answers `451`."
+- **C5.** "The SD-mode skip and the single-pool bypass are cited by line range at `0d7408fc…`, the excerpts are committed with the evidence, and that commit equals the record's `minio.commitId`."
+- **C6.** "'A5 P2' means ⟨definition⟩; without a committed definition, (vi) uses the E2/E7 population. The member is `sha256:3f97c5651cb6662b880c787a232b6b34fec8d8922e08d6617b25d241a21164bb`. *i_max* for this record is confirmed by E1/E2."
+
+**C6 as applied:** A5 is not used, so "A5 P2" is void and (vi) runs on the E2/E7 population. The member is the full
+digest quoted in C6. "After the reboot" means the boot id C3 records: running kernel 6.8.0-147-generic, boot id
+unchanged at every step.
+
+## Amendment note (2026-11-05, WS-N1 A2): the N1 ballast and qualification procedure (pointer)
+
+This is a procedure clarification, not a criterion change. The procedure for N1's ballast windows and qualification
+trees (stopped stack, interlock, ballast form, band minimums, lab monitor configuration, isolation, cleanup, E10's
+decoy fault) is the dated note "A2: the N1 ballast and qualification procedure" in `docs/dev/production.md`, from #124
+comment 6649193963 §3 as clarified by comment 6667602147. Gate F is unchanged by it.
 
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
