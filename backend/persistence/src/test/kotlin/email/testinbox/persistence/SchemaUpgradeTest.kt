@@ -221,6 +221,39 @@ class SchemaUpgradeTest : PersistenceIntegrationTest() {
                 "23",
                 "24",
                 "25",
+                "26",
+            )
+    }
+
+    @Test
+    fun `V26 indexes the deltas a V25 schema already holds, by workspace and by inbox, and changes no row`() {
+        // Gate D A2: expand-only. The deltas written before it stay exactly as they were.
+        val dataSource = freshDatabase()
+        val jdbc = JdbcClient.create(dataSource)
+        flyway(dataSource, target = "25").migrate()
+        val (workspace, inbox, _) = seedV1Data(jdbc)
+        jdbc
+            .sql("INSERT INTO storage_delta (workspace_id, inbox_id, bytes, objects) VALUES (?, ?, 7, 1), (?, NULL, -3, 0)")
+            .params(workspace, inbox, workspace)
+            .update()
+        val before =
+            jdbc
+                .sql("SELECT id, workspace_id, inbox_id, bytes, objects FROM storage_delta ORDER BY id")
+                .query()
+                .listOfRows()
+        flyway(dataSource).migrate()
+        jdbc
+            .sql("SELECT id, workspace_id, inbox_id, bytes, objects FROM storage_delta ORDER BY id")
+            .query()
+            .listOfRows() shouldBe before
+        jdbc
+            .sql(
+                "SELECT indexdef FROM pg_indexes WHERE tablename = 'storage_delta' AND indexname LIKE 'ix_storage_delta_%' ORDER BY indexname",
+            ).query(String::class.java)
+            .list() shouldBe
+            listOf(
+                "CREATE INDEX ix_storage_delta_inbox ON public.storage_delta USING btree (inbox_id) INCLUDE (bytes, objects)",
+                "CREATE INDEX ix_storage_delta_workspace ON public.storage_delta USING btree (workspace_id) INCLUDE (bytes, objects)",
             )
     }
 
