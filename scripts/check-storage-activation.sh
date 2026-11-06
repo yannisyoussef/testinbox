@@ -165,15 +165,43 @@ FIRST_COHORT_PROFILES="10|1|11|22|8|500|10,25,50,100|0.995"
 # harness records it: harness.poolMaxLifetime (ISO-8601) and per scenario pool.maxLifetimeMs.
 FIRST_COHORT_POOL_MAX_LIFETIME="PT30M"
 FIRST_COHORT_POOL_MAX_LIFETIME_MS="1800000"
-# Production code, for binding first-cohort evidence to the deployment: the main
-# sources (code and resources, migrations included) of every backend module, and
-# of no other. Every deployable (api, ingestion, migrator) and every module they
-# link (domain, application, persistence, storage, notification, observability)
-# is a direct child of backend/; `**` also covers a module nested deeper. Only the
-# harness is excluded: it is never deployed. `glob` magic is explicit because a
-# bare 'backend/*/src/main' matches no FILE in a tree diff (git compares the
+# The frozen measured window (--duration-seconds 60). The harness schedules
+# floor(rate x window) events, due over (n - 1) / rate seconds; a scenario's
+# durationSeconds is the MEASURED span (first due to last completion), so a full
+# 60 s run records about 59.9 s at 11/s plus its terminal lag, never >= 60 by
+# construction. The window is therefore read as harness.durationSeconds = 60,
+# scheduledEvents >= floor(rate x 60), and a measured span reaching the last due
+# of that schedule.
+FIRST_COHORT_WINDOW_SECONDS="60"
+# The T1 a first-cohort scenario must have measured: production's mode a
+# adapter (IngestionWiring.storageAdmission), as the harness's per-scenario
+# production-faithfulness probe records it (t1Probe). A lab variant built on the
+# same production code (share-partitioned T1, an escrow store, the NO_LOCK
+# reference) records another storeClass, locking or partitioned value.
+FIRST_COHORT_STORE_CLASS="email.testinbox.persistence.JdbcStorageAdmission"
+# Production code, for binding first-cohort evidence to the deployment: what the
+# deployed images are built from. That is the main sources (code and resources,
+# migrations included) of every backend module; every deployable (api, ingestion,
+# migrator) and every module they link (domain, application, persistence, storage,
+# notification, observability) is a direct child of backend/, and `**` also covers
+# a module nested deeper. Plus the build and runtime inputs: the Gradle build
+# files, properties, version catalogue and wrapper, and the one Dockerfile all
+# three JVM deployables are built from. Only the harness (its sources and its
+# build file) is excluded: it is never deployed. `glob` magic is explicit because
+# a bare 'backend/*/src/main' matches no FILE in a tree diff (git compares the
 # whole path, so it selects nothing and the comparison would be vacuous).
-PRODUCTION_CODE_PATHSPEC=(':(glob)backend/**/src/main/**' ':(glob,exclude)backend/benchmark/**')
+PRODUCTION_CODE_PATHSPEC=(
+    ':(glob)backend/**/src/main/**'
+    ':(glob)backend/build.gradle.kts'
+    ':(glob)backend/settings.gradle.kts'
+    ':(glob)backend/**/build.gradle.kts'
+    ':(glob)backend/gradle.properties'
+    ':(glob)backend/gradle/libs.versions.toml'
+    ':(glob)backend/gradle/wrapper/**'
+    ':(glob)backend/gradlew'
+    ':(glob)deploy/docker/backend.Dockerfile'
+    ':(glob,exclude)backend/benchmark/**'
+)
 
 usage() {
     sed -n '/^# Usage:/,/^# Exit:/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
@@ -823,18 +851,23 @@ EOF
     problems="$(jq -r --argjson n "$n" --argjson l "$l" --argjson r "$r" --argjson r2 "$r2" --argjson pool "$pool" \
                    --argjson t1max "$t1max" --arg conc "$conc" --argjson tol "$sustain" --argjson window "$SUSTAIN_WINDOW_SECONDS" \
                    --argjson ltr "$LOCK_TIMEOUT_RATE" --arg lifetime "$FIRST_COHORT_POOL_MAX_LIFETIME" \
-                   --argjson lifetimeMs "$FIRST_COHORT_POOL_MAX_LIFETIME_MS" "$JQ_GATE_D_DEFS"'
+                   --argjson lifetimeMs "$FIRST_COHORT_POOL_MAX_LIFETIME_MS" --argjson fcwindow "$FIRST_COHORT_WINDOW_SECONDS" \
+                   --arg storeClass "$FIRST_COHORT_STORE_CLASS" "$JQ_GATE_D_DEFS"'
         def shown: if . == null then "absent" else tostring end;
         (.harness // {}) as $h
         | (.scenarios // []) as $s
         | ($conc | split(",") | map(tonumber)) as $required
+        # The rate is matched EXACTLY (never rounded, as the §11 path does): 10.6/s is not R = 11.
         | def at($rate; $c): [ $s[] | select(.mode == "CHOSEN" and (.offeredRate | type) == "number"
-                                             and (.offeredRate | round) == ($rate | round) and .concurrency == $c) ];
+                                             and ((.offeredRate - $rate) | fabs) < 1e-9 and .concurrency == $c) ];
         [ [$r, $r2][] as $rate | $required[] as $c | at($rate; $c) | select(length == 1) | .[0] ] as $req
         # The run: --focused-cohort. The harness records harness.focusedCohort where it
         # writes one (it must then be true); otherwise its own record of that run is
         # focused = true with the cohort size and population checked below, which only
-        # --focused-cohort produces (--cohort-participants is refused without it).
+        # --focused-cohort produces: the harness refuses --cohort-participants without it
+        # (BenchmarkOptionsTest, "--cohort-participants sizes the --focused-cohort closed
+        # cohort, 1 to 30, and nothing else", at the M3 harness ce925d7: refused alone,
+        # with --focused and with --partitioned-variant).
         | ( if ($h | has("focusedCohort")) then
                 (if $h.focusedCohort == true then [] else ["harness.focusedCohort is \($h.focusedCohort | shown), not true: not the --focused-cohort run"] end)
             elif $h.focused != true then ["the harness records neither focusedCohort nor focused = true: not the --focused-cohort run"]
@@ -843,6 +876,7 @@ EOF
         + ( if $h.poolSize != $pool then ["harness.poolSize is \($h.poolSize | shown), not production'"'"'s pool \($pool)"] else [] end )
         + ( if $h.coldPool != true then ["harness.coldPool is \($h.coldPool | shown): the profile starts cold"] else [] end )
         + ( if $h.poolMaxLifetime != $lifetime then ["harness.poolMaxLifetime is \($h.poolMaxLifetime | shown), not production'"'"'s \($lifetime)"] else [] end )
+        + ( if $h.durationSeconds != $fcwindow then ["harness.durationSeconds is \($h.durationSeconds | shown), not the frozen \($fcwindow) s window"] else [] end )
         # Coverage: exactly one CHOSEN scenario at R and at 2R, at every concurrency of the profile.
         + [ [$r, $r2][] as $rate | $required[] as $c | at($rate; $c)
               | if length == 0 then "coverage: no CHOSEN scenario at \($rate)/s, concurrency \($c)"
@@ -853,6 +887,20 @@ EOF
         + [ $req[] | select(.pool.poolSize != $pool) | "pool: \(.name) ran with a pool of \(.pool.poolSize | shown), not \($pool)" ]
         + [ $req[] | select(.pool.coldPool != true) | "pool: \(.name) did not start cold (pool.coldPool \(.pool.coldPool | shown))" ]
         + [ $req[] | select(.pool.maxLifetimeMs != $lifetimeMs) | "pool: \(.name) pool.maxLifetimeMs \(.pool.maxLifetimeMs | shown), not production'"'"'s \($lifetimeMs)" ]
+        # The frozen 60 s window: the events it schedules, and a measured span reaching its last due.
+        + [ $req[] | ((.offeredRate * $fcwindow) | floor) as $nw
+              | select((.scheduledEvents | type) != "number" or .scheduledEvents < $nw
+                       or (.durationSeconds | type) != "number" or .durationSeconds < ($nw - 1) / .offeredRate - 1e-6)
+              | "window: \(.name) scheduled \(.scheduledEvents | shown) events over a measured \(.durationSeconds | shown) s; the frozen \($fcwindow) s window schedules \($nw), due over \(($nw - 1) / .offeredRate) s" ]
+        # Mode identity: the production mode a T1, as the per-scenario probe recorded it.
+        + [ $req[] | select(.t1Probe == null) | "t1Probe: \(.name) records no production-faithfulness probe, so the T1 it measured is unknown" ]
+        + [ $req[] | select(.t1Probe != null) | . as $sc | .t1Probe
+              | [ (if .storeClass != $storeClass then "storeClass \(.storeClass | shown), not \($storeClass)" else empty end),
+                  (if .locking != "GLOBAL" then "locking \(.locking | shown), not GLOBAL" else empty end),
+                  (if .partitioned != false then "partitioned \(.partitioned | shown), not false" else empty end),
+                  (if .cohortRequired != true then "cohortRequired \(.cohortRequired | shown), not true" else empty end),
+                  (if .enforcement != "ALL" then "enforcement \(.enforcement | shown), not ALL" else empty end) ]
+              | select(length > 0) | "t1Probe: \($sc.name) did not measure production'"'"'s mode a T1: \(join(", "))" ]
         # D1, recomputed from the numbers.
         + [ $req[] | select(.percentiles.t1.p99Ms == null) | "t1P99: \(.name) has no T1 samples" ]
         + [ $req[] | select(.percentiles.t1.p99Ms != null and .percentiles.t1.p99Ms > $t1max)
@@ -877,7 +925,7 @@ EOF
     if [ -n "$PROBLEMS" ]; then
         record "$gate" BLOCKED "$label: $PROBLEMS"
     else
-        record "$gate" PASS "$label: R = $r and 2R = $r2 events/s (the declared R_gated $EXPECTED_RATE) x concurrency $conc, pool $pool, cold, $FIRST_COHORT_POOL_MAX_LIFETIME, $((n + l)) workspaces; T1 p99 ≤ $t1max ms, sustained ≥ $sustain (30 s reading) and zero integrity errors recompute from the numbers (the evidence's own verdict is not read); production code of ${bench_sha:0:12} identical to the deployed $BOUND_DEPLOYED"
+        record "$gate" PASS "$label: R = $r and 2R = $r2 events/s (the declared R_gated $EXPECTED_RATE) x concurrency $conc over the frozen ${FIRST_COHORT_WINDOW_SECONDS} s window, pool $pool, cold, $FIRST_COHORT_POOL_MAX_LIFETIME, $((n + l)) workspaces, the production mode a T1 (GLOBAL, cohort REQUIRED, ALL); T1 p99 ≤ $t1max ms, sustained ≥ $sustain (30 s reading) and zero integrity errors recompute from the numbers (the evidence's own verdict is not read); production code of ${bench_sha:0:12} identical to the deployed $BOUND_DEPLOYED"
     fi
 }
 

@@ -542,8 +542,12 @@ fc_write backend/ingestion/src/main/kotlin/Ingestion.kt 'ingestion v1'
 fc_write backend/persistence/src/main/resources/db/migration/V1__fixture.sql 'SELECT 1;'
 fc_write backend/benchmark/src/main/kotlin/Harness.kt 'harness v1'
 fc_write backend/api/src/test/kotlin/ApiTest.kt 'test v1'
+fc_write backend/gradle/libs.versions.toml 'postgresql = "42.7.4"'
+fc_write backend/benchmark/build.gradle.kts 'harness build v1'
+fc_write deploy/docker/backend.Dockerfile 'FROM eclipse-temurin:25-jre-alpine'
 FC_DEPLOYED="$(fc_commit "candidate (fixture)")"
 fc_write backend/benchmark/src/main/kotlin/Harness.kt 'harness v2: --cohort-participants, --pool-size'
+fc_write backend/benchmark/build.gradle.kts 'harness build v2'
 fc_write docs/dev/storage-benchmark.md 'harness docs'
 fc_write backend/api/src/test/kotlin/ApiTest.kt 'test v2'
 FC_BENCH_ONLY="$(fc_commit "harness (fixture)")"
@@ -552,6 +556,12 @@ FC_PROD_CODE="$(fc_commit "ingestion change (fixture)")"
 git -C "$REPO_FC" reset -q --hard "$FC_BENCH_ONLY"
 fc_write backend/persistence/src/main/resources/db/migration/V2__fixture.sql 'SELECT 2;'
 FC_PROD_RESOURCE="$(fc_commit "a migration (fixture)")"
+git -C "$REPO_FC" reset -q --hard "$FC_BENCH_ONLY"
+fc_write backend/gradle/libs.versions.toml 'postgresql = "42.7.5"'
+FC_CATALOGUE="$(fc_commit "a dependency bump (fixture)")"
+git -C "$REPO_FC" reset -q --hard "$FC_BENCH_ONLY"
+fc_write deploy/docker/backend.Dockerfile 'FROM eclipse-temurin:25.0.1-jre-alpine'
+FC_DOCKERFILE="$(fc_commit "a runtime image change (fixture)")"
 # The nodes of the approved N = 10 envelope: N 10, N + L 11, R_gated 11, running FC_DEPLOYED.
 # fc_metrics <role> <out> <N> <R_gated> <git_sha>
 fc_metrics() {
@@ -588,6 +598,45 @@ fcj not-focused '.harness.focused = false'
 only "D first cohort: a run that is not focused (and records no focusedCohort) blocks" D-benchmark "$FC_LABEL: .*records neither focusedCohort nor focused = true" "$TMP/fca-not-focused"
 fcj population '(.scenarios[] | select(.name == "chosen-ws11-c50-r22") | .workspaceCount) = 10000'
 only "D first cohort: a scenario over another population than the cohort's N + L blocks" D-benchmark "$FC_LABEL: .*population: chosen-ws11-c50-r22 ran over 10000 workspaces, not the cohort.s N \+ L = 11" "$TMP/fca-population"
+
+# Mode identity: every required scenario measured the production mode a T1 (its t1Probe).
+fcj store-partitioned '(.scenarios[] | select(.name == "chosen-ws11-c25-r22") | .t1Probe) |= (.locking = "COHORT_PARTITIONED" | .partitioned = true)'
+only "D first cohort: a share-partitioned T1 on the same production code blocks" D-benchmark \
+    "$FC_LABEL: t1Probe: chosen-ws11-c25-r22 did not measure production.s mode a T1: locking COHORT_PARTITIONED, not GLOBAL, partitioned true, not false" "$TMP/fca-store-partitioned"
+fcj store-escrow '(.scenarios[] | select(.name == "chosen-ws11-c50-r11") | .t1Probe.storeClass) = "email.testinbox.persistence.EscrowStorageAdmission"'
+only "D first cohort: an escrow storeClass blocks" D-benchmark \
+    "t1Probe: chosen-ws11-c50-r11 did not measure production.s mode a T1: storeClass email.testinbox.persistence.EscrowStorageAdmission, not email.testinbox.persistence.JdbcStorageAdmission" "$TMP/fca-store-escrow"
+fcj store-nolock '(.scenarios[] | select(.name == "chosen-ws11-c10-r22") | .t1Probe.storeClass) = "email.testinbox.benchmark.NoLockAdmissionStore"'
+only "D first cohort: the NO_LOCK reference store blocks" D-benchmark "t1Probe: chosen-ws11-c10-r22 .*storeClass email.testinbox.benchmark.NoLockAdmissionStore" "$TMP/fca-store-nolock"
+fcj not-required '(.scenarios[] | select(.name == "chosen-ws11-c100-r11") | .t1Probe.cohortRequired) = false'
+only "D first cohort: a cohort that was not REQUIRED blocks" D-benchmark "t1Probe: chosen-ws11-c100-r11 .*cohortRequired false, not true" "$TMP/fca-not-required"
+fcj tenant-limits '(.scenarios[] | select(.name == "chosen-ws11-c100-r11") | .t1Probe.enforcement) = "TENANT_LIMITS"'
+only "D first cohort: enforcement other than ALL blocks" D-benchmark "t1Probe: chosen-ws11-c100-r11 .*enforcement TENANT_LIMITS, not ALL" "$TMP/fca-tenant-limits"
+fcj no-probe '(.scenarios[] | select(.name == "chosen-ws11-c25-r11")) |= del(.t1Probe)'
+only "D first cohort: a scenario without its T1 probe blocks (fail closed)" D-benchmark "t1Probe: chosen-ws11-c25-r11 records no production-faithfulness probe" "$TMP/fca-no-probe"
+
+# The rate is matched exactly: 10.6/s does not count as R = 11 (the §11 path rounds; this one does not).
+fcj rate-106 '(.scenarios[] | select(.name == "chosen-ws11-c10-r11") | .offeredRate) = 10.6'
+only "D first cohort: a scenario offered 10.6/s is not the R = 11 scenario" D-benchmark "$FC_LABEL: coverage: no CHOSEN scenario at 11/s, concurrency 10" "$TMP/fca-rate-106"
+fcj rate-224 '(.scenarios[] | select(.name == "chosen-ws11-c50-r22") | .offeredRate) = 22.4'
+only "D first cohort: a scenario offered 22.4/s is not the 2R = 22 scenario" D-benchmark "coverage: no CHOSEN scenario at 22/s, concurrency 50" "$TMP/fca-rate-224"
+
+# The frozen 60 s window. A scenario's durationSeconds is the measured span (first due to last
+# completion), about (n - 1) / rate + lag: 59.94 s at 11/s for a full 60 s run, which passes.
+jq -e '[.scenarios[] | select(.offeredRate == 11) | .durationSeconds < 60] | all' "$TMP/fc-pass.json" >/dev/null \
+    && ok "D first cohort: (the passing 60 s fixture's 11/s scenarios measure a span below 60 s, as a real 60 s run does)" \
+    || bad "D first cohort: the passing fixture does not measure the span a 60 s run measures, so the window cases prove nothing"
+fcj short-run '.harness.durationSeconds = 30 | .scenarios |= map(((.offeredRate * 30) | floor) as $n
+    | .scheduledEvents = $n | .completedEvents = $n | .durationSeconds = (($n - 1) / .offeredRate + .terminalLagMs / 1000)
+    | .achievedRate = ($n / .durationSeconds))'
+only "D first cohort: a 30 s run (its p99 on half the events) blocks, on the harness window and on every scenario" D-benchmark \
+    "$FC_LABEL: harness.durationSeconds is 30, not the frozen 60 s window.*window: chosen-ws11-c10-r11 scheduled 330 events over a measured [0-9.]+ s; the frozen 60 s window schedules 660" "$TMP/fca-short-run"
+fcj short-scenario '(.scenarios[] | select(.name == "chosen-ws11-c100-r22")) |= (.scheduledEvents = 600 | .completedEvents = 600
+    | .durationSeconds = (599 / 22 + .terminalLagMs / 1000) | .achievedRate = (600 / .durationSeconds))'
+only "D first cohort: one scenario with a short window blocks, though the harness says 60 s" D-benchmark \
+    "window: chosen-ws11-c100-r22 scheduled 600 events over a measured [0-9.]+ s; the frozen 60 s window schedules 1320" "$TMP/fca-short-scenario"
+fcj short-span '(.scenarios[] | select(.name == "chosen-ws11-c25-r11") | .durationSeconds) = 45'
+only "D first cohort: a measured span short of the schedule's last due blocks" D-benchmark "window: chosen-ws11-c25-r11 scheduled 660 events over a measured 45 s" "$TMP/fca-short-span"
 
 # D1's T1 criterion, recomputed: <= 500 ms at every required scenario, the boundary included.
 fcj t1-500 '(.scenarios[] | select(.name == "chosen-ws11-c50-r22") | .percentiles.t1.p99Ms) = 500'
@@ -718,6 +767,17 @@ sed "s/@GIT_SHA@/$FC_PROD_RESOURCE/g" "$FIX/benchmark/first-cohort-pass.json" > 
 fc "$TMP/fc-prod-resource.json" > "$TMP/fca-prod-resource"
 only "D first cohort binding: a main resource (a migration) is production code too" D-benchmark \
     "differ in production code \(backend/persistence/src/main/resources/db/migration/V2__fixture.sql" "$TMP/fca-prod-resource"
+sed "s/@GIT_SHA@/$FC_CATALOGUE/g" "$FIX/benchmark/first-cohort-pass.json" > "$TMP/fc-catalogue.json"
+fc "$TMP/fc-catalogue.json" > "$TMP/fca-catalogue"
+only "D first cohort binding: a version-catalogue-only difference (a dependency bump) blocks" D-benchmark \
+    "differ in production code \(backend/gradle/libs.versions.toml" "$TMP/fca-catalogue"
+sed "s/@GIT_SHA@/$FC_DOCKERFILE/g" "$FIX/benchmark/first-cohort-pass.json" > "$TMP/fc-dockerfile.json"
+fc "$TMP/fc-dockerfile.json" > "$TMP/fca-dockerfile"
+only "D first cohort binding: a difference in the deployables' Dockerfile blocks" D-benchmark \
+    "differ in production code \(deploy/docker/backend.Dockerfile" "$TMP/fca-dockerfile"
+[ -n "$(git -C "$REPO_FC" diff --name-only "$FC_DEPLOYED" "$FC_BENCH_ONLY" -- backend/benchmark/build.gradle.kts)" ] \
+    && ok "D first cohort binding: (the passing evidence's commit also changes the harness's own build file: excluded with the harness)" \
+    || bad "D first cohort binding: the fixture's harness commit does not change backend/benchmark/build.gradle.kts"
 GIT_LITERAL_PATHSPECS=1 run_args "$TMP/fca-prod-code"
 printf '%s\n' "$OUT" | grep -qE '^D-benchmark[[:space:]]+BLOCKED[[:space:]].*differ in production code' \
     && ok "D first cohort binding: an inherited GIT_LITERAL_PATHSPECS=1 cannot make the comparison vacuous" \

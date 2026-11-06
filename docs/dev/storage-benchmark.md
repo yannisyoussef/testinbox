@@ -534,17 +534,32 @@ itself:
 - **the run:** `harness.focusedCohort` is `true` where the harness records it;
   otherwise `harness.focused` is `true`, which together with the next two
   checks only `--focused-cohort` produces (the harness refuses
-  `--cohort-participants` without it). `harness.cohortParticipants` = N,
+  `--cohort-participants` without it; `BenchmarkOptionsTest`, "--cohort-participants
+  sizes the --focused-cohort closed cohort, 1 to 30, and nothing else", at the M3
+  harness `ce925d7`). `harness.cohortParticipants` = N,
   `harness.poolSize` = 8 (`null`, the harness's c + 6, blocks),
   `harness.coldPool` = `true`, `harness.poolMaxLifetime` = `PT30M`
-  (production's), `harness.expectedRate` = R, and R = the R_gated every node
-  declares;
-- **coverage:** exactly one CHOSEN scenario at R **and** at 2R (rounded, as on
-  the §11 path) at **every** concurrency of the profile. A missing one blocks;
+  (production's), `harness.durationSeconds` = 60 (the frozen window),
+  `harness.expectedRate` = R, and R = the R_gated every node declares;
+- **coverage:** exactly one CHOSEN scenario at R **and** at 2R, the offered
+  rate matched **exactly** (not rounded as on the §11 path: 10.6/s is not
+  R = 11), at **every** concurrency of the profile. A missing one blocks;
   two at the same point block as ambiguous (the profile is run once);
 - **per required scenario, as recorded:** `workspaceCount` = N + L (the closed
   cohort, 11), and the Hikari `pool` it ran on: `poolSize` 8, `coldPool`
   true, `maxLifetimeMs` 1 800 000;
+- **the window:** `scheduledEvents` ≥ ⌊rate × 60⌋ and a measured
+  `durationSeconds` reaching that schedule's last due, (⌊rate × 60⌋ − 1) / rate.
+  A scenario's `durationSeconds` is the measured span (first due to last
+  completion), which a full 60 s run records just below 60 s at 11/s (about
+  59.9 s plus the terminal lag), so it is never compared with 60 itself. A
+  shorter run, whose p99 rests on fewer events, blocks;
+- **mode identity,** from each required scenario's `t1Probe` (the harness's
+  production-faithfulness probe): `storeClass`
+  `email.testinbox.persistence.JdbcStorageAdmission`, `locking` `GLOBAL`,
+  `partitioned` false, `cohortRequired` true, `enforcement` `ALL`. A lab
+  variant on the same production code (the share-partitioned T1, an escrow
+  store, the NO_LOCK reference) blocks, and so does a scenario without a probe;
 - **D1, recomputed from the numbers** at every required scenario:
   `percentiles.t1.p99Ms` ≤ 500 (absent blocks); sustained ≥ 0.995 with the
   **same** jq definitions as `sustained2x` on the §11 path, applied at R as
@@ -558,11 +573,18 @@ itself:
   records no `errors` or `lockTimeoutRate` blocks;
 - **binding:** the evidence `gitSha` must be production code **identical** to
   every node's deployed `git_sha` (`testinbox_build`), in the `--repo`
-  checkout: `git diff --quiet <gitSha> <deployed> --
-  ':(glob)backend/**/src/main/**' ':(glob,exclude)backend/benchmark/**'`.
-  That covers the main sources and resources (migrations included) of every
-  backend module: the api, ingestion and migrator deployables and every
-  module they link. Only the harness is excluded, so evidence measured on a
+  checkout: `git diff --quiet <gitSha> <deployed> -- <pathspec>`, where the
+  pathspec (`PRODUCTION_CODE_PATHSPEC`) is what the deployed images are built
+  from: `backend/**/src/main/**` (the main sources and resources, migrations
+  included, of every backend module: the api, ingestion and migrator
+  deployables and every module they link), the Gradle build and runtime
+  inputs (`backend/build.gradle.kts`, `backend/settings.gradle.kts`,
+  `backend/**/build.gradle.kts`, `backend/gradle.properties`,
+  `backend/gradle/libs.versions.toml`, `backend/gradle/wrapper/**`,
+  `backend/gradlew`) and `deploy/docker/backend.Dockerfile`, the one
+  Dockerfile all three deployables are built from; all `:(glob)`, with
+  `:(glob,exclude)backend/benchmark/**`. Only the harness (sources and build
+  file) is excluded, so a dependency bump blocks and evidence measured on a
   later harness commit over the frozen candidate binds, and a difference in
   docs, scripts or tests does not matter. Any production-code difference
   blocks, and so does each way the binding cannot be established: no git
@@ -574,8 +596,8 @@ itself:
 The gate's line names `first-cohort profile N=10 (owner D1)` and every
 failing scenario. Nothing on this path changes the §11 path: at N = 30 the
 same file is judged as §11 evidence, and blocks there as not ADR evidence.
-Build scripts and the dependency catalogue are outside the identity
-pathspec, which implements "production code" as the main sources only.
+`sdk/kotlin` (composed into the Gradle build for the e2e suite, not linked by
+any deployable) and `config/` (Detekt) are outside it.
 
 ### `adrEvidence`: the constants are not loosenable through flags
 

@@ -122,6 +122,19 @@
         "poolSize": 8,
         "connectionsOpenedBeforePhase": 8,
         "connectionsOpenedInPhase": 0
+      },
+      "t1Probe": {
+        "storeClass": "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement": "ALL",
+        "readsFootprint": true,
+        "footprintRead": true,
+        "footprintUnavailable": null,
+        "cohortRequired": true,
+        "snapshotStatementSha256": "fixture",
+        "budgetedWorkspaces": 1,
+        "inactiveWorkspaces": 0,
+        "locking": "GLOBAL",
+        "partitioned": false
       }
     },
     {
@@ -184,6 +197,19 @@
         "poolSize": 8,
         "connectionsOpenedBeforePhase": 8,
         "connectionsOpenedInPhase": 0
+      },
+      "t1Probe": {
+        "storeClass": "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement": "ALL",
+        "readsFootprint": true,
+        "footprintRead": true,
+        "footprintUnavailable": null,
+        "cohortRequired": true,
+        "snapshotStatementSha256": "fixture",
+        "budgetedWorkspaces": 1,
+        "inactiveWorkspaces": 0,
+        "locking": "GLOBAL",
+        "partitioned": false
       }
     },
     {
@@ -246,6 +272,19 @@
         "poolSize": 8,
         "connectionsOpenedBeforePhase": 8,
         "connectionsOpenedInPhase": 0
+      },
+      "t1Probe": {
+        "storeClass": "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement": "ALL",
+        "readsFootprint": true,
+        "footprintRead": true,
+        "footprintUnavailable": null,
+        "cohortRequired": true,
+        "snapshotStatementSha256": "fixture",
+        "budgetedWorkspaces": 1,
+        "inactiveWorkspaces": 0,
+        "locking": "GLOBAL",
+        "partitioned": false
       }
     },
     {
@@ -308,6 +347,19 @@
         "poolSize": 8,
         "connectionsOpenedBeforePhase": 8,
         "connectionsOpenedInPhase": 0
+      },
+      "t1Probe": {
+        "storeClass": "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement": "ALL",
+        "readsFootprint": true,
+        "footprintRead": true,
+        "footprintUnavailable": null,
+        "cohortRequired": true,
+        "snapshotStatementSha256": "fixture",
+        "budgetedWorkspaces": 1,
+        "inactiveWorkspaces": 0,
+        "locking": "GLOBAL",
+        "partitioned": false
       }
     },
     {
@@ -370,6 +422,19 @@
         "poolSize": 8,
         "connectionsOpenedBeforePhase": 8,
         "connectionsOpenedInPhase": 0
+      },
+      "t1Probe": {
+        "storeClass": "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement": "ALL",
+        "readsFootprint": true,
+        "footprintRead": true,
+        "footprintUnavailable": null,
+        "cohortRequired": true,
+        "snapshotStatementSha256": "fixture",
+        "budgetedWorkspaces": 1,
+        "inactiveWorkspaces": 0,
+        "locking": "GLOBAL",
+        "partitioned": false
       }
     },
     {
@@ -432,6 +497,19 @@
         "poolSize": 8,
         "connectionsOpenedBeforePhase": 8,
         "connectionsOpenedInPhase": 0
+      },
+      "t1Probe": {
+        "storeClass": "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement": "ALL",
+        "readsFootprint": true,
+        "footprintRead": true,
+        "footprintUnavailable": null,
+        "cohortRequired": true,
+        "snapshotStatementSha256": "fixture",
+        "budgetedWorkspaces": 1,
+        "inactiveWorkspaces": 0,
+        "locking": "GLOBAL",
+        "partitioned": false
       }
     },
     {
@@ -494,6 +572,19 @@
         "poolSize": 8,
         "connectionsOpenedBeforePhase": 8,
         "connectionsOpenedInPhase": 0
+      },
+      "t1Probe": {
+        "storeClass": "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement": "ALL",
+        "readsFootprint": true,
+        "footprintRead": true,
+        "footprintUnavailable": null,
+        "cohortRequired": true,
+        "snapshotStatementSha256": "fixture",
+        "budgetedWorkspaces": 1,
+        "inactiveWorkspaces": 0,
+        "locking": "GLOBAL",
+        "partitioned": false
       }
     },
     {
@@ -556,6 +647,19 @@
         "poolSize": 8,
         "connectionsOpenedBeforePhase": 8,
         "connectionsOpenedInPhase": 0
+      },
+      "t1Probe": {
+        "storeClass": "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement": "ALL",
+        "readsFootprint": true,
+        "footprintRead": true,
+        "footprintUnavailable": null,
+        "cohortRequired": true,
+        "snapshotStatementSha256": "fixture",
+        "budgetedWorkspaces": 1,
+        "inactiveWorkspaces": 0,
+        "locking": "GLOBAL",
+        "partitioned": false
       }
     }
   ],
