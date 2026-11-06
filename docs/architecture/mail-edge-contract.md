@@ -100,6 +100,7 @@ mix two renders.
 | the **compiled** postmaster alias | a rendered aliases file that was never compiled looks identical on disk to one that was — layer C asserts `postalias -q`, not the file |
 | `smtpd_etrn_restrictions = reject`, `fast_flush_domains` **empty** | no client may force a queue run — see [Client-triggered flushes and DSN](#client-triggered-flushes-and-dsn) |
 | `smtpd_discard_ehlo_keywords = silent-discard, dsn, etrn` | no client may request a success notice — same section |
+| `delay_warning_time = 0h` | no delay warnings. This is the Postfix default, pinned so the invariant does not depend on a default — same section |
 
 ### Client-triggered flushes and DSN
 
@@ -158,15 +159,34 @@ notice. The control transaction without DSN parameters relayed normally, with
 no notice. `silent-discard` keeps the per-session "discarding EHLO keywords"
 line out of the log.
 
-All three keys are under `required:`, never `ci_overridable`. They are asserted
+**Delay warnings.** The security review's invariant is that no delivery-status
+notice of any class reaches a sender. Delay warnings need no DSN parameters:
+they are controlled by `delay_warning_time` alone. Its 3.8.6 default is `0h`
+(off), and the contract now pins `delay_warning_time = 0h` explicitly. Tested on
+the rehearsal image with a sink answering `451` to the recipient, so the message
+stayed deferred and was retried on the CI timers for 15 s:
+
+- At `0h`, a tenant-domain sender and a foreign sender each produced no notice.
+  Each message was deferred at least four times.
+- At `1s`, the shortest interval Postfix can express, `bounce` logged *sender
+  delay notification* for both senders. The tenant-domain sender's
+  `Delayed Mail (still being retried)` was relayed **into ingestion**; the
+  foreign sender's went to `discard`.
+
+`NOTIFY=SUCCESS,DELAY` on `RCPT` is answered `501 5.7.1 DSN support is
+disabled`, like every other DSN parameter.
+
+All four keys are under `required:`, never `ci_overridable`. They are asserted
 statically by the gate, at runtime by the entrypoint (layer C now derives its
 assertions from `required:` instead of a hand-kept list), and behaviourally by
 `check-mail-edge-contract.test.sh`. That suite probes a running edge from a
 non-`mynetworks` address and requires the same assertion to fail with the keys
-removed. Ops is changing the host in lockstep on `infinity-core`
+removed, or with delay warnings re-enabled. Because `fast_flush_domains` and
+`delay_warning_time` change no reply when removed, the suite also pins their
+values independently of the manifest. Ops is changing the host in lockstep on `infinity-core`
 `ops/mail-edge-etrn-off`. That branch carries the two ETRN keys. The
-`smtpd_discard_ehlo_keywords` value above must be added there as well before the
-host matches this contract.
+`smtpd_discard_ehlo_keywords` and `delay_warning_time` values above must be added
+there as well before the host matches this contract.
 
 ### The size contract
 

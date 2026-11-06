@@ -183,6 +183,13 @@ for profile in ci production; do
     "edit main.cf '/^smtpd_discard_ehlo_keywords /d'" "$profile"
   mutate "[$profile] discarding etrn but not dsn is rejected" 1 \
     "edit main.cf 's|^smtpd_discard_ehlo_keywords = .*|smtpd_discard_ehlo_keywords = silent-discard, etrn|'" "$profile"
+  # No delivery-status notice of ANY class reaches a sender: delay warnings
+  # included. 0h is Postfix's default, so removing the line changes nothing
+  # today — it is rejected because the invariant must not rest on a default.
+  mutate "[$profile] removing delay_warning_time is rejected" 1 \
+    "edit main.cf '/^delay_warning_time /d'" "$profile"
+  mutate "[$profile] delay_warning_time = 1h is rejected" 1 \
+    "edit main.cf 's|^delay_warning_time = .*|delay_warning_time = 1h|'" "$profile"
 done
 
 # The mutations above compare the rendered file against contract.yaml, so
@@ -191,7 +198,8 @@ done
 # smtpd_etrn_restrictions and smtpd_discard_ehlo_keywords, but NOT for
 # fast_flush_domains: with `smtpd_etrn_restrictions = reject` in place its
 # removal changes no reply (ETRN is 554 either way), because it is defence in
-# depth. So the values are pinned here, independently of the manifest; changing
+# depth. delay_warning_time is the same case: 0h is Postfix's default, so its
+# removal changes no behaviour either. So the values are pinned here, independently of the manifest; changing
 # one is then a deliberate edit to this suite, not a quiet contract diff.
 pin_ok=1
 while IFS='|' read -r key want; do
@@ -204,14 +212,15 @@ done <<'PINS'
 smtpd_etrn_restrictions|reject
 fast_flush_domains|
 smtpd_discard_ehlo_keywords|silent-discard, dsn, etrn
+delay_warning_time|0h
 PINS
 if (( pin_ok )); then
-  printf 'ok   — the contract still requires the ETRN and DSN keys (required:, not ci_overridable)\n'
+  printf 'ok   — the contract still requires the ETRN, DSN and delay-warning keys (required:, not ci_overridable)\n'
   pass=$((pass + 1))
 else
   fail=$((fail + 1))
 fi
-for key in smtpd_etrn_restrictions fast_flush_domains smtpd_discard_ehlo_keywords; do
+for key in smtpd_etrn_restrictions fast_flush_domains smtpd_discard_ehlo_keywords delay_warning_time; do
   if "$REPO_ROOT/deploy/mail-edge/contract.py" keys ci_overridable | grep -qx "$key"; then
     printf 'FAIL — %s is listed in ci_overridable; the ETRN/DSN keys hold in every profile\n' "$key"
     fail=$((fail + 1))
@@ -368,13 +377,16 @@ fi
 #
 # Variants, all in one container:
 #   contract           the render as-is: must refuse ETRN (5xx), advertise
-#                      neither ETRN nor DSN, refuse RET=/NOTIFY= (5xx), and
-#                      emit no DSN
+#                      neither ETRN nor DSN, refuse RET=/NOTIFY= (5xx, including
+#                      NOTIFY=SUCCESS,DELAY), and emit no DSN
 #   postfix-defaults   all three keys removed: must reproduce the exposure
 #                      (ETRN 250 Queuing started, DSN advertised, a success
 #                      DSN generated) — or the probe is vacuous
 #   no-etrn-restrictions, no-discard-keywords
 #                      one key removed each: the contract assertion must fail
+#   delay-contract, delay-warning-1s
+#                      a message held deferred by the sink: no delay notice
+#                      with the contract, notices with the 1s control
 # fast_flush_domains is pinned statically above: with the restriction present
 # its removal changes no reply.
 note ""
@@ -402,6 +414,8 @@ async def handle(r, w):
             while (await r.readline()) not in (b".\r\n", b""): pass
             with open("/tmp/sink.log", "a") as f: f.write(" | ".join(env) + "\n")
             env = []; w.write(b"250 2.0.0 sunk\r\n")
+        elif up.startswith("RCPT") and "DEFER@" in up:
+            w.write(b"451 4.3.0 try later\r\n")   # the delay-warning case
         elif up.startswith("QUIT"):
             w.write(b"221 bye\r\n"); await w.drain(); break
         else:
@@ -439,9 +453,12 @@ mail_ret = session(["EHLO outside.example", f"MAIL FROM:<dsn-probe@{domain}> RET
                     f"RCPT TO:<rcpt-a@{domain}> NOTIFY=SUCCESS", "DATA", "<BODY>"])
 rcpt_notify = session(["EHLO outside.example", f"MAIL FROM:<dsn-probe@{domain}>",
                        f"RCPT TO:<rcpt-b@{domain}> NOTIFY=SUCCESS,DELAY,FAILURE", "DATA", "<BODY>"])
+rcpt_notify_delay = session(["EHLO outside.example", f"MAIL FROM:<dsn-probe@{domain}>",
+                             f"RCPT TO:<rcpt-c@{domain}> NOTIFY=SUCCESS,DELAY", "DATA", "<BODY>"])
 code = lambda res, i: res[i][-1][:3] if len(res) > i else "---"
 print(f"ehlo_etrn={int('ETRN' in kw)} ehlo_dsn={int('DSN' in kw)} etrn={code(etrn, 1)} "
-      f"mail_ret={code(mail_ret, 1)} rcpt_notify={code(rcpt_notify, 2)}")
+      f"mail_ret={code(mail_ret, 1)} rcpt_notify={code(rcpt_notify, 2)} "
+      f"rcpt_notify_delay={code(rcpt_notify_delay, 2)}")
 PY
 python3 /tmp/sink.py & sleep 0.5
 IP="$(hostname -i | awk '{print $1}')"
@@ -474,6 +491,54 @@ for variant in contract postfix-defaults no-etrn-restrictions no-discard-keyword
   done
   echo "RESULT $variant $result dsn_emitted=$dsn"
 done
+
+# --- delay warnings: a deferred message must produce NO notice ---------------
+# The sink answers 451 to defer@, so these messages sit deferred and are
+# retried on the CI timers (2s/4s backoff, 2s queue runs) for the whole window.
+# One sender is in the tenant domain (its notice would relay INTO ingestion),
+# one is foreign (its notice would be generated and then discarded). The
+# control renders delay_warning_time = 1s, the shortest interval Postfix can
+# express, and must produce the notices within the same window, or the
+# contract variant's silence proves nothing.
+cat > /tmp/defer.py <<'DEFER'
+import socket, sys
+host = sys.argv[1]
+for sender in ("delay-probe@inbox.testinbox.email", "delay-probe@example.org"):
+    s = socket.create_connection((host, 25), timeout=15); f = s.makefile("rb")
+    def reply():
+        while True:
+            l = f.readline().decode(errors="replace")
+            if len(l) < 4 or l[3] != "-": return l
+    reply()
+    for l in ("EHLO outside.example", f"MAIL FROM:<{sender}>", "RCPT TO:<defer@inbox.testinbox.email>", "DATA"):
+        s.sendall(l.encode() + b"\r\n"); r = reply()
+        if r[:1] not in ("2", "3"): sys.exit(f"refused at {l}: {r}")
+    s.sendall(b"Subject: delay probe\r\n\r\nbody\r\n.\r\n"); r = reply()
+    if not r.startswith("250"): sys.exit(f"not queued: {r}")
+    s.sendall(b"QUIT\r\n"); s.close()
+DEFER
+for variant in delay-contract delay-warning-1s; do
+  postfix stop >/dev/null 2>&1; sleep 1
+  postsuper -d ALL >/dev/null 2>&1   # nothing from an earlier variant may age into this one
+  /opt/mail-edge/render.sh --profile ci --out /etc/postfix --relay-target 127.0.0.1:2525 \
+    --mail-domain inbox.testinbox.email --smtp-bind 0.0.0.0:25 >/dev/null
+  [[ "$variant" == delay-warning-1s ]] && sed -i 's/^delay_warning_time = .*/delay_warning_time = 1s/' /etc/postfix/main.cf
+  postmap /etc/postfix/transport; install -m 0644 /etc/postfix/aliases /etc/aliases; newaliases
+  : > /var/log/mail.log; : > /tmp/sink.log
+  postfix start >/dev/null 2>&1
+  for _ in $(seq 1 50); do
+    case "$(printf 'QUIT\r\n' | timeout 3 nc -w 3 "$IP" 25 2>/dev/null | head -1)" in 220*) break ;; esac
+    sleep 0.2
+  done
+  python3 /tmp/defer.py "$IP" || { echo "PROBE-ERROR delay messages not queued for $variant"; exit 1; }
+  # A fixed window, identical for both variants: the contract's silence counts
+  # only because the control speaks inside the same window.
+  sleep 15
+  deferred="$(grep -c 'to=<defer@inbox.testinbox.email>.*status=deferred' /var/log/mail.log)"
+  notices="$(grep -c 'sender delay notification' /var/log/mail.log)"
+  relayed="$(grep -c 'MAIL FROM:<>' /tmp/sink.log)"
+  echo "RESULT $variant deferred=$deferred delay_notices=$notices relayed_to_ingestion=$relayed"
+done
 PROBE
   pstatus=$?
   field() { grep "^RESULT $1 " "$PROBE_OUT" | tr ' ' '\n' | awk -F= -v k="$2" '$1 == k { print $2 }'; }
@@ -482,7 +547,8 @@ PROBE
   conforms() {
     [[ "$(field "$1" ehlo_etrn)" == 0 && "$(field "$1" ehlo_dsn)" == 0 \
        && "$(field "$1" etrn)" == 5* && "$(field "$1" mail_ret)" == 5* \
-       && "$(field "$1" rcpt_notify)" == 5* && "$(field "$1" dsn_emitted)" == 0 ]]
+       && "$(field "$1" rcpt_notify)" == 5* && "$(field "$1" rcpt_notify_delay)" == 5* \
+       && "$(field "$1" dsn_emitted)" == 0 ]]
   }
   if (( pstatus != 0 )) || ! grep -q '^RESULT ' "$PROBE_OUT"; then
     printf 'FAIL — the ETRN/DSN probe produced no verdict (exit %s):\n' "$pstatus"
@@ -491,7 +557,7 @@ PROBE
   else
     grep '^RESULT ' "$PROBE_OUT" | sed 's/^RESULT /       /'
     if conforms contract; then
-      printf 'ok   — with the keys, an outside client gets ETRN 5xx, no ETRN/DSN keyword, RET=/NOTIFY= 5xx, and no DSN\n'
+      printf 'ok   — with the keys, an outside client gets ETRN 5xx, no ETRN/DSN keyword, RET=/NOTIFY= 5xx (SUCCESS,DELAY too), and no DSN\n'
       pass=$((pass + 1))
     else
       printf 'FAIL — the contract render does not refuse ETRN / DSN for an outside client\n'
@@ -515,6 +581,26 @@ PROBE
         pass=$((pass + 1))
       fi
     done
+    # Delay warnings. "deferred >= 4" means each of the two messages was
+    # retried at least once more after its first deferral, past the control's
+    # 1s warning interval, so silence is not a timing artefact.
+    dc_deferred="$(field delay-contract deferred)"; c1_notices="$(field delay-warning-1s delay_notices)"
+    c1_relayed="$(field delay-warning-1s relayed_to_ingestion)"
+    if (( ${dc_deferred:-0} >= 4 )) && [[ "$(field delay-contract delay_notices)" == 0 \
+          && "$(field delay-contract relayed_to_ingestion)" == 0 ]]; then
+      printf 'ok   — a message deferred past any warning interval produces no delay notice (tenant or foreign sender)\n'
+      pass=$((pass + 1))
+    else
+      printf 'FAIL — the contract render emitted a delay notice, or the messages were not kept deferred\n'
+      fail=$((fail + 1))
+    fi
+    if (( ${c1_notices:-0} >= 2 && ${c1_relayed:-0} >= 1 )); then
+      printf 'ok   — with delay_warning_time = 1s the probe sees the notices (one relayed into ingestion)\n'
+      pass=$((pass + 1))
+    else
+      printf 'FAIL — the delay control produced no notices; the delay probe cannot fail and is not a gate\n'
+      fail=$((fail + 1))
+    fi
   fi
 fi
 

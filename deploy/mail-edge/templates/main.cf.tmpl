@@ -108,6 +108,10 @@ notify_classes =
 # closed off by smtpd_discard_ehlo_keywords above; the residual failure-bounce
 # path is a recorded known gap in docs/architecture/mail-edge-contract.md.
 bounce_queue_lifetime = 0
+# [INVARIANT] No delay warnings. 0h is the Postfix default and is pinned
+# explicitly: with any non-zero value a deferred message from a tenant-domain
+# envelope sender yields a "Delayed Mail" notice that relays into ingestion.
+delay_warning_time = 0h
 soft_bounce = no
 
 # [INVARIANT] Queue expiry = operational signal + discard, never return-to-sender.

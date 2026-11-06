@@ -67,6 +67,13 @@ required:
   default_transport: discard
   notify_classes: ""
   bounce_queue_lifetime: "0"
+  # No delay warnings ("Delayed Mail (still being retried)"). 0h is Postfix's
+  # default and is pinned anyway: no delivery-status notice of any class may
+  # reach a sender, and with any non-zero value a deferred message from a
+  # tenant-domain envelope sender produced a delay notice that the edge
+  # RELAYED INTO INGESTION (observed on 3.8.6 with 1s; foreign senders' went to
+  # discard). A default is not a decision; a pinned value is.
+  delay_warning_time: "0h"
   # No smart host: normal operation requires no Internet SMTP egress.
   relayhost: ""
   # Pinned, never derived from the container subnet.
