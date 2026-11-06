@@ -20,8 +20,9 @@ object FocusedReport {
             appendLine()
             val population =
                 if (options.focusedCohort) {
-                    "the beta's production state: the closed cohort of ${Seeder.PARTICIPANTS + 1} workspaces (30 participants + 1 " +
-                        "legacy), its pool reserved, approved and REQUIRED, every event to those workspaces"
+                    "the beta's production state: the closed cohort of ${options.cohortParticipants + 1} workspaces " +
+                        "(${options.cohortParticipants} participants + 1 legacy), its pool reserved, approved and REQUIRED, every " +
+                        "event to those workspaces"
                 } else {
                     "workspaces ${options.workspaces} with ${if (options.cohortShares) Seeder.PARTICIPANTS + 1 else 0} cohort shares"
                 }

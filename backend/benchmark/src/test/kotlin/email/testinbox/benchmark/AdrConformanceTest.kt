@@ -55,6 +55,29 @@ class AdrConformanceTest {
     }
 
     @Test
+    fun `a closed cohort smaller than the beta's thirty participants is never gate evidence`() {
+        only(conforming.copy(cohortParticipants = 10)) shouldContain
+            "--cohort-participants 10: a closed cohort of 11 workspaces, not the beta's 30 participants + 1 legacy"
+        AdrConformance.reasons(conforming.copy(cohortParticipants = 30)).shouldBeEmpty()
+        val run =
+            AdrConformance.reasons(
+                BenchmarkOptions.parse(
+                    listOf(
+                        "--jdbc-url",
+                        "jdbc:postgresql://db/ti_bench",
+                        "--host-class",
+                        "h",
+                        "--focused-cohort",
+                        "--cohort-participants",
+                        "15",
+                    ),
+                ),
+            )
+        run.any { it.startsWith("--focused") } shouldBe true
+        run.any { it.startsWith("--cohort-participants 15") } shouldBe true
+    }
+
+    @Test
     fun `gate evidence is faithful to production's pool lifecycle - cold, with production's maxLifetime`() {
         // The default IS production's lifecycle; naming it explicitly changes nothing.
         AdrConformance.reasons(conforming.copy(coldPool = true, poolMaxLifetime = Duration.ofMinutes(30))).shouldBeEmpty()

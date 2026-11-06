@@ -122,6 +122,14 @@ data class BenchmarkOptions(
      */
     val focusedCohort: Boolean = false,
     /**
+     * `--cohort-participants <N>` (with `--focused-cohort` only): the closed cohort's
+     * participants, 1..[Seeder.PARTICIPANTS]; the default is the beta's maximum. A smaller
+     * first cohort lowers R = r × (N + L); its pool is still reserved for all thirty places
+     * and REQUIRED, every event goes to the N + 1 workspaces. Anything but 30 is never gate
+     * evidence ([AdrConformance]).
+     */
+    val cohortParticipants: Int = Seeder.PARTICIPANTS,
+    /**
      * `--cold-pool` (the default) / `--warm-pool`: whether each measured phase starts on new
      * physical connections that have executed nothing, as a just-deployed ingestion node does
      * ([PoolLifecycle]), or on connections warmed past pgJDBC's prepare threshold (the harness's
@@ -174,6 +182,7 @@ data class BenchmarkOptions(
             var options = BenchmarkOptions()
             var i = 0
             val poolFlags = mutableSetOf<String>()
+            var cohortParticipantsGiven = false
 
             fun value(flag: String): String {
                 i++
@@ -325,6 +334,11 @@ data class BenchmarkOptions(
                         options = options.copy(poolMaxLifetime = PoolLifecycle.parseDuration(value(flag)))
                     }
 
+                    "--cohort-participants" -> {
+                        cohortParticipantsGiven = true
+                        options = options.copy(cohortParticipants = int(value(flag), flag))
+                    }
+
                     "--focused-cohort" -> {
                         options = focusedPreset(options).copy(focusedCohort = true)
                     }
@@ -345,6 +359,9 @@ data class BenchmarkOptions(
                 i++
             }
             if (poolFlags.size > 1) throw UsageException("--cold-pool and --warm-pool contradict each other")
+            if (cohortParticipantsGiven && !options.focusedCohort) {
+                throw UsageException("--cohort-participants sizes the closed cohort of --focused-cohort; it takes effect nowhere else")
+            }
             options.validate()
             return options
         }
@@ -402,7 +419,10 @@ data class BenchmarkOptions(
 
         private fun BenchmarkOptions.validateFocused() {
             if (focused && partitionedVariant) throw UsageException("--focused measures CHOSEN only; it takes no --partitioned-variant")
-            if (focusedCohort && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
+            if (cohortParticipants !in 1..Seeder.PARTICIPANTS) {
+                throw UsageException("--cohort-participants must be in 1..${Seeder.PARTICIPANTS}, got $cohortParticipants")
+            }
+            if (focusedCohort && (cohortParticipants + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
                 throw UsageException("the closed cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
             }
         }
@@ -462,6 +482,9 @@ data class BenchmarkOptions(
               --focused-cohort                as --focused, on the beta's production state: the closed cohort (30
                                               participants + 1 legacy, pool reserved and approved, so REQUIRED), every
                                               event to those 31 workspaces, mode a
+              --cohort-participants <n>       with --focused-cohort only: n participants (1..30, default 30) + 1 legacy,
+                                              the pool still reserved for thirty places and REQUIRED, every event to those
+                                              n + 1 workspaces; anything but 30 is not ADR evidence
               --t1-steps                      time T1 step by step in any run (lock, snapshot, decision, insert, commit;
                                               `t1Steps` in the evidence), observing T1's statements without changing them,
                                               and attribute each T1 to a cold (first 5 executions on its physical
@@ -485,7 +508,7 @@ data class BenchmarkOptions(
               --out <dir>                     evidence directory (default build/benchmark-evidence)
 
             Any departure from the §11 matrix (rate, concurrency, backlog, population, --local, no --host-class,
-            no NO_LOCK reference) or from production's connection lifecycle (--warm-pool, a --pool-max-lifetime
+            no NO_LOCK reference, --cohort-participants other than 30) or from production's connection lifecycle (--warm-pool, a --pool-max-lifetime
             other than 30m) is recorded as adrEvidence=false and makes the verdict INCOMPLETE.
 
             Exit code: 0 PASS, 1 FAIL, 3 INCOMPLETE, 2 usage or safety refusal.
