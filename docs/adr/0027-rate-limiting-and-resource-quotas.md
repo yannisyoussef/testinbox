@@ -75,11 +75,13 @@ Enforcement moves to surfaces where refusing leaks nothing.
 > rate state: no limit may alter the SMTP reply. It is not a claim that
 > workspace-membership correlation is impossible. Under ADR-035's storage
 > enforcement (`ALL`), mode a's per-workspace write slots (not a limit) let an
-> authenticated participant correlate membership from the load-dependent delay
-> or `451` of a co-addressed event. The owner accepted that channel as a dated
-> exception to ADR-035 I9, for the initial beta of at most 30 admitted accounts
-> only, with mitigation tracked in #139. See ADR-035, "Owner decision note
-> (2026-11-06): exception to I9 for the initial beta (≤ 30 admitted accounts)".
+> authenticated participant read, from the load-dependent delay or `451` of a
+> co-addressed event, shared workspace membership (through induced contention)
+> and a known workspace's natural congestion (coarse: at the slot cap or not).
+> The owner accepted both as one bounded timing-disclosure exception to
+> ADR-035 I9, for the initial beta of at most 30 admitted accounts only, with
+> mitigation tracked in #139. See ADR-035, "Owner decision note (2026-11-06): bounded timing-disclosure exception to
+> I9 for the initial beta (≤ 30 admitted accounts)".
 
 ### 2. Where each limit is enforced
 

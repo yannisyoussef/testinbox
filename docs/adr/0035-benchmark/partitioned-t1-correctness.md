@@ -340,14 +340,17 @@ deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:286`.
    `:45`). Their consequence for a tenant observer (membership of an address
    in a saturated workspace, from the delay or the `451`) was not analysed by
    any ADR. It was escalated to the owner (#124) as an I9 tension. On
-   2026-11-06 the owner **accepted it as a dated exception to I9, for the
-   initial beta of at most 30 admitted accounts only**, with mitigation
-   tracked in #139 and reviewed before any expansion (ADR-035, "Owner decision
-   note (2026-11-06)"; `docs/security/abuse-model.md`).
+   2026-11-06 the owner **accepted it, together with the coarse reading of a
+   known workspace's natural congestion, as one bounded timing-disclosure
+   exception to I9, for the initial beta of at most 30 admitted accounts
+   only**, with mitigation tracked in #139 and the exception reassessed before
+   any expansion (ADR-035, "Owner decision note (2026-11-06)";
+   `docs/security/abuse-model.md`).
 
-   **The partitioned residual is NOT covered by that acceptance.** The owner's
-   decision states that it does not waive the partitioned-mode timing
-   assessment. The partitioned residual is still measured against the mode a
+   **The partitioned residual is NOT covered by that acceptance.** Both owner
+   decisions exclude it: the first does not waive the partitioned-mode timing
+   assessment, and the second excludes "the separate partitioned-locking
+   residual". The partitioned residual is still measured against the mode a
    baseline, but "no worse than the baseline" is a comparison, not an
    acceptance: the baseline's acceptance is a scoped exception, not a
    threshold that other channels inherit. The partitioned residual still needs
@@ -407,5 +410,5 @@ deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:286`.
 | per-metric reasons | `MetricCardinalityTest` keeps one `reason` set per metric |
 | S-C1 probes | `*-probe` scenarios in mode a and partitioned (`ProbeLoad`); then target-copy accounting, a paced point, repetitions with bucket reset and alternating order, pooled samples (security re-check) |
 | S-C2 Ops precondition | PROPOSED note and production.md |
-| S-C3 §7.2 and abuse model | §7.2 above; abuse-model.md slot-channel baseline (behaviour specified by ADR-035 §4 step 5 and §5; its oracle consequence escalated to the owner, then accepted on 2026-11-06 as a dated I9 exception for the beta of at most 30 accounts, #139) and partitioned-timing entry (not accepted) |
+| S-C3 §7.2 and abuse model | §7.2 above; abuse-model.md slot-channel baseline (behaviour specified by ADR-035 §4 step 5 and §5; its oracle consequence escalated to the owner, then accepted on 2026-11-06, with natural-congestion inference, as one bounded timing-disclosure exception to I9 for the beta of at most 30 accounts, #139) and partitioned-timing entry (not accepted) |
 | S-REC lock order | `(38,·)` before shared `(35,1)` (`JSA:204`), argument in §3, `PRT:137` (failed before) |

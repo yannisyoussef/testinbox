@@ -35,10 +35,12 @@ capacity inference risk in ADR-037 is unchanged.
 
 *Dated note (2026-11-06):* one `451` is neither uniform nor before
 resolution: a write-slot wait beyond `W_slot` depends on the load of the
-workspaces the event involves. The resulting workspace-membership timing
-channel, observable by an authenticated participant, is a separate dated
-exception to ADR-035 I9 for the initial beta of at most 30 admitted accounts
-(mitigation tracked in #139), not part of the ADR-037 capacity acceptance. See
+workspaces the event involves. The resulting timing disclosure, observable by
+an authenticated participant (shared workspace membership through induced
+contention, and a known workspace's natural congestion), is a separate,
+bounded timing-disclosure exception to ADR-035 I9 for the initial beta of at
+most 30 admitted accounts (mitigation tracked in #139), not part of the
+ADR-037 capacity acceptance. See
 ADR-035, "Owner decision note (2026-11-06)", and
 `docs/security/abuse-model.md`.
 

@@ -149,13 +149,17 @@ For the owner's decision; nothing here is a criterion until the owner adopts it.
 
 Criterion 8 measures the partitioned residual against mode a's write-slot
 channel (ADR-035 §4 step 5, with the slots of §5). On 2026-11-06 the owner
-accepted that mode a channel as a **dated exception to ADR-035 I9, for the
-initial beta of at most 30 admitted accounts only**, with mitigation tracked
-in #139 and reviewed before any expansion (ADR-035, "Owner decision note
+accepted that mode a channel (shared membership through induced contention,
+and a known workspace's natural congestion) as **one bounded
+timing-disclosure exception to ADR-035 I9, for the initial beta of at most 30
+admitted accounts only**, with mitigation tracked in #139 and the exception
+reassessed before any expansion (ADR-035, "Owner decision note
 (2026-11-06)").
 
-**The partitioned residual is NOT covered by that acceptance.** The decision
-states that it does not waive the partitioned-mode timing assessment. Meeting
+**The partitioned residual is NOT covered by that acceptance.** Both owner
+decisions exclude it: the first does not waive the partitioned-mode timing
+assessment, and the second excludes "the separate partitioned-locking
+residual". Meeting
 criterion 8's relative bounds would show the partitioned residual is no worse
 than mode a's; it would not make the partitioned residual accepted. The
 baseline's acceptance is a scoped exception, not a threshold other channels
