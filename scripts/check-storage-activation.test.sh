@@ -345,6 +345,58 @@ good | sed -e 's/^ALL$/TENANT_LIMITS/' -e "s#$M/ingestion-healthy.prom#$M/ingest
 case_ "D: TENANT_LIMITS needs no R_gated (the gate is NOT REQUIRED there)" 0 '^ACTIVATION READY$' "$TMP/dr15"
 
 # ---------------------------------------------------------------------------
+# Gate D, the measured window (owner decision 2026-11-06, #124 6684712608): at
+# R = 31 the harness measures >= 33 s so the 2R scenarios reach 100 retention
+# samples, and sustained2x keeps the terminal-lag allowance of a 30 s window
+# whatever the window. Every case below is the beta evidence with each
+# scenario's events, completions, terminal lag and achieved rate rewritten as
+# the harness's open loop reports them for a window of $2 s: achieved =
+# completed / ((N - 1) / rate + lag). The c100 2R scenario carries lag $3 ms.
+# ---------------------------------------------------------------------------
+window_bench() {
+    jq --argjson s "$2" --argjson lag "$3" '
+        .scenarios |= map(
+            ((.offeredRate * $s) | floor) as $n
+            | .scheduledEvents = $n | .completedEvents = $n
+            | .terminalLagMs = (if .name == "chosen-ws10000-c100-r62" then $lag else 8.0 end)
+            | .achievedRate = ($n / (($n - 1) / .offeredRate + .terminalLagMs / 1000)))' "$TMP/bench-beta.json" > "$1"
+}
+window_case() { beta | sed "s#$TMP/bench-beta.json#$1#"; }
+# At 30 s nothing changes: the reading is achieved/offered, so each lag passes exactly when that ratio is
+# >= 0.995 (166.9 ms at 62/s with every event in), the rule before the window was held.
+same=0
+for lag in 0 50 120 150 160 165 166 167 168 175 205 300; do
+    window_bench "$TMP/bench-w30-$lag.json" 30 "$lag"
+    window_case "$TMP/bench-w30-$lag.json" > "$TMP/dw30-$lag"
+    run_args "$TMP/dw30-$lag"
+    raw_passes="$(jq -r '[.scenarios[] | select(.name == "chosen-ws10000-c100-r62") | .achievedRate / .offeredRate >= 0.995] | first' "$TMP/bench-w30-$lag.json")"
+    if [ "$raw_passes" = true ]; then expected=0; else expected=1; fi
+    [ "$STATUS" = "$expected" ] || { bad "D: at 30 s, lag $lag ms: exit $STATUS, but achieved/offered alone says $raw_passes" "$OUT"; same=1; }
+done
+[ "$same" = 0 ] && ok "D: at a 30 s window every terminal lag is judged exactly as achieved/offered >= 0.995 judges it (unchanged)"
+window_bench "$TMP/bench-w30-205.json" 30 205
+window_case "$TMP/bench-w30-205.json" > "$TMP/dw1"
+only "D: at 30 s run 3's 205 ms terminal lag still blocks, on the achieved rate" D-benchmark "sustained2x: chosen-ws10000-c100-r62 achieved .* of 62(\.0)?/s offered \(ratio below 0.995\)" "$TMP/dw1"
+window_bench "$TMP/bench-w33-160.json" 33 160
+window_case "$TMP/bench-w33-160.json" > "$TMP/dw2"
+case_ "D: a 33 s window with a terminal lag inside the 30 s allowance passes" 0 '^ACTIVATION READY$' "$TMP/dw2"
+window_bench "$TMP/bench-w33-175.json" 33 175
+jq -e '[.scenarios[] | select(.name == "chosen-ws10000-c100-r62") | .achievedRate / .offeredRate >= 0.995] | first' "$TMP/bench-w33-175.json" >/dev/null \
+    && ok "D: (175 ms over 33 s is >= 0.995 read alone: the case below is the loosening the held allowance stops)" \
+    || bad "D: the 33 s / 175 ms fixture does not pass achieved/offered alone, so it proves nothing"
+window_case "$TMP/bench-w33-175.json" > "$TMP/dw3"
+only "D: a 33 s window does not loosen the allowance: 175 ms blocks" D-benchmark "sustained2x: chosen-ws10000-c100-r62 terminal lag 175 ms is past the 30 s allowance" "$TMP/dw3"
+window_bench "$TMP/bench-w60-300.json" 60 300
+window_case "$TMP/bench-w60-300.json" > "$TMP/dw4"
+only "D: a 60 s window does not loosen it either: 300 ms (0.9953 read alone) blocks" D-benchmark "sustained2x: chosen-ws10000-c100-r62 terminal lag 300 ms is past the 30 s allowance" "$TMP/dw4"
+window_bench "$TMP/bench-w60-160.json" 60 160
+window_case "$TMP/bench-w60-160.json" > "$TMP/dw5"
+case_ "D: a 60 s window with a terminal lag inside the 30 s allowance passes" 0 '^ACTIVATION READY$' "$TMP/dw5"
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c100-r62")) |= del(.terminalLagMs)' "$TMP/bench-w33-160.json" > "$TMP/bench-w33-nolag.json"
+window_case "$TMP/bench-w33-nolag.json" > "$TMP/dw6"
+only "D: a window longer than 30 s without its terminal lag cannot be read over 30 s and blocks" D-benchmark "records no completedEvents or terminalLagMs" "$TMP/dw6"
+
+# ---------------------------------------------------------------------------
 # Gate W, ADR-035 amendment D: before a cohort plan exists every workspace
 # receives mail, so under ALL the database holds at most 30 + L of them. The
 # bound comes from every node (testinbox_storage_envelope_max_workspaces).

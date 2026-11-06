@@ -115,6 +115,13 @@ HEARTBEAT_MAX_AGE=300
 EXPECTED_RATE=""
 EXPECTED_RATE_ARG=""
 SUSTAIN_TOLERANCE="0.995"
+# sustained2x's terminal-lag allowance is the one of a 30 s window, whatever window the
+# run measured (owner decision 2026-11-06, #124 6684712608: "keep the 150 ms terminal-lag
+# allowance ... unchanged"). A scenario whose window is longer is also read as the same
+# completion fraction and terminal lag over 30 s, and passes only if that reading is
+# >= 0.995 too; at 30 s or less the reading is achieved/offered exactly as before. The
+# harness's GateEvaluator.sustainedRatio is the same function.
+SUSTAIN_WINDOW_SECONDS="30"
 T1_P99_MS="50"
 RETENTION_RATIO="2"
 LOCK_TIMEOUT_RATE="0.001"
@@ -532,7 +539,8 @@ gate_benchmark() {
     fi
     # The §11 criteria, recomputed from the scenarios exactly as
     # docs/dev/storage-benchmark.md defines them (schemaVersion 1).
-    recomputed="$(jq -r --argjson expected "$EXPECTED_RATE" --argjson tol "$SUSTAIN_TOLERANCE" --argjson t1max "$T1_P99_MS" \
+    recomputed="$(jq -r --argjson expected "$EXPECTED_RATE" --argjson tol "$SUSTAIN_TOLERANCE" --argjson window "$SUSTAIN_WINDOW_SECONDS" \
+                     --argjson t1max "$T1_P99_MS" \
                      --argjson ratio "$RETENTION_RATIO" --argjson ltr "$LOCK_TIMEOUT_RATE" --argjson minws "$MIN_WORKSPACES" \
                      --argjson minres "$MIN_RESERVATION_BACKLOG" --arg conc "$REQUIRED_CONCURRENCY" --arg gated "$LOAD_GATED_CONCURRENCY" '
         (.scenarios // []) as $s
@@ -546,6 +554,11 @@ gate_benchmark() {
           def misses: (.errors.deadlineMissesFromSlotQueueing // .deadlineMissesFromSlotQueueing // 0);
           def others: (.errors.other // 0);
           def starved: (.retentionStarvedTicks // 0);
+          # The events a 30 s window holds at this rate; a scenario that scheduled more measured a longer window.
+          def refEvents: ((.offeredRate * $window) | floor);
+          def longWindow: (.scheduledEvents // 0) > refEvents and refEvents >= 2;
+          # The same completion fraction and terminal lag over a 30 s window (GateEvaluator.sustainedRatio).
+          def over30: ((.completedEvents / .scheduledEvents) * refEvents) / ((refEvents - 1) + .offeredRate * .terminalLagMs / 1000);
         ( if .adrEvidence != true then ["not ADR evidence (the harness departed from §11): " + ((.adrEvidenceReasons // []) | join("; ") | if . == "" then "no reason recorded" else . end)] else [] end )
         + ( if ($s | length) == 0 then ["no scenarios recorded"] else [] end )
         + ( if ($chosen2x | length) == 0 then ["no CHOSEN scenario offered 2× the expected rate (\(2 * $expected)/s)"] else [] end )
@@ -553,6 +566,12 @@ gate_benchmark() {
               | "coverage: no CHOSEN 2× scenario at concurrency \(.) with ≥ \($minws) workspaces and ≥ \($minres) live reservations" ]
         + [ $gated2x[] | select(.achievedRate == null or .achievedRate / .offeredRate < $tol)
               | "sustained2x: \(.name) achieved \(.achievedRate // "nothing") of \(.offeredRate)/s offered (ratio below \($tol))" ]
+        + [ $gated2x[] | select(.achievedRate != null and .achievedRate / .offeredRate >= $tol and longWindow)
+              | if .completedEvents == null or .terminalLagMs == null
+                then "sustained2x: \(.name) measured \(.scheduledEvents) events, a window longer than \($window) s, but records no completedEvents or terminalLagMs to read it over \($window) s"
+                elif over30 < $tol
+                then "sustained2x: \(.name) terminal lag \(.terminalLagMs) ms is past the \($window) s allowance (ratio \(over30) read over \($window) s, below \($tol))"
+                else empty end ]
         + [ $chosen2x[] | select(.percentiles.t1.p99Ms == null) | "t1P99: \(.name) has no T1 samples" ]
         + [ $gated2x[] | select(.percentiles.t1.p99Ms != null and .percentiles.t1.p99Ms > $t1max)
               | "t1P99: \(.name) T1 p99 \(.percentiles.t1.p99Ms) ms > \($t1max) ms" ]
