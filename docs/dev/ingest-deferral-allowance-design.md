@@ -1422,7 +1422,7 @@ here is accepted.
 Each one is listed with its mechanism, bound or metric, and the
 minimisation done.
 
-## 9. RL-9 correction (PROPOSED: revised after the lab and Ops' live answers; both reviewers AGREE subject to these edits (applied); not accepted, not implemented; lab item 6 re-run pending)
+## 9. RL-9 correction (PROPOSED: revised after the lab and Ops' live answers; both reviewers AGREE subject to these edits (applied); not accepted, not implemented; lab item 6 re-run confirmed in the lab)
 
 **Review status (2026-11-06).** Both reviewers agreed the invariants at
 `32539dd`. That agreement covered three carriers. Ops' lab then measured them
@@ -1438,9 +1438,9 @@ time ingestion first saw the identity. That is a material change.
   Those edits are applied in this commit. They cover the advertised XFORWARD
   set, the framing of the 6.98-bit figure, the IDENT logging rule, RL-4 and
   the activation barrier.
-- The lab item 6 re-run with the advertised set {IDENT, PROTO, SOURCE} is
-  pending (#124 6688831352). It is queued after the A′ checkpoint run (#124
-  6688849188).
+- The lab item 6 re-run with the advertised set {IDENT, PROTO, SOURCE}
+  **confirmed** the eligibility rule and EP-8 (4) in the lab (#124
+  6689153504), not on the live edge.
 - No agreement is owner acceptance of anything, and nothing here activates
   anything.
 
@@ -1578,8 +1578,8 @@ here with their evidence.
 IDENT stable on retries and kept across a requeue (item 2), so C4 does not
 apply.
 
-**Eligible origin (lab item 6: measured in the lab; a re-run with the real
-advertised set is pending).**
+**Eligible origin (lab item 6: measured in the lab, then re-run with the real
+advertised set; confirmed in the lab, not on the live edge).**
 
 - **What the lab found.** The lab sink advertised every attribute.
   - Mail the edge's `smtpd` received always carried `ADDR`, `PORT`, `PROTO`,
@@ -1590,8 +1590,21 @@ advertised set is pending).**
     bounces and delay notices.
 - **The re-run.** Ingestion advertises exactly {IDENT, PROTO, SOURCE}, so
   `ADDR` and `HELO` never arrive. A re-run with that advertised set,
-  recording each origin, is requested (#124 [6688831352](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688831352)) and **pending**. The
-  eligibility rule and EP-8 (4) depend on its result.
+  recording each origin, was requested (#124 [6688831352](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688831352)) and run (#124 [6689153504](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6689153504)):
+  - `smtpd` mail (EHLO, plain HELO, and loopback) sent `PROTO`, `IDENT` and
+    `SOURCE=REMOTE` (loopback is `REMOTE` under the edge's empty
+    `local_header_rewrite_clients`);
+  - `pickup`, `sendmail -bs`, a forced expiry bounce and a delay notice sent
+    only `SOURCE=LOCAL`;
+  - a requeued `smtpd` message kept the old `IDENT`;
+  - a sink advertising none of the attributes received no XFORWARD at all,
+    for every origin (today's live state).
+
+  So with this set every origin sends at least `SOURCE`, and a missing
+  XFORWARD means the attributes were not advertised or XFORWARD is off at
+  the edge, never a genuine edge notice. The only sender-influenced attribute
+  in the set is `PROTO` (HELO vs EHLO), which stays within the SMTP family.
+  This confirms the eligibility rule and EP-8 (4) **in the lab**.
 - **The rule:** only copies whose `PROTO` is in {SMTP, ESMTP, ESMTPS, ESMTPA,
   ESMTPSA} are eligible for credit. An absent `PROTO` means ineligible.
   - Ingestion advertises `IDENT`, `PROTO` and `SOURCE` (I-10). `PROTO` and
@@ -1822,7 +1835,7 @@ allowances expired + copies discarded by the limiter after a spend.
   open 270 s.
 - **Item 6:** measured with the sink advertising every attribute.
   Non-`smtpd` origins sent only `SOURCE=LOCAL`. A re-run with ingestion's
-  real advertised set {IDENT, PROTO, SOURCE} is **pending** (#124 [6688831352](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688831352)).
+  real advertised set {IDENT, PROTO, SOURCE} **confirmed** it in the lab (#124 [6689153504](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6689153504)).
 - **Reload and restart:** §4.
 
 **Questions still open:**
@@ -1949,8 +1962,9 @@ practice today". It is **an observation, not a proof**.
         ESMTPSA}).
     - An absent or `[UNAVAILABLE]` `PROTO` from an edge counts as not
       `smtpd`-originated.
-    - The rule depends on the pending lab item 6 re-run with the advertised
-      set {IDENT, PROTO, SOURCE} (#124 [6688831352](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688831352)).
+    - The lab item 6 re-run with the advertised set {IDENT, PROTO, SOURCE}
+      confirmed the discriminator in the lab (#124 [6689153504](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6689153504)): edge
+      notices send only `SOURCE=LOCAL`, with no `PROTO`.
     - A `trusted-clients` peer (no XFORWARD) is handled normally.
     - **If XFORWARD is missing from an edge** (the alert above), this is
       **proposed, for the owner**: fail closed. Every edge null-sender
