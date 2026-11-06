@@ -199,7 +199,13 @@ restart would.
 | `TESTINBOX_LIMITS_INGEST_PER_INBOX_REFILL_PER_SECOND` | `0.5` | default in the deployed profile; ≤ r |
 | `TESTINBOX_STORAGE_GATED_EXPECTED_RATE` | `31` | R_gated: the passing gate D evidence's `harness.expectedRate`; no default; required, and exactly 31, under `ALL`; pin it in `check-testinbox-prod` |
 | `TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES` | `1` | L; no default; required, and at most 1, under `ALL`; pin it in `check-testinbox-prod` |
-| `TESTINBOX_BETA_MAX_PARTICIPANTS` | `30` | N; default 30; 1..30; only lowers admissions; under `ALL` only an owner-approved N starts (today: 30) |
+| `TESTINBOX_BETA_MAX_PARTICIPANTS` | `30` | N; default 30; 1..30; only lowers admissions; under `ALL` only an owner-approved N starts (30, or 10 for the first cohort) |
+| `TESTINBOX_DB_POOL_SIZE` (ingestion) | `8` | Hikari `maximum-pool-size`; under `ALL` must equal the approved entry's pool (first cohort: 8; N = 30: none approved) |
+
+For the first cohort under `ALL`: `TESTINBOX_BETA_MAX_PARTICIPANTS=10` and
+`TESTINBOX_STORAGE_GATED_EXPECTED_RATE=11` on both services,
+`TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES=1`, the four limit variables at
+their deployed defaults (or lower), and `TESTINBOX_DB_POOL_SIZE` 8 on ingestion.
 
 Set them identically on the API and the ingestion gateway: both run the same
 startup check. The reference staging topology (`deploy/staging/compose.yaml`)
@@ -270,14 +276,18 @@ upper bound.
   (`testinbox_storage_envelope_max_workspaces`, which is N + L) and gate D
   (R_gated, which must equal the approved R for N).
 - **Under `ALL`, N selects an owner-approved envelope.** The approved
-  envelopes are one list, `IngestEnvelopeSafety.APPROVED_ENVELOPES`. It holds
-  **one** entry today: amendment D's N = 30, r = 1, b = 60, L = 1, so R = 31.
-  An N without an entry (any N below 30 today) is **refused at startup** with
-  `testinbox.beta.max-participants is N but no owner-approved INGEST envelope
-  covers N = …`. A smaller first cohort (e.g. N = 10, so R = 1 × (10 + 1) = 11)
-  needs the owner's decision and a passing gate D at that R first, then one
-  reviewed line in that list. Outside `ALL` a lowered N needs no envelope: it
-  only lowers admissions.
+  envelopes are one list, `IngestEnvelopeSafety.APPROVED_ENVELOPES`:
+  - amendment D: N = 30, r = 1, b = 60, L = 1, so R = 31; pool size
+    unapproved (see below);
+  - the closed first cohort (owner decision 2026-11-06, ADR-035 "closed
+    first-cohort MVP envelope"): N = 10, r = 1, b = 60, L = 1, so **R = 11**
+    (2R = 22), ingestion pool **8**.
+
+  Any other N is **refused at startup** with `testinbox.beta.max-participants
+  is N but no owner-approved INGEST envelope covers N = …`. A new N needs the
+  owner's decision and a passing gate D at its R first, then one reviewed entry
+  in that list. Outside `ALL` a lowered N needs no envelope: it only lowers
+  admissions.
 - **At run time under `ALL`, with a lowered N,** the activation watch keeps
   counting the workspace population against N + L even after a cohort plan
   exists. The pool's thirty participant shares bound the population only while
@@ -289,10 +299,11 @@ upper bound.
   entry's evidence covers. It fails closed if the size cannot be read. Amendment
   D names **no** pool size, and the committed gate D harness sizes each
   scenario's pool c + 6, not the gateway's 8 (`docs/dev/storage-benchmark.md`).
-  So the N = 30 entry records the pool size as **unapproved**, and **`ALL` is
-  refused on every ingestion gateway**, the lab included, until the owner
-  approves an entry with a pool size. The API runs no SMTP T1 and is not
-  affected.
+  So the N = 30 entry records the pool size as **unapproved**, and `ALL` with
+  N = 30 is refused on every ingestion gateway, the lab included. The first
+  cohort's entry approves pool **8**, so `ALL` with N = 10 starts only with
+  `TESTINBOX_DB_POOL_SIZE` 8 (or unset: 8 is the deployed default). The API runs
+  no SMTP T1 and is not affected.
 - **Not changed.** The offline `admission status` command still prints
   `consumed_places=…/30`: it runs before Spring and reads no deployable's
   configuration, so it reports the hard bound, not N.

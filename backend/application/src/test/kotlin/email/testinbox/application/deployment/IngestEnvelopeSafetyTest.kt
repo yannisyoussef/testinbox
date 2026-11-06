@@ -224,11 +224,19 @@ class IngestEnvelopeSafetyTest {
     private val tenForTest =
         ApprovedIngestEnvelope(participants = 10, refill = 1.0, burst = 60, legacy = 1, ingestionPoolSize = 8, approval = "test only")
 
-    private val withTen = IngestEnvelopeSafety.APPROVED_ENVELOPES + tenForTest
+    /** Amendment D plus the test-only entry: the derivation exercised independently of the shipped first-cohort entry. */
+    private val withTen = IngestEnvelopeSafety.APPROVED_ENVELOPES.filter { it.participants == 30 } + tenForTest
 
     @Test
-    fun `the approved set is exactly amendment D's one entry - N 30, r 1, b 60, L 1, R 31, pool unapproved`() {
-        val only = IngestEnvelopeSafety.APPROVED_ENVELOPES.single()
+    fun `the approved set is exactly amendment D's entry and the first-cohort entry`() {
+        IngestEnvelopeSafety.APPROVED_ENVELOPES.map { it.participants } shouldBe listOf(30, 10)
+        val first = IngestEnvelopeSafety.APPROVED_ENVELOPES.single { it.participants == 10 }
+        first.refill shouldBe 1.0
+        first.burst shouldBe 60
+        first.legacy shouldBe 1
+        first.gatedRate.compareTo(java.math.BigDecimal("11")) shouldBe 0
+        first.ingestionPoolSize shouldBe 8
+        val only = IngestEnvelopeSafety.APPROVED_ENVELOPES.single { it.participants == 30 }
         only.participants shouldBe 30
         only.refill shouldBe IngestEnvelopeSafety.APPROVED_WORKSPACE_REFILL
         only.burst shouldBe IngestEnvelopeSafety.APPROVED_WORKSPACE_BURST
@@ -246,20 +254,38 @@ class IngestEnvelopeSafetyTest {
         IngestEnvelopeSafety.mailReceivingWorkspaces(capped(30).storage) shouldBe 31
     }
 
+    private val amendmentDOnly = IngestEnvelopeSafety.APPROVED_ENVELOPES.filter { it.participants == 30 }
+
+    private fun onlyAgainst(
+        approved: List<ApprovedIngestEnvelope>,
+        settings: DeploymentSettings,
+        key: String,
+        problem: String,
+    ) {
+        val found = IngestEnvelopeSafety.check(settings, approved)
+        found.map { it.setting } shouldBe listOf(key)
+        found.single().problem shouldContain problem
+    }
+
     @Test
     fun `N = 10 is refused under ALL until the owner approves it - fail closed, naming the missing approval`() {
-        // R_gated computed from N = 10, and the old 31: both refused, by the cap alone.
+        // Against amendment D alone, as before the first-cohort entry: R_gated from N = 10, and the old 31, both refused.
         for (rGated in listOf(11.0, 31.0)) {
-            only(capped(10, rGated = rGated), IngestEnvelopeSafety.PARTICIPANTS, "no owner-approved INGEST envelope covers N = 10")
+            onlyAgainst(
+                amendmentDOnly,
+                capped(10, rGated = rGated),
+                IngestEnvelopeSafety.PARTICIPANTS,
+                "no owner-approved INGEST envelope covers N = 10",
+            )
         }
-        val problem = envelope(capped(10, rGated = 11.0)).single().problem
+        val problem = IngestEnvelopeSafety.check(capped(10, rGated = 11.0), amendmentDOnly).single().problem
         problem shouldContain "is 10 but"
         problem shouldContain "r × (N + L) = 1.0 × (10 + 1) = 11.0 events/s has no owner approval"
         problem shouldContain "Approved: N = 30: R = 1.0 × (30 + 1) = 31.0"
         problem shouldContain "IngestEnvelopeSafety.APPROVED_ENVELOPES"
-        IngestEnvelopeSafety.expectedGatedRate(capped(10).storage) shouldBe null
-        // Every lowered N, not just 10.
-        for (n in 1..29) envelope(capped(n)).map { it.setting } shouldContain IngestEnvelopeSafety.PARTICIPANTS
+        IngestEnvelopeSafety.expectedGatedRate(capped(10).storage, amendmentDOnly) shouldBe null
+        // Every other lowered N, against the shipped set.
+        for (n in (1..29) - 10) envelope(capped(n)).map { it.setting } shouldContain IngestEnvelopeSafety.PARTICIPANTS
         // Outside ALL a lowered N only lowers admissions; it needs no envelope.
         for (mode in listOf(StorageEnforcement.OFF, StorageEnforcement.TENANT_LIMITS)) {
             envelope(capped(10).let { it.copy(storage = it.storage.copy(enforcement = mode)) }).shouldBeEmpty()
@@ -303,6 +329,45 @@ class IngestEnvelopeSafetyTest {
         envelope(
             capped(30, pool = IngestionPoolSize.Known(10)).let { it.copy(storage = it.storage.copy(enforcement = StorageEnforcement.OFF)) },
         ).shouldBeEmpty()
+    }
+
+    @Test
+    fun `the first-cohort entry - cap 10 with pool 8 starts ALL, pool 10 or cap 12 is refused`() {
+        // The API (no pool) and the gateway (pool 8) at N = 10, R_gated = 11.
+        envelope(capped(10, rGated = 11.0)).shouldBeEmpty()
+        envelope(capped(10, rGated = 11.0, pool = IngestionPoolSize.Known(8))).shouldBeEmpty()
+        IngestEnvelopeSafety.expectedGatedRate(capped(10).storage)!!.compareTo(java.math.BigDecimal("11")) shouldBe 0
+        only(
+            capped(10, rGated = 11.0, pool = IngestionPoolSize.Known(10)),
+            IngestEnvelopeSafety.POOL_SIZE,
+            "is 10 but the approved envelope's evidence covers an ingestion pool of exactly 8",
+        )
+        only(
+            capped(10, rGated = 11.0, pool = IngestionPoolSize.Unreadable("not Hikari")),
+            IngestEnvelopeSafety.POOL_SIZE,
+            "could not be determined",
+        )
+        only(
+            capped(12, rGated = 13.0, pool = IngestionPoolSize.Known(8)),
+            IngestEnvelopeSafety.PARTICIPANTS,
+            "no owner-approved INGEST envelope covers N = 12",
+        )
+        // N = 10 at amendment D's rate is not the first cohort's evidence.
+        only(capped(10, rGated = 31.0), IngestEnvelopeSafety.GATED_RATE, "owner approved R = 1.0 × (10 + 1) = 11.0")
+        // Not more than the one owner workspace, and nothing above r = 1 or b = 60.
+        only(capped(10, rGated = 11.0, legacy = 2), IngestEnvelopeSafety.LEGACY, "owner approved at most 1")
+        envelope(capped(10, rGated = 11.0).copy(ingest = beta.copy(capacity = 61))).map { it.setting } shouldBe
+            listOf(IngestEnvelopeSafety.WORKSPACE_CAPACITY)
+    }
+
+    @Test
+    fun `two entries for one N are ambiguous and fail closed`() {
+        val twice = withTen + tenForTest.copy(ingestionPoolSize = 16)
+        IngestEnvelopeSafety.check(capped(10, rGated = 11.0), twice).map { it.setting } shouldBe listOf(IngestEnvelopeSafety.PARTICIPANTS)
+        IngestEnvelopeSafety.APPROVED_ENVELOPES
+            .groupBy { it.participants }
+            .values
+            .all { it.size == 1 } shouldBe true
     }
 
     @Test

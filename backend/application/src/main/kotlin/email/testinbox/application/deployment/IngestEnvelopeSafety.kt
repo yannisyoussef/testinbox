@@ -104,8 +104,10 @@ object IngestEnvelopeSafety {
      * gateway's 8. So its pool size is UNAPPROVED (null) and `ALL` is refused on
      * the gateway until the owner approves one.
      *
-     * A smaller first cohort (for example N = 10, R = 1 × (10 + 1) = 11) is NOT
-     * here: it needs the owner's decision first, then one line below.
+     * The closed first cohort (owner decision 2026-11-06, ADR-035 "Amendment
+     * note (2026-11-06, owner decision): closed first-cohort MVP envelope"):
+     * N = 10 with the owner workspace (L = 1), r = 1, b = 60, so R = 11, measured
+     * at the gateway's production pool of 8. Thirty remains the later target.
      */
     val APPROVED_ENVELOPES: List<ApprovedIngestEnvelope> =
         listOf(
@@ -116,6 +118,14 @@ object IngestEnvelopeSafety {
                 legacy = APPROVED_LEGACY_WORKSPACES,
                 ingestionPoolSize = null,
                 approval = "ADR-035 amendment D, owner decision 2026-11-06 (#124 comment 6676738358)",
+            ),
+            ApprovedIngestEnvelope(
+                participants = 10,
+                refill = 1.0,
+                burst = 60,
+                legacy = 1,
+                ingestionPoolSize = 8,
+                approval = "ADR-035 first-cohort MVP envelope, owner decision 2026-11-06",
             ),
         )
 

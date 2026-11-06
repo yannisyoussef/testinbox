@@ -395,12 +395,43 @@ class IngestionDeploymentSafetyCheckTest {
     }
 
     @Test
-    fun `a lowered N under ALL is refused on the gateway, naming the missing owner approval`() {
-        runner.withPropertyValues(*deployed, "testinbox.storage.enforcement=ALL", "testinbox.beta.max-participants=10").run { context ->
+    fun `an unapproved N under ALL is refused on the gateway, naming the missing owner approval`() {
+        runner.withPropertyValues(*deployed, "testinbox.storage.enforcement=ALL", "testinbox.beta.max-participants=12").run { context ->
             assertThat(context).hasFailed()
             context.startupFailure!!.stackTraceToString() shouldContain
-                "testinbox.beta.max-participants is 10 but no owner-approved INGEST envelope covers N = 10"
+                "testinbox.beta.max-participants is 12 but no owner-approved INGEST envelope covers N = 12"
         }
+    }
+
+    @Test
+    fun `the first cohort under ALL reaches the pool check - a pool of 10 is named, a pool of 8 is not`() {
+        val firstCohort =
+            arrayOf(
+                *deployed,
+                "testinbox.storage.enforcement=ALL",
+                "testinbox.beta.max-participants=10",
+                "testinbox.storage.gated-expected-rate=11",
+                "testinbox.storage.declared-legacy-workspaces=1",
+            )
+        runner
+            .withUserConfiguration(HikariPool::class.java)
+            .withPropertyValues(*firstCohort, "spring.datasource.hikari.maximum-pool-size=10")
+            .run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure!!.stackTraceToString() shouldContain
+                    "spring.datasource.hikari.maximum-pool-size is 10 but the approved envelope's evidence covers an ingestion pool of exactly 8"
+            }
+        runner
+            .withUserConfiguration(HikariPool::class.java)
+            .withPropertyValues(*firstCohort, "spring.datasource.hikari.maximum-pool-size=8")
+            .run { context ->
+                // Still refused for the other ALL declarations this fixture omits, but never for N, R_gated, L or the pool.
+                assertThat(context).hasFailed()
+                val message = context.startupFailure!!.stackTraceToString()
+                message.contains("spring.datasource.hikari.maximum-pool-size") shouldBe false
+                message.contains("testinbox.beta.max-participants") shouldBe false
+                message.contains("testinbox.storage.gated-expected-rate") shouldBe false
+            }
     }
 
     @Test
