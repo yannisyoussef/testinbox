@@ -74,7 +74,16 @@ class BenchmarkTarget private constructor(
             val container =
                 PostgreSQLContainer("postgres:16-alpine")
                     .withDatabaseName(LOCAL_DATABASE)
-                    .withCommand("postgres", "-c", "max_connections=$LOCAL_MAX_CONNECTIONS")
+                    // pg_stat_statements with planning: the gate D diagnostics (plan and execution time per statement).
+                    .withCommand(
+                        "postgres",
+                        "-c",
+                        "max_connections=$LOCAL_MAX_CONNECTIONS",
+                        "-c",
+                        "shared_preload_libraries=pg_stat_statements",
+                        "-c",
+                        "pg_stat_statements.track_planning=on",
+                    )
             container.start()
             return BenchmarkTarget(
                 container.jdbcUrl,

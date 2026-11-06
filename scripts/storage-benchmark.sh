@@ -67,7 +67,7 @@ fi
 export TESTINBOX_GIT_SHA="${TESTINBOX_GIT_SHA:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
 
 set +e
-"$LAUNCHER" "$@" "${EXTRA[@]}"
+"$LAUNCHER" "$@" ${EXTRA[@]+"${EXTRA[@]}"}
 STATUS=$?
 set -e
 

@@ -1064,6 +1064,11 @@ The result is recorded in `production-ops-acceptance.md` row P. If it fails,
 the design **returns to ADR review**. Per-node escrow is the named fallback,
 and it is not pre-built. Nothing outside PostgreSQL is introduced.
 
+> **Dated note (2026-11-05):** gate D FAILED at `c10dd3d` on the staging host
+> class. The correction stays in mode a and is recorded in "Amendment note
+> (2026-11-05, gate D): still mode a, correct within mode a first" below. No
+> criterion above changes.
+
 ### 12. SMTP and edge behaviour
 
 | Situation | Gateway reply to the edge | Stored | Tenant sees |
@@ -2062,6 +2067,88 @@ record satisfies it, so production still cannot start `ALL`.
   added by this change: the Ops-evidenced `production-host` record for
   `adr035-presigned-put-v2` ships in a later pull request
   (`docs/dev/production.md`, "Storage activation").
+
+## Amendment note (2026-11-05, gate D): still mode a, correct within mode a first
+
+**Authority: the storage CODEOWNERS' consolidated Stage B verdict**, #120
+comment 6631813062, §2.3 ("A dated §11 note records the FAIL, the diagnosis
+and 'correct within mode a first'"). This note records a result and the
+correction; it changes no §11 parameter, threshold, matrix entry or pass
+criterion.
+
+- **The FAIL.** Gate D ran at `c10dd3d` on the staging host class
+  (vmi2932906, 8 vCPU KVM, PostgreSQL 16.15 with production defaults except
+  `max_connections`), the documented command, `--workspaces 200,10000`,
+  `adrEvidence: true` (#124 comment 6613516903; raw evidence #129 under
+  `docs/adr/0035-benchmark/staging/2026-11-03-c10dd3d-FAIL/`). CHOSEN
+  sustained 41.6–61.8 events/s at 520 offered (worst ratio 0.080), T1 p99
+  219–325 s, 1 410 slot-queueing misses; retention and integrity passed.
+  The NO_LOCK reference reached 96–198/s.
+- **The diagnosis.** The `(35, 1)` hold was 15–24 ms against a serial budget
+  of 1.92 ms at 520/s: two population-scaled sums over
+  `workspace_storage_account`, sums over bloated churn heaps, ~7 ms of
+  planning of a variable-arity statement, and the `synchronous_commit = on`
+  commit inside the lock (#124 6633013793).
+- **The harness under-measured production.** It built T1 without
+  `readsFootprint`, which production `ALL` sets (the footprint and cohort reads,
+  a second set of global sums and a population-scaled count). The FAIL stands
+  a fortiori. From now on gate D counts only a run whose T1 is assembled as
+  `IngestionWiring` assembles it, with seeded trust, observation and watermark
+  rows, proven per scenario by the harness's T1 probe (recorded as `t1Probe`).
+  No participant exists in that population, so the cohort pool is read but
+  not required at 10 000 workspaces.
+- **The correction is still mode a.** T1 keeps the exclusive `(35, 1)` lock and
+  its one-statement snapshot. V24 keeps Σ workspace bases in one row,
+  `storage_global_base`, written only by database definer triggers in the base
+  writers' own transactions (compactor, repair, recompute); T1 and T2 never
+  write it, so this is not mode b's hot row, and no application code maintains
+  it (OFF rollback stays exact, §A2.8). Reconciliation (I8) checks it against
+  Σ workspace bases, the repair fixes it and revokes trust, and
+  `storage_confirm_footprint_trust()` revokes trust while it disagrees, so
+  `ALL` fails closed (451). T1 binds one `uuid[]` per id list under
+  `plan_cache_mode = force_generic_plan`, scans each in-flight table once, and
+  its cohort "unknown" read stops at the first unshared workspace. V24 sets
+  per-table autovacuum and fillfactor. `synchronous_commit` stays on (§4).
+- **Then gate D reruns unchanged.** If CHOSEN fails while NO_LOCK passes, the
+  design returns to ADR review for the named per-node escrow fallback. If
+  NO_LOCK fails, the per-event cost and the host class for 2 × 260/s are an
+  owner/ADR question.
+- **A measurement, not a mode.** The harness can also run a
+  `PARTITIONED` benchmark variant (a shared `(35, 1)` plus sorted per-workspace
+  locks over a 30-participant + legacy population, W1). It lives only in the
+  benchmark module, is reported apart from the gate and never counts as gate D
+  evidence; whether any such mode exists is an owner decision and a separate
+  ADR amendment.
+
+## Owner decision note (2026-11-05): partitioned locking, implementation and testing only
+
+**Authority: owner decision 2026-11-05**, relayed by Ops on #124 comment
+6665820491, quoted exactly:
+
+> "Partitioned locking: Implementation and testing authorized. Release requires independent correctness review, passing applicable benchmark criteria, and enforced safeguards against cohort growth or overcommit. Benchmark success alone is insufficient. This does not authorize opening admission."
+
+This note records that decision; it changes no text above. In particular the
+gate D note's last bullet ("A measurement, not a mode … lives only in the
+benchmark module … whether any such mode exists is an owner decision and a
+separate ADR amendment") and ADR-037's "preserve … transaction lock ordering"
+stand as written. What follows is **the team's safeguard reading** of the
+decision — how the implementation keeps within it — not the owner's words,
+which are only the quotation above:
+
+- the production-code implementation of the share-partitioned T1 behind a
+  **lab-only** switch, `testinbox.storage.admission-locking`, whose default
+  and only committed value is `GLOBAL` (mode a). `DeploymentSafety` refuses
+  `COHORT_PARTITIONED` in every environment but `lab`; the activation inventory
+  refuses a node that runs it outside the lab; activation gate L blocks while
+  any node runs it or cannot prove it does not;
+- its tests, and its measurement by the §11 harness as a variant reported
+  apart from gate D, which is still computed from mode a's CHOSEN scenarios.
+
+On that reading it authorizes nothing more: not release, enablement, opening
+admission, or any §11 parameter, threshold or criterion change. Whether the mode exists in ADR-035,
+and on which criteria, is the PROPOSED note
+[`0035-amendment-note-partitioned-t1-PROPOSED.md`](0035-amendment-note-partitioned-t1-PROPOSED.md),
+which lists both passages above as text it would amend.
 
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 

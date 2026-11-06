@@ -174,9 +174,44 @@
   for up to 1 s) and T1's own snapshot; (2) a `STORAGE_FULL` breaker's
   half-open trial fails (or its probe is refused by rule (P)) after resolution;
   (3) an inbox stops receiving — expired by the sweep or deleted by its owner —
-  while an upload into it is in flight, and T2 fences the whole event. None is
-  a stable state an attacker can hold open: each answers "a recipient existed
-  at that instant", which address entropy already makes infeasible to aim.
+  while an upload into it is in flight, and T2 fences the whole event. None of
+  these three races is a stable state an attacker can hold open: each answers
+  "a recipient existed at that instant", which address entropy already makes
+  infeasible to aim. *(Corrected 2026-11-05, review #136 S-C3: the next item is
+  a stable state, and pre-existing.)*
+- **Write-slot fairness channel (mode a, pre-existing; its consequence is NOT
+  accepted by any ADR and is escalated to the owner).** The slot *behaviour* is
+  specified by ADR-035 §5 step 5 (Accepted): per-workspace fair write slots — at
+  most `max-concurrent-events-per-workspace` = 4 per node
+  (`StorageProtocol.MAX_EVENTS_PER_WORKSPACE`, slots / 4) — and a bounded wait
+  `W_slot` = 10 s (`StorageProtocol.SLOT_WAIT`) after which the whole DATA is
+  answered `451` as "a load failure". Its *consequence* was not analysed by any
+  ADR: a party that keeps a workspace's slots busy (by flooding addresses it
+  knows there) can hold that state open, and an **authenticated tenant**
+  co-addressing its own inbox with a candidate address in one DATA then learns,
+  from the delay or the `451`, whether the candidate belongs to the busy
+  workspace. That sits in tension with I9 ("a `451` … is never chosen per
+  tenant", ADR-035 §1) and with CLAUDE.md invariant 8, and has been escalated to
+  the owner (#124) as a possible I9 tension. It is bounded by the INGEST rate
+  limits, needs known addresses of the target workspace, and answers workspace
+  membership, never content. This entry records it as the pre-existing
+  baseline the share-partitioned T1 is measured against, pending the owner's
+  decision. No behaviour changes here.
+- **Share-partitioned T1 timing (PROPOSED, lab only; ADR-035 PROPOSED note,
+  correctness document §7.2).** The partitioned T1 adds a per-workspace lock
+  `(38, k)`. Its timeout or deadlock falls back to mode a rather than answering
+  `451`, but the wait is still visible as latency to an **authenticated tenant
+  observer** that co-addresses its own inbox with a candidate address and reads
+  its own inbox's delivery time. The external sender learns nothing new: the
+  edge stores and forwards, so the sender sees the edge's reply. The channel is
+  of the same kind as the slot channel above and is measured against it by the
+  benchmark's `*-probe` scenarios (mode a vs partitioned under the same load).
+  The security review found the partitioned residual no worse than that
+  baseline, subject to its conditions (the measurement and the Ops precondition
+  below); that is a comparison with an unaccepted baseline, not an acceptance —
+  no security review can accept it, and the baseline itself awaits the owner.
+  Precondition: in an environment running the mode, only the edge or trusted
+  test clients reach ingestion's SMTP port.
 - **Envelope-order capacity refusals under `ALL`** (contract §11.6): with
   footprint admission, copies of one event are decided against running totals
   in envelope order, so a tenant parking global headroom at the cliff could

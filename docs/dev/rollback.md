@@ -566,3 +566,40 @@ lifecycle floor above (`a00c16e`). This change adds no state that an older artif
 could corrupt. The restore-window protections (every managed key refused
 while quarantined, every managed key revoked by `restore-reconcile`) already
 ship in `a00c16e`; only artifacts older than it lack them.
+
+## Share-partitioned T1 guard (PROPOSED, gate D W1, schema V25)
+
+V25 is expand-only: one table (`storage_partition_bound`, never backed up),
+one column (`storage_node.admission_locking`, `NOT NULL DEFAULT 'GLOBAL'`),
+one invoker function and two definer trigger functions with their triggers
+on `storage_legacy_share`, `participant_workspace`, `storage_cohort_plan` and
+`storage_partition_bound`. An older artifact starts cleanly against it and
+never reads the table or the column. The switch it serves
+(`testinbox.storage.admission-locking = COHORT_PARTITIONED`) is refused
+outside the lab, so in staging and production every artifact, older or not,
+runs mode a.
+
+What an older artifact (any digest before V25) meets:
+
+| Older artifact | What happens | Consequence |
+|---|---|---|
+| ingestion / API (runtime) | registers and heartbeats `storage_node` without the column | the row reads `GLOBAL`, which is what it runs |
+| beta admission (API) | its `participant_workspace` insert passes the V25 fence trigger, re-entrantly: it already holds `(35, 1)` | unchanged |
+| pool reserve (`storage-budget reserve` of an older digest) | writes the shares and the plan, never the bound; a bound recorded earlier by a newer digest now carries a different fingerprint (or binding) than the plan | that stale bound neither binds (the deferred check applies only while the bound matches the APPROVED plan) nor partitions (G1 fails, every T1 runs mode a) |
+| any share/plan writer not in READ COMMITTED | refused by the fence (READ COMMITTED only: a REPEATABLE READ or SERIALIZABLE snapshot predates the fence) | every application writer runs READ COMMITTED (the reserve command asserts it); a server whose `default_transaction_isolation` was changed refuses share writes, fail closed |
+
+**Recovery from a stale bound.** None is needed for correctness: a bound that
+does not match the approved plan is inert. To remove it, `DELETE FROM
+storage_partition_bound` as the owner (it takes `(35, 1)`), or re-reserve
+from a digest at or after V25, which records the matching bound.
+
+**Activation gate L blocks while any pre-switch artifact runs.** An artifact
+older than V25 exports no `testinbox_storage_admission_locking` series; gate L
+reads an absent series as UNKNOWN, never as mode a, and reports `L-lock-protocol
+BLOCKED … T1 lock protocol UNKNOWN`. After rolling back below V25, expect the
+activation barrier to stay BLOCKED until every node runs an artifact that
+exports the series. (The node rows themselves read `GLOBAL` by the column
+default, so the inventory check is not affected.)
+
+No new floor in `deploy/rollback-floors.txt`: nothing an older artifact does
+can make a T1 partition, and the partitioned mode is lab-only.

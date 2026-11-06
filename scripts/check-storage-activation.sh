@@ -38,6 +38,7 @@
 #   --sessions-file <tsv>              application_name<TAB>usename, replaces the pg_stat_activity query
 #   --application-role <role>      evaluate only sessions of this database role (ADR-035 §14 (a) scope; default: every role)
 #   --nodes-file <tsv>                 node_id<TAB>capability<TAB>heartbeat_age_seconds<TAB>clean_shutdown(t|f)
+#                                      [<TAB>admission_locking]: the optional V25 column, read by gate L
 #   --qualification-dir <dir>          default backend/storage/src/main/resources/adr035-qualification
 #   --backend-identity <json>          the Ops-declared backend identity (non-secret)
 #   --qualification-valid-metric 0|1   the Ops qualification-check's testinbox_storage_qualification_valid
@@ -538,6 +539,64 @@ gate_benchmark() {
 }
 
 # ---------------------------------------------------------------------------
+# Gate L: T1's lock protocol (testinbox.storage.admission-locking). Gate D's
+# evidence and every accepted ADR-035 text are mode a (GLOBAL); the
+# share-partitioned T1 is a PROPOSED amendment authorized for the lab only. So
+# every evaluated node must PROVE GLOBAL, in any mode:
+#   - metrics: testinbox_storage_admission_locking{mode="global"} 1 on every
+#     endpoint; a series that is absent (an artifact older than the switch, or a
+#     scrape that lost it) is UNKNOWN and blocks, never read as mode a;
+#   - database (TESTINBOX_ACTIVATION_DB_URL, or a 5th column of --nodes-file):
+#     no live storage_node row (V25 admission_locking) other than GLOBAL.
+# No input at all is NOT RUN, which blocks like every unevaluated gate.
+# ---------------------------------------------------------------------------
+gate_locking() {
+    local gate="L-lock-protocol" role label path err global partitioned checked=0 rows="" node locking age clean
+    reset_problems
+    while IFS="$TAB" read -r role label path err; do
+        [ -n "$role" ] || continue
+        [ -z "$err" ] || { problem "$err"; continue; }
+        checked=$((checked + 1))
+        global="$(metric_value "$path" testinbox_storage_admission_locking 'mode="global"')"
+        partitioned="$(metric_value "$path" testinbox_storage_admission_locking 'mode="cohort_partitioned"')"
+        if is_number "$partitioned" && num_eq "$partitioned" 1; then
+            problem "$label ($role): runs the share-partitioned T1 (admission-locking COHORT_PARTITIONED), a PROPOSED ADR-035 amendment permitted only in the lab"
+        elif ! is_number "$global"; then
+            problem "$label ($role): T1 lock protocol UNKNOWN (testinbox_storage_admission_locking absent); a node must prove GLOBAL"
+        elif ! num_eq "$global" 1; then
+            problem "$label ($role): testinbox_storage_admission_locking{mode=global} is $global, not 1"
+        fi
+    done <<EOF
+$METRICS_INDEX
+EOF
+    if [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
+        if ! rows="$(PGAPPNAME="ops:storage-activation-check" psql "$TESTINBOX_ACTIVATION_DB_URL" -X -At -F "$TAB" -v ON_ERROR_STOP=1 \
+            -c "SELECT node_id, admission_locking FROM storage_node WHERE NOT clean_shutdown AND heartbeat_at > now() - make_interval(secs => $HEARTBEAT_MAX_AGE) AND admission_locking <> 'GLOBAL'" \
+            2>"$WORK/psql-locking.err")"; then
+            problem "storage_node admission_locking query failed; the T1 protocol of the nodes could not be observed"
+        fi
+        checked=$((checked + 1))
+    elif [ -n "$NODES_FILE" ] && grep -v '^#' "$NODES_FILE" | awk -F'\t' 'NF >= 5 { found = 1 } END { exit !found }'; then
+        rows="$(grep -v '^#' "$NODES_FILE" | awk -F'\t' -v max="$HEARTBEAT_MAX_AGE" \
+            'NF >= 5 && $4 !~ /^(t|true|T|TRUE)$/ && ($3 + 0) <= max && $5 != "GLOBAL" { print $1 "\t" $5 }')"
+        checked=$((checked + 1))
+    fi
+    while IFS="$TAB" read -r node locking; do
+        [ -n "$node" ] || continue
+        problem "storage_node '$node' records admission_locking $locking (live); a PROPOSED ADR-035 amendment permitted only in the lab"
+    done <<EOF
+$rows
+EOF
+    if [ "$checked" -eq 0 ]; then
+        record "$gate" NOT_RUN "no metrics endpoint, no TESTINBOX_ACTIVATION_DB_URL and no --nodes-file admission_locking column: the T1 lock protocol is unobserved"
+    elif [ -n "$PROBLEMS" ]; then
+        record "$gate" BLOCKED "$PROBLEMS"
+    else
+        record "$gate" PASS "$checked source(s): every node proves admission-locking GLOBAL (ADR-035 mode a)"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Gate E: rollback floors. The ADR-035 floors are parsed from the floors file,
 # never hardcoded. Production: every floor is on origin/master AND listed in
 # master's floors file (production-handoff.yml reads the floors from master).
@@ -780,6 +839,13 @@ SELECT json_build_object(
                  + (SELECT coalesce(sum(objects), 0) FROM storage_delta)
                  + (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation),
       'debtBytes', (SELECT bytes FROM debt), 'debtObjects', (SELECT objects FROM debt)),
+  -- V24: the global base row T1 reads instead of the population, against Σ workspace bases,
+  -- in the same snapshot. NULL row figures mean the row is missing.
+  'globalBase', json_build_object(
+      'rowBytes', (SELECT base_bytes FROM storage_global_base WHERE id = 1),
+      'rowObjects', (SELECT base_objects FROM storage_global_base WHERE id = 1),
+      'sumBytes', (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account),
+      'sumObjects', (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)),
   'observation', (SELECT json_build_object('startedSeq', started_seq, 'writtenBy', written_by::text,
                      'observedAt', to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
                      'blockSizeBytes', block_size_bytes, 'capacityBytes', capacity_bytes, 'usedBytes', used_bytes,
@@ -811,8 +877,10 @@ SELECT json_build_object(
       SELECT r.app || ': ' || p.priv || ' on ' || p.tbl
         FROM reach r
         JOIN (SELECT tbl, priv FROM (VALUES ('storage_sweep_run'), ('storage_delta'), ('workspace_storage_account'),
+                                            ('storage_global_base'),
                                             ('storage_containment_watermark'), ('storage_legacy_share'),
-                                            ('storage_cohort_plan'), ('workspace_deletion_charge')) AS t(tbl)
+                                            ('storage_cohort_plan'), ('storage_partition_bound'),
+                                            ('workspace_deletion_charge')) AS t(tbl)
                      CROSS JOIN (VALUES ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE')) AS v(priv)
               UNION ALL
               -- ADR-037: a participant marker is inserted once by provisioning; erasing or
@@ -825,7 +893,7 @@ SELECT json_build_object(
                      CROSS JOIN (VALUES ('TRIGGER'), ('TRUNCATE')) AS v(priv)
               UNION ALL
               SELECT tbl, 'TRIGGER' FROM (VALUES ('storage_sweep_run'), ('storage_delta'), ('workspace_storage_account'),
-                                                 ('storage_containment_watermark')) AS t(tbl)
+                                                 ('storage_global_base'), ('storage_containment_watermark')) AS t(tbl)
               UNION ALL
               SELECT 'inbox_storage', 'DELETE') AS p(tbl, priv)
           ON has_table_privilege(r.goid, p.tbl, p.priv)
@@ -974,7 +1042,8 @@ gate_filesystem() {
               else [] end )
           + [ ( [["now"], "string"], [["inRecovery"], "boolean"], [["trust","distrustEpoch"], "count"], [["trust","distrustedSeq"], "count"], [["watermark"], "count"],
                 [["footprint","liveBytes"], "count"], [["footprint","liveObjects"], "count"], [["footprint","debtBytes"], "count"],
-                [["footprint","debtObjects"], "count"], [["sequenceCacheSize"], "positive"] ) | need($s; "state"; .[0]; .[1]) ]
+                [["footprint","debtObjects"], "count"], [["sequenceCacheSize"], "positive"],
+                [["globalBase","sumBytes"], "count"], [["globalBase","sumObjects"], "count"] ) | need($s; "state"; .[0]; .[1]) ]
           + ( if ($s.liveNodes | type) != "array" then ["state.liveNodes is not a list"] else [] end )
           + ( if ($s.observationInserters | type) != "array" then ["state.observationInserters is not a list"] else [] end )
           + ( if ($s.beginObservationExecutors | type) != "array" then ["state.beginObservationExecutors is not a list"] else [] end )
@@ -1124,6 +1193,14 @@ gate_filesystem() {
                 then "observation validity: the newest observation began at seq \($o.startedSeq), below the compaction watermark \($s.watermark) (T1 refuses it)" else empty end ),
             ( if ([$fp.liveBytes, $fp.liveObjects, $fp.debtBytes, $fp.debtObjects, $fp.liveBytes + $fp.debtBytes] | max) > 9223372036854775807
                 then "indeterminate: a footprint total does not fit a signed 64-bit figure (T1 refuses it)" else empty end ),
+            # V24: T1 reads Σ workspace bases from ONE row. Missing or different, the figure
+            # admission decides on is wrong (or, missing, the population scan is back):
+            # reconciliation repairs it and the verifier revokes trust until then.
+            ( if $s.globalBase.rowBytes == null or $s.globalBase.rowObjects == null
+                then "global base: the storage_global_base row is missing (T1 sums the population; reconciliation must recreate it)"
+              elif $s.globalBase.rowBytes != $s.globalBase.sumBytes or $s.globalBase.rowObjects != $s.globalBase.sumObjects
+                then "global base: storage_global_base \($s.globalBase.rowBytes) B / \($s.globalBase.rowObjects) objects ≠ Σ workspace bases \($s.globalBase.sumBytes) B / \($s.globalBase.sumObjects) objects (drift; reconciliation repairs it and revokes trust)"
+              else empty end ),
             ( if $s.trust == null or $s.trust.trustedEpoch != $s.trust.distrustEpoch
                 then "trusted counts: trusted_epoch \($s.trust.trustedEpoch // "null") ≠ distrust_epoch \($s.trust.distrustEpoch // "null")" else empty end ),
             ( if $o != null and $o.startedSeq <= $s.trust.distrustedSeq
@@ -1269,6 +1346,7 @@ gate_inventory
 gate_physical
 gate_clock
 gate_benchmark
+gate_locking
 gate_floors_staging
 gate_floors_production
 gate_qualification

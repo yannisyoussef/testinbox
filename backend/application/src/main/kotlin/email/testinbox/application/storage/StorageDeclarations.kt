@@ -73,6 +73,47 @@ data class StorageBackendIdentity(
     }
 }
 
+/**
+ * How T1 serializes admissions (`testinbox.storage.admission-locking`).
+ *
+ * - [GLOBAL] is ADR-035 §4/§11 mode a, the accepted design and the default:
+ *   every T1 takes the global admission lock `(35, 1)` EXCLUSIVE.
+ * - [COHORT_PARTITIONED] is the share-partitioned T1 of the PROPOSED ADR-035
+ *   amendment note (gate D, W1): `(35, 1)` SHARED plus one exclusive lock per
+ *   involved workspace, used only while PostgreSQL proves, in T1's own snapshot,
+ *   a closed and non-overcommitted cohort; in every other state that T1 falls
+ *   back to [GLOBAL] in a new transaction. Implementation and testing are
+ *   authorized (owner, 2026-11-05); release is not, so `DeploymentSafety`
+ *   refuses it in production and wherever it cannot engage (anything but
+ *   `ALL` with a declared filesystem).
+ */
+enum class AdmissionLocking { GLOBAL, COHORT_PARTITIONED }
+
+/**
+ * Why a share-partitioned T1 was decided by mode a instead (closed set, a metric
+ * label: `testinbox_storage_admission_partition_fallback_total{reason}`). Each
+ * is a fallback, never a refusal: the event gets exactly mode a's outcome.
+ */
+enum class PartitionFallbackReason {
+    /** No approved plan, or no V25 bound recorded for the plan's binding and fingerprint. */
+    NO_MATCHING_BOUND,
+
+    /** The reserved shares exceed the recorded bound (overcommitted). */
+    OVER_BOUND,
+
+    /** A workspace of the event holds no share. */
+    UNSHARED_WORKSPACE,
+
+    /** An unsuperseded debt row of a shared workspace is charged to no share (it raced the reserve). */
+    UNCHARGED_DEBT,
+
+    /** A per-workspace lock `(38, k)` waited past the lock timeout. */
+    WORKSPACE_LOCK_TIMEOUT,
+
+    /** PostgreSQL broke a deadlock while a per-workspace lock was being taken. */
+    WORKSPACE_LOCK_DEADLOCK,
+}
+
 /** The two protocol roles a node can have in the activation inventory (ADR-035 §14 (a)). */
 enum class NodeRole { API, INGESTION }
 
@@ -125,6 +166,8 @@ data class StorageDeclarations(
     val node: DeclaredNode? = null,
     /** The dedicated filesystem's declared budgets (filesystem-containment contract, TI-STORAGE-006E). */
     val filesystem: FilesystemDeclarations = FilesystemDeclarations(),
+    /** T1's lock protocol; [AdmissionLocking.GLOBAL] (mode a) unless explicitly declared. */
+    val admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
 ) {
     val enforced: Boolean get() = enforcement != StorageEnforcement.OFF
 

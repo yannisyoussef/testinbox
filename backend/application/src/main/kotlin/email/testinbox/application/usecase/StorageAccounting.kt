@@ -186,13 +186,13 @@ class ReconcileStorageAccounting(
                         // this node made counts.
                         if (repaired.isEmpty()) ReconciliationOutcome.CLEAN else ReconciliationOutcome.REPAIRED
                     }
-                // Contract §4.5: a pass that found no WORKSPACE-scope drift is what
-                // makes the object counts trusted again. Inbox-only drift (what
+                // Contract §4.5: a pass that found no WORKSPACE- or GLOBAL-scope drift
+                // is what makes the object counts trusted again. Inbox-only drift (what
                 // paced retention leaves) never enters the global potential, so it
                 // must not starve trust. The check is repeated under the ledger
                 // lock and marked compare-and-set; a pass that repaired workspace
-                // drift has just revoked trust and leaves it to the next pass.
-                if (detected.none { it.scope == AccountingScope.WORKSPACE } && !ledger.confirmTrust()) {
+                // or global drift has just revoked trust and leaves it to the next pass.
+                if (detected.none { it.scope != AccountingScope.INBOX } && !ledger.confirmTrust()) {
                     log.warn("storage footprint counts remain untrusted; the next pass retries")
                 }
                 result

@@ -71,12 +71,14 @@ class IngestionDeploymentSafetyCheck(
                 )
             check(violations.isEmpty()) { DeploymentSafety.describe(violations) }
             log.info(
-                "deployment configuration validated (environment={} profiles={} gitSha={} imageDigest={} storageEnforcement={})",
+                "deployment configuration validated (environment={} profiles={} gitSha={} imageDigest={} storageEnforcement={} " +
+                    "admissionLocking={})",
                 environment,
                 springEnvironment.activeProfiles.joinToString(","),
                 properties.deployment.gitSha,
                 properties.deployment.imageDigest,
                 properties.storage.enforcement,
+                properties.storage.admissionLocking,
             )
         }
     }

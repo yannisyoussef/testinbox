@@ -142,6 +142,27 @@ by the database.**
   `inbox_storage`'s base columns.
 - The API role holds `SELECT` on the three tables and `EXECUTE` on the two
   functions.
+- From V24 (gate D step (1)), `storage_global_base` (Σ workspace bases, the
+  row T1 reads) is written only by definer triggers on
+  `workspace_storage_account`. Both deployables need `SELECT` on it (T1, the
+  footprint gate, rule P, reconciliation) and nothing else; no role may hold
+  `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` or `TRIGGER` on it (gate F).
+- From V25 (share-partitioned T1, a PROPOSED ADR-035 amendment that every
+  environment but `lab` refuses), `storage_partition_bound` is written only by
+  the operator's pool reserve, which records it whatever the switch says. The
+  ingestion role holds `SELECT` on it and `EXECUTE` on the invoker function
+  `storage_partition_within_bound()`; no application role may hold `INSERT`,
+  `UPDATE`, `DELETE` or `TRUNCATE` on it (gate F). Its two definer trigger
+  functions are executable by nobody (`REVOKE ... FROM PUBLIC`). Also under
+  mode a: every write to the share tables, the plan or the bound takes the
+  `(35, 1)` admission lock and runs only under READ COMMITTED, and nodes
+  record `storage_node.admission_locking` (activation gate L).
+- **Ops precondition for `COHORT_PARTITIONED` (lab only today):** only the
+  mail edge or trusted test clients may reach ingestion's SMTP port;
+  `TESTINBOX_SMTP_BIND` stays loopback or internal. The application cannot check
+  networking: Ops verifies it from the rendered compose and on the host
+  (`ss -ltnp`) and records it with that environment's evidence (PROPOSED note,
+  "Ops precondition").
 - Both deployables keep a column grant for the refusal record:
   - `INSERT (inbox_id, workspace_id, refusal_count, last_refusal_at, last_refusal_reason)`
     and `UPDATE (refusal_count, last_refusal_at, last_refusal_reason)` on
@@ -1064,7 +1085,7 @@ leaving the restored database unquarantined.
 
 | backed up | never |
 |---|---|
-| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch`, `storage_clock_episode` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
+| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `storage_global_base` (V24), `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch`, `storage_clock_episode` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
 
 > **Amended by TI-DELIVERY-001 (ADR-036/ADR-037), recorded 2026-10-30.** The
 > table above is the TI-006 set. `deploy/backup/scope.txt` is authoritative and

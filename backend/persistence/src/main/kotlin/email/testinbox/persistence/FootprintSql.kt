@@ -13,20 +13,57 @@ import java.sql.ResultSet
  * the two can never read different definitions.
  */
 internal object FootprintSql {
-    val CTES = """fp_newest AS (SELECT observed_at, started_seq, trash_bytes, block_size_bytes, capacity_bytes, written_by
+    /**
+     * The global figures, ONE scan of each table (V24, gate D step (1)): Σ
+     * workspace bases from the definer-maintained `storage_global_base` row, and
+     * Σ delta and Σ reservation over the in-flight tables. T1 reads them for its
+     * GLOBAL row and, with the footprint, for *L*, from the same CTEs, so the two
+     * can never disagree.
+     *
+     * A missing row (a restore: the row, like the base rows, is never backed up)
+     * is never read as 0: the second branch then sums the base rows, exactly, in
+     * the same snapshot. It is a one-time filter the planner skips while the row
+     * exists, so the population is scanned only in that degenerate state, which
+     * reconciliation reports as GLOBAL drift and the repair ends (V24); under
+     * `ALL` the verifier also revokes trust while it lasts.
+     */
+    const val GLOBAL_CTES = """g_base AS (SELECT base_bytes AS bytes, base_objects AS objects FROM storage_global_base WHERE id = 1
+                                    UNION ALL
+                                    SELECT s.bytes, s.objects
+                                      FROM (SELECT coalesce(sum(base_bytes), 0) AS bytes, coalesce(sum(base_objects), 0) AS objects
+                                              FROM workspace_storage_account) s
+                                     WHERE NOT EXISTS (SELECT 1 FROM storage_global_base WHERE id = 1)),
+                         g_delta AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(objects), 0) AS objects FROM storage_delta),
+                         g_reserved AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(cardinality(object_keys)), 0) AS objects
+                                          FROM storage_reservation)"""
+
+    /** The footprint-only CTEs, for a statement that already carries [GLOBAL_CTES] (T1). */
+    val FOOTPRINT_CTES = """fp_newest AS (SELECT observed_at, started_seq, trash_bytes, block_size_bytes, capacity_bytes, written_by
                                        FROM storage_filesystem_observation ORDER BY started_seq DESC, id DESC LIMIT 1),
                          fp_debt AS (SELECT coalesce(sum(d.bytes), 0) AS bytes, coalesce(sum(d.objects), 0) AS objects
                                        FROM storage_deletion_debt d
                                       WHERE d.incurred_at = 'infinity'::timestamptz
                                          OR d.seq >= coalesce((SELECT started_seq FROM fp_newest), 0)), ${CohortSql.CTES}"""
 
-    val COLUMNS = """(SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account)
-                         + (SELECT coalesce(sum(bytes), 0) FROM storage_delta)
-                         + (SELECT coalesce(sum(bytes), 0) FROM storage_reservation) AS fp_live_bytes,
-                           (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)
-                         + (SELECT coalesce(sum(objects), 0) FROM storage_delta)
-                         + (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation) AS fp_live_objects,
-                           (SELECT bytes FROM fp_debt) AS fp_debt_bytes,
+    /** Every CTE [COLUMNS] needs, for a statement of its own (the footprint gate, rule P). */
+    val CTES = "$GLOBAL_CTES,\n                         $FOOTPRINT_CTES"
+
+    /** *L* from the [GLOBAL_CTES] sums: mode a's (and the footprint gate's) live set. */
+    private const val LIVE_COLUMNS = """(SELECT bytes FROM g_base) + (SELECT bytes FROM g_delta) + (SELECT bytes FROM g_reserved) AS fp_live_bytes,
+                           (SELECT objects FROM g_base) + (SELECT objects FROM g_delta) + (SELECT objects FROM g_reserved) AS fp_live_objects,
+                           """
+
+    /**
+     * *L* = 0 for the share-partitioned T1 (PROPOSED, gate D W1): it reads no
+     * global sum. Every live byte belongs to a share, and the shares fit the
+     * declarations by the V25 bound the same statement checks, so rules (G) and
+     * (C) hold by that partition, not by this figure (partitioned-t1-correctness.md).
+     */
+    private const val NO_LIVE_COLUMNS = """0::numeric AS fp_live_bytes, 0::numeric AS fp_live_objects,
+                           """
+
+    /** Debt, trust, watermark, observation and cohort pool: identical in both. */
+    private val REST_COLUMNS = """(SELECT bytes FROM fp_debt) AS fp_debt_bytes,
                            (SELECT objects FROM fp_debt) AS fp_debt_objects,
                            coalesce((SELECT trusted_epoch IS NOT DISTINCT FROM distrust_epoch FROM storage_footprint_trust WHERE id = 1), false)
                              AS fp_trusted,
@@ -37,6 +74,11 @@ internal object FootprintSql {
                            (SELECT block_size_bytes FROM fp_newest) AS fp_block_size,
                            (SELECT capacity_bytes FROM fp_newest) AS fp_capacity,
                            (SELECT written_by::text FROM fp_newest) AS fp_written_by, ${CohortSql.COLUMN}"""
+
+    val COLUMNS = LIVE_COLUMNS + REST_COLUMNS
+
+    /** [COLUMNS] without the global live sums, for a statement that carries no [GLOBAL_CTES]. */
+    val PARTITIONED_COLUMNS = NO_LIVE_COLUMNS + REST_COLUMNS
 
     /** The same columns, typed, for the rows that do not carry them. */
     const val NONE = """NULL::numeric, NULL::numeric, NULL::numeric, NULL::numeric, NULL::boolean, NULL::bigint,

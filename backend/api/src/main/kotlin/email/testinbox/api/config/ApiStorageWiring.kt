@@ -89,6 +89,11 @@ class ApiStorageWiring(
             // guard is the one GuardedStorage consults. Metrics and logs are the API's output.
             ActivationGuard(),
             storageMetrics,
+            // The same rule as the gateway: a node running the share-partitioned T1 is an
+            // inventory problem everywhere but the lab (review #136 N3).
+            partitionedAllowed =
+                properties.deployment.environment ==
+                    email.testinbox.application.deployment.StorageEnforcementSafety.LAB_ENVIRONMENT,
         )
 
     @Bean

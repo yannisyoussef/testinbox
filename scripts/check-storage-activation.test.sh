@@ -127,9 +127,9 @@ only() {
 good > "$TMP/args-good"
 case_ "all gates satisfied → ACTIVATION READY" 0 '^ACTIVATION READY$' "$TMP/args-good" --json "$TMP/evidence.json"
 if [ -f "$TMP/evidence.json" ] && jq -e '.mode == "ALL" and .evaluatedAt == "2026-10-07T00:00:00Z" and .verdict == "READY"
-        and (.gates | length) == 10 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
+        and (.gates | length) == 11 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
         and (.cohortGate | startswith("storage-budget check"))' "$TMP/evidence.json" >/dev/null 2>&1; then
-    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 10 gates"
+    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 11 gates (gate L included)"
 else
     bad "the evidence JSON shape is wrong" "$(cat "$TMP/evidence.json" 2>/dev/null)"
 fi
@@ -204,6 +204,25 @@ only "C: a set admission latch blocks, naming the node" C-clock-offset "\(api\):
 with --ingestion-metrics "$M/ingestion-breaker-open.prom" > "$TMP/c4"
 only "C: an open breaker blocks, naming the node" C-clock-offset "\(ingestion\): storage breaker is OPEN" "$TMP/c4"
 case_ "C: ε_max is configurable (--max-clock-offset-seconds 60 admits -31.5 s)" 0 '^C-clock-offset[[:space:]]+PASS' "$TMP/c1" --max-clock-offset-seconds 60
+
+# ---------------------------------------------------------------------------
+# Gate L: T1's lock protocol. Every node must PROVE GLOBAL; absent = unknown = blocked.
+# ---------------------------------------------------------------------------
+sed 's/mode="global"} 1.0/mode="global"} 0.0/; s/mode="cohort_partitioned"} 0.0/mode="cohort_partitioned"} 1.0/' "$M/ingestion-healthy.prom" > "$M/ingestion-partitioned.prom"
+grep -v 'testinbox_storage_admission_locking' "$M/ingestion-healthy.prom" > "$M/ingestion-no-locking.prom"
+with --ingestion-metrics "$M/ingestion-partitioned.prom" > "$TMP/l1"
+only "L: a node running the share-partitioned T1 blocks, naming it" L-lock-protocol "runs the share-partitioned T1" "$TMP/l1"
+with --ingestion-metrics "$M/ingestion-no-locking.prom" > "$TMP/l2"
+only "L: a node whose lock protocol is not exported is UNKNOWN and blocks, never read as mode a" L-lock-protocol "T1 lock protocol UNKNOWN" "$TMP/l2"
+with --ingestion-metrics "$M/ingestion-partitioned.prom" | sed 's/^ALL$/TENANT_LIMITS/' > "$TMP/l3"
+case_ "L: ...and blocks under TENANT_LIMITS too" 1 '^L-lock-protocol[[:space:]]+BLOCKED[[:space:]].*runs the share-partitioned T1' "$TMP/l3"
+awk -F'\t' 'BEGIN { OFS = "\t" } /^#/ || NF < 4 { print; next } $1 == "ing-1" { print $0, "COHORT_PARTITIONED"; next } { print $0, "GLOBAL" }' \
+    "$FIX/nodes/healthy.tsv" > "$TMP/nodes-partitioned.tsv"
+with --nodes-file "$TMP/nodes-partitioned.tsv" > "$TMP/l4"
+only "L: a live storage_node row recording COHORT_PARTITIONED blocks (the database, not only the metric)" L-lock-protocol "storage_node 'ing-1' records admission_locking COHORT_PARTITIONED" "$TMP/l4"
+awk -F'\t' 'BEGIN { OFS = "\t" } /^#/ || NF < 4 { print; next } { print $0, "GLOBAL" }' "$FIX/nodes/healthy.tsv" > "$TMP/nodes-global.tsv"
+with --nodes-file "$TMP/nodes-global.tsv" > "$TMP/l5"
+case_ "L: GLOBAL metrics and GLOBAL node rows pass, and so does the whole barrier" 0 '^L-lock-protocol[[:space:]]+PASS' "$TMP/l5"
 
 # ---------------------------------------------------------------------------
 # Gate D: the §11 benchmark, required only for ALL.
@@ -438,6 +457,8 @@ jq '.preallocation.allocatedBytes = 4096' "$FSE" > "$TMP/ev-tl-sparse.json"; sed
 case_ "F: TENANT_LIMITS refuses a sparse backing image" 1 '^F-filesystem[[:space:]]+BLOCKED[[:space:]]+TENANT_LIMITS isolation preflight: preallocation: backing image allocated 4096' "$TMP/tl-sparse"
 jq '.roleViolations = ["testinbox_app: owns message"] | .trust.trustedEpoch = 1 | .sweep = null' "$FSS" > "$TMP/st-tl-staging.json"; sed "s#$FSS#$TMP/st-tl-staging.json#" "$TMP/tl-base" > "$TMP/tl-staging"
 case_ "F: TENANT_LIMITS ignores the containment-only rows (staging's owner connection, untrusted counts, no sweep)" 0 '^F-filesystem[[:space:]]+PASS[[:space:]]+TENANT_LIMITS isolation preflight held' "$TMP/tl-staging"
+jq '.globalBase.rowBytes = 5' "$FSS" > "$TMP/st-tl-global.json"; sed "s#$FSS#$TMP/st-tl-global.json#" "$TMP/tl-base" > "$TMP/tl-global"
+case_ "F: TENANT_LIMITS ignores the global base row (no global potential is enforced)" 0 '^F-filesystem[[:space:]]+PASS[[:space:]]+TENANT_LIMITS isolation preflight held' "$TMP/tl-global"
 jq '.observation = null' "$FSS" > "$TMP/st-tl-noobs.json"; sed "s#$FSS#$TMP/st-tl-noobs.json#" "$TMP/tl-base" > "$TMP/tl-noobs"
 jq '.uncleanLowerNodes = ["ing-old"]' "$FSS" > "$TMP/st-tl-lower.json"; sed "s#$FSS#$TMP/st-tl-lower.json#" "$TMP/tl-base" > "$TMP/tl-lower"
 case_ "F: TENANT_LIMITS refuses while an artifact below the containment level may run (no STORAGE_FULL/containment code)" 1 '^F-filesystem[[:space:]]+BLOCKED[[:space:]]+TENANT_LIMITS isolation preflight: mixed versions: node\(s\) below containment level 1' "$TMP/tl-lower"
@@ -469,6 +490,9 @@ fs obs-future '.observation.observedAt = "2026-10-07T00:10:00Z"' "an observation
 fs watermark '.watermark = 121' "an observation below the compaction watermark blocks, as T1 refuses it" "below the compaction watermark 121"
 fs overflow '.footprint.liveBytes = 9300000000000000000' "a footprint total beyond 64 bits blocks, as T1 refuses it" "indeterminate: a footprint total does not fit"
 fs no-watermark 'del(.watermark)' "a state without the watermark → NOT RUN" "state.watermark missing"
+fs global-missing '.globalBase.rowBytes = null | .globalBase.rowObjects = null' "a missing V24 global base row blocks ALL (T1 would sum the population)" "global base: the storage_global_base row is missing"
+fs global-drift '.globalBase.rowBytes = 5' "a global base row that differs from the sum of workspace bases blocks ALL" "global base: storage_global_base 5 B / 10000 objects ≠ Σ workspace bases 1073741824 B / 10000 objects"
+fs no-global 'del(.globalBase)' "a state without the global base (a pre-V24 schema) → NOT RUN" "state.globalBase.sumBytes missing"
 fe age-cap '.declared.observationMaxAgeSeconds = 86400' "an A_obs above an hour → NOT RUN (a large age cannot launder stale evidence)" "observationMaxAgeSeconds is not a whole number of seconds in \(0, 3600\]"
 fe age-exp '.declared.observationMaxAgeSeconds = 1e300' "an A_obs bash cannot compare → NOT RUN, never fresh" "observationMaxAgeSeconds is not a whole number"
 TESTINBOX_ACTIVATION_DB_URL="postgresql://unused.invalid/x" run_args "$TMP/args-good"

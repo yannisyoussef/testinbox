@@ -5,6 +5,7 @@ import email.testinbox.application.BackendIdentityProperties
 import email.testinbox.application.LimitsProperties
 import email.testinbox.application.StorageDeclarationsFactory
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.storage.AdmissionLocking
 import email.testinbox.application.storage.QualificationRecord
 import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.domain.storage.StorageEnforcement
@@ -69,6 +70,14 @@ data class IngestionProperties(
         val filesystem: email.testinbox.application.FilesystemProperties = email.testinbox.application.FilesystemProperties(),
         /** The lab-only qualification record (issue #102); refused at startup anywhere but environment `lab`. */
         val qualification: email.testinbox.application.QualificationProperties = email.testinbox.application.QualificationProperties(),
+        /**
+         * T1's lock protocol (`testinbox.storage.admission-locking`): GLOBAL, ADR-035
+         * mode a, is the default and the accepted design. COHORT_PARTITIONED is the
+         * PROPOSED share-partitioned T1; `DeploymentSafety` refuses it in production
+         * and outside `ALL` with a declared filesystem, and every node exports the
+         * value as `testinbox_storage_admission_locking` for the activation barrier.
+         */
+        val admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
     )
 
     /** The framework-free declarations `DeploymentSafety` and `EffectiveStoragePolicy` read (ADR-035 §18). */
@@ -87,6 +96,7 @@ data class IngestionProperties(
             nodeId = storage.nodeId,
             nodeRole = email.testinbox.application.storage.NodeRole.INGESTION,
             filesystem = storage.filesystem,
+            admissionLocking = storage.admissionLocking,
         )
 
     /**

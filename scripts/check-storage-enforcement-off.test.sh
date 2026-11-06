@@ -120,6 +120,65 @@ variant lab-path-empty
 printf 'testinbox:\n  storage:\n    enforcement: OFF\n    qualification:\n      lab-record-path: ${TESTINBOX_STORAGE_QUALIFICATION_LAB_RECORD_PATH:}\n' > "$TMP/lab-path-empty/backend/api/src/main/resources/application-deployed.yaml"
 check "an empty-default lab record path is fine" 0 "$TMP/lab-path-empty"
 
+# T1's lock protocol: only GLOBAL may be committed, in any spelling Spring would bind.
+variant locking-yaml
+printf 'testinbox:\n  storage:\n    enforcement: OFF\n    admission-locking: COHORT_PARTITIONED\n' > "$TMP/locking-yaml/backend/ingestion/src/main/resources/application-deployed.yaml"
+check "a committed COHORT_PARTITIONED fails, naming the file" 1 "$TMP/locking-yaml" 'application-deployed.yaml:4: T1 admission locking is set to COHORT_PARTITIONED'
+variant locking-lenient
+printf 'TESTINBOX_STORAGE_ADMISSION_LOCKING=cohort-partitioned\n' >> "$TMP/locking-lenient/deploy/staging/.env.example"
+check "a dashed lower-case spelling Spring would bind fails" 1 "$TMP/locking-lenient" '\.env\.example:[0-9]+: T1 admission locking is set to cohort-partitioned'
+variant locking-default
+printf 'testinbox:\n  storage:\n    admission-locking: ${TESTINBOX_STORAGE_ADMISSION_LOCKING:-Cohort.Partitioned}\n' > "$TMP/locking-default/backend/api/src/main/resources/application-deployed.yaml"
+check "a placeholder default in a dotted mixed-case spelling fails" 1 "$TMP/locking-default" 'application-deployed.yaml:3: T1 admission locking is set to'
+variant locking-workflow
+printf '      - run: ./gradlew bootRun --args="--testinbox.storage.admission-locking=cohortpartitioned"\n' >> "$TMP/locking-workflow/.github/workflows/ci.yml"
+check "a workflow passing the property fails" 1 "$TMP/locking-workflow" 'ci.yml:[0-9]+: T1 admission locking is set to'
+# Spring's relaxed binding of the KEY (review #136 N1): case and '-', '_', '.' do not matter.
+variant locking-env-squashed
+printf 'TESTINBOX_STORAGE_ADMISSIONLOCKING=COHORT_PARTITIONED\n' >> "$TMP/locking-env-squashed/deploy/staging/.env.example"
+check "the squashed env key TESTINBOX_STORAGE_ADMISSIONLOCKING fails" 1 "$TMP/locking-env-squashed" '\.env\.example:[0-9]+: T1 admission locking is set to COHORT_PARTITIONED'
+variant locking-yaml-underscore
+printf 'testinbox:\n  storage:\n    admission_locking: cohort-partitioned\n' > "$TMP/locking-yaml-underscore/backend/ingestion/src/main/resources/application-deployed.yaml"
+check "an underscored YAML key admission_locking fails" 1 "$TMP/locking-yaml-underscore" 'application-deployed.yaml:3: T1 admission locking is set to cohort-partitioned'
+variant locking-yaml-camel
+printf 'testinbox:\n  storage:\n    admissionLocking: CohortPartitioned\n' > "$TMP/locking-yaml-camel/backend/api/src/main/resources/application-deployed.yaml"
+check "a camelCase YAML key admissionLocking fails" 1 "$TMP/locking-yaml-camel" 'application-deployed.yaml:3: T1 admission locking is set to CohortPartitioned'
+variant locking-other-key
+printf 'testinbox:\n  storage:\n    admission-locking-note: COHORT_PARTITIONED\n    max_admission_locking: COHORT_PARTITIONED\n' > "$TMP/locking-other-key/backend/api/src/main/resources/application-deployed.yaml"
+check "a different key that merely contains admission-locking is not this setting" 0 "$TMP/locking-other-key"
+# A system property (-D) and SPRING_APPLICATION_JSON (review #136 final N1), for both settings.
+variant locking-java-tool-options
+printf 'services:\n  ingestion:\n    environment:\n      JAVA_TOOL_OPTIONS: "-Xmx512m -Dtestinbox.storage.admission-locking=COHORT_PARTITIONED"\n' > "$TMP/locking-java-tool-options/deploy/staging/compose.yaml"
+check "a -D system property in JAVA_TOOL_OPTIONS fails" 1 "$TMP/locking-java-tool-options" 'compose.yaml:4: T1 admission locking is set to COHORT_PARTITIONED'
+variant locking-command
+printf 'services:\n  ingestion:\n    command: ["java", "-Dtestinbox.storage.admission-locking=cohort-partitioned", "-jar", "app.jar"]\n' > "$TMP/locking-command/deploy/staging/compose.yaml"
+check "a -D system property in a compose command array fails" 1 "$TMP/locking-command" 'compose.yaml:3: T1 admission locking is set to cohort-partitioned'
+variant locking-json
+printf 'services:\n  ingestion:\n    environment:\n      SPRING_APPLICATION_JSON: '"'"'{"testinbox":{"storage":{"admission-locking":"COHORT_PARTITIONED"}}}'"'"'\n' > "$TMP/locking-json/deploy/staging/compose.yaml"
+check "SPRING_APPLICATION_JSON carrying the locking key fails" 1 "$TMP/locking-json" 'compose.yaml:4: T1 admission locking is set to COHORT_PARTITIONED'
+variant locking-json-escaped
+printf 'SPRING_APPLICATION_JSON="{\\"testinbox.storage.admissionLocking\\":\\"CohortPartitioned\\"}"\n' >> "$TMP/locking-json-escaped/deploy/staging/.env.example"
+check "escaped flat SPRING_APPLICATION_JSON carrying the locking key fails" 1 "$TMP/locking-json-escaped" '\.env\.example:[0-9]+: T1 admission locking is set to CohortPartitioned'
+variant enforcement-java-tool-options
+printf 'services:\n  api:\n    environment:\n      JAVA_TOOL_OPTIONS: "-Dtestinbox.storage.ENFORCEMENT=all"\n' > "$TMP/enforcement-java-tool-options/deploy/staging/compose.yaml"
+check "a -D enforcement property in any case fails" 1 "$TMP/enforcement-java-tool-options" 'compose.yaml:4: storage enforcement is set to all'
+variant enforcement-json
+printf 'services:\n  api:\n    environment:\n      SPRING_APPLICATION_JSON: '"'"'{"testinbox":{"storage":{"enforcement":"TENANT_LIMITS"}}}'"'"'\n' > "$TMP/enforcement-json/deploy/staging/compose.yaml"
+check "SPRING_APPLICATION_JSON carrying enforcement fails" 1 "$TMP/enforcement-json" 'compose.yaml:4: storage enforcement is set to TENANT_LIMITS'
+variant json-off
+printf 'services:\n  api:\n    environment:\n      SPRING_APPLICATION_JSON: '"'"'{"testinbox":{"storage":{"enforcement":"OFF","admission-locking":"GLOBAL"}}}'"'"'\n' > "$TMP/json-off/deploy/staging/compose.yaml"
+check "SPRING_APPLICATION_JSON with OFF and GLOBAL is fine" 0 "$TMP/json-off"
+variant locking-global
+printf 'testinbox:\n  storage:\n    admission-locking: ${TESTINBOX_STORAGE_ADMISSION_LOCKING:GLOBAL}\n' > "$TMP/locking-global/backend/api/src/main/resources/application-deployed.yaml"
+check "GLOBAL, or a bare placeholder, is fine" 0 "$TMP/locking-global"
+variant locking-property
+sed -i.bak 's/AdmissionLocking = AdmissionLocking.GLOBAL/AdmissionLocking = AdmissionLocking.COHORT_PARTITIONED/' \
+    "$TMP/locking-property/backend/ingestion/src/main/kotlin/email/testinbox/ingestion/config/IngestionProperties.kt" && rm -f "$TMP/locking-property/backend/ingestion/src/main/kotlin/email/testinbox/ingestion/config/IngestionProperties.kt.bak"
+check "an ingestion property default other than GLOBAL fails" 1 "$TMP/locking-property" 'IngestionProperties.kt: the admission-locking default is not GLOBAL'
+variant locking-property-missing
+sed -i.bak '/admissionLocking: AdmissionLocking/d' "$TMP/locking-property-missing/backend/ingestion/src/main/kotlin/email/testinbox/ingestion/config/IngestionProperties.kt" && rm -f "$TMP/locking-property-missing/backend/ingestion/src/main/kotlin/email/testinbox/ingestion/config/IngestionProperties.kt.bak"
+check "an ingestion property class with no locking default fails" 1 "$TMP/locking-property-missing" "declares no 'admissionLocking"
+
 # The real repository: what CI gates. Reported, and asserted, because the gate
 # step in ci.yml runs it against this tree.
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
