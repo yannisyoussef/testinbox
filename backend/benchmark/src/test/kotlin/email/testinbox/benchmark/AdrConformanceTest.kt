@@ -1,6 +1,7 @@
 package email.testinbox.benchmark
 
 import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.Test
@@ -39,6 +40,17 @@ class AdrConformanceTest {
         // activation gate's question: it refuses evidence whose rate differs from the declared R_gated.
         AdrConformance.reasons(conforming.copy(expectedRate = 31.0, rates = listOf(31.0, 62.0))).shouldBeEmpty()
         only(conforming.copy(expectedRate = 31.0, rates = listOf(31.0))) shouldContain "do not include §11's [31.0, 62.0]"
+    }
+
+    @Test
+    fun `a population without the cohort shares, and a focused run, are not gate evidence`() {
+        // Owner decision 2026-11-06 (#124 6684712608): the gate population includes the beta's 31 shares.
+        only(conforming.copy(cohortShares = false)) shouldContain "--no-cohort-shares"
+        AdrConformance.reasons(conforming.copy(focused = true)) shouldContain "--focused: a focused A′ measurement, never gate evidence"
+        AdrConformance
+            .reasons(
+                BenchmarkOptions.parse(listOf("--jdbc-url", "jdbc:postgresql://db/ti_bench", "--host-class", "h", "--focused")),
+            ).any { it.startsWith("--focused") } shouldBe true
     }
 
     @Test

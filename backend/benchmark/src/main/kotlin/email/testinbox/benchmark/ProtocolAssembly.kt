@@ -69,6 +69,9 @@ class EventTimings {
 
     @Volatile var slotWaitNanos: Long = 0
 
+    /** `--t1-steps` / `--focused` only ([HoldTiming]): T1's steps, stamped as they happen; empty otherwise. */
+    val steps = T1StepClock()
+
     companion object {
         val current: ThreadLocal<EventTimings?> = ThreadLocal()
     }
@@ -83,6 +86,10 @@ class TimingAdmissionStore(
         decide: (StorageUsageSnapshot) -> StorageAdmissionPlan<R>,
     ): R {
         val started = System.nanoTime()
+        EventTimings.current
+            .get()
+            ?.steps
+            ?.begin(started)
         try {
             return delegate.admit(scope, decide)
         } finally {

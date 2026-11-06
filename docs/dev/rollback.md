@@ -630,3 +630,53 @@ one compaction interval of rows, so that is short. No new floor in
 `deploy/rollback-floors.txt`, no change to `roles.reference.sql` or
 `deploy/backup/scope.txt`. A failed V26 leaves V25 applied and is roll
 forward only, like V25 above.
+
+## T1 reservation usage index (gate D mode a correction A′, schema V27)
+
+V27 is expand-only: one STORED generated column,
+`storage_reservation.object_count = cardinality(object_keys)`, and one index,
+`ix_storage_reservation_usage (workspace_id) INCLUDE (bytes, object_count)`. No
+table, function, trigger, constraint, type or grant change. Every writer of
+`storage_reservation` names its columns, so an older artifact's insert, which
+does not mention `object_count`, still works and PostgreSQL computes the value;
+its statements read the same rows (`SchemaUpgradeTest`). The A′ T1 text, which
+reads `object_count`, is in the artifact: rolling the artifact back restores the
+A1–A3 statement, which returns the same figures
+(`AdmissionStatementEquivalenceTest`). An artifact at or after A′ needs V27 and
+refuses readiness on a V26 schema, as every artifact does on an older schema.
+
+Adding a STORED generated column rewrites the table under `ACCESS EXCLUSIVE`,
+which holds every T1, T2, cleanup and fence write of `storage_reservation` for
+that time; the table holds the in-flight reservations only, so that is short.
+`lock_timeout` 2 s and `statement_timeout` 60 s: a writer holding the table
+makes the migration fail instead of queueing every later writer behind it;
+re-run it with the same candidate.
+
+**The transient window.** While V27 *waits* for `ACCESS EXCLUSIVE`, every later
+lock request on `storage_reservation` queues behind it, T1's reads included, so
+an attempt may hold T1 reads for up to `lock_timeout`, answered 451 and retried
+by the edge. That holds whether the attempt then succeeds or fails. The bound is
+2 s, below T1's own 5 s lock timeout, rather than V26's 10 s: V26's build waits
+for `SHARE` on `storage_delta`, which T1's reads do not conflict with, so V26
+delays the ledger-trigger writers (T2, retention, cleanup) but not T1.
+
+**A failed attempt is clean.** The lock timeout aborts V27's transaction
+(`55P03`) and Flyway rolls it back whole: no `object_count`, no index and no
+row for V27 in `flyway_schema_history` (`SchemaUpgradeTest`). The migrator does
+not retry: the Flyway failure fails its startup, it exits non-zero, and
+`deploy.sh` aborts before any service is touched (see
+[If the migration itself fails](#if-the-migration-itself-fails)). Re-running
+the same candidate's migrator is safe. No new floor in
+`deploy/rollback-floors.txt`, no change to `roles.reference.sql` (the table's
+grants are table-level) or `deploy/backup/scope.txt` (`storage_reservation` is
+already classified, never backed up). A failed V27 leaves V26 applied and is
+roll forward only, like V26 above.
+
+**A driver precondition, not a schema one.** A′'s gateway sends T1's insert and
+`COMMIT` in one round trip, which is reasoned and tested only under pgJDBC's
+defaults. From A′ on, the gateway refuses to start when its database URL or its
+`spring.datasource.hikari.data-source-properties` set `autosave` to anything but
+`never` or `preferQueryMode` to anything but `extended` (`DriverProtocolSafety`).
+Nothing in this repository sets either; Ops should confirm `TESTINBOX_DB_URL`
+does not. Rolling the artifact back removes the refusal along with the batch it
+protects.

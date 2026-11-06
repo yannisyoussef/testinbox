@@ -48,6 +48,13 @@ object AdrConformance {
         } else if (options.referenceMode != ReferenceMode.NO_LOCK) {
             reasons += "reference mode ${options.referenceMode} is not the no-ceiling mode c (NO_LOCK)"
         }
+        // Owner decision 2026-11-06 (#124 6684712608): the gate population includes the beta's cohort shares.
+        if (!options.cohortShares) {
+            reasons += "--no-cohort-shares: the gate population includes the closed beta's 31 cohort shares"
+        }
+        if (options.focused) {
+            reasons += "--focused: a focused A′ measurement, never gate evidence"
+        }
         return reasons
     }
 }

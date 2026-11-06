@@ -133,6 +133,31 @@ class Diagnostics(
             tables().forEach { appendLine(it) }
         }
 
+    /**
+     * `--focused` only, at the end of a measured phase (before the backlog is restored): the
+     * T1 statement's generic plan as a connection would make it NOW, from the statistics the
+     * run left, executed and explained once, with the in-flight tables' planner figures. A
+     * diagnostic of what the running connections may have planned (an `ANALYZE` replans
+     * them), never a criterion.
+     */
+    fun planNow(
+        statement: String,
+        population: SeededPopulation,
+    ): String {
+        val text = statement.replace(":workspaces", "$1").replace(":inboxes", "$2")
+        val stats =
+            runCatching {
+                jdbc
+                    .sql(
+                        "SELECT relname || ': relpages ' || relpages || ', relallvisible ' || relallvisible || ', reltuples ' || " +
+                            "reltuples::bigint FROM pg_class WHERE relname IN ('storage_reservation', 'storage_delta') ORDER BY relname",
+                    ).query(String::class.java)
+                    .list()
+                    .joinToString("\n")
+            }.getOrElse { "unavailable: ${it.message?.lineSequence()?.firstOrNull()}" }
+        return "$stats\n${prepared(text, population.inboxes.take(SCOPE_INBOXES))}"
+    }
+
     private fun settings(): List<String> =
         jdbc
             .sql(

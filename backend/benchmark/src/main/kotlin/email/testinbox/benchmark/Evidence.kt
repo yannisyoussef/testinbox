@@ -42,6 +42,12 @@ data class HarnessDescription(
     val targetKind: String,
     val targetDatabaseName: String,
     val lockWaitDefinition: String,
+    /** Cohort shares seeded beside each gate population (31, or 0 with --no-cohort-shares). */
+    val cohortShares: Int = 0,
+    /** sustained2x's terminal-lag allowance is the one of a window this long ([GateEvaluator.sustainedRatio]). */
+    val sustainedReferenceWindowSeconds: Int = GateEvaluator.SUSTAINED_REFERENCE_WINDOW_SECONDS,
+    /** A `--focused` A′ measurement: never gate evidence. */
+    val focused: Boolean = false,
 )
 
 data class SafetyRecord(
@@ -106,6 +112,9 @@ class Evidence(
                     "deltaBacklog" to harness.deltaBacklog,
                     "target" to linkedMapOf("kind" to harness.targetKind, "databaseName" to harness.targetDatabaseName),
                     "lockWaitDefinition" to harness.lockWaitDefinition,
+                    "cohortShares" to harness.cohortShares,
+                    "sustainedReferenceWindowSeconds" to harness.sustainedReferenceWindowSeconds,
+                    "focused" to harness.focused,
                 ),
             "safety" to
                 linkedMapOf(
@@ -307,6 +316,11 @@ class Evidence(
                 },
             "partitionFallbacks" to s.partitionFallbacks,
             "eventsWithoutT1" to s.eventsWithoutT1,
+            "t1Steps" to
+                s.t1Steps?.let { t ->
+                    linkedMapOf<String, Any?>("definition" to STEPS_DEFINITION) +
+                        t.steps.mapValues { (_, v) -> linkedMapOf("meanMs" to v.meanMs) + (latency(v.latency) ?: emptyMap()) }
+                },
             "partitionFallbackReasons" to s.partitionFallbackReasons,
             "background" to
                 s.background?.let {
@@ -408,6 +422,12 @@ class Evidence(
 
     companion object {
         const val SCHEMA_VERSION = 1
+        const val STEPS_DEFINITION =
+            "--t1-steps/--focused only, client side, per T1, ms: preLock (call start to lock sent), lockWait (lock sent to " +
+                "returned), hold (lock returned to commit returned: the server's hold to about one round trip), and inside " +
+                "it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, " +
+                "decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then " +
+                "afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion."
         const val VARIANT_STATUS =
             "Measurement of the production share-partitioned T1 (admission-locking = COHORT_PARTITIONED) over a closed " +
                 "30-participant + legacy cohort, reported apart and never gate D evidence; the mode is a PROPOSED ADR-035 " +

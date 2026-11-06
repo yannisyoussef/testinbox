@@ -1,5 +1,6 @@
 package email.testinbox.benchmark
 
+import email.testinbox.domain.storage.ParticipantStorageShare
 import org.springframework.jdbc.core.simple.JdbcClient
 import java.util.UUID
 import kotlin.random.Random
@@ -14,8 +15,29 @@ class SeededInbox(
 class SeededPopulation(
     val workspaceCount: Int,
     val inboxes: List<SeededInbox>,
+    /** The cohort-share workspaces seeded beside a gate population ([Seeder.cohortShares]); empty otherwise. */
+    val shareWorkspaces: Set<UUID> = emptySet(),
 ) {
     val workspaceIds: List<UUID> = inboxes.map { it.workspaceId }.distinct()
+
+    /**
+     * The gate population without its cohort shares: where the synthetic backlog
+     * (deltas, reservations) and retention's expired inboxes go, so no share is filled
+     * by bytes no T1 admitted (as [ClosedCohort] keeps its participants clean).
+     */
+    val unshared: SeededPopulation
+        get() =
+            if (shareWorkspaces.isEmpty()) {
+                this
+            } else {
+                SeededPopulation(
+                    workspaceCount,
+                    inboxes.filter {
+                        it.workspaceId !in
+                            shareWorkspaces
+                    },
+                )
+            }
 }
 
 /**
@@ -280,6 +302,45 @@ class Seeder(
             .param("f", LEGACY_FOOTPRINT_BYTES)
             .update()
         return cohort
+    }
+
+    /**
+     * The closed beta's cohort shares beside a gate population (owner decision
+     * 2026-11-06, #124 6684712608: "include the beta's 31 cohort shares"): [PARTICIPANTS]
+     * workspaces with the ADR-037 participant share (128 MiB payload, 256 MiB footprint)
+     * and one legacy share, each with [inboxesPerWorkspace] inboxes. T1's one statement
+     * then reads 31 shares, their usage and their budgets, as it does in the beta.
+     *
+     * **Seeded as `storage_legacy_share` rows, not `participant_workspace` rows.** A
+     * participant row makes the cohort pool REQUIRED, and a required pool is approved
+     * only when no workspace lacks a share (`unknown = 0`, CohortStorageRuntime). Beside
+     * 10 000 unshared workspaces that never holds, so every CHOSEN T1 would be a
+     * COHORT_UNAPPROVED `451` and the run would measure nothing. The 30 participant-sized
+     * rows are therefore legacy rows with the participant figures: the statement reads
+     * the same 31 share rows, their deltas, reservations and charges, and prices every
+     * copy to a share against its budget, as in the beta; it does not run the required
+     * pool's approval (the plan, node and fingerprint checks), which no population of
+     * 10 000 unshared workspaces can pass.
+     *
+     * Returns the gate population with the share workspaces' inboxes added; its
+     * workspace count stays the nominal one, so scenario names and §11 coverage are
+     * unchanged.
+     */
+    fun cohortShares(
+        population: SeededPopulation,
+        inboxesPerWorkspace: Int,
+    ): SeededPopulation {
+        val shares = population(PARTICIPANTS + 1, inboxesPerWorkspace)
+        shares.workspaceIds.forEachIndexed { index, ws ->
+            val participant = index < PARTICIPANTS
+            jdbc
+                .sql("INSERT INTO storage_legacy_share (workspace_id, payload_limit_bytes, footprint_limit_bytes) VALUES (:ws, :p, :f)")
+                .param("ws", ws)
+                .param("p", if (participant) ParticipantStorageShare.PAYLOAD_BYTES else LEGACY_PAYLOAD_BYTES)
+                .param("f", if (participant) ParticipantStorageShare.FOOTPRINT_BYTES else LEGACY_FOOTPRINT_BYTES)
+                .update()
+        }
+        return SeededPopulation(population.workspaceCount, population.inboxes + shares.inboxes, shares.workspaceIds.toSet())
     }
 
     /**

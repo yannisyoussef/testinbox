@@ -1,0 +1,76 @@
+WITH ws AS (SELECT DISTINCT unnest(CAST(:workspaces AS uuid[])) AS id),
+     ib AS (SELECT DISTINCT unnest(CAST(:inboxes AS uuid[])) AS id),
+     -- Each global sum is ONE scan of its table, bytes and objects together
+     -- (referenced more than once, so materialized once), still in the same
+     -- statement. Σ workspace bases is ONE row (V24), never the population.
+     g_base AS (SELECT base_bytes AS bytes, base_objects AS objects FROM storage_global_base WHERE id = 1
+                            UNION ALL
+                            SELECT s.bytes, s.objects
+                              FROM (SELECT coalesce(sum(base_bytes), 0) AS bytes, coalesce(sum(base_objects), 0) AS objects
+                                      FROM workspace_storage_account) s
+                             WHERE NOT EXISTS (SELECT 1 FROM storage_global_base WHERE id = 1)),
+                 g_delta AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(objects), 0) AS objects FROM storage_delta),
+                 g_reserved AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(cardinality(object_keys)), 0) AS objects
+                                  FROM storage_reservation),
+     -- Each sum is aggregated once for the involved ids, not
+     -- once per id: the statement's cost must not grow with
+     -- the recipient count times the ledger backlog.
+     ws_delta AS (SELECT d.workspace_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d
+                   WHERE d.workspace_id IN (SELECT id FROM ws) GROUP BY d.workspace_id),
+     ws_reserved AS (SELECT r.workspace_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
+                       FROM storage_reservation r
+                      WHERE r.workspace_id IN (SELECT id FROM ws) GROUP BY r.workspace_id),
+     ws_charge AS (SELECT workspace_id AS id,sum(bytes) AS bytes,sum(objects) AS objects
+                      FROM workspace_deletion_charge WHERE workspace_id IN (SELECT id FROM ws) GROUP BY workspace_id),
+     ib_delta AS (SELECT d.inbox_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d
+                   WHERE d.inbox_id IN (SELECT id FROM ib) GROUP BY d.inbox_id),
+     ib_reserved AS (SELECT r.inbox_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
+                       FROM storage_reservation r
+                      WHERE r.inbox_id IN (SELECT id FROM ib) GROUP BY r.inbox_id)
+-- Objects beside bytes (TI-STORAGE-006E): the footprint bound is
+-- applied by the caller, from the same snapshot.
+SELECT 'GLOBAL' AS scope, NULL::uuid AS id, NULL::uuid AS owner, now() AS t0,
+       (SELECT bytes FROM g_base) + (SELECT bytes FROM g_delta) AS committed,
+       (SELECT bytes FROM g_reserved) AS reserved,
+       (SELECT objects FROM g_base) + (SELECT objects FROM g_delta) AS committed_objects,
+       (SELECT objects FROM g_reserved) AS reserved_objects,
+       NULL::bigint AS payload_limit, NULL::bigint AS footprint_limit,
+       NULL::numeric AS cleanup_bytes,NULL::numeric AS cleanup_objects,
+       NULL::boolean AS inactive,
+       NULL::numeric, NULL::numeric, NULL::numeric, NULL::numeric, NULL::boolean, NULL::bigint,
+                   NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text, NULL::jsonb
+UNION ALL
+SELECT 'WORKSPACE', ws.id, ws.id, now(),
+       coalesce(a.base_bytes, 0) + coalesce(d.bytes, 0),
+       coalesce(r.bytes, 0),
+       coalesce(a.base_objects, 0) + coalesce(d.objects, 0),
+       coalesce(r.objects, 0),
+       coalesce(p.payload_limit_bytes,l.payload_limit_bytes),coalesce(p.footprint_limit_bytes,l.footprint_limit_bytes),
+       coalesce(c.bytes,0),coalesce(c.objects,0),
+       -- Account lifecycle (V22), in the SAME statement under (35, 1):
+       -- a participant marker without an active membership is inactive.
+       coalesce(NOT e.active, false),
+       NULL::numeric, NULL::numeric, NULL::numeric, NULL::numeric, NULL::boolean, NULL::bigint,
+                   NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text, NULL::jsonb
+  FROM ws
+  LEFT JOIN workspace_storage_account a ON a.workspace_id = ws.id
+  LEFT JOIN ws_delta d ON d.id = ws.id
+  LEFT JOIN ws_reserved r ON r.id = ws.id
+  LEFT JOIN ws_charge c ON c.id=ws.id
+  LEFT JOIN participant_workspace p ON p.workspace_id=ws.id
+  LEFT JOIN storage_legacy_share l ON l.workspace_id=ws.id
+  LEFT JOIN workspace_lifecycle_eligibility e ON e.workspace_id = ws.id
+UNION ALL
+SELECT 'INBOX', ib.id, x.workspace_id, now(),
+       coalesce(s.base_bytes, 0) + coalesce(d.bytes, 0),
+       coalesce(r.bytes, 0),
+       coalesce(s.base_objects, 0) + coalesce(d.objects, 0),
+       coalesce(r.objects, 0),
+       NULL::bigint,NULL::bigint,NULL::numeric,NULL::numeric,NULL::boolean,
+       NULL::numeric, NULL::numeric, NULL::numeric, NULL::numeric, NULL::boolean, NULL::bigint,
+                   NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text, NULL::jsonb
+  FROM ib
+  LEFT JOIN inbox x ON x.id = ib.id
+  LEFT JOIN inbox_storage s ON s.inbox_id = ib.id
+  LEFT JOIN ib_delta d ON d.id = ib.id
+  LEFT JOIN ib_reserved r ON r.id = ib.id

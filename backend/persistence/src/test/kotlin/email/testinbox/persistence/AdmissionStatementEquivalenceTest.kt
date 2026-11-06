@@ -25,8 +25,9 @@ import java.util.UUID
 import kotlin.random.Random
 
 /**
- * Gate D, mode a corrections A1–A3 (owner decision 2026-11-06, #124): the new
- * T1 statement returns exactly what the accepted one returned.
+ * Gate D, mode a corrections A1–A3 and A′ (owner decisions 2026-11-06, #124 and
+ * #124 6684712608): the new T1 statement returns exactly what the accepted one
+ * returned, and what the A1–A3 one returned.
  *
  * The OLD texts are fixtures (`admission-equivalence/`), byte for byte what the
  * adapter sent before A1–A3, pinned by SHA-256 below; the NEW texts are what the
@@ -40,7 +41,8 @@ import kotlin.random.Random
  * without charges, orphan charges, deltas (NULL inbox included), reservations, a
  * missing V24 global base row, no observation, and the partition guard's inputs
  * (plan, bound, uncharged shared debt). Mutants of the new text prove the states
- * exercise each of A1–A3's rewrites.
+ * exercise each of A1–A3's rewrites, and each of A′'s (the reservation object
+ * counts read from V27's stored `object_count`).
  */
 class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
     @Autowired lateinit var admin: JdbcClient
@@ -55,6 +57,7 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
 
     private val unbound = JdbcClient.create(SimpleDriverDataSource())
     private val modeA = JdbcStorageAdmission(unbound, TransactionTemplate(), readsFootprint = true)
+    private val modeANoFootprint = JdbcStorageAdmission(unbound, TransactionTemplate(), readsFootprint = false)
     private val partitioned =
         JdbcStorageAdmission(unbound, TransactionTemplate(), readsFootprint = true, locking = AdmissionLocking.COHORT_PARTITIONED)
     private val newGate = "WITH ${FootprintSql.CTES} SELECT ${FootprintSql.COLUMNS}"
@@ -66,6 +69,12 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
     private val oldModeA = fixture("t1-mode-a-9d06ab2.sql")
     private val oldPartitioned = fixture("t1-partitioned-658782c.sql")
     private val oldGate = fixture("footprint-gate-658782c.sql")
+
+    // A′'s OLD texts: what the adapter sent with A1–A3 (9e46896), before V27's object_count.
+    private val a1a3ModeA = fixture("t1-mode-a-9e46896.sql")
+    private val a1a3Partitioned = fixture("t1-partitioned-9e46896.sql")
+    private val a1a3Gate = fixture("footprint-gate-9e46896.sql")
+    private val a1a3NoFootprint = fixture("t1-mode-a-no-footprint-9e46896.sql")
 
     private fun sha256(text: String) =
         MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
@@ -80,6 +89,30 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
         modeA.snapshotStatement shouldNotBe oldModeA
         checkNotNull(partitioned.partitionedStatement) shouldNotBe oldPartitioned
         newGate shouldNotBe oldGate
+    }
+
+    @Test
+    fun `the A-prime fixtures are the A1-A3 texts of 9e46896, and the adapter now sends different ones`() {
+        // Mode a: AdmissionStatementTextTest's pin from A1–A3 until A′.
+        sha256(a1a3ModeA) shouldBe "0135227453cb5afa256e598593e7d421f36a1c90174d816b7c98b92e59fd6b2a"
+        sha256(a1a3Partitioned) shouldBe "0957d3ee207f3bc0ecaff329617776ef05561ed514951d43e53e1dc2b4dd037b"
+        sha256(a1a3Gate) shouldBe "c20a6ffc11330d90d73c8ff2d8407221d6493d14329084252753d9b9c7a925a3"
+        // Mode a without the footprint reads, unchanged from 9d06ab2 until A′.
+        sha256(a1a3NoFootprint) shouldBe "6cc082aab4d6b1ea044fe0d56f8b4bf938c1b8b3c96950053ade3c8039d3d594"
+        modeANoFootprint.snapshotStatement shouldNotBe a1a3NoFootprint
+        modeA.snapshotStatement shouldNotBe a1a3ModeA
+        checkNotNull(partitioned.partitionedStatement) shouldNotBe a1a3Partitioned
+        newGate shouldNotBe a1a3Gate
+        // A′ changes only where the reservation object count is read (g_reserved, ws_reserved — the first
+        // r.object_keys sum; ib_reserved keeps cardinality — and cp_reserved) and the pool's JSON type.
+        a1a3ModeA
+            .replace("coalesce(sum(cardinality(object_keys)), 0) AS objects", "coalesce(sum(object_count), 0) AS objects")
+            .replaceFirst("sum(cardinality(r.object_keys)) AS objects", "sum(r.object_count) AS objects")
+            .replace(
+                "sum(cardinality(object_keys)) AS objects FROM storage_reservation",
+                "sum(object_count) AS objects FROM storage_reservation",
+            ).replace("jsonb", "json") shouldBe
+            modeA.snapshotStatement
     }
 
     /** A mutant of the new mode a text: the one rewrite it breaks, and the text with that rewrite undone wrongly. */
@@ -111,6 +144,23 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
                 "IN (SELECT workspace_id FROM cp_shares) GROUP BY",
                 "IN (SELECT workspace_id FROM participant_workspace) GROUP BY",
             ),
+            // A′: the global reservation objects are the stored per-row count, summed.
+            Mutant(
+                "global reservation objects counted as rows",
+                "coalesce(sum(object_count), 0) AS objects",
+                "coalesce(count(*), 0) AS objects",
+            ),
+            // A′: every reservation counts, whatever its state (I5).
+            Mutant(
+                "workspace reservation objects of RESERVED rows only",
+                "sum(r.object_count) AS objects",
+                "sum(r.object_count) FILTER (WHERE r.state = 'RESERVED') AS objects",
+            ),
+            Mutant(
+                "share reservation objects counted as rows",
+                "sum(object_count) AS objects FROM storage_reservation",
+                "count(*) AS objects FROM storage_reservation",
+            ),
         )
 
     @Test
@@ -135,6 +185,16 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
                 withClue("seed $seed, mode a") { run(newModeA) shouldBe old }
                 withClue("seed $seed, partitioned") { run(newPartitioned) shouldBe run(oldPartitioned) }
                 withClue("seed $seed, footprint gate") { rows(client, newGate) shouldBe rows(client, oldGate) }
+                // A′ against A1–A3: the statements as they were at 9e46896.
+                withClue("seed $seed, mode a vs A1-A3") { run(newModeA) shouldBe run(a1a3ModeA) }
+                withClue("seed $seed, partitioned vs A1-A3") { run(newPartitioned) shouldBe run(a1a3Partitioned) }
+                withClue("seed $seed, footprint gate vs A1-A3") { rows(client, newGate) shouldBe rows(client, a1a3Gate) }
+                // Position by position: the GLOBAL row's untyped NULL pool column is labelled by its type,
+                // `jsonb` before A′ and `json` since; every value must still match.
+                withClue("seed $seed, mode a without the footprint reads") {
+                    run(modeANoFootprint.snapshotStatement).map { it.values.toList() } shouldBe
+                        run(a1a3NoFootprint).map { it.values.toList() }
+                }
                 for ((name, text) in mutated) if (run(text) != old) detected += name
 
                 val global = old.single { it["scope"] == "GLOBAL" }
@@ -181,13 +241,14 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
      * times (`g_delta`, `cp_delta`, `ws_delta`, `ib_delta`) and `storage_reservation`
      * twice (`g_reserved`, `cp_reserved`); the new text on V26 once each (`g_delta`,
      * `g_reserved`), and reads the debt table fewer times. A diagnostic of the plan,
-     * not of correctness (that is the test above).
+     * not of correctness (that is the test above). Since A′ the "new" text of this
+     * claim is the A1–A3 fixture (9e46896), planned on V26 (V27's index dropped).
      */
     @Test
     fun `the new statement scans each in-flight table once, where the old one scanned the deltas four times`() {
         largeLedger()
         val before = seqScans(oldModeA, withoutV26 = true)
-        val after = seqScans(modeA.snapshotStatement, withoutV26 = false)
+        val after = seqScans(a1a3ModeA, withoutV26 = false, withoutV27 = true)
         withClue("before (old text, V25 schema): $before\nafter (new text, V26 schema): $after") {
             (before["storage_delta"] ?: 0) shouldBe 4
             (before["storage_reservation"] ?: 0) shouldBe 2
@@ -195,6 +256,33 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
             (after["storage_reservation"] ?: 0) shouldBe 1
             (after["storage_deletion_debt"] ?: 0) shouldBeLessThan (before["storage_deletion_debt"] ?: 0)
         }
+    }
+
+    /**
+     * Gate D A′ in the plan: with V27, `g_reserved` (and every per-workspace and
+     * per-share reservation sum) can be answered from `ix_storage_reservation_usage`
+     * alone, so the A′ statement reads the reservation heap in none of them. The
+     * A1–A3 text on the same schema still scans it (its object count is an
+     * expression over `object_keys`, which no index carries). A diagnostic of the
+     * plan, not of correctness. The planner chooses the index-only scan where the
+     * visibility map says most heap pages are all-visible, as after the autovacuum
+     * visit that also analyzes the table (V24's per-table thresholds), and where the
+     * heap is large against the index, as production's reservations are (two object
+     * keys of over a hundred characters each); a table churned since its last vacuum,
+     * or one of tiny rows, may still be planned as a scan.
+     */
+    @Test
+    fun `with V27 the A-prime statement answers the reservation sums from the covering index, not the heap`() {
+        largeLedger()
+        productionSizedReservations()
+        val a1a3 = seqScans(a1a3ModeA, withoutV26 = false)
+        val aPrime = seqScans(modeA.snapshotStatement, withoutV26 = false)
+        withClue("A1-A3 text on V27: $a1a3\nA′ text on V27: $aPrime") {
+            (a1a3["storage_reservation"] ?: 0) shouldBe 1
+            (aPrime["storage_reservation"] ?: 0) shouldBe 0
+            (aPrime["storage_delta"] ?: 0) shouldBe 1
+        }
+        indexOnlyScans(modeA.snapshotStatement)["ix_storage_reservation_usage"]!! shouldBeGreaterThan 1
     }
 
     // --- running ---------------------------------------------------------------------------------
@@ -226,7 +314,12 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
         return spec.query { rs, _ -> row(rs) }.list().sortedBy { it.toString() }
     }
 
-    /** Every column as the driver renders it; the cohort JSON parsed, its `shares` array as a multiset (it has no ORDER BY). */
+    /**
+     * Every column as the driver renders it; the cohort JSON parsed, its `shares` array as a multiset (it has no
+     * ORDER BY). Since A′ the pool is `json`, whose text keeps the construction order of its keys, where `jsonb`
+     * sorted them: the parsed maps compare equal either way, and the multiset is ordered by each share's
+     * key-sorted form, so the text's key order cannot reorder it.
+     */
     private fun row(rs: ResultSet): Map<String, Any?> {
         val meta = rs.metaData
         return (1..meta.columnCount).associate { i ->
@@ -239,13 +332,30 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
     private fun cohort(json: String): Map<String, Any?> {
         @Suppress("UNCHECKED_CAST")
         val map = mapper.readValue(json, Map::class.java) as Map<String, Any?>
-        return map + ("shares" to (map["shares"] as List<*>).sortedBy { it.toString() })
+        return map +
+            ("shares" to (map["shares"] as List<*>).sortedBy { (it as Map<*, *>).toSortedMap(compareBy { k -> k.toString() }).toString() })
     }
 
-    /** Sequential scans per table in [statement]'s generic plan; [withoutV26] plans it with V26's indexes dropped (rolled back). */
+    /**
+     * Sequential scans per table in [statement]'s generic plan; [withoutV26] plans it with V26's
+     * indexes dropped, [withoutV27] with V27's (both rolled back).
+     */
     private fun seqScans(
         statement: String,
         withoutV26: Boolean,
+        withoutV27: Boolean = withoutV26,
+    ): Map<String, Int> = planNodes(statement, withoutV26, withoutV27, "Seq Scan", "Relation Name")
+
+    /** Index-only scans per index in [statement]'s generic plan on the current schema. */
+    private fun indexOnlyScans(statement: String): Map<String, Int> =
+        planNodes(statement, withoutV26 = false, withoutV27 = false, "Index Only Scan", "Index Name")
+
+    private fun planNodes(
+        statement: String,
+        withoutV26: Boolean,
+        withoutV27: Boolean,
+        nodeType: String,
+        key: String,
     ): Map<String, Int> {
         val text = statement.replace(":workspaces", "$1").replace(":inboxes", "$2")
         val plan =
@@ -254,6 +364,7 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
                     status.setRollbackOnly()
                     val client = db.jdbc
                     if (withoutV26) client.sql("DROP INDEX ix_storage_delta_workspace, ix_storage_delta_inbox").update()
+                    if (withoutV27) client.sql("DROP INDEX ix_storage_reservation_usage").update()
                     client.sql("SET LOCAL plan_cache_mode = force_generic_plan").update()
                     client.sql("PREPARE t1_plan(uuid[], uuid[]) AS $text").update()
                     try {
@@ -270,7 +381,7 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
 
         fun walk(node: JsonNode) {
             fun field(name: String) = node.get(name)?.toString()?.trim('"')
-            if (field("Node Type") == "Seq Scan") counts.merge(checkNotNull(field("Relation Name")), 1, Int::plus)
+            if (field("Node Type") == nodeType) counts.merge(checkNotNull(field(key)), 1, Int::plus)
             node.get("Plans")?.forEach { walk(it) }
         }
         walk(mapper.readTree(plan)[0]["Plan"])
@@ -582,6 +693,26 @@ class AdmissionStatementEquivalenceTest : PersistenceIntegrationTest() {
                 ).update()
         }
         db.jdbc.sql("VACUUM ANALYZE").update()
+    }
+
+    /** The reservations replaced by production-sized ones: two `ObjectKeys`-shaped keys each, 20 per workspace. */
+    private fun productionSizedReservations() {
+        db.transactions.execute {
+            val j = db.jdbc
+            j.sql("SET LOCAL session_replication_role = replica").update()
+            j.sql("DELETE FROM storage_reservation").update()
+            j
+                .sql(
+                    """
+                    INSERT INTO storage_reservation (message_id, workspace_id, inbox_id, object_keys, bytes, state, created_at,
+                                                     write_deadline_at, node_id, generation)
+                    SELECT m, ws, i, ARRAY[ws || '/' || i || '/' || m || '/raw.eml', ws || '/' || i || '/' || m || '/attachments/' || gen_random_uuid()],
+                           10, 'RESERVED', now(), now(), 'n', gen_random_uuid()
+                      FROM (SELECT w.id AS ws, gen_random_uuid() AS m, gen_random_uuid() AS i FROM workspace w, generate_series(1, 20)) x
+                    """.trimIndent(),
+                ).update()
+        }
+        db.jdbc.sql("VACUUM ANALYZE storage_reservation").update()
     }
 
     private companion object {
