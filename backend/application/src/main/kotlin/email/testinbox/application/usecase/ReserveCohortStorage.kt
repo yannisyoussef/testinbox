@@ -25,6 +25,10 @@ class ReserveCohortStorage(
         require(declarations.enforcement == StorageEnforcement.ALL) { "cohort approval requires ALL declarations" }
         val policy = checkNotNull(EffectiveStoragePolicy.footprint(declarations))
         val runtime = checkNotNull(policy.cohort)
+        require(runtime.withinDeclaredLegacy(legacy)) {
+            "the pool holds ${legacy.size} legacy shares but testinbox.storage.declared-legacy-workspaces is " +
+                "${declarations.declaredLegacyWorkspaces}; the gated INGEST envelope covers 30 + L workspaces (ADR-035 amendment D)"
+        }
         require(
             runtime.assess(legacy, unattributed, trash) is CohortStorageBudget.Result.Fits,
         ) { "all thirty shares and reserves must fit" }

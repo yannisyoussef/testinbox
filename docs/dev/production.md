@@ -79,6 +79,7 @@ relaxed-binding override of the underlying property is refused).
 | `TESTINBOX_BOOTSTRAP_API_KEY` | ≥ 43 chars of real entropy | break-glass only |
 | `TESTINBOX_GIT_SHA`, `TESTINBOX_IMAGE_DIGEST` | the handed-off candidate and each image's own digest | identity on `/actuator/info` |
 | `TESTINBOX_MANAGEMENT_PORT`, `TESTINBOX_SMTP_PORT`, `TESTINBOX_SHUTDOWN_GRACE`, `TESTINBOX_DB_POOL_SIZE` | as staging | private management port; SMTP never public |
+| `TESTINBOX_LIMITS_INGEST_CAPACITY`, `_REFILL_PER_SECOND`; `TESTINBOX_LIMITS_INGEST_PER_INBOX_CAPACITY`, `_REFILL_PER_SECOND` | `60`, `1.0`; `30`, `0.5` | the closed-beta **incoming** recipient-copy envelope (ADR-035 amendment D); the deployed profile's defaults, pin them in the policy; [beta-limits.md](beta-limits.md) |
 
 ## Readiness, and one setting the application checks live
 
@@ -849,6 +850,20 @@ or role separation: admission answers `CAPACITY_UNAVAILABLE` until the
 readiness collaborator sees all of them, `storage-budget check` proves the
 pool, and gate F proves the rest. **Today no shipped record satisfies
 condition 1**, so production cannot start `ALL` with this artifact.
+
+**The gated workload envelope (ADR-035 amendment D, owner decision
+2026-11-06).** In every environment, `ALL` also refuses to start unless
+`TESTINBOX_STORAGE_GATED_EXPECTED_RATE` (R_gated, the expected rate of the
+passing gate D evidence: `31` for the approved envelope) and
+`TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES` (L: `1`) are set, the
+per-workspace INGEST refill × (30 + L) does not exceed R_gated, the
+per-workspace burst is at most 60, and limits are enabled. Every mode refuses
+a per-inbox INGEST value above the per-workspace one. Gate D of
+`check-storage-activation.sh` reads R_gated from every node
+(`testinbox_storage_gated_expected_rate`) and refuses evidence run at another
+rate. What the limits are, that they govern **incoming** mail only, and how a
+discarded over-budget copy differs from a `451` slot deferral:
+[beta-limits.md](beta-limits.md).
 
 #### The production qualification record Ops must evidence (`adr035-presigned-put-v2`)
 

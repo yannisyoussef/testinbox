@@ -122,3 +122,13 @@ Filesystem containment, PR C (TI-STORAGE-006E; contract PROPOSED in #82):
 | Evidence = the newest observation, begun after the latest trip (a failed trial needs a newer one), younger than *A_obs* from its start, not from the future, with `avail ≥ R_ops` and `R_ops / B` free inodes; a negative answer cached 5 s; figures never below the contract's floors | A `StorageFullEvidenceTest`; P `FilesystemObservationsTest` |
 | On the real stack: ambiguous and charged, only the STORAGE_FULL kind open, the same `451` for known and unknown recipients, no trial and no witness probe without evidence, recovery through a real event; a failed trial on fresh evidence re-trips and the same observation cannot license another; `500` ENOSPC vs plain `500` | I `StorageFullBreakerTest` |
 | `DeploymentSafety`: the legacy bucket-quota fuse is no longer required or evaluated (Amendment 2); every filesystem declaration (including *P_F*, the monitor role and *A_obs*) is required under non-OFF; `G_F + D_budget + P_F + M + R_ops ≤ C_fs`; `TENANT_LIMITS` and `ALL` are both refused in production; `R_ops ≥ max(5 %, 2 GiB)`; one inode per block; `H_F < G_F`, each at its exact boundary; malformed figures, an unsupported block size and `A_obs` > 1 h refused in every mode; every key binds in both deployables | A `StorageEnforcementSafetyTest`; API/I `DeploymentSafetyCheckTest`, `IngestionDeploymentSafetyCheckTest` |
+
+Amendment D, the closed-beta workload envelope (owner decision 2026-11-06):
+
+| Property | Where |
+|---|---|
+| Under `ALL`, startup refuses an undeclared R_gated or L, r × (30 + L) > R_gated (exact decimal, at the boundary), a burst above b = 60, disabled limits and an unbounded refill; every mode refuses a per-inbox value above the workspace's; malformed declarations are refused in every mode; OFF and TENANT_LIMITS need nothing | A `IngestEnvelopeSafetyTest`, `StorageEnforcementSafetyTest`, `ProductionAllSafetyTest`; I `IngestionDeploymentSafetyCheckTest` |
+| A pool with more legacy shares than the declared L is never proven, reserved or approved, so an understated L fails closed | A `DeclaredLegacyEnvelopeTest` |
+| Staging and production resolve 60 / 1.0 per workspace and 30 / 0.5 per inbox from the shared deployed layer, identical in both deployables and absent from development; R_gated and L have no default | API `DeployedProfileLayeringTest`; AR `DeployedConfigurationTest` |
+| R_gated is exported as one unlabelled gauge, absent while undeclared | observability `MetricCardinalityTest` |
+| Gate D judges the evidence at the R_gated every node declares, refuses any other expected rate, keeps every other criterion at 2R | `scripts/check-storage-activation.test.sh` (16 cases); harness `AdrConformanceTest` |

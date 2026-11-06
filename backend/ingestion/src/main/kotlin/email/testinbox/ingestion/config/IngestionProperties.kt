@@ -78,6 +78,15 @@ data class IngestionProperties(
          * value as `testinbox_storage_admission_locking` for the activation barrier.
          */
         val admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
+        /**
+         * *R_gated*, events/s (`TESTINBOX_STORAGE_GATED_EXPECTED_RATE`): the §11
+         * expected rate of the passing gate D evidence (ADR-035 amendment D).
+         * `ALL` is refused while it is absent or below the configured INGEST
+         * envelope (`IngestEnvelopeSafety`).
+         */
+        val gatedExpectedRate: Double? = null,
+        /** *L* (`TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES`): legacy-share workspaces beside the thirty participant places. */
+        val declaredLegacyWorkspaces: Int? = null,
     )
 
     /** The framework-free declarations `DeploymentSafety` and `EffectiveStoragePolicy` read (ADR-035 §18). */
@@ -96,6 +105,8 @@ data class IngestionProperties(
             nodeId = storage.nodeId,
             nodeRole = email.testinbox.application.storage.NodeRole.INGESTION,
             filesystem = storage.filesystem,
+            gatedExpectedRate = storage.gatedExpectedRate,
+            declaredLegacyWorkspaces = storage.declaredLegacyWorkspaces,
             admissionLocking = storage.admissionLocking,
         )
 

@@ -280,7 +280,14 @@ class IngestionWiring(
         registry: io.micrometer.core.instrument.MeterRegistry,
         policy: StorageCapacityPolicy,
         declarations: StorageDeclarations,
-    ): StorageProtocolMetrics = MicrometerStorageProtocolMetrics(registry, policy, declarations.enforcement, declarations.admissionLocking)
+    ): StorageProtocolMetrics =
+        MicrometerStorageProtocolMetrics(
+            registry,
+            policy,
+            declarations.enforcement,
+            declarations.admissionLocking,
+            declarations.gatedExpectedRate,
+        )
 
     /** TI-STORAGE-006 §22: the in-process fail-closed guard a broken activation invariant sets on a non-OFF node. */
     @Bean

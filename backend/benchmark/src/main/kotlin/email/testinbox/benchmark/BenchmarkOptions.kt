@@ -301,7 +301,9 @@ data class BenchmarkOptions(
               --inboxes-per-workspace 10
               --concurrency 1,10,25,50,100    worker pool sizes
               --rates 260,520                 offered events/s, open loop
-              --expected-rate 260             the §11 "expected load"; criteria are read at 2x it
+              --expected-rate 260             the §11 "expected load" R; criteria are read at 2R, and --rates
+                                              must include R and 2R. Under amendment D, R is the deployment's
+                                              R_gated (closed beta: --expected-rate 31 --rates 31,62)
               --duration-seconds 30  --warmup-seconds 3
               --reservation-backlog 1000      live reservations, 1 in 5 RELEASING
               --delta-backlog 500             one compaction interval's worth of storage_delta rows

@@ -168,6 +168,23 @@ data class StorageDeclarations(
     val filesystem: FilesystemDeclarations = FilesystemDeclarations(),
     /** T1's lock protocol; [AdmissionLocking.GLOBAL] (mode a) unless explicitly declared. */
     val admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
+    /**
+     * *R_gated* (`testinbox.storage.gated-expected-rate`), events/s: the §11
+     * expected rate R at which the passing gate D evidence ran (ADR-035
+     * amendment D, 2026-11-06). Ops sets it from that evidence. `ALL` is
+     * refused while it is undeclared, or while the configured per-workspace
+     * `INGEST` refill × the mail-receiving workspaces exceeds it
+     * (`IngestEnvelopeSafety`); gate D refuses evidence run at any other rate.
+     */
+    val gatedExpectedRate: Double? = null,
+    /**
+     * *L* (`testinbox.storage.declared-legacy-workspaces`): the legacy-share
+     * workspaces the cohort pool may hold beside the beta's thirty participant
+     * places, so the mail-receiving population under `ALL` is at most `30 + L`
+     * (amendment D). A pool holding more legacy shares than this is never
+     * approved ([CohortStorageRuntime.assess]).
+     */
+    val declaredLegacyWorkspaces: Int? = null,
 ) {
     val enforced: Boolean get() = enforcement != StorageEnforcement.OFF
 

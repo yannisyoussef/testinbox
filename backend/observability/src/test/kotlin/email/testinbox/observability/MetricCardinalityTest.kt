@@ -419,6 +419,27 @@ class MetricCardinalityTest {
     }
 
     @Test
+    fun `R_gated is one unlabelled series carrying the declared rate, and no series at all while undeclared`() {
+        // ADR-035 amendment D: activation gate D reads this from every node and blocks on an absent one.
+        val declared = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(
+            declared,
+            StorageCapacityPolicy.ADR_035_REFERENCE,
+            email.testinbox.domain.storage.StorageEnforcement.ALL,
+            gatedExpectedRate = 31.0,
+        )
+        declared.find("testinbox_storage_gated_expected_rate").gauges().size shouldBe 1
+        declared
+            .get("testinbox_storage_gated_expected_rate")
+            .gauge()
+            .id.tags shouldBe emptyList()
+        declared.scrape() shouldContain "testinbox_storage_gated_expected_rate 31.0"
+        val undeclared = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(undeclared, StorageCapacityPolicy.ADR_035_REFERENCE)
+        undeclared.find("testinbox_storage_gated_expected_rate").gauges().size shouldBe 0
+    }
+
+    @Test
     fun `T1's lock protocol is one closed-enum series per value, GLOBAL unless declared otherwise`() {
         exerciseEverything()
         // The activation barrier (gate D) reads exactly these series.
