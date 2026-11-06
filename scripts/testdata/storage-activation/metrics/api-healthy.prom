@@ -31,3 +31,6 @@ testinbox_storage_gated_expected_rate{service="testinbox-api",environment="stagi
 # HELP testinbox_storage_envelope_max_workspaces 30 + L, the workspaces the gated envelope covers (ADR-035 amendment D)
 # TYPE testinbox_storage_envelope_max_workspaces gauge
 testinbox_storage_envelope_max_workspaces{service="testinbox-api",environment="staging"} 31.0
+# HELP testinbox_storage_envelope_participants N, the participant cap (testinbox.beta.max-participants)
+# TYPE testinbox_storage_envelope_participants gauge
+testinbox_storage_envelope_participants{service="testinbox-api",environment="staging"} 30.0

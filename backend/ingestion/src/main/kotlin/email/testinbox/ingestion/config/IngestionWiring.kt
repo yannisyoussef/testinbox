@@ -297,6 +297,7 @@ class IngestionWiring(
             declarations.gatedExpectedRate,
             email.testinbox.application.deployment.IngestEnvelopeSafety
                 .mailReceivingWorkspaces(declarations),
+            envelopeParticipants = declarations.participantCap.value,
         )
 
     /** TI-STORAGE-006 §22: the in-process fail-closed guard a broken activation invariant sets on a non-OFF node. */

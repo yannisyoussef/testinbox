@@ -304,9 +304,17 @@ upper bound.
   cohort's entry approves pool **8**, so `ALL` with N = 10 starts only with
   `TESTINBOX_DB_POOL_SIZE` 8 (or unset: 8 is the deployed default). The API runs
   no SMTP T1 and is not affected.
-- **Not changed.** The offline `admission status` command still prints
-  `consumed_places=…/30`: it runs before Spring and reads no deployable's
-  configuration, so it reports the hard bound, not N.
+- **Activation (gate W).** Every node exports N as
+  `testinbox_storage_envelope_participants` beside N + L
+  (`testinbox_storage_envelope_max_workspaces`). Gate W blocks while either is
+  absent or the nodes disagree, and with N below 30 it keeps counting the
+  workspaces after a cohort plan exists, the same rule as the nodes. So a
+  cohort admitted under a larger N cannot pass the barrier only to have every
+  node answer `451` after the switch.
+- **The offline `admission status` command** prints
+  `consumed_places=n (hard limit 30; the deployed cap N is configured per
+  deployable)`. It runs before Spring and reads no deployable's configuration,
+  so it cannot know N and does not guess it.
 
 ## Changing the envelope
 

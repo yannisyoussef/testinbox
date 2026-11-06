@@ -439,10 +439,25 @@ class MetricCardinalityTest {
         MicrometerStorageProtocolMetrics(undeclared, StorageCapacityPolicy.ADR_035_REFERENCE)
         undeclared.find("testinbox_storage_gated_expected_rate").gauges().size shouldBe 0
         undeclared.find("testinbox_storage_envelope_max_workspaces").gauges().size shouldBe 0
+        undeclared.find("testinbox_storage_envelope_participants").gauges().size shouldBe 0
         // The pre-plan population bound, 30 + L, read by the activation barrier the same way.
         val envelope = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
         MicrometerStorageProtocolMetrics(envelope, StorageCapacityPolicy.ADR_035_REFERENCE, envelopeWorkspaces = 31)
         envelope.scrape() shouldContain "testinbox_storage_envelope_max_workspaces 31.0"
+        // N, the participant cap gate W compares across nodes: one unlabelled series, never an id.
+        val participants = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(
+            participants,
+            StorageCapacityPolicy.ADR_035_REFERENCE,
+            envelopeWorkspaces = 11,
+            envelopeParticipants = 10,
+        )
+        participants.find("testinbox_storage_envelope_participants").gauges().size shouldBe 1
+        participants
+            .get("testinbox_storage_envelope_participants")
+            .gauge()
+            .id.tags shouldBe emptyList()
+        participants.scrape() shouldContain "testinbox_storage_envelope_participants 10.0"
         envelope.find("testinbox_storage_activation_gate_ready").gauges().size shouldBe 3
     }
 

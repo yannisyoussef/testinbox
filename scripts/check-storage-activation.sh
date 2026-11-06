@@ -637,16 +637,20 @@ gate_benchmark() {
 # evidence covers r x (N + L) events/s (N: testinbox.beta.max-participants, 30
 # unless lowered); once a plan exists the pool bounds the population (gate G),
 # but before it every workspace in the database receives mail. So under ALL the
-# database must hold at most N + L workspaces while no plan exists. (A node with a
-# LOWERED N also keeps counting after the plan, because the pool's thirty
-# participant shares do not bound it; this script reads only N + L, so that
-# post-plan case is the nodes' own run-time check.) The bound is read from every node
-# (testinbox_storage_envelope_max_workspaces, which they must agree on), the
-# population from the live database or --population-state. The nodes enforce
-# the same rule at run time (a uniform 451 for every event, never per tenant).
+# database must hold at most N + L workspaces while no plan exists. With a
+# LOWERED N (below 30) the count applies after the plan too: the pool's thirty
+# participant shares do not bound it, and a lowered N evicts nobody, so
+# admissions made under a larger N can exceed N + L. This is the nodes' own rule
+# (WorkspaceEnvelopeCheck); a READY here that the nodes then refuse would be a
+# global 451 outage at the switch. The bound N + L is read from every node
+# (testinbox_storage_envelope_max_workspaces) and N itself
+# (testinbox_storage_envelope_participants); the nodes must agree on both, and
+# either one absent blocks. The population comes from the live database or
+# --population-state. The nodes enforce the same rule at run time (a uniform 451
+# for every event, never per tenant).
 # ---------------------------------------------------------------------------
 gate_envelope() {
-    local gate="W-workspace-envelope" role label path err value seen="" checked=0 max row plan workspaces
+    local gate="W-workspace-envelope" role label path err value seen="" checked=0 max row plan workspaces n seen_n="" participants
     reset_problems
     if [ "$MODE" = TENANT_LIMITS ]; then
         record "$gate" NOT_REQUIRED "NOT REQUIRED FOR TENANT_LIMITS: the gated envelope belongs to ALL (ADR-035 amendment D)"
@@ -664,6 +668,14 @@ gate_envelope() {
         elif ! num_eq "$value" "$seen"; then
             problem "$label ($role): declares an envelope of $value workspaces but another node declares $seen; the nodes must agree"
         fi
+        n="$(metric_value "$path" testinbox_storage_envelope_participants)"
+        if ! is_number "$n" || ! num_gt "$n" 0 || num_gt "$n" 30; then
+            problem "$label ($role): the participant cap N is UNKNOWN (testinbox_storage_envelope_participants absent or outside 1..30); every node must export testinbox.beta.max-participants"
+        elif [ -z "$seen_n" ]; then
+            seen_n="$n"
+        elif ! num_eq "$n" "$seen_n"; then
+            problem "$label ($role): declares a participant cap N of $n but another node declares $seen_n; the nodes must agree"
+        fi
     done <<EOF
 $METRICS_INDEX
 EOF
@@ -673,6 +685,7 @@ EOF
         return
     fi
     max="$(awk -v a="$seen" 'BEGIN { printf "%d", a }')"
+    participants="$(awk -v a="$seen_n" 'BEGIN { printf "%d", a }')"
     if [ -n "$POPULATION_STATE" ] && [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
         record "$gate" NOT_RUN "--population-state and TESTINBOX_ACTIVATION_DB_URL both given; the live database is the only source when it is reachable"
         return
@@ -694,7 +707,13 @@ EOF
     fi
     case "$plan" in
         t|true)
-            record "$gate" PASS "a cohort plan exists; the pool bounds the population (every workspace shared, at most L legacy: gate G)" ;;
+            if [ "$participants" -ge 30 ]; then
+                record "$gate" PASS "a cohort plan exists; the pool bounds the population (every workspace shared, at most L legacy: gate G)"
+            elif num_gt "$workspaces" "$max"; then
+                record "$gate" BLOCKED "a cohort plan exists but N = $participants is below 30, so the pool's thirty participant shares do not bound the population, and the database holds more than $max workspaces (counted $workspaces); gate D covers at most N + L under ALL, and every node would refuse all mail (ADR-035 amendment D)"
+            else
+                record "$gate" PASS "a cohort plan exists and N = $participants is below 30; $workspaces workspace(s), within the envelope's $max (N + L)"
+            fi ;;
         *)
             if num_gt "$workspaces" "$max"; then
                 record "$gate" BLOCKED "no cohort plan exists and the database holds more than $max workspaces (counted $workspaces); before the plan every workspace receives mail, and gate D covers at most N + L under ALL (ADR-035 amendment D)"
