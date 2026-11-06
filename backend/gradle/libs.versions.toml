@@ -27,6 +27,8 @@ awaitility = "4.3.0"
 
 [libraries]
 spring-boot-dependencies = { module = "org.springframework.boot:spring-boot-dependencies", version.ref = "springBoot" }
+# Version from the Spring Boot BOM (platform above); a catalog alias so build files name it once.
+spring-jdbc = { module = "org.springframework:spring-jdbc" }
 jackson3-bom = { module = "tools.jackson:jackson-bom", version.ref = "jackson3" }
 jackson2-bom = { module = "com.fasterxml.jackson:jackson-bom", version.ref = "jackson2" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }

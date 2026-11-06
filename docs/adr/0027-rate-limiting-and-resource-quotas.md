@@ -71,6 +71,18 @@ Therefore: **any syntactically valid recipient continues to receive a uniform
 `250` (ADR-025, unchanged), and no quota state may alter the SMTP reply.**
 Enforcement moves to surfaces where refusing leaks nothing.
 
+> **Dated note (2026-11-06):** this section stands as written for quota and
+> rate state: no limit may alter the SMTP reply. It is not a claim that
+> workspace-membership correlation is impossible. Under ADR-035's storage
+> enforcement (`ALL`), mode a's per-workspace write slots (not a limit) let an
+> authenticated participant read, from the load-dependent delay or `451` of a
+> co-addressed event, shared workspace membership (through induced contention)
+> and a known workspace's natural congestion (coarse: at the slot cap or not).
+> The owner accepted both as one bounded timing-disclosure exception to
+> ADR-035 I9, for the initial beta of at most 30 admitted accounts only, with
+> mitigation tracked in #139. See ADR-035, "Owner decision note (2026-11-06): bounded timing-disclosure exception to
+> I9 for the initial beta (≤ 30 admitted accounts)".
+
 ### 2. Where each limit is enforced
 
 | Control | Bound | Enforced at | Refusal |

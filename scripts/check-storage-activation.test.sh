@@ -75,7 +75,8 @@ good() {
         --qualification-dir "$FIX/qualification" --backend-identity "$FIX/identity/match.json" \
         --benchmark-evidence "$TMP/bench-pass.json" \
         --filesystem-evidence "$FIX/filesystem/evidence-good.json" --footprint-state "$FIX/filesystem/state-good.json" \
-        --cohort-check-output "$FIX/cohort/check-pass.txt" --cohort-pool-file "$FIX/cohort/pool.json"
+        --cohort-check-output "$FIX/cohort/check-pass.txt" --cohort-pool-file "$FIX/cohort/pool.json" \
+        --population-state "$FIX/population/pre-plan-within.json"
 }
 # with <flag> <value>: the good inputs with one flag's value replaced (removed when
 # value is ""), or the flag appended when the good inputs do not carry it.
@@ -127,9 +128,9 @@ only() {
 good > "$TMP/args-good"
 case_ "all gates satisfied → ACTIVATION READY" 0 '^ACTIVATION READY$' "$TMP/args-good" --json "$TMP/evidence.json"
 if [ -f "$TMP/evidence.json" ] && jq -e '.mode == "ALL" and .evaluatedAt == "2026-10-07T00:00:00Z" and .verdict == "READY"
-        and (.gates | length) == 10 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
+        and (.gates | length) == 12 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
         and (.cohortGate | startswith("storage-budget check"))' "$TMP/evidence.json" >/dev/null 2>&1; then
-    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 10 gates"
+    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 12 gates (gates L and W included)"
 else
     bad "the evidence JSON shape is wrong" "$(cat "$TMP/evidence.json" 2>/dev/null)"
 fi
@@ -206,6 +207,25 @@ only "C: an open breaker blocks, naming the node" C-clock-offset "\(ingestion\):
 case_ "C: ε_max is configurable (--max-clock-offset-seconds 60 admits -31.5 s)" 0 '^C-clock-offset[[:space:]]+PASS' "$TMP/c1" --max-clock-offset-seconds 60
 
 # ---------------------------------------------------------------------------
+# Gate L: T1's lock protocol. Every node must PROVE GLOBAL; absent = unknown = blocked.
+# ---------------------------------------------------------------------------
+sed 's/mode="global"} 1.0/mode="global"} 0.0/; s/mode="cohort_partitioned"} 0.0/mode="cohort_partitioned"} 1.0/' "$M/ingestion-healthy.prom" > "$M/ingestion-partitioned.prom"
+grep -v 'testinbox_storage_admission_locking' "$M/ingestion-healthy.prom" > "$M/ingestion-no-locking.prom"
+with --ingestion-metrics "$M/ingestion-partitioned.prom" > "$TMP/l1"
+only "L: a node running the share-partitioned T1 blocks, naming it" L-lock-protocol "runs the share-partitioned T1" "$TMP/l1"
+with --ingestion-metrics "$M/ingestion-no-locking.prom" > "$TMP/l2"
+only "L: a node whose lock protocol is not exported is UNKNOWN and blocks, never read as mode a" L-lock-protocol "T1 lock protocol UNKNOWN" "$TMP/l2"
+with --ingestion-metrics "$M/ingestion-partitioned.prom" | sed 's/^ALL$/TENANT_LIMITS/' > "$TMP/l3"
+case_ "L: ...and blocks under TENANT_LIMITS too" 1 '^L-lock-protocol[[:space:]]+BLOCKED[[:space:]].*runs the share-partitioned T1' "$TMP/l3"
+awk -F'\t' 'BEGIN { OFS = "\t" } /^#/ || NF < 4 { print; next } $1 == "ing-1" { print $0, "COHORT_PARTITIONED"; next } { print $0, "GLOBAL" }' \
+    "$FIX/nodes/healthy.tsv" > "$TMP/nodes-partitioned.tsv"
+with --nodes-file "$TMP/nodes-partitioned.tsv" > "$TMP/l4"
+only "L: a live storage_node row recording COHORT_PARTITIONED blocks (the database, not only the metric)" L-lock-protocol "storage_node 'ing-1' records admission_locking COHORT_PARTITIONED" "$TMP/l4"
+awk -F'\t' 'BEGIN { OFS = "\t" } /^#/ || NF < 4 { print; next } { print $0, "GLOBAL" }' "$FIX/nodes/healthy.tsv" > "$TMP/nodes-global.tsv"
+with --nodes-file "$TMP/nodes-global.tsv" > "$TMP/l5"
+case_ "L: GLOBAL metrics and GLOBAL node rows pass, and so does the whole barrier" 0 '^L-lock-protocol[[:space:]]+PASS' "$TMP/l5"
+
+# ---------------------------------------------------------------------------
 # Gate D: the §11 benchmark, required only for ALL.
 # ---------------------------------------------------------------------------
 with --benchmark-evidence "" > "$TMP/d1"
@@ -270,6 +290,86 @@ case_ "D: a benchmark gitSha that cannot be related to the running API warns but
 printf '{"verdict":"PASS","gitSha":"x"}' > "$TMP/bench-shapeless.json"
 with --benchmark-evidence "$TMP/bench-shapeless.json" > "$TMP/d7"
 only "D: a PASS with no scenarios does not pass (fail closed)" D-benchmark "no scenarios recorded" "$TMP/d7"
+
+# ---------------------------------------------------------------------------
+# Gate D, ADR-035 amendment D (2026-11-06): §11's expected rate R is R_gated,
+# the rate every node declares (testinbox_storage_gated_expected_rate). The
+# evidence must have run at exactly it; every other criterion is unchanged.
+# ---------------------------------------------------------------------------
+# The closed-beta evidence: the PASS fixture re-run at R = 31 and 2R = 62 (r = 1, 30 + L = 31).
+jq '.harness.expectedRate = 31.0 | .harness.rates = [31.0, 62.0]
+    | .scenarios |= map(
+        .achievedRate = (if .achievedRate == null then null else .achievedRate * (if .offeredRate == 260 then 31 / 260 else 62 / 520 end) end)
+        | .offeredRate = (if .offeredRate == 260 then 31.0 else 62.0 end)
+        | .name |= (sub("-r260$"; "-r31") | sub("-r520$"; "-r62")))' "$TMP/bench-pass.json" > "$TMP/bench-beta.json"
+declare_rate() { sed -E "s/^(testinbox_storage_gated_expected_rate\{[^}]*\}) .*/\1 $3/" "$M/$1" > "$M/$2"; }
+declare_rate api-healthy.prom api-r31.prom 31.0
+declare_rate ingestion-healthy.prom ingestion-r31.prom 31.0
+grep -v '^testinbox_storage_gated_expected_rate' "$M/ingestion-healthy.prom" > "$M/ingestion-no-rgated.prom"
+beta() { good | sed -e "s#$M/api-healthy.prom#$M/api-r31.prom#" -e "s#$M/ingestion-healthy.prom#$M/ingestion-r31.prom#" -e "s#$TMP/bench-pass.json#$TMP/bench-beta.json#"; }
+
+beta > "$TMP/dr1"
+case_ "D: nodes declaring R_gated 31 and evidence run at 31 and 62 → ACTIVATION READY" 0 '^ACTIVATION READY$' "$TMP/dr1"
+printf '%s\n' "$OUT" | grep -qE '^D-benchmark[[:space:]]+PASS[[:space:]].*declared R_gated 31' && ok "D: the PASS names the declared R_gated it was judged at" || bad "D did not judge at the declared R_gated 31" "$OUT"
+beta | sed "s#$TMP/bench-beta.json#$TMP/bench-pass.json#" > "$TMP/dr2"
+only "D: evidence run at 260 does not count where the nodes declare R_gated 31" D-benchmark "ran at expected rate 260(\.0)? events/s but the nodes declare R_gated 31" "$TMP/dr2"
+with --benchmark-evidence "$TMP/bench-beta.json" > "$TMP/dr3"
+only "D: evidence run at 31 does not count where the nodes declare R_gated 260" D-benchmark "ran at expected rate 31(\.0)? events/s but the nodes declare R_gated 260" "$TMP/dr3"
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c50-r62") | .achievedRate) = 55.0' "$TMP/bench-beta.json" > "$TMP/bench-beta-short.json"
+beta | sed "s#$TMP/bench-beta.json#$TMP/bench-beta-short.json#" > "$TMP/dr4"
+only "D: at R_gated 31 the 2× criterion is still sustained 62/s at the pinned 0.995" D-benchmark "sustained2x: chosen-ws10000-c50-r62 achieved 55" "$TMP/dr4"
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c25-r62") | .percentiles.t1.p99Ms) = 50.5' "$TMP/bench-beta.json" > "$TMP/bench-beta-t1.json"
+beta | sed "s#$TMP/bench-beta.json#$TMP/bench-beta-t1.json#" > "$TMP/dr5"
+only "D: at R_gated 31 T1 p99 is still ≤ 50 ms" D-benchmark "t1P99: chosen-ws10000-c25-r62 T1 p99 50.5 ms > 50 ms" "$TMP/dr5"
+jq 'del(.scenarios[] | select(.name == "chosen-ws10000-c100-r62"))' "$TMP/bench-beta.json" > "$TMP/bench-beta-nocov.json"
+beta | sed "s#$TMP/bench-beta.json#$TMP/bench-beta-nocov.json#" > "$TMP/dr6"
+only "D: at R_gated 31 the full concurrency matrix is still required" D-benchmark "coverage: no CHOSEN 2× scenario at concurrency 100" "$TMP/dr6"
+with --ingestion-metrics "$M/ingestion-no-rgated.prom" > "$TMP/dr7"
+only "D: a node that declares no R_gated blocks (UNKNOWN, never the old 260)" D-benchmark "R_gated UNKNOWN \(testinbox_storage_gated_expected_rate absent\)" "$TMP/dr7"
+with --ingestion-metrics "$M/ingestion-r31.prom" > "$TMP/dr8"
+only "D: nodes that disagree on R_gated block" D-benchmark "declares R_gated 31(\.0)? but another node declares 260" "$TMP/dr8"
+with --expected-rate 31 > "$TMP/dr9"
+only "D: --expected-rate may only confirm the declaration, never replace it" D-benchmark "--expected-rate 31 differs from the R_gated 260(\.0)? the nodes declare" "$TMP/dr9"
+with --expected-rate 260 > "$TMP/dr10"
+case_ "D: --expected-rate equal to the declared R_gated confirms it" 0 '^ACTIVATION READY$' "$TMP/dr10"
+beta > "$TMP/dr11"
+case_ "D: --expected-rate 31 confirms a declared 31" 0 '^ACTIVATION READY$' "$TMP/dr11" --expected-rate 31
+with --expected-rate fast > "$TMP/dr12"
+case_ "D: a non-numeric --expected-rate is a usage error" 2 'expected-rate must be a positive number' "$TMP/dr12"
+with --expected-rate 0 > "$TMP/dr13"
+case_ "D: a zero --expected-rate is a usage error" 2 'expected-rate must be a positive number' "$TMP/dr13"
+jq 'del(.harness.expectedRate)' "$TMP/bench-pass.json" > "$TMP/bench-norate.json"
+with --benchmark-evidence "$TMP/bench-norate.json" > "$TMP/dr14"
+only "D: evidence that records no expected rate cannot be bound to R_gated" D-benchmark "records no harness.expectedRate" "$TMP/dr14"
+good | sed -e 's/^ALL$/TENANT_LIMITS/' -e "s#$M/ingestion-healthy.prom#$M/ingestion-no-rgated.prom#" > "$TMP/dr15"
+case_ "D: TENANT_LIMITS needs no R_gated (the gate is NOT REQUIRED there)" 0 '^ACTIVATION READY$' "$TMP/dr15"
+
+# ---------------------------------------------------------------------------
+# Gate W, ADR-035 amendment D: before a cohort plan exists every workspace
+# receives mail, so under ALL the database holds at most 30 + L of them. The
+# bound comes from every node (testinbox_storage_envelope_max_workspaces).
+# ---------------------------------------------------------------------------
+with --population-state "$FIX/population/pre-plan-over.json" > "$TMP/w1"
+only "W: no plan and one workspace over 30 + L blocks, with the count" W-workspace-envelope "no cohort plan exists and the database holds more than 31 workspaces \(counted 32\)" "$TMP/w1"
+with --population-state "$FIX/population/plan-exists.json" > "$TMP/w2"
+case_ "W: once a cohort plan exists the pool bounds the population (gate G), so the count does not block" 0 '^W-workspace-envelope[[:space:]]+PASS[[:space:]].*a cohort plan exists' "$TMP/w2"
+printf '{"cohortPlanExists": false, "workspaces": 31}\n' > "$TMP/pop-31.json"
+with --population-state "$TMP/pop-31.json" > "$TMP/w3"
+case_ "W: exactly 30 + L passes" 0 '^W-workspace-envelope[[:space:]]+PASS[[:space:]].*31 workspace\(s\), within the envelope.s 31' "$TMP/w3"
+with --population-state "" > "$TMP/w4"
+only "W: no population input under ALL → NOT RUN, and NOT RUN blocks" W-workspace-envelope "no population: set TESTINBOX_ACTIVATION_DB_URL or pass --population-state" "$TMP/w4"
+grep -v '^testinbox_storage_envelope_max_workspaces' "$M/ingestion-healthy.prom" > "$M/ingestion-no-envelope.prom"
+with --ingestion-metrics "$M/ingestion-no-envelope.prom" > "$TMP/w5"
+only "W: a node that declares no envelope blocks (UNKNOWN, never assumed)" W-workspace-envelope "envelope bound is UNKNOWN \(testinbox_storage_envelope_max_workspaces absent\)" "$TMP/w5"
+sed -E 's/^(testinbox_storage_envelope_max_workspaces\{[^}]*\}) .*/\1 30.0/' "$M/ingestion-healthy.prom" > "$M/ingestion-envelope-30.prom"
+with --ingestion-metrics "$M/ingestion-envelope-30.prom" > "$TMP/w6"
+only "W: nodes that disagree on the envelope block" W-workspace-envelope "declares an envelope of 30(\.0)? workspaces but another node declares 31" "$TMP/w6"
+printf '{"cohortPlanExists": "no", "workspaces": 2}\n' > "$TMP/pop-bad.json"
+with --population-state "$TMP/pop-bad.json" > "$TMP/w7"
+only "W: a malformed population state blocks" W-workspace-envelope "population-state must be" "$TMP/w7"
+good | sed -e 's/^ALL$/TENANT_LIMITS/' -e "s#$FIX/population/pre-plan-within.json#$FIX/population/pre-plan-over.json#" > "$TMP/w8"
+case_ "W: TENANT_LIMITS is NOT REQUIRED, whatever the population" 0 '^ACTIVATION READY$' "$TMP/w8"
+printf '%s\n' "$OUT" | grep -qE '^W-workspace-envelope[[:space:]]+NOT REQUIRED[[:space:]]' && ok "W: the TENANT_LIMITS verdict is literally NOT REQUIRED" || bad "W is not NOT REQUIRED for TENANT_LIMITS" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Gate E: rollback floors (throwaway history).
@@ -423,6 +523,53 @@ qrec() { jq "$2" "$FIX/qualification/laptop-arm64-reference.json" > "$TMP/rec-$1
 qrec no-e7 'del(.filesystem.metadataInodesMeasured)'
 with --qualification-dir "$TMP/qual-no-e7" > "$TMP/f-no-e7"
 only "F: a record without the E7 metadata inode measurement blocks" F-filesystem "carries no E7 metadata inode measurement" "$TMP/f-no-e7"
+# One counting definition (amendment note, metadata inodes): .minio.sys only, on both sides.
+fe meta-scope-all '.minio.metadataInodesScope = "minio-sys+bucket-directories"' "evidence counting bucket directories as metadata inodes blocks" "MinIO metadata: the evidence counts metadataInodes over scope minio-sys\\+bucket-directories, not minio-sys"
+fe no-meta-scope 'del(.minio.metadataInodesScope)' "evidence that does not state its metadata inode scope → NOT RUN" "evidence.minio.metadataInodesScope missing"
+qrec no-scope 'del(.filesystem.metadataInodesScope)'
+with --qualification-dir "$TMP/qual-no-scope" > "$TMP/f-no-scope"
+only "F: a record whose E7 figure does not state scope minio-sys blocks" F-filesystem "record fixture-laptop-arm64-reference does not state its E7 metadataInodesMeasured as scope minio-sys" "$TMP/f-no-scope"
+# One counting definition for metadata BYTES (amendment note): .minio.sys without .trash + unattributed allocations.
+fe bytes-scope-all '.minio.metadataBytesScope = "minio-sys+bucket-directories"' "evidence counting every bucket directory block as metadata bytes blocks" "MinIO metadata: the evidence counts bucketDirectoryBytes over scope minio-sys\\+bucket-directories, not minio-sys\\+unattributed"
+fe no-bytes-scope 'del(.minio.metadataBytesScope)' "evidence that does not state its metadata bytes scope → NOT RUN" "evidence.minio.metadataBytesScope missing"
+qrec no-bytes-scope 'del(.filesystem.metadataBytesScope)'
+with --qualification-dir "$TMP/qual-no-bytes-scope" > "$TMP/f-no-bytes-scope"
+only "F: a record whose metadata bytes figure does not state scope minio-sys+unattributed blocks" F-filesystem "record fixture-laptop-arm64-reference does not state its metadataBytesMeasured as scope minio-sys\\+unattributed" "$TMP/f-no-bytes-scope"
+qrec no-bytes 'del(.filesystem.metadataBytesMeasured)'
+with --qualification-dir "$TMP/qual-no-bytes" > "$TMP/f-no-bytes"
+only "F: a record without the E2/E7 metadata bytes measurement blocks" F-filesystem "carries no E2/E7 metadata bytes measurement" "$TMP/f-no-bytes"
+# The inode scope without .trash only with the armed inode-headroom latch; a missing bucket never passes.
+# The inode scope without .trash only when PROVEN (record: PASS E10 drill of the evidence's fs-monitor build); one
+# scope on both sides; a missing bucket never passes.
+FSM="$(printf 'f%.0s' $(seq 1 64))"
+qrec excl '.filesystem.metadataInodesScope = "minio-sys-excl-trash" | .filesystem.inodeHeadroomLatchDrill = {"result": "PASS", "fsMonitorSha256": "'"$FSM"'"}'
+xev() {  # xev <name> <jq over the proven evidence> <case> <regex|PASS>
+    jq '.minio.metadataInodesScope = "minio-sys-excl-trash" | .monitor = {"inodeHeadroomLatchArmed": true, "fsMonitorSha256": "'"$FSM"'"} | '"$2" "$FSE" > "$TMP/ev-x-$1.json"
+    with --filesystem-evidence "$TMP/ev-x-$1.json" | sed "s#$FIX/qualification\$#$TMP/qual-$5#" > "$TMP/f-x-$1"
+    if [ "$4" = PASS ]; then case_ "F: $3" 0 '^F-filesystem[[:space:]]+PASS' "$TMP/f-x-$1"; else only "F: $3" F-filesystem "$4" "$TMP/f-x-$1"; fi
+}
+xev proven '.' "minio-sys-excl-trash with a PASS E10 drill of the evidence's fs-monitor build passes" PASS excl
+xev sha-mismatch '.monitor.fsMonitorSha256 = "'"$(printf 'e%.0s' $(seq 1 64))"'"' "minio-sys-excl-trash with another fs-monitor build than E10 drilled blocks" "no PASS E10 inode-headroom latch drill of the fs-monitor build the evidence names" excl
+xev no-sha 'del(.monitor.fsMonitorSha256)' "minio-sys-excl-trash with no fs-monitor build named blocks" "monitor.fsMonitorSha256 null\): only minio-sys is acceptable" excl
+xev unarmed 'del(.monitor.inodeHeadroomLatchArmed)' "minio-sys-excl-trash proven but not stated armed blocks" "monitor.inodeHeadroomLatchArmed is not true" excl
+qrec excl-nodrill '.filesystem.metadataInodesScope = "minio-sys-excl-trash"'
+xev no-drill '.' "minio-sys-excl-trash with a record carrying no E10 drill blocks (a declared flag is not proof)" "record carries no PASS E10 inode-headroom latch drill" excl-nodrill
+qrec excl-fail '.filesystem.metadataInodesScope = "minio-sys-excl-trash" | .filesystem.inodeHeadroomLatchDrill = {"result": "FAIL", "fsMonitorSha256": "'"$FSM"'"}'
+xev drill-fail '.' "minio-sys-excl-trash with a failed E10 drill blocks" "record carries no PASS E10 inode-headroom latch drill" excl-fail
+fe scope-vs-record '.minio.metadataInodesScope = "minio-sys-excl-trash" | .monitor = {"inodeHeadroomLatchArmed": true, "fsMonitorSha256": "'"$FSM"'"}' "an evidence inode scope that differs from the record's blocks" "but record fixture-laptop-arm64-reference measured scope minio-sys: one scope on both sides"
+with --qualification-dir "$TMP/qual-excl" > "$TMP/f-rec-excl-ev-sys"
+only "F: a record measured without .trash against evidence counting .trash blocks (one scope on both sides)" F-filesystem "counts inodes over scope minio-sys but record fixture-laptop-arm64-reference measured scope minio-sys-excl-trash" "$TMP/f-rec-excl-ev-sys"
+fe no-bucket '.minio.bucketPresent = false' "evidence collected with no bucket directory blocks" "MinIO metadata: the evidence was collected with no bucket directory \\(bucketPresent false\\)"
+fe no-bucket-field 'del(.minio.bucketPresent)' "evidence that does not state bucketPresent → NOT RUN" "evidence.minio.bucketPresent missing"
+# Production M = 1 GiB (owner decision 2026-11-05): a production record whose measured metadata exceeds the staging
+# 256 MiB passes against M = 1 GiB, and is blocked against 256 MiB. Gate F compares; it pins nothing.
+qrec m768 '.filesystem.metadataBytesMeasured = 805306368'
+jq '.declared.metadataBudgetBytes = 1073741824' "$FSE" > "$TMP/ev-m1g.json"
+with --qualification-dir "$TMP/qual-m768" | sed "s#$FSE#$TMP/ev-m1g.json#" > "$TMP/f-m768-1g"
+case_ "F: a record measuring 768 MiB of metadata passes against the production M of 1 GiB" 0 '^F-filesystem[[:space:]]+PASS' "$TMP/f-m768-1g"
+with --qualification-dir "$TMP/qual-m768" > "$TMP/f-m768-256"
+only "F: the same record against M = 256 MiB blocks" F-filesystem "MinIO metadata: M 268435456 is below the E2/E7 measurement 805306368" "$TMP/f-m768-256"
+fe bytes-budget '.declared.metadataBudgetBytes = 120000000' "an M below the record's measured metadata bytes blocks" "MinIO metadata: M 120000000 is below the E2/E7 measurement 125829120"
 qrec no-e3 'del(.filesystem.experiments.E3)'
 with --qualification-dir "$TMP/qual-no-e3" > "$TMP/f-no-e3"
 only "F: ALL needs every experiment E1–E11 recorded PASS" F-filesystem "experiments: record fixture-laptop-arm64-reference does not record PASS for E3" "$TMP/f-no-e3"
@@ -438,6 +585,8 @@ jq '.preallocation.allocatedBytes = 4096' "$FSE" > "$TMP/ev-tl-sparse.json"; sed
 case_ "F: TENANT_LIMITS refuses a sparse backing image" 1 '^F-filesystem[[:space:]]+BLOCKED[[:space:]]+TENANT_LIMITS isolation preflight: preallocation: backing image allocated 4096' "$TMP/tl-sparse"
 jq '.roleViolations = ["testinbox_app: owns message"] | .trust.trustedEpoch = 1 | .sweep = null' "$FSS" > "$TMP/st-tl-staging.json"; sed "s#$FSS#$TMP/st-tl-staging.json#" "$TMP/tl-base" > "$TMP/tl-staging"
 case_ "F: TENANT_LIMITS ignores the containment-only rows (staging's owner connection, untrusted counts, no sweep)" 0 '^F-filesystem[[:space:]]+PASS[[:space:]]+TENANT_LIMITS isolation preflight held' "$TMP/tl-staging"
+jq '.globalBase.rowBytes = 5' "$FSS" > "$TMP/st-tl-global.json"; sed "s#$FSS#$TMP/st-tl-global.json#" "$TMP/tl-base" > "$TMP/tl-global"
+case_ "F: TENANT_LIMITS ignores the global base row (no global potential is enforced)" 0 '^F-filesystem[[:space:]]+PASS[[:space:]]+TENANT_LIMITS isolation preflight held' "$TMP/tl-global"
 jq '.observation = null' "$FSS" > "$TMP/st-tl-noobs.json"; sed "s#$FSS#$TMP/st-tl-noobs.json#" "$TMP/tl-base" > "$TMP/tl-noobs"
 jq '.uncleanLowerNodes = ["ing-old"]' "$FSS" > "$TMP/st-tl-lower.json"; sed "s#$FSS#$TMP/st-tl-lower.json#" "$TMP/tl-base" > "$TMP/tl-lower"
 case_ "F: TENANT_LIMITS refuses while an artifact below the containment level may run (no STORAGE_FULL/containment code)" 1 '^F-filesystem[[:space:]]+BLOCKED[[:space:]]+TENANT_LIMITS isolation preflight: mixed versions: node\(s\) below containment level 1' "$TMP/tl-lower"
@@ -462,13 +611,16 @@ fs privileges '.roleViolations = ["testinbox_app: owns storage_deletion_debt"]' 
 fs cache '.sequenceCacheSize = 20' "a cached ordering sequence blocks" "ordering: storage_debt_order_seq has CACHE 20, not 1"
 fs replica '.inRecovery = true' "a gate connected to a replica blocks" "ordering: a reader or writer is not on the primary"
 fe primary '.database.allConnectionsToPrimary = false' "a reader or writer off the primary blocks" "ordering: a reader or writer is not on the primary"
-fe metadata '.minio.bucketDirectoryBytes = 200000000' "MinIO metadata above M blocks" "MinIO metadata: .minio.sys 104857600 \+ bucket directories 200000000 > M 268435456"
+fe metadata '.minio.bucketDirectoryBytes = 200000000' "MinIO metadata above M blocks" "MinIO metadata: .minio.sys 104857600 \+ unattributed 200000000 > M 268435456"
 fe qual-invalid '.qualificationValid = 0' "an Ops qualification-check reporting invalid blocks" "qualification identity: Ops qualification-check reports valid=0"
 fs obs-age '.observation.observedAt = "2026-10-06T23:40:00Z"' "an observation older than A_obs blocks" "observation liveness: the newest observation is 1500 s old, more than A_obs 900 s"
 fs obs-future '.observation.observedAt = "2026-10-07T00:10:00Z"' "an observation from the future blocks" "observation liveness: the newest observation is in the future"
 fs watermark '.watermark = 121' "an observation below the compaction watermark blocks, as T1 refuses it" "below the compaction watermark 121"
 fs overflow '.footprint.liveBytes = 9300000000000000000' "a footprint total beyond 64 bits blocks, as T1 refuses it" "indeterminate: a footprint total does not fit"
 fs no-watermark 'del(.watermark)' "a state without the watermark → NOT RUN" "state.watermark missing"
+fs global-missing '.globalBase.rowBytes = null | .globalBase.rowObjects = null' "a missing V24 global base row blocks ALL (T1 would sum the population)" "global base: the storage_global_base row is missing"
+fs global-drift '.globalBase.rowBytes = 5' "a global base row that differs from the sum of workspace bases blocks ALL" "global base: storage_global_base 5 B / 10000 objects ≠ Σ workspace bases 1073741824 B / 10000 objects"
+fs no-global 'del(.globalBase)' "a state without the global base (a pre-V24 schema) → NOT RUN" "state.globalBase.sumBytes missing"
 fe age-cap '.declared.observationMaxAgeSeconds = 86400' "an A_obs above an hour → NOT RUN (a large age cannot launder stale evidence)" "observationMaxAgeSeconds is not a whole number of seconds in \(0, 3600\]"
 fe age-exp '.declared.observationMaxAgeSeconds = 1e300' "an A_obs bash cannot compare → NOT RUN, never fresh" "observationMaxAgeSeconds is not a whole number"
 TESTINBOX_ACTIVATION_DB_URL="postgresql://unused.invalid/x" run_args "$TMP/args-good"

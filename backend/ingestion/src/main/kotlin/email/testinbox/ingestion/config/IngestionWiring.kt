@@ -210,6 +210,8 @@ class IngestionWiring(
                 .footprint(declarations)
                 ?.cohort
                 ?.binding,
+            // V25: the node row says which T1 protocol it runs, for the activation inventory.
+            declarations.admissionLocking,
         )
 
     @Bean
@@ -278,7 +280,16 @@ class IngestionWiring(
         registry: io.micrometer.core.instrument.MeterRegistry,
         policy: StorageCapacityPolicy,
         declarations: StorageDeclarations,
-    ): StorageProtocolMetrics = MicrometerStorageProtocolMetrics(registry, policy, declarations.enforcement)
+    ): StorageProtocolMetrics =
+        MicrometerStorageProtocolMetrics(
+            registry,
+            policy,
+            declarations.enforcement,
+            declarations.admissionLocking,
+            declarations.gatedExpectedRate,
+            email.testinbox.application.deployment.IngestEnvelopeSafety
+                .mailReceivingWorkspaces(declarations),
+        )
 
     /** TI-STORAGE-006 §22: the in-process fail-closed guard a broken activation invariant sets on a non-OFF node. */
     @Bean
@@ -296,14 +307,24 @@ class IngestionWiring(
         declarations: StorageDeclarations,
         guard: ActivationGuard,
         storageMetrics: StorageProtocolMetrics,
-    ): ActivationWatch =
-        ActivationWatch(
-            JdbcActivationInventory(jdbc),
+    ): ActivationWatch {
+        val inventory = JdbcActivationInventory(jdbc)
+        return ActivationWatch(
+            inventory,
             properties.storage.activation.toExpectedNodes(),
             declarations.enforcement,
             guard,
             storageMetrics,
+            // The share-partitioned T1 is permitted in the lab only (DeploymentSafety refuses it elsewhere).
+            partitionedAllowed =
+                properties.deployment.environment ==
+                    email.testinbox.application.deployment.StorageEnforcementSafety.LAB_ENVIRONMENT,
+            // ADR-035 amendment D: before a cohort plan exists, at most 30 + L workspaces (451 for all if not).
+            envelope =
+                email.testinbox.application.deployment.IngestEnvelopeSafety
+                    .activationEnvelope(declarations, inventory),
         )
+    }
 
     /**
      * T1 with the deployment's enforcement mode (ADR-035 §14). OFF, the
@@ -317,6 +338,10 @@ class IngestionWiring(
      * reads its own `max-stored-bytes` and declarations, so the two agree
      * exactly when their configuration does; a split configuration is an
      * operations error, not a code path.
+     *
+     * `testinbox.storage.admission-locking` selects T1's lock protocol: GLOBAL,
+     * ADR-035 mode a, by default; COHORT_PARTITIONED only where `DeploymentSafety`
+     * allows it (see [email.testinbox.application.storage.AdmissionLocking]).
      */
     @Bean
     fun storageAdmission(
@@ -324,9 +349,18 @@ class IngestionWiring(
         transactionManager: PlatformTransactionManager,
         policy: StorageCapacityPolicy,
         declarations: StorageDeclarations,
+        storageMetrics: StorageProtocolMetrics,
     ): StorageAdmission =
         FootprintWiring.admission(
-            JdbcStorageAdmission(jdbc, template(transactionManager), readsFootprint = FootprintWiring.readsFootprint(declarations)),
+            JdbcStorageAdmission(
+                jdbc,
+                template(transactionManager),
+                readsFootprint = FootprintWiring.readsFootprint(declarations),
+                // GLOBAL (mode a) unless declared; DeploymentSafety refuses COHORT_PARTITIONED
+                // outside the lab and wherever the partition guard could not engage.
+                locking = declarations.admissionLocking,
+                onFallback = storageMetrics::partitionFallback,
+            ),
             policy,
             declarations,
         )

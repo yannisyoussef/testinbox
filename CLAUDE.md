@@ -78,7 +78,9 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
    into an append-only ledger) and **reconciled against the authoritative
    `message`/`attachment` rows**. It is **never** an application-maintained,
    unauditable counter: a cascade delete runs no application code to
-   decrement one.
+   decrement one. The timing disclosure of ADR-035's write slots (not a limit)
+   is a dated, bounded I9 exception for the beta of ≤ 30 accounts (ADR-035 note
+   2026-11-06, #139); it does not relax this invariant for limits.
 9. **Security.** API keys hashed at rest, never logged. Untrusted HTML is
    never rendered on the primary origin (sandboxed iframe, CSP, no remote
    loads — ADR-011). Never auto-fetch URLs from message content. Every

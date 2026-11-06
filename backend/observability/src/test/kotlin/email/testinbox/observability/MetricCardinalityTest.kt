@@ -178,6 +178,10 @@ class MetricCardinalityTest {
                 AddressMode.entries.map { it.name }.toSet() +
                 email.testinbox.domain.storage.StorageEnforcement.entries
                     .map { it.name.lowercase() }
+                    .toSet() +
+                // T1's lock protocol (testinbox_storage_admission_locking), a closed enum.
+                email.testinbox.application.storage.AdmissionLocking.entries
+                    .map { it.name.lowercase() }
                     .toSet(),
             "parse_status" to ParseStatus.entries.map { it.name }.toSet(),
             "outcome" to
@@ -194,7 +198,6 @@ class MetricCardinalityTest {
                 BlobOperation.entries.map { it.name }.toSet() +
                 ApiKeyOperation.entries.map { it.name }.toSet() +
                 IdempotentOperation.entries.map { it.name }.toSet(),
-            "reason" to SmtpRejection.entries.map { it.name }.toSet(),
             "cause" to
                 email.testinbox.application.storage.FootprintUnavailability.entries
                     .map { it.name.lowercase() }
@@ -208,7 +211,22 @@ class MetricCardinalityTest {
             "path" to ReleasePath.entries.map { it.name.lowercase() }.toSet(),
             "state" to setOf("reserved", "releasing"),
             // Only the two gates a node re-checks at run time are exported (ADR-035 §14 Phase 4).
-            "gate" to setOf("session_allowlist", "node_inventory"),
+            "gate" to setOf("session_allowlist", "node_inventory", "workspace_envelope"),
+        )
+
+    /**
+     * `reason` means different things on different metrics, so each metric has its
+     * own closed set: an SMTP rejection can never carry a partition-fallback reason,
+     * nor the reverse. A metric with a `reason` label not listed here fails.
+     */
+    private val allowedReasonsByMetric: Map<String, Set<String>> =
+        mapOf(
+            "testinbox_smtp_reject" to SmtpRejection.entries.map { it.name }.toSet(),
+            // Why a share-partitioned T1 fell back to mode a (PROPOSED, gate D W1).
+            "testinbox_storage_admission_partition_fallback" to
+                email.testinbox.application.storage.PartitionFallbackReason.entries
+                    .map { it.name.lowercase() }
+                    .toSet(),
         )
 
     @Test
@@ -216,6 +234,12 @@ class MetricCardinalityTest {
         exerciseEverything()
         registry.meters.forEach { meter ->
             meter.id.tags.forEach { tag ->
+                if (tag.key == "reason") {
+                    val allowed = allowedReasonsByMetric[meter.id.name.removeSuffix("_total")]
+                    io.kotest.assertions.withClue("${meter.id.name} reason=${tag.value}") {
+                        (allowed != null && tag.value in allowed) shouldBe true
+                    }
+                }
                 (tag.key in allowedLabelKeys) shouldBe true
                 // build_info's labels are fixed for a process's lifetime — one
                 // series per deployed build, not one per request — so they are
@@ -279,8 +303,10 @@ class MetricCardinalityTest {
         // is ever introduced. ADR-035 §16 (TI-STORAGE-003) added about 45
         // enum-bounded series; TI-DELIVERY-002 account lifecycle added six
         // (one inbound counter, one admission outcome, two auth outcomes and two
-        // quota dimensions), every one from a closed enum: 164 series today.
-        io.kotest.assertions.withClue("series=$before") { (before < 170) shouldBe true }
+        // quota dimensions), every one from a closed enum: 164 series. The
+        // share-partitioned T1 (PROPOSED) added eight more, all closed enums: two
+        // admission-locking gauges and six fallback reasons: 172 series today.
+        io.kotest.assertions.withClue("series=$before") { (before < 180) shouldBe true }
     }
 
     @Test
@@ -357,6 +383,8 @@ class MetricCardinalityTest {
             "testinbox_storage_activation_violation",
             "testinbox_storage_activation_gate_ready",
             "testinbox_storage_enforcement_mode",
+            "testinbox_storage_admission_locking",
+            "testinbox_storage_admission_partition_fallback_total",
             "testinbox_storage_orphan_sweep_completed_at_seconds",
             "testinbox_storage_orphan_sweep_total",
         ).forEach { name -> scrape shouldContain name }
@@ -388,6 +416,87 @@ class MetricCardinalityTest {
             .tag("kind", "committed")
             .gauge()
             .value() shouldBe 3_456.0
+    }
+
+    @Test
+    fun `R_gated is one unlabelled series carrying the declared rate, and no series at all while undeclared`() {
+        // ADR-035 amendment D: activation gate D reads this from every node and blocks on an absent one.
+        val declared = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(
+            declared,
+            StorageCapacityPolicy.ADR_035_REFERENCE,
+            email.testinbox.domain.storage.StorageEnforcement.ALL,
+            gatedExpectedRate = 31.0,
+        )
+        declared.find("testinbox_storage_gated_expected_rate").gauges().size shouldBe 1
+        declared
+            .get("testinbox_storage_gated_expected_rate")
+            .gauge()
+            .id.tags shouldBe emptyList()
+        declared.scrape() shouldContain "testinbox_storage_gated_expected_rate 31.0"
+        val undeclared = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(undeclared, StorageCapacityPolicy.ADR_035_REFERENCE)
+        undeclared.find("testinbox_storage_gated_expected_rate").gauges().size shouldBe 0
+        undeclared.find("testinbox_storage_envelope_max_workspaces").gauges().size shouldBe 0
+        // The pre-plan population bound, 30 + L, read by the activation barrier the same way.
+        val envelope = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(envelope, StorageCapacityPolicy.ADR_035_REFERENCE, envelopeWorkspaces = 31)
+        envelope.scrape() shouldContain "testinbox_storage_envelope_max_workspaces 31.0"
+        envelope.find("testinbox_storage_activation_gate_ready").gauges().size shouldBe 3
+    }
+
+    @Test
+    fun `T1's lock protocol is one closed-enum series per value, GLOBAL unless declared otherwise`() {
+        exerciseEverything()
+        // The activation barrier (gate D) reads exactly these series.
+        registry
+            .get("testinbox_storage_admission_locking")
+            .tag("mode", "global")
+            .gauge()
+            .value() shouldBe 1.0
+        registry
+            .get("testinbox_storage_admission_locking")
+            .tag("mode", "cohort_partitioned")
+            .gauge()
+            .value() shouldBe 0.0
+        registry.find("testinbox_storage_admission_locking").gauges().size shouldBe
+            email.testinbox.application.storage.AdmissionLocking.entries.size
+        val partitioned = io.micrometer.prometheusmetrics.PrometheusMeterRegistry(io.micrometer.prometheusmetrics.PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(
+            partitioned,
+            email.testinbox.domain.storage.StorageCapacityPolicy.ADR_035_REFERENCE,
+            email.testinbox.domain.storage.StorageEnforcement.ALL,
+            email.testinbox.application.storage.AdmissionLocking.COHORT_PARTITIONED,
+        )
+        partitioned.scrape() shouldContain "testinbox_storage_admission_locking{mode=\"cohort_partitioned\"} 1.0"
+    }
+
+    @Test
+    fun `an SMTP rejection reason and a partition-fallback reason never cross metrics`() {
+        allowedReasonsByMetric.getValue("testinbox_smtp_reject").intersect(
+            allowedReasonsByMetric.getValue("testinbox_storage_admission_partition_fallback"),
+        ) shouldBe emptySet()
+        ("uncharged_debt" in allowedReasonsByMetric.getValue("testinbox_smtp_reject")) shouldBe false
+    }
+
+    @Test
+    fun `a partitioned T1's fallback to mode a is counted by a closed reason, every reason pre-registered at zero`() {
+        val fresh = io.micrometer.prometheusmetrics.PrometheusMeterRegistry(io.micrometer.prometheusmetrics.PrometheusConfig.DEFAULT)
+        val metrics = MicrometerStorageProtocolMetrics(fresh, email.testinbox.domain.storage.StorageCapacityPolicy.ADR_035_REFERENCE)
+        fresh.find("testinbox_storage_admission_partition_fallback_total").counters().size shouldBe
+            email.testinbox.application.storage.PartitionFallbackReason.entries.size
+        metrics.partitionFallback(email.testinbox.application.storage.PartitionFallbackReason.UNCHARGED_DEBT)
+        fresh
+            .get("testinbox_storage_admission_partition_fallback_total")
+            .tag("reason", "uncharged_debt")
+            .counter()
+            .count() shouldBe 1.0
+        fresh
+            .get("testinbox_storage_admission_partition_fallback_total")
+            .tag("reason", "workspace_lock_timeout")
+            .counter()
+            .count() shouldBe
+            0.0
     }
 
     @Test

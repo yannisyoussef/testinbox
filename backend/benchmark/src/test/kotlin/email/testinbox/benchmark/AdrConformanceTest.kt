@@ -19,7 +19,8 @@ class AdrConformanceTest {
 
     @Test
     fun `each departure is reported on its own`() {
-        only(conforming.copy(expectedRate = 100.0)) shouldContain "expected rate 100.0 is not §11's 260.0"
+        // Amendment D: R is a parameter, so a departure is a matrix that does not offer R and 2R.
+        only(conforming.copy(expectedRate = 100.0)) shouldContain "offered rates [260.0, 520.0] do not include §11's [100.0, 200.0]"
         only(conforming.copy(rates = listOf(260.0))) shouldContain "do not include §11's [260.0, 520.0]"
         only(conforming.copy(rates = listOf(520.0, 1040.0))) shouldContain "do not include"
         only(conforming.copy(concurrency = listOf(1, 10, 25, 50))) shouldContain "does not include §11's [1, 10, 25, 50, 100]"
@@ -30,6 +31,14 @@ class AdrConformanceTest {
         only(conforming.copy(hostClass = "unspecified")) shouldContain "--host-class was not supplied"
         only(conforming.copy(reference = false)) shouldContain "--no-reference"
         only(conforming.copy(referenceMode = ReferenceMode.CEILING_OFF)) shouldContain "CEILING_OFF is not the no-ceiling mode c (NO_LOCK)"
+    }
+
+    @Test
+    fun `the closed-beta rate of amendment D, offered at R and 2R, is ADR evidence`() {
+        // R = r × (30 + L) = 1 × 31 (owner decision 2026-11-06). Whether 31 is the RIGHT R is the
+        // activation gate's question: it refuses evidence whose rate differs from the declared R_gated.
+        AdrConformance.reasons(conforming.copy(expectedRate = 31.0, rates = listOf(31.0, 62.0))).shouldBeEmpty()
+        only(conforming.copy(expectedRate = 31.0, rates = listOf(31.0))) shouldContain "do not include §11's [31.0, 62.0]"
     }
 
     @Test

@@ -33,6 +33,17 @@ failure answers uniform 451 before recipient resolution. Diagnostic refusal
 counts/reasons remain private to that workspace; the accepted cross-event
 capacity inference risk in ADR-037 is unchanged.
 
+*Dated note (2026-11-06):* one `451` is neither uniform nor before
+resolution: a write-slot wait beyond `W_slot` depends on the load of the
+workspaces the event involves. The resulting timing disclosure, observable by
+an authenticated participant (shared workspace membership through induced
+contention, and a known workspace's natural congestion), is a separate,
+bounded timing-disclosure exception to ADR-035 I9 for the initial beta of at
+most 30 admitted accounts (mitigation tracked in #139), not part of the
+ADR-037 capacity acceptance. See
+ADR-035, "Owner decision note (2026-11-06)", and
+`docs/security/abuse-model.md`.
+
 Deleting rows does not immediately free the physical share. V20 attributes
 message/attachment cascades, releasing reservations and canonical orphan keys
 to a transient workspace cleanup mirror. The mirror survives global debt
@@ -62,7 +73,12 @@ Use the reviewed API jar and a private JSON file containing:
 The declarations are facts/budgets from the reviewed Ops activation packet,
 not numbers inferred from the 48 GiB image. Reserve all thirty participant
 shares, all legacy shares, the worst full envelope, finalization, debt, trash,
-probe, metadata and operational headroom. The application checks arithmetic;
+probe, metadata and operational headroom. The metadata budget *M* is
+1,073,741,824 B (1 GiB) in production, by the owner's decision of 2026-11-05,
+subject to Ops' capacity proof, which passes: [FS] slack 24,988,291,265,
+[I-C] slack 16,786,280,448, root-reserve slack 2,791,731,200 (infinity-core
+!189). The pool file and the environment declarations must carry that same
+value. The staging example stays at 256 MiB. The application checks arithmetic;
 Ops still verifies the actual host/MinIO combination and qualified evidence.
 
 Set `TI_BUDGET_JDBC_URL`, `TI_BUDGET_USER`, `TI_BUDGET_PASSWORD` through the
@@ -131,6 +147,29 @@ of the same image; see
 [ADMISSION-AND-SOURCE.md](../delivery/ti-delivery-002/ADMISSION-AND-SOURCE.md).
 A pause alone does not permit `storage-budget` changes, which still require
 `capacity_ready` closed as well.
+
+**`capacity_ready` is schema-owner SQL, not a subcommand.** Only after the
+activation run with gate G PASS (`ACTIVATION READY`, bound to the reviewed
+pool file), as the schema owner:
+
+```sql
+UPDATE beta_cohort SET capacity_ready = true WHERE id = 'beta-30';
+```
+
+`reserve` and `revoke` require `admissions_open = false` **and**
+`capacity_ready = false` (`JdbcCohortBudgets.lockClosed`, under the cohort
+row lock); to change a pool, `admission pause`, then
+`UPDATE beta_cohort SET capacity_ready = false WHERE id = 'beta-30';`, then
+`reserve`/`revoke` → `check` → gate G PASS → `capacity_ready = true` again.
+When to set it back to false, and the rest of the contract:
+[production.md](production.md#setting-capacity_ready-schema-owner-sql).
+
+**No environment admits without this path.** `cohort.ready` requires
+enforcement `ALL` and an approved, reserved pool everywhere, staging and labs
+included; with storage `OFF` every admission answers `CAPACITY_UNAVAILABLE`.
+A staged acceptance on staging runs the same order as production: `ALL` with
+staging's eligible record → `reserve` → gate G PASS → `capacity_ready` →
+admit.
 
 ## Upgrade, restore and rollback boundaries
 

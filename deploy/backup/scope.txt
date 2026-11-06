@@ -50,12 +50,13 @@
 - idempotency_record
 - rate_bucket
 - wait_lease
-# ADR-035 §14 (V6). All seven are derived or transient, so none is ever backed
+# ADR-035 §14 (V6; V24 adds storage_global_base). All eight are derived or transient, so none is ever backed
 # up. The ledger is rebuilt from rows, and after a restore `message` is empty,
 # so empty base figures are correct. A reservation, an ambiguity or a latch
 # describes object storage, which is not restored either (ADR-035 §9 restore
 # procedure). scripts/check-backup-scope.sh refuses any of these as `+`.
 - workspace_storage_account
+- storage_global_base
 - inbox_storage
 - storage_delta
 - storage_reservation
@@ -92,8 +93,12 @@
 - human_request_budget
 
 # ADR-037: preserve legacy allocations; restore never restores pool approval or cleanup evidence.
+# V25: the partition bound is part of the pool's approval (recorded by the same
+# reserve, for the plan's binding and fingerprint), so it is never restored either:
+# a restored database re-reserves, and until then no T1 partitions.
 + storage_legacy_share
 - storage_cohort_plan
+- storage_partition_bound
 - workspace_deletion_charge
 
 # ADR-036 account lifecycle (V22): the restore-quarantine clearance. NEVER

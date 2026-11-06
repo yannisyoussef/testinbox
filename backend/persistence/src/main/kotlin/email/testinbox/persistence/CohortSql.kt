@@ -11,19 +11,48 @@ import tools.jackson.databind.json.JsonMapper
 import java.sql.ResultSet
 import java.util.UUID
 
-/** Global-only internal pool snapshot; kept in the SAME SQL statement as T1/health. */
+/**
+ * Global-only internal pool snapshot; kept in the SAME SQL statement as T1/health.
+ *
+ * `unknown` (gate D step (1)): whether ANY workspace lacks a share, as 0 or 1,
+ * never a population count. Only `== 0` is ever asked of it
+ * ([email.testinbox.application.storage.CohortPoolState.unknownWorkspaces]),
+ * and the anti-join stops at the first workspace without a share, so the
+ * statement visits at most the shared workspaces (≤ 62, the inventory bound
+ * [read] enforces) plus one, whatever the population.
+ *
+ * Gate D, mode a corrections A1 and A3 (owner decision 2026-11-06, #124): the
+ * figures are the same as at 9d06ab2, from the same statement and snapshot
+ * (`AdmissionStatementEquivalenceTest` runs both texts on the same states).
+ * - A1: `cp_delta` and `cp_reserved` aggregate only the SHARED workspaces. They
+ *   are read only by the `shares` join on `cp_shares`, so every other group was
+ *   computed and thrown away; nothing else reads them.
+ * - A3: the unattributed debt rows are summed in `fp_debt`'s one pass over the
+ *   debt table ([FootprintSql.FOOTPRINT_CTES]), and `cp_unattributed` is ONE row
+ *   with bytes and objects together, not a row set aggregated once per figure.
+ */
 internal object CohortSql {
-    const val CTES = """cp_shares AS (
+    /**
+     * The share inventory: participants and legacy shares. Its own CTE, ahead of
+     * `fp_debt`, which reads it ([FootprintSql.FOOTPRINT_CTES]).
+     */
+    const val SHARES = """cp_shares AS (
         SELECT workspace_id,payload_limit_bytes,footprint_limit_bytes,true AS participant FROM participant_workspace
-        UNION ALL SELECT workspace_id,payload_limit_bytes,footprint_limit_bytes,false FROM storage_legacy_share),
-        cp_delta AS (SELECT workspace_id,sum(bytes) AS bytes,sum(objects) AS objects FROM storage_delta GROUP BY workspace_id),
-        cp_reserved AS (SELECT workspace_id,sum(bytes) AS bytes,sum(cardinality(object_keys)) AS objects FROM storage_reservation GROUP BY workspace_id),
+        UNION ALL SELECT workspace_id,payload_limit_bytes,footprint_limit_bytes,false FROM storage_legacy_share)"""
+
+    /**
+     * Per-share usage, and the unattributed pool: what `fp_debt` (already defined,
+     * with its `unattributed_*` figures) left to the charges whose debt row is gone.
+     */
+    const val CTES = """cp_delta AS (SELECT workspace_id,sum(bytes) AS bytes,sum(objects) AS objects FROM storage_delta
+                       WHERE workspace_id IN (SELECT workspace_id FROM cp_shares) GROUP BY workspace_id),
+        cp_reserved AS (SELECT workspace_id,sum(bytes) AS bytes,sum(cardinality(object_keys)) AS objects FROM storage_reservation
+                         WHERE workspace_id IN (SELECT workspace_id FROM cp_shares) GROUP BY workspace_id),
         cp_charge AS (SELECT workspace_id,sum(bytes) AS bytes,sum(objects) AS objects FROM workspace_deletion_charge GROUP BY workspace_id),
         cp_unattributed AS (
-            SELECT d.id,d.bytes,d.objects FROM storage_deletion_debt d
-             WHERE (d.workspace_id IS NULL OR NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=d.workspace_id))
-               AND (d.incurred_at='infinity' OR d.seq>=coalesce((SELECT started_seq FROM fp_newest),0))
-            UNION ALL SELECT c.debt_id,c.bytes,c.objects FROM workspace_deletion_charge c
+            SELECT (SELECT unattributed_bytes FROM fp_debt) + coalesce(sum(c.bytes),0) AS bytes,
+                   (SELECT unattributed_objects FROM fp_debt) + coalesce(sum(c.objects),0) AS objects
+              FROM workspace_deletion_charge c
              WHERE NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=c.workspace_id)
                AND NOT EXISTS(SELECT 1 FROM storage_deletion_debt d WHERE d.id=c.debt_id))"""
 
@@ -34,7 +63,7 @@ internal object CohortSql {
         'fingerprint',(SELECT fingerprint FROM storage_cohort_plan WHERE approved),
         'unattributedAllowance',(SELECT unattributed_allowance FROM storage_cohort_plan),
         'trashAllowance',(SELECT trash_allowance FROM storage_cohort_plan),
-        'unknown',(SELECT count(*) FROM workspace w WHERE NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=w.id)),
+        'unknown',(SELECT count(*) FROM (SELECT 1 FROM workspace w WHERE NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=w.id) LIMIT 1) u),
         'nodesReady',coalesce((SELECT NOT EXISTS(
             SELECT 1 FROM unnest(p.expected_nodes) expected WHERE NOT EXISTS(
                 SELECT 1 FROM storage_node n WHERE n.node_id=expected AND NOT n.clean_shutdown
@@ -45,8 +74,8 @@ internal object CohortSql {
                  OR n.cohort_binding IS DISTINCT FROM p.binding OR NOT(n.node_id=ANY(p.expected_nodes))))
             AND coalesce((SELECT observed_at>=now()-make_interval(secs=>p.observation_max_age_ms/1000.0) FROM fp_newest),false)
             FROM storage_cohort_plan p WHERE approved),false),
-        'unknownBytes',(SELECT coalesce(sum(bytes),0) FROM cp_unattributed),
-        'unknownObjects',(SELECT coalesce(sum(objects),0) FROM cp_unattributed),
+        'unknownBytes',(SELECT bytes FROM cp_unattributed),
+        'unknownObjects',(SELECT objects FROM cp_unattributed),
         'trash',(SELECT trash_bytes FROM fp_newest),
         'shares',coalesce((SELECT jsonb_agg(jsonb_build_object(
             'id',s.workspace_id,'participant',s.participant,'payload',s.payload_limit_bytes,'footprint',s.footprint_limit_bytes,

@@ -62,6 +62,8 @@ class IngestionDeploymentSafetyCheck(
                         proxyReadTimeout = properties.deployment.proxyReadTimeout,
                         edgeRequestCeiling = properties.deployment.edgeRequestCeiling,
                         limitsEnabled = properties.limits.enabled,
+                        ingest = properties.limits.ingest,
+                        ingestPerInbox = properties.limits.ingestPerInbox,
                         activeProfiles = springEnvironment.activeProfiles.toSet(),
                         // No public HTTP origin, so the production base-URL rule does not apply here.
                         publicSurface = false,
@@ -71,12 +73,14 @@ class IngestionDeploymentSafetyCheck(
                 )
             check(violations.isEmpty()) { DeploymentSafety.describe(violations) }
             log.info(
-                "deployment configuration validated (environment={} profiles={} gitSha={} imageDigest={} storageEnforcement={})",
+                "deployment configuration validated (environment={} profiles={} gitSha={} imageDigest={} storageEnforcement={} " +
+                    "admissionLocking={})",
                 environment,
                 springEnvironment.activeProfiles.joinToString(","),
                 properties.deployment.gitSha,
                 properties.deployment.imageDigest,
                 properties.storage.enforcement,
+                properties.storage.admissionLocking,
             )
         }
     }

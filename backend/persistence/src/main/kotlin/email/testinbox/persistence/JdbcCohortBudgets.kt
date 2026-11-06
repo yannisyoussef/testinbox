@@ -3,6 +3,7 @@ package email.testinbox.persistence
 import email.testinbox.application.port.CohortBudgets
 import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.domain.WorkspaceId
+import email.testinbox.domain.storage.CohortStorageBudget
 import email.testinbox.domain.storage.LegacyStorageShare
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -23,6 +24,7 @@ class JdbcCohortBudgets(
         jdbc.sql("SELECT pg_advisory_xact_lock(35,1)").query { _, _ -> Unit }.single()
     }
 
+    @Suppress("LongParameterList") // one parameter per recorded fact of the approved pool
     override fun reserve(
         declarations: StorageDeclarations,
         binding: String,
@@ -30,6 +32,7 @@ class JdbcCohortBudgets(
         legacy: Map<WorkspaceId, LegacyStorageShare>,
         unattributed: Long,
         trash: Long,
+        partition: CohortStorageBudget.PartitionCapacity,
     ) {
         // No allocation may silently vanish or shrink, even if its workspace was erased.
         val old =
@@ -94,6 +97,23 @@ class JdbcCohortBudgets(
                         declarations.expectedIngestionNodes
                 ).toList(),
             ).update()
+        // V25: the bound these declarations leave for all shares, for exactly this
+        // binding and fingerprint. A later plan with another binding or fingerprint
+        // (any binary, any operator) no longer matches it, so the share-partitioned T1
+        // does not partition until a reserve records the matching bound; and at
+        // commit PostgreSQL refuses shares above it (storage_partition_bound_check).
+        jdbc
+            .sql(
+                """INSERT INTO storage_partition_bound (id,binding,fingerprint,payload_capacity_bytes,footprint_capacity_bytes)
+            VALUES (true,:binding,:fingerprint,:payload,:footprint)
+            ON CONFLICT (id) DO UPDATE SET binding=EXCLUDED.binding,fingerprint=EXCLUDED.fingerprint,
+            payload_capacity_bytes=EXCLUDED.payload_capacity_bytes,footprint_capacity_bytes=EXCLUDED.footprint_capacity_bytes,
+            recorded_at=clock_timestamp()""",
+            ).param("binding", binding)
+            .param("fingerprint", fingerprint)
+            .param("payload", partition.payloadBytes)
+            .param("footprint", partition.footprintBytes)
+            .update()
     }
 
     override fun revoke() {

@@ -1,5 +1,6 @@
 package email.testinbox.application
 
+import email.testinbox.application.storage.AdmissionLocking
 import email.testinbox.application.storage.DeclaredNode
 import email.testinbox.application.storage.NodeRole
 import email.testinbox.application.storage.QualificationRecord
@@ -163,6 +164,9 @@ object StorageDeclarationsFactory {
         nodeId: String? = null,
         nodeRole: NodeRole? = null,
         filesystem: FilesystemProperties = FilesystemProperties(),
+        admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
+        gatedExpectedRate: Double? = null,
+        declaredLegacyWorkspaces: Int? = null,
     ): StorageDeclarations =
         StorageDeclarations(
             enforcement = enforcement,
@@ -178,5 +182,8 @@ object StorageDeclarationsFactory {
             expectedApiNodes = activation.toExpectedNodes().api,
             node = if (nodeId != null && nodeRole != null) DeclaredNode(nodeId, nodeRole) else null,
             filesystem = filesystem.toDeclarations(),
+            admissionLocking = admissionLocking,
+            gatedExpectedRate = gatedExpectedRate,
+            declaredLegacyWorkspaces = declaredLegacyWorkspaces,
         )
 }

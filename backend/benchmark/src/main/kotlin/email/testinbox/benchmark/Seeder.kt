@@ -106,6 +106,32 @@ class Seeder(
     }
 
     /**
+     * The same number of unfolded rows as [deltas], usage-neutral: `+x` and `−x`
+     * on one inbox, so a closed cohort's shares are not filled by bytes no T1
+     * admitted ([ClosedCohort]). The rows T1 scans are what the backlog is for.
+     */
+    fun neutralDeltas(
+        population: SeededPopulation,
+        count: Int,
+    ) {
+        val rows =
+            List((count + 1) / 2) { population.inboxes.random(random) to random.nextLong(1, 100_000) }
+                .flatMap { (inbox, bytes) -> listOf(inbox to bytes, inbox to -bytes) }
+                .take(count)
+        rows.chunked(BATCH).forEach { chunk ->
+            var statement =
+                jdbc.sql(
+                    "INSERT INTO storage_delta (workspace_id, inbox_id, bytes) VALUES " +
+                        chunk.indices.joinToString(",") { "(:w$it, :i$it, :b$it)" },
+                )
+            chunk.forEachIndexed { i, (inbox, bytes) ->
+                statement = statement.param("w$i", inbox.workspaceId).param("i$i", inbox.inboxId).param("b$i", bytes)
+            }
+            statement.update()
+        }
+    }
+
+    /**
      * The live reservation backlog another node's events would have left:
      * `RESERVED` with a deadline ahead, and one in five `RELEASING` with a
      * release time far ahead, so no cleanup could remove them during a run.
@@ -213,7 +239,69 @@ class Seeder(
         return inboxIds.size
     }
 
+    /**
+     * The W1 cohort at its maximum, for the PARTITIONED variant ([ClosedCohort]):
+     * [PARTICIPANTS] ACTIVE, verified participants (the ADR-037 fixed 128/256 MiB
+     * shares, by V19's defaults) and one legacy share, each with
+     * [inboxesPerWorkspace] inboxes, provisioned the way `AdmitBetaParticipant`
+     * leaves them (account, admission, marker). Inserting the markers needs the
+     * operator authority: the harness is the owner of its own benchmark database.
+     */
+    fun cohort(inboxesPerWorkspace: Int): SeededPopulation {
+        val cohort = population(PARTICIPANTS + 1, inboxesPerWorkspace)
+        cohort.workspaceIds.take(PARTICIPANTS).forEachIndexed { index, ws ->
+            val account = UUID.randomUUID()
+            jdbc
+                .sql(
+                    "INSERT INTO human_account (id, contact_email, contact_verified_at, state, created_at) " +
+                        "VALUES (:a, :email, now(), 'ACTIVE', now())",
+                ).param("a", account)
+                .param("email", "$account@bench.invalid")
+                .update()
+            jdbc
+                .sql(
+                    "INSERT INTO beta_admission (cohort_id, place, account_id, workspace_id, project_id, admitted_at) " +
+                        "VALUES ('beta-30', :place, :a, :ws, :ws, now())",
+                ).param("place", index + 1)
+                .param("a", account)
+                .param("ws", ws)
+                .update()
+            jdbc
+                .sql(
+                    "INSERT INTO participant_workspace (workspace_id, cohort_id, place, allocated_at) VALUES (:ws, 'beta-30', :place, now())",
+                ).param("ws", ws)
+                .param("place", index + 1)
+                .update()
+        }
+        jdbc
+            .sql("INSERT INTO storage_legacy_share (workspace_id, payload_limit_bytes, footprint_limit_bytes) VALUES (:ws, :p, :f)")
+            .param("ws", cohort.workspaceIds[PARTICIPANTS])
+            .param("p", LEGACY_PAYLOAD_BYTES)
+            .param("f", LEGACY_FOOTPRINT_BYTES)
+            .update()
+        return cohort
+    }
+
+    /**
+     * Between PARTITIONED scenarios, untimed: the cohort's messages go (their
+     * ledger deltas fold in the next compaction), and the deletion debt and
+     * cleanup charges they leave are dropped, so every scenario starts the
+     * cohort from the same usage, far inside its shares.
+     */
+    fun resetCohortUsage(cohort: SeededPopulation) {
+        val ids = cohort.workspaceIds
+        jdbc.sql("DELETE FROM message WHERE workspace_id = ANY(ARRAY[:ws]::uuid[])").param("ws", ids).update()
+        jdbc.sql("DELETE FROM workspace_deletion_charge WHERE workspace_id = ANY(ARRAY[:ws]::uuid[])").param("ws", ids).update()
+        jdbc.sql("DELETE FROM storage_deletion_debt WHERE workspace_id = ANY(ARRAY[:ws]::uuid[])").param("ws", ids).update()
+    }
+
     companion object {
+        /** ADR-037: the cohort's thirty places (`BetaCohortPolicy.MAX_PARTICIPANTS`). */
+        const val PARTICIPANTS = 30
+
+        /** Sized for retention's expired inboxes, which the closed cohort puts in the legacy workspace. */
+        const val LEGACY_PAYLOAD_BYTES = 64L shl 30
+        const val LEGACY_FOOTPRINT_BYTES = 128L shl 30
         const val SEED_NODE = "bench-seed"
         private const val BATCH = 200
     }

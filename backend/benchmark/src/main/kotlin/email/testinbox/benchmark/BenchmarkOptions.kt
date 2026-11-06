@@ -85,6 +85,18 @@ data class BenchmarkOptions(
     val seed: Long = 35,
     val reference: Boolean = true,
     val referenceMode: ReferenceMode = ReferenceMode.NO_LOCK,
+    /**
+     * Also run the share-partitioned T1 as it would ship (production's
+     * `JdbcStorageAdmission` with `admission-locking = COHORT_PARTITIONED`) at
+     * every matrix point, over a closed 30-participant + legacy cohort
+     * ([ClosedCohort]). Reported apart; never part of the gate's verdict, and it
+     * changes nothing about whether the run is ADR evidence.
+     */
+    val partitionedVariant: Boolean = false,
+    /** Repetitions of the variant's timing-probe runs (S-C1), at each of its two load points, in both modes. */
+    val probeRepetitions: Int = 4,
+    /** Seconds of each timing-probe run: its own, so the probes never stretch the gate's matrix. */
+    val probeDurationSeconds: Int = 60,
 ) {
     fun retentionRateFor(offered: Double): Double = retentionRate ?: (offered / RETENTION_RATIO)
 
@@ -216,6 +228,19 @@ data class BenchmarkOptions(
                             options.copy(referenceMode = ReferenceMode.valueOf(value(flag).uppercase().replace('-', '_')))
                     }
 
+                    "--partitioned-variant" -> {
+                        options = options.copy(partitionedVariant = true)
+                    }
+
+                    "--probe-duration-seconds" -> {
+                        options =
+                            options.copy(probeDurationSeconds = value(flag).toIntOrNull() ?: throw UsageException("$flag needs a number"))
+                    }
+
+                    "--probe-repetitions" -> {
+                        options = options.copy(probeRepetitions = value(flag).toIntOrNull() ?: throw UsageException("$flag needs a number"))
+                    }
+
                     "--help", "-h" -> {
                         throw UsageException(USAGE)
                     }
@@ -247,6 +272,14 @@ data class BenchmarkOptions(
             if (expectedRate <= 0) throw UsageException("--expected-rate must be positive")
             if (slotsPerWorkspace !in 1..slots) throw UsageException("--slots-per-workspace must be in 1..slots")
             if (inboxesPerWorkspace < 1) throw UsageException("--inboxes-per-workspace must be positive")
+            if (partitionedVariant && inboxesPerWorkspace <= ScenarioRunner.PROBE_HOT_INBOXES) {
+                throw UsageException("the timing probes reserve ${ScenarioRunner.PROBE_HOT_INBOXES} inboxes of the hot workspace")
+            }
+            if (probeRepetitions < 1) throw UsageException("--probe-repetitions must be at least 1")
+            if (probeDurationSeconds < 1) throw UsageException("--probe-duration-seconds must be at least 1")
+            if (partitionedVariant && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
+                throw UsageException("the partitioned cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
+            }
             if (workspaces.any { it * inboxesPerWorkspace < recipientMix.maxRecipients }) {
                 throw UsageException("every population needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
             }
@@ -268,7 +301,9 @@ data class BenchmarkOptions(
               --inboxes-per-workspace 10
               --concurrency 1,10,25,50,100    worker pool sizes
               --rates 260,520                 offered events/s, open loop
-              --expected-rate 260             the §11 "expected load"; criteria are read at 2x it
+              --expected-rate 260             the §11 "expected load" R; criteria are read at 2R, and --rates
+                                              must include R and 2R. Under amendment D, R is the deployment's
+                                              R_gated (closed beta: --expected-rate 31 --rates 31,62)
               --duration-seconds 30  --warmup-seconds 3
               --reservation-backlog 1000      live reservations, 1 in 5 RELEASING
               --delta-backlog 500             one compaction interval's worth of storage_delta rows
@@ -283,6 +318,13 @@ data class BenchmarkOptions(
               --reference-mode no-lock|ceiling-off
                                               no-lock (default) = §11 mode c, the adapter without its advisory lock;
                                               ceiling-off = same lock, G unlimited: diagnostic only, verdict INCOMPLETE
+              --partitioned-variant           also run production's share-partitioned T1 (admission-locking =
+                                              COHORT_PARTITIONED: shared (35,1) + sorted per-workspace locks) at every
+                                              matrix point, over a closed cohort of 30 participants + 1 legacy share
+                                              (the gate population is wiped first); reported under "variant", never
+                                              part of the verdict
+              --probe-repetitions <n>         timing-probe runs per load point and mode in the variant (default 4)
+              --probe-duration-seconds <n>    seconds of each timing-probe run (default 60)
 
             Output:
               --host-class <text>             operator-supplied host class, recorded in the evidence

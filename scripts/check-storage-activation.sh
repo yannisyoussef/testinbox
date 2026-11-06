@@ -38,10 +38,14 @@
 #   --sessions-file <tsv>              application_name<TAB>usename, replaces the pg_stat_activity query
 #   --application-role <role>      evaluate only sessions of this database role (ADR-035 §14 (a) scope; default: every role)
 #   --nodes-file <tsv>                 node_id<TAB>capability<TAB>heartbeat_age_seconds<TAB>clean_shutdown(t|f)
+#                                      [<TAB>admission_locking]: the optional V25 column, read by gate L
 #   --qualification-dir <dir>          default backend/storage/src/main/resources/adr035-qualification
 #   --backend-identity <json>          the Ops-declared backend identity (non-secret)
 #   --qualification-valid-metric 0|1   the Ops qualification-check's testinbox_storage_qualification_valid
 #   --benchmark-evidence <json>        the §11 benchmark result (docs/dev/storage-benchmark.md)
+#   --expected-rate <events/s>         gate D: OPTIONAL cross-check. §11's expected rate R is R_gated, read from
+#                                      every node's testinbox_storage_gated_expected_rate (ADR-035 amendment D);
+#                                      this value must EQUAL it, and the evidence must have run at it
 #   --repo <dir>                       the checkout whose history evaluates floors (default: this repository)
 #   --floors-file <file>               default <repo>/deploy/rollback-floors.txt
 #   --fetch                            `git fetch origin master` before evaluating gate E
@@ -53,6 +57,8 @@
 #                                      (never passing): this script never recomputes the ADR-037 proof.
 #   --cohort-pool-file <file>          gate G: the reviewed pool file that check ran against; its SHA-256 must equal
 #                                      the `reviewed-file sha256=` line the command printed (binds the output to it)
+#   --population-state <json>         gate W (--mode ALL): {"cohortPlanExists": bool, "workspaces": n} for an offline
+#                                      evaluation; replaces the query (refused when TESTINBOX_ACTIVATION_DB_URL is set)
 #   --environment production|staging|lab  gate F: with `production`, the matched qualification record must carry
 #                                      platformClass production-host (the evidence itself does not name the environment)
 #   --json <file>                      write the evidence record
@@ -92,6 +98,7 @@ FLOORS_FILE=""
 FETCH=false
 FS_EVIDENCE=""
 FOOTPRINT_STATE=""
+POPULATION_STATE=""
 COHORT_CHECK=""
 JSON_OUT=""
 MAX_OFFSET=30
@@ -99,7 +106,14 @@ HEARTBEAT_MAX_AGE=300
 # ADR-035 §11 constants are PINNED here and never read from the evidence: an
 # evidence file is data a harness produced, and a harness run with relaxed
 # inputs must not be able to relax the gate (docs/dev/storage-benchmark.md).
-EXPECTED_RATE="260"
+# The expected rate R is not read from the evidence either. Since amendment D
+# (2026-11-06) R is R_gated: the rate every node declares
+# (testinbox.storage.gated-expected-rate, exported as
+# testinbox_storage_gated_expected_rate), under which DeploymentSafety holds the
+# INGEST envelope r x (30 + L). Gate D reads it from the nodes and refuses
+# evidence run at any other rate. There is no default.
+EXPECTED_RATE=""
+EXPECTED_RATE_ARG=""
 SUSTAIN_TOLERANCE="0.995"
 T1_P99_MS="50"
 RETENTION_RATIO="2"
@@ -134,12 +148,14 @@ while [ $# -gt 0 ]; do
         --backend-identity) need_value "$@"; IDENTITY="$2"; shift 2 ;;
         --qualification-valid-metric) need_value "$@"; QUAL_METRIC="$2"; shift 2 ;;
         --benchmark-evidence) need_value "$@"; BENCH="$2"; shift 2 ;;
+        --expected-rate) need_value "$@"; EXPECTED_RATE_ARG="$2"; shift 2 ;;
         --repo) need_value "$@"; REPO="$2"; shift 2 ;;
         --floors-file) need_value "$@"; FLOORS_FILE="$2"; shift 2 ;;
         --fetch) FETCH=true; shift ;;
         --max-clock-offset-seconds) need_value "$@"; MAX_OFFSET="$2"; shift 2 ;;
         --filesystem-evidence) need_value "$@"; FS_EVIDENCE="$2"; shift 2 ;;
         --footprint-state) need_value "$@"; FOOTPRINT_STATE="$2"; shift 2 ;;
+        --population-state) need_value "$@"; POPULATION_STATE="$2"; shift 2 ;;
         --cohort-check-output) need_value "$@"; COHORT_CHECK="$2"; shift 2 ;;
         --cohort-pool-file) need_value "$@"; COHORT_POOL="$2"; shift 2 ;;
         --environment) need_value "$@"; ENVIRONMENT="$2"; shift 2 ;;
@@ -158,7 +174,12 @@ esac
 case "$ENVIRONMENT" in ""|production|staging|lab) ;; *) echo "error: --environment must be exactly production, staging or lab, not '$ENVIRONMENT'" >&2; usage ;; esac
 case "$QUAL_METRIC" in ""|0|1) ;; *) echo "error: --qualification-valid-metric must be 0 or 1" >&2; usage ;; esac
 case "$MAX_OFFSET" in ''|*[!0-9.]*) echo "error: --max-clock-offset-seconds must be a number" >&2; usage ;; esac
-for f in "$SESSIONS_FILE" "$NODES_FILE" "$IDENTITY" "$BENCH" "$FLOORS_FILE" "$FS_EVIDENCE" "$FOOTPRINT_STATE" "$COHORT_CHECK" "$COHORT_POOL"; do
+case "$EXPECTED_RATE_ARG" in
+    "") ;;
+    *[!0-9.]*|.|*.*.*) echo "error: --expected-rate must be a positive number of events/s" >&2; usage ;;
+    *) awk -v a="$EXPECTED_RATE_ARG" 'BEGIN { exit !((a + 0) > 0) }' || { echo "error: --expected-rate must be a positive number of events/s" >&2; usage; } ;;
+esac
+for f in "$SESSIONS_FILE" "$NODES_FILE" "$IDENTITY" "$BENCH" "$FLOORS_FILE" "$FS_EVIDENCE" "$FOOTPRINT_STATE" "$POPULATION_STATE" "$COHORT_CHECK" "$COHORT_POOL"; do
     [ -z "$f" ] || [ -f "$f" ] || { echo "error: input file not found: $f" >&2; usage; }
 done
 [ -d "$REPO" ] || { echo "error: --repo $REPO is not a directory" >&2; usage; }
@@ -450,8 +471,35 @@ EOF
 # blocks. A CHOSEN 2× scenario with no matching REFERENCE run cannot be judged
 # and blocks; an INCOMPLETE run blocks with its reasons.
 # ---------------------------------------------------------------------------
+# Sets EXPECTED_RATE to the R_gated every metrics endpoint declares, or leaves it
+# empty and records why. --expected-rate, when given, must equal it.
+declared_gated_rate() {
+    local role label path err value seen="" checked=0
+    EXPECTED_RATE=""
+    while IFS="$TAB" read -r role label path err; do
+        [ -n "$role" ] || continue
+        [ -z "$err" ] || { problem "$err"; continue; }
+        checked=$((checked + 1))
+        value="$(metric_value "$path" testinbox_storage_gated_expected_rate)"
+        if ! is_number "$value" || ! num_gt "$value" 0; then
+            problem "$label ($role): R_gated UNKNOWN (testinbox_storage_gated_expected_rate absent); every node must declare testinbox.storage.gated-expected-rate"
+        elif [ -z "$seen" ]; then
+            seen="$value"
+        elif ! num_eq "$value" "$seen"; then
+            problem "$label ($role): declares R_gated $value but another node declares $seen; the nodes must agree"
+        fi
+    done <<EOF
+$METRICS_INDEX
+EOF
+    [ "$checked" -gt 0 ] || problem "no metrics endpoint: R_gated (testinbox_storage_gated_expected_rate) is unobserved, so §11's expected rate is unknown"
+    if [ -n "$seen" ] && [ -n "$EXPECTED_RATE_ARG" ] && ! num_eq "$EXPECTED_RATE_ARG" "$seen"; then
+        problem "--expected-rate $EXPECTED_RATE_ARG differs from the R_gated $seen the nodes declare; it may only confirm the declaration"
+    fi
+    [ -n "$PROBLEMS" ] || EXPECTED_RATE="$seen"
+}
+
 gate_benchmark() {
-    local gate="D-benchmark" verdict recomputed bench_sha api_sha warn=""
+    local gate="D-benchmark" verdict recomputed bench_sha api_sha bench_rate warn=""
     reset_problems
     if [ "$MODE" = TENANT_LIMITS ]; then
         record "$gate" NOT_REQUIRED "NOT REQUIRED FOR TENANT_LIMITS: the global ceiling is not enabled in this mode (§14 phase 4)"
@@ -462,6 +510,20 @@ gate_benchmark() {
         return
     fi
     jq -e . "$BENCH" >/dev/null 2>&1 || { record "$gate" BLOCKED "benchmark evidence is not valid JSON"; return; }
+    # ADR-035 amendment D: R is R_gated, as every node declares it. Unknown or
+    # inconsistent blocks: the criteria cannot be recomputed against a rate no
+    # node is proven to run under.
+    declared_gated_rate
+    if [ -z "$EXPECTED_RATE" ]; then
+        record "$gate" BLOCKED "$PROBLEMS"
+        return
+    fi
+    bench_rate="$(jq -r '.harness.expectedRate // empty' "$BENCH")"
+    if ! is_number "$bench_rate"; then
+        problem "the evidence records no harness.expectedRate, so it cannot be bound to R_gated $EXPECTED_RATE events/s"
+    elif ! num_eq "$bench_rate" "$EXPECTED_RATE"; then
+        problem "the evidence ran at expected rate $bench_rate events/s but the nodes declare R_gated $EXPECTED_RATE (testinbox.storage.gated-expected-rate); evidence counts only at the declared rate (ADR-035 amendment D)"
+    fi
     verdict="$(jq -r '.verdict // "MISSING"' "$BENCH")"
     if [ "$verdict" = INCOMPLETE ]; then
         problem "benchmark verdict is INCOMPLETE: $(jq -r '(.incompleteReasons // []) | join("; ") | if . == "" then "no reason recorded" else . end' "$BENCH")"
@@ -533,7 +595,134 @@ gate_benchmark() {
     if [ -n "$PROBLEMS" ]; then
         record "$gate" BLOCKED "$PROBLEMS${warn:+; $warn}"
     else
-        record "$gate" PASS "recorded PASS and the §11 criteria recompute from the numbers${warn:+; $warn}"
+        record "$gate" PASS "recorded PASS at the declared R_gated $EXPECTED_RATE events/s and the §11 criteria recompute from the numbers${warn:+; $warn}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Gate W: ADR-035 amendment D, the window before a cohort plan exists. Gate D's
+# evidence covers r x (30 + L) events/s; once a plan exists the pool bounds the
+# population (gate G), but before it every workspace in the database receives
+# mail. So under ALL the database must hold at most 30 + L workspaces while no
+# plan exists. The bound is read from every node
+# (testinbox_storage_envelope_max_workspaces, which they must agree on), the
+# population from the live database or --population-state. The nodes enforce
+# the same rule at run time (a uniform 451 for every event, never per tenant).
+# ---------------------------------------------------------------------------
+gate_envelope() {
+    local gate="W-workspace-envelope" role label path err value seen="" checked=0 max row plan workspaces
+    reset_problems
+    if [ "$MODE" = TENANT_LIMITS ]; then
+        record "$gate" NOT_REQUIRED "NOT REQUIRED FOR TENANT_LIMITS: the gated envelope belongs to ALL (ADR-035 amendment D)"
+        return
+    fi
+    while IFS="$TAB" read -r role label path err; do
+        [ -n "$role" ] || continue
+        [ -z "$err" ] || { problem "$err"; continue; }
+        checked=$((checked + 1))
+        value="$(metric_value "$path" testinbox_storage_envelope_max_workspaces)"
+        if ! is_number "$value" || ! num_gt "$value" 0; then
+            problem "$label ($role): the envelope bound is UNKNOWN (testinbox_storage_envelope_max_workspaces absent); every node must declare testinbox.storage.declared-legacy-workspaces"
+        elif [ -z "$seen" ]; then
+            seen="$value"
+        elif ! num_eq "$value" "$seen"; then
+            problem "$label ($role): declares an envelope of $value workspaces but another node declares $seen; the nodes must agree"
+        fi
+    done <<EOF
+$METRICS_INDEX
+EOF
+    [ "$checked" -gt 0 ] || problem "no metrics endpoint: the envelope bound (testinbox_storage_envelope_max_workspaces) is unobserved"
+    if [ -n "$PROBLEMS" ]; then
+        record "$gate" BLOCKED "$PROBLEMS"
+        return
+    fi
+    max="$(awk -v a="$seen" 'BEGIN { printf "%d", a }')"
+    if [ -n "$POPULATION_STATE" ] && [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
+        record "$gate" NOT_RUN "--population-state and TESTINBOX_ACTIVATION_DB_URL both given; the live database is the only source when it is reachable"
+        return
+    elif [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
+        if ! row="$(PGAPPNAME="ops:storage-activation-check" psql "$TESTINBOX_ACTIVATION_DB_URL" -X -At -F "$TAB" -v ON_ERROR_STOP=1 \
+            -c "SELECT EXISTS(SELECT 1 FROM storage_cohort_plan), (SELECT count(*) FROM (SELECT id FROM workspace LIMIT $((max + 1))) w)" \
+            2>"$WORK/psql-envelope.err")"; then
+            record "$gate" BLOCKED "the workspace population query failed; the envelope could not be observed"
+            return
+        fi
+        plan="${row%%"$TAB"*}"; workspaces="${row#*"$TAB"}"
+    elif [ -n "$POPULATION_STATE" ]; then
+        jq -e '(.cohortPlanExists | type) == "boolean" and (.workspaces | type) == "number" and .workspaces >= 0' "$POPULATION_STATE" >/dev/null 2>&1 ||
+            { record "$gate" BLOCKED "--population-state must be {\"cohortPlanExists\": bool, \"workspaces\": n ≥ 0}"; return; }
+        plan="$(jq -r '.cohortPlanExists' "$POPULATION_STATE")"; workspaces="$(jq -r '.workspaces' "$POPULATION_STATE")"
+    else
+        record "$gate" NOT_RUN "no population: set TESTINBOX_ACTIVATION_DB_URL or pass --population-state"
+        return
+    fi
+    case "$plan" in
+        t|true)
+            record "$gate" PASS "a cohort plan exists; the pool bounds the population (every workspace shared, at most L legacy: gate G)" ;;
+        *)
+            if num_gt "$workspaces" "$max"; then
+                record "$gate" BLOCKED "no cohort plan exists and the database holds more than $max workspaces (counted $workspaces); before the plan every workspace receives mail, and gate D covers at most 30 + L under ALL (ADR-035 amendment D)"
+            else
+                record "$gate" PASS "no cohort plan yet; $workspaces workspace(s), within the envelope's $max (30 + L)"
+            fi ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# Gate L: T1's lock protocol (testinbox.storage.admission-locking). Gate D's
+# evidence and every accepted ADR-035 text are mode a (GLOBAL); the
+# share-partitioned T1 is a PROPOSED amendment authorized for the lab only. So
+# every evaluated node must PROVE GLOBAL, in any mode:
+#   - metrics: testinbox_storage_admission_locking{mode="global"} 1 on every
+#     endpoint; a series that is absent (an artifact older than the switch, or a
+#     scrape that lost it) is UNKNOWN and blocks, never read as mode a;
+#   - database (TESTINBOX_ACTIVATION_DB_URL, or a 5th column of --nodes-file):
+#     no live storage_node row (V25 admission_locking) other than GLOBAL.
+# No input at all is NOT RUN, which blocks like every unevaluated gate.
+# ---------------------------------------------------------------------------
+gate_locking() {
+    local gate="L-lock-protocol" role label path err global partitioned checked=0 rows="" node locking age clean
+    reset_problems
+    while IFS="$TAB" read -r role label path err; do
+        [ -n "$role" ] || continue
+        [ -z "$err" ] || { problem "$err"; continue; }
+        checked=$((checked + 1))
+        global="$(metric_value "$path" testinbox_storage_admission_locking 'mode="global"')"
+        partitioned="$(metric_value "$path" testinbox_storage_admission_locking 'mode="cohort_partitioned"')"
+        if is_number "$partitioned" && num_eq "$partitioned" 1; then
+            problem "$label ($role): runs the share-partitioned T1 (admission-locking COHORT_PARTITIONED), a PROPOSED ADR-035 amendment permitted only in the lab"
+        elif ! is_number "$global"; then
+            problem "$label ($role): T1 lock protocol UNKNOWN (testinbox_storage_admission_locking absent); a node must prove GLOBAL"
+        elif ! num_eq "$global" 1; then
+            problem "$label ($role): testinbox_storage_admission_locking{mode=global} is $global, not 1"
+        fi
+    done <<EOF
+$METRICS_INDEX
+EOF
+    if [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
+        if ! rows="$(PGAPPNAME="ops:storage-activation-check" psql "$TESTINBOX_ACTIVATION_DB_URL" -X -At -F "$TAB" -v ON_ERROR_STOP=1 \
+            -c "SELECT node_id, admission_locking FROM storage_node WHERE NOT clean_shutdown AND heartbeat_at > now() - make_interval(secs => $HEARTBEAT_MAX_AGE) AND admission_locking <> 'GLOBAL'" \
+            2>"$WORK/psql-locking.err")"; then
+            problem "storage_node admission_locking query failed; the T1 protocol of the nodes could not be observed"
+        fi
+        checked=$((checked + 1))
+    elif [ -n "$NODES_FILE" ] && grep -v '^#' "$NODES_FILE" | awk -F'\t' 'NF >= 5 { found = 1 } END { exit !found }'; then
+        rows="$(grep -v '^#' "$NODES_FILE" | awk -F'\t' -v max="$HEARTBEAT_MAX_AGE" \
+            'NF >= 5 && $4 !~ /^(t|true|T|TRUE)$/ && ($3 + 0) <= max && $5 != "GLOBAL" { print $1 "\t" $5 }')"
+        checked=$((checked + 1))
+    fi
+    while IFS="$TAB" read -r node locking; do
+        [ -n "$node" ] || continue
+        problem "storage_node '$node' records admission_locking $locking (live); a PROPOSED ADR-035 amendment permitted only in the lab"
+    done <<EOF
+$rows
+EOF
+    if [ "$checked" -eq 0 ]; then
+        record "$gate" NOT_RUN "no metrics endpoint, no TESTINBOX_ACTIVATION_DB_URL and no --nodes-file admission_locking column: the T1 lock protocol is unobserved"
+    elif [ -n "$PROBLEMS" ]; then
+        record "$gate" BLOCKED "$PROBLEMS"
+    else
+        record "$gate" PASS "$checked source(s): every node proves admission-locking GLOBAL (ADR-035 mode a)"
     fi
 }
 
@@ -780,6 +969,13 @@ SELECT json_build_object(
                  + (SELECT coalesce(sum(objects), 0) FROM storage_delta)
                  + (SELECT coalesce(sum(cardinality(object_keys)), 0) FROM storage_reservation),
       'debtBytes', (SELECT bytes FROM debt), 'debtObjects', (SELECT objects FROM debt)),
+  -- V24: the global base row T1 reads instead of the population, against Σ workspace bases,
+  -- in the same snapshot. NULL row figures mean the row is missing.
+  'globalBase', json_build_object(
+      'rowBytes', (SELECT base_bytes FROM storage_global_base WHERE id = 1),
+      'rowObjects', (SELECT base_objects FROM storage_global_base WHERE id = 1),
+      'sumBytes', (SELECT coalesce(sum(base_bytes), 0) FROM workspace_storage_account),
+      'sumObjects', (SELECT coalesce(sum(base_objects), 0) FROM workspace_storage_account)),
   'observation', (SELECT json_build_object('startedSeq', started_seq, 'writtenBy', written_by::text,
                      'observedAt', to_char(observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
                      'blockSizeBytes', block_size_bytes, 'capacityBytes', capacity_bytes, 'usedBytes', used_bytes,
@@ -811,8 +1007,10 @@ SELECT json_build_object(
       SELECT r.app || ': ' || p.priv || ' on ' || p.tbl
         FROM reach r
         JOIN (SELECT tbl, priv FROM (VALUES ('storage_sweep_run'), ('storage_delta'), ('workspace_storage_account'),
+                                            ('storage_global_base'),
                                             ('storage_containment_watermark'), ('storage_legacy_share'),
-                                            ('storage_cohort_plan'), ('workspace_deletion_charge')) AS t(tbl)
+                                            ('storage_cohort_plan'), ('storage_partition_bound'),
+                                            ('workspace_deletion_charge')) AS t(tbl)
                      CROSS JOIN (VALUES ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE')) AS v(priv)
               UNION ALL
               -- ADR-037: a participant marker is inserted once by provisioning; erasing or
@@ -825,7 +1023,7 @@ SELECT json_build_object(
                      CROSS JOIN (VALUES ('TRIGGER'), ('TRUNCATE')) AS v(priv)
               UNION ALL
               SELECT tbl, 'TRIGGER' FROM (VALUES ('storage_sweep_run'), ('storage_delta'), ('workspace_storage_account'),
-                                                 ('storage_containment_watermark')) AS t(tbl)
+                                                 ('storage_global_base'), ('storage_containment_watermark')) AS t(tbl)
               UNION ALL
               SELECT 'inbox_storage', 'DELETE') AS p(tbl, priv)
           ON has_table_privilege(r.goid, p.tbl, p.priv)
@@ -951,7 +1149,8 @@ gate_filesystem() {
               [["statvfs","frsize"], "positive"], [["statvfs","blocks"], "count"], [["statvfs","files"], "count"],
               [["preallocation","blockDevice"], "boolean"], [["preallocation","thinPool"], "boolean"], [["preallocation","fstrimExcluded"], "boolean"],
               [["isolation","dedicatedDevice"], "boolean"],
-              [["minio","bucketDirectoryBytes"], "count"], [["minio","metadataInodes"], "count"],
+              [["minio","bucketDirectoryBytes"], "count"], [["minio","metadataBytesScope"], "string"], [["minio","bucketPresent"], "boolean"],
+              [["minio","metadataInodes"], "count"], [["minio","metadataInodesScope"], "string"],
               [["database","allConnectionsToPrimary"], "boolean"],
               [["declared","capacityBytes"], "positive"], [["declared","blockSizeBytes"], "positive"], [["declared","inodes"], "positive"],
               [["declared","globalFootprintLimitBytes"], "positive"],
@@ -974,7 +1173,8 @@ gate_filesystem() {
               else [] end )
           + [ ( [["now"], "string"], [["inRecovery"], "boolean"], [["trust","distrustEpoch"], "count"], [["trust","distrustedSeq"], "count"], [["watermark"], "count"],
                 [["footprint","liveBytes"], "count"], [["footprint","liveObjects"], "count"], [["footprint","debtBytes"], "count"],
-                [["footprint","debtObjects"], "count"], [["sequenceCacheSize"], "positive"] ) | need($s; "state"; .[0]; .[1]) ]
+                [["footprint","debtObjects"], "count"], [["sequenceCacheSize"], "positive"],
+                [["globalBase","sumBytes"], "count"], [["globalBase","sumObjects"], "count"] ) | need($s; "state"; .[0]; .[1]) ]
           + ( if ($s.liveNodes | type) != "array" then ["state.liveNodes is not a list"] else [] end )
           + ( if ($s.observationInserters | type) != "array" then ["state.observationInserters is not a list"] else [] end )
           + ( if ($s.beginObservationExecutors | type) != "array" then ["state.beginObservationExecutors is not a list"] else [] end )
@@ -1124,6 +1324,14 @@ gate_filesystem() {
                 then "observation validity: the newest observation began at seq \($o.startedSeq), below the compaction watermark \($s.watermark) (T1 refuses it)" else empty end ),
             ( if ([$fp.liveBytes, $fp.liveObjects, $fp.debtBytes, $fp.debtObjects, $fp.liveBytes + $fp.debtBytes] | max) > 9223372036854775807
                 then "indeterminate: a footprint total does not fit a signed 64-bit figure (T1 refuses it)" else empty end ),
+            # V24: T1 reads Σ workspace bases from ONE row. Missing or different, the figure
+            # admission decides on is wrong (or, missing, the population scan is back):
+            # reconciliation repairs it and the verifier revokes trust until then.
+            ( if $s.globalBase.rowBytes == null or $s.globalBase.rowObjects == null
+                then "global base: the storage_global_base row is missing (T1 sums the population; reconciliation must recreate it)"
+              elif $s.globalBase.rowBytes != $s.globalBase.sumBytes or $s.globalBase.rowObjects != $s.globalBase.sumObjects
+                then "global base: storage_global_base \($s.globalBase.rowBytes) B / \($s.globalBase.rowObjects) objects ≠ Σ workspace bases \($s.globalBase.sumBytes) B / \($s.globalBase.sumObjects) objects (drift; reconciliation repairs it and revokes trust)"
+              else empty end ),
             ( if $s.trust == null or $s.trust.trustedEpoch != $s.trust.distrustEpoch
                 then "trusted counts: trusted_epoch \($s.trust.trustedEpoch // "null") ≠ distrust_epoch \($s.trust.distrustEpoch // "null")" else empty end ),
             ( if $o != null and $o.startedSeq <= $s.trust.distrustedSeq
@@ -1162,8 +1370,44 @@ gate_filesystem() {
             ( if $s.sequenceCacheSize != 1 then "ordering: storage_debt_order_seq has CACHE \($s.sequenceCacheSize), not 1" else empty end ),
             ( if $s.inRecovery or $e.database.allConnectionsToPrimary != true
                 then "ordering: a reader or writer is not on the primary" else empty end ),
+            # ONE counting definition for metadata BYTES (amendment note, scope minio-sys+unattributed): .minio.sys
+            # without .trash (the observation minio_sys_bytes) plus every allocation outside .minio.sys that no object
+            # is charged for (bucketDirectoryBytes): the bucket root, the blocks of each directory beyond its first while it
+            # holds an object (shared growth, post-drain residue), every block of a directory holding none, stray files
+            # and the mount root. Per-object directories are inside O_max (§3.1), never also metadata.
+            ( if $e.minio.metadataBytesScope != "minio-sys+unattributed"
+                then "MinIO metadata: the evidence counts bucketDirectoryBytes over scope \($e.minio.metadataBytesScope), not minio-sys+unattributed (per-object directory blocks are charged by O_max, ADR-035 §3.1; scripts/adr035-metadata-accounting.py)" else empty end ),
             ( if $o != null and ($o.minioSysBytes + $e.minio.bucketDirectoryBytes) > $d.metadataBudgetBytes
-                then "MinIO metadata: .minio.sys \($o.minioSysBytes) + bucket directories \($e.minio.bucketDirectoryBytes) > M \($d.metadataBudgetBytes)" else empty end ),
+                then "MinIO metadata: .minio.sys \($o.minioSysBytes) + unattributed \($e.minio.bucketDirectoryBytes) > M \($d.metadataBudgetBytes)" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataBytesScope // "") != "minio-sys+unattributed"
+                then "MinIO metadata: record \($e.qualificationRecordId) does not state its metadataBytesMeasured as scope minio-sys+unattributed (filesystem.metadataBytesScope)" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataBytesMeasured | type) != "number"
+                then "MinIO metadata: record \($e.qualificationRecordId) carries no E2/E7 metadata bytes measurement"
+              elif $rec != null and $rec.filesystem != null and $rec.filesystem.metadataBytesMeasured > $d.metadataBudgetBytes
+                then "MinIO metadata: M \($d.metadataBudgetBytes) is below the E2/E7 measurement \($rec.filesystem.metadataBytesMeasured)" else empty end ),
+            # ONE counting definition for metadata inodes (ADR-035 §3.5; amendment note, metadata inodes): the inodes
+            # under .minio.sys only. Bucket directories ({ws}/, {inbox}/, {message}/, {key}/, {uuid}/) are per-object
+            # inodes charged by i_max = 6, never also metadata; the starting-headroom row bounds them physically.
+            # Scope minio-sys-excl-trash (trash inodes left out) is accepted ONLY when PROVEN: the record carries a
+            # PASS E10 drill of the scope-independent inode-headroom latch (inodes_total - inodes_used >= ceil(avail / B),
+            # the starting-headroom row above, every cycle) on a named fs-monitor build, and the evidence names the SAME
+            # build. monitor.inodeHeadroomLatchArmed is required too, but as a declaration it proves nothing alone.
+            ( if (["minio-sys", "minio-sys-excl-trash"] | index($e.minio.metadataInodesScope)) == null
+                then "MinIO metadata: the evidence counts metadataInodes over scope \($e.minio.metadataInodesScope), not minio-sys or minio-sys-excl-trash (.minio.sys only; bucket directories are per-object inodes charged by i_max, ADR-035 §3.5)"
+              elif $e.minio.metadataInodesScope == "minio-sys-excl-trash" and (($rec.filesystem.inodeHeadroomLatchDrill.result // "") != "PASS"
+                     or ($rec.filesystem.inodeHeadroomLatchDrill.fsMonitorSha256 | type) != "string"
+                     or $rec.filesystem.inodeHeadroomLatchDrill.fsMonitorSha256 != ($e.monitor.fsMonitorSha256 // null))
+                then "MinIO metadata: the evidence counts metadataInodes without .trash (minio-sys-excl-trash) but the record carries no PASS E10 inode-headroom latch drill of the fs-monitor build the evidence names (monitor.fsMonitorSha256 \($e.monitor.fsMonitorSha256 // "null")): only minio-sys is acceptable"
+              elif $e.minio.metadataInodesScope == "minio-sys-excl-trash" and ($e.monitor.inodeHeadroomLatchArmed // false) != true
+                then "MinIO metadata: the evidence counts metadataInodes without .trash (minio-sys-excl-trash) but monitor.inodeHeadroomLatchArmed is not true" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataInodesScope // "") != $e.minio.metadataInodesScope
+                then "MinIO metadata: the evidence counts inodes over scope \($e.minio.metadataInodesScope) but record \($e.qualificationRecordId) measured scope \($rec.filesystem.metadataInodesScope // "null"): one scope on both sides" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and (["minio-sys", "minio-sys-excl-trash"] | index($rec.filesystem.metadataInodesScope // "")) == null
+                then "MinIO metadata: record \($e.qualificationRecordId) does not state its E7 metadataInodesMeasured as scope minio-sys or minio-sys-excl-trash (filesystem.metadataInodesScope)" else empty end ),
+            # bucketPresent false is a 0-object baseline, or the walk measured the wrong directory: production
+            # pre-provisions the bucket (create-bucket=false), so it never passes for a populated filesystem.
+            ( if $e.minio.bucketPresent != true
+                then "MinIO metadata: the evidence was collected with no bucket directory (bucketPresent false): production pre-provisions the bucket, so the walk measured the wrong directory or nothing" else empty end ),
             ( if $e.minio.metadataInodes > $d.metadataBudgetInodes
                 then "MinIO metadata: \($e.minio.metadataInodes) metadata inodes > the inode budget \($d.metadataBudgetInodes)" else empty end ),
             ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataInodesMeasured | type) != "number"
@@ -1269,6 +1513,8 @@ gate_inventory
 gate_physical
 gate_clock
 gate_benchmark
+gate_envelope
+gate_locking
 gate_floors_staging
 gate_floors_production
 gate_qualification

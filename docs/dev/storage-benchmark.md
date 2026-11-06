@@ -14,8 +14,193 @@ slot-queueing deadline misses, other errors, starved retention ticks).
 No latency threshold exists for concurrency 1. `scripts/check-storage-activation.sh`
 gate D recomputes the same split.
 
-No staging-host-class run has been recorded; only laptop smoke runs exist,
-and they are `adrEvidence: false` by construction.
+**Expected rate, amendment D (2026-11-06, owner decision).** For the closed
+beta, §11's expected rate R is r × (30 + L), the highest sustained T1 rate the
+configured `INGEST` limits admit; with r = 1 and L = 1 it is **31 events/s**,
+so the gate runs at 31 and 62. Every other parameter and criterion below is
+unchanged. R is no longer pinned in the harness: `--expected-rate` defaults to
+260 as before, and a run is ADR evidence when its `--rates` include R and 2R.
+Which R counts is decided by the deployment: `check-storage-activation.sh`
+gate D reads R_gated from every node (`testinbox_storage_gated_expected_rate`,
+set from `TESTINBOX_STORAGE_GATED_EXPECTED_RATE`) and refuses evidence whose
+`harness.expectedRate` differs ([beta-limits.md](beta-limits.md)). The
+closed-beta run is the documented command with
+`--expected-rate 31 --rates 31,62` added and nothing else changed.
+
+One staging-host-class run is recorded: **FAIL at `c10dd3d`** (2026-11-03,
+`docs/adr/0035-benchmark/staging/2026-11-03-c10dd3d-FAIL/`, #129). Its
+harness built T1 without `readsFootprint`, so it under-measured production
+`ALL`; the FAIL stands a fortiori (ADR-035 "Amendment note (2026-11-05, gate
+D)"). Gate D now counts only a production-faithful T1, below.
+
+## Production-faithful T1 (gate D correction, #120 verdict §2.3)
+
+`ProtocolAssembly` builds T1 exactly as `IngestionWiring` does in production
+`ALL`: `FootprintWiring.admission(store, policy, declarations)` over
+`JdbcStorageAdmission(jdbc, template, readsFootprint = FootprintWiring.readsFootprint(declarations))`,
+with `HarnessDeclarations` declaring a filesystem (B 4096, *O_max* 24 576, two
+processes, generous *G_F*/*C_fs*), `JdbcStorageAmbiguity` registering the node
+with the deployment's cohort mode and binding, and `WriteSlots` counting
+orphaned rows under `ALL`. So the one statement also reads the footprint
+(*L*, debt, trust, watermark, observation) and the cohort pool columns, as
+production's does.
+
+- **Seeded before every scenario** (`FootprintSeed`): a trusted ledger (marked
+  through the V10 verifier's own marker, as the owner of the benchmark
+  database: the synthetic ledger would not reconcile), a monitor observation
+  written by the harness's login role (declared as the monitor role), the
+  watermark row.
+- **No participant and no cohort plan** exist for CHOSEN and NO_LOCK, so the
+  cohort pool is read but not *required* at 10 000 workspaces (W1). Every
+  cohort column is still computed in the statement.
+- **Proven per scenario.** Before warm-up, every scenario runs one real T1 of
+  its store that reserves nothing (`ProtocolAssembly.probe`): the footprint
+  figures must have been read and production's `FootprintPolicy` must find
+  them evaluable, or the run stops. The probe (store class, enforcement,
+  `readsFootprint`, the statement's sha256) is recorded per scenario as
+  `t1Probe`. `ProtocolAssemblyTest` pins the CHOSEN store to production's class
+  and statement text, and NO_LOCK to the same statement.
+- Thresholds, `adrEvidence` rules and the §11 matrix are untouched.
+
+## Diagnostics (not criteria)
+
+Per population the harness writes `diagnostics-ws<N>.txt` beside the evidence:
+the settings the gate depends on; the commit cost (`synchronous_commit = on`,
+500 commits timed alone); for each T1 statement an `EXPLAIN (GENERIC_PLAN)`
+and an `EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` of it executed as a prepared
+statement under `plan_cache_mode = force_generic_plan`; `pg_stat_statements`
+(top statements); and the churn tables' live/dead tuples and reloptions. With
+`pg_stat_statements` preloaded (`shared_preload_libraries`, and
+`pg_stat_statements.track_planning = on` for plan time), every scenario also
+records `t1Statement`: the T1 statement's calls, plans, mean plan and execution
+time over the measured phase. Without it these are recorded as unavailable;
+nothing fails. `--local` preloads it.
+
+## The PARTITIONED variant (`--partitioned-variant`, reported apart)
+
+**Never gate D evidence.** It measures the share-partitioned T1 **as it would
+ship**: production's `JdbcStorageAdmission`, built exactly as `IngestionWiring`
+builds it, with the declared `testinbox.storage.admission-locking =
+COHORT_PARTITIONED` (no benchmark-only store exists any more). The mode is a
+PROPOSED ADR-035 amendment
+(`docs/adr/0035-amendment-note-partitioned-t1-PROPOSED.md`); its correctness
+argument is `docs/adr/0035-benchmark/partitioned-t1-correctness.md`.
+
+The production T1 partitions only a **closed, approved, non-overcommitted
+cohort**, and falls back to mode a in any other state, so the variant runs on
+its own population (`ClosedCohort`): after the gate's own scenarios of a
+population and their diagnostics, the gate population is wiped and replaced by
+30 ACTIVE participants (ADR-037's fixed shares) and one legacy share, nothing
+else; the expected nodes (`bench-api`, `bench-ingestion`) are registered with
+the pool's binding; and production's `ReserveCohortStorage` reserves and
+approves the pool, recording the V25 partition bound. Every T1 therefore reads
+and decides the whole cohort readiness, as a real partitioned deployment does.
+
+Differences from the gate's population, by necessity, all recorded:
+- 31 workspaces (an unshared workspace with usage is exactly what the guard
+  refuses to partition);
+- the delta floor is seeded as usage-neutral `+x / −x` pairs (synthetic
+  positive deltas are bytes no T1 admitted and would push a share past its
+  ceiling);
+- retention's expired inboxes belong to the legacy workspace, whose share
+  (64 GiB payload, 128 GiB footprint) holds them; participants receive only
+  admitted copies. The cohort's usage is reset between scenarios.
+
+During every variant scenario both expected nodes heartbeat at production's
+cadence (every 10 s, as `StorageNodeRuntime` does): each heartbeat writes
+`storage_node`, whose V21 fence takes `(35, 1)` exclusive and drains every
+in-flight partitioned T1 once. After the matrix, one more scenario,
+`partitioned-…-hot`, sends every event to ONE participant workspace at the
+matrix's heaviest point (its `(38, k)` is the contended lock); it is reported
+under `variant` and left out of the informational criteria. The reviewers'
+recommended criteria for a partitioned T1 (not adopted) are in the PROPOSED
+note.
+
+Then the timing-channel probes (security review S-C1 and its re-check), on the
+closed cohort, in mode a (`chosen-…-probe…`, the declared ingestion node,
+GLOBAL) and partitioned (`partitioned-…-probe…`) under identical load, at two
+points: the matrix's heaviest, and a PACED point (`…-probe-paced…`) where the
+flood sends maximum-size events (every flood inbox of the hot workspace) at 90 %
+of what the hot workspace's INGEST refill leaves beside the probe, so it keeps
+its budget (the attacker's best case). Flood and probes alike pass production's
+ADR-027 INGEST limits (per inbox, then per workspace) before T1; production write
+slots; heartbeats on. Because INGEST caps the hot flood at the hot workspace's
+refill (about 10 copies/s), each probe run also carries BACKGROUND traffic at the
+matrix point's offered rate (the heaviest rate, for both points), with the
+recipient mix, over every OTHER cohort workspace (not the hot, observer, cold or
+legacy one; the run fails if a role is the legacy workspace or would receive
+background traffic), through INGEST like production; `background` reports its
+admitted copies per second and its T1 p99, so the evidence shows T1, the write
+slots and mode a's global lock were busy (INGEST bounds it: 27 background
+workspaces × 10 copies/s ≈ 270 admitted copies/s sustained, after each one's
+300-copy burst; that is the most load the closed cohort can admit in production).
+Beside the flood, three classes at
+4 events/s each:
+`inside` (one of three reserved hot-workspace inboxes, rotated, co-addressed with
+an observer's inbox in another workspace), `cold` (three of the cold
+workspace's inboxes, rotated, so no single inbox meets its 2/s per-inbox refill),
+and `unknown` (resolution discards it; `reachesT1 = false`). Each run repeats `--probe-repetitions` times
+(default 4), every run starting from reset INGEST buckets and the order of the
+two modes alternating between repetitions (`…-repN`). Per class, `probes`
+reports `events` and `targetReachedEvents` (the target copy passed INGEST and
+reached the guarded protocol); latency and the 451 rate are computed only over
+the latter. Probe runs last `--probe-duration-seconds` (default 60), not the matrix
+duration, so they never stretch the gate's own scenarios.
+
+**Sample arithmetic.** 4 events/s × 60 s = 240 events per class per run; the
+default 4 repetitions send 960 per class, point and mode. `cold` targets always
+pass INGEST. `inside` targets compete with the flood for the hot workspace's
+10/s refill: assuming only 50 % pass, 480 target-reached events pool, 1.6 × the
+300 minimum (300 is still met at 31 %). Staging recommendation: the defaults,
+`--probe-repetitions 4 --probe-duration-seconds 60`.
+
+**Wall time (corrected after the staging run of #136 at 1023af5).** A probe run
+is open loop: it SCHEDULES `rate × probe duration` events for each of its two
+streams (the hot flood at the matrix rate at the heaviest point, and the
+background at the matrix rate at both points: 520/s × 60 s = 31 200 events each)
+and ends only when every scheduled event has completed. So a run lasts
+`max(scheduled / achieved rate)` over its streams, not 60 s. At r520 the
+streams cannot keep up: every flood copy is charged to the hot workspace's
+INGEST buckets, which are single `rate_bucket` rows taken `FOR UPDATE` in their
+own transactions, so the whole flood serializes on those rows, and the
+background's admitted copies queue on T1 and the write slots. The backlog drains
+at that saturated rate, which on the staging host made one probe run take about
+45 minutes, not the ≈ 85 s first estimated here (that estimate holds only where
+both streams keep up, as at the laptop smoke's 40/s). With 16 runs per
+population that is on the order of 12 hours at r520.
+
+A cheap way to bound it without changing what the probes measure (proposed,
+NOT the default): give the probe runs a deadline - stop DISPATCHING flood and
+background events at the probe duration (plus a short grace) and count the
+undispatched ones as not run, instead of draining a backlog that only repeats
+the same saturated steady state. The probe classes, the reset buckets, the
+repetitions and the 60 s of load the probes sit in are unchanged; `achievedRate`
+then describes the 60 s window. A second option, a probe-only offered rate equal
+to what INGEST can admit (the background's ceiling ≈ 270 copies/s ≈ 67 events/s
+at the mix's mean of about 4 copies; the hot flood's ≈ 10 copies/s), would also
+bound it, but it removes the INGEST-discarded events, which are real load on the
+`rate_bucket` rows, so it changes what is measured. Neither is adopted yet.
+
+`variant.probePooled` pools the repetitions per point and mode, with
+the sample size, `minimumSampleMet` (300) and `insideMinusColdP99Ms`; no verdict
+(the proposed criterion is in the PROPOSED note, not adopted). Limit: uploads are
+instant here, so a write slot is held for T1 and T2 only. Every PARTITIONED
+scenario also reports `partitionFallbackReasons`; with the hot scenario's
+`t1Transaction.maxMs` that is the evidence for the lock-timeout fallback
+cascade (a T1 can take about two lock timeouts plus its statement when it
+falls back). None of this is gate D; the mode a probe scenarios are reported
+under `variant` too.
+
+Every variant scenario's probe must show the partitioned path
+(`t1Probe.partitioned = true`, `t1Probe.locking = COHORT_PARTITIONED`) or the
+run stops; `partitionFallbacks` records the T1s whose guard did not hold during
+the scenario (warm-up included) and must be 0 for the scenario to describe the
+partitioned path alone. Its scenarios and an informational reading of the §11
+criteria (against the gate population's NO_LOCK references, so the retention
+ratio compares different populations) are written under `variant`;
+`scenarios`, `criteria` and `verdict`, which gate D recomputes, never contain
+it. Gate D itself (`check-storage-activation.sh`) also blocks while any node
+exports `testinbox_storage_admission_locking{mode="cohort_partitioned"} 1`.
 
 ## What it exercises
 
@@ -123,7 +308,8 @@ criterion's `detail` names the mode it compared against.
 
 ## Pass criterion (encoded in `GateEvaluator`, nowhere else)
 
-Read on the CHOSEN scenarios at 2× `--expected-rate` (default 260 → 520/s):
+Read on the CHOSEN scenarios at 2× `--expected-rate` (default 260 → 520/s;
+the closed beta's R_gated 31 → 62/s, amendment D):
 
 | Criterion (`criteria` key) | Threshold |
 |---|---|
@@ -160,12 +346,14 @@ rate), but a run whose inputs depart from §11 is recorded with
 `"adrEvidence": false` and the reasons in `adrEvidenceReasons`, and its
 verdict is forced to `INCOMPLETE` whatever it measured (criteria are still
 computed, for information). The departures (`AdrConformance`):
-`--expected-rate` ≠ 260; `--rates` not ⊇ {260, 520}; `--concurrency` not ⊇
+`--rates` not ⊇ {R, 2R} for R = `--expected-rate` (since amendment D, R itself
+is not a departure: gate D binds it to the deployment's R_gated); `--concurrency` not ⊇
 {1, 10, 25, 50, 100}; `--reservation-backlog` < 1 000; `--delta-backlog`
 < 500; no population ≥ 10 000 in `--workspaces`; `--local`; no
 `--host-class` (the default `unspecified`); `--no-reference`; a reference
-mode other than `no-lock`. `--expected-rate` and the rest can therefore
-never produce a `PASS`.
+mode other than `no-lock`. A departure can therefore never produce a
+`PASS`, and a `PASS` at an R other than the deployment's R_gated never passes
+gate D.
 
 ## Safety: the harness destroys its target
 
@@ -195,7 +383,8 @@ TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK=I_UNDERSTAND_THIS_DESTROYS_THE_TARGET_DATABA
   scripts/storage-benchmark.sh --local --workspaces 50 --concurrency 1,10 --rates 50 \
     --duration-seconds 10 --warmup-seconds 2
 
-# The gate, on the staging host class (about 15 minutes per population)
+# The gate, on the staging host class (about 85 minutes per population for the
+# §11 matrix; --partitioned-variant adds about 40 minutes per population)
 TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK=I_UNDERSTAND_THIS_DESTROYS_THE_TARGET_DATABASE \
 TESTINBOX_BENCHMARK_DB_PASSWORD=... \
   scripts/storage-benchmark.sh \
