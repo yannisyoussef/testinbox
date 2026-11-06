@@ -51,7 +51,7 @@ class WorkspaceEnvelopeWatchTest {
         }
     }
 
-    private class Gates : StorageProtocolMetrics {
+    private class RecordingMetrics : StorageProtocolMetrics {
         val gates = mutableMapOf<ActivationGate, Boolean>()
         var violation: Boolean? = null
 
@@ -70,7 +70,7 @@ class WorkspaceEnvelopeWatchTest {
     private fun watch(
         population: Population,
         guard: ActivationGuard,
-        metrics: Gates = Gates(),
+        metrics: RecordingMetrics = RecordingMetrics(),
         enforcement: StorageEnforcement = StorageEnforcement.ALL,
         max: Int = 31,
     ) = ActivationWatch(healthy, expected, enforcement, guard, metrics, envelope = ActivationEnvelope(max, population))
@@ -85,7 +85,7 @@ class WorkspaceEnvelopeWatchTest {
     @Test
     fun `before any plan, a population within 30 + L admits`() {
         val guard = ActivationGuard()
-        val metrics = Gates()
+        val metrics = RecordingMetrics()
         val outcome = watch(Population(WorkspacePopulation(false, 31)), guard, metrics).run()
         outcome.holds shouldBe true
         outcome.envelope.verdict shouldBe GateVerdict.PASS
@@ -96,7 +96,7 @@ class WorkspaceEnvelopeWatchTest {
     @Test
     fun `before any plan, one workspace over 30 + L stops admission for everyone on the node, then clears when restored`() {
         val guard = ActivationGuard()
-        val metrics = Gates()
+        val metrics = RecordingMetrics()
         val population = Population(WorkspacePopulation(false, 32))
         val outcome = watch(population, guard, metrics).run()
         outcome.holds shouldBe false
