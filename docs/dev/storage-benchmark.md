@@ -374,6 +374,131 @@ not implemented)`. The thresholds are tested verbatim, with mutation-style
 negatives (each criterion failing alone fails the verdict). Do not loosen
 them; a different threshold is a new ADR.
 
+### Terminal-completion allowance
+
+The "150 ms at 30 s" in the `sustained2x` row is the round figure. The
+allowance actually enforced is the one below, accepted by the owner on
+2026-11-06 ("Preserving the historical terminal-completion allowance (≈ 166.9
+ms at 62/s) is accepted ... No widening through rounding or longer windows.
+T1 p99 ≤ 50 ms is unchanged."). Regression evidence that the 30 s outcomes are
+unchanged: [`docs/adr/0035-benchmark/terminal-allowance-regression.md`](../adr/0035-benchmark/terminal-allowance-regression.md).
+
+**Where it is enforced.** `scripts/check-storage-activation.sh` gate D
+recomputes it from the scenarios (`SUSTAIN_WINDOW_SECONDS`, jq `refEvents`,
+`longWindow`, `over30`), and that recomputation is what decides activation.
+The harness records its own verdict with `GateEvaluator.sustainedRatio`
+(ported verbatim from `app/fasttrack-gate-d-a-prime`), the same 30 s reading.
+
+**Formula.** The open loop schedules N events with the last one due at
+(N − 1)/rate (`OpenLoopScheduler.schedule` pins it), and reports
+`achievedRate = completed / (last completion − first due)` and
+`terminalLagMs = last completion − last due`. With C events completed and a
+terminal lag L (seconds):
+
+1. achieved = C / ((N − 1)/rate + L), so achieved/offered = C / ((N − 1) + rate × L).
+2. Over the 30 s window, N = N₃₀ = ⌊30 × rate⌋; with every event in, C = N₃₀.
+3. N₃₀ / ((N₃₀ − 1) + rate × L) ≥ 0.995 ⇔ rate × L ≤ N₃₀/0.995 − (N₃₀ − 1) = 1 + N₃₀ × (1/0.995 − 1).
+4. **lag_max(rate) = (1 + N₃₀ × (1/0.995 − 1)) / rate seconds**, and since
+   1/0.995 − 1 = 1/199 exactly, lag_max = (199 + N₃₀) / (199 × rate).
+
+**Rate dependence.** When 30 × rate is an integer, lag_max = 30 s/199 + 1/rate
+= 150.754 ms plus one mean inter-arrival gap, so it falls towards 150.754 ms
+as the rate rises. When 30 × rate is not an integer the floor makes it
+slightly smaller, never larger (62.01/s: 166.856 ms, against 166.880 ms from
+30/199 + 1/rate).
+
+| Rate (events/s) | N₃₀ | lag_max (exact, s) | lag_max |
+|---:|---:|---|---:|
+| 31 | 930 | 1129/6169 | 183.0 ms (183.012) |
+| 62 | 1860 | 2059/12338 | **166.9 ms (166.883)** |
+| 124 | 3720 | 3919/24676 | 158.8 ms (158.818) |
+| 260 | 7800 | 7999/51740 | 154.6 ms (154.600) |
+| 520 | 15600 | 15799/103480 | 152.7 ms (152.677) |
+
+What it is held against: achieved/offered alone over a window of S seconds
+would allow (1 + ⌊rate × S⌋/199)/rate, at 62/s 171.9 ms at 31 s, 182.0 ms at
+33 s, 242.3 ms at 45 s, 317.6 ms at 60 s and 619.1 ms at 120 s. A scenario
+that scheduled more than N₃₀ events is therefore also read over 30 s,
+`(C/S) × N₃₀ / ((N₃₀ − 1) + rate × L)`, and passes only if that reading is ≥
+0.995 too; at N ≤ N₃₀ the reading is achieved/offered exactly as before.
+
+**Which window counts as longer.** In `GateEvaluator`, a scenario whose
+`scheduledEvents` exceeds N₃₀ (the harness always records the count it
+scheduled). The gate script, which also reads evidence the harness did not
+write, reads a CHOSEN 2R scenario over 30 s when `scheduledEvents` > N₃₀ **or**
+`durationSeconds` > 30, and the lower reading counts, so either input can only
+tighten. A CHOSEN 2R scenario without `scheduledEvents` blocks, as one
+without `completedEvents` or `terminalLagMs` does once it must be read over
+30 s. `durationSeconds` is the measured span from the first due time to the
+last completion, terminal lag included (`(N − 1)/rate + L`), so it also marks
+most 30 s runs (any terminal lag above one mean gap, 16.1 ms at 62/s). For
+those the 30 s reading is achieved/offered recomputed from
+`completedEvents` and `terminalLagMs` rather than read from `achievedRate`;
+the two agree to within 1.6 × 10⁻¹¹ of the ratio on every 30 s scenario of
+the committed evidence (the last due time is rounded to the nanosecond), and
+the lower counts. That is the only way the script's verdict can differ from
+`GateEvaluator`'s on harness evidence, and only towards blocking. A
+`durationSeconds` that understates a longer schedule changes nothing:
+`scheduledEvents` still marks it.
+
+**Partial completion.** Missing events shrink the allowance; they never move
+it the other way.
+
+- 30 s window, C < N₃₀: lag_max = (C/0.995 − (N₃₀ − 1))/rate. Each missing
+  event costs (1/0.995)/rate, 16.21 ms at 62/s: 150.67 ms with one missing,
+  134.46 ms with two, 4.78 ms with ten, and with eleven or more missing
+  (C < 0.995 × (N₃₀ − 1)) no terminal lag passes.
+- Longer window (S scheduled, f = C/S): the held reading allows
+  lag_max = (f × N₃₀/0.995 − (N₃₀ − 1))/rate, so the completion **fraction** is
+  carried into the 30 s reading: one event missing of 3720 at 60 s and 62/s
+  gives 158.78 ms (half an event at 30 s), ten give 85.83 ms, and below
+  f = 0.995 × (N₃₀ − 1)/N₃₀ (0.99447 at 62/s) nothing passes. The gate takes
+  the lower of the two readings; where f < 0.995 achieved/offered over the
+  long window is already the tighter one, so neither reading loosens.
+
+**Precision** (verified in the code on 2026-11-06, not assumed):
+
+- *Arithmetic type.* The script's jq (1.7.1) computes every number as an IEEE
+  754 binary64 double; the constants enter as `--argjson tol 0.995` and
+  `--argjson window 30`. `GateEvaluator` uses Kotlin `Double`;
+  `sustainedRatio` performs the same operations in the same order as the jq
+  `over30` (`completion × N₃₀ / ((N₃₀ − 1) + rate × lag / 1000)`), and a
+  transcription of it in Java returns the same 16 significant digits as jq
+  on the boundary and run-4 inputs. The evidence is written by Jackson as
+  shortest round-trip doubles and read back by jq without loss.
+- *No rounding or formatting before comparison.* The ratios are compared raw:
+  `.achievedRate / .offeredRate < $tol` and `over30 < $tol` in the script,
+  `worst >= SUSTAINED_TOLERANCE` in `GateEvaluator`. The only `floor` is
+  N₃₀ = ⌊rate × 30⌋, an event count, which is the same truncation the harness
+  applies when it schedules `(offeredRate × durationSeconds).toInt()` events,
+  so a 30 s schedule is never counted as a longer one. The only `round` selects the
+  2R scenarios and pairs references (`(.offeredRate | round) == ((2 × R) |
+  round)`); it is selection, not the comparison. The interpolations in the
+  messages (`\(over30)`, `"%.0f".format(terminalLagMs)`) are text produced
+  after the decision.
+- *≥ on the unrounded value.* The script blocks on `< 0.995`, i.e. passes
+  exactly when the unrounded double is ≥ 0.995; `GateEvaluator` tests `>=`.
+  0.995 is the binary64 0.99499999999999999555910790149937…, the same on
+  both sides; that moves lag_max by about 10⁻¹³ ms, far below the ±1 µs at
+  which the tests decide (the ratio moves 3.3 × 10⁻⁸ per µs of lag at 62/s).
+- *The window is a constant.* `SUSTAIN_WINDOW_SECONDS="30"` is pinned in the
+  script and `SUSTAINED_REFERENCE_WINDOW_SECONDS = 30` in `GateEvaluator`;
+  the allowance is always computed over that constant. A scenario's
+  `durationSeconds` is read only to decide WHETHER the 30 s reading applies
+  as well, never to size the allowance, and since the lower reading counts it
+  can only tighten; `harness.durationSeconds` is not read.
+
+**Tests.** `scripts/check-storage-activation.test.sh` decides the boundary at
+lag_max(62/s) ± 1 µs at 30 s (the same verdict as achieved/offered alone),
+holds it at 31, 33, 45, 60 and 120 s in both directions, covers one missing
+event at 60 s, and blocks a CHOSEN 2R scenario without `scheduledEvents`
+(with or without a 60 s `durationSeconds`), one whose 60 s `durationSeconds`
+contradicts a 30 s `scheduledEvents`, and a 30 s schedule measured over more
+than 30 s without its terminal lag; a 29 s `durationSeconds` does not shorten
+a 60 s schedule. `GateEvaluatorTest` decides the same 30 s boundary (and one
+missing event at 30 s, ±0.01 ms around 150.67 ms) for the harness, holds it
+at 33, 60 and 120 s, and carries a-prime's `sustainedRatio` tests verbatim.
+
 ### `adrEvidence`: the constants are not loosenable through flags
 
 Every flag exists for exploration (a smoke, a shorter matrix, a different

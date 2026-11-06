@@ -4,6 +4,7 @@ import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotBeEmpty
+import io.kotest.matchers.doubles.plusOrMinus
 import io.kotest.matchers.doubles.shouldBeLessThanOrEqual
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
@@ -461,6 +462,76 @@ class GateEvaluatorTest {
         val alone = windowed(62.0, 33, 175.0, concurrency = 100)
         (alone.achievedRate / alone.offeredRate >= GateEvaluator.SUSTAINED_TOLERANCE) shouldBe true
         late.criteria.getValue(GateEvaluator.SUSTAINED).threshold shouldContain "30 s window"
+    }
+
+    /**
+     * The closed beta's matrix (R = 31, 2R = 62) over a window of [seconds], every
+     * scenario completing every event with an 8 ms terminal lag, except the 2R c100
+     * CHOSEN scenario, whose terminal lag is [lagMs] and which completes all but
+     * [missing] events. The achieved rate is the one the open loop reports:
+     * completed / ((N - 1) / rate + lag).
+     */
+    private fun betaWindow(
+        seconds: Int,
+        lagMs: Double,
+        missing: Int = 0,
+    ): List<ScenarioResult> =
+        listOf(31.0, 62.0).flatMap { rate ->
+            GateEvaluator.REQUIRED_CONCURRENCY.flatMap { c ->
+                listOf(AdmissionMode.CHOSEN, AdmissionMode.REFERENCE).map { mode ->
+                    val events = Math.floor(rate * seconds).toInt()
+                    val target = mode == AdmissionMode.CHOSEN && c == 100 && rate == 62.0
+                    val lag = if (target) lagMs else 8.0
+                    val completed = events - if (target) missing else 0
+                    scenario(mode, c, rate, scheduled = events).copy(
+                        completedEvents = completed,
+                        terminalLagMs = lag,
+                        achievedRate = completed / ((events - 1) / rate + lag / 1_000),
+                    )
+                }
+            }
+        }
+
+    private fun sustainedAt(
+        seconds: Int,
+        lagMs: Double,
+        missing: Int = 0,
+    ): Boolean =
+        GateEvaluator(expectedRate = 31.0)
+            .evaluate(betaWindow(seconds, lagMs, missing))
+            .criteria
+            .getValue(GateEvaluator.SUSTAINED)
+            .pass
+
+    /** lag_max(62/s) = (1 + N30 x (1/0.995 - 1)) / 62, N30 = 1860 (storage-benchmark.md, "Terminal-completion allowance"). */
+    private val lagMax62Ms = (1 + 1_860 * (1 / GateEvaluator.SUSTAINED_TOLERANCE - 1)) / 62.0 * 1_000
+
+    @Test
+    fun `the 30 s terminal-completion allowance at 62 per second is 166_88 ms, decided at the microsecond`() {
+        lagMax62Ms shouldBe (166.8828 plusOrMinus 0.0001)
+        sustainedAt(30, lagMax62Ms - 0.001) shouldBe true
+        sustainedAt(30, lagMax62Ms + 0.001) shouldBe false
+        // One missing event costs (1/0.995) / rate = 16.21 ms at 62/s.
+        sustainedAt(30, lagMax62Ms - 16.20, missing = 1) shouldBe false
+        sustainedAt(30, lagMax62Ms - 16.22, missing = 1) shouldBe true
+    }
+
+    @Test
+    fun `a window longer than 30 s does not narrow the allowance - lag_max minus 1 us passes`() {
+        for (seconds in listOf(33, 60, 120)) {
+            withClue("$seconds s window, terminal lag lag_max - 1 us") { sustainedAt(seconds, lagMax62Ms - 0.001) shouldBe true }
+        }
+    }
+
+    @Test
+    fun `a window longer than 30 s does not widen the allowance - lag_max plus 1 us fails`() {
+        for (seconds in listOf(33, 60, 120)) {
+            val loose =
+                betaWindow(seconds, lagMax62Ms + 0.001)
+                    .single { it.mode == AdmissionMode.CHOSEN && it.concurrency == 100 && it.offeredRate == 62.0 }
+            (loose.achievedRate / loose.offeredRate >= GateEvaluator.SUSTAINED_TOLERANCE) shouldBe true
+            withClue("$seconds s window, terminal lag lag_max + 1 us") { sustainedAt(seconds, lagMax62Ms + 0.001) shouldBe false }
+        }
     }
 
     @Test
