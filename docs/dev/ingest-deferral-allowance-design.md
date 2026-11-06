@@ -1244,3 +1244,238 @@ here is accepted.
 
 Each one is listed with its mechanism, bound or metric, and the
 minimisation done.
+
+## 9. RL-9 correction (PROPOSED: not agreed, not implemented)
+
+**Authority.** Owner decision, #124 comment
+[6686873641](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6686873641),
+verbatim:
+
+> "RL-9: investigate a correction before requesting acceptance. Preserve the
+> distinction between traffic exceeding the published ingress allowance and
+> within-envelope mail bunched by our own outage, hold or recovery process.
+> Coordinate a focused proposal with Ops. Assess stable retry identity,
+> trusted timing, restart behavior and the qualified processing envelope. Do
+> not assume that changing timestamps, burst size or relay concurrency is
+> safe without that assessment. Do not implement another full variant before
+> correctness and security reviewers agree on the proposed invariants."
+
+This proposal changes no burst size, relay concurrency or edge timestamp.
+
+### 9.1 The problem
+
+`INGEST` is charged when a copy reaches ingestion. While the edge holds mail,
+the bucket is not charged, so it refills to b and the cap discards the rest
+of the refill. When the held mail is released, it arrives together and finds
+at most b tokens.
+
+**What is lost.** A workspace sending within its envelope at rate r through
+a hold of H seconds loses about r·H − b copies, all behind a `250`. For
+example, a 10 min outage loses about 540 of 600 copies.
+
+**What holds mail at the edge:**
+
+- ingestion is unreachable, or the destination is marked dead;
+- pre-resolution `451`s (breaker, latch, activation, footprint), which
+  charge nothing;
+- an operator hold, then the `edge-stop.sh` flush;
+- catch-up work occupying the 20 relay sessions;
+- the edge's own queueing.
+
+**Not affected:** mail deferred *after* charging. It already holds an
+allowance.
+
+**Genuinely over-allowance traffic** is traffic whose arrival stream *at the
+edge* exceeds (b, r). The natural criterion is therefore: judge conformance
+at the time the mail reached the edge, not the time it reached ingestion.
+
+### 9.2 A trusted edge-arrival time, already on the reviewed transport
+
+- **The arrival time is in the queue ID.** A long queue ID begins with the
+  queue file's creation time: 6 characters in base 52 for the seconds, then
+  4 for the microseconds, using the vowel-free alphabet. I decoded four IDs
+  from the 2026-11-06 rehearsal runs, including one taken through
+  `postsuper -r`. Each equals `postqueue -j` `arrival_time` exactly.
+- **It is already carried as the transport identity.** `XFORWARD IDENT` is
+  accepted only from single-host edge peers (I-4, I-20), and the edge refuses
+  a sender's `XFORWARD`. So t_a costs no new transport and no content
+  parsing.
+- **Restart behaviour.** IDENT was stable across `451` retries and
+  `postfix stop/start` (§2.1), so t_a is too.
+- **Caveats.**
+  - The encoding is Postfix's internal format (`mail_queue.h`), not a
+    documented interface. It needs the version pin (3.8.6) and a decode test.
+  - The time comes from the edge host's clock, so a skew bound is needed.
+- **Rejected sources.**
+  - A header the edge adds: content-borne, second resolution, local time
+    format.
+  - A time attribute in XFORWARD: none exists.
+  - DSN `ENVID`: set by the sender.
+
+### 9.3 Candidates
+
+| | Distinguishes over-allowance from bunched mail | Forgeable or gameable | Effect on T1 | Interaction with the I9 exception | Verdict |
+|---|---|---|---|---|---|
+| **(a)** charge at virtual time t_a (rate limiter run against t_a) | exactly | not forgeable | bunched admits arrive at once | none new | **no.** Out-of-order release makes it refuse conformant mail unless its tolerance grows with the hold. Exact handling needs a per-arrival ledger |
+| **(b)** credit inside Ops-declared outage or hold windows | only inside declared windows. Misses coupling and undeclared outages | over-allowance mail sent inside a window gets credit unless bounded, which reduces to (d) | as (d) | as (d) | **no.** Depends on manual declarations |
+| **(c)** charge at the first presentation, even on a pre-resolution `451` | only for pre-resolution `451`s | no | none | changes ADR-025's pre-check ordering | **no.** Partial, and needs the DB during outages |
+| **(d)** overflow credit since edge arrival | yes, see below | not forgeable. Credit exists only as allowance the workspace did not use | credited events are scheduled as catch-up | lateness-based class, no new channel | **recommended** |
+
+### 9.4 How (d) works
+
+**Credit is the refill the cap threw away.**
+
+- For each `INGEST` bucket (per inbox and per workspace), refill that the cap
+  discards is recorded as **overflow** in 60 s slots, in the same transaction
+  as the refill. Slots older than L + δ are dropped.
+- **Lateness** is λ = DB `now()` − t_a.
+- A copy with λ > ε_late that finds no whole token may claim one unclaimed
+  overflow unit, from a slot later than slot(t_a), narrow-first.
+- Each unit is claimed once. A copy that cannot claim one is discarded, as
+  today.
+
+**It distinguishes the two kinds of traffic:**
+
+- Over any interval, spends + claims ≤ tokens(start) + r·T + unclaimed
+  overflow from the last L + δ. The credit is only allowance the workspace
+  failed to use.
+- A sender conforming at the edge and held for H needs at most
+  tokens(start) + r·H. That equals tokens(now) + overflow over H, so every
+  copy is admitted.
+- A sender exceeding its allowance over the hold is still discarded beyond
+  b + r·H.
+
+**What it does not check.** Arrival-time shape *within* the hold is not
+policed. A sender cannot gain more than its allowance for the whole interval,
+but it can front-load inside it. Reviewer question RQ-1.
+
+**Scheduling (the qualified envelope).**
+
+- Every event with λ > ε_late is scheduled as **catch-up** in the carved
+  bucket, whether its copies used credit or tokens. It keeps its allowances
+  when deferred and drains under I-23.
+- Fresh events (λ ≤ ε_late) never use credit. So I-21's σ′ argument, I-18's
+  bound and G-D/G-C are unchanged.
+- Bunched mail is *delayed* within the R-REC envelope, not discarded.
+
+**I9.**
+
+- The class depends only on the event's lateness, which is the edge's
+  handling and the same for every copy. It never depends on a workspace's
+  credit, so the scheduling refusal stays global.
+- Admission and discard stay invisible over SMTP (`250`). Credit is part of
+  the `INGEST` budget the exception's bound already names.
+- The security reviewer must confirm this.
+
+### 9.5 Proposed invariants
+
+1. **INV-R9-1 (trusted time).**
+   - t_a exists only for a single-host allow-listed edge peer whose IDENT
+     has the long-ID shape. It is decoded from the time field.
+   - t_a is clamped to [now − (L + δ), now + ε_skew]. Outside that range,
+     there is no credit.
+   - No header or content is ever used.
+2. **INV-R9-2 (credit source).**
+   - Credit is only refill that the cap discarded, recorded in the
+     refilling transaction.
+   - It never exceeds the recorded overflow, and it expires at L + δ.
+3. **INV-R9-3 (eligibility).** Credit is claimable only:
+   - when λ > ε_late;
+   - from slots after slot(t_a);
+   - when the bucket has no whole token;
+   - narrow-first;
+   - once per unit, under the bucket's row lock (lock order I-13).
+4. **INV-R9-4 (envelope).** For every bucket and interval, spends + claims ≤
+   tokens(start) + r·T + unclaimed overflow within L + δ. Tokens still rise
+   only by refill (I-1).
+5. **INV-R9-5 (class).**
+   - λ > ε_late means a catch-up event.
+   - Fresh events never use credit, and I-21 is unchanged.
+6. **INV-R9-6 (skew).**
+   - The edge clock offset comes from an Ops-written observation the
+     application only reads.
+   - While the offset is missing, stale or above ε_skew, both credit and the
+     late class are off, and charging is as today.
+7. **INV-R9-7 (restart).**
+   - Overflow and claims are durable in PostgreSQL.
+   - t_a survives edge restarts and retries.
+   - A restored database has no credit, the same as I-16.
+8. **INV-R9-8 (labels).** Closed enums only. Metrics: overflow recorded,
+   credit claimed or refused, and a lateness histogram.
+
+**Proposed values, for review:**
+
+- ε_late = 30 s, above normal edge latency plus skew, to be confirmed by Ops
+  data.
+- ε_skew = 1 s.
+- slot = 60 s.
+
+### 9.6 Proposed acceptance tests
+
+1. **AT-R9-1 decode (rehearsal and live).** IDENT time = `postqueue -j`
+   `arrival_time` for fresh mail, deferred mail, after `stop/start`, after
+   `postsuper -r`, and after an `edge-stop.sh` hold and flush.
+2. **AT-R9-2 outage.** A workspace sends at r for 10 min while ingestion is
+   down.
+   - On recovery all 600 copies are stored, none discarded.
+   - At 2r, exactly b + r·H are admitted.
+3. **AT-R9-3 other hold causes.** The same outcome for a pre-resolution `451`
+   storm, an operator hold, and catch-up coupling.
+4. **AT-R9-4 over-allowance.** Over-allowance senders are discarded exactly
+   as today, whether their mail arrives on time or late.
+5. **AT-R9-5 no credit.** No credit for:
+   - a non-peer IDENT;
+   - a short ID or `[UNAVAILABLE]`;
+   - a future t_a, or one older than L + δ;
+   - an on-time copy.
+6. **AT-R9-6 concurrency.** N concurrent late copies against k credit units
+   produce exactly k claims, and there is no `40P01`.
+7. **AT-R9-7 envelope.** A property test of INV-R9-4. AT-21 is rerun with
+   late arrivals injected: fresh is never refused and I-18 holds.
+8. **AT-R9-8 skew.** A missing or excessive offset disables credit.
+9. **AT-R9-9 I9.** An event's class is identical whether W pays with tokens
+   or with credit.
+
+### 9.7 Questions for Ops
+
+The edge is internet-facing.
+
+1. **Q-R9-1.** On edge-fr-01, does the long-ID time field equal
+   `postqueue -j` `arrival_time`? Can `enable_long_queue_ids=yes` be set
+   while no tenant mail is deferred (RL-7)?
+2. **Q-R9-2.** Which operations change a message's queue ID or arrival time?
+   Candidates: `postsuper -r` (the rehearsal preserved both), `-h`/`-H`,
+   `edge-stop.sh`, reconcile reload and restart, `postsuper -s`, and spool
+   restore or migration.
+3. **Q-R9-3.** What is the edge clock's NTP source and maximum observed
+   offset? Can Ops write a periodic offset observation that ingestion reads,
+   as the filesystem monitor does? What alerts exist?
+4. **Q-R9-4.** What is the p99 latency from edge arrival to relay under
+   normal operation? This sets ε_late.
+5. **Q-R9-5.** Does anything other than `smtpd` inject into the tenant relay
+   path: pickup, a local re-injection of `postmaster@`, or a re-queue after
+   expiry? Any of these would mint new IDs and times.
+6. **Q-R9-6.** Confirmation that nothing here asks for a change to relay
+   concurrency, backoff, burst size or timestamps. None is assumed.
+
+### 9.8 What it changes in the agreed design
+
+- **§2.1:** IDENT also yields t_a.
+- **The `INGEST` limiter** gains an overflow ledger and a credit claim, both
+  under the existing row lock. I-1 holds. I-2 gains a term on the refill
+  side: credits claimed out of discarded refill.
+- **§2.3:** catch-up becomes "allowance taken **or** λ > ε_late".
+- **RL-9 shrinks to:**
+  - bunching within ε_late, at most r·ε_late per workspace per episode;
+  - identity-less traffic;
+  - periods with credit disabled by skew.
+- **Unchanged:** T1, G-D/G-C, R-REC and the carved bucket.
+- **New tests:** AT-R9-1 is a rehearsal and live proof. AT-R9-2 to AT-R9-9
+  run on Testcontainers.
+
+**Reviewer questions:**
+
+- **RQ-1:** Is envelope-over-interval semantics for late mail acceptable,
+  rather than exact arrival-time shape?
+- **RQ-2:** Is relying on Postfix's internal queue-ID time encoding
+  acceptable, under the version pin and AT-R9-1?
