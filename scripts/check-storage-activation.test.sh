@@ -423,6 +423,53 @@ qrec() { jq "$2" "$FIX/qualification/laptop-arm64-reference.json" > "$TMP/rec-$1
 qrec no-e7 'del(.filesystem.metadataInodesMeasured)'
 with --qualification-dir "$TMP/qual-no-e7" > "$TMP/f-no-e7"
 only "F: a record without the E7 metadata inode measurement blocks" F-filesystem "carries no E7 metadata inode measurement" "$TMP/f-no-e7"
+# One counting definition (amendment note, metadata inodes): .minio.sys only, on both sides.
+fe meta-scope-all '.minio.metadataInodesScope = "minio-sys+bucket-directories"' "evidence counting bucket directories as metadata inodes blocks" "MinIO metadata: the evidence counts metadataInodes over scope minio-sys\\+bucket-directories, not minio-sys"
+fe no-meta-scope 'del(.minio.metadataInodesScope)' "evidence that does not state its metadata inode scope → NOT RUN" "evidence.minio.metadataInodesScope missing"
+qrec no-scope 'del(.filesystem.metadataInodesScope)'
+with --qualification-dir "$TMP/qual-no-scope" > "$TMP/f-no-scope"
+only "F: a record whose E7 figure does not state scope minio-sys blocks" F-filesystem "record fixture-laptop-arm64-reference does not state its E7 metadataInodesMeasured as scope minio-sys" "$TMP/f-no-scope"
+# One counting definition for metadata BYTES (amendment note): .minio.sys without .trash + unattributed allocations.
+fe bytes-scope-all '.minio.metadataBytesScope = "minio-sys+bucket-directories"' "evidence counting every bucket directory block as metadata bytes blocks" "MinIO metadata: the evidence counts bucketDirectoryBytes over scope minio-sys\\+bucket-directories, not minio-sys\\+unattributed"
+fe no-bytes-scope 'del(.minio.metadataBytesScope)' "evidence that does not state its metadata bytes scope → NOT RUN" "evidence.minio.metadataBytesScope missing"
+qrec no-bytes-scope 'del(.filesystem.metadataBytesScope)'
+with --qualification-dir "$TMP/qual-no-bytes-scope" > "$TMP/f-no-bytes-scope"
+only "F: a record whose metadata bytes figure does not state scope minio-sys+unattributed blocks" F-filesystem "record fixture-laptop-arm64-reference does not state its metadataBytesMeasured as scope minio-sys\\+unattributed" "$TMP/f-no-bytes-scope"
+qrec no-bytes 'del(.filesystem.metadataBytesMeasured)'
+with --qualification-dir "$TMP/qual-no-bytes" > "$TMP/f-no-bytes"
+only "F: a record without the E2/E7 metadata bytes measurement blocks" F-filesystem "carries no E2/E7 metadata bytes measurement" "$TMP/f-no-bytes"
+# The inode scope without .trash only with the armed inode-headroom latch; a missing bucket never passes.
+# The inode scope without .trash only when PROVEN (record: PASS E10 drill of the evidence's fs-monitor build); one
+# scope on both sides; a missing bucket never passes.
+FSM="$(printf 'f%.0s' $(seq 1 64))"
+qrec excl '.filesystem.metadataInodesScope = "minio-sys-excl-trash" | .filesystem.inodeHeadroomLatchDrill = {"result": "PASS", "fsMonitorSha256": "'"$FSM"'"}'
+xev() {  # xev <name> <jq over the proven evidence> <case> <regex|PASS>
+    jq '.minio.metadataInodesScope = "minio-sys-excl-trash" | .monitor = {"inodeHeadroomLatchArmed": true, "fsMonitorSha256": "'"$FSM"'"} | '"$2" "$FSE" > "$TMP/ev-x-$1.json"
+    with --filesystem-evidence "$TMP/ev-x-$1.json" | sed "s#$FIX/qualification\$#$TMP/qual-$5#" > "$TMP/f-x-$1"
+    if [ "$4" = PASS ]; then case_ "F: $3" 0 '^F-filesystem[[:space:]]+PASS' "$TMP/f-x-$1"; else only "F: $3" F-filesystem "$4" "$TMP/f-x-$1"; fi
+}
+xev proven '.' "minio-sys-excl-trash with a PASS E10 drill of the evidence's fs-monitor build passes" PASS excl
+xev sha-mismatch '.monitor.fsMonitorSha256 = "'"$(printf 'e%.0s' $(seq 1 64))"'"' "minio-sys-excl-trash with another fs-monitor build than E10 drilled blocks" "no PASS E10 inode-headroom latch drill of the fs-monitor build the evidence names" excl
+xev no-sha 'del(.monitor.fsMonitorSha256)' "minio-sys-excl-trash with no fs-monitor build named blocks" "monitor.fsMonitorSha256 null\): only minio-sys is acceptable" excl
+xev unarmed 'del(.monitor.inodeHeadroomLatchArmed)' "minio-sys-excl-trash proven but not stated armed blocks" "monitor.inodeHeadroomLatchArmed is not true" excl
+qrec excl-nodrill '.filesystem.metadataInodesScope = "minio-sys-excl-trash"'
+xev no-drill '.' "minio-sys-excl-trash with a record carrying no E10 drill blocks (a declared flag is not proof)" "record carries no PASS E10 inode-headroom latch drill" excl-nodrill
+qrec excl-fail '.filesystem.metadataInodesScope = "minio-sys-excl-trash" | .filesystem.inodeHeadroomLatchDrill = {"result": "FAIL", "fsMonitorSha256": "'"$FSM"'"}'
+xev drill-fail '.' "minio-sys-excl-trash with a failed E10 drill blocks" "record carries no PASS E10 inode-headroom latch drill" excl-fail
+fe scope-vs-record '.minio.metadataInodesScope = "minio-sys-excl-trash" | .monitor = {"inodeHeadroomLatchArmed": true, "fsMonitorSha256": "'"$FSM"'"}' "an evidence inode scope that differs from the record's blocks" "but record fixture-laptop-arm64-reference measured scope minio-sys: one scope on both sides"
+with --qualification-dir "$TMP/qual-excl" > "$TMP/f-rec-excl-ev-sys"
+only "F: a record measured without .trash against evidence counting .trash blocks (one scope on both sides)" F-filesystem "counts inodes over scope minio-sys but record fixture-laptop-arm64-reference measured scope minio-sys-excl-trash" "$TMP/f-rec-excl-ev-sys"
+fe no-bucket '.minio.bucketPresent = false' "evidence collected with no bucket directory blocks" "MinIO metadata: the evidence was collected with no bucket directory \\(bucketPresent false\\)"
+fe no-bucket-field 'del(.minio.bucketPresent)' "evidence that does not state bucketPresent → NOT RUN" "evidence.minio.bucketPresent missing"
+# Production M = 1 GiB (owner decision 2026-11-05): a production record whose measured metadata exceeds the staging
+# 256 MiB passes against M = 1 GiB, and is blocked against 256 MiB. Gate F compares; it pins nothing.
+qrec m768 '.filesystem.metadataBytesMeasured = 805306368'
+jq '.declared.metadataBudgetBytes = 1073741824' "$FSE" > "$TMP/ev-m1g.json"
+with --qualification-dir "$TMP/qual-m768" | sed "s#$FSE#$TMP/ev-m1g.json#" > "$TMP/f-m768-1g"
+case_ "F: a record measuring 768 MiB of metadata passes against the production M of 1 GiB" 0 '^F-filesystem[[:space:]]+PASS' "$TMP/f-m768-1g"
+with --qualification-dir "$TMP/qual-m768" > "$TMP/f-m768-256"
+only "F: the same record against M = 256 MiB blocks" F-filesystem "MinIO metadata: M 268435456 is below the E2/E7 measurement 805306368" "$TMP/f-m768-256"
+fe bytes-budget '.declared.metadataBudgetBytes = 120000000' "an M below the record's measured metadata bytes blocks" "MinIO metadata: M 120000000 is below the E2/E7 measurement 125829120"
 qrec no-e3 'del(.filesystem.experiments.E3)'
 with --qualification-dir "$TMP/qual-no-e3" > "$TMP/f-no-e3"
 only "F: ALL needs every experiment E1–E11 recorded PASS" F-filesystem "experiments: record fixture-laptop-arm64-reference does not record PASS for E3" "$TMP/f-no-e3"
@@ -462,7 +509,7 @@ fs privileges '.roleViolations = ["testinbox_app: owns storage_deletion_debt"]' 
 fs cache '.sequenceCacheSize = 20' "a cached ordering sequence blocks" "ordering: storage_debt_order_seq has CACHE 20, not 1"
 fs replica '.inRecovery = true' "a gate connected to a replica blocks" "ordering: a reader or writer is not on the primary"
 fe primary '.database.allConnectionsToPrimary = false' "a reader or writer off the primary blocks" "ordering: a reader or writer is not on the primary"
-fe metadata '.minio.bucketDirectoryBytes = 200000000' "MinIO metadata above M blocks" "MinIO metadata: .minio.sys 104857600 \+ bucket directories 200000000 > M 268435456"
+fe metadata '.minio.bucketDirectoryBytes = 200000000' "MinIO metadata above M blocks" "MinIO metadata: .minio.sys 104857600 \+ unattributed 200000000 > M 268435456"
 fe qual-invalid '.qualificationValid = 0' "an Ops qualification-check reporting invalid blocks" "qualification identity: Ops qualification-check reports valid=0"
 fs obs-age '.observation.observedAt = "2026-10-06T23:40:00Z"' "an observation older than A_obs blocks" "observation liveness: the newest observation is 1500 s old, more than A_obs 900 s"
 fs obs-future '.observation.observedAt = "2026-10-07T00:10:00Z"' "an observation from the future blocks" "observation liveness: the newest observation is in the future"

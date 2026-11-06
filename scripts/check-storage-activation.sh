@@ -951,7 +951,8 @@ gate_filesystem() {
               [["statvfs","frsize"], "positive"], [["statvfs","blocks"], "count"], [["statvfs","files"], "count"],
               [["preallocation","blockDevice"], "boolean"], [["preallocation","thinPool"], "boolean"], [["preallocation","fstrimExcluded"], "boolean"],
               [["isolation","dedicatedDevice"], "boolean"],
-              [["minio","bucketDirectoryBytes"], "count"], [["minio","metadataInodes"], "count"],
+              [["minio","bucketDirectoryBytes"], "count"], [["minio","metadataBytesScope"], "string"], [["minio","bucketPresent"], "boolean"],
+              [["minio","metadataInodes"], "count"], [["minio","metadataInodesScope"], "string"],
               [["database","allConnectionsToPrimary"], "boolean"],
               [["declared","capacityBytes"], "positive"], [["declared","blockSizeBytes"], "positive"], [["declared","inodes"], "positive"],
               [["declared","globalFootprintLimitBytes"], "positive"],
@@ -1162,8 +1163,44 @@ gate_filesystem() {
             ( if $s.sequenceCacheSize != 1 then "ordering: storage_debt_order_seq has CACHE \($s.sequenceCacheSize), not 1" else empty end ),
             ( if $s.inRecovery or $e.database.allConnectionsToPrimary != true
                 then "ordering: a reader or writer is not on the primary" else empty end ),
+            # ONE counting definition for metadata BYTES (amendment note, scope minio-sys+unattributed): .minio.sys
+            # without .trash (the observation minio_sys_bytes) plus every allocation outside .minio.sys that no object
+            # is charged for (bucketDirectoryBytes): the bucket root, the blocks of each directory beyond its first while it
+            # holds an object (shared growth, post-drain residue), every block of a directory holding none, stray files
+            # and the mount root. Per-object directories are inside O_max (§3.1), never also metadata.
+            ( if $e.minio.metadataBytesScope != "minio-sys+unattributed"
+                then "MinIO metadata: the evidence counts bucketDirectoryBytes over scope \($e.minio.metadataBytesScope), not minio-sys+unattributed (per-object directory blocks are charged by O_max, ADR-035 §3.1; scripts/adr035-metadata-accounting.py)" else empty end ),
             ( if $o != null and ($o.minioSysBytes + $e.minio.bucketDirectoryBytes) > $d.metadataBudgetBytes
-                then "MinIO metadata: .minio.sys \($o.minioSysBytes) + bucket directories \($e.minio.bucketDirectoryBytes) > M \($d.metadataBudgetBytes)" else empty end ),
+                then "MinIO metadata: .minio.sys \($o.minioSysBytes) + unattributed \($e.minio.bucketDirectoryBytes) > M \($d.metadataBudgetBytes)" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataBytesScope // "") != "minio-sys+unattributed"
+                then "MinIO metadata: record \($e.qualificationRecordId) does not state its metadataBytesMeasured as scope minio-sys+unattributed (filesystem.metadataBytesScope)" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataBytesMeasured | type) != "number"
+                then "MinIO metadata: record \($e.qualificationRecordId) carries no E2/E7 metadata bytes measurement"
+              elif $rec != null and $rec.filesystem != null and $rec.filesystem.metadataBytesMeasured > $d.metadataBudgetBytes
+                then "MinIO metadata: M \($d.metadataBudgetBytes) is below the E2/E7 measurement \($rec.filesystem.metadataBytesMeasured)" else empty end ),
+            # ONE counting definition for metadata inodes (ADR-035 §3.5; amendment note, metadata inodes): the inodes
+            # under .minio.sys only. Bucket directories ({ws}/, {inbox}/, {message}/, {key}/, {uuid}/) are per-object
+            # inodes charged by i_max = 6, never also metadata; the starting-headroom row bounds them physically.
+            # Scope minio-sys-excl-trash (trash inodes left out) is accepted ONLY when PROVEN: the record carries a
+            # PASS E10 drill of the scope-independent inode-headroom latch (inodes_total - inodes_used >= ceil(avail / B),
+            # the starting-headroom row above, every cycle) on a named fs-monitor build, and the evidence names the SAME
+            # build. monitor.inodeHeadroomLatchArmed is required too, but as a declaration it proves nothing alone.
+            ( if (["minio-sys", "minio-sys-excl-trash"] | index($e.minio.metadataInodesScope)) == null
+                then "MinIO metadata: the evidence counts metadataInodes over scope \($e.minio.metadataInodesScope), not minio-sys or minio-sys-excl-trash (.minio.sys only; bucket directories are per-object inodes charged by i_max, ADR-035 §3.5)"
+              elif $e.minio.metadataInodesScope == "minio-sys-excl-trash" and (($rec.filesystem.inodeHeadroomLatchDrill.result // "") != "PASS"
+                     or ($rec.filesystem.inodeHeadroomLatchDrill.fsMonitorSha256 | type) != "string"
+                     or $rec.filesystem.inodeHeadroomLatchDrill.fsMonitorSha256 != ($e.monitor.fsMonitorSha256 // null))
+                then "MinIO metadata: the evidence counts metadataInodes without .trash (minio-sys-excl-trash) but the record carries no PASS E10 inode-headroom latch drill of the fs-monitor build the evidence names (monitor.fsMonitorSha256 \($e.monitor.fsMonitorSha256 // "null")): only minio-sys is acceptable"
+              elif $e.minio.metadataInodesScope == "minio-sys-excl-trash" and ($e.monitor.inodeHeadroomLatchArmed // false) != true
+                then "MinIO metadata: the evidence counts metadataInodes without .trash (minio-sys-excl-trash) but monitor.inodeHeadroomLatchArmed is not true" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataInodesScope // "") != $e.minio.metadataInodesScope
+                then "MinIO metadata: the evidence counts inodes over scope \($e.minio.metadataInodesScope) but record \($e.qualificationRecordId) measured scope \($rec.filesystem.metadataInodesScope // "null"): one scope on both sides" else empty end ),
+            ( if $rec != null and $rec.filesystem != null and (["minio-sys", "minio-sys-excl-trash"] | index($rec.filesystem.metadataInodesScope // "")) == null
+                then "MinIO metadata: record \($e.qualificationRecordId) does not state its E7 metadataInodesMeasured as scope minio-sys or minio-sys-excl-trash (filesystem.metadataInodesScope)" else empty end ),
+            # bucketPresent false is a 0-object baseline, or the walk measured the wrong directory: production
+            # pre-provisions the bucket (create-bucket=false), so it never passes for a populated filesystem.
+            ( if $e.minio.bucketPresent != true
+                then "MinIO metadata: the evidence was collected with no bucket directory (bucketPresent false): production pre-provisions the bucket, so the walk measured the wrong directory or nothing" else empty end ),
             ( if $e.minio.metadataInodes > $d.metadataBudgetInodes
                 then "MinIO metadata: \($e.minio.metadataInodes) metadata inodes > the inode budget \($d.metadataBudgetInodes)" else empty end ),
             ( if $rec != null and $rec.filesystem != null and ($rec.filesystem.metadataInodesMeasured | type) != "number"
