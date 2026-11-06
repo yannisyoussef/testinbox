@@ -60,6 +60,16 @@ are complete. Existing D3 physical qualification is reused, not reopened.
    the separate containment/deletion/probe/metadata reserves satisfied too.
    This makes ordinary participant exhaustion less likely to reach a global
    cliff; it is not a proof that every global failure is tenant-independent.
+
+   > **Dated note (2026-11-06):** decision A2 covers the coarse
+   > global-capacity channel above and nothing else. It does not cover, and
+   > must not be cited for, the separate workspace-membership timing channel
+   > of ADR-035 mode a's per-workspace write slots. The owner accepted that
+   > channel on its own terms, as a dated exception to ADR-035 I9 for the
+   > initial beta of at most 30 admitted accounts, with mitigation tracked in
+   > #139. That channel also means §5's envelope invariance holds for
+   > admission outcomes, not for the slot wait or its `451`. See ADR-035,
+   > "Owner decision note (2026-11-06)".
 7. **Availability and operator evidence:** bound active inboxes, API requests,
    waits, participant key inventory and signup metadata. Track own workspace
    refusal and aggregate SERVICE_CAPACITY counters without tenant metric labels.

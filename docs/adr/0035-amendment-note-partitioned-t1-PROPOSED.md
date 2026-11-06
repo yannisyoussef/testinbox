@@ -145,6 +145,26 @@ For the owner's decision; nothing here is a criterion until the owner adopts it.
      mode a's slot channel look SMALLER than in production, so the relative
      bound against mode a is stricter here than it would be with real uploads.
 
+## The mode a baseline and the partitioned residual (dated 2026-11-06)
+
+Criterion 8 measures the partitioned residual against mode a's write-slot
+channel (ADR-035 §4 step 5, with the slots of §5). On 2026-11-06 the owner
+accepted that mode a channel as a **dated exception to ADR-035 I9, for the
+initial beta of at most 30 admitted accounts only**, with mitigation tracked
+in #139 and reviewed before any expansion (ADR-035, "Owner decision note
+(2026-11-06)").
+
+**The partitioned residual is NOT covered by that acceptance.** The decision
+states that it does not waive the partitioned-mode timing assessment. Meeting
+criterion 8's relative bounds would show the partitioned residual is no worse
+than mode a's; it would not make the partitioned residual accepted. The
+baseline's acceptance is a scoped exception, not a threshold other channels
+inherit. The partitioned residual still needs its own assessment, the adoption
+of a criterion (criterion 8 above is still a recommendation, NOT adopted), and
+its own owner decision (conditions 4 and 5 below). If #139's mitigation changes
+mode a's slot behaviour, the baseline criterion 8 compares against changes
+too, and the criterion must be re-stated against it.
+
 ## Ops precondition (security review S-C2)
 
 In any environment that runs `COHORT_PARTITIONED` (today: the lab only), only
