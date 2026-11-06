@@ -1,0 +1,44 @@
+t1Probe check over evidence.json (gitSha 634762769d64ee9a8f72a8c119ab171f41d29817): every scenario's t1Probe.readsFootprint must be true
+scenario                           block              readsFootprint footprintRead footprintUnavailable storeClass
+chosen-ws200-c1-r31                scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c1-r31             scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws200-c10-r31               scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c10-r31            scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws200-c25-r31               scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c25-r31            scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws200-c50-r31               scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c50-r31            scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws200-c100-r31              scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c100-r31           scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws200-c1-r62                scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c1-r62             scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws200-c10-r62               scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c10-r62            scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws200-c25-r62               scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c25-r62            scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws200-c50-r62               scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c50-r62            scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws200-c100-r62              scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c100-r62           scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c1-r31              scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c1-r31           scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c10-r31             scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c10-r31          scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c25-r31             scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c25-r31          scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c50-r31             scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c50-r31          scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c100-r31            scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c100-r31         scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c1-r62              scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c1-r62           scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c10-r62             scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c10-r62          scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c25-r62             scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c25-r62          scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c50-r62             scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c50-r62          scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c100-r62            scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c100-r62         scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+
+RESULT: 40 scenario(s) checked (40 gate + 0 variant); readsFootprint true in 40; false/missing in 0. The run is NOT void on this check.
