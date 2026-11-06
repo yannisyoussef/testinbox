@@ -210,7 +210,10 @@
        probe address is in W. Preconditions: at least one known address in W.
        Bound: the flood and the probe copy are both charged to W's `INGEST`
        budgets (defaults, configurable: burst 60, refilling 2/s per inbox;
-       burst 300, refilling 10/s per workspace). A probe copy refused there is
+       burst 300, refilling 10/s per workspace; the closed beta's deployed
+       profile sets burst 30 and 0.5/s per inbox, burst 60 and 1/s per
+       workspace: ADR-035 amendment D, `docs/dev/beta-limits.md`). A probe
+       copy refused there is
        discarded before any slot, so the signal disappears. One bit per
        probe.
     2. *Naturally occurring congestion of a known workspace.* With no flood,
