@@ -12,6 +12,14 @@ host with production secrets, private SMTP only, no MX, no relay from the
 edge, no tenant traffic. Public activation is TI-007 plus the human gates in
 [ADR-004](../adr/0004-initial-inbound-provider-strategy.md).
 
+> **Correction, 2026-11-06.** The paragraph above and the topology below are
+> dated: since the owner-only beta launch of 2026-10-28 the edge is public
+> (tcp/25 and `inbox.testinbox.email MX 10 mx1.testinbox.email`) and relays to
+> production ingestion over the private path. Inbox creation and message access
+> stay authenticated; self-service sign-in, participant admission and storage
+> enforcement stay closed under their own authorizations. See
+> [the correction](../architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing).
+
 ## Topology
 
 ```

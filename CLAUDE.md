@@ -85,7 +85,7 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
    query workspace-scoped; cross-tenant read is a security bug. Cross-tenant
    lookups return `404`, not `403`.
 
-## Deployment (ADR-028/029/030/034 — staging is LIVE, production is DARK-DEPLOYABLE)
+## Deployment (ADR-028/029/030/034 — staging is LIVE, production is an owner-only BETA with public inbound SMTP)
 
 - **Build once, promote many.** Images are built only by
   `.github/workflows/build-images.yml`; the **digest** is the deployment
@@ -149,11 +149,28 @@ domain  ←  application  ←  adapters (api, ingestion, persistence, storage, n
 - **Backups never contain tenant content**: `deploy/backup/scope.txt`
   classifies every table and `check-backup-scope.sh` refuses a dump that
   carries `message`/`inbox`/`attachment` rows — or that examines nothing.
-- No public MX record, no live production, no `master` auto-deploy.
+- **Production receives Internet mail** since the 2026-10-28 owner-only beta
+  launch: `inbox.testinbox.email MX 10 mx1.testinbox.email` and a public tcp/25
+  listener on the Postfix edge. Inbox creation and message access stay
+  authenticated; self-service sign-in, participant admission and storage
+  enforcement stay closed under their own release authorizations. Keep the
+  public delivery path operational: withdrawing the MX or closing public SMTP
+  is an owner/Ops decision, never a side effect of a repository change. There
+  is still no `master` auto-deploy.
+
+  > **Correction, 2026-11-06.** This file previously said "production is
+  > DARK-DEPLOYABLE", "No public MX record, no live production" and called the
+  > edge "dormant". That was superseded on 2026-10-28 (public tcp/25 18:07:03Z,
+  > MX 18:12:03Z, owner GO for the owner-only beta) and is corrected on the
+  > owner's statement (#124, comment 6686330363) and Ops' launch and acceptance
+  > records (#124, comment 6686375458). Dates and evidence:
+  > `docs/architecture/mail-edge-contract.md` § Correction (2026-11-06).
 
 ## The Postfix mail edge (ADR-004, TI-005)
 
-The inbound edge is a **dedicated, dormant** Postfix host Ops owns. The
+The inbound edge is a **dedicated, internet-facing** Postfix host Ops owns
+(public tcp/25 and named by the public MX since 2026-10-28); treat it as
+internet-facing in every security analysis. The
 application repo owns its *behavioural contract* and proves it in the rehearsal;
 Ops owns the host, nftables, systemd, WireGuard and the substitution values.
 `deploy/mail-edge/contract.yaml` is the machine-readable invariant manifest, and
@@ -180,8 +197,9 @@ must never acquire a host IP, secret or deployment detail. Full rationale:
 - `scripts/check-mail-edge-contract.test.sh` is the mutation suite. It **fails**
   rather than skips when Docker is absent: a mutation suite that quietly skips is
   the failure it exists to prevent.
-- `deploy.sh` does not know about the edge, and must not. It is the script a real
-  host runs, and a real host does not deploy this.
+- `deploy.sh` does not know about the edge, and must not. It is the script an
+  application host runs; the real edge is a separate host Ops reconciles from
+  `infinity-core`, never from this script.
 
 ## Coding conventions
 

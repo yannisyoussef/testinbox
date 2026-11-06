@@ -195,7 +195,9 @@ ADR-020 amendment, not a note here.
 only to let the synthetic suite validate our own stack. The production inbound
 provider is decided (ADR-004, Accepted: a dedicated, dormant Postfix edge) and
 its activation is TI-007; the production application host is decided too
-(ADR-034, [production.md](production.md)).
+(ADR-034, [production.md](production.md)). *(2026-11-06: the production edge
+is no longer dormant; it has been public since 2026-10-28 —
+[correction](../architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing).)*
 
 ## Edge protection
 

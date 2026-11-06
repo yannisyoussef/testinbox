@@ -37,6 +37,24 @@ isolation — are rows A, B and C.
 | **V** | Public-edge queue alerting (§12) | Before any public MX: alerting on edge queue age and deferred mail early enough to act well before the 4 h expiry (e.g. oldest deferred message older than 30 min), because a `451` condition that outlives the queue is silent loss | the alert rule and one deliberate trigger | Ops | **PENDING** — does not block a dark production |
 | **M** | Dark-deployment verification | All of A–L, and: no MX record, no public TCP/25, no edge→ingestion relay configured, no tenant traffic, `testinbox_smtp_accept_total` moves only for the synthetic sender | DNS query showing no MX for `inbox.testinbox.email`; external port scan of the edge and origin; the edge's transport still `discard:`; counters | Ops · Owner declares "dark" only with this evidence | any of those is live, or evidence is asserted rather than shown |
 
+> **2026-11-06.** Row **M** describes the dark state that held until the
+> owner-only beta launch of 2026-10-28, when public tcp/25 and the public MX
+> were enabled ([correction](../architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing)).
+> It is no longer the production state.
+>
+> Row **V**, as Ops maps it to its records (#124, comment 6686721348; for the
+> record only): the Grafana rule uid `edge-queue-ageing` (oldest message over
+> 3600 s for 5 min, critical) was **present and live-loaded before the MX**:
+> installed 2026-09-16 (`SESSION-STATE.md.bak-20260919-134815`,
+> `103036bef3952475`; oldest rules backup `a1b67659c2d39762`) and seen in a
+> Grafana ruler read at 2026-10-28 16:34Z (`ruler.json`, `7b4e7abc72bbc921`),
+> before the MX went live at 18:12:03Z. It has **never been fired deliberately
+> on the live system** (only offline promtool and CI tests), so the row's "one
+> deliberate trigger" proof is not met, and there is **no alert on the
+> deferred-mail count**. The row's status above is left as written. Whether
+> either point needs action is the owner's decision; this note does not reopen
+> the launch qualification.
+
 ## What this does not cover
 
 - **Public SMTP / MX / edge relay** — TI-007, with its own contract in

@@ -11,6 +11,11 @@ decision (`docs/releases/0.1.0.md`). That is an explicitly limited mode: the
 ADR-035 protocol runs and is observed, no storage ceiling refuses mail, and
 check 17 proves the mode did not change.
 
+> **2026-11-06.** This contract describes the *dark* deployment that preceded
+> the owner-only beta launch of 2026-10-28. Its "no public MX or public TCP/25"
+> preconditions (row M) no longer hold: production now has both. See
+> [the correction](../architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing).
+
 ## 1. Preconditions
 
 - The candidate was handed off by `Production handoff` on `master` with the

@@ -1,5 +1,125 @@
 # The Postfix mail edge — application-owned contract
 
+## Correction (2026-11-06): the edge is internet-facing
+
+The status block below ("**dormant**", "No public MX. No public SMTP. No
+production relay.") was true when written and is kept as dated history. It was
+**superseded on 2026-10-28** by the owner-authorized owner-only beta launch, and
+this section corrects it on the owner's statement of 2026-11-06 (#124, comment
+6686330363):
+
+> Yes. I previously authorized public inbound SMTP and the MX for
+> inbox.testinbox.email as part of the owner-only production beta launch.
+>
+> The intended state is:
+> - Public inbound SMTP through mx1.testinbox.email.
+> - Internet senders can deliver to TestInbox recipient addresses.
+> - Inbox creation and message access remain authenticated and restricted.
+> - Self-service sign-in, participant admission and storage-enforcement
+>   activation remain governed by their separate release authorizations.
+>
+> Keep the existing public delivery path operational. Withdrawing the MX or
+> closing public SMTP is not authorized by this documentation discrepancy.
+
+The same statement says it "does not open registration or admission, accept
+additional residuals, or waive review of functional changes".
+
+**What is live.** Dates and times are UTC, from Ops' launch records as reported
+by Ops on #124 (comment 6686375458):
+
+| step | when | what |
+|---|---|---|
+| G3, public tcp/25 listener | 2026-10-28 18:07:03Z | edge env `EDGE_PUBLIC_SMTP=true`; smtpd listens on `0.0.0.0:25` |
+| G4, public MX | 2026-10-28 18:12:03Z | `inbox.testinbox.email MX 10 mx1.testinbox.email` |
+
+Ops' read-only check of 2026-11-06 (#124, comment 6686107928) also records that
+nftables accept inbound tcp/25 and that the edge relays the tenant domain to
+production ingestion over the private WireGuard hop (`relay:`), with
+`postmaster@` routed `local:` and `default_transport = discard`, as this
+contract requires. "No production relay" no longer holds either.
+
+**Authorization and acceptance records.** These live in the Ops workspace
+(`/opt/infinity/workspace/ti-008-beta/`) and in `infinity-core`, not in this
+repository; they are cited as Ops reported them.
+
+| record | reference |
+|---|---|
+| authorization | `launch-20261028/LAUNCH-RUNBOOK.md` (sha256 `25dd94da4c1f8188…`, per #124 comment 6686721348) line 3, as quoted by Ops: "**Authorization:** owner GO 2026-10-28, 'complete the owner-only TestInbox beta release today'. Its scope is real internet mail for the owner's own validation. Excluded: public registrations, other testers, unrestricted API/web access, unrelated DNS/firewall/egress/WAF changes, storage enforcement, optional maintenance, hardening extras (CAA, null MX, MTA-STS/TLS-RPT stay follow-ups)." Independent reviews: `launch-20261028/REVIEW-security.md`, `REVIEW-ops.md` |
+| result | `launch-20261028/RESULT.md` (sha256 `b80374ae679a6917…`): "RESULT = PASS (owner-only beta left enabled)" |
+| closeout | `closeout/PHASE2-CLOSEOUT.md` (sha256 `f5a1067d92a09009…`): acceptance A1–A7 PASS on day 2 (2026-10-29 14:02Z). Owner acceptance was recorded by the ops lead; there is no separate owner-signed file. The owner statement above is the citable owner confirmation |
+| evidence index | `closeout/EVIDENCE-INDEX.md` (sha256 `e05ec55b63d17a6f…`) |
+| `infinity-core` MRs | !164 (mx1 certificate path), !166 (B2 recipient allow-list), !167 (`edge_public_smtp_intended` gauge); !192 is Ops' own docs correction |
+
+**What did not change.**
+
+- The contract below is unchanged, and every invariant in it now protects a
+  live, internet-facing listener rather than a rehearsal. It still requires
+  ADR-025's uniform `250` at the edge: `relay_recipient_maps` empty, and an
+  unknown recipient relayed and discarded in ingestion.
+- Inbox creation and message access stay authenticated. Self-service sign-in,
+  participant admission and storage enforcement stay closed under their own
+  release authorizations.
+- `deploy.sh` still does not deploy the edge; Ops reconciles it from
+  `infinity-core`.
+
+**What this correction does not settle.**
+
+- **The app-side gate still encodes "no public SMTP".**
+  `scripts/check-mail-edge-contract.sh` refuses the `live` listener in a
+  `production` render, `render.sh` warns that "No MX and no public SMTP are
+  sanctioned yet", and a comment in `deploy/mail-edge/contract.yaml` says
+  CLAUDE.md's "no public SMTP" rests on the listener switch. Ops renders the
+  real edge with its own `reconcile.sh` in `infinity-core`, so these do not
+  touch the live host. Aligning them is a functional change and goes through
+  normal review; this documentation-only correction leaves them as they are.
+- **The [known gaps](#known-gaps) are now gaps on a live edge.** They were
+  written as "all matter before public SMTP". They are tracked, not closed.
+- **Two exposures found after launch**, both addressed by the open draft
+  [#147](https://github.com/yannisyoussef/testinbox/pull/147) together with
+  Ops' lockstep host change in `infinity-core`:
+  - **ETRN.** The contract sets neither ETRN key, so Postfix's defaults leave
+    ETRN enabled for the tenant domain: on the rehearsal image
+    `ETRN inbox.testinbox.email` answers `250 Queuing started`. Ops confirmed
+    the live edge has the same settings and advertises ETRN, so any internet
+    client can force an immediate flush of the deferred queue. **Not closed**
+    until #147 and the host change land and Ops verifies a `5xx` on the live
+    edge.
+  - **DSN.** EHLO advertises DSN. #147 reports that on the rehearsal image the
+    edge generated delivery-status notices on a client's request
+    (`NOTIFY=SUCCESS`), despite the no-DSN invariant. **Not closed** until #147
+    and the host change land and the live edge is verified.
+- **The B2 recipient allow-list (`infinity-core` !166).** Ops' records name it
+  as merged and reconciled before the listener went public. This repository has
+  not reviewed what it does, or how it relates to the empty
+  `relay_recipient_maps` and the uniform `250` this contract requires; Ops'
+  acceptance A3 reports an unknown recipient "relayed and discarded, no DSN".
+- **ADR-004's gates and acceptance row V, as Ops maps them (for the record
+  only).** Ops matched ADR-004's
+  [remaining gates](../adr/0004-initial-inbound-provider-strategy.md#gates-that-remain-closed)
+  and row V of [`production-ops-acceptance.md`](../dev/production-ops-acceptance.md)
+  to its launch records by content, reading the records only (#124, comment
+  6686721348). Paths are as Ops gives them, under `/opt/infinity/workspace/`;
+  sha256 prefixes in parentheses. Full detail:
+  `ti-delivery-002/stage-b/fasttrack/edge-docs/ADR004-GATE-RECORDS.md`.
+
+  | gate | Ops' finding | Ops record |
+  |---|---|---|
+  | **1** named owner and runbooks | **Partly**, for the owner-only window. The `operational-owner.md` sign-off is **unsigned**. There is **no runbook for patching, provider incidents or CVE response** | `ti-008-beta/launch/OWNER-FORM-1A-3A-4A.md` (`371074e3b9645def`) names the owner; `ti-008-beta/launch-20261028/LAUNCH-RUNBOOK.md` (`25dd94da4c1f8188`) |
+  | **4** apex contacts | Discharged, 2026-10-28 16:39Z. Cloudflare Email Routing forwarding to Microsoft 365, not a mailbox provider; the owner accepted that design on 2026-10-27 | `launch-20261028/fwd-checks-20261028.md` (`5c1efe792ea3a3b6`) |
+  | **4a** `postmaster@inbox.testinbox.email` | Discharged at the RCPT stage, before and after MX: "tenant-domain replies byte-identical" | `launch-20261028/g3ext-rcpt.txt` (`c1e1e2fdc2ea472c`); repeated after MX in `a6-rcpt-after-mx.txt` |
+  | **5** privacy, terms and legal | **NOT FOUND**: no Ops record discharges it; the records still list it as blocked | `ti-008-beta/launch/README.md` (`3d8343e412052623`), closeout P-2/P-4 |
+  | **6** production readiness | **No single record**; only per-item records (the monitoring fire-test, secrets, the D3 storage cutover, the guards). **Backups cover the control plane only** | — |
+  | **row V** edge queue-age alerting before any public MX | Alert **present and live-loaded before MX**: Grafana rule uid `edge-queue-ageing` (oldest message over 3600 s for 5 min, critical), installed 2026-09-16, live-loaded per a ruler read at 2026-10-28 16:34Z (MX at 18:12:03Z). It has **never been fired deliberately on the live system**, only in offline promtool and CI tests. There is **no alert on the deferred-mail count** | `SESSION-STATE.md.bak-20260919-134815` (`103036bef3952475`); the oldest rules backup (`a1b67659c2d39762`); `ruler.json` (`7b4e7abc72bbc921`) |
+
+  Gates 1, 5 and 6 are recorded as Ops states them, partial, not found and no
+  single record, and are **not** discharged. Whether any of them, or row V's
+  missing live fire and deferred-count alert, needs action is the **owner's
+  decision**. This record does not reopen the completed launch qualification.
+
+---
+
+*Dormant-era text follows, as written before 2026-10-28.*
+
 **Status:** the contract is executable and blocking in CI (TI-005). The real edge
 exists, is **dormant**, and is not connected to anything.
 
@@ -238,6 +358,10 @@ All are blocking in the rehearsal, which is itself a required check.
 
 Recorded rather than implied to be covered. None blocks the increment; all
 matter before public SMTP.
+
+> **2026-11-06:** public SMTP has existed since 2026-10-28 (see the
+> [correction](#correction-2026-11-06-the-edge-is-internet-facing)). These gaps
+> are open on the live edge; none is closed by that correction.
 
 | gap | consequence |
 |---|---|
