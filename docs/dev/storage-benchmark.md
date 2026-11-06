@@ -432,20 +432,38 @@ is that measurement, reproducible from one flag: CHOSEN only, `--expected-rate 3
 `--duration-seconds 60`, no reference. It is recorded `adrEvidence: false`
 (`--focused`) and its verdict is INCOMPLETE by construction.
 
-Per scenario it adds `hold` to the evidence and writes `FOCUSED.md`:
+Per scenario it adds `t1Steps` to the evidence (also available in any run with
+`--t1-steps`) and writes `FOCUSED.md`, whose main table is **T1 step by step**:
 
-- **Lock hold** per event, client side (`HoldTiming`, a JDBC proxy over the
-  scenario's pool that observes T1's statements and changes none of them; the
-  T1 adapter stays production's class): from the return of
-  `pg_advisory_xact_lock(35, 1)` to the return of T1's commit, so the server's
-  hold to within about one round trip. Mean and p50/p95/p99.
-- **Inside the hold**: the snapshot statement's client-observed time, the
-  server's mean execution time of it (`pg_stat_statements`, when preloaded),
-  the insert, and the commit.
+- **Steps**, client side, per T1 (`HoldTiming`, a JDBC proxy over the scenario's
+  pool that observes T1's statements and changes none of them; the T1 adapter
+  stays production's class): `preLock` (call start → lock sent), `lockWait` (lock
+  sent → returned), **`hold`** (lock returned → commit returned: the server's
+  hold to within about one round trip), and inside it `toSnapshot`, `snapshot`
+  (its round trip), `decide` (snapshot returned → write sent: row mapping, the
+  cohort JSON, the decision, the insert's text), `insert` (its round trip; it
+  carries the COMMIT since A′), `toCommit`, `commit`; then `afterCommit`. Mean
+  and p50/p95/p99 each.
+- **Server side**: the snapshot's mean execution time and the plans made during
+  the phase (`pg_stat_statements`, when preloaded).
 - **T1 p99** (completion − due), as the gate reads it.
 - Kept apart: throughput (achieved, completed/scheduled, terminal lag) and
   correctness (lock timeouts, deadlocks, other errors); ρ = rate × mean hold
-  [derived] and the M/M/1 wait p99 from it [estimate], labelled as such.
+  [derived] and the M/M/1 wait p99 from it [estimate], labelled as such; and
+  the generic plan the run's statistics give T1 at the end of the phase
+  (`EXPLAIN (ANALYZE, BUFFERS)`, with `Heap Fetches` and the in-flight tables'
+  `relpages`/`relallvisible`) [diagnostic].
+
+**Warm connections (every run, not only `--focused`).** Before each measured
+phase every connection of the scenario's pool executes T1's statement past
+pgjdbc's `prepareThreshold` under `force_generic_plan`, untimed and rolled
+back, so each holds the server-prepared statement and its generic plan, as a
+long-lived production pool does. A fresh pool of c + 6 connections otherwise
+planned inside the lock during the measurement (12–16 ms a plan on the staging
+host; 164–296 plans a minute at c100 in the 80482e6 diagnostic run). The pool's
+size is unchanged (it is part of §11's concurrency model). Plans still made
+during a phase are invalidations by autovacuum/analyze, which mode a must make
+inside the lock: a READ COMMITTED portal takes its snapshot at Bind.
 
 ```bash
 # On a quiet host, outside any gate window: a labelled NON-GATE focused run.

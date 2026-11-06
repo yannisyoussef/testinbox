@@ -68,11 +68,13 @@ class HoldTimingTest {
         } finally {
             EventTimings.current.remove()
         }
-        (timings.holdNanos > 0) shouldBe true
-        (timings.snapshotNanos > 0) shouldBe true
-        (timings.insertNanos > 0) shouldBe true
-        (timings.commitNanos > 0) shouldBe true
-        (timings.snapshotNanos + timings.insertNanos + timings.commitNanos <= timings.holdNanos) shouldBe true
+        val c = timings.steps
+        c.complete shouldBe true
+        // The stamps are in order, and the steps tile the hold.
+        listOf(c.lockStart, c.lockEnd, c.snapshotStart, c.snapshotEnd, c.writeStart, c.insertEnd, c.commitStart, c.commitEnd)
+            .zipWithNext()
+            .all { (a, b) -> a <= b } shouldBe true
+        (c.lockEnd > 0 && c.writeStart > c.snapshotEnd) shouldBe true
         // Every call reached the driver, unchanged, in order.
         calls shouldBe
             listOf(
@@ -96,24 +98,34 @@ class HoldTimingTest {
         } finally {
             EventTimings.current.remove()
         }
-        (timings.holdNanos > 0) shouldBe true
-        timings.insertNanos shouldBe 0L
+        timings.steps.complete shouldBe true
+        timings.steps.insertEnd shouldBe 0L
+        // Nothing reserved: the decision is done when the commit starts.
+        timings.steps.writeStart shouldBe timings.steps.commitStart
     }
 
     @Test
-    fun `the summary is null without holds, and its mean is the mean of the per-event holds`() {
-        HoldSummary.of(listOf(EventTimings())).shouldBeNull()
+    fun `the step summary is null without a complete T1, and each step is the difference of its two stamps`() {
+        T1StepsSummary.of(listOf(EventTimings())).shouldBeNull()
         val events =
             listOf(2_000_000L, 4_000_000L).map { hold ->
                 EventTimings().apply {
-                    stepFinished(HoldTiming.Step.LOCK, 0, 1)
-                    commitFinished(1, 1 + hold)
+                    steps.begin(100)
+                    steps.statement(HoldTiming.Step.LOCK, 200, 1_000)
+                    steps.statement(HoldTiming.Step.SNAPSHOT, 1_100, 1_500)
+                    steps.statement(HoldTiming.Step.INSERT, 1_700, 1_900)
+                    steps.commit(2_000, 1_000 + hold)
+                    t1EndNanos = 1_000 + hold + 50
                 }
             }
-        val summary = HoldSummary.of(events)!!
-        summary.meanHoldMs shouldBe (3.0 plusOrMinus 1e-9)
-        summary.hold.samples shouldBe 2
-        summary.snapshot.shouldBeNull()
+        val summary = T1StepsSummary.of(events)!!.steps
+        summary.keys.toList() shouldBe T1StepsSummary.NAMES
+        summary.getValue("hold").meanMs shouldBe (3.0 plusOrMinus 1e-9)
+        summary.getValue("preLock").latency.maxMs shouldBe 0.0001
+        summary.getValue("lockWait").latency.maxMs shouldBe 0.0008
+        summary.getValue("decide").latency.maxMs shouldBe 0.0002
+        summary.getValue("insert").latency.maxMs shouldBe 0.0002
+        summary.getValue("afterCommit").latency.maxMs shouldBe 0.00005
     }
 
     @Test

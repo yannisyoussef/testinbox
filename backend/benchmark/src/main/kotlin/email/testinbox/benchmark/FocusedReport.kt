@@ -18,35 +18,53 @@ object FocusedReport {
         buildString {
             appendLine("# A′ focused measurement (NOT gate evidence)")
             appendLine()
+            val population =
+                if (options.focusedCohort) {
+                    "the beta's production state: the closed cohort of ${Seeder.PARTICIPANTS + 1} workspaces (30 participants + 1 " +
+                        "legacy), its pool reserved, approved and REQUIRED, every event to those workspaces"
+                } else {
+                    "workspaces ${options.workspaces} with ${if (options.cohortShares) Seeder.PARTICIPANTS + 1 else 0} cohort shares"
+                }
             appendLine(
-                "CHOSEN only; rates ${options.rates}; concurrency ${options.concurrency}; workspaces ${options.workspaces} " +
-                    "with ${if (options.cohortShares) Seeder.PARTICIPANTS + 1 else 0} cohort shares; ${options.measuredSeconds} s " +
-                    "measured after ${options.warmupSeconds} s warm-up.",
+                "CHOSEN (mode a) only; rates ${options.rates}; concurrency ${options.concurrency}; $population; " +
+                    "${options.measuredSeconds} s measured after ${options.warmupSeconds} s warm-up.",
             )
             appendLine()
-            appendLine("Hold: ${Evidence.HOLD_DEFINITION}")
+            appendLine("Steps: ${Evidence.STEPS_DEFINITION}")
             appendLine()
-            appendLine("## Latency [measured]")
+            appendLine("## T1 step by step [measured], ms: mean / p50 / p95 / p99")
             appendLine()
-            appendLine(
-                "| Scenario | Hold mean | Hold p50 / p95 / p99 | Snapshot (client) mean / p50 / p99 | Snapshot exec (server) mean | " +
-                    "Insert p50 / p99 | Commit p50 / p99 | T1 tx p50 / p99 | T1 p50 / p95 / p99 |",
-            )
-            appendLine("|---|---:|---|---|---:|---|---|---|---|")
-            results.forEach { s ->
-                val h = s.hold
+            appendLine("| Step | " + results.joinToString(" | ") { it.name } + " |")
+            appendLine("|---|" + results.joinToString("") { "---|" })
+            T1StepsSummary.NAMES.forEach { step ->
                 appendLine(
-                    "| ${s.name} | ${h?.let { ms(it.meanHoldMs) } ?: "-"} | ${three(h?.hold)} | " +
-                        "${h?.meanSnapshotMs?.let(
-                            ::ms,
-                        ) ?: "-"} / ${two(h?.snapshot)} | ${s.t1Statement?.meanExecMs?.let(::ms) ?: "n/a"} | " +
-                        "${two(h?.insert)} | ${two(h?.commit)} | ${two(s.t1Transaction)} | ${three(s.t1)} |",
+                    "| $step | " +
+                        results.joinToString(" | ") { s ->
+                            s.t1Steps
+                                ?.steps
+                                ?.get(
+                                    step,
+                                )?.let { "${ms(it.meanMs)} / ${ms(it.latency.p50Ms)} / ${ms(it.latency.p95Ms)} / ${ms(it.latency.p99Ms)}" }
+                                ?: "-"
+                        } + " |",
                 )
             }
+            appendLine(
+                "| snapshot exec (server, mean) | " +
+                    results.joinToString(" | ") { s -> s.t1Statement?.let { "${ms(it.meanExecMs)} (max ${ms(it.maxExecMs)})" } ?: "n/a" } +
+                    " |",
+            )
+            appendLine(
+                "| snapshot plans in the phase × mean plan | " +
+                    results.joinToString(" | ") { s -> s.t1Statement?.let { "${it.plans} × ${ms(it.meanPlanMs)}" } ?: "n/a" } + " |",
+            )
+            appendLine("| T1 tx p50 / p99 | " + results.joinToString(" | ") { two(it.t1Transaction) } + " |")
+            appendLine("| **T1 p50 / p95 / p99** (completion − due) | " + results.joinToString(" | ") { three(it.t1) } + " |")
             appendLine()
             appendLine(
-                "Snapshot exec (server) is pg_stat_statements' mean execution time of the T1 statement over the measured phase " +
-                    "(n/a when the server does not preload pg_stat_statements).",
+                "Server figures are pg_stat_statements over the measured phase (n/a when it is not preloaded; plans need " +
+                    "pg_stat_statements.track_planning). Every pool connection was warmed past prepareThreshold before the phase, " +
+                    "so a plan inside it is an invalidation (autovacuum/analyze), not a cold connection.",
             )
             appendLine()
             appendLine("## Throughput and correctness [measured]")
@@ -73,12 +91,12 @@ object FocusedReport {
             appendLine("| Scenario | ρ [derived] | Wait p99 [estimate] | Wait p99 + hold p99 [estimate] |")
             appendLine("|---|---:|---:|---:|")
             results.forEach { s ->
-                val h = s.hold ?: return@forEach
-                val rho = s.offeredRate * h.meanHoldMs / MILLIS
-                val wait = waitP99Ms(rho, h.meanHoldMs)
+                val h = s.t1Steps?.steps?.get("hold") ?: return@forEach
+                val rho = s.offeredRate * h.meanMs / MILLIS
+                val wait = waitP99Ms(rho, h.meanMs)
                 appendLine(
                     "| ${s.name} | ${"%.3f".format(rho)} | ${wait?.let(::ms) ?: "unstable (ρ ≥ 1)"} | " +
-                        "${wait?.let { ms(it + h.hold.p99Ms) } ?: "-"} |",
+                        "${wait?.let { ms(it + h.latency.p99Ms) } ?: "-"} |",
                 )
             }
             appendLine()

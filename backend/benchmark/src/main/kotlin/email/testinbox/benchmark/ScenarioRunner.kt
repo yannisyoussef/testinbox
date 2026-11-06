@@ -137,8 +137,8 @@ class ScenarioRunner(
         )
         // A probe run drives two event streams (the hot flood and the background), each with the scenario's workers.
         target.pool((if (spec.probe) 2 else 1) * spec.concurrency + POOL_MARGIN).use { hikari ->
-            // --focused: T1's statements are observed (never changed) to time the lock hold.
-            val pool = if (options.focused) HoldTiming.wrap(hikari) else hikari
+            // --t1-steps / --focused: T1's statements are observed (never changed) to time its steps.
+            val pool = if (options.stepTiming) HoldTiming.wrap(hikari) else hikari
             val declarations =
                 HarnessDeclarations.of(
                     HarnessDeclarations.enforcement(spec.mode, options.referenceMode),
@@ -155,6 +155,7 @@ class ScenarioRunner(
                 val probe = prepare(protocol, name, spec.mode)
 
                 warmUp(protocol, spec)
+                warmConnections(hikari, protocol)
 
                 errors.clear().also { diagnostics?.resetStatements() } // warm-up failures and statements are not the scenario's
                 val records = Collections.synchronizedList(ArrayList<EventRecord>())
@@ -226,7 +227,14 @@ class ScenarioRunner(
                         t1Probe = probe,
                         t1Statement = t1Statement,
                         partitionFallbacks = if (spec.mode == AdmissionMode.PARTITIONED) protocol.store.partitionFallbacks else null,
-                        hold = if (options.focused) HoldSummary.of(records.filter { it.failure == null }.map { it.timings }) else null,
+                        t1Steps =
+                            if (options.stepTiming) {
+                                T1StepsSummary.of(
+                                    records.filter { it.failure == null }.map { it.timings },
+                                )
+                            } else {
+                                null
+                            },
                         planAtEnd = planNow,
                         partitionFallbackReasons =
                             if (spec.mode == AdmissionMode.PARTITIONED) protocol.fallbackReasons.mapValues { it.value.get() } else null,
@@ -260,6 +268,51 @@ class ScenarioRunner(
             OpenLoopScheduler(spec.offeredRate, options.arrivals, options.seed - 1).run(warmupEvents, spec.concurrency) {
                 runEvent(protocol, EventRecord(EventTimings(), it.scheduledNanos), threadRandom())
             }
+        }
+    }
+
+    /**
+     * Every connection of the scenario's pool, untimed, before the measured phase: T1's
+     * statement executed past pgjdbc's `prepareThreshold` under `force_generic_plan`, so
+     * each connection holds the server-prepared statement and its generic plan, as a
+     * long-lived production pool does. Without it a fresh pool of c + 6 connections plans
+     * inside the lock during the measurement (12–16 ms a plan on the staging host,
+     * 164–296 plans a minute at c100 in the 80482e6 diagnostic run). The pool's size is
+     * unchanged. Read-only, and rolled back.
+     */
+    private fun warmConnections(
+        pool: com.zaxxer.hikari.HikariDataSource,
+        protocol: ProtocolAssembly,
+    ) {
+        val texts =
+            listOfNotNull(protocol.store.snapshotStatement, protocol.store.partitionedStatement)
+                .map {
+                    org.springframework.jdbc.core.namedparam.NamedParameterUtils
+                        .parseSqlStatementIntoString(it)
+                }
+        val scope = population.inboxes.first()
+        val connections = List(pool.maximumPoolSize) { pool.connection }
+        try {
+            for (c in connections) {
+                c.autoCommit = false
+                try {
+                    c.createStatement().use { it.execute("SET LOCAL plan_cache_mode = force_generic_plan") }
+                    for (text in texts) {
+                        repeat(WARM_EXECUTIONS) {
+                            c.prepareStatement(text).use { ps ->
+                                ps.setObject(1, c.createArrayOf("uuid", arrayOf(scope.workspaceId)), java.sql.Types.ARRAY)
+                                ps.setObject(2, c.createArrayOf("uuid", arrayOf(scope.inboxId)), java.sql.Types.ARRAY)
+                                ps.executeQuery().close()
+                            }
+                        }
+                    }
+                } finally {
+                    c.rollback()
+                    c.autoCommit = true
+                }
+            }
+        } finally {
+            connections.forEach { it.close() }
         }
     }
 
@@ -722,6 +775,9 @@ class ScenarioRunner(
         private const val RETENTION_HEADROOM = 1.5
         private const val ERROR_SAMPLES = 5
         private const val DELTA_SAMPLE_MILLIS = 250L
+
+        /** pgjdbc's default `prepareThreshold` (5) server-prepares on the 5th use; two more run the generic plan. */
+        private const val WARM_EXECUTIONS = 7
 
         /** StorageNodeRuntime's production heartbeat interval. */
         private const val HEARTBEAT_MILLIS = 10_000L

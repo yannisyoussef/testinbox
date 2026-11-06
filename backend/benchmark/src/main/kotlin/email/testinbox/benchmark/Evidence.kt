@@ -316,17 +316,10 @@ class Evidence(
                 },
             "partitionFallbacks" to s.partitionFallbacks,
             "eventsWithoutT1" to s.eventsWithoutT1,
-            "hold" to
-                s.hold?.let {
-                    linkedMapOf(
-                        "definition" to HOLD_DEFINITION,
-                        "hold" to latency(it.hold),
-                        "meanHoldMs" to it.meanHoldMs,
-                        "snapshot" to latency(it.snapshot),
-                        "meanSnapshotMs" to it.meanSnapshotMs,
-                        "insert" to latency(it.insert),
-                        "commit" to latency(it.commit),
-                    )
+            "t1Steps" to
+                s.t1Steps?.let { t ->
+                    linkedMapOf<String, Any?>("definition" to STEPS_DEFINITION) +
+                        t.steps.mapValues { (_, v) -> linkedMapOf("meanMs" to v.meanMs) + (latency(v.latency) ?: emptyMap()) }
                 },
             "partitionFallbackReasons" to s.partitionFallbackReasons,
             "background" to
@@ -429,10 +422,12 @@ class Evidence(
 
     companion object {
         const val SCHEMA_VERSION = 1
-        const val HOLD_DEFINITION =
-            "--focused only, client side: return of pg_advisory_xact_lock(35, 1) to return of the T1 commit, per event " +
-                "(the server's hold to within about one round trip); snapshot, insert and commit are those statements' " +
-                "client-observed times inside it. A focused measurement, never a §11 criterion."
+        const val STEPS_DEFINITION =
+            "--t1-steps/--focused only, client side, per T1, ms: preLock (call start to lock sent), lockWait (lock sent to " +
+                "returned), hold (lock returned to commit returned: the server's hold to about one round trip), and inside " +
+                "it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, " +
+                "decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then " +
+                "afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion."
         const val VARIANT_STATUS =
             "Measurement of the production share-partitioned T1 (admission-locking = COHORT_PARTITIONED) over a closed " +
                 "30-participant + legacy cohort, reported apart and never gate D evidence; the mode is a PROPOSED ADR-035 " +

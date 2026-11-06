@@ -96,9 +96,13 @@ class Harness(
             val directory = options.outputDirectory.resolve(STAMP.format(environmentRecord.timestamp))
             Files.createDirectories(directory)
             val matrix = Matrix(target, adminPool, directory)
-            options.workspaces.forEachIndexed { index, workspaces ->
-                if (index > 0) wipe(admin)
-                matrix.population(workspaces)
+            if (options.focusedCohort) {
+                matrix.closedCohortChosen()
+            } else {
+                options.workspaces.forEachIndexed { index, workspaces ->
+                    if (index > 0) wipe(admin)
+                    matrix.population(workspaces)
+                }
             }
             val results = matrix.results
             val variantResults = matrix.variantResults
@@ -216,6 +220,28 @@ class Harness(
         val variantResults = mutableListOf<ScenarioResult>()
         val diagnosticsRecords = mutableListOf<Map<String, Any?>>()
         var bytesPerCopy = 0L
+
+        /**
+         * `--focused-cohort`: CHOSEN (mode a) on the beta's production state, the closed
+         * cohort with its pool approved and REQUIRED, every event to its 31 workspaces.
+         * Never gate evidence (the run is `--focused`).
+         */
+        fun closedCohortChosen() {
+            val closed = ClosedCohort(admin, adminTemplate, seeder, monitorRole)
+            val cohort = closed.seed(options)
+            val runner = ScenarioRunner(target, options, cohort, seeder, admin, monitorRole, cohort, diagnostics, closed)
+            bytesPerCopy = runner.bytesPerCopy
+            val commit = diagnostics.commitProbe()
+            for (rate in options.rates) {
+                for (concurrency in options.concurrency) {
+                    results += runner.run(ScenarioSpec(AdmissionMode.CHOSEN, concurrency, rate))
+                }
+            }
+            val statements = linkedMapOf("CHOSEN (production T1, readsFootprint = true), closed cohort" to productionStatement)
+            val file = "diagnostics-cohort.txt"
+            Files.writeString(directory.resolve(file), diagnostics.report(cohort, statements, commit))
+            diagnosticsRecords += linkedMapOf("workspaces" to cohort.workspaceCount, "file" to file)
+        }
 
         fun population(workspaces: Int) {
             log.info(

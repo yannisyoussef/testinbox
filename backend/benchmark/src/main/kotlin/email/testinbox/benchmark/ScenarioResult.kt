@@ -41,37 +41,6 @@ data class DeltaBacklogObserved(
     val maxRows: Long,
 )
 
-/**
- * `--focused` only ([HoldTiming]): T1's lock hold per event, client side, and the
- * client-observed steps inside it. A focused measurement, never a §11 criterion.
- */
-data class HoldSummary(
-    val hold: LatencySummary,
-    val meanHoldMs: Double,
-    val snapshot: LatencySummary?,
-    val meanSnapshotMs: Double?,
-    val insert: LatencySummary?,
-    val commit: LatencySummary?,
-) {
-    companion object {
-        fun of(timings: List<EventTimings>): HoldSummary? {
-            val held = timings.filter { it.holdNanos > 0 }
-            val hold = LatencySummary.ofNanos(held.map { it.holdNanos }) ?: return null
-            val snapshots = held.map { it.snapshotNanos }.filter { it > 0 }
-            return HoldSummary(
-                hold = hold,
-                meanHoldMs = held.map { it.holdNanos }.average() / NANOS_PER_MILLI,
-                snapshot = LatencySummary.ofNanos(snapshots),
-                meanSnapshotMs = snapshots.takeIf { it.isNotEmpty() }?.average()?.div(NANOS_PER_MILLI),
-                insert = LatencySummary.ofNanos(held.map { it.insertNanos }.filter { it > 0 }),
-                commit = LatencySummary.ofNanos(held.map { it.commitNanos }.filter { it > 0 }),
-            )
-        }
-
-        private const val NANOS_PER_MILLI = 1_000_000.0
-    }
-}
-
 /** Everything one scenario measured. Null summaries mean "no sample", never zero. */
 data class ScenarioResult(
     val name: String,
@@ -141,8 +110,8 @@ data class ScenarioResult(
      * probe floods only) and so enter no latency figure; 0 everywhere else.
      */
     val eventsWithoutT1: Int = 0,
-    /** `--focused` only: the T1 lock hold and the steps inside it ([HoldTiming]); null otherwise. */
-    val hold: HoldSummary? = null,
+    /** `--t1-steps` / `--focused` only: T1 step by step, lock hold included ([HoldTiming]); null otherwise. */
+    val t1Steps: T1StepsSummary? = null,
     /** `--focused` only: the T1 statement's generic plan from the statistics at the end of the measured phase ([Diagnostics.planNow]). */
     val planAtEnd: String? = null,
 ) {

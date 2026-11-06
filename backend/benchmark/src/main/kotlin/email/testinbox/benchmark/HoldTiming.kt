@@ -82,7 +82,7 @@ object HoldTiming {
                 val started = System.nanoTime()
                 val result = forward(target, method, args)
                 val end = System.nanoTime()
-                timings?.commitFinished(started, end)
+                timings?.steps?.commit(started, end)
                 return result
             }
             val result = forward(target, method, args)
@@ -116,7 +116,7 @@ object HoldTiming {
             if (timings == null || !method.name.startsWith("execute")) return forward(target, method, args)
             val started = System.nanoTime()
             val result = forward(target, method, args)
-            timings.stepFinished(step, started, System.nanoTime())
+            timings.steps.statement(step, started, System.nanoTime())
             return result
         }
     }

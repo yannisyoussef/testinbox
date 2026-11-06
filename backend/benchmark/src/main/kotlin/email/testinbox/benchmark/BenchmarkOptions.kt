@@ -111,7 +111,20 @@ data class BenchmarkOptions(
      * cohort shares, 60 s; the T1 lock hold is timed per event ([HoldTiming]).
      */
     val focused: Boolean = false,
+    /** `--t1-steps`: time T1 step by step in any run ([HoldTiming], `t1Steps` in the evidence); `--focused` implies it. */
+    val t1Steps: Boolean = false,
+    /**
+     * `--focused-cohort`: the focused measurement on the beta's production state instead
+     * of the gate population: the closed cohort of 30 participants + 1 legacy share with
+     * its pool reserved and approved ([ClosedCohort], so the pool is REQUIRED and every
+     * readiness check runs), every event to those 31 workspaces, CHOSEN (mode a). Never
+     * gate evidence.
+     */
+    val focusedCohort: Boolean = false,
 ) {
+    /** Whether T1's statements are observed for [T1StepsSummary]. */
+    val stepTiming: Boolean get() = t1Steps || focused
+
     fun retentionRateFor(offered: Double): Double = retentionRate ?: (offered / RETENTION_RATIO)
 
     /**
@@ -282,23 +295,21 @@ data class BenchmarkOptions(
                         options = options.copy(probeRepetitions = value(flag).toIntOrNull() ?: throw UsageException("$flag needs a number"))
                     }
 
+                    "--t1-steps" -> {
+                        options = options.copy(t1Steps = true)
+                    }
+
                     "--no-cohort-shares" -> {
                         options = options.copy(cohortShares = false)
                     }
 
+                    "--focused-cohort" -> {
+                        options = focusedPreset(options).copy(focusedCohort = true)
+                    }
+
                     // A preset: the flags after it may still override a field, and the evidence records what ran.
                     "--focused" -> {
-                        options =
-                            options.copy(
-                                focused = true,
-                                workspaces = listOf(FOCUSED_WORKSPACES),
-                                expectedRate = FOCUSED_EXPECTED_RATE,
-                                rates = listOf(2 * FOCUSED_EXPECTED_RATE),
-                                concurrency = FOCUSED_CONCURRENCY,
-                                durationSeconds = FOCUSED_SECONDS,
-                                reference = false,
-                                cohortShares = true,
-                            )
+                        options = focusedPreset(options)
                     }
 
                     "--help", "-h" -> {
@@ -314,6 +325,18 @@ data class BenchmarkOptions(
             options.validate()
             return options
         }
+
+        private fun focusedPreset(options: BenchmarkOptions): BenchmarkOptions =
+            options.copy(
+                focused = true,
+                workspaces = listOf(FOCUSED_WORKSPACES),
+                expectedRate = FOCUSED_EXPECTED_RATE,
+                rates = listOf(2 * FOCUSED_EXPECTED_RATE),
+                concurrency = FOCUSED_CONCURRENCY,
+                durationSeconds = FOCUSED_SECONDS,
+                reference = false,
+                cohortShares = true,
+            )
 
         private fun int(
             text: String,
@@ -338,6 +361,9 @@ data class BenchmarkOptions(
             if (probeRepetitions < 1) throw UsageException("--probe-repetitions must be at least 1")
             if (probeDurationSeconds < 1) throw UsageException("--probe-duration-seconds must be at least 1")
             if (focused && partitionedVariant) throw UsageException("--focused measures CHOSEN only; it takes no --partitioned-variant")
+            if (focusedCohort && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
+                throw UsageException("the closed cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
+            }
             if (partitionedVariant && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
                 throw UsageException("the partitioned cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
             }
@@ -396,6 +422,11 @@ data class BenchmarkOptions(
                                               --workspaces 10000 (with the cohort shares) --duration-seconds 60
                                               --no-reference; times the T1 lock hold per event and reports it with the
                                               T1 statement time and the T1 p99 (FOCUSED.md beside the evidence)
+              --focused-cohort                as --focused, on the beta's production state: the closed cohort (30
+                                              participants + 1 legacy, pool reserved and approved, so REQUIRED), every
+                                              event to those 31 workspaces, mode a
+              --t1-steps                      time T1 step by step in any run (lock, snapshot, decision, insert, commit;
+                                              `t1Steps` in the evidence), observing T1's statements without changing them
 
             Output:
               --host-class <text>             operator-supplied host class, recorded in the evidence
