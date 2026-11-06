@@ -261,4 +261,46 @@ class DeployedConfigurationTest {
                 "reap healthy transactions, and far above it stops bounding a partitioned node usefully",
         )
     }
+
+    /** The `  limits:` block of the deployed layer (first document), up to the next two-space key. */
+    private fun limitsBlock(text: String): String? =
+        Regex("""(?m)^  limits:\n((?:    .*\n|\s*\n)+)""").find(text.split(Regex("(?m)^---\\s*$")).first())?.groupValues?.get(1)
+
+    @Test
+    fun `both deployables carry the same closed-beta INGEST envelope in the shared deployed layer (ADR-035 amendment D)`() {
+        val blocks = deployedProfiles.map { it to limitsBlock(it.readText()) }
+        assertAll(
+            blocks.map { (file, block) ->
+                {
+                    assertTrue(block != null, "${file.name}: the deployed layer must declare testinbox.limits (the beta envelope)")
+                    val text = block.orEmpty()
+                    for (expected in listOf(
+                        "capacity: \${TESTINBOX_LIMITS_INGEST_CAPACITY:60}",
+                        "refill-per-second: \${TESTINBOX_LIMITS_INGEST_REFILL_PER_SECOND:1.0}",
+                        "capacity: \${TESTINBOX_LIMITS_INGEST_PER_INBOX_CAPACITY:30}",
+                        "refill-per-second: \${TESTINBOX_LIMITS_INGEST_PER_INBOX_REFILL_PER_SECOND:0.5}",
+                    )) {
+                        assertTrue(text.contains(expected), "${file.name}: the beta envelope must contain '$expected'")
+                    }
+                    // Undeclared means refused under ALL: R_gated and L have no default anywhere.
+                    val shared = file.readText()
+                    assertTrue(shared.contains("gated-expected-rate: \${TESTINBOX_STORAGE_GATED_EXPECTED_RATE:}"), file.name)
+                    assertTrue(shared.contains("declared-legacy-workspaces: \${TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES:}"), file.name)
+                    assertFalse(
+                        productionDocument(file).contains("limits:"),
+                        "${file.name}: the envelope is shared by staging and production; a production-only copy would drift",
+                    )
+                }
+            } +
+                {
+                    assertEquals(blocks[0].second, blocks[1].second, "the API and the gateway must carry the identical INGEST envelope")
+                } +
+                baseProfiles.map { base ->
+                    {
+                        // Development keeps the library defaults (300/10, 60/2).
+                        assertTrue(limitsBlock(base.readText()) == null, "${base.path}: the base profile must not set the beta envelope")
+                    }
+                },
+        )
+    }
 }
