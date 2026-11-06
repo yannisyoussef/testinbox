@@ -1,5 +1,6 @@
 package email.testinbox.benchmark
 
+import email.testinbox.application.storage.AdmissionAccounting
 import email.testinbox.application.storage.AdmissionLocking
 import email.testinbox.application.storage.FilesystemDeclarations
 import email.testinbox.application.storage.StorageDeclarations
@@ -55,7 +56,7 @@ object HarnessDeclarations {
         referenceMode: ReferenceMode,
     ): StorageEnforcement =
         when (mode) {
-            AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED -> {
+            AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED, AdmissionMode.ESCROW -> {
                 StorageEnforcement.ALL
             }
 
@@ -74,14 +75,20 @@ object HarnessDeclarations {
     fun locking(mode: AdmissionMode): AdmissionLocking =
         if (mode == AdmissionMode.PARTITIONED) AdmissionLocking.COHORT_PARTITIONED else AdmissionLocking.GLOBAL
 
+    /** The accounting each harness mode declares: the escrow variant is ESCROW (ADR-038 PROPOSED), everything else mode a. */
+    fun accounting(mode: AdmissionMode): AdmissionAccounting =
+        if (mode == AdmissionMode.ESCROW) AdmissionAccounting.ESCROW else AdmissionAccounting.GLOBAL
+
     fun of(
         enforcement: StorageEnforcement,
         monitorRole: String,
         locking: AdmissionLocking = AdmissionLocking.GLOBAL,
+        accounting: AdmissionAccounting = AdmissionAccounting.GLOBAL,
     ): StorageDeclarations =
         StorageDeclarations(
             enforcement = enforcement,
             admissionLocking = locking,
+            admissionAccounting = accounting,
             globalLimitBytes = 1L shl 50,
             declaredBucketQuotaBytes = 1L shl 50,
             declaredMaxIngestionProcesses = PROCESSES,

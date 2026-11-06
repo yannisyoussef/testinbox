@@ -2,6 +2,8 @@ package email.testinbox.benchmark
 
 import email.testinbox.application.TestInboxConfig
 import email.testinbox.application.port.BlobStore
+import email.testinbox.application.port.EscrowInputs
+import email.testinbox.application.port.EscrowRegrantKind
 import email.testinbox.application.port.IncompleteUpload
 import email.testinbox.application.port.PhysicalFailureKind
 import email.testinbox.application.port.ReservedUpload
@@ -25,13 +27,17 @@ import email.testinbox.application.storage.StorageNodeLifecycle
 import email.testinbox.application.storage.StorageProtocol
 import email.testinbox.application.storage.WriteSlots
 import email.testinbox.application.usecase.CompactStorageLedger
+import email.testinbox.application.usecase.EscrowAdmission
 import email.testinbox.application.usecase.ExpireInboxes
+import email.testinbox.application.usecase.RefillStorageEscrow
 import email.testinbox.application.usecase.StorageAdmission
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.storage.InboxShare
 import email.testinbox.domain.storage.StorageCapacityPolicy
 import email.testinbox.domain.storage.StorageEnforcement
+import email.testinbox.persistence.EscrowSlowPath
+import email.testinbox.persistence.JdbcEscrowAdmission
 import email.testinbox.persistence.JdbcExactAddressReservations
 import email.testinbox.persistence.JdbcInboxRepository
 import email.testinbox.persistence.JdbcMessageRepository
@@ -72,6 +78,15 @@ class EventTimings {
     /** `--t1-steps` / `--focused` only ([HoldTiming]): T1's steps, stamped as they happen; empty otherwise. */
     val steps = T1StepClock()
 
+    /** `--escrow-variant` only: the fast path's steps ([HoldTiming], [TimingEscrowStore]). */
+    val escrow = EscrowStepClock()
+
+    /** `--escrow-variant` only: the stub `t1_schedule` spend ([ScheduleStubHook]), inside completion − due. */
+    @Volatile var scheduleNanos: Long = 0
+
+    /** Stub spends of this event: one per T1 attempt (OD-5). Written on the event's own thread only. */
+    @Volatile var scheduleSpends: Int = 0
+
     companion object {
         val current: ThreadLocal<EventTimings?> = ThreadLocal()
     }
@@ -95,7 +110,9 @@ class TimingAdmissionStore(
         } finally {
             val end = System.nanoTime()
             EventTimings.current.get()?.let {
-                it.t1Nanos = end - started
+                // An escrow event that escalated: T1 began with its fast attempt (0 under mode a).
+                val begun = if (it.escrow.escalated && it.escrow.start != 0L) it.escrow.start else started
+                it.t1Nanos = end - begun
                 it.t1EndNanos = end
             }
         }
@@ -255,9 +272,51 @@ class ProtocolAssembly(
                 },
         ) { ambiguity.unresolvedFor(node.nodeId) }
 
-    /** The T1 adapter this mode runs: exactly production's for CHOSEN (see [admissionStore]). */
+    // Generous: nothing is refused, so every T1 inserts and every event reaches T2. The lock and the rows are what is measured.
+    private val policy =
+        when (mode) {
+            AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED, AdmissionMode.ESCROW -> {
+                StorageCapacityPolicy(
+                    1L shl 40,
+                    InboxShare.of("1"),
+                    1L shl 50,
+                    0,
+                )
+            }
+
+            // No global ceiling: an effectively unlimited G.
+            AdmissionMode.REFERENCE -> {
+                StorageCapacityPolicy(1L shl 40, InboxShare.of("1"), Long.MAX_VALUE, 0)
+            }
+        }
+
+    /** `--escrow-variant`: the escrow's closed-label signals for this scenario (NON-GATE). */
+    val escrowMetrics = RecordingEscrowMetrics()
+
+    /** The escrow's application inputs: mode a's own policy and footprint model (the scope rows' binding). */
+    val escrowInputs: EscrowInputs? =
+        if (mode ==
+            AdmissionMode.ESCROW
+        ) {
+            EscrowInputs(policy.workspaceLimitBytes, policy.inboxShare.value, checkNotNull(footprint).model)
+        } else {
+            null
+        }
+
+    /** The T1 adapter this mode runs: exactly production's for CHOSEN (see [admissionStore]); for ESCROW, mode a with the slow-path strategy. */
     val store: JdbcStorageAdmission =
-        admissionStore(jdbc, template, mode, options.referenceMode, declarations) { reason ->
+        admissionStore(
+            jdbc,
+            template,
+            mode,
+            options.referenceMode,
+            declarations,
+            escrowInputs?.let { inputs ->
+                EscrowSlowPath(jdbc, inputs) { regrant, duration ->
+                    escrowMetrics.regrant(EscrowRegrantKind.SLOW_PATH, duration, regrant.granted)
+                }
+            },
+        ) { reason ->
             fallbackReasons
                 .computeIfAbsent(reason.name) {
                     java.util.concurrent.atomic
@@ -281,17 +340,31 @@ class ProtocolAssembly(
         email.testinbox.persistence.JdbcRateLimiter(jdbc, transactionManager) { category, perInbox -> limits.rateFor(category, perInbox) }
     }
 
-    // Generous: nothing is refused, so every T1 inserts and every event reaches T2. The lock and the rows are what is measured.
-    private val policy =
-        when (mode) {
-            AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED -> StorageCapacityPolicy(1L shl 40, InboxShare.of("1"), 1L shl 50, 0)
+    /** ESCROW: the stub `t1_schedule` (benchmark-only, correctness 11; one token per T1 attempt, OD-5). */
+    private val scheduleStub: ScheduleStub? = if (mode == AdmissionMode.ESCROW) ScheduleStub(jdbc) else null
 
-            // No global ceiling: an effectively unlimited G.
-            AdmissionMode.REFERENCE -> StorageCapacityPolicy(1L shl 40, InboxShare.of("1"), Long.MAX_VALUE, 0)
+    /** ESCROW: the fast-path adapter over [store] (injected, never constructed by it, M3). */
+    val escrowStore: JdbcEscrowAdmission? = escrowInputs?.let { JdbcEscrowAdmission(jdbc, template, store) }
+
+    /** ESCROW: the keeper's use case. */
+    val escrowRefill: RefillStorageEscrow? = escrowStore?.let { RefillStorageEscrow(it, checkNotNull(footprint), escrowMetrics) }
+
+    /**
+     * Production's construction: `FootprintWiring.admission(store, policy, declarations)`, with the store timed.
+     * ESCROW (NON-GATE prototype): the same use case with its escrow part; the fast path is timed as T1 too.
+     */
+    val admission: StorageAdmission =
+        if (escrowStore != null) {
+            StorageAdmission(
+                TimingAdmissionStore(store),
+                policy,
+                declarations.enforcement,
+                footprint = footprint,
+                escrow = EscrowAdmission(TimingEscrowStore(escrowStore, scheduleStub), checkNotNull(escrowInputs), escrowMetrics),
+            )
+        } else {
+            FootprintWiring.admission(TimingAdmissionStore(store), policy, declarations)
         }
-
-    /** Production's construction: `FootprintWiring.admission(store, policy, declarations)`, with the store timed. */
-    val admission: StorageAdmission = FootprintWiring.admission(TimingAdmissionStore(store), policy, declarations)
 
     val guarded =
         GuardedStorage(
@@ -307,6 +380,8 @@ class ProtocolAssembly(
             transactions = TimingTransactionRunner(SpringTransactionRunner(transactionManager)),
             clock = reservations,
             metrics = metrics,
+            // ESCROW: the stub t1_schedule spend after the slot, before T1 (benchmark-only, correctness 11).
+            hook = scheduleStub?.let(::ScheduleStubHook) ?: email.testinbox.application.storage.IngestSyncHook.NONE,
         )
 
     val messages = JdbcMessageRepository(jdbc)
@@ -342,23 +417,99 @@ class ProtocolAssembly(
         val probe =
             store.admit(scope) { snapshot ->
                 StorageAdmissionPlan(
-                    emptyList(),
-                    T1Probe(
-                        mode = mode,
-                        storeClass = store.javaClass.name,
-                        enforcement = declarations.enforcement,
-                        readsFootprint = store.readsFootprint,
-                        footprintRead = snapshot.footprint != null,
-                        footprintUnavailable = footprint?.unavailability(snapshot.footprint)?.name,
-                        cohortRequired = snapshot.footprint?.cohort?.required,
-                        snapshotStatementSha256 = sha256(statement),
-                        budgetedWorkspaces = snapshot.budgets.size,
-                        inactiveWorkspaces = snapshot.inactiveWorkspaces.size,
-                        locking = store.locking,
-                    ),
+                    escrowNotReady = footprint?.unavailability(snapshot.footprint)?.name?.lowercase(),
+                    reservations = emptyList(),
+                    outcome =
+                        T1Probe(
+                            mode = mode,
+                            storeClass = store.javaClass.name,
+                            enforcement = declarations.enforcement,
+                            readsFootprint = store.readsFootprint,
+                            footprintRead = snapshot.footprint != null,
+                            footprintUnavailable = footprint?.unavailability(snapshot.footprint)?.name,
+                            cohortRequired = snapshot.footprint?.cohort?.required,
+                            snapshotStatementSha256 = sha256(statement),
+                            budgetedWorkspaces = snapshot.budgets.size,
+                            inactiveWorkspaces = snapshot.inactiveWorkspaces.size,
+                            locking = store.locking,
+                        ),
                 )
             }
         return probe.copy(partitioned = store.partitionedAdmissions == partitionedBefore + 1)
+    }
+
+    /**
+     * ESCROW: the policy row, as the operator's pool reserve would write it (§4.1), from this
+     * assembly's own policy and footprint declarations: `G − H`, rules (G)/(C)/(P)'s figures,
+     * the model, `Q_lane` (256 MiB payload, §9.4; footprint 4 × that), `K_max` = 32, and this
+     * node as the one ingestion node lanes exist for.
+     */
+    fun setEscrowPolicy() {
+        val inputs = checkNotNull(escrowInputs)
+        val fp = checkNotNull(footprint)
+        jdbc
+            .sql(
+                "SELECT storage_escrow_set_policy(:b, :gp, :gf, :hf, :c, :pf, :m, :r, :bs, :den, :omax, :qp, :qf, :k, " +
+                    "ARRAY[:node]::text[], interval '5 minutes', make_interval(secs => :age))",
+            ).param("b", inputs.binding)
+            .param("gp", policy.globalAdmissionCapBytes)
+            .param("gf", fp.limits.globalFootprintLimitBytes)
+            .param("hf", fp.limits.finalizeBudgetBytes)
+            .param("c", fp.limits.capacityBytes)
+            .param("pf", fp.limits.probeBudgetBytes)
+            .param("m", fp.limits.metadataBudgetBytes)
+            .param("r", fp.limits.operationalReserveBytes)
+            .param("bs", fp.model.blockSizeBytes)
+            .param("den", fp.model.fragmentationDenominator)
+            .param("omax", fp.model.objectOverheadMaxBytes)
+            .param("qp", ESCROW_Q_LANE_PAYLOAD)
+            .param("qf", 4 * ESCROW_Q_LANE_PAYLOAD)
+            .param("k", ESCROW_K_MAX)
+            .param("node", node.nodeId)
+            .param("age", checkNotNull(declarations.filesystem.observationMaxAge).seconds.toDouble())
+            .query()
+            .singleRow()
+    }
+
+    /**
+     * ESCROW integrity (G5, reduced to the prototype): E4 (`L_P + Σ spendable lane payload ≤ G − H`)
+     * and E1/E2 for every spendable scope row against mode a's limits derived here, never the stamped ones.
+     */
+    fun escrowAudit(): Map<String, Long> {
+        val inputs = checkNotNull(escrowInputs)
+        val e4Slack =
+            jdbc
+                .sql(
+                    "SELECT :cap - ((SELECT coalesce(sum(base_bytes),0) FROM workspace_storage_account) + " +
+                        "(SELECT coalesce(sum(bytes),0) FROM storage_delta) + (SELECT coalesce(sum(bytes),0) FROM storage_reservation) + " +
+                        "(SELECT coalesce(sum(l.payload_avail),0) FROM storage_escrow_lane l, storage_admission_epoch e WHERE e.id = 1 " +
+                        "AND l.epoch = e.epoch AND l.generation = e.generation AND l.ready AND l.valid_until > clock_timestamp()))",
+                ).param("cap", policy.globalAdmissionCapBytes)
+                .query(Long::class.java)
+                .single()
+        val scopeViolations =
+            jdbc
+                .sql(
+                    """
+                    SELECT count(*) FROM storage_escrow_scope s, storage_admission_epoch e
+                     WHERE e.id = 1 AND s.kind = 'W' AND s.active AND s.binding = :binding AND s.generation = e.generation
+                       AND s.scope_epoch = e.scope_epoch
+                       AND coalesce((SELECT base_bytes FROM workspace_storage_account WHERE workspace_id = s.scope_id), 0)
+                         + coalesce((SELECT sum(bytes) FROM storage_delta WHERE workspace_id = s.scope_id), 0)
+                         + coalesce((SELECT sum(bytes) FROM storage_reservation WHERE workspace_id = s.scope_id), 0)
+                         + s.payload_avail
+                         > least(:max, coalesce((SELECT payload_limit_bytes FROM participant_workspace WHERE workspace_id = s.scope_id),
+                                                (SELECT payload_limit_bytes FROM storage_legacy_share WHERE workspace_id = s.scope_id), :max))
+                    """.trimIndent(),
+                ).param("binding", inputs.binding)
+                .param("max", policy.workspaceLimitBytes)
+                .query(Long::class.java)
+                .single()
+        return linkedMapOf(
+            "e4SlackBytes" to e4Slack,
+            "workspaceRowsOverLimit" to scopeViolations,
+            "violations" to (if (e4Slack < 0) 1 else 0) + scopeViolations,
+        )
     }
 
     /** One production heartbeat of this assembly's node. */
@@ -369,6 +520,10 @@ class ProtocolAssembly(
     }
 
     companion object {
+        /** `Q_lane` (§9.4's proposed value) and `K_max` (one process plus one stranded generation). */
+        const val ESCROW_Q_LANE_PAYLOAD = 256L shl 20
+        const val ESCROW_K_MAX = 32
+
         /**
          * The T1 adapter for [mode], built from [declarations] exactly as
          * `IngestionWiring.storageAdmission` builds production's:
@@ -381,10 +536,22 @@ class ProtocolAssembly(
             mode: AdmissionMode,
             referenceMode: ReferenceMode,
             declarations: StorageDeclarations,
+            escrow: EscrowSlowPath? = null,
             onFallback: (email.testinbox.application.storage.PartitionFallbackReason) -> Unit = {},
         ): JdbcStorageAdmission {
             val readsFootprint = FootprintWiring.readsFootprint(declarations)
             return when (mode) {
+                // NON-GATE prototype: mode a's adapter with the escrow strategy (null under GLOBAL, as everywhere else).
+                AdmissionMode.ESCROW -> {
+                    JdbcStorageAdmission(
+                        jdbc,
+                        template,
+                        readsFootprint = readsFootprint,
+                        locking = declarations.admissionLocking,
+                        escrow = checkNotNull(escrow) { "the escrow variant needs its slow-path strategy" },
+                    )
+                }
+
                 // Both exactly IngestionWiring.storageAdmission's construction: the switch is the
                 // declared `admission-locking`, GLOBAL for CHOSEN, COHORT_PARTITIONED for the variant.
                 AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED -> {

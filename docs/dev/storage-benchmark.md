@@ -598,6 +598,40 @@ TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK=I_UNDERSTAND_THIS_DESTROYS_THE_TARGET_DATABA
 Laptop focused figures are indicative only; the dev host is about three
 times slower per statement than an Apple-silicon laptop.
 
+## Slot-lane escrow M1 prototype (`--escrow-variant`, NON-GATE)
+
+ADR-038 is **Proposed**; the owner authorized design and prototype work, not
+production activation or participant admission
+(`docs/dev/structural-admission-design.md` §12). `--escrow-variant` needs
+`--focused-cohort` and is never gate or ADR evidence (`adrEvidence: false`).
+
+- **Mode a first, on a pristine schema.** The closed cohort's mode a scenarios run
+  before anything escrow-related exists. Only then does the harness apply
+  **V28-proto** (`benchmark/src/main/resources/escrow-proto/`) to its own disposable
+  database, after Flyway. That file is never in `db/migration` and is never merged
+  onto a migration path.
+- **Then the escrow at the same points.** The same use case with its escrow part:
+  fast path (`storage_escrow_lock`, `storage_escrow_admit` + COMMIT), escalation to
+  mode a's slow path behind the drain fence (insert, then regrant), the per-node
+  keeper (NOTIFY on a session connection, background scope refill), a synthetic
+  lane-epoch bump every `--escrow-lane-bump-seconds` (default 60), and the stub
+  `t1_schedule` spend (`bench_t1_schedule`, one global row, own transaction, after
+  the slot, before T1) inside the T1 latency G1 reads.
+- **Reported apart** under `variant` and in `ESCROW.md`: mode a vs escrow per point,
+  the fast path's steps split cold/warm by the lock statement's connection, the
+  slow path's steps, path and escalation-reason counters, inline refills by
+  kind and cause, scope-row lock waits, regrants by kind with durations, the stub's
+  cost, and an end-of-scenario audit (E4 and the workspace rows' E2).
+- **Loads.** The gate loads stay R = 31 and 2R = 62/s; any point above 62/s is
+  labelled **STRESS DIAGNOSTIC: not a criterion** and never enters a GO/STOP reading.
+
+```
+# NON-GATE: mode a, then the escrow prototype, on a disposable database
+storage-benchmark --jdbc-url <disposable db> --username <user> --create-database --out <dir> \
+  --focused-cohort --escrow-variant --rates 62 --concurrency 10,25,50,100 \
+  --duration-seconds 60 --pool-max-lifetime 30s --host-class "<host class> (NON-GATE SLE prototype)"
+```
+
 ## Evidence JSON (`schemaVersion` 1)
 
 Another script reads `verdict` and recomputes `criteria` from `scenarios`.

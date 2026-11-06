@@ -36,10 +36,18 @@ object HoldTiming {
     private const val SNAPSHOT_MARK = "SELECT 'GLOBAL' AS scope"
     private const val INSERT_PREFIX = "INSERT INTO storage_reservation"
 
+    // --escrow-variant (slot-lane escrow prototype, NON-GATE): the slow path's drain fence is its lock;
+    // the fast path's configure batch, lock statement and admit batch are its own steps.
+    private const val FENCE_PREFIX = "SELECT storage_t1_fence("
+    private const val ESCROW_CONFIGURE_PREFIX = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SET LOCAL"
+    private const val ESCROW_LOCK_PREFIX = "SELECT * FROM storage_escrow_lock("
+    private const val ESCROW_ADMIT_MARK = "CALL storage_escrow_admit("
+    private const val ESCROW_REGRANT_PREFIX = "SELECT * FROM storage_escrow_regrant("
+
     fun wrap(
         dataSource: DataSource,
         ledger: ConnectionLedger = ConnectionLedger(),
-    ): DataSource = proxy(dataSource, DataSource::class.java, DataSourceHandler(dataSource, ledger))
+    ): DataSource = proxy(dataSource, DataSource::class.java, DataSourceHandler(dataSource, ledger, ConnectionLedger()))
 
     @Suppress("UNCHECKED_CAST")
     private fun <T> proxy(
@@ -63,6 +71,8 @@ object HoldTiming {
     private class DataSourceHandler(
         private val target: DataSource,
         private val ledger: ConnectionLedger,
+        /** The escrow lock statement's executions, kept apart so the snapshot ledger's phase figures stay mode a's. */
+        private val escrowLedger: ConnectionLedger,
     ) : InvocationHandler {
         override fun invoke(
             proxy: Any,
@@ -71,7 +81,7 @@ object HoldTiming {
         ): Any? {
             val result = forward(target, method, args)
             return if (method.name == "getConnection" && result is Connection) {
-                proxy(result, Connection::class.java, ConnectionHandler(result, physical(result), ledger))
+                proxy(result, Connection::class.java, ConnectionHandler(result, physical(result), ledger, escrowLedger))
             } else {
                 result
             }
@@ -86,6 +96,7 @@ object HoldTiming {
         private val target: Connection,
         private val physical: Any,
         private val ledger: ConnectionLedger,
+        private val escrowLedger: ConnectionLedger,
     ) : InvocationHandler {
         override fun invoke(
             proxy: Any,
@@ -103,7 +114,12 @@ object HoldTiming {
             val result = forward(target, method, args)
             val step = (args?.firstOrNull() as? String)?.let(::kindOf)
             return if (method.name == "prepareStatement" && result is PreparedStatement && step != null) {
-                val counted = if (step == Step.SNAPSHOT) Counted(ledger, physical, args!!.first() as String) else null
+                val counted =
+                    when (step) {
+                        Step.SNAPSHOT -> Counted(ledger, physical, args!!.first() as String)
+                        Step.ESCROW_LOCK -> Counted(escrowLedger, physical, args!!.first() as String)
+                        else -> null
+                    }
                 proxy(result, PreparedStatement::class.java, StatementHandler(result, step, counted))
             } else {
                 result
@@ -112,7 +128,11 @@ object HoldTiming {
 
         private fun kindOf(sql: String): Step? =
             when {
-                sql.startsWith(LOCK_PREFIX) -> Step.LOCK
+                sql.startsWith(LOCK_PREFIX) || sql.startsWith(FENCE_PREFIX) -> Step.LOCK
+                sql.startsWith(ESCROW_CONFIGURE_PREFIX) -> Step.ESCROW_CONFIGURE
+                sql.startsWith(ESCROW_LOCK_PREFIX) -> Step.ESCROW_LOCK
+                sql.contains(ESCROW_ADMIT_MARK) -> Step.ESCROW_ADMIT
+                sql.startsWith(ESCROW_REGRANT_PREFIX) -> Step.ESCROW_REGRANT
                 sql.contains(SNAPSHOT_MARK) -> Step.SNAPSHOT
                 sql.trimStart().startsWith(INSERT_PREFIX) -> Step.INSERT
                 else -> null
@@ -141,10 +161,30 @@ object HoldTiming {
             val timings = EventTimings.current.get() ?: return forward(target, method, args)
             val started = System.nanoTime()
             val result = forward(target, method, args)
-            timings.steps.statement(step, started, System.nanoTime(), ordinal)
+            val ended = System.nanoTime()
+            if (step.escrow) {
+                timings.escrow.statement(
+                    step,
+                    started,
+                    ended,
+                    ordinal,
+                )
+            } else {
+                timings.steps.statement(step, started, ended, ordinal)
+            }
             return result
         }
     }
 
-    enum class Step { LOCK, SNAPSHOT, INSERT }
+    enum class Step(
+        val escrow: Boolean = false,
+    ) {
+        LOCK,
+        SNAPSHOT,
+        INSERT,
+        ESCROW_CONFIGURE(true),
+        ESCROW_LOCK(true),
+        ESCROW_ADMIT(true),
+        ESCROW_REGRANT(true),
+    }
 }

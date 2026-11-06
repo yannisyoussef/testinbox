@@ -55,6 +55,9 @@ object AdrConformance {
         if (options.focused) {
             reasons += "--focused: a focused A′ measurement, never gate evidence"
         }
+        if (options.escrowVariant) {
+            reasons += "--escrow-variant: the slot-lane escrow M1 prototype (ADR-038 PROPOSED), NON-GATE"
+        }
         reasons += poolLifecycle(options)
         return reasons
     }

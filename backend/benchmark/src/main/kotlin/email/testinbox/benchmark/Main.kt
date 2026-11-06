@@ -107,7 +107,7 @@ class Harness(
             val gate = GateEvaluator(expectedRate = options.expectedRate).evaluate(results, nonAdr)
             // The variant, read by the same criteria against the same NO_LOCK references, for information only.
             val variantGate =
-                if (variantResults.isEmpty()) {
+                if (variantResults.none { it.mode == AdmissionMode.PARTITIONED }) {
                     null
                 } else {
                     GateEvaluator(expectedRate = options.expectedRate).evaluate(
@@ -171,6 +171,11 @@ class Harness(
                 val focused = FocusedReport.render(results, options)
                 Files.writeString(directory.resolve(FocusedReport.FILE), focused)
                 println(focused)
+            }
+            if (options.escrowVariant) {
+                val escrow = EscrowReport.render(results, variantResults.filter { it.mode == AdmissionMode.ESCROW }, options)
+                Files.writeString(directory.resolve(EscrowReport.FILE), escrow)
+                println(escrow)
             }
             println("evidence: ${json.toAbsolutePath()}")
             println("summary:  ${markdown.toAbsolutePath()}")
@@ -244,6 +249,16 @@ class Harness(
             for (rate in options.rates) {
                 for (concurrency in options.concurrency) {
                     results += runner.run(ScenarioSpec(AdmissionMode.CHOSEN, concurrency, rate))
+                }
+            }
+            // --escrow-variant (NON-GATE): only now, after every mode a scenario, V28-proto is applied to this
+            // disposable database (never by Flyway, never on a migration path), and the escrow runs the same points.
+            if (options.escrowVariant) {
+                EscrowProto.apply(adminPool)
+                for (rate in options.rates) {
+                    for (concurrency in options.concurrency) {
+                        variantResults += runner.run(ScenarioSpec(AdmissionMode.ESCROW, concurrency, rate))
+                    }
                 }
             }
             val statements = linkedMapOf("CHOSEN (production T1, readsFootprint = true), closed cohort" to productionStatement)

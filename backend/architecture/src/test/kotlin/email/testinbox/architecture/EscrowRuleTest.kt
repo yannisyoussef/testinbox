@@ -54,7 +54,6 @@ class EscrowRuleTest {
                 "email.testinbox.persistence.EscrowSlowPath",
                 "email.testinbox.benchmark.ProtocolAssembly",
                 "email.testinbox.benchmark.ProtocolAssembly\$Companion",
-                "email.testinbox.benchmark.EscrowAssembly",
             )
 
         /** Who may name ESCROW: the enum, DeploymentSafety's storage checks, and the benchmark's declarations. */
@@ -70,6 +69,8 @@ class EscrowRuleTest {
             setOf(
                 "email.testinbox.application.usecase.EscrowAdmission",
                 "email.testinbox.application.usecase.RefillStorageEscrow",
+                // The §11 benchmark's timing decorator: it only forwards, around the use case's own call.
+                "email.testinbox.benchmark.TimingEscrowStore",
             )
 
         /** The port's operations, by name: an implementation's own helpers are not calls into the port. */

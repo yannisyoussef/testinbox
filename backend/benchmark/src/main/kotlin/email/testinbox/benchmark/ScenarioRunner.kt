@@ -144,6 +144,7 @@ class ScenarioRunner(
                     HarnessDeclarations.enforcement(spec.mode, options.referenceMode),
                     monitorRole,
                     HarnessDeclarations.locking(spec.mode),
+                    HarnessDeclarations.accounting(spec.mode),
                 )
             val protocol = ProtocolAssembly(pool, options, spec.mode, declarations, onClosedCohort = closedCohort != null)
             hotWorkspace = spec.hot || spec.probe
@@ -153,6 +154,8 @@ class ScenarioRunner(
             if (spec.probe) admin.sql("DELETE FROM rate_bucket").update()
             try {
                 val probe = prepare(protocol, name, spec.mode)
+                // ESCROW (NON-GATE): the keeper and the synthetic lane-epoch bump run through warm-up and the phase.
+                val escrowRun = if (spec.mode == AdmissionMode.ESCROW) EscrowRun(protocol).also { it.start() } else null
 
                 warmUp(protocol, spec)
                 // --cold-pool (the default): new physical connections, never warmed; --warm-pool: warmed past prepareThreshold.
@@ -162,6 +165,8 @@ class ScenarioRunner(
                 )
 
                 errors.clear().also { diagnostics?.resetStatements() } // warm-up failures and statements are not the scenario's
+                protocol.escrowMetrics.reset()
+                escrowRun?.startPhase()
                 scenarioPool.startPhase()
                 val records = Collections.synchronizedList(ArrayList<EventRecord>())
                 val retentionLatencies = Collections.synchronizedList(ArrayList<Long>())
@@ -191,6 +196,7 @@ class ScenarioRunner(
                 compactor.shutdownNow()
                 deltaSampler.shutdownNow()
                 heartbeats?.shutdownNow()
+                escrowRun?.stop()
                 val t1Statement = diagnostics?.t1Stats()
                 // --focused: the plan the run's statistics give T1 now, before the backlog is restored.
                 val planNow = if (options.focused) diagnostics?.planNow(protocol.statement, population) else null
@@ -230,6 +236,11 @@ class ScenarioRunner(
                             if (spec.mode == AdmissionMode.PARTITIONED) protocol.fallbackReasons.mapValues { it.value.get() } else null,
                         probes = probes?.summaries(),
                         background = background?.summary(),
+                        escrow =
+                            escrowRun?.report(
+                                spec.offeredRate,
+                                records.filter { it.failure == null }.map { TimedEvent(it.dueNanos, it.timings) },
+                            ),
                     )
                 log.info(
                     "scenario {} done: offered {} achieved {} T1 p99 {} ms, lock timeouts {}, deadlocks {}, {}",
@@ -247,6 +258,99 @@ class ScenarioRunner(
                 protocol.stop()
             }
         }
+    }
+
+    /**
+     * The escrow variant's background (NON-GATE): the node's keeper ([EscrowKeeper], NOTIFY on a
+     * session connection of its own, [PgEscrowSignals]) and the synthetic lane-epoch bump of §12.2.
+     */
+    private inner class EscrowRun(
+        private val protocol: ProtocolAssembly,
+    ) {
+        private val signals = email.testinbox.notification.PgEscrowSignals(target.jdbcUrl, target.username, target.password)
+        private val objectsPerCopy = 2L
+        private val keeper =
+            email.testinbox.application.storage.EscrowKeeper(
+                checkNotNull(protocol.escrowRefill),
+                signals,
+                protocol.node.nodeId,
+                scopeLowPayload = bytesPerCopy * options.recipientMix.maxRecipients,
+                scopeLowFootprint =
+                    checkNotNull(protocol.footprint).model.bound(bytesPerCopy, objectsPerCopy) * options.recipientMix.maxRecipients,
+            )
+        private val thread = Thread(keeper, "bench-escrow-keeper").apply { isDaemon = true }
+        private val bumps = AtomicLong()
+        private var bumper: ScheduledExecutorService? = null
+        private var globalAtPhase = 0L
+        private var scopeAtPhase = 0L
+        private var failuresAtPhase = 0L
+
+        fun start() {
+            thread.start()
+            val period = options.escrowLaneBumpSeconds.toLong()
+            if (period > 0) {
+                bumper =
+                    Executors.newSingleThreadScheduledExecutor { Thread(it, "bench-escrow-bump").apply { isDaemon = true } }.also {
+                        it.scheduleWithFixedDelay(
+                            {
+                                runCatching {
+                                    admin.sql("SELECT storage_escrow_bump_for_benchmark(true, false)").query().singleRow()
+                                    bumps.incrementAndGet()
+                                }
+                            },
+                            period,
+                            period,
+                            TimeUnit.SECONDS,
+                        )
+                    }
+            }
+        }
+
+        fun startPhase() {
+            bumps.set(0)
+            globalAtPhase = keeper.globalRefills.get()
+            scopeAtPhase = keeper.scopeRefills.get()
+            failuresAtPhase = keeper.failures.get()
+        }
+
+        fun stop() {
+            bumper?.shutdownNow()
+            keeper.stop()
+            thread.join(STOP_MILLIS)
+            signals.close()
+        }
+
+        fun report(
+            rate: Double,
+            events: List<TimedEvent>,
+        ): EscrowScenarioReport =
+            EscrowScenarioReport.of(
+                rate = rate,
+                events = events,
+                metrics = protocol.escrowMetrics,
+                threshold = PoolLifecycle.PREPARE_THRESHOLD,
+                keeper =
+                    linkedMapOf(
+                        "globalRefills" to keeper.globalRefills.get() - globalAtPhase,
+                        "backgroundScopeRefills" to keeper.scopeRefills.get() - scopeAtPhase,
+                        "failures" to keeper.failures.get() - failuresAtPhase,
+                        "listenDegradedAtEnd" to (if (signals.degraded) 1L else 0L),
+                    ),
+                laneEpochBumps = bumps.get(),
+                settings =
+                    linkedMapOf(
+                        "audit" to protocol.escrowAudit(),
+                        "qLanePayloadBytes" to ProtocolAssembly.ESCROW_Q_LANE_PAYLOAD,
+                        "kMax" to ProtocolAssembly.ESCROW_K_MAX,
+                        "scopeWaitMs" to
+                            email.testinbox.persistence.JdbcEscrowAdmission.DEFAULT_SCOPE_WAIT
+                                .toMillis(),
+                        "laneEpochBumpSeconds" to options.escrowLaneBumpSeconds,
+                        "scheduleStub" to
+                            "bench_t1_schedule: one global row, own transaction, one token per T1 attempt (OD-5): after the slot " +
+                            "before the fast attempt, and again before the slow path of an escalated event",
+                    ),
+            )
     }
 
     /** Retention sweeps, open loop on their own thread: a starved sweep is counted, never a sample. */
@@ -362,6 +466,8 @@ class ScenarioRunner(
         // Production ALL's footprint inputs: trust, a fresh observation, the watermark.
         FootprintSeed.seed(admin)
         closedCohort?.heartbeat()
+        // ESCROW: the policy row before the probe, whose slow-path T1 then creates and grants the lanes.
+        if (mode == AdmissionMode.ESCROW) protocol.setEscrowPolicy()
         admin.sql("ANALYZE").update()
         return verifiedProbe(protocol, name, mode)
     }
@@ -702,6 +808,12 @@ class ScenarioRunner(
             copiesCommitted = ok.sumOf { it.copies.toLong() },
             t1 = latencies.t1,
             t1Transaction = latencies.t1Transaction,
+            t1TransactionMeanMs =
+                ok
+                    .filter { it.timings.t1EndNanos != 0L }
+                    .map { it.timings.t1Nanos / NANOS_PER_MILLI }
+                    .takeIf { it.isNotEmpty() }
+                    ?.average(),
             t2 = latencies.t2,
             event = LatencySummary.ofNanos(report.latencyNanos),
             retention = LatencySummary.ofNanos(o.retentionLatencies),
@@ -754,6 +866,9 @@ class ScenarioRunner(
         private const val RETENTION_HEADROOM = 1.5
         private const val ERROR_SAMPLES = 5
         private const val DELTA_SAMPLE_MILLIS = 250L
+
+        private const val STOP_MILLIS = 5_000L
+        private const val NANOS_PER_MILLI = 1_000_000.0
 
         /** StorageNodeRuntime's production heartbeat interval. */
         private const val HEARTBEAT_MILLIS = 10_000L

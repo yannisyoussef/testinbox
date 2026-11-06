@@ -14,6 +14,8 @@ plugins {
 dependencies {
     implementation(project(":application"))
     implementation(project(":persistence"))
+    // --escrow-variant only: the keeper's LISTEN on a session connection (PgEscrowSignals).
+    implementation(project(":notification"))
     implementation(platform(libs.spring.boot.dependencies))
     implementation(platform(libs.jackson3.bom))
     implementation(platform(libs.jackson2.bom))

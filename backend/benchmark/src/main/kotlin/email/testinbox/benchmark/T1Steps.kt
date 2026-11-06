@@ -65,6 +65,11 @@ class T1StepClock {
                     insertEnd = ended
                 }
             }
+
+            // The escrow variant's own steps are stamped on EscrowStepClock.
+            else -> {
+                Unit
+            }
         }
     }
 

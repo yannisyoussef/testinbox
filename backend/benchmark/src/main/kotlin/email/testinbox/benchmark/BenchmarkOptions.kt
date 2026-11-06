@@ -130,6 +130,15 @@ data class BenchmarkOptions(
     val coldPool: Boolean = true,
     /** `--pool-max-lifetime`: Hikari `maxLifetime` of the scenario pool; null is production's ([PoolLifecycle.PRODUCTION_MAX_LIFETIME]). */
     val poolMaxLifetime: Duration? = null,
+    /**
+     * `--escrow-variant` (with `--focused-cohort`): after mode a's scenarios, apply V28-proto to
+     * this disposable database and run the slot-lane escrow M1 PROTOTYPE (ADR-038 PROPOSED) at
+     * the same points, with the stub `t1_schedule` spend, the keeper and a synthetic lane-epoch
+     * bump. Reported under `variant` and in ESCROW.md: NON-GATE, never ADR evidence.
+     */
+    val escrowVariant: Boolean = false,
+    /** `--escrow-lane-bump-seconds`: the synthetic lane-epoch bump's period (§12.2 realism knob); 0 = none. */
+    val escrowLaneBumpSeconds: Int = 60,
 ) {
     /** Whether T1's statements are observed for [T1StepsSummary]. */
     val stepTiming: Boolean get() = t1Steps || focused
@@ -325,6 +334,18 @@ data class BenchmarkOptions(
                         options = options.copy(poolMaxLifetime = PoolLifecycle.parseDuration(value(flag)))
                     }
 
+                    "--escrow-variant" -> {
+                        options = options.copy(escrowVariant = true)
+                    }
+
+                    "--escrow-lane-bump-seconds" -> {
+                        options =
+                            options.copy(
+                                escrowLaneBumpSeconds =
+                                    value(flag).toIntOrNull()?.takeIf { it >= 0 } ?: throw UsageException("$flag needs a number >= 0"),
+                            )
+                    }
+
                     "--focused-cohort" -> {
                         options = focusedPreset(options).copy(focusedCohort = true)
                     }
@@ -402,6 +423,9 @@ data class BenchmarkOptions(
 
         private fun BenchmarkOptions.validateFocused() {
             if (focused && partitionedVariant) throw UsageException("--focused measures CHOSEN only; it takes no --partitioned-variant")
+            if (escrowVariant && !focusedCohort) {
+                throw UsageException("--escrow-variant runs on the closed cohort: it needs --focused-cohort (NON-GATE)")
+            }
             if (focusedCohort && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
                 throw UsageException("the closed cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
             }
@@ -466,6 +490,14 @@ data class BenchmarkOptions(
                                               `t1Steps` in the evidence), observing T1's statements without changing them,
                                               and attribute each T1 to a cold (first 5 executions on its physical
                                               connection) or warm connection (`t1Planning` in the evidence)
+
+            Slot-lane escrow M1 prototype (ADR-038 PROPOSED; NON-GATE, never ADR evidence):
+              --escrow-variant                with --focused-cohort: after mode a's scenarios, apply V28-proto to this
+                                              disposable database and run the escrow at the same points, with the stub
+                                              t1_schedule spend inside T1, the NOTIFY keeper and a synthetic lane-epoch
+                                              bump; reported under "variant" and in ESCROW.md (124/s and above:
+                                              STRESS DIAGNOSTIC, not a criterion)
+              --escrow-lane-bump-seconds <n>  the synthetic lane-epoch bump's period (default 60; 0 = none)
 
             Connection lifecycle (production's by default; docs/dev/storage-benchmark.md):
               --cold-pool                     the default: after the event warm-up every pool connection is replaced

@@ -13,7 +13,17 @@ package email.testinbox.benchmark
  *   of `scenarios` and the gate's criteria, and reported under `variant` (see
  *   `Main`); the mode is a PROPOSED ADR-035 amendment.
  */
-enum class AdmissionMode { CHOSEN, REFERENCE, PARTITIONED }
+enum class AdmissionMode {
+    CHOSEN,
+    REFERENCE,
+    PARTITIONED,
+
+    /**
+     * `--escrow-variant` only: the slot-lane escrow M1 PROTOTYPE (ADR-038 PROPOSED) on
+     * the closed cohort of `--focused-cohort`, reported under `variant`, NON-GATE.
+     */
+    ESCROW,
+}
 
 /**
  * How the reference is produced. The implemented protocol has no lock-free
@@ -105,6 +115,10 @@ data class ScenarioResult(
     val probes: Map<String, ProbeSummary>? = null,
     /** The timing-probe scenario only: what its background traffic achieved (the system was loaded). */
     val background: BackgroundSummary? = null,
+    /** Mean T1 transaction (admission call start → end; for the escrow, its fast attempt included), ms (G7). */
+    val t1TransactionMeanMs: Double? = null,
+    /** `--escrow-variant` scenarios only: the slot-lane escrow prototype's figures (NON-GATE). */
+    val escrow: EscrowScenarioReport? = null,
     /**
      * Completed events that never reached T1 (every copy discarded by INGEST before it:
      * probe floods only) and so enter no latency figure; 0 everywhere else.
