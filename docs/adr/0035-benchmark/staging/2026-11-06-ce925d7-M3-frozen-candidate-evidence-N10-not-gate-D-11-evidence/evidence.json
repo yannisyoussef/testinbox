@@ -1,0 +1,1950 @@
+{
+  "schemaVersion" : 1,
+  "gitSha" : "ce925d7e3091fda18ae8292ca489af4f839198a3",
+  "timestamp" : "2026-11-06T22:33:57.736044849Z",
+  "architecture" : "amd64",
+  "kernel" : "Linux version 6.8.0-147-generic (buildd@lcy02-amd64-081) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026",
+  "hostClass" : "staging-host vmi2932906 (M3: frozen-candidate evidence, first cohort N=10, owner D1)",
+  "postgresVersion" : "PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+  "jvmVersion" : "25.0.3+9-LTS",
+  "harness" : {
+    "measures" : "The database protocol only: write slot, T1 assembled as production ALL assembles it (IngestionWiring: FootprintWiring.admission over JdbcStorageAdmission(readsFootprint = FootprintWiring.readsFootprint(declarations)) with a declared filesystem, so the one statement also reads the footprint and cohort inputs; seeded trust, observation and watermark rows; the closed beta's 31 cohort shares beside the population (30 participant-sized and 1 legacy, as legacy-share rows: no participant row and no cohort plan, so the cohort pool is read, every copy to a share is priced against its budget, and the pool is not required; unless --no-cohort-shares); probed before every scenario, see t1Probe), T1 (admission lock, one-statement snapshot, reservation insert), the fence rows, T2 (reservations FOR UPDATE, inboxes FOR KEY SHARE, message and attachment rows through JdbcMessageRepository.appendVisible so the ledger triggers run, pg_notify, reservations consumed), retention (ExpireInboxes.sweep hard-deleting one expired inbox per sweep) and compaction on its interval. Uploads are an in-memory stub whose fenced PUT is Stored instantly; T_put and the storage backend are qualified separately (ADR-035 §9a).",
+    "arrivals" : "POISSON",
+    "durationSeconds" : 60,
+    "warmupSeconds" : 3,
+    "expectedRate" : 11.0,
+    "referenceMode" : null,
+    "recipientMix" : "1:60,3:25,10:12,50:3",
+    "bytesPerCopy" : 24576,
+    "slots" : 16,
+    "slotsPerWorkspace" : 4,
+    "compactionIntervalSeconds" : 5,
+    "retentionMessagesPerInbox" : 200,
+    "inboxesPerWorkspace" : 10,
+    "sustainedTolerance" : 0.995,
+    "seed" : 35,
+    "rates" : [ 11.0, 22.0 ],
+    "concurrency" : [ 10, 25, 50, 100 ],
+    "workspaces" : [ 10000 ],
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "target" : {
+      "kind" : "remote",
+      "databaseName" : "ti_bench_m3_n10"
+    },
+    "lockWaitDefinition" : "lockWait is StorageProtocolMetrics.lockWait as GuardedStorage reports it: the whole admission call (lock wait, snapshot, decision, insert, commit), NOT the pg_advisory_xact_lock wait alone.",
+    "cohortShares" : 31,
+    "sustainedReferenceWindowSeconds" : 30,
+    "focused" : true,
+    "cohortParticipants" : 10,
+    "poolSize" : 8,
+    "coldPool" : true,
+    "poolMaxLifetime" : "PT30M",
+    "poolMaxLifetimeMs" : 1800000,
+    "poolKeepaliveMs" : 120000,
+    "poolLifecycleSource" : "HikariCP 7.0.2 defaults (maxLifetime 30 min, keepaliveTime 2 min): the ingestion gateway's spring.datasource.hikari sets only maximum-pool-size (application-deployed.yaml, TESTINBOX_DB_POOL_SIZE, default 8) and data-source-properties.ApplicationName (application.yaml); no committed deployment file sets a lifetime",
+    "prepareThreshold" : 5
+  },
+  "safety" : {
+    "databaseName" : "ti_bench_m3_n10",
+    "createdByHarness" : true,
+    "tenantRowCountsAtStart" : {
+      "workspace" : 0,
+      "inbox" : 0,
+      "message" : 0
+    },
+    "acknowledgementVariable" : "TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK"
+  },
+  "scenarios" : [ {
+    "name" : "chosen-ws11-c10-r11",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 11,
+    "inboxCount" : 110,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 239,
+      "meanRows" : 746.6861924686192,
+      "maxRows" : 1380
+    },
+    "concurrency" : 10,
+    "offeredRate" : 11.0,
+    "achievedRate" : 11.008631404604445,
+    "durationSeconds" : 59.952956525,
+    "scheduledEvents" : 660,
+    "completedEvents" : 660,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 43.865616,
+    "copiesCommitted" : 2796,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 660,
+        "p50Ms" : 21.153546,
+        "p95Ms" : 52.422785,
+        "p99Ms" : 121.43341,
+        "maxMs" : 306.129858
+      },
+      "t1Transaction" : {
+        "samples" : 660,
+        "p50Ms" : 16.027518,
+        "p95Ms" : 45.06195,
+        "p99Ms" : 95.454943,
+        "maxMs" : 284.28485
+      },
+      "t2" : {
+        "samples" : 660,
+        "p50Ms" : 10.408131,
+        "p95Ms" : 48.927772,
+        "p99Ms" : 175.284093,
+        "maxMs" : 264.747342
+      },
+      "event" : {
+        "samples" : 660,
+        "p50Ms" : 36.565139,
+        "p95Ms" : 126.23351,
+        "p99Ms" : 319.269623,
+        "maxMs" : 407.54613
+      },
+      "retention" : {
+        "samples" : 33,
+        "p50Ms" : 26.825014,
+        "p95Ms" : 61.168914,
+        "p99Ms" : 79.185942,
+        "maxMs" : 79.185942
+      },
+      "lockWait" : {
+        "samples" : 660,
+        "p50Ms" : 16.132896,
+        "p95Ms" : 45.170874,
+        "p99Ms" : 95.57713,
+        "maxMs" : 284.373776
+      },
+      "slotWait" : {
+        "samples" : 660,
+        "p50Ms" : 0.722606,
+        "p95Ms" : 2.643574,
+        "p99Ms" : 5.214726,
+        "maxMs" : 9.63542
+      }
+    },
+    "retentionOfferedRate" : 0.55,
+    "retentionAchievedRate" : 0.5669098343191212,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : true,
+      "snapshotStatementSha256" : "a422b636738ca64e0c2ed4393673f96f395271ac23b7932094391cf2c9a6afe9",
+      "budgetedWorkspaces" : 1,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "eventsWithoutT1" : 0,
+    "t1Steps" : {
+      "definition" : "--t1-steps/--focused only, client side, per T1, ms: preLock (call start to lock sent), lockWait (lock sent to returned), hold (lock returned to commit returned: the server's hold to about one round trip), and inside it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion.",
+      "preLock" : {
+        "meanMs" : 1.5596415651515152,
+        "samples" : 660,
+        "p50Ms" : 1.251522,
+        "p95Ms" : 3.496393,
+        "p99Ms" : 5.467807,
+        "maxMs" : 14.973254
+      },
+      "lockWait" : {
+        "meanMs" : 3.752726934848485,
+        "samples" : 660,
+        "p50Ms" : 0.299027,
+        "p95Ms" : 15.23285,
+        "p99Ms" : 49.376678,
+        "maxMs" : 199.994419
+      },
+      "hold" : {
+        "meanMs" : 16.05906082121212,
+        "samples" : 660,
+        "p50Ms" : 13.576132,
+        "p95Ms" : 31.731575,
+        "p99Ms" : 57.623232,
+        "maxMs" : 93.707958
+      },
+      "toSnapshot" : {
+        "meanMs" : 0.5501733045454545,
+        "samples" : 660,
+        "p50Ms" : 0.343119,
+        "p95Ms" : 0.90172,
+        "p99Ms" : 2.749893,
+        "maxMs" : 24.871145
+      },
+      "snapshot" : {
+        "meanMs" : 9.425902806060607,
+        "samples" : 660,
+        "p50Ms" : 7.785284,
+        "p95Ms" : 21.514602,
+        "p99Ms" : 37.338581,
+        "maxMs" : 62.433282
+      },
+      "decide" : {
+        "meanMs" : 1.5662057424242424,
+        "samples" : 660,
+        "p50Ms" : 1.24542,
+        "p95Ms" : 2.931733,
+        "p99Ms" : 6.314534,
+        "maxMs" : 14.062277
+      },
+      "insert" : {
+        "meanMs" : 4.384858087878788,
+        "samples" : 660,
+        "p50Ms" : 3.785853,
+        "p95Ms" : 7.619265,
+        "p99Ms" : 14.097053,
+        "maxMs" : 51.999826
+      },
+      "toCommit" : {
+        "meanMs" : 0.11645926212121212,
+        "samples" : 660,
+        "p50Ms" : 0.08041,
+        "p95Ms" : 0.245016,
+        "p99Ms" : 0.491336,
+        "maxMs" : 3.29104
+      },
+      "commit" : {
+        "meanMs" : 0.015461618181818182,
+        "samples" : 660,
+        "p50Ms" : 0.008256,
+        "p95Ms" : 0.027762,
+        "p99Ms" : 0.078315,
+        "maxMs" : 2.36721
+      },
+      "afterCommit" : {
+        "meanMs" : 0.09342906969696971,
+        "samples" : 660,
+        "p50Ms" : 0.077224,
+        "p95Ms" : 0.184283,
+        "p99Ms" : 0.272489,
+        "maxMs" : 0.401619
+      }
+    },
+    "partitionFallbackReasons" : null,
+    "pool" : {
+      "coldPool" : true,
+      "maxLifetimeMs" : 1800000,
+      "keepaliveMs" : 120000,
+      "poolSize" : 8,
+      "connectionsOpenedBeforePhase" : 15,
+      "connectionsOpenedInPhase" : 0
+    },
+    "t1Planning" : {
+      "definition" : "In-lock planning of T1's snapshot over the measured phase, never a §11 criterion. client (--t1-steps/--focused only): snapshot executions per physical connection; one that is among its connection's first prepareThreshold executions plans once inside the lock (coldSnapshotExecutions), and a completed T1 whose snapshot was one is a coldT1 (T1 completion - due), the rest warmT1. server: pg_stat_statements plans and plan time of the snapshot statement (both kinds together; 0 without track_planning). derived: invalidationReplans = server plans - client cold plans; coldPlanCostMs = mean cold snapshot - mean warm snapshot round trip.",
+      "prepareThreshold" : 5,
+      "client" : {
+        "snapshotExecutions" : 660,
+        "coldSnapshotExecutions" : 25,
+        "physicalConnections" : 5,
+        "firstUsedInPhase" : 5,
+        "coldT1" : {
+          "samples" : 25,
+          "p50Ms" : 77.678018,
+          "p95Ms" : 240.13687,
+          "p99Ms" : 306.129858,
+          "maxMs" : 306.129858
+        },
+        "warmT1" : {
+          "samples" : 635,
+          "p50Ms" : 20.895108,
+          "p95Ms" : 42.079942,
+          "p99Ms" : 70.2373,
+          "maxMs" : 105.70376
+        },
+        "coldSnapshotMeanMs" : 34.06216400000001,
+        "warmSnapshotMeanMs" : 8.455971262992133
+      },
+      "server" : null,
+      "derived" : {
+        "invalidationReplans" : null,
+        "coldPlanCostMs" : 25.606192737007877
+      }
+    },
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws11-c25-r11",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 11,
+    "inboxCount" : 110,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 239,
+      "meanRows" : 739.3891213389121,
+      "maxRows" : 1248
+    },
+    "concurrency" : 25,
+    "offeredRate" : 11.0,
+    "achievedRate" : 11.008216477921508,
+    "durationSeconds" : 59.955216299,
+    "scheduledEvents" : 660,
+    "completedEvents" : 660,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 46.12539,
+    "copiesCommitted" : 2506,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 660,
+        "p50Ms" : 19.898618,
+        "p95Ms" : 41.216742,
+        "p99Ms" : 138.292924,
+        "maxMs" : 330.257616
+      },
+      "t1Transaction" : {
+        "samples" : 660,
+        "p50Ms" : 15.660865,
+        "p95Ms" : 35.106432,
+        "p99Ms" : 115.364919,
+        "maxMs" : 306.4677
+      },
+      "t2" : {
+        "samples" : 660,
+        "p50Ms" : 9.440275,
+        "p95Ms" : 39.219429,
+        "p99Ms" : 124.64765,
+        "maxMs" : 192.737822
+      },
+      "event" : {
+        "samples" : 660,
+        "p50Ms" : 33.877022,
+        "p95Ms" : 100.39382,
+        "p99Ms" : 249.411596,
+        "maxMs" : 366.180959
+      },
+      "retention" : {
+        "samples" : 33,
+        "p50Ms" : 23.751252,
+        "p95Ms" : 39.949462,
+        "p99Ms" : 61.225944,
+        "maxMs" : 61.225944
+      },
+      "lockWait" : {
+        "samples" : 660,
+        "p50Ms" : 15.767563,
+        "p95Ms" : 35.182393,
+        "p99Ms" : 115.416305,
+        "maxMs" : 306.536097
+      },
+      "slotWait" : {
+        "samples" : 660,
+        "p50Ms" : 0.665288,
+        "p95Ms" : 2.22414,
+        "p99Ms" : 4.02383,
+        "maxMs" : 9.376976
+      }
+    },
+    "retentionOfferedRate" : 0.55,
+    "retentionAchievedRate" : 0.5669421260809702,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : true,
+      "snapshotStatementSha256" : "a422b636738ca64e0c2ed4393673f96f395271ac23b7932094391cf2c9a6afe9",
+      "budgetedWorkspaces" : 1,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "eventsWithoutT1" : 0,
+    "t1Steps" : {
+      "definition" : "--t1-steps/--focused only, client side, per T1, ms: preLock (call start to lock sent), lockWait (lock sent to returned), hold (lock returned to commit returned: the server's hold to about one round trip), and inside it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion.",
+      "preLock" : {
+        "meanMs" : 1.384184106060606,
+        "samples" : 660,
+        "p50Ms" : 1.110558,
+        "p95Ms" : 2.922561,
+        "p99Ms" : 4.797371,
+        "maxMs" : 7.332912
+      },
+      "lockWait" : {
+        "meanMs" : 3.29357906969697,
+        "samples" : 660,
+        "p50Ms" : 0.279762,
+        "p95Ms" : 12.867313,
+        "p99Ms" : 48.225724,
+        "maxMs" : 215.039423
+      },
+      "hold" : {
+        "meanMs" : 15.371012545454544,
+        "samples" : 660,
+        "p50Ms" : 13.335205,
+        "p95Ms" : 29.23389,
+        "p99Ms" : 57.401743,
+        "maxMs" : 88.911713
+      },
+      "toSnapshot" : {
+        "meanMs" : 0.3935411878787879,
+        "samples" : 660,
+        "p50Ms" : 0.237942,
+        "p95Ms" : 0.490933,
+        "p99Ms" : 1.256991,
+        "maxMs" : 21.56809
+      },
+      "snapshot" : {
+        "meanMs" : 10.03450170151515,
+        "samples" : 660,
+        "p50Ms" : 8.368309,
+        "p95Ms" : 23.211259,
+        "p99Ms" : 41.926814,
+        "maxMs" : 68.232076
+      },
+      "decide" : {
+        "meanMs" : 0.8486950121212121,
+        "samples" : 660,
+        "p50Ms" : 0.782857,
+        "p95Ms" : 1.339613,
+        "p99Ms" : 2.016664,
+        "maxMs" : 3.857821
+      },
+      "insert" : {
+        "meanMs" : 4.014338381818182,
+        "samples" : 660,
+        "p50Ms" : 3.608868,
+        "p95Ms" : 6.746719,
+        "p99Ms" : 9.619778,
+        "maxMs" : 32.441501
+      },
+      "toCommit" : {
+        "meanMs" : 0.07161938939393939,
+        "samples" : 660,
+        "p50Ms" : 0.066905,
+        "p95Ms" : 0.12361,
+        "p99Ms" : 0.233144,
+        "maxMs" : 0.85388
+      },
+      "commit" : {
+        "meanMs" : 0.008316872727272726,
+        "samples" : 660,
+        "p50Ms" : 0.007064,
+        "p95Ms" : 0.010469,
+        "p99Ms" : 0.038131,
+        "maxMs" : 0.238303
+      },
+      "afterCommit" : {
+        "meanMs" : 0.0605574196969697,
+        "samples" : 660,
+        "p50Ms" : 0.051617,
+        "p95Ms" : 0.098282,
+        "p99Ms" : 0.303154,
+        "maxMs" : 0.701876
+      }
+    },
+    "partitionFallbackReasons" : null,
+    "pool" : {
+      "coldPool" : true,
+      "maxLifetimeMs" : 1800000,
+      "keepaliveMs" : 120000,
+      "poolSize" : 8,
+      "connectionsOpenedBeforePhase" : 15,
+      "connectionsOpenedInPhase" : 0
+    },
+    "t1Planning" : {
+      "definition" : "In-lock planning of T1's snapshot over the measured phase, never a §11 criterion. client (--t1-steps/--focused only): snapshot executions per physical connection; one that is among its connection's first prepareThreshold executions plans once inside the lock (coldSnapshotExecutions), and a completed T1 whose snapshot was one is a coldT1 (T1 completion - due), the rest warmT1. server: pg_stat_statements plans and plan time of the snapshot statement (both kinds together; 0 without track_planning). derived: invalidationReplans = server plans - client cold plans; coldPlanCostMs = mean cold snapshot - mean warm snapshot round trip.",
+      "prepareThreshold" : 5,
+      "client" : {
+        "snapshotExecutions" : 660,
+        "coldSnapshotExecutions" : 30,
+        "physicalConnections" : 6,
+        "firstUsedInPhase" : 6,
+        "coldT1" : {
+          "samples" : 30,
+          "p50Ms" : 47.227587,
+          "p95Ms" : 232.308768,
+          "p99Ms" : 330.257616,
+          "maxMs" : 330.257616
+        },
+        "warmT1" : {
+          "samples" : 630,
+          "p50Ms" : 19.539465,
+          "p95Ms" : 36.016109,
+          "p99Ms" : 49.516882,
+          "maxMs" : 65.2797
+        },
+        "coldSnapshotMeanMs" : 34.38171376666667,
+        "warmSnapshotMeanMs" : 8.87511065079366
+      },
+      "server" : null,
+      "derived" : {
+        "invalidationReplans" : null,
+        "coldPlanCostMs" : 25.506603115873013
+      }
+    },
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws11-c50-r11",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 11,
+    "inboxCount" : 110,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 239,
+      "meanRows" : 792.6610878661088,
+      "maxRows" : 1450
+    },
+    "concurrency" : 50,
+    "offeredRate" : 11.0,
+    "achievedRate" : 11.008813230748867,
+    "durationSeconds" : 59.951966317,
+    "scheduledEvents" : 660,
+    "completedEvents" : 660,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 42.875408,
+    "copiesCommitted" : 3045,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 660,
+        "p50Ms" : 20.377046,
+        "p95Ms" : 43.24058,
+        "p99Ms" : 106.942302,
+        "maxMs" : 339.301268
+      },
+      "t1Transaction" : {
+        "samples" : 660,
+        "p50Ms" : 16.16209,
+        "p95Ms" : 38.205837,
+        "p99Ms" : 96.231032,
+        "maxMs" : 320.301862
+      },
+      "t2" : {
+        "samples" : 660,
+        "p50Ms" : 9.571018,
+        "p95Ms" : 44.09695,
+        "p99Ms" : 130.894407,
+        "maxMs" : 156.955437
+      },
+      "event" : {
+        "samples" : 660,
+        "p50Ms" : 34.873544,
+        "p95Ms" : 145.917623,
+        "p99Ms" : 243.098728,
+        "maxMs" : 426.102746
+      },
+      "retention" : {
+        "samples" : 33,
+        "p50Ms" : 28.48063,
+        "p95Ms" : 51.637533,
+        "p99Ms" : 72.950912,
+        "maxMs" : 72.950912
+      },
+      "lockWait" : {
+        "samples" : 660,
+        "p50Ms" : 16.209058,
+        "p95Ms" : 38.25943,
+        "p99Ms" : 96.307484,
+        "maxMs" : 320.350062
+      },
+      "slotWait" : {
+        "samples" : 660,
+        "p50Ms" : 0.738976,
+        "p95Ms" : 2.200637,
+        "p99Ms" : 4.607829,
+        "maxMs" : 20.683658
+      }
+    },
+    "retentionOfferedRate" : 0.55,
+    "retentionAchievedRate" : 0.5669705570534683,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : true,
+      "snapshotStatementSha256" : "a422b636738ca64e0c2ed4393673f96f395271ac23b7932094391cf2c9a6afe9",
+      "budgetedWorkspaces" : 1,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "eventsWithoutT1" : 0,
+    "t1Steps" : {
+      "definition" : "--t1-steps/--focused only, client side, per T1, ms: preLock (call start to lock sent), lockWait (lock sent to returned), hold (lock returned to commit returned: the server's hold to about one round trip), and inside it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion.",
+      "preLock" : {
+        "meanMs" : 1.4366985818181819,
+        "samples" : 660,
+        "p50Ms" : 1.146635,
+        "p95Ms" : 2.971392,
+        "p99Ms" : 4.872441,
+        "maxMs" : 19.559384
+      },
+      "lockWait" : {
+        "meanMs" : 3.371585590909091,
+        "samples" : 660,
+        "p50Ms" : 0.299648,
+        "p95Ms" : 12.505262,
+        "p99Ms" : 47.859315,
+        "maxMs" : 180.859073
+      },
+      "hold" : {
+        "meanMs" : 15.793185498484847,
+        "samples" : 660,
+        "p50Ms" : 14.016223,
+        "p95Ms" : 28.621585,
+        "p99Ms" : 45.456347,
+        "maxMs" : 138.465119
+      },
+      "toSnapshot" : {
+        "meanMs" : 0.36155099848484845,
+        "samples" : 660,
+        "p50Ms" : 0.22589,
+        "p95Ms" : 0.447353,
+        "p99Ms" : 1.471039,
+        "maxMs" : 18.174605
+      },
+      "snapshot" : {
+        "meanMs" : 10.513989231818183,
+        "samples" : 660,
+        "p50Ms" : 8.967095,
+        "p95Ms" : 23.5267,
+        "p99Ms" : 34.030067,
+        "maxMs" : 111.068185
+      },
+      "decide" : {
+        "meanMs" : 0.781858637878788,
+        "samples" : 660,
+        "p50Ms" : 0.715742,
+        "p95Ms" : 1.24578,
+        "p99Ms" : 1.747934,
+        "maxMs" : 7.910677
+      },
+      "insert" : {
+        "meanMs" : 4.059463734848485,
+        "samples" : 660,
+        "p50Ms" : 3.630069,
+        "p95Ms" : 6.710633,
+        "p99Ms" : 10.215438,
+        "maxMs" : 46.43349
+      },
+      "toCommit" : {
+        "meanMs" : 0.06836076060606061,
+        "samples" : 660,
+        "p50Ms" : 0.064982,
+        "p95Ms" : 0.116697,
+        "p99Ms" : 0.229086,
+        "maxMs" : 0.736732
+      },
+      "commit" : {
+        "meanMs" : 0.00796213484848485,
+        "samples" : 660,
+        "p50Ms" : 0.007054,
+        "p95Ms" : 0.010458,
+        "p99Ms" : 0.031108,
+        "maxMs" : 0.153384
+      },
+      "afterCommit" : {
+        "meanMs" : 0.047391248484848485,
+        "samples" : 660,
+        "p50Ms" : 0.044012,
+        "p95Ms" : 0.073747,
+        "p99Ms" : 0.149469,
+        "maxMs" : 0.247401
+      }
+    },
+    "partitionFallbackReasons" : null,
+    "pool" : {
+      "coldPool" : true,
+      "maxLifetimeMs" : 1800000,
+      "keepaliveMs" : 120000,
+      "poolSize" : 8,
+      "connectionsOpenedBeforePhase" : 15,
+      "connectionsOpenedInPhase" : 0
+    },
+    "t1Planning" : {
+      "definition" : "In-lock planning of T1's snapshot over the measured phase, never a §11 criterion. client (--t1-steps/--focused only): snapshot executions per physical connection; one that is among its connection's first prepareThreshold executions plans once inside the lock (coldSnapshotExecutions), and a completed T1 whose snapshot was one is a coldT1 (T1 completion - due), the rest warmT1. server: pg_stat_statements plans and plan time of the snapshot statement (both kinds together; 0 without track_planning). derived: invalidationReplans = server plans - client cold plans; coldPlanCostMs = mean cold snapshot - mean warm snapshot round trip.",
+      "prepareThreshold" : 5,
+      "client" : {
+        "snapshotExecutions" : 660,
+        "coldSnapshotExecutions" : 25,
+        "physicalConnections" : 5,
+        "firstUsedInPhase" : 5,
+        "coldT1" : {
+          "samples" : 25,
+          "p50Ms" : 50.681893,
+          "p95Ms" : 224.807781,
+          "p99Ms" : 339.301268,
+          "maxMs" : 339.301268
+        },
+        "warmT1" : {
+          "samples" : 635,
+          "p50Ms" : 20.156267,
+          "p95Ms" : 37.624143,
+          "p99Ms" : 60.543768,
+          "maxMs" : 90.172521
+        },
+        "coldSnapshotMeanMs" : 35.030517999999994,
+        "warmSnapshotMeanMs" : 9.548771563779543
+      },
+      "server" : null,
+      "derived" : {
+        "invalidationReplans" : null,
+        "coldPlanCostMs" : 25.48174643622045
+      }
+    },
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws11-c100-r11",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 11,
+    "inboxCount" : 110,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 239,
+      "meanRows" : 774.5439330543933,
+      "maxRows" : 1282
+    },
+    "concurrency" : 100,
+    "offeredRate" : 11.0,
+    "achievedRate" : 11.007402401246479,
+    "durationSeconds" : 59.959650419,
+    "scheduledEvents" : 660,
+    "completedEvents" : 660,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 50.55951,
+    "copiesCommitted" : 2916,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 660,
+        "p50Ms" : 20.249083,
+        "p95Ms" : 46.589808,
+        "p99Ms" : 87.477038,
+        "maxMs" : 326.651507
+      },
+      "t1Transaction" : {
+        "samples" : 660,
+        "p50Ms" : 15.954174,
+        "p95Ms" : 42.92462,
+        "p99Ms" : 80.456255,
+        "maxMs" : 310.34028
+      },
+      "t2" : {
+        "samples" : 660,
+        "p50Ms" : 9.832046,
+        "p95Ms" : 48.055955,
+        "p99Ms" : 155.112097,
+        "maxMs" : 205.283178
+      },
+      "event" : {
+        "samples" : 660,
+        "p50Ms" : 35.430084,
+        "p95Ms" : 120.341207,
+        "p99Ms" : 284.638516,
+        "maxMs" : 368.523385
+      },
+      "retention" : {
+        "samples" : 33,
+        "p50Ms" : 30.453967,
+        "p95Ms" : 46.953766,
+        "p99Ms" : 65.83306,
+        "maxMs" : 65.83306
+      },
+      "lockWait" : {
+        "samples" : 660,
+        "p50Ms" : 16.00071,
+        "p95Ms" : 42.981987,
+        "p99Ms" : 80.493344,
+        "maxMs" : 310.372689
+      },
+      "slotWait" : {
+        "samples" : 660,
+        "p50Ms" : 0.653407,
+        "p95Ms" : 1.918512,
+        "p99Ms" : 4.424648,
+        "maxMs" : 14.007942
+      }
+    },
+    "retentionOfferedRate" : 0.55,
+    "retentionAchievedRate" : 0.5669045240564676,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : true,
+      "snapshotStatementSha256" : "a422b636738ca64e0c2ed4393673f96f395271ac23b7932094391cf2c9a6afe9",
+      "budgetedWorkspaces" : 1,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "eventsWithoutT1" : 0,
+    "t1Steps" : {
+      "definition" : "--t1-steps/--focused only, client side, per T1, ms: preLock (call start to lock sent), lockWait (lock sent to returned), hold (lock returned to commit returned: the server's hold to about one round trip), and inside it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion.",
+      "preLock" : {
+        "meanMs" : 1.4132881636363637,
+        "samples" : 660,
+        "p50Ms" : 1.027213,
+        "p95Ms" : 2.721597,
+        "p99Ms" : 6.150312,
+        "maxMs" : 20.944456
+      },
+      "lockWait" : {
+        "meanMs" : 3.317178051515152,
+        "samples" : 660,
+        "p50Ms" : 0.282938,
+        "p95Ms" : 15.212554,
+        "p99Ms" : 45.626918,
+        "maxMs" : 220.785324
+      },
+      "hold" : {
+        "meanMs" : 15.988412795454545,
+        "samples" : 660,
+        "p50Ms" : 13.595252,
+        "p95Ms" : 31.418268,
+        "p99Ms" : 53.43015,
+        "maxMs" : 111.305722
+      },
+      "toSnapshot" : {
+        "meanMs" : 0.4326468621212121,
+        "samples" : 660,
+        "p50Ms" : 0.247982,
+        "p95Ms" : 0.547979,
+        "p99Ms" : 9.734594,
+        "maxMs" : 20.75412
+      },
+      "snapshot" : {
+        "meanMs" : 10.55709344848485,
+        "samples" : 660,
+        "p50Ms" : 8.683987,
+        "p95Ms" : 24.817236,
+        "p99Ms" : 36.638607,
+        "maxMs" : 78.93831
+      },
+      "decide" : {
+        "meanMs" : 0.7592644818181818,
+        "samples" : 660,
+        "p50Ms" : 0.675628,
+        "p95Ms" : 1.13847,
+        "p99Ms" : 1.791065,
+        "maxMs" : 14.487214
+      },
+      "insert" : {
+        "meanMs" : 4.167292687878788,
+        "samples" : 660,
+        "p50Ms" : 3.696142,
+        "p95Ms" : 7.28312,
+        "p99Ms" : 14.639789,
+        "maxMs" : 27.603786
+      },
+      "toCommit" : {
+        "meanMs" : 0.06339611060606061,
+        "samples" : 660,
+        "p50Ms" : 0.057687,
+        "p95Ms" : 0.105826,
+        "p99Ms" : 0.276544,
+        "maxMs" : 0.906758
+      },
+      "commit" : {
+        "meanMs" : 0.008719204545454546,
+        "samples" : 660,
+        "p50Ms" : 0.007504,
+        "p95Ms" : 0.011322,
+        "p99Ms" : 0.040275,
+        "maxMs" : 0.21488
+      },
+      "afterCommit" : {
+        "meanMs" : 0.04740178636363636,
+        "samples" : 660,
+        "p50Ms" : 0.039995,
+        "p95Ms" : 0.073196,
+        "p99Ms" : 0.173683,
+        "maxMs" : 2.20714
+      }
+    },
+    "partitionFallbackReasons" : null,
+    "pool" : {
+      "coldPool" : true,
+      "maxLifetimeMs" : 1800000,
+      "keepaliveMs" : 120000,
+      "poolSize" : 8,
+      "connectionsOpenedBeforePhase" : 15,
+      "connectionsOpenedInPhase" : 0
+    },
+    "t1Planning" : {
+      "definition" : "In-lock planning of T1's snapshot over the measured phase, never a §11 criterion. client (--t1-steps/--focused only): snapshot executions per physical connection; one that is among its connection's first prepareThreshold executions plans once inside the lock (coldSnapshotExecutions), and a completed T1 whose snapshot was one is a coldT1 (T1 completion - due), the rest warmT1. server: pg_stat_statements plans and plan time of the snapshot statement (both kinds together; 0 without track_planning). derived: invalidationReplans = server plans - client cold plans; coldPlanCostMs = mean cold snapshot - mean warm snapshot round trip.",
+      "prepareThreshold" : 5,
+      "client" : {
+        "snapshotExecutions" : 660,
+        "coldSnapshotExecutions" : 25,
+        "physicalConnections" : 5,
+        "firstUsedInPhase" : 5,
+        "coldT1" : {
+          "samples" : 25,
+          "p50Ms" : 61.044709,
+          "p95Ms" : 255.525961,
+          "p99Ms" : 326.651507,
+          "maxMs" : 326.651507
+        },
+        "warmT1" : {
+          "samples" : 635,
+          "p50Ms" : 19.896622,
+          "p95Ms" : 40.490064,
+          "p99Ms" : 63.028096,
+          "maxMs" : 87.477038
+        },
+        "coldSnapshotMeanMs" : 33.382751840000005,
+        "warmSnapshotMeanMs" : 9.658445480314962
+      },
+      "server" : null,
+      "derived" : {
+        "invalidationReplans" : null,
+        "coldPlanCostMs" : 23.724306359685045
+      }
+    },
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws11-c10-r22",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 11,
+    "inboxCount" : 110,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 239,
+      "meanRows" : 1018.1757322175732,
+      "maxRows" : 1784
+    },
+    "concurrency" : 10,
+    "offeredRate" : 22.0,
+    "achievedRate" : 21.982791513582807,
+    "durationSeconds" : 60.046968975,
+    "scheduledEvents" : 1320,
+    "completedEvents" : 1320,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 92.42352,
+    "copiesCommitted" : 5468,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 1320,
+        "p50Ms" : 22.531292,
+        "p95Ms" : 88.246247,
+        "p99Ms" : 232.134409,
+        "maxMs" : 411.730172
+      },
+      "t1Transaction" : {
+        "samples" : 1320,
+        "p50Ms" : 18.930298,
+        "p95Ms" : 76.724136,
+        "p99Ms" : 227.726795,
+        "maxMs" : 381.953337
+      },
+      "t2" : {
+        "samples" : 1320,
+        "p50Ms" : 9.465846,
+        "p95Ms" : 43.56721,
+        "p99Ms" : 136.6319,
+        "maxMs" : 187.380599
+      },
+      "event" : {
+        "samples" : 1320,
+        "p50Ms" : 38.657682,
+        "p95Ms" : 181.641016,
+        "p99Ms" : 342.829999,
+        "maxMs" : 655.050261
+      },
+      "retention" : {
+        "samples" : 66,
+        "p50Ms" : 24.36487,
+        "p95Ms" : 36.642688,
+        "p99Ms" : 54.011957,
+        "maxMs" : 54.011957
+      },
+      "lockWait" : {
+        "samples" : 1320,
+        "p50Ms" : 18.954893,
+        "p95Ms" : 76.757148,
+        "p99Ms" : 227.756439,
+        "maxMs" : 381.983463
+      },
+      "slotWait" : {
+        "samples" : 1320,
+        "p50Ms" : 0.645452,
+        "p95Ms" : 2.001968,
+        "p99Ms" : 3.250893,
+        "maxMs" : 16.989224
+      }
+    },
+    "retentionOfferedRate" : 1.1,
+    "retentionAchievedRate" : 1.1165575713863805,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : true,
+      "snapshotStatementSha256" : "a422b636738ca64e0c2ed4393673f96f395271ac23b7932094391cf2c9a6afe9",
+      "budgetedWorkspaces" : 1,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "eventsWithoutT1" : 0,
+    "t1Steps" : {
+      "definition" : "--t1-steps/--focused only, client side, per T1, ms: preLock (call start to lock sent), lockWait (lock sent to returned), hold (lock returned to commit returned: the server's hold to about one round trip), and inside it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion.",
+      "preLock" : {
+        "meanMs" : 1.3103143924242424,
+        "samples" : 1320,
+        "p50Ms" : 1.007335,
+        "p95Ms" : 2.965371,
+        "p99Ms" : 5.227994,
+        "maxMs" : 16.251049
+      },
+      "lockWait" : {
+        "meanMs" : 11.442630622727274,
+        "samples" : 1320,
+        "p50Ms" : 0.430481,
+        "p95Ms" : 51.378838,
+        "p99Ms" : 184.256807,
+        "maxMs" : 325.458927
+      },
+      "hold" : {
+        "meanMs" : 16.691325687878788,
+        "samples" : 1320,
+        "p50Ms" : 15.053128,
+        "p95Ms" : 29.423767,
+        "p99Ms" : 44.368742,
+        "maxMs" : 98.396209
+      },
+      "toSnapshot" : {
+        "meanMs" : 0.3304692537878788,
+        "samples" : 1320,
+        "p50Ms" : 0.193771,
+        "p95Ms" : 0.422988,
+        "p99Ms" : 1.361906,
+        "maxMs" : 27.78251
+      },
+      "snapshot" : {
+        "meanMs" : 11.544621699242425,
+        "samples" : 1320,
+        "p50Ms" : 10.190224,
+        "p95Ms" : 23.517148,
+        "p99Ms" : 34.168001,
+        "maxMs" : 64.745633
+      },
+      "decide" : {
+        "meanMs" : 0.666608446969697,
+        "samples" : 1320,
+        "p50Ms" : 0.589909,
+        "p95Ms" : 1.011232,
+        "p99Ms" : 1.71845,
+        "maxMs" : 16.226504
+      },
+      "insert" : {
+        "meanMs" : 4.080807002272728,
+        "samples" : 1320,
+        "p50Ms" : 3.708975,
+        "p95Ms" : 7.059043,
+        "p99Ms" : 9.607609,
+        "maxMs" : 42.837774
+      },
+      "toCommit" : {
+        "meanMs" : 0.06546474848484848,
+        "samples" : 1320,
+        "p50Ms" : 0.056936,
+        "p95Ms" : 0.109794,
+        "p99Ms" : 0.300269,
+        "maxMs" : 2.646108
+      },
+      "commit" : {
+        "meanMs" : 0.0033545371212121214,
+        "samples" : 1320,
+        "p50Ms" : 0.002955,
+        "p95Ms" : 0.004649,
+        "p99Ms" : 0.015149,
+        "maxMs" : 0.093944
+      },
+      "afterCommit" : {
+        "meanMs" : 0.043563282575757575,
+        "samples" : 1320,
+        "p50Ms" : 0.036859,
+        "p95Ms" : 0.078927,
+        "p99Ms" : 0.161,
+        "maxMs" : 0.770896
+      }
+    },
+    "partitionFallbackReasons" : null,
+    "pool" : {
+      "coldPool" : true,
+      "maxLifetimeMs" : 1800000,
+      "keepaliveMs" : 120000,
+      "poolSize" : 8,
+      "connectionsOpenedBeforePhase" : 15,
+      "connectionsOpenedInPhase" : 0
+    },
+    "t1Planning" : {
+      "definition" : "In-lock planning of T1's snapshot over the measured phase, never a §11 criterion. client (--t1-steps/--focused only): snapshot executions per physical connection; one that is among its connection's first prepareThreshold executions plans once inside the lock (coldSnapshotExecutions), and a completed T1 whose snapshot was one is a coldT1 (T1 completion - due), the rest warmT1. server: pg_stat_statements plans and plan time of the snapshot statement (both kinds together; 0 without track_planning). derived: invalidationReplans = server plans - client cold plans; coldPlanCostMs = mean cold snapshot - mean warm snapshot round trip.",
+      "prepareThreshold" : 5,
+      "client" : {
+        "snapshotExecutions" : 1320,
+        "coldSnapshotExecutions" : 40,
+        "physicalConnections" : 8,
+        "firstUsedInPhase" : 8,
+        "coldT1" : {
+          "samples" : 40,
+          "p50Ms" : 149.080318,
+          "p95Ms" : 389.994093,
+          "p99Ms" : 411.730172,
+          "maxMs" : 411.730172
+        },
+        "warmT1" : {
+          "samples" : 1280,
+          "p50Ms" : 22.212752,
+          "p95Ms" : 62.027391,
+          "p99Ms" : 144.083671,
+          "maxMs" : 204.67167
+        },
+        "coldSnapshotMeanMs" : 33.315362949999994,
+        "warmSnapshotMeanMs" : 10.86428603515624
+      },
+      "server" : null,
+      "derived" : {
+        "invalidationReplans" : null,
+        "coldPlanCostMs" : 22.451076914843753
+      }
+    },
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws11-c25-r22",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 11,
+    "inboxCount" : 110,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 239,
+      "meanRows" : 1015.7656903765691,
+      "maxRows" : 1922
+    },
+    "concurrency" : 25,
+    "offeredRate" : 22.0,
+    "achievedRate" : 21.997092415525678,
+    "durationSeconds" : 60.007930824,
+    "scheduledEvents" : 1320,
+    "completedEvents" : 1320,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 53.385369,
+    "copiesCommitted" : 5422,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 1320,
+        "p50Ms" : 26.07629,
+        "p95Ms" : 73.135559,
+        "p99Ms" : 256.530316,
+        "maxMs" : 442.083288
+      },
+      "t1Transaction" : {
+        "samples" : 1320,
+        "p50Ms" : 21.255941,
+        "p95Ms" : 68.009488,
+        "p99Ms" : 209.577194,
+        "maxMs" : 399.36027
+      },
+      "t2" : {
+        "samples" : 1320,
+        "p50Ms" : 10.376342,
+        "p95Ms" : 45.434664,
+        "p99Ms" : 146.421537,
+        "maxMs" : 197.852302
+      },
+      "event" : {
+        "samples" : 1320,
+        "p50Ms" : 44.44716,
+        "p95Ms" : 151.183884,
+        "p99Ms" : 372.994517,
+        "maxMs" : 697.572522
+      },
+      "retention" : {
+        "samples" : 66,
+        "p50Ms" : 22.92123,
+        "p95Ms" : 38.242859,
+        "p99Ms" : 57.863945,
+        "maxMs" : 57.863945
+      },
+      "lockWait" : {
+        "samples" : 1320,
+        "p50Ms" : 21.286096,
+        "p95Ms" : 68.035788,
+        "p99Ms" : 209.606128,
+        "maxMs" : 399.402048
+      },
+      "slotWait" : {
+        "samples" : 1320,
+        "p50Ms" : 0.767269,
+        "p95Ms" : 2.773915,
+        "p99Ms" : 4.966388,
+        "maxMs" : 27.822577
+      }
+    },
+    "retentionOfferedRate" : 1.1,
+    "retentionAchievedRate" : 1.1165747735158424,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : true,
+      "snapshotStatementSha256" : "a422b636738ca64e0c2ed4393673f96f395271ac23b7932094391cf2c9a6afe9",
+      "budgetedWorkspaces" : 1,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "eventsWithoutT1" : 0,
+    "t1Steps" : {
+      "definition" : "--t1-steps/--focused only, client side, per T1, ms: preLock (call start to lock sent), lockWait (lock sent to returned), hold (lock returned to commit returned: the server's hold to about one round trip), and inside it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion.",
+      "preLock" : {
+        "meanMs" : 1.5099876901515152,
+        "samples" : 1320,
+        "p50Ms" : 1.185277,
+        "p95Ms" : 3.295807,
+        "p99Ms" : 6.789774,
+        "maxMs" : 14.115274
+      },
+      "lockWait" : {
+        "meanMs" : 11.342887925000001,
+        "samples" : 1320,
+        "p50Ms" : 0.643047,
+        "p95Ms" : 45.070575,
+        "p99Ms" : 155.588033,
+        "maxMs" : 366.730932
+      },
+      "hold" : {
+        "meanMs" : 18.09395080909091,
+        "samples" : 1320,
+        "p50Ms" : 16.385431,
+        "p95Ms" : 29.816741,
+        "p99Ms" : 40.784763,
+        "maxMs" : 91.59763
+      },
+      "toSnapshot" : {
+        "meanMs" : 0.29626871515151515,
+        "samples" : 1320,
+        "p50Ms" : 0.183923,
+        "p95Ms" : 0.386389,
+        "p99Ms" : 1.047711,
+        "maxMs" : 16.760789
+      },
+      "snapshot" : {
+        "meanMs" : 12.721877101515151,
+        "samples" : 1320,
+        "p50Ms" : 11.339004,
+        "p95Ms" : 22.665144,
+        "p99Ms" : 32.302069,
+        "maxMs" : 71.280278
+      },
+      "decide" : {
+        "meanMs" : 0.6395957128787879,
+        "samples" : 1320,
+        "p50Ms" : 0.538763,
+        "p95Ms" : 1.052079,
+        "p99Ms" : 2.488944,
+        "maxMs" : 14.403221
+      },
+      "insert" : {
+        "meanMs" : 4.37288251439394,
+        "samples" : 1320,
+        "p50Ms" : 3.894211,
+        "p95Ms" : 7.57149,
+        "p99Ms" : 11.386684,
+        "maxMs" : 56.139176
+      },
+      "toCommit" : {
+        "meanMs" : 0.059603968181818186,
+        "samples" : 1320,
+        "p50Ms" : 0.05408,
+        "p95Ms" : 0.099165,
+        "p99Ms" : 0.282026,
+        "maxMs" : 1.036309
+      },
+      "commit" : {
+        "meanMs" : 0.00372279696969697,
+        "samples" : 1320,
+        "p50Ms" : 0.003006,
+        "p95Ms" : 0.004709,
+        "p99Ms" : 0.023594,
+        "maxMs" : 0.315097
+      },
+      "afterCommit" : {
+        "meanMs" : 0.0340094946969697,
+        "samples" : 1320,
+        "p50Ms" : 0.028884,
+        "p95Ms" : 0.055343,
+        "p99Ms" : 0.140793,
+        "maxMs" : 1.180097
+      }
+    },
+    "partitionFallbackReasons" : null,
+    "pool" : {
+      "coldPool" : true,
+      "maxLifetimeMs" : 1800000,
+      "keepaliveMs" : 120000,
+      "poolSize" : 8,
+      "connectionsOpenedBeforePhase" : 15,
+      "connectionsOpenedInPhase" : 0
+    },
+    "t1Planning" : {
+      "definition" : "In-lock planning of T1's snapshot over the measured phase, never a §11 criterion. client (--t1-steps/--focused only): snapshot executions per physical connection; one that is among its connection's first prepareThreshold executions plans once inside the lock (coldSnapshotExecutions), and a completed T1 whose snapshot was one is a coldT1 (T1 completion - due), the rest warmT1. server: pg_stat_statements plans and plan time of the snapshot statement (both kinds together; 0 without track_planning). derived: invalidationReplans = server plans - client cold plans; coldPlanCostMs = mean cold snapshot - mean warm snapshot round trip.",
+      "prepareThreshold" : 5,
+      "client" : {
+        "snapshotExecutions" : 1320,
+        "coldSnapshotExecutions" : 40,
+        "physicalConnections" : 8,
+        "firstUsedInPhase" : 8,
+        "coldT1" : {
+          "samples" : 40,
+          "p50Ms" : 147.410922,
+          "p95Ms" : 423.791395,
+          "p99Ms" : 442.083288,
+          "maxMs" : 442.083288
+        },
+        "warmT1" : {
+          "samples" : 1280,
+          "p50Ms" : 25.808417,
+          "p95Ms" : 64.852436,
+          "p99Ms" : 88.632167,
+          "maxMs" : 121.645915
+        },
+        "coldSnapshotMeanMs" : 33.255302025000006,
+        "warmSnapshotMeanMs" : 12.080207572656265
+      },
+      "server" : null,
+      "derived" : {
+        "invalidationReplans" : null,
+        "coldPlanCostMs" : 21.175094452343743
+      }
+    },
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws11-c50-r22",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 11,
+    "inboxCount" : 110,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 239,
+      "meanRows" : 1026.3012552301254,
+      "maxRows" : 1796
+    },
+    "concurrency" : 50,
+    "offeredRate" : 22.0,
+    "achievedRate" : 21.99295690180536,
+    "durationSeconds" : 60.019214601,
+    "scheduledEvents" : 1320,
+    "completedEvents" : 1320,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 64.669146,
+    "copiesCommitted" : 5681,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 1320,
+        "p50Ms" : 24.43993,
+        "p95Ms" : 91.578727,
+        "p99Ms" : 263.61799,
+        "maxMs" : 449.841203
+      },
+      "t1Transaction" : {
+        "samples" : 1320,
+        "p50Ms" : 20.36882,
+        "p95Ms" : 87.036546,
+        "p99Ms" : 246.377862,
+        "maxMs" : 424.763082
+      },
+      "t2" : {
+        "samples" : 1320,
+        "p50Ms" : 9.755297,
+        "p95Ms" : 43.430065,
+        "p99Ms" : 145.394954,
+        "maxMs" : 217.185764
+      },
+      "event" : {
+        "samples" : 1320,
+        "p50Ms" : 42.181502,
+        "p95Ms" : 197.792178,
+        "p99Ms" : 324.350061,
+        "maxMs" : 516.296873
+      },
+      "retention" : {
+        "samples" : 66,
+        "p50Ms" : 25.260372,
+        "p95Ms" : 39.833111,
+        "p99Ms" : 81.939334,
+        "maxMs" : 81.939334
+      },
+      "lockWait" : {
+        "samples" : 1320,
+        "p50Ms" : 20.422911,
+        "p95Ms" : 87.078915,
+        "p99Ms" : 246.401296,
+        "maxMs" : 424.814086
+      },
+      "slotWait" : {
+        "samples" : 1320,
+        "p50Ms" : 0.658257,
+        "p95Ms" : 2.200307,
+        "p99Ms" : 4.267817,
+        "maxMs" : 7.615803
+      }
+    },
+    "retentionOfferedRate" : 1.1,
+    "retentionAchievedRate" : 1.1165767644485944,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : true,
+      "snapshotStatementSha256" : "a422b636738ca64e0c2ed4393673f96f395271ac23b7932094391cf2c9a6afe9",
+      "budgetedWorkspaces" : 1,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "eventsWithoutT1" : 0,
+    "t1Steps" : {
+      "definition" : "--t1-steps/--focused only, client side, per T1, ms: preLock (call start to lock sent), lockWait (lock sent to returned), hold (lock returned to commit returned: the server's hold to about one round trip), and inside it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion.",
+      "preLock" : {
+        "meanMs" : 1.4040909416666667,
+        "samples" : 1320,
+        "p50Ms" : 1.103204,
+        "p95Ms" : 3.111374,
+        "p99Ms" : 5.870391,
+        "maxMs" : 14.057689
+      },
+      "lockWait" : {
+        "meanMs" : 13.053147421969697,
+        "samples" : 1320,
+        "p50Ms" : 0.54247,
+        "p95Ms" : 55.236752,
+        "p99Ms" : 202.412553,
+        "maxMs" : 392.757693
+      },
+      "hold" : {
+        "meanMs" : 17.840755682575757,
+        "samples" : 1320,
+        "p50Ms" : 15.8418,
+        "p95Ms" : 31.306179,
+        "p99Ms" : 46.989464,
+        "maxMs" : 89.511905
+      },
+      "toSnapshot" : {
+        "meanMs" : 0.2789266075757576,
+        "samples" : 1320,
+        "p50Ms" : 0.164747,
+        "p95Ms" : 0.367444,
+        "p99Ms" : 1.257261,
+        "maxMs" : 15.082285
+      },
+      "snapshot" : {
+        "meanMs" : 12.731451774242423,
+        "samples" : 1320,
+        "p50Ms" : 11.113176,
+        "p95Ms" : 25.070697,
+        "p99Ms" : 36.668012,
+        "maxMs" : 71.406249
+      },
+      "decide" : {
+        "meanMs" : 0.5489618787878788,
+        "samples" : 1320,
+        "p50Ms" : 0.484973,
+        "p95Ms" : 0.899976,
+        "p99Ms" : 1.437377,
+        "maxMs" : 8.077933
+      },
+      "insert" : {
+        "meanMs" : 4.211321609090909,
+        "samples" : 1320,
+        "p50Ms" : 3.806057,
+        "p95Ms" : 7.025382,
+        "p99Ms" : 10.613104,
+        "maxMs" : 34.700368
+      },
+      "toCommit" : {
+        "meanMs" : 0.06630365454545455,
+        "samples" : 1320,
+        "p50Ms" : 0.056535,
+        "p95Ms" : 0.144058,
+        "p99Ms" : 0.288316,
+        "maxMs" : 1.214461
+      },
+      "commit" : {
+        "meanMs" : 0.0037901583333333332,
+        "samples" : 1320,
+        "p50Ms" : 0.003016,
+        "p95Ms" : 0.004779,
+        "p99Ms" : 0.027752,
+        "maxMs" : 0.126306
+      },
+      "afterCommit" : {
+        "meanMs" : 0.04535764621212121,
+        "samples" : 1320,
+        "p50Ms" : 0.036719,
+        "p95Ms" : 0.078356,
+        "p99Ms" : 0.242913,
+        "maxMs" : 1.204323
+      }
+    },
+    "partitionFallbackReasons" : null,
+    "pool" : {
+      "coldPool" : true,
+      "maxLifetimeMs" : 1800000,
+      "keepaliveMs" : 120000,
+      "poolSize" : 8,
+      "connectionsOpenedBeforePhase" : 15,
+      "connectionsOpenedInPhase" : 0
+    },
+    "t1Planning" : {
+      "definition" : "In-lock planning of T1's snapshot over the measured phase, never a §11 criterion. client (--t1-steps/--focused only): snapshot executions per physical connection; one that is among its connection's first prepareThreshold executions plans once inside the lock (coldSnapshotExecutions), and a completed T1 whose snapshot was one is a coldT1 (T1 completion - due), the rest warmT1. server: pg_stat_statements plans and plan time of the snapshot statement (both kinds together; 0 without track_planning). derived: invalidationReplans = server plans - client cold plans; coldPlanCostMs = mean cold snapshot - mean warm snapshot round trip.",
+      "prepareThreshold" : 5,
+      "client" : {
+        "snapshotExecutions" : 1320,
+        "coldSnapshotExecutions" : 40,
+        "physicalConnections" : 8,
+        "firstUsedInPhase" : 8,
+        "coldT1" : {
+          "samples" : 40,
+          "p50Ms" : 168.673507,
+          "p95Ms" : 429.802716,
+          "p99Ms" : 449.841203,
+          "maxMs" : 449.841203
+        },
+        "warmT1" : {
+          "samples" : 1280,
+          "p50Ms" : 24.147962,
+          "p95Ms" : 68.363702,
+          "p99Ms" : 156.206695,
+          "maxMs" : 207.267686
+        },
+        "coldSnapshotMeanMs" : 34.56430039999999,
+        "warmSnapshotMeanMs" : 12.049175254687519
+      },
+      "server" : null,
+      "derived" : {
+        "invalidationReplans" : null,
+        "coldPlanCostMs" : 22.515125145312474
+      }
+    },
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws11-c100-r22",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 11,
+    "inboxCount" : 110,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 239,
+      "meanRows" : 882.4267782426779,
+      "maxRows" : 1840
+    },
+    "concurrency" : 100,
+    "offeredRate" : 22.0,
+    "achievedRate" : 22.00169182779369,
+    "durationSeconds" : 59.995386279,
+    "scheduledEvents" : 1320,
+    "completedEvents" : 1320,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 40.840824,
+    "copiesCommitted" : 4355,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 1320,
+        "p50Ms" : 23.637509,
+        "p95Ms" : 157.576483,
+        "p99Ms" : 614.174472,
+        "maxMs" : 812.573587
+      },
+      "t1Transaction" : {
+        "samples" : 1320,
+        "p50Ms" : 19.522146,
+        "p95Ms" : 136.752548,
+        "p99Ms" : 385.82794,
+        "maxMs" : 642.751421
+      },
+      "t2" : {
+        "samples" : 1320,
+        "p50Ms" : 9.244245,
+        "p95Ms" : 37.018807,
+        "p99Ms" : 120.660971,
+        "maxMs" : 353.411535
+      },
+      "event" : {
+        "samples" : 1320,
+        "p50Ms" : 39.174955,
+        "p95Ms" : 231.929555,
+        "p99Ms" : 701.430622,
+        "maxMs" : 898.60043
+      },
+      "retention" : {
+        "samples" : 66,
+        "p50Ms" : 25.688656,
+        "p95Ms" : 54.916279,
+        "p99Ms" : 158.886047,
+        "maxMs" : 158.886047
+      },
+      "lockWait" : {
+        "samples" : 1320,
+        "p50Ms" : 19.55203,
+        "p95Ms" : 136.797711,
+        "p99Ms" : 385.856013,
+        "maxMs" : 642.777299
+      },
+      "slotWait" : {
+        "samples" : 1320,
+        "p50Ms" : 0.659848,
+        "p95Ms" : 2.441337,
+        "p99Ms" : 8.622437,
+        "maxMs" : 284.630929
+      }
+    },
+    "retentionOfferedRate" : 1.1,
+    "retentionAchievedRate" : 1.1164861712013532,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : true,
+      "snapshotStatementSha256" : "a422b636738ca64e0c2ed4393673f96f395271ac23b7932094391cf2c9a6afe9",
+      "budgetedWorkspaces" : 1,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "eventsWithoutT1" : 0,
+    "t1Steps" : {
+      "definition" : "--t1-steps/--focused only, client side, per T1, ms: preLock (call start to lock sent), lockWait (lock sent to returned), hold (lock returned to commit returned: the server's hold to about one round trip), and inside it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion.",
+      "preLock" : {
+        "meanMs" : 2.6216900151515152,
+        "samples" : 1320,
+        "p50Ms" : 1.080542,
+        "p95Ms" : 3.263437,
+        "p99Ms" : 34.901827,
+        "maxMs" : 293.704336
+      },
+      "lockWait" : {
+        "meanMs" : 19.369298598484846,
+        "samples" : 1320,
+        "p50Ms" : 0.471708,
+        "p95Ms" : 109.038284,
+        "p99Ms" : 275.168718,
+        "maxMs" : 593.176581
+      },
+      "hold" : {
+        "meanMs" : 17.631243241666667,
+        "samples" : 1320,
+        "p50Ms" : 15.20203,
+        "p95Ms" : 34.071819,
+        "p99Ms" : 50.559236,
+        "maxMs" : 137.779737
+      },
+      "toSnapshot" : {
+        "meanMs" : 0.33442042727272725,
+        "samples" : 1320,
+        "p50Ms" : 0.165198,
+        "p95Ms" : 0.364107,
+        "p99Ms" : 1.640184,
+        "maxMs" : 34.025603
+      },
+      "snapshot" : {
+        "meanMs" : 12.563370369696969,
+        "samples" : 1320,
+        "p50Ms" : 10.474998,
+        "p95Ms" : 27.887584,
+        "p99Ms" : 42.864594,
+        "maxMs" : 98.194651
+      },
+      "decide" : {
+        "meanMs" : 0.5490536196969698,
+        "samples" : 1320,
+        "p50Ms" : 0.485996,
+        "p95Ms" : 0.841357,
+        "p99Ms" : 1.46539,
+        "maxMs" : 13.146032
+      },
+      "insert" : {
+        "meanMs" : 4.110295223484848,
+        "samples" : 1320,
+        "p50Ms" : 3.687016,
+        "p95Ms" : 7.211279,
+        "p99Ms" : 9.977451,
+        "maxMs" : 36.841166
+      },
+      "toCommit" : {
+        "meanMs" : 0.07045045075757576,
+        "samples" : 1320,
+        "p50Ms" : 0.055543,
+        "p95Ms" : 0.102852,
+        "p99Ms" : 0.253081,
+        "maxMs" : 13.062615
+      },
+      "commit" : {
+        "meanMs" : 0.0036531507575757577,
+        "samples" : 1320,
+        "p50Ms" : 0.002915,
+        "p95Ms" : 0.004679,
+        "p99Ms" : 0.021962,
+        "maxMs" : 0.352746
+      },
+      "afterCommit" : {
+        "meanMs" : 0.05406336287878788,
+        "samples" : 1320,
+        "p50Ms" : 0.038962,
+        "p95Ms" : 0.120886,
+        "p99Ms" : 0.207988,
+        "maxMs" : 7.41027
+      }
+    },
+    "partitionFallbackReasons" : null,
+    "pool" : {
+      "coldPool" : true,
+      "maxLifetimeMs" : 1800000,
+      "keepaliveMs" : 120000,
+      "poolSize" : 8,
+      "connectionsOpenedBeforePhase" : 15,
+      "connectionsOpenedInPhase" : 0
+    },
+    "t1Planning" : {
+      "definition" : "In-lock planning of T1's snapshot over the measured phase, never a §11 criterion. client (--t1-steps/--focused only): snapshot executions per physical connection; one that is among its connection's first prepareThreshold executions plans once inside the lock (coldSnapshotExecutions), and a completed T1 whose snapshot was one is a coldT1 (T1 completion - due), the rest warmT1. server: pg_stat_statements plans and plan time of the snapshot statement (both kinds together; 0 without track_planning). derived: invalidationReplans = server plans - client cold plans; coldPlanCostMs = mean cold snapshot - mean warm snapshot round trip.",
+      "prepareThreshold" : 5,
+      "client" : {
+        "snapshotExecutions" : 1320,
+        "coldSnapshotExecutions" : 40,
+        "physicalConnections" : 8,
+        "firstUsedInPhase" : 8,
+        "coldT1" : {
+          "samples" : 40,
+          "p50Ms" : 488.886936,
+          "p95Ms" : 746.717872,
+          "p99Ms" : 812.573587,
+          "maxMs" : 812.573587
+        },
+        "warmT1" : {
+          "samples" : 1280,
+          "p50Ms" : 23.103117,
+          "p95Ms" : 81.386444,
+          "p99Ms" : 267.764162,
+          "maxMs" : 634.364474
+        },
+        "coldSnapshotMeanMs" : 42.15244809999998,
+        "warmSnapshotMeanMs" : 11.638711690625
+      },
+      "server" : null,
+      "derived" : {
+        "invalidationReplans" : null,
+        "coldPlanCostMs" : 30.513736409374978
+      }
+    },
+    "background" : null,
+    "probes" : null
+  } ],
+  "criteria" : {
+    "sustained2x" : {
+      "pass" : true,
+      "observed" : 0.9984368148885419,
+      "threshold" : "achieved / offered >= 0.995 at 22.0 events/s at concurrency [10, 25, 50, 100] (concurrency 1 is the uncontended baseline, reported only); a window longer than 30 s is also read over a 30 s window, so its terminal-lag allowance stays the 30 s one",
+      "detail" : "worst achieved/offered (read over 30 s where the window is longer) over 4 scenario(s); terminal lag c10=92 ms, c25=53 ms, c50=65 ms, c100=41 ms"
+    },
+    "t1P99" : {
+      "pass" : false,
+      "observed" : 614.174472,
+      "threshold" : "T1 p99 <= 50.0 ms (completion - due, schedule lag included) at concurrency [10, 25, 50, 100]; concurrency 1 is reported only",
+      "detail" : "worst T1 p99 over 4 scenario(s)"
+    },
+    "retentionP99VsReference" : {
+      "pass" : false,
+      "observed" : null,
+      "threshold" : "retention p99 <= 2.0 x the NO_LOCK reference's retention p99 (ADR-035 §11 mode c, no global ceiling) at the same offered load",
+      "detail" : "a scenario has no reference run"
+    },
+    "deadlocks" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "0 deadlocks (SQLSTATE 40P01) across every scenario",
+      "detail" : "sum over 8 scenario(s)"
+    },
+    "lockTimeoutRate" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "lock_timeout rate < 0.001 of events, every CHOSEN scenario",
+      "detail" : "worst per-scenario rate over 8 scenario(s)"
+    },
+    "slotQueueingDeadlineMisses" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "0 events refused for W_slot (StorageUnavailableReason.SLOT_WAIT) across every scenario",
+      "detail" : "sum over 8 scenario(s)"
+    },
+    "otherErrors" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "0 errors other than lock_timeout, deadlock or slot wait, events and retention, across every scenario",
+      "detail" : "sum over 8 scenario(s)"
+    },
+    "retentionStarvedTicks" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "0 retention ticks that found nothing to delete, across every scenario",
+      "detail" : "sum over 8 scenario(s)"
+    }
+  },
+  "adrEvidence" : false,
+  "adrEvidenceReasons" : [ "concurrency [10, 25, 50, 100] does not include §11's [1, 10, 25, 50, 100]", "--no-reference: §11's retention criterion needs the no-ceiling reference", "--focused: a focused A′ measurement, never gate evidence", "--pool-size 8: not §11's c + 6 pool; never gate evidence", "--cohort-participants 10: a closed cohort of 11 workspaces, not the beta's 30 participants + 1 legacy; never gate evidence" ],
+  "incompleteReasons" : [ "not ADR evidence: concurrency [10, 25, 50, 100] does not include §11's [1, 10, 25, 50, 100]", "not ADR evidence: --no-reference: §11's retention criterion needs the no-ceiling reference", "not ADR evidence: --focused: a focused A′ measurement, never gate evidence", "not ADR evidence: --pool-size 8: not §11's c + 6 pool; never gate evidence", "not ADR evidence: --cohort-participants 10: a closed cohort of 11 workspaces, not the beta's 30 participants + 1 legacy; never gate evidence", "no CHOSEN scenario at 22.0 events/s on a population of >= 10000 workspaces", "concurrency 1 missing at 22.0 events/s on >= 10000 workspaces", "concurrency 10 missing at 22.0 events/s on >= 10000 workspaces", "concurrency 25 missing at 22.0 events/s on >= 10000 workspaces", "concurrency 50 missing at 22.0 events/s on >= 10000 workspaces", "concurrency 100 missing at 22.0 events/s on >= 10000 workspaces", "no REFERENCE run for chosen-ws11-c10-r22", "only 66 retention samples for chosen-ws11-c10-r22 (minimum 100)", "no REFERENCE run for chosen-ws11-c25-r22", "only 66 retention samples for chosen-ws11-c25-r22 (minimum 100)", "no REFERENCE run for chosen-ws11-c50-r22", "only 66 retention samples for chosen-ws11-c50-r22 (minimum 100)", "no REFERENCE run for chosen-ws11-c100-r22", "only 66 retention samples for chosen-ws11-c100-r22 (minimum 100)" ],
+  "verdict" : "INCOMPLETE",
+  "diagnostics" : [ {
+    "workspaces" : 11,
+    "file" : "diagnostics-cohort.txt"
+  } ],
+  "variant" : null
+}
