@@ -105,11 +105,17 @@ For the owner's decision; nothing here is a criterion until the owner adopts it.
      hot workspace) paced at 90 % of what the hot workspace's INGEST refill
      (10/s) leaves beside the `inside` probe, so the flood keeps its budget.
      Production write slots, production INGEST limits (per inbox, then per
-     workspace) on flood and probes alike, heartbeats on.
+     workspace) on flood and probes alike, heartbeats on, and BACKGROUND traffic
+     at the matrix point's offered rate over every other cohort workspace (not
+     the hot, observer, cold or legacy one), through INGEST, so T1, the slots and
+     mode a's global lock are loaded; its admitted rate and T1 p99 are reported
+     per run.
    - **Classes.** `inside`: one of three reserved hot-workspace inboxes (the
      target, rotated so each stays under its 2/s per-inbox refill) co-addressed
-     with the observer's own inbox in one event; `cold`: an unrelated
-     workspace's inbox; `unknown`: never reaches T1.
+     with the observer's own inbox in one event; `cold`: three inboxes of an
+     unrelated workspace, rotated likewise; `unknown`: never reaches T1. Neither
+     the observer nor the cold workspace is the legacy one (retention load), and
+     neither receives background traffic; the harness fails the run otherwise.
    - **What counts.** Only events whose TARGET copy passed INGEST and reached
      the guarded protocol (write slot, then T1): `targetReachedEvents`. An
      `inside` event whose hot copy was rate-limited measures the observer's
@@ -117,8 +123,10 @@ For the owner's decision; nothing here is a criterion until the owner adopts it.
    - **Runs.** N ≥ 4 repetitions per point and mode, INGEST buckets reset
      before every run, the order of the two modes alternating between
      repetitions; figures pooled per point and mode (`probePooled`).
-   - **Sample.** 3 events/s per class for 30 s is 90 per run; four repetitions
-     pool 360. Each pooled class needs **at least 300 target-reached events**,
+   - **Sample.** 4 events/s per class for a 60 s probe run is 240 per run;
+     four repetitions send 960, so even at 50 % of `inside` targets passing the
+     hot workspace's INGEST budget 480 pool. Each pooled class needs **at least
+     300 target-reached events**,
      or the point is INCONCLUSIVE (not a pass): at 300 the nearest-rank p99 is
      the 297th value, so three observations lie above it and one outlier
      cannot set it.
@@ -133,7 +141,9 @@ For the owner's decision; nothing here is a criterion until the owner adopts it.
      `cold 451 rate ≤ 0.1 %` (§11's `lock_timeout` bound; with fewer than 1 000
      pooled cold events, zero `451`s).
    - Limit: the harness's uploads are instant, so a write slot is held for T1
-     and T2 only; production upload time would lengthen slot holds.
+     and T2 only; production upload time would lengthen slot holds. This makes
+     mode a's slot channel look SMALLER than in production, so the relative
+     bound against mode a is stricter here than it would be with real uploads.
 
 ## Ops precondition (security review S-C2)
 

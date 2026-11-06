@@ -111,15 +111,39 @@ flood sends maximum-size events (every flood inbox of the hot workspace) at 90 %
 of what the hot workspace's INGEST refill leaves beside the probe, so it keeps
 its budget (the attacker's best case). Flood and probes alike pass production's
 ADR-027 INGEST limits (per inbox, then per workspace) before T1; production write
-slots; heartbeats on. Beside the flood, three classes at 3 events/s each:
+slots; heartbeats on. Because INGEST caps the hot flood at the hot workspace's
+refill (about 10 copies/s), each probe run also carries BACKGROUND traffic at the
+matrix point's offered rate (the heaviest rate, for both points), with the
+recipient mix, over every OTHER cohort workspace (not the hot, observer, cold or
+legacy one; the run fails if a role is the legacy workspace or would receive
+background traffic), through INGEST like production; `background` reports its
+admitted copies per second and its T1 p99, so the evidence shows T1, the write
+slots and mode a's global lock were busy (INGEST bounds it: 27 background
+workspaces × 10 copies/s ≈ 270 admitted copies/s sustained, after each one's
+300-copy burst; that is the most load the closed cohort can admit in production).
+Beside the flood, three classes at
+4 events/s each:
 `inside` (one of three reserved hot-workspace inboxes, rotated, co-addressed with
-an observer's inbox in another workspace), `cold`, and `unknown` (resolution
-discards it; `reachesT1 = false`). Each run repeats `--probe-repetitions` times
+an observer's inbox in another workspace), `cold` (three of the cold
+workspace's inboxes, rotated, so no single inbox meets its 2/s per-inbox refill),
+and `unknown` (resolution discards it; `reachesT1 = false`). Each run repeats `--probe-repetitions` times
 (default 4), every run starting from reset INGEST buckets and the order of the
 two modes alternating between repetitions (`…-repN`). Per class, `probes`
 reports `events` and `targetReachedEvents` (the target copy passed INGEST and
 reached the guarded protocol); latency and the 451 rate are computed only over
-the latter. `variant.probePooled` pools the repetitions per point and mode, with
+the latter. Probe runs last `--probe-duration-seconds` (default 60), not the matrix
+duration, so they never stretch the gate's own scenarios.
+
+**Sample arithmetic.** 4 events/s × 60 s = 240 events per class per run; the
+default 4 repetitions send 960 per class, point and mode. `cold` targets always
+pass INGEST. `inside` targets compete with the flood for the hot workspace's
+10/s refill: assuming only 50 % pass, 480 target-reached events pool, 1.6 × the
+300 minimum (300 is still met at 31 %). Staging recommendation: the defaults,
+`--probe-repetitions 4 --probe-duration-seconds 60`. Added wall time per
+population: 2 points × 2 modes × 4 repetitions = 16 runs of about 60 s + warm-up +
+reset/restore (≈ 85 s each), so about 23 minutes.
+
+`variant.probePooled` pools the repetitions per point and mode, with
 the sample size, `minimumSampleMet` (300) and `insideMinusColdP99Ms`; no verdict
 (the proposed criterion is in the PROPOSED note, not adopted). Limit: uploads are
 instant here, so a write slot is held for T1 and T2 only. Every PARTITIONED
