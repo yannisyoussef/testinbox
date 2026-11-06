@@ -75,7 +75,8 @@ good() {
         --qualification-dir "$FIX/qualification" --backend-identity "$FIX/identity/match.json" \
         --benchmark-evidence "$TMP/bench-pass.json" \
         --filesystem-evidence "$FIX/filesystem/evidence-good.json" --footprint-state "$FIX/filesystem/state-good.json" \
-        --cohort-check-output "$FIX/cohort/check-pass.txt" --cohort-pool-file "$FIX/cohort/pool.json"
+        --cohort-check-output "$FIX/cohort/check-pass.txt" --cohort-pool-file "$FIX/cohort/pool.json" \
+        --population-state "$FIX/population/pre-plan-within.json"
 }
 # with <flag> <value>: the good inputs with one flag's value replaced (removed when
 # value is ""), or the flag appended when the good inputs do not carry it.
@@ -127,9 +128,9 @@ only() {
 good > "$TMP/args-good"
 case_ "all gates satisfied → ACTIVATION READY" 0 '^ACTIVATION READY$' "$TMP/args-good" --json "$TMP/evidence.json"
 if [ -f "$TMP/evidence.json" ] && jq -e '.mode == "ALL" and .evaluatedAt == "2026-10-07T00:00:00Z" and .verdict == "READY"
-        and (.gates | length) == 11 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
+        and (.gates | length) == 12 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
         and (.cohortGate | startswith("storage-budget check"))' "$TMP/evidence.json" >/dev/null 2>&1; then
-    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 11 gates (gate L included)"
+    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 12 gates (gates L and W included)"
 else
     bad "the evidence JSON shape is wrong" "$(cat "$TMP/evidence.json" 2>/dev/null)"
 fi
@@ -289,6 +290,86 @@ case_ "D: a benchmark gitSha that cannot be related to the running API warns but
 printf '{"verdict":"PASS","gitSha":"x"}' > "$TMP/bench-shapeless.json"
 with --benchmark-evidence "$TMP/bench-shapeless.json" > "$TMP/d7"
 only "D: a PASS with no scenarios does not pass (fail closed)" D-benchmark "no scenarios recorded" "$TMP/d7"
+
+# ---------------------------------------------------------------------------
+# Gate D, ADR-035 amendment D (2026-11-06): §11's expected rate R is R_gated,
+# the rate every node declares (testinbox_storage_gated_expected_rate). The
+# evidence must have run at exactly it; every other criterion is unchanged.
+# ---------------------------------------------------------------------------
+# The closed-beta evidence: the PASS fixture re-run at R = 31 and 2R = 62 (r = 1, 30 + L = 31).
+jq '.harness.expectedRate = 31.0 | .harness.rates = [31.0, 62.0]
+    | .scenarios |= map(
+        .achievedRate = (if .achievedRate == null then null else .achievedRate * (if .offeredRate == 260 then 31 / 260 else 62 / 520 end) end)
+        | .offeredRate = (if .offeredRate == 260 then 31.0 else 62.0 end)
+        | .name |= (sub("-r260$"; "-r31") | sub("-r520$"; "-r62")))' "$TMP/bench-pass.json" > "$TMP/bench-beta.json"
+declare_rate() { sed -E "s/^(testinbox_storage_gated_expected_rate\{[^}]*\}) .*/\1 $3/" "$M/$1" > "$M/$2"; }
+declare_rate api-healthy.prom api-r31.prom 31.0
+declare_rate ingestion-healthy.prom ingestion-r31.prom 31.0
+grep -v '^testinbox_storage_gated_expected_rate' "$M/ingestion-healthy.prom" > "$M/ingestion-no-rgated.prom"
+beta() { good | sed -e "s#$M/api-healthy.prom#$M/api-r31.prom#" -e "s#$M/ingestion-healthy.prom#$M/ingestion-r31.prom#" -e "s#$TMP/bench-pass.json#$TMP/bench-beta.json#"; }
+
+beta > "$TMP/dr1"
+case_ "D: nodes declaring R_gated 31 and evidence run at 31 and 62 → ACTIVATION READY" 0 '^ACTIVATION READY$' "$TMP/dr1"
+printf '%s\n' "$OUT" | grep -qE '^D-benchmark[[:space:]]+PASS[[:space:]].*declared R_gated 31' && ok "D: the PASS names the declared R_gated it was judged at" || bad "D did not judge at the declared R_gated 31" "$OUT"
+beta | sed "s#$TMP/bench-beta.json#$TMP/bench-pass.json#" > "$TMP/dr2"
+only "D: evidence run at 260 does not count where the nodes declare R_gated 31" D-benchmark "ran at expected rate 260(\.0)? events/s but the nodes declare R_gated 31" "$TMP/dr2"
+with --benchmark-evidence "$TMP/bench-beta.json" > "$TMP/dr3"
+only "D: evidence run at 31 does not count where the nodes declare R_gated 260" D-benchmark "ran at expected rate 31(\.0)? events/s but the nodes declare R_gated 260" "$TMP/dr3"
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c50-r62") | .achievedRate) = 55.0' "$TMP/bench-beta.json" > "$TMP/bench-beta-short.json"
+beta | sed "s#$TMP/bench-beta.json#$TMP/bench-beta-short.json#" > "$TMP/dr4"
+only "D: at R_gated 31 the 2× criterion is still sustained 62/s at the pinned 0.995" D-benchmark "sustained2x: chosen-ws10000-c50-r62 achieved 55" "$TMP/dr4"
+jq '(.scenarios[] | select(.name == "chosen-ws10000-c25-r62") | .percentiles.t1.p99Ms) = 50.5' "$TMP/bench-beta.json" > "$TMP/bench-beta-t1.json"
+beta | sed "s#$TMP/bench-beta.json#$TMP/bench-beta-t1.json#" > "$TMP/dr5"
+only "D: at R_gated 31 T1 p99 is still ≤ 50 ms" D-benchmark "t1P99: chosen-ws10000-c25-r62 T1 p99 50.5 ms > 50 ms" "$TMP/dr5"
+jq 'del(.scenarios[] | select(.name == "chosen-ws10000-c100-r62"))' "$TMP/bench-beta.json" > "$TMP/bench-beta-nocov.json"
+beta | sed "s#$TMP/bench-beta.json#$TMP/bench-beta-nocov.json#" > "$TMP/dr6"
+only "D: at R_gated 31 the full concurrency matrix is still required" D-benchmark "coverage: no CHOSEN 2× scenario at concurrency 100" "$TMP/dr6"
+with --ingestion-metrics "$M/ingestion-no-rgated.prom" > "$TMP/dr7"
+only "D: a node that declares no R_gated blocks (UNKNOWN, never the old 260)" D-benchmark "R_gated UNKNOWN \(testinbox_storage_gated_expected_rate absent\)" "$TMP/dr7"
+with --ingestion-metrics "$M/ingestion-r31.prom" > "$TMP/dr8"
+only "D: nodes that disagree on R_gated block" D-benchmark "declares R_gated 31(\.0)? but another node declares 260" "$TMP/dr8"
+with --expected-rate 31 > "$TMP/dr9"
+only "D: --expected-rate may only confirm the declaration, never replace it" D-benchmark "--expected-rate 31 differs from the R_gated 260(\.0)? the nodes declare" "$TMP/dr9"
+with --expected-rate 260 > "$TMP/dr10"
+case_ "D: --expected-rate equal to the declared R_gated confirms it" 0 '^ACTIVATION READY$' "$TMP/dr10"
+beta > "$TMP/dr11"
+case_ "D: --expected-rate 31 confirms a declared 31" 0 '^ACTIVATION READY$' "$TMP/dr11" --expected-rate 31
+with --expected-rate fast > "$TMP/dr12"
+case_ "D: a non-numeric --expected-rate is a usage error" 2 'expected-rate must be a positive number' "$TMP/dr12"
+with --expected-rate 0 > "$TMP/dr13"
+case_ "D: a zero --expected-rate is a usage error" 2 'expected-rate must be a positive number' "$TMP/dr13"
+jq 'del(.harness.expectedRate)' "$TMP/bench-pass.json" > "$TMP/bench-norate.json"
+with --benchmark-evidence "$TMP/bench-norate.json" > "$TMP/dr14"
+only "D: evidence that records no expected rate cannot be bound to R_gated" D-benchmark "records no harness.expectedRate" "$TMP/dr14"
+good | sed -e 's/^ALL$/TENANT_LIMITS/' -e "s#$M/ingestion-healthy.prom#$M/ingestion-no-rgated.prom#" > "$TMP/dr15"
+case_ "D: TENANT_LIMITS needs no R_gated (the gate is NOT REQUIRED there)" 0 '^ACTIVATION READY$' "$TMP/dr15"
+
+# ---------------------------------------------------------------------------
+# Gate W, ADR-035 amendment D: before a cohort plan exists every workspace
+# receives mail, so under ALL the database holds at most 30 + L of them. The
+# bound comes from every node (testinbox_storage_envelope_max_workspaces).
+# ---------------------------------------------------------------------------
+with --population-state "$FIX/population/pre-plan-over.json" > "$TMP/w1"
+only "W: no plan and one workspace over 30 + L blocks, with the count" W-workspace-envelope "no cohort plan exists and the database holds more than 31 workspaces \(counted 32\)" "$TMP/w1"
+with --population-state "$FIX/population/plan-exists.json" > "$TMP/w2"
+case_ "W: once a cohort plan exists the pool bounds the population (gate G), so the count does not block" 0 '^W-workspace-envelope[[:space:]]+PASS[[:space:]].*a cohort plan exists' "$TMP/w2"
+printf '{"cohortPlanExists": false, "workspaces": 31}\n' > "$TMP/pop-31.json"
+with --population-state "$TMP/pop-31.json" > "$TMP/w3"
+case_ "W: exactly 30 + L passes" 0 '^W-workspace-envelope[[:space:]]+PASS[[:space:]].*31 workspace\(s\), within the envelope.s 31' "$TMP/w3"
+with --population-state "" > "$TMP/w4"
+only "W: no population input under ALL → NOT RUN, and NOT RUN blocks" W-workspace-envelope "no population: set TESTINBOX_ACTIVATION_DB_URL or pass --population-state" "$TMP/w4"
+grep -v '^testinbox_storage_envelope_max_workspaces' "$M/ingestion-healthy.prom" > "$M/ingestion-no-envelope.prom"
+with --ingestion-metrics "$M/ingestion-no-envelope.prom" > "$TMP/w5"
+only "W: a node that declares no envelope blocks (UNKNOWN, never assumed)" W-workspace-envelope "envelope bound is UNKNOWN \(testinbox_storage_envelope_max_workspaces absent\)" "$TMP/w5"
+sed -E 's/^(testinbox_storage_envelope_max_workspaces\{[^}]*\}) .*/\1 30.0/' "$M/ingestion-healthy.prom" > "$M/ingestion-envelope-30.prom"
+with --ingestion-metrics "$M/ingestion-envelope-30.prom" > "$TMP/w6"
+only "W: nodes that disagree on the envelope block" W-workspace-envelope "declares an envelope of 30(\.0)? workspaces but another node declares 31" "$TMP/w6"
+printf '{"cohortPlanExists": "no", "workspaces": 2}\n' > "$TMP/pop-bad.json"
+with --population-state "$TMP/pop-bad.json" > "$TMP/w7"
+only "W: a malformed population state blocks" W-workspace-envelope "population-state must be" "$TMP/w7"
+good | sed -e 's/^ALL$/TENANT_LIMITS/' -e "s#$FIX/population/pre-plan-within.json#$FIX/population/pre-plan-over.json#" > "$TMP/w8"
+case_ "W: TENANT_LIMITS is NOT REQUIRED, whatever the population" 0 '^ACTIVATION READY$' "$TMP/w8"
+printf '%s\n' "$OUT" | grep -qE '^W-workspace-envelope[[:space:]]+NOT REQUIRED[[:space:]]' && ok "W: the TENANT_LIMITS verdict is literally NOT REQUIRED" || bad "W is not NOT REQUIRED for TENANT_LIMITS" "$OUT"
 
 # ---------------------------------------------------------------------------
 # Gate E: rollback floors (throwaway history).

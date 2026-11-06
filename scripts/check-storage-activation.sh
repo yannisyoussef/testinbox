@@ -43,6 +43,9 @@
 #   --backend-identity <json>          the Ops-declared backend identity (non-secret)
 #   --qualification-valid-metric 0|1   the Ops qualification-check's testinbox_storage_qualification_valid
 #   --benchmark-evidence <json>        the §11 benchmark result (docs/dev/storage-benchmark.md)
+#   --expected-rate <events/s>         gate D: OPTIONAL cross-check. §11's expected rate R is R_gated, read from
+#                                      every node's testinbox_storage_gated_expected_rate (ADR-035 amendment D);
+#                                      this value must EQUAL it, and the evidence must have run at it
 #   --repo <dir>                       the checkout whose history evaluates floors (default: this repository)
 #   --floors-file <file>               default <repo>/deploy/rollback-floors.txt
 #   --fetch                            `git fetch origin master` before evaluating gate E
@@ -54,6 +57,8 @@
 #                                      (never passing): this script never recomputes the ADR-037 proof.
 #   --cohort-pool-file <file>          gate G: the reviewed pool file that check ran against; its SHA-256 must equal
 #                                      the `reviewed-file sha256=` line the command printed (binds the output to it)
+#   --population-state <json>         gate W (--mode ALL): {"cohortPlanExists": bool, "workspaces": n} for an offline
+#                                      evaluation; replaces the query (refused when TESTINBOX_ACTIVATION_DB_URL is set)
 #   --environment production|staging|lab  gate F: with `production`, the matched qualification record must carry
 #                                      platformClass production-host (the evidence itself does not name the environment)
 #   --json <file>                      write the evidence record
@@ -93,6 +98,7 @@ FLOORS_FILE=""
 FETCH=false
 FS_EVIDENCE=""
 FOOTPRINT_STATE=""
+POPULATION_STATE=""
 COHORT_CHECK=""
 JSON_OUT=""
 MAX_OFFSET=30
@@ -100,7 +106,14 @@ HEARTBEAT_MAX_AGE=300
 # ADR-035 §11 constants are PINNED here and never read from the evidence: an
 # evidence file is data a harness produced, and a harness run with relaxed
 # inputs must not be able to relax the gate (docs/dev/storage-benchmark.md).
-EXPECTED_RATE="260"
+# The expected rate R is not read from the evidence either. Since amendment D
+# (2026-11-06) R is R_gated: the rate every node declares
+# (testinbox.storage.gated-expected-rate, exported as
+# testinbox_storage_gated_expected_rate), under which DeploymentSafety holds the
+# INGEST envelope r x (30 + L). Gate D reads it from the nodes and refuses
+# evidence run at any other rate. There is no default.
+EXPECTED_RATE=""
+EXPECTED_RATE_ARG=""
 SUSTAIN_TOLERANCE="0.995"
 T1_P99_MS="50"
 RETENTION_RATIO="2"
@@ -135,12 +148,14 @@ while [ $# -gt 0 ]; do
         --backend-identity) need_value "$@"; IDENTITY="$2"; shift 2 ;;
         --qualification-valid-metric) need_value "$@"; QUAL_METRIC="$2"; shift 2 ;;
         --benchmark-evidence) need_value "$@"; BENCH="$2"; shift 2 ;;
+        --expected-rate) need_value "$@"; EXPECTED_RATE_ARG="$2"; shift 2 ;;
         --repo) need_value "$@"; REPO="$2"; shift 2 ;;
         --floors-file) need_value "$@"; FLOORS_FILE="$2"; shift 2 ;;
         --fetch) FETCH=true; shift ;;
         --max-clock-offset-seconds) need_value "$@"; MAX_OFFSET="$2"; shift 2 ;;
         --filesystem-evidence) need_value "$@"; FS_EVIDENCE="$2"; shift 2 ;;
         --footprint-state) need_value "$@"; FOOTPRINT_STATE="$2"; shift 2 ;;
+        --population-state) need_value "$@"; POPULATION_STATE="$2"; shift 2 ;;
         --cohort-check-output) need_value "$@"; COHORT_CHECK="$2"; shift 2 ;;
         --cohort-pool-file) need_value "$@"; COHORT_POOL="$2"; shift 2 ;;
         --environment) need_value "$@"; ENVIRONMENT="$2"; shift 2 ;;
@@ -159,7 +174,12 @@ esac
 case "$ENVIRONMENT" in ""|production|staging|lab) ;; *) echo "error: --environment must be exactly production, staging or lab, not '$ENVIRONMENT'" >&2; usage ;; esac
 case "$QUAL_METRIC" in ""|0|1) ;; *) echo "error: --qualification-valid-metric must be 0 or 1" >&2; usage ;; esac
 case "$MAX_OFFSET" in ''|*[!0-9.]*) echo "error: --max-clock-offset-seconds must be a number" >&2; usage ;; esac
-for f in "$SESSIONS_FILE" "$NODES_FILE" "$IDENTITY" "$BENCH" "$FLOORS_FILE" "$FS_EVIDENCE" "$FOOTPRINT_STATE" "$COHORT_CHECK" "$COHORT_POOL"; do
+case "$EXPECTED_RATE_ARG" in
+    "") ;;
+    *[!0-9.]*|.|*.*.*) echo "error: --expected-rate must be a positive number of events/s" >&2; usage ;;
+    *) awk -v a="$EXPECTED_RATE_ARG" 'BEGIN { exit !((a + 0) > 0) }' || { echo "error: --expected-rate must be a positive number of events/s" >&2; usage; } ;;
+esac
+for f in "$SESSIONS_FILE" "$NODES_FILE" "$IDENTITY" "$BENCH" "$FLOORS_FILE" "$FS_EVIDENCE" "$FOOTPRINT_STATE" "$POPULATION_STATE" "$COHORT_CHECK" "$COHORT_POOL"; do
     [ -z "$f" ] || [ -f "$f" ] || { echo "error: input file not found: $f" >&2; usage; }
 done
 [ -d "$REPO" ] || { echo "error: --repo $REPO is not a directory" >&2; usage; }
@@ -451,8 +471,35 @@ EOF
 # blocks. A CHOSEN 2× scenario with no matching REFERENCE run cannot be judged
 # and blocks; an INCOMPLETE run blocks with its reasons.
 # ---------------------------------------------------------------------------
+# Sets EXPECTED_RATE to the R_gated every metrics endpoint declares, or leaves it
+# empty and records why. --expected-rate, when given, must equal it.
+declared_gated_rate() {
+    local role label path err value seen="" checked=0
+    EXPECTED_RATE=""
+    while IFS="$TAB" read -r role label path err; do
+        [ -n "$role" ] || continue
+        [ -z "$err" ] || { problem "$err"; continue; }
+        checked=$((checked + 1))
+        value="$(metric_value "$path" testinbox_storage_gated_expected_rate)"
+        if ! is_number "$value" || ! num_gt "$value" 0; then
+            problem "$label ($role): R_gated UNKNOWN (testinbox_storage_gated_expected_rate absent); every node must declare testinbox.storage.gated-expected-rate"
+        elif [ -z "$seen" ]; then
+            seen="$value"
+        elif ! num_eq "$value" "$seen"; then
+            problem "$label ($role): declares R_gated $value but another node declares $seen; the nodes must agree"
+        fi
+    done <<EOF
+$METRICS_INDEX
+EOF
+    [ "$checked" -gt 0 ] || problem "no metrics endpoint: R_gated (testinbox_storage_gated_expected_rate) is unobserved, so §11's expected rate is unknown"
+    if [ -n "$seen" ] && [ -n "$EXPECTED_RATE_ARG" ] && ! num_eq "$EXPECTED_RATE_ARG" "$seen"; then
+        problem "--expected-rate $EXPECTED_RATE_ARG differs from the R_gated $seen the nodes declare; it may only confirm the declaration"
+    fi
+    [ -n "$PROBLEMS" ] || EXPECTED_RATE="$seen"
+}
+
 gate_benchmark() {
-    local gate="D-benchmark" verdict recomputed bench_sha api_sha warn=""
+    local gate="D-benchmark" verdict recomputed bench_sha api_sha bench_rate warn=""
     reset_problems
     if [ "$MODE" = TENANT_LIMITS ]; then
         record "$gate" NOT_REQUIRED "NOT REQUIRED FOR TENANT_LIMITS: the global ceiling is not enabled in this mode (§14 phase 4)"
@@ -463,6 +510,20 @@ gate_benchmark() {
         return
     fi
     jq -e . "$BENCH" >/dev/null 2>&1 || { record "$gate" BLOCKED "benchmark evidence is not valid JSON"; return; }
+    # ADR-035 amendment D: R is R_gated, as every node declares it. Unknown or
+    # inconsistent blocks: the criteria cannot be recomputed against a rate no
+    # node is proven to run under.
+    declared_gated_rate
+    if [ -z "$EXPECTED_RATE" ]; then
+        record "$gate" BLOCKED "$PROBLEMS"
+        return
+    fi
+    bench_rate="$(jq -r '.harness.expectedRate // empty' "$BENCH")"
+    if ! is_number "$bench_rate"; then
+        problem "the evidence records no harness.expectedRate, so it cannot be bound to R_gated $EXPECTED_RATE events/s"
+    elif ! num_eq "$bench_rate" "$EXPECTED_RATE"; then
+        problem "the evidence ran at expected rate $bench_rate events/s but the nodes declare R_gated $EXPECTED_RATE (testinbox.storage.gated-expected-rate); evidence counts only at the declared rate (ADR-035 amendment D)"
+    fi
     verdict="$(jq -r '.verdict // "MISSING"' "$BENCH")"
     if [ "$verdict" = INCOMPLETE ]; then
         problem "benchmark verdict is INCOMPLETE: $(jq -r '(.incompleteReasons // []) | join("; ") | if . == "" then "no reason recorded" else . end' "$BENCH")"
@@ -534,8 +595,77 @@ gate_benchmark() {
     if [ -n "$PROBLEMS" ]; then
         record "$gate" BLOCKED "$PROBLEMS${warn:+; $warn}"
     else
-        record "$gate" PASS "recorded PASS and the §11 criteria recompute from the numbers${warn:+; $warn}"
+        record "$gate" PASS "recorded PASS at the declared R_gated $EXPECTED_RATE events/s and the §11 criteria recompute from the numbers${warn:+; $warn}"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# Gate W: ADR-035 amendment D, the window before a cohort plan exists. Gate D's
+# evidence covers r x (30 + L) events/s; once a plan exists the pool bounds the
+# population (gate G), but before it every workspace in the database receives
+# mail. So under ALL the database must hold at most 30 + L workspaces while no
+# plan exists. The bound is read from every node
+# (testinbox_storage_envelope_max_workspaces, which they must agree on), the
+# population from the live database or --population-state. The nodes enforce
+# the same rule at run time (a uniform 451 for every event, never per tenant).
+# ---------------------------------------------------------------------------
+gate_envelope() {
+    local gate="W-workspace-envelope" role label path err value seen="" checked=0 max row plan workspaces
+    reset_problems
+    if [ "$MODE" = TENANT_LIMITS ]; then
+        record "$gate" NOT_REQUIRED "NOT REQUIRED FOR TENANT_LIMITS: the gated envelope belongs to ALL (ADR-035 amendment D)"
+        return
+    fi
+    while IFS="$TAB" read -r role label path err; do
+        [ -n "$role" ] || continue
+        [ -z "$err" ] || { problem "$err"; continue; }
+        checked=$((checked + 1))
+        value="$(metric_value "$path" testinbox_storage_envelope_max_workspaces)"
+        if ! is_number "$value" || ! num_gt "$value" 0; then
+            problem "$label ($role): the envelope bound is UNKNOWN (testinbox_storage_envelope_max_workspaces absent); every node must declare testinbox.storage.declared-legacy-workspaces"
+        elif [ -z "$seen" ]; then
+            seen="$value"
+        elif ! num_eq "$value" "$seen"; then
+            problem "$label ($role): declares an envelope of $value workspaces but another node declares $seen; the nodes must agree"
+        fi
+    done <<EOF
+$METRICS_INDEX
+EOF
+    [ "$checked" -gt 0 ] || problem "no metrics endpoint: the envelope bound (testinbox_storage_envelope_max_workspaces) is unobserved"
+    if [ -n "$PROBLEMS" ]; then
+        record "$gate" BLOCKED "$PROBLEMS"
+        return
+    fi
+    max="$(awk -v a="$seen" 'BEGIN { printf "%d", a }')"
+    if [ -n "$POPULATION_STATE" ] && [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
+        record "$gate" NOT_RUN "--population-state and TESTINBOX_ACTIVATION_DB_URL both given; the live database is the only source when it is reachable"
+        return
+    elif [ -n "${TESTINBOX_ACTIVATION_DB_URL:-}" ]; then
+        if ! row="$(PGAPPNAME="ops:storage-activation-check" psql "$TESTINBOX_ACTIVATION_DB_URL" -X -At -F "$TAB" -v ON_ERROR_STOP=1 \
+            -c "SELECT EXISTS(SELECT 1 FROM storage_cohort_plan), (SELECT count(*) FROM (SELECT id FROM workspace LIMIT $((max + 1))) w)" \
+            2>"$WORK/psql-envelope.err")"; then
+            record "$gate" BLOCKED "the workspace population query failed; the envelope could not be observed"
+            return
+        fi
+        plan="${row%%"$TAB"*}"; workspaces="${row#*"$TAB"}"
+    elif [ -n "$POPULATION_STATE" ]; then
+        jq -e '(.cohortPlanExists | type) == "boolean" and (.workspaces | type) == "number" and .workspaces >= 0' "$POPULATION_STATE" >/dev/null 2>&1 ||
+            { record "$gate" BLOCKED "--population-state must be {\"cohortPlanExists\": bool, \"workspaces\": n ≥ 0}"; return; }
+        plan="$(jq -r '.cohortPlanExists' "$POPULATION_STATE")"; workspaces="$(jq -r '.workspaces' "$POPULATION_STATE")"
+    else
+        record "$gate" NOT_RUN "no population: set TESTINBOX_ACTIVATION_DB_URL or pass --population-state"
+        return
+    fi
+    case "$plan" in
+        t|true)
+            record "$gate" PASS "a cohort plan exists; the pool bounds the population (every workspace shared, at most L legacy: gate G)" ;;
+        *)
+            if num_gt "$workspaces" "$max"; then
+                record "$gate" BLOCKED "no cohort plan exists and the database holds more than $max workspaces (counted $workspaces); before the plan every workspace receives mail, and gate D covers at most 30 + L under ALL (ADR-035 amendment D)"
+            else
+                record "$gate" PASS "no cohort plan yet; $workspaces workspace(s), within the envelope's $max (30 + L)"
+            fi ;;
+    esac
 }
 
 # ---------------------------------------------------------------------------
@@ -1346,6 +1476,7 @@ gate_inventory
 gate_physical
 gate_clock
 gate_benchmark
+gate_envelope
 gate_locking
 gate_floors_staging
 gate_floors_production

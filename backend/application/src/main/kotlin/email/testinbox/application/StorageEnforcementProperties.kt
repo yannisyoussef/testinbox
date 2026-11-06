@@ -165,6 +165,8 @@ object StorageDeclarationsFactory {
         nodeRole: NodeRole? = null,
         filesystem: FilesystemProperties = FilesystemProperties(),
         admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
+        gatedExpectedRate: Double? = null,
+        declaredLegacyWorkspaces: Int? = null,
     ): StorageDeclarations =
         StorageDeclarations(
             enforcement = enforcement,
@@ -181,5 +183,7 @@ object StorageDeclarationsFactory {
             node = if (nodeId != null && nodeRole != null) DeclaredNode(nodeId, nodeRole) else null,
             filesystem = filesystem.toDeclarations(),
             admissionLocking = admissionLocking,
+            gatedExpectedRate = gatedExpectedRate,
+            declaredLegacyWorkspaces = declaredLegacyWorkspaces,
         )
 }

@@ -39,6 +39,19 @@ class MicrometerStorageProtocolMetrics(
      * any node reporting COHORT_PARTITIONED blocks the gate.
      */
     admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
+    /**
+     * R_gated, `testinbox.storage.gated-expected-rate` (ADR-035 amendment D):
+     * exported so the activation barrier's gate D compares the benchmark
+     * evidence with what every node actually declares. No series at all while
+     * undeclared, which gate D reads as UNKNOWN and blocks on.
+     */
+    gatedExpectedRate: Double? = null,
+    /**
+     * 30 + L, the workspaces the gated envelope covers (ADR-035 amendment D):
+     * exported so the activation barrier can hold the pre-plan population to it.
+     * No series while L is undeclared.
+     */
+    envelopeWorkspaces: Int? = null,
 ) : StorageProtocolMetrics {
     private val breakerOpen = AtomicLong(0)
     private val breakerEscalated = AtomicLong(0)
@@ -52,8 +65,13 @@ class MicrometerStorageProtocolMetrics(
     private val orphanSweepCompletedAt = AtomicLong(0)
     private val byState = mapOf("RESERVED" to AtomicLong(0), "RELEASING" to AtomicLong(0))
 
-    /** Only the two gates a node can re-check at run time are exported per node (§14 Phase 4). */
-    private val gates = mapOf(ActivationGate.SESSION_ALLOWLIST to AtomicLong(0), ActivationGate.NODE_INVENTORY to AtomicLong(0))
+    /** Only the gates a node can re-check at run time are exported per node (§14 Phase 4; amendment D's envelope). */
+    private val gates =
+        mapOf(
+            ActivationGate.SESSION_ALLOWLIST to AtomicLong(0),
+            ActivationGate.NODE_INVENTORY to AtomicLong(0),
+            ActivationGate.WORKSPACE_ENVELOPE to AtomicLong(0),
+        )
     private val modes = StorageEnforcement.entries.associateWith { AtomicLong(if (it == enforcement) 1 else 0) }
     private val locking = AdmissionLocking.entries.associateWith { AtomicLong(if (it == admissionLocking) 1 else 0) }
     private val lockWait = Timer.builder(LOCK_WAIT).register(registry)
@@ -77,6 +95,8 @@ class MicrometerStorageProtocolMetrics(
         PartitionFallbackReason.entries.forEach { registry.counter(PARTITION_FALLBACK, "reason", it.name.lowercase()) }
         Gauge.builder(GLOBAL_LIMIT) { policy.globalLimitBytes.toDouble() }.register(registry)
         Gauge.builder(FINALIZE_BUDGET) { policy.finalizeBudgetBytes.toDouble() }.register(registry)
+        gatedExpectedRate?.let { rate -> Gauge.builder(GATED_EXPECTED_RATE) { rate }.register(registry) }
+        envelopeWorkspaces?.let { n -> Gauge.builder(ENVELOPE_WORKSPACES) { n }.register(registry) }
         StorageAdmissionOutcome.entries.forEach { registry.counter(ADMISSION, "outcome", it.name.lowercase()) }
         StorageScope.entries.forEach { registry.counter(UNENFORCED, "ceiling", it.name.lowercase()) }
         PhysicalFailureKind.entries.forEach { registry.counter(PHYSICAL_FAILURE, "kind", it.name.lowercase()) }
@@ -214,6 +234,8 @@ class MicrometerStorageProtocolMetrics(
         const val ACTIVATION_GATE = "testinbox_storage_activation_gate_ready"
         const val ENFORCEMENT_MODE = "testinbox_storage_enforcement_mode"
         const val ADMISSION_LOCKING = "testinbox_storage_admission_locking"
+        const val GATED_EXPECTED_RATE = "testinbox_storage_gated_expected_rate"
+        const val ENVELOPE_WORKSPACES = "testinbox_storage_envelope_max_workspaces"
         const val PARTITION_FALLBACK = "testinbox_storage_admission_partition_fallback_total"
         const val ORPHAN_SWEEP_COMPLETED_AT = "testinbox_storage_orphan_sweep_completed_at_seconds"
         const val ORPHAN_SWEEP = "testinbox_storage_orphan_sweep_total"

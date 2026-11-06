@@ -211,7 +211,7 @@ class MetricCardinalityTest {
             "path" to ReleasePath.entries.map { it.name.lowercase() }.toSet(),
             "state" to setOf("reserved", "releasing"),
             // Only the two gates a node re-checks at run time are exported (ADR-035 §14 Phase 4).
-            "gate" to setOf("session_allowlist", "node_inventory"),
+            "gate" to setOf("session_allowlist", "node_inventory", "workspace_envelope"),
         )
 
     /**
@@ -416,6 +416,33 @@ class MetricCardinalityTest {
             .tag("kind", "committed")
             .gauge()
             .value() shouldBe 3_456.0
+    }
+
+    @Test
+    fun `R_gated is one unlabelled series carrying the declared rate, and no series at all while undeclared`() {
+        // ADR-035 amendment D: activation gate D reads this from every node and blocks on an absent one.
+        val declared = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(
+            declared,
+            StorageCapacityPolicy.ADR_035_REFERENCE,
+            email.testinbox.domain.storage.StorageEnforcement.ALL,
+            gatedExpectedRate = 31.0,
+        )
+        declared.find("testinbox_storage_gated_expected_rate").gauges().size shouldBe 1
+        declared
+            .get("testinbox_storage_gated_expected_rate")
+            .gauge()
+            .id.tags shouldBe emptyList()
+        declared.scrape() shouldContain "testinbox_storage_gated_expected_rate 31.0"
+        val undeclared = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(undeclared, StorageCapacityPolicy.ADR_035_REFERENCE)
+        undeclared.find("testinbox_storage_gated_expected_rate").gauges().size shouldBe 0
+        undeclared.find("testinbox_storage_envelope_max_workspaces").gauges().size shouldBe 0
+        // The pre-plan population bound, 30 + L, read by the activation barrier the same way.
+        val envelope = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        MicrometerStorageProtocolMetrics(envelope, StorageCapacityPolicy.ADR_035_REFERENCE, envelopeWorkspaces = 31)
+        envelope.scrape() shouldContain "testinbox_storage_envelope_max_workspaces 31.0"
+        envelope.find("testinbox_storage_activation_gate_ready").gauges().size shouldBe 3
     }
 
     @Test

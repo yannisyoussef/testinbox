@@ -83,8 +83,16 @@ class CohortStorageRuntime(
         trash: Long,
     ): CohortStorageBudget.Result {
         if (binding == null || legacy.size > MAX_LEGACY_WORKSPACES) return CohortStorageBudget.Result.Unproven
+        // ADR-035 amendment D: the gated INGEST envelope counts 30 + L mail-receiving
+        // workspaces. A pool with more legacy shares than the declared L would admit
+        // traffic no passing gate D covers, so it is never proven, never approved.
+        if (!withinDeclaredLegacy(legacy)) return CohortStorageBudget.Result.Unproven
         return CohortStorageBudget.assess(budget(legacy, unattributed, trash))
     }
+
+    /** Whether [legacy] fits the declared legacy-share count L; true while L is undeclared (startup refuses `ALL` then). */
+    fun withinDeclaredLegacy(legacy: Map<WorkspaceId, LegacyStorageShare>): Boolean =
+        declarations.declaredLegacyWorkspaces?.let { legacy.size <= it } ?: true
 
     /**
      * The partition bound the approved pool records beside its plan (V25,

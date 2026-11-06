@@ -41,3 +41,18 @@ interface ActivationInventory {
     /** The database clock the heartbeats are measured on. */
     fun now(): Instant
 }
+
+/**
+ * ADR-035 amendment D, the window before any cohort plan exists: whether one
+ * exists, and how many `workspace` rows there are, counted only up to a cap.
+ */
+data class WorkspacePopulation(
+    val cohortPlanExists: Boolean,
+    /** Counted up to the cap the reader was given, never beyond: a bound check, not a population scan. */
+    val workspaces: Long,
+)
+
+/** Reads [WorkspacePopulation] under the deployable's own privileges (`workspace(id)` and `storage_cohort_plan`, which T1 already reads). */
+fun interface WorkspacePopulationReader {
+    fun read(cap: Int): WorkspacePopulation
+}
