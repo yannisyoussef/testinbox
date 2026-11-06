@@ -81,8 +81,20 @@ The design separates two things:
 
 ### 2.1 Transport identity
 
-The identity is Postfix `XFORWARD IDENT`, the edge's queue ID. Verified on
-`testinbox-mail-edge:rehearsal` (Postfix 3.8.6):
+The identity is Postfix `XFORWARD IDENT`, the edge's queue ID.
+
+**The live edge sends no XFORWARD today** (#124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)):
+
+- `smtp_send_xforward_command = no` and `enable_long_queue_ids = no`, with no
+  `master.cf` override on `relay`, so queue IDs are short;
+- today ingestion sees only the edge's WireGuard address as the client.
+
+So **this design, and EP-8 (4), cannot run on today's edge**. They need EP-0
+and EP-1 (§9.9), which are required behaviour changes, together with
+ingestion's `xforward-peers` allow-list.
+
+These properties were verified on `testinbox-mail-edge:rehearsal` (Postfix
+3.8.6) with XFORWARD enabled:
 
 - It is sent before every `MAIL`, including on a reused connection.
 - It is stable across `451` retries and across `postfix stop/start`.
@@ -542,9 +554,11 @@ SMTP and the MX were authorized for the owner-only production beta launch
     periodic scan. So the scan-phase reset adds no attempts.
   - **The in-flight exception.** If a reload hits a delivery that is in
     flight, that attempt's backoff is lost. The next attempt comes at the
-    first mail arrival after reload + 60 s, which anyone can trigger,
-    otherwise at reload + 300 s. A restart during an in-flight delivery
-    retries at once.
+    first mail arrival after reload + 60 s, otherwise at reload + 300 s. So
+    **any sender** can time that extra attempt anywhere within
+    [reload + 60 s, reload + 300 s]. It counts once in N_rr, and the bound
+    is unchanged, but the instant is chosen by the sender, not the edge. A
+    restart during an in-flight delivery retries at once.
   - **Model:** each reload or restart adds at most one attempt to each
     message in flight at that instant.
 - **Requeue** (`postsuper -r`) gives a new queue ID but keeps the old IDENT
@@ -586,23 +600,47 @@ SMTP and the MX were authorized for the owner-only production beta launch
   |---|---|---|
   | 0 | log₂ 123 ≈ **6.94** | log₂ 27 ≈ **4.75** |
   | 1 | log₂ 124 ≈ 6.95 | log₂ 28 ≈ 4.81 |
+  | **3 (the observed worst 4 h window)** | log₂ 126 ≈ **6.98** | log₂ 30 ≈ 4.91 |
   | 10 | log₂ 133 ≈ 7.06 | log₂ 37 ≈ 5.21 |
   | 30 | log₂ 153 ≈ 7.26 | log₂ 57 ≈ 5.83 |
   | 120 (reconcile at its maximum, every 2 min for 4 h) | log₂ 243 ≈ **7.92** | log₂ 147 ≈ 7.20 |
 
-- **The parameter.** N_rr is set by the reload and restart rate. Ops is
-  reporting the 30-day count, n₃₀. The worst 4 h window has N_rr ≤ n₃₀, and
-  the average window has N_rr ≈ n₃₀/180.
+- **The parameter, observed** on edge-fr-01's maillog, 2026-10-07 to now
+  (#124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)).
+  - **Counts:** 8 reloads and 5 starts.
+  - **Since public launch (2026-10-28 18:07Z):** only the weekly
+    maillog-rotation reload (Sundays at about 00:05).
+  - **Steady state:** about 1 a week, plus 1 per reviewed config MR, plus 1
+    per cert renewal (every 60–90 days).
+  - **The busiest 4 h window had 3**, all during launch config changes: Oct
+    28 at 15:08, 18:00 and 18:07.
+  - **Unexplained:** two starts (Oct 15 and Oct 19) have unverified causes.
+  - **What N_rr counts.** Only reloads or restarts that hit a message *in
+    flight*, and a pure retry is in flight for milliseconds. So N_rr is
+    realistically 0 per message, and at most the number of reloads within
+    its 4 h lifetime: **N_rr ≤ 3** on the observed worst window.
+  - **N_op and N_step since launch.** Ops' records list no operator flush or
+    clock step since launch (the Oct 27 edge-stop drills were before it).
+    This is **unverified**: no source states it explicitly, so EP-6 and EP-3,
+    or journal counts, must report them.
   - The expected count is far smaller. A reload adds an attempt only to a
     message in flight at that instant, and a probe's attempts last seconds
     while their spacing is minutes.
   - The bound must be worst-case all the same.
-- **Escalation.** The ≈ 6.9-bit hard figure holds only at N = 0. Any
-  realistic rate makes the hard bound exceed 6.9 bits: at a reconcile reload
-  in the window, or an operator flush, requeue or clock step. It reaches
-  ≈ 7.9 bits at the reconcile maximum. **Under the I9 exception's escalation
-  clause, that figure returns to the owner** with the measured n₃₀. The
-  typical figure stays ≤ ≈ 5.8 bits for N ≤ 30.
+- **Every term of K is reported, not assumed.**
+  - N_rr comes from the reconcile and systemd logs (n₃₀).
+  - N_op comes from EP-6, or from the `postsuper`/`postqueue` journal.
+  - N_step comes from EP-3, or from the `timesyncd` step journal.
+  - EP-3 and EP-6 are **required for this reporting** unless Ops provides
+    equivalent journal counts. They are not credit gates (§9.9).
+- **For the owner.** At the observed worst-case reload density (N_rr ≤ 3,
+  N_op = N_step = 0 unverified), the hard bound rises from ≈ 6.94 to
+  **≈ 6.98 bits**, with K ≤ 125.
+  - The typical figure is ≈ 4.75 to 4.81 bits at N_rr = 0 to 1.
+  - It reaches ≈ 7.9 bits only at the reconcile maximum of 120 per 4 h,
+    which has not been observed.
+  - **This is the owner's call under the I9 exception's escalation
+    clause.**
 - This is not a bound on every timing observation.
 - I-17's immediate deferral changes the `451`'s latency, not the ordinal.
 
@@ -638,10 +676,11 @@ SMTP and the MX were authorized for the owner-only production beta launch
 > K ≤ 122 + N_rr + N_op + N_step within the message's lifetime: N_rr counts
 > reloads or restarts that hit it in flight, N_op operator flushes or
 > requeues, and N_step edge clock steps. On the observed schedule that is
-> about 4.8 bits (K ≈ 26). The hard figure is about 6.94 bits at N = 0, and
-> exceeds 6.9 bits for any N ≥ 1, reaching about 7.9 bits at 120 per 4 h.
-> The figure under the measured reload and restart rate returns to the
-> owner. Probe events stay
+> about 4.8 bits (K ≈ 26). The hard figure is about 6.94 bits at N = 0. It
+> rises to about 6.98 bits at the observed worst-case reload density
+> (N_rr ≤ 3 in a 4 h window, #124 6688743690), and would reach about 7.9 bits
+> only at 120 per 4 h. That figure is the owner's call under the escalation
+> clause. Probe events stay
 > bounded by the probed workspace's `INGEST` budget. This is not a universal
 > bound on timing information.
 >
@@ -672,11 +711,10 @@ SMTP and the MX were authorized for the owner-only production beta launch
 
 **Add to `contract.yaml` under `required:`** (every profile):
 
-- `smtp_send_xforward_command: "yes"`. The live value is **unverified: Ops
-  is confirming it (#124 6688582662)**. If it is `no`, this is EP-0, a
-  behaviour change toward ingestion only;
-- `enable_long_queue_ids: "yes"`. The live value is **unverified** for the
-  same reason (EP-1);
+- `smtp_send_xforward_command: "yes"`. The live value is **`no`** (#124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)),
+  so this is EP-0, a **required behaviour change** toward ingestion only;
+- `enable_long_queue_ids: "yes"`. The live value is **`no`** (#124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)), so this
+  is EP-1, a **required behaviour change**;
 - `smtpd_authorized_xforward_hosts: ""`;
 - `smtpd_authorized_xclient_hosts: ""`;
 - `smtpd_etrn_restrictions: reject`;
@@ -751,8 +789,9 @@ an enforced check.
 | `in_flow_delay` | 1s (default) | assumption | throttles inbound arrival only when qmgr lags |
 | `smtpd_client_*` limits | 20 / 60/min / 100/min | pinned (`production`) | per-client limits on a public edge. They do not bound a distributed sender; `INGEST` does |
 | ETRN | **open today** | keys added (§6). **Needs live verification** | no client-triggered retries |
-| Operator flush (`edge-stop.sh`) | after an operator hold only | Ops procedure; each use logged | an extra presentation (K, catch-up burst) |
-| Reconcile reload or restart | on a config change, at most every 2 min | **unverified** effect on next-attempt times | P, K |
+| `smtp_send_xforward_command`, `enable_long_queue_ids` | **`no`, `no`**; no `relay` override (#124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)) | **not pinned**: EP-0 and EP-1 are required changes | identity (the whole allowance design), EP-8 (4) |
+| Operator flush (`edge-stop.sh`) | after an operator hold only | Ops procedure. **Not logged today**, only journal lines (EP-6) | an extra presentation (K, catch-up burst) |
+| Reconcile reload or restart | 2026-10-07 to now: 8 reloads and 5 starts. Since launch, only the weekly rotation reload (#124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)) | lab-measured effect: stored times never advanced; at most one extra attempt per message in flight (§4) | K (N_rr) |
 | Relay session time t_s | not measured | **needs evidence** (G-E) | assumption S: t_s ≤ 20/R_T ≈ 0.65 s, with ramp-up from 5 |
 
 **Ops:**
@@ -950,6 +989,9 @@ A2.2). No object, upload, fence, MinIO or filesystem dependency changes.
     - The refusal is the transient greeting `421 4.3.2 Service not
       available`, then close, never a 5xx, so a mis-listed edge defers its
       mail rather than bouncing it.
+    - A transaction from an `xforward-peers` edge without XFORWARD is
+      counted as `identity="edge_without_xforward"` and raises an alert
+      (EP-0).
 21. **I-21 Fresh envelope untouched.**
     - A catch-up spend never takes the bucket below σ′ =
       (30+L)·b + R·W_slot = 2 170.
@@ -1282,14 +1324,15 @@ here is accepted.
   - at most log₂(123 + N), where N counts reloads and restarts hitting the
     message in flight, plus operator flushes, requeues and clock steps
     (§4);
-  - about 6.94 bits at N = 0, above 6.9 for any N ≥ 1, and about 7.9 bits
-    at 120 per 4 h.
-  - The figure under the measured n₃₀ returns to the owner.
+  - **the hard bound rises from ≈ 6.94 to ≈ 6.98 bits at the observed
+    worst-case reload density** (N_rr ≤ 3 in a 4 h window, #124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)). The owner
+    decides under the I9 escalation clause.
 - It depends on Ops' live verifications:
   - ETRN refused;
   - no delivery-status notice of any class;
-  - the reload and restart count n₃₀;
-  - the live XFORWARD and long-ID values (EP-0, EP-1).
+  - N_op and N_step since launch, which are still unverified.
+- **XFORWARD and long queue IDs are off on the live edge**, so EP-0 and
+  EP-1 are required before any of this can run.
 
 **(v) The final residual list for explicit acceptance (§8(c)).**
 
@@ -1308,16 +1351,22 @@ here is accepted.
 Each one is listed with its mechanism, bound or metric, and the
 minimisation done.
 
-## 9. RL-9 correction (PROPOSED: reduced to C3 after Ops' lab; back to both reviewers; not accepted, not implemented)
+## 9. RL-9 correction (PROPOSED: revised after the lab; returned to both reviewers; not agreed, not accepted, not implemented)
 
 **Review status (2026-11-06).** Both reviewers agreed the invariants at
 `32539dd`. That agreement covered three carriers. Ops' lab then measured them
 (#124 comment
 [6688294528](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688294528)):
 neither edge carrier is usable, so **the correction reduces to C3**, the
-time ingestion first saw the identity. That is a material change, so §9 goes
-back to both reviewers. The earlier agreement is not owner acceptance of
-anything, and nothing here activates anything.
+time ingestion first saw the identity. That is a material change.
+
+- Both reviewers re-checked `7202c85` and returned AGREE WITH CHANGES.
+  Rejecting C1/C2, adopting C3, the requeue handling and the K model are
+  confirmed.
+- This revision applies their changes and is **returned to both reviewers**.
+  It is not agreed yet.
+- No agreement is owner acceptance of anything, and nothing here activates
+  anything.
 
 **Authority.** Owner decision, #124 comment
 [6686873641](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6686873641),
@@ -1333,12 +1382,14 @@ verbatim:
 > correctness and security reviewers agree on the proposed invariants."
 
 This proposal changes no burst size, relay concurrency or edge timestamp.
-**Pending:** the live values of `smtp_send_xforward_command` and
-`enable_long_queue_ids` are **unverified; Ops is confirming them (#124
-[6688582662](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688582662))**.
-The lab notes the edge template sets neither, so both may be at Postfix's
-default `no`. In that case the edge sends no XFORWARD today, and EP-0 (§9.9)
-becomes a precondition of the whole allowance design.
+**Live edge (#124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)):** `smtp_send_xforward_command = no` and
+`enable_long_queue_ids = no`, with no `relay` override. The edge sends **no
+XFORWARD** today, and ingestion sees only its WireGuard address as the
+client.
+
+- EP-0 and EP-1 (§9.9) are therefore **required behaviour changes**, with
+  ingestion's `xforward-peers` allow-list.
+- Neither C3, the allowance design nor EP-8 (4) can run on today's edge.
 
 ### 9.1 The problem
 
@@ -1392,7 +1443,10 @@ transaction time, D_max, counted from `MAIL FROM`. Credit would then have to
 start D_max after it. With the deadline on and CHUNKING off, using the
 symbols below:
 
-> D_max = (R + O + J + E)·(T + T_srv) + E·s + T + M/ρ
+> D_max = (R + O + J + E)·(T + T_srv) + E·s + 2T + M/ρ
+
+The `DATA` command line and the `DATA` content are two separate requests,
+hence 2T.
 
 | Symbol | Meaning | Value |
 |---|---|---|
@@ -1411,12 +1465,12 @@ How large D_max is at each setting:
 | Setting | D_max |
 |---|---|
 | Today: deadline off | **unbounded**: any command line can be trickled |
-| Defaults, with EP-4 | (50 + 1000 + 100 + 20)·120 + 20 + 120 + 240 ≈ **140 800 s ≈ 39 h**, beyond the 4 h lifetime |
-| Tightest plausible pins (R = 50, O = 0, J = 0, E = 1, T = 120 s, ρ = 64 KiB/s) | 51·120 + 1 + 120 + 240 ≈ **6 480 s ≈ 1.8 h** |
-| Even with T = 30 s, far below RFC 5321's 5 min | 51·30 + 1 + 30 + 240 ≈ **1 800 s** |
+| Defaults, with EP-4 | 1 170·120 + 20·1 + 2·120 + 15 728 640/65 536 = 140 400 + 20 + 240 + 240 = **140 900 s ≈ 39 h**, beyond the 4 h lifetime |
+| Tightest plausible pins (R = 50, O = 0, J = 0, E = 1, T = 120 s, ρ = 64 KiB/s) | 51·120 + 1 + 240 + 240 = **6 601 s ≈ 1.8 h** |
+| Even with T = 30 s, far below RFC 5321's 5 min | 51·30 + 1 + 60 + 240 = **1 831 s** |
 
 Credit cannot cover the first D_max + ε_late of a hold, so the per-episode
-loss stays ≤ r·(D_max + ε_late): about 6 500 copies at the tightest
+loss stays ≤ r·(D_max + ε_late): about 6 630 copies at the tightest
 plausible pins. That is more than any hold this section is meant to fix.
 Those pins would also refuse legitimate clients: any overshooting `RCPT`, a
 `NOOP` or a single error would end the session.
@@ -1428,9 +1482,9 @@ here with their evidence.
 
 **C3, adopted: first sight at ingestion.**
 
-- **What t_fs is.** At the first presentation of an (edge, IDENT), ingestion
-  durably records t_fs = DB `now()`. It does this even when it answers with a
-  pre-resolution `451`.
+- **What t_fs is.** When a presentation of an (edge, IDENT) ends in a
+  pre-resolution `451`, ingestion durably records t_fs = DB `now()`. It does
+  this only then, and only for the first such presentation (INV-R9-1).
 - **Why it can't be pre-dated.** By then the whole message has been received,
   and t_fs is taken from the database clock. No sender trickle and no edge
   clock enters it.
@@ -1438,7 +1492,9 @@ here with their evidence.
   matches the same first-sight row.
 - **Failure.** A failed first-sight write gives no credit.
 - **What it covers:** (h1), pre-resolution `451`s (by far the most common
-  hold where ingestion is up), and any later deferral of a copy already seen.
+  hold where ingestion is up), and any later re-presentation of a copy first
+  seen in (h1). A copy that reached charging has a marker or an allowance
+  instead.
 - **What it does not cover:** holds at the edge before first sight, (h2) to
   (h5). These stay in RL-9.
 
@@ -1525,11 +1581,24 @@ Admission and discard stay behind the uniform `250`.
 ### 9.5 Proposed invariants
 
 1. **INV-R9-1 (trusted time: C3 only).**
-   - t_fs is DB `now()` at the first presentation of an (edge, IDENT). The
-     edge must be a single-host `xforward-peers` peer, and the IDENT must
-     have long-ID shape.
-   - The record is written even on a pre-resolution `451`. A failed write
-     gives no credit.
+   - **When it is written.** The first-sight record is written **only** when
+     a presentation ends in a pre-resolution `451`, from an `xforward-peers`
+     edge with a long-ID IDENT, in its own short transaction. t_fs is DB
+     `now()` at that first such presentation.
+   - **Failure.** A failed write never changes the reply (I-9); the copy
+     then simply gets no credit.
+   - **Content.** It holds only (edge, IDENT, t_fs): no recipient, no
+     content.
+   - **Never on `250`.** It is never written for a transaction answered
+     `250`.
+   - **Charging writes the marker instead.** A presentation that reaches
+     charging writes the marker, which already excludes credit.
+   - **Access and retention.** Only the ingestion role is granted, and
+     `scope.txt` marks it `-`. `REQUIRED_DENY` lists it, and it is reaped at
+     L + δ.
+   - **ADR-025.** This keeps "an unknown recipient leaves nothing". During a
+     pre-resolution-`451` window the row is written before resolution, so it
+     says nothing about any recipient.
    - No edge time is ever used: not the queue-ID time, not a `Received:`
      date, not `arrival_time`. That is C1/C2, measured and rejected.
 2. **INV-R9-2 (credit source).** Credit is only overflow, recorded in the
@@ -1594,6 +1663,11 @@ allowances expired + copies discarded by the limiter after a spend.
    - A failed write gives no credit.
    - After a `postsuper -r` on the edge, the copy still matches: old IDENT,
      same record.
+   - A presentation that reaches charging writes a marker and no first-sight
+     record.
+   - An event whose recipients are all unknown writes nothing outside a
+     pre-resolution-`451` window.
+   - A failed first-sight write leaves the `451` byte-identical.
 2. **AT-R9-2 pre-resolution hold.** A breaker or latch `451` storm runs for
    10 min while a workspace sends at r.
    - On recovery all 600 copies are stored.
@@ -1649,9 +1723,11 @@ allowances expired + copies discarded by the limiter after a spend.
 | `local_header_rewrite_clients` | empty, so `SOURCE=REMOTE` for `smtpd` mail |
 | `master.cf` | only `0.0.0.0:25 smtpd` |
 
-- **`smtp_send_xforward_command` and `enable_long_queue_ids` are
-  unverified.** Ops is confirming them (#124 6688582662). They are not
-  asserted either way here; see EP-0 and EP-1.
+- **Observed off:** `smtp_send_xforward_command = no` and
+  `enable_long_queue_ids = no` (#124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)). They are not pinned, and EP-0 and EP-1
+  change them.
+- **Not applied anywhere:** migrations V24–V27, on production and on staging
+  (both at max 23; #124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)).
 
 **Ops lab results** (lab mirror, 6688294528):
 
@@ -1667,8 +1743,8 @@ allowances expired + copies discarded by the limiter after a spend.
 
 **Questions still open:**
 
-- the live XFORWARD and long-ID values (above);
-- the 30-day reload and restart count, with causes, for §4.
+- the causes of the Oct 15 and Oct 19 starts;
+- N_op and N_step since launch (§4).
 
 ### 9.8 What it changes, and the owner items
 
@@ -1698,9 +1774,12 @@ allowances expired + copies discarded by the limiter after a spend.
 1. **RQ-1.** Shape within a hold is not policed. Accept that, or require a
    per-arrival ledger, option (a), which needs a trusted time that does not
    exist (§9.2).
-2. **The marker and first-sight cost.** One durable write per identified
-   event. With the marker, that is up to about 476 k rows across the cohort
-   over L + δ.
+2. **The marker and first-sight cost.**
+   - **Markers:** one durable write per identified event that reaches
+     charging, up to about 476 k rows across the cohort over L + δ.
+   - **First-sight rows:** at most the new identified transactions that
+     arrive during pre-resolution-`451` windows within L + δ. They are
+     reaped at L + δ.
 3. **The remaining RL-9.** Holds at the edge before first sight are not
    corrected:
    - ingestion unreachable;
@@ -1714,6 +1793,12 @@ allowances expired + copies discarded by the limiter after a spend.
 4. **EP-4 is optional.** The deadline plus 64 KiB/s no longer unlocks credit.
    It remains a sender-facing hardening against the slowloris, and nothing in
    this design requires it.
+5. **EP-8 (4) when XFORWARD is missing.** This is proposed, not accepted:
+   - **fail closed:** discard every edge null-sender message while the
+     `edge_without_xforward` alert is open. Genuine bounces are lost, and §4
+     is kept;
+   - **or fail open:** deliver them, which reopens the expiry-bounce path for
+     that duration.
 
 ### 9.9 Edge preconditions: one change set for Ops to review
 
@@ -1722,18 +1807,23 @@ belong to §4.
 
 | # | Edge change | Status | Unlocks |
 |---|---|---|---|
-| EP-0 | `smtp_send_xforward_command = yes` on the relay transport | **conditional**: required for the whole allowance design and for EP-8 (4) **if the live value is `no`**. It changes behaviour toward ingestion only | identity, C3, EP-8 (4) |
-| EP-1 | `enable_long_queue_ids = yes`, switched while no tenant mail is deferred. The live value is unverified | **required**, unless it is already `yes` live | IDENT uniqueness: the allowance design and C3 (RL-7) |
-| EP-2 | Pin the current values as a no-change hardening: relay concurrency 20, backoff 120/600 s, `queue_run_delay` 120 s, lifetime 4 h, `bounce_queue_lifetime` 0, recipient limits 50/50, empty `smtpd_authorized_xforward_hosts`, empty `local_header_rewrite_clients`, and the `master.cf` service list. This excludes the two unverified keys above | **required** | all credit |
-| EP-3 | Clock canary: the minutely edge timer is read over WireGuard against DB `now()` | **recommended**, as a §4 privacy-model alarm; no longer a credit gate | none for credit |
+| EP-0 | `smtp_send_xforward_command = yes` on the relay transport, with ingestion's `xforward-peers` allow-list. Live value: `no` (#124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)) | **required**: a new behaviour change toward ingestion, for the whole allowance design and EP-8 (4). Nothing deployed trusts XFORWARD today, and enabling it first is harmless, because the edge sends only the attributes ingestion advertises | identity, C3, EP-8 (4) |
+| EP-1 | `enable_long_queue_ids = yes`, switched while no tenant mail is deferred. Live value: `no`, so queue IDs are short (#124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)) | **required**: a behaviour change | IDENT uniqueness: the allowance design and C3 (RL-7) |
+| EP-2 | Pin the current values as a no-change hardening: relay concurrency 20, backoff 120/600 s, `queue_run_delay` 120 s, lifetime 4 h, `bounce_queue_lifetime` 0, recipient limits 50/50, empty `smtpd_authorized_xforward_hosts`, empty `local_header_rewrite_clients`, and the `master.cf` service list. It does **not** include `smtp_send_xforward_command` or `enable_long_queue_ids`, which are off live and changed by EP-0 and EP-1 | **required** | all credit |
+| EP-3 | Clock canary: the minutely edge timer is read over WireGuard against DB `now()` | **required for §4 reporting** (N_step), unless Ops provides equivalent `timesyncd` step-journal counts. Not a credit gate | §4's K reporting |
 | EP-4 | `smtpd_per_request_deadline = yes`, `smtpd_min_data_rate = 65536`, `chunking` in `smtpd_discard_ehlo_keywords`, stress form kept | **optional**, a sender-facing hardening that nothing requires. It affects slow senders | none for credit |
 | EP-5 | Restrict `authorized_submit_users` | **recommended**; `pickup` origins are already ineligible through `PROTO` | none for credit; it narrows local injection |
-| EP-6 | Append-only operator-action wrapper | **recommended**. It would make the operator term of §4's K auditable | none for credit |
+| EP-6 | Append-only operator-action wrapper | **required for §4 reporting** (N_op), unless Ops provides equivalent `postsuper`/`postqueue` journal counts. Not a credit gate | §4's K reporting |
 | EP-7 | NTS: chrony 4.5 plus an egress rule for TCP 4460 and UDP 123 | **recommended** | none for credit |
 | EP-8 | Close the expiry-bounce path into the relay domain (below) | **required** for §4's "no DSN of any class", and before any activation that can produce a persistent per-recipient `451` | §4 |
 
-**C3 needs EP-0 (if the live value is `no`), EP-1 (unless it is already
-`yes`) and EP-2.**
+**C3 needs EP-0, EP-1 and EP-2.** The allowance design itself needs EP-0
+and EP-1. §4's reporting of K needs EP-3 and EP-6, or Ops'
+equivalent journal counts.
+
+**Missing XFORWARD is alerted (with I-20).** A transaction from an
+`xforward-peers` edge that carries no XFORWARD is counted as
+`identity="edge_without_xforward"` and raises an alert.
 
 **EP-8 in detail** (#124 comments 6687275537, 6687301964 and 6687332923).
 
@@ -1755,8 +1845,7 @@ practice today". It is **an observation, not a proof**.
   discards edge-originated notices (null sender, not `smtpd`-originated per
   `PROTO`) behind the uniform `250`. That is ADR-025's unknown-recipient
   treatment.
-  - It needs no edge change beyond EP-0, if XFORWARD is off on the live
-    edge.
+  - It needs EP-0. XFORWARD is off on the live edge (#124 6688743690).
   - Genuine internet bounces, and testers sending as an inbox address, are
     unaffected.
   - It is an app change behind the uniform reply, so it needs its own
@@ -1768,6 +1857,13 @@ practice today". It is **an observation, not a proof**.
     - An absent or `[UNAVAILABLE]` `PROTO` from an edge counts as not
       `smtpd`-originated.
     - A `trusted-clients` peer (no XFORWARD) is handled normally.
+    - **If XFORWARD is missing from an edge** (the alert above), this is
+      **proposed, for the owner**: fail closed. Every edge null-sender
+      message is discarded while the alert is open, so genuine internet
+      bounces are lost, in exchange for keeping §4's privacy condition.
+      - The alternative is to fail open: deliver them, which reopens the
+        expiry-bounce path for that duration.
+      - Neither is accepted.
     - The discriminator is `PROTO`, not the null sender alone. The lab
       measured that every non-`smtpd` origin (`pickup`, `sendmail -bs`,
       bounce, delay notice) sends only `SOURCE=LOCAL`, with no `PROTO`. So
