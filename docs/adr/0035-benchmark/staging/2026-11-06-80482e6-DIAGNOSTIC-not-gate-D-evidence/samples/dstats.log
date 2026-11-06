@@ -1,0 +1,25 @@
+2026-11-06T13:12:33Z Error response from daemon: No such container: ws-b3-gate 
+2026-11-06T13:13:02Z ws-b3-pg cpu=170.84% mem=238.7MiB / 23.47GiB blk=19.9MB / 307MB ws-b3-gate cpu=105.09% mem=285.3MiB / 23.47GiB blk=545kB / 106kB 
+2026-11-06T13:13:32Z ws-b3-pg cpu=187.30% mem=271.9MiB / 23.47GiB blk=19.9MB / 546MB ws-b3-gate cpu=47.57% mem=326.3MiB / 23.47GiB blk=545kB / 225kB 
+2026-11-06T13:14:02Z ws-b3-pg cpu=113.71% mem=202.8MiB / 23.47GiB blk=19.9MB / 728MB ws-b3-gate cpu=0.20% mem=325.3MiB / 23.47GiB blk=598kB / 319kB 
+2026-11-06T13:14:32Z ws-b3-pg cpu=159.15% mem=298.9MiB / 23.47GiB blk=19.9MB / 1.08GB ws-b3-gate cpu=41.04% mem=327.1MiB / 23.47GiB blk=598kB / 414kB 
+2026-11-06T13:15:02Z ws-b3-pg cpu=153.42% mem=307.6MiB / 23.47GiB blk=19.9MB / 1.37GB ws-b3-gate cpu=50.48% mem=327.5MiB / 23.47GiB blk=598kB / 528kB 
+2026-11-06T13:15:32Z ws-b3-pg cpu=100.16% mem=232.7MiB / 23.47GiB blk=19.9MB / 1.72GB ws-b3-gate cpu=0.06% mem=327MiB / 23.47GiB blk=598kB / 606kB 
+2026-11-06T13:16:02Z ws-b3-pg cpu=226.69% mem=611.7MiB / 23.47GiB blk=19.9MB / 1.9GB ws-b3-gate cpu=93.77% mem=362.1MiB / 23.47GiB blk=598kB / 705kB 
+2026-11-06T13:16:32Z ws-b3-pg cpu=316.38% mem=712.8MiB / 23.47GiB blk=19.9MB / 2.07GB ws-b3-gate cpu=189.53% mem=366.6MiB / 23.47GiB blk=598kB / 844kB 
+2026-11-06T13:17:02Z ws-b3-pg cpu=190.47% mem=288.7MiB / 23.47GiB blk=55.8MB / 2.41GB ws-b3-gate cpu=28.08% mem=356.1MiB / 23.47GiB blk=602kB / 954kB 
+2026-11-06T13:17:32Z ws-b3-pg cpu=188.23% mem=501MiB / 23.47GiB blk=69.3MB / 2.68GB ws-b3-gate cpu=47.61% mem=368.8MiB / 23.47GiB blk=606kB / 1.08MB 
+2026-11-06T13:18:02Z ws-b3-pg cpu=112.01% mem=507.2MiB / 23.47GiB blk=74.2MB / 2.89GB ws-b3-gate cpu=46.94% mem=372.4MiB / 23.47GiB blk=606kB / 1.18MB 
+2026-11-06T13:18:32Z ws-b3-pg cpu=91.85% mem=211.1MiB / 23.47GiB blk=76MB / 3.23GB ws-b3-gate cpu=139.42% mem=395.6MiB / 23.47GiB blk=639kB / 1.29MB 
+2026-11-06T13:19:03Z ws-b3-pg cpu=118.72% mem=297MiB / 23.47GiB blk=76MB / 3.47GB ws-b3-gate cpu=47.82% mem=402.3MiB / 23.47GiB blk=639kB / 1.38MB 
+2026-11-06T13:19:33Z ws-b3-pg cpu=148.85% mem=302.5MiB / 23.47GiB blk=76MB / 3.71GB ws-b3-gate cpu=36.41% mem=402.3MiB / 23.47GiB blk=639kB / 1.5MB 
+2026-11-06T13:20:03Z ws-b3-pg cpu=99.40% mem=225MiB / 23.47GiB blk=76MB / 4.09GB ws-b3-gate cpu=0.12% mem=400.9MiB / 23.47GiB blk=639kB / 1.59MB 
+2026-11-06T13:20:33Z ws-b3-pg cpu=198.37% mem=306.1MiB / 23.47GiB blk=76MB / 4.36GB ws-b3-gate cpu=54.33% mem=402.4MiB / 23.47GiB blk=639kB / 1.69MB 
+2026-11-06T13:21:03Z ws-b3-pg cpu=151.41% mem=311.9MiB / 23.47GiB blk=76MB / 4.58GB ws-b3-gate cpu=50.06% mem=402.4MiB / 23.47GiB blk=639kB / 1.8MB 
+2026-11-06T13:21:33Z ws-b3-pg cpu=98.84% mem=230.6MiB / 23.47GiB blk=76MB / 4.96GB ws-b3-gate cpu=10.67% mem=401.3MiB / 23.47GiB blk=639kB / 1.89MB 
+2026-11-06T13:22:03Z ws-b3-pg cpu=295.77% mem=593.6MiB / 23.47GiB blk=76MB / 5.19GB ws-b3-gate cpu=114.94% mem=410.9MiB / 23.47GiB blk=639kB / 1.99MB 
+2026-11-06T13:22:33Z ws-b3-pg cpu=230.36% mem=803MiB / 23.47GiB blk=76MB / 5.55GB ws-b3-gate cpu=128.86% mem=414.2MiB / 23.47GiB blk=639kB / 2.13MB 
+2026-11-06T13:23:03Z ws-b3-pg cpu=99.84% mem=235.7MiB / 23.47GiB blk=76MB / 5.89GB ws-b3-gate cpu=0.18% mem=405.5MiB / 23.47GiB blk=639kB / 2.25MB 
+2026-11-06T13:23:32Z ws-b3-pg cpu=186.97% mem=451.3MiB / 23.47GiB blk=76MB / 6.2GB ws-b3-gate cpu=46.00% mem=411.2MiB / 23.47GiB blk=639kB / 2.36MB 
+2026-11-06T13:24:02Z ws-b3-pg cpu=158.84% mem=486.6MiB / 23.47GiB blk=76MB / 6.5GB ws-b3-gate cpu=52.14% mem=411.3MiB / 23.47GiB blk=639kB / 2.48MB 
+2026-11-06T13:24:32Z Error response from daemon: No such container: ws-b3-gate 

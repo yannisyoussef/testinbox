@@ -1,0 +1,2125 @@
+# after-reference-ws200-c10-r62 at 2026-11-06T13:15:21.723Z
+## pg_stat_statements ORDER BY total_exec_time DESC LIMIT 40 (all databases)
+CREATE EXTENSION
+NOTICE:  extension "pg_stat_statements" already exists, skipping
+-[ RECORD 1 ]----------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 8785300370965482888
+query                  | WITH ws AS (SELECT DISTINCT unnest(CAST($1 AS uuid[])) AS id),                                                                                                                                                                                                                                                                  +
+                       |              ib AS (SELECT DISTINCT unnest(CAST($2 AS uuid[])) AS id),                                                                                                                                                                                                                                                          +
+                       |              -- Each global sum is ONE scan of its table, bytes and objects together                                                                                                                                                                                                                                            +
+                       |              -- (referenced more than once, so materialized once), still in the same                                                                                                                                                                                                                                            +
+                       |              -- statement. Σ workspace bases is ONE row (V24), never the population.                                                                                                                                                                                                                                            +
+                       |              g_base AS (SELECT base_bytes AS bytes, base_objects AS objects FROM storage_global_base WHERE id = 1                                                                                                                                                                                                               +
+                       |                                     UNION ALL                                                                                                                                                                                                                                                                                   +
+                       |                                     SELECT s.bytes, s.objects                                                                                                                                                                                                                                                                   +
+                       |                                       FROM (SELECT coalesce(sum(base_bytes), 0) AS bytes, coalesce(sum(base_objects), 0) AS objects                                                                                                                                                                                             +
+                       |                                               FROM workspace_storage_account) s                                                                                                                                                                                                                                                 +
+                       |                                      WHERE NOT EXISTS (SELECT 1 FROM storage_global_base WHERE id = 1)),                                                                                                                                                                                                                        +
+                       |                          g_delta AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(objects), 0) AS objects FROM storage_delta),                                                                                                                                                                                         +
+                       |                          g_reserved AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(cardinality(object_keys)), 0) AS objects                                                                                                                                                                                          +
+                       |                                           FROM storage_reservation),                                                                                                                                                                                                                                                            +
+                       |              -- Each sum is aggregated once for the involved ids, not                                                                                                                                                                                                                                                           +
+                       |              -- once per id: the statement's cost must not grow with                                                                                                                                                                                                                                                            +
+                       |              -- the recipient count times the ledger backlog.                                                                                                                                                                                                                                                                   +
+                       |              ws_delta AS (SELECT d.workspace_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d                                                                                                                                                                                                    +
+                       |                            WHERE d.workspace_id IN (SELECT id FROM ws) GROUP BY d.workspace_id),                                                                                                                                                                                                                                +
+                       |              ws_reserved AS (SELECT r.workspace_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects                                                                                                                                                                                                     +
+                       |                                FROM storage_reservation r                                                                                                                                                                                                                                                                       +
+                       |                               WHERE r.workspace_id IN (SELECT id FROM ws) GROUP BY r.workspace_id),                                                                                                                                                                                                                             +
+                       |              ws_charge AS (SELECT workspace_id AS id,sum(bytes) AS bytes,sum(objects) AS objects                                                                                                                                                                                                                                +
+                       |                               FROM workspace_deletion_charge WHERE workspace_id IN (SELECT id FROM ws) GROUP BY workspace_id),                                                                                                                                                                                                  +
+                       |              ib_delta AS (SELECT d.inbox_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d                                                                                                                                                                                                        +
+                       |                            WHERE d.inbox_id IN (SELECT id FROM ib) GROUP BY d.inbox_id),                                                                                                                                                                                                                                        +
+                       |              ib_reserved AS (SELECT r.inbox_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects                                                                                                                                                                                                         +
+                       |                                FROM storage_reservation r                                                                                                                                                                                                                                                                       +
+                       |                               WHERE r.inbox_id IN (SELECT id FROM ib) GROUP BY r.inbox_id),                                                                                                                                                                                                                                     +
+                       | fp_newest AS (SELECT observed_at, started_seq, trash_bytes, block_size_bytes, capacity_bytes, written_by                                                                                                                                                                                                                        +
+                       |                                        FROM storage_filesystem_observation ORDER BY started_seq DESC, id DESC LIMIT 1),                                                                                                                                                                                                         +
+                       |                          cp_shares AS (                                                                                                                                                                                                                                                                                         +
+                       |         SELECT workspace_id,payload_limit_bytes,footprint_limit_bytes,true AS participant FROM participant_workspace                                                                                                                                                                                                            +
+                       |         UNION ALL SELECT workspace_id,payload_limit_bytes,footprint_limit_bytes,false FROM storage_legacy_share),                                                                                                                                                                                                               +
+                       |                          fp_debt AS (SELECT coalesce(sum(d.bytes), 0) AS bytes, coalesce(sum(d.objects), 0) AS objects,                                                                                                                                                                                                         +
+                       |                                             coalesce(sum(d.bytes) FILTER (WHERE s.workspace_id IS NULL), 0) AS unattributed_bytes,                                                                                                                                                                                              +
+                       |                                             coalesce(sum(d.objects) FILTER (WHERE s.workspace_id IS NULL), 0) AS unattributed_objects                                                                                                                                                                                           +
+                       |                                        FROM storage_deletion_debt d                                                                                                                                                                                                                                                             +
+                       |                                        LEFT JOIN (SELECT DISTINCT workspace_id FROM cp_shares) s ON s.workspace_id = d.workspace_id                                                                                                                                                                                             +
+                       |                                       WHERE d.incurred_at = 'infinity'::timestamptz                                                                                                                                                                                                                                             +
+                       |                                          OR d.seq >= coalesce((SELECT started_seq FROM fp_newest), 0)),                                                                                                                                                                                                                         +
+                       |                          cp_delta AS (SELECT workspace_id,sum(bytes) AS bytes,sum(objects) AS objects FROM storage_delta                                                                                                                                                                                                        +
+                       |                        WHERE workspace_id IN (SELECT workspace_id FROM cp_shares) GROUP BY workspace_id),                                                                                                                                                                                                                       +
+                       |         cp_reserved AS (SELECT workspace_id,sum(bytes) AS bytes,sum(cardinality(object_keys)) AS objects FROM storage_reservation                                                                                                                                                                                               +
+                       |                          WHERE workspace_id IN (SELECT workspace_id FROM cp_shares) GROUP BY workspace_id),                                                                                                                                                                                                                     +
+                       |         cp_charge AS (SELECT workspace_id,sum(bytes) AS bytes,sum(objects) AS objects FROM workspace_deletion_charge GROUP BY workspace_id),                                                                                                                                                                                    +
+                       |         cp_unattributed AS (                                                                                                                                                                                                                                                                                                    +
+                       |             SELECT (SELECT unattributed_bytes FROM fp_debt) + coalesce(sum(c.bytes),0) AS bytes,                                                                                                                                                                                                                                +
+                       |                    (SELECT unattributed_objects FROM fp_debt) + coalesce(sum(c.objects),0) AS objects                                                                                                                                                                                                                           +
+                       |               FROM workspace_deletion_charge c                                                                                                                                                                                                                                                                                  +
+                       |              WHERE NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=c.workspace_id)                                                                                                                                                                                                                                    +
+                       |                AND NOT EXISTS(SELECT 1 FROM storage_deletion_debt d WHERE d.id=c.debt_id))                                                                                                                                                                                                                                      +
+                       |         -- Objects beside bytes (TI-STORAGE-006E): the footprint bound is                                                                                                                                                                                                                                                       +
+                       |         -- applied by the caller, from the same snapshot.                                                                                                                                                                                                                                                                       +
+                       |         SELECT 'GLOBAL' AS scope, NULL::uuid AS id, NULL::uuid AS owner, now() AS t0,                                                                                                                                                                                                                                           +
+                       |                (SELECT bytes FROM g_base) + (SELECT bytes FROM g_delta) AS committed,                                                                                                                                                                                                                                           +
+                       |                (SELECT bytes FROM g_reserved) AS reserved,                                                                                                                                                                                                                                                                      +
+                       |                (SELECT objects FROM g_base) + (SELECT objects FROM g_delta) AS committed_objects,                                                                                                                                                                                                                               +
+                       |                (SELECT objects FROM g_reserved) AS reserved_objects,                                                                                                                                                                                                                                                            +
+                       |                NULL::bigint AS payload_limit, NULL::bigint AS footprint_limit,                                                                                                                                                                                                                                                  +
+                       |                NULL::numeric AS cleanup_bytes,NULL::numeric AS cleanup_objects,                                                                                                                                                                                                                                                 +
+                       |                NULL::boolean AS inactive,                                                                                                                                                                                                                                                                                       +
+                       |                (SELECT bytes FROM g_base) + (SELECT bytes FROM g_delta) + (SELECT bytes FROM g_reserved) AS fp_live_bytes,                                                                                                                                                                                                      +
+                       |                            (SELECT objects FROM g_base) + (SELECT objects FROM g_delta) + (SELECT objects FROM g_reserved) AS fp_live_objects,                                                                                                                                                                                  +
+                       |                            (SELECT bytes FROM fp_debt) AS fp_debt_bytes,                                                                                                                                                                                                                                                        +
+                       |                            (SELECT objects FROM fp_debt) AS fp_debt_objects,                                                                                                                                                                                                                                                    +
+                       |                            coalesce((SELECT trusted_epoch IS NOT DISTINCT FROM distrust_epoch FROM storage_footprint_trust WHERE id = 1), false)                                                                                                                                                                                +
+                       |                              AS fp_trusted,                                                                                                                                                                                                                                                                                     +
+                       |                            coalesce((SELECT compacted_through_seq FROM storage_debt_watermark WHERE id = 1), 0) AS fp_watermark,                                                                                                                                                                                                +
+                       |                            coalesce((SELECT distrusted_seq FROM storage_footprint_trust WHERE id = 1), 0) AS fp_distrusted_seq,                                                                                                                                                                                                 +
+                       |                            (SELECT started_seq FROM fp_newest) AS fp_started_seq,                                                                                                                                                                                                                                               +
+                       |                            (SELECT trash_bytes FROM fp_newest) AS fp_trash_bytes,                                                                                                                                                                                                                                               +
+                       |                            (SELECT block_size_bytes FROM fp_newest) AS fp_block_size,                                                                                                                                                                                                                                           +
+                       |                            (SELECT capacity_bytes FROM fp_newest) AS fp_capacity,                                                                                                                                                                                                                                               +
+                       |                            (SELECT written_by::text FROM fp_newest) AS fp_written_by, jsonb_build_object(                                                                                                                                                                                                                       +
+                       |         'participants',EXISTS(SELECT 1 FROM participant_workspace),                                                                                                                                                                                                                                                             +
+                       |         'protected',EXISTS(SELECT 1 FROM storage_cohort_plan),                                                                                                                                                                                                                                                                  +
+                       |         'binding',(SELECT binding FROM storage_cohort_plan WHERE approved),                                                                                                                                                                                                                                                     +
+                       |         'fingerprint',(SELECT fingerprint FROM storage_cohort_plan WHERE approved),                                                                                                                                                                                                                                             +
+                       |         'unattributedAllowance',(SELECT unattributed_allowance FROM storage_cohort_plan),                                                                                                                                                                                                                                       +
+                       |         'trashAllowance',(SELECT trash_allowance FROM storage_cohort_plan),                                                                                                                                                                                                                                                     +
+                       |         'unknown',(SELECT count(*) FROM (SELECT 1 FROM workspace w WHERE NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=w.id) LIMIT 1) u),                                                                                                                                                                           +
+                       |         'nodesReady',coalesce((SELECT NOT EXISTS(                                                                                                                                                                                                                                                                               +
+                       |             SELECT 1 FROM unnest(p.expected_nodes) expected WHERE NOT EXISTS(                                                                                                                                                                                                                                                   +
+                       |                 SELECT 1 FROM storage_node n WHERE n.node_id=expected AND NOT n.clean_shutdown                                                                                                                                                                                                                                  +
+                       |                  AND n.heartbeat_at>=now()-interval '5 minutes' AND n.cohort_capability='cohort-storage-v1'                                                                                                                                                                                                                     +
+                       |                  AND n.cohort_mode='ALL' AND n.cohort_binding=p.binding))                                                                                                                                                                                                                                                       +
+                       |             AND NOT EXISTS(SELECT 1 FROM storage_node n WHERE NOT n.clean_shutdown AND                                                                                                                                                                                                                                          +
+                       |                 (n.cohort_capability IS DISTINCT FROM 'cohort-storage-v1' OR n.cohort_mode IS DISTINCT FROM 'ALL'                                                                                                                                                                                                               +
+                       |                  OR n.cohort_binding IS DISTINCT FROM p.binding OR NOT(n.node_id=ANY(p.expected_nodes))))                                                                                                                                                                                                                       +
+                       |             AND coalesce((SELECT observed_at>=now()-make_interval(secs=>p.observation_max_age_ms/1000.0) FROM fp_newest),false)                                                                                                                                                                                                 +
+                       |             FROM storage_cohort_plan p WHERE approved),false),                                                                                                                                                                                                                                                                  +
+                       |         'unknownBytes',(SELECT bytes FROM cp_unattributed),                                                                                                                                                                                                                                                                     +
+                       |         'unknownObjects',(SELECT objects FROM cp_unattributed),                                                                                                                                                                                                                                                                 +
+                       |         'trash',(SELECT trash_bytes FROM fp_newest),                                                                                                                                                                                                                                                                            +
+                       |         'shares',coalesce((SELECT jsonb_agg(jsonb_build_object(                                                                                                                                                                                                                                                                 +
+                       |             'id',s.workspace_id,'participant',s.participant,'payload',s.payload_limit_bytes,'footprint',s.footprint_limit_bytes,                                                                                                                                                                                                +
+                       |             'committed',coalesce(a.base_bytes,0)+coalesce(d.bytes,0),'reserved',coalesce(r.bytes,0),                                                                                                                                                                                                                            +
+                       |             'committedObjects',coalesce(a.base_objects,0)+coalesce(d.objects,0),'reservedObjects',coalesce(r.objects,0),                                                                                                                                                                                                        +
+                       |             'cleanupBytes',coalesce(c.bytes,0),'cleanupObjects',coalesce(c.objects,0)))                                                                                                                                                                                                                                         +
+                       |             FROM cp_shares s LEFT JOIN workspace_storage_account a ON a.workspace_id=s.workspace_id                                                                                                                                                                                                                             +
+                       |              LEFT JOIN cp_delta d ON d.workspace_id=s.workspace_id LEFT JOIN cp_reserved r ON r.workspace_id=s.workspace_id                                                                                                                                                                                                     +
+                       |              LEFT JOIN cp_charge c ON c.workspace_id=s.workspace_id),'[]'::jsonb)) AS fp_cohort                                                                                                                                                                                                                                 +
+                       |         UNION ALL                                                                                                                                                                                                                                                                                                               +
+                       |         SELECT 'WORKSPACE', ws.id, ws.id, now(),                                                                                                                                                                                                                                                                                +
+                       |                coalesce(a.base_bytes, 0) + coalesce(d.bytes, 0),                                                                                                                                                                                                                                                                +
+                       |                coalesce(r.bytes, 0),                                                                                                                                                                                                                                                                                            +
+                       |                coalesce(a.base_objects, 0) + coalesce(d.objects, 0),                                                                                                                                                                                                                                                            +
+                       |                coalesce(r.objects, 0),                                                                                                                                                                                                                                                                                          +
+                       |                coalesce(p.payload_limit_bytes,l.payload_limit_bytes),coalesce(p.footprint_limit_bytes,l.footprint_limit_bytes),                                                                                                                                                                                                 +
+                       |                coalesce(c.bytes,0),coalesce(c.objects,0),                                                                                                                                                                                                                                                                       +
+                       |                -- Account lifecycle (V22), in the SAME statement under (35, 1):                                                                                                                                                                                                                                                 +
+                       |                -- a participant marker without an active membership is inactive.                                                                                                                                                                                                                                                +
+                       |                coalesce(NOT e.active, false),                                                                                                                                                                                                                                                                                   +
+                       |                NULL::numeric, NULL::numeric, NULL::numeric, NULL::numeric, NULL::boolean, NULL::bigint,                                                                                                                                                                                                                         +
+                       |                            NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text, NULL::jsonb                                                                                                                                                                                                        +
+                       |           FROM ws                                                                                                                                                                                                                                                                                                               +
+                       |           LEFT JOIN workspace_storage_account a ON a.workspace_id = ws.id                                                                                                                                                                                                                                                       +
+                       |           LEFT JOIN ws_delta d ON d.id = ws.id                                                                                                                                                                                                                                                                                  +
+                       |           LEFT JOIN ws_reserved r ON r.id = ws.id                                                                                                                                                                                                                                                                               +
+                       |           LEFT JOIN ws_charge c ON c.id=ws.id                                                                                                                                                                                                                                                                                   +
+                       |           LEFT JOIN participant_workspace p ON p.workspace_id=ws.id                                                                                                                                                                                                                                                             +
+                       |           LEFT JOIN storage_legacy_share l ON l.workspace_id=ws.id                                                                                                                                                                                                                                                              +
+                       |           LEFT JOIN workspace_lifecycle_eligibility e ON e.workspace_id = ws.id                                                                                                                                                                                                                                                 +
+                       |         UNION ALL                                                                                                                                                                                                                                                                                                               +
+                       |         SELECT 'INBOX', ib.id, x.workspace_id, now(),                                                                                                                                                                                                                                                                           +
+                       |                coalesce(s.base_bytes, 0) + coalesce(d.bytes, 0),                                                                                                                                                                                                                                                                +
+                       |                coalesce(r.bytes, 0),                                                                                                                                                                                                                                                                                            +
+                       |                coalesce(s.base_objects, 0) + coalesce(d.objects, 0),                                                                                                                                                                                                                                                            +
+                       |                coalesce(r.objects, 0),                                                                                                                                                                                                                                                                                          +
+                       |                NULL::bigint,NULL::bigint,NULL::numeric,NULL::numeric,NULL::boolean,                                                                                                                                                                                                                                             +
+                       |                NULL::numeric, NULL::numeric, NULL::numeric, NULL::numeric, NULL::boolean, NULL::bigint,                                                                                                                                                                                                                         +
+                       |                            NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text, NULL::jsonb                                                                                                                                                                                                        +
+                       |           FROM ib                                                                                                                                                                                                                                                                                                               +
+                       |           LEFT JOIN inbox x ON x.id = ib.id                                                                                                                                                                                                                                                                                     +
+                       |           LEFT JOIN inbox_storage s ON s.inbox_id = ib.id                                                                                                                                                                                                                                                                       +
+                       |           LEFT JOIN ib_delta d ON d.id = ib.id                                                                                                                                                                                                                                                                                  +
+                       |           LEFT JOIN ib_reserved r ON r.id = ib.id
+plans                  | 38
+total_plan_time        | 544.7848449999998
+min_plan_time          | 9.436158
+max_plan_time          | 49.513491
+mean_plan_time         | 14.336443289473683
+stddev_plan_time       | 6.80296986318455
+calls                  | 3720
+total_exec_time        | 21650.024070000007
+min_exec_time          | 2.418654
+max_exec_time          | 74.55664900000001
+mean_exec_time         | 5.819898943548377
+stddev_exec_time       | 3.1919550387164324
+rows                   | 23499
+shared_blks_hit        | 7910523
+shared_blks_read       | 3
+shared_blks_dirtied    | 7
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0.096762
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 953
+wal_fpi                | 0
+wal_bytes              | 134799
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 2 ]----------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -8937523735191948800
+query                  | INSERT INTO message (id, workspace_id, inbox_id, received_at, provider, provider_message_id,                                                                                                                                                                                                                                    +
+                       |                      envelope_from, envelope_to, raw_object_key, raw_size_bytes,                                                                                                                                                                                                                                                +
+                       |                      content_fingerprint, possible_duplicate_of_message_id,                                                                                                                                                                                                                                                     +
+                       |                      parse_status, parse_error, from_address, from_header, to_header,                                                                                                                                                                                                                                           +
+                       |                      subject, text_body, html_body, headers, links)                                                                                                                                                                                                                                                             +
+                       | VALUES ($1, $2, $3, $4, $5, $6,                                                                                                                                                                                                                                                                                                 +
+                       |         $7, $8, $9, $10,                                                                                                                                                                                                                                                                                                        +
+                       |         $11, $12,                                                                                                                                                                                                                                                                                                               +
+                       |         $13, $14, $15, $16, $17,                                                                                                                                                                                                                                                                                                +
+                       |         $18, $19, $20, $21::jsonb, $22::jsonb)                                                                                                                                                                                                                                                                                  +
+                       | ON CONFLICT (provider, provider_message_id, envelope_to)                                                                                                                                                                                                                                                                        +
+                       |     WHERE provider_message_id IS NOT NULL DO NOTHING
+plans                  | 31
+total_plan_time        | 1.2794390000000002
+min_plan_time          | 0.02183
+max_plan_time          | 0.252441
+mean_plan_time         | 0.0412722258064516
+stddev_plan_time       | 0.03996065721206271
+calls                  | 14949
+total_exec_time        | 6306.649268999997
+min_exec_time          | 0.171309
+max_exec_time          | 19.423890999999998
+mean_exec_time         | 0.4218776686734889
+stddev_exec_time       | 0.38795498982656246
+rows                   | 14949
+shared_blks_hit        | 518378
+shared_blks_read       | 186
+shared_blks_dirtied    | 1055
+shared_blks_written    | 778
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 4.754448000000002
+blk_write_time         | 46.82536299999996
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 171100
+wal_fpi                | 1045
+wal_bytes              | 27956783
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 3 ]----------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 7297423009014228290
+query                  | INSERT INTO attachment (id, workspace_id, message_id, file_name, content_type, size_bytes, object_key)                                                                                                                                                                                                                          +
+                       | VALUES ($1, $2, $3, $4, $5, $6, $7)
+plans                  | 30
+total_plan_time        | 0.8457120000000001
+min_plan_time          | 0.01109
+max_plan_time          | 0.062296
+mean_plan_time         | 0.0281904
+stddev_plan_time       | 0.014627516726134115
+calls                  | 14949
+total_exec_time        | 5748.367505000003
+min_exec_time          | 0.194171
+max_exec_time          | 14.653286999999999
+mean_exec_time         | 0.3845319088233313
+stddev_exec_time       | 0.327944186326832
+rows                   | 14949
+shared_blks_hit        | 437582
+shared_blks_read       | 29
+shared_blks_dirtied    | 488
+shared_blks_written    | 458
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 1.0544470000000001
+blk_write_time         | 26.691636000000003
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 135751
+wal_fpi                | 826
+wal_bytes              | 19040466
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 4 ]----------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -5479393500136727570
+query                  | DELETE FROM inbox WHERE id = $1
+plans                  | 37
+total_plan_time        | 2.879031
+min_plan_time          | 0.041567
+max_plan_time          | 0.260455
+mean_plan_time         | 0.07781164864864866
+stddev_plan_time       | 0.047410028743052814
+calls                  | 186
+total_exec_time        | 3547.871420000001
+min_exec_time          | 12.29411
+max_exec_time          | 96.50671700000001
+mean_exec_time         | 19.07457752688172
+stddev_exec_time       | 7.678798210449908
+rows                   | 186
+shared_blks_hit        | 536796
+shared_blks_read       | 1
+shared_blks_dirtied    | 1094
+shared_blks_written    | 6
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0.057988
+blk_write_time         | 0.41876899999999995
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 84921
+wal_fpi                | 861
+wal_bytes              | 9797940
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 5 ]----------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 9045842018804197385
+query                  | UPDATE storage_reservation SET first_upload_at = coalesce(first_upload_at, clock_timestamp()) WHERE message_id = $1 AND state = 'RESERVED'
+plans                  | 20
+total_plan_time        | 5.418995999999999
+min_plan_time          | 0.047137
+max_plan_time          | 0.781056
+mean_plan_time         | 0.27094979999999996
+stddev_plan_time       | 0.20163061402564839
+calls                  | 14949
+total_exec_time        | 1907.6880639999963
+min_exec_time          | 0.051236000000000004
+max_exec_time          | 2.588231
+mean_exec_time         | 0.1276130887684794
+stddev_exec_time       | 0.0889373225935287
+rows                   | 14949
+shared_blks_hit        | 123517
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 40713
+wal_fpi                | 0
+wal_bytes              | 3573010
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 6 ]----------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | f
+queryid                | 1527218879226025456
+query                  | DELETE FROM ONLY "public"."attachment" WHERE $1 OPERATOR(pg_catalog.=) "message_id"
+plans                  | 66
+total_plan_time        | 2.7467150000000005
+min_plan_time          | 0.016341
+max_plan_time          | 0.707157
+mean_plan_time         | 0.04161689393939393
+stddev_plan_time       | 0.08410013934033944
+calls                  | 37554
+total_exec_time        | 1332.3663859999901
+min_exec_time          | 0.018163
+max_exec_time          | 9.375875
+mean_exec_time         | 0.03547868099270382
+stddev_exec_time       | 0.08767641078293847
+rows                   | 37554
+shared_blks_hit        | 227724
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 42593
+wal_fpi                | 836
+wal_bytes              | 7284629
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 7 ]----------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | f
+queryid                | 3606260533603002407
+query                  | INSERT INTO storage_delta (workspace_id, inbox_id, bytes, objects)                                                                                                                                                                                                                                                              +
+                       |         SELECT n.workspace_id, m.inbox_id, sum(n.size_bytes), count(*)                                                                                                                                                                                                                                                          +
+                       |           FROM storage_new_rows n                                                                                                                                                                                                                                                                                               +
+                       |           LEFT JOIN message m ON m.id = n.message_id                                                                                                                                                                                                                                                                            +
+                       |          GROUP BY n.workspace_id, m.inbox_id
+plans                  | 43
+total_plan_time        | 18.150963000000004
+min_plan_time          | 0.227022
+max_plan_time          | 1.194325
+mean_plan_time         | 0.42211541860465124
+stddev_plan_time       | 0.20480616749607278
+calls                  | 14949
+total_exec_time        | 1259.0288260000036
+min_exec_time          | 0.042589999999999996
+max_exec_time          | 14.286453
+mean_exec_time         | 0.08422160853568789
+stddev_exec_time       | 0.131193619909275
+rows                   | 14949
+shared_blks_hit        | 211102
+shared_blks_read       | 25
+shared_blks_dirtied    | 72
+shared_blks_written    | 47
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 1.007339
+blk_write_time         | 2.6168310000000004
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 60365
+wal_fpi                | 4
+wal_bytes              | 5382588
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 8 ]----------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -1646202183202902161
+query                  | SELECT storage_compact_ledger($1)
+plans                  | 11
+total_plan_time        | 0.525733
+min_plan_time          | 0.036148
+max_plan_time          | 0.078957
+mean_plan_time         | 0.04779390909090909
+stddev_plan_time       | 0.013517479878455998
+calls                  | 12
+total_exec_time        | 981.8315959999999
+min_exec_time          | 18.905906
+max_exec_time          | 115.225296
+mean_exec_time         | 81.81929966666667
+stddev_exec_time       | 23.048557666467143
+rows                   | 12
+shared_blks_hit        | 252157
+shared_blks_read       | 6
+shared_blks_dirtied    | 23
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 46
+temp_blks_written      | 231
+blk_read_time          | 0.10939399999999999
+blk_write_time         | 0
+temp_blk_read_time     | 0.210399
+temp_blk_write_time    | 3.2351380000000005
+wal_records            | 68106
+wal_fpi                | 16
+wal_bytes              | 4261654
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 9 ]----------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | f
+queryid                | -8671451481426123376
+query                  | WITH folded AS (                                                                                                                                                                                                                                                                                                                +
+                       |         DELETE FROM storage_delta                                                                                                                                                                                                                                                                                               +
+                       |          WHERE id IN (SELECT id FROM storage_delta ORDER BY id LIMIT p_batch)                                                                                                                                                                                                                                                   +
+                       |         RETURNING workspace_id, inbox_id, bytes, objects                                                                                                                                                                                                                                                                        +
+                       |     ),                                                                                                                                                                                                                                                                                                                          +
+                       |     workspaces AS (                                                                                                                                                                                                                                                                                                             +
+                       |         INSERT INTO workspace_storage_account (workspace_id, base_bytes, base_objects)                                                                                                                                                                                                                                          +
+                       |         SELECT f.workspace_id, sum(f.bytes), sum(f.objects)                                                                                                                                                                                                                                                                     +
+                       |           FROM folded f                                                                                                                                                                                                                                                                                                         +
+                       |          WHERE EXISTS (SELECT $2 FROM workspace w WHERE w.id = f.workspace_id)                                                                                                                                                                                                                                                  +
+                       |          GROUP BY f.workspace_id                                                                                                                                                                                                                                                                                                +
+                       |          ORDER BY f.workspace_id                                                                                                                                                                                                                                                                                                +
+                       |         ON CONFLICT (workspace_id)                                                                                                                                                                                                                                                                                              +
+                       |             DO UPDATE SET base_bytes = workspace_storage_account.base_bytes + EXCLUDED.base_bytes,                                                                                                                                                                                                                              +
+                       |                           base_objects = workspace_storage_account.base_objects + EXCLUDED.base_objects                                                                                                                                                                                                                         +
+                       |         RETURNING $3                                                                                                                                                                                                                                                                                                            +
+                       |     ),                                                                                                                                                                                                                                                                                                                          +
+                       |     inboxes AS (                                                                                                                                                                                                                                                                                                                +
+                       |         INSERT INTO inbox_storage (inbox_id, workspace_id, base_bytes, base_objects)                                                                                                                                                                                                                                            +
+                       |         SELECT f.inbox_id, (array_agg(f.workspace_id))[$4], sum(f.bytes), sum(f.objects)                                                                                                                                                                                                                                        +
+                       |           FROM folded f                                                                                                                                                                                                                                                                                                         +
+                       |          WHERE f.inbox_id IS NOT NULL                                                                                                                                                                                                                                                                                           +
+                       |            AND EXISTS (SELECT $5 FROM inbox i WHERE i.id = f.inbox_id)                                                                                                                                                                                                                                                          +
+                       |          GROUP BY f.inbox_id                                                                                                                                                                                                                                                                                                    +
+                       |          ORDER BY f.inbox_id                                                                                                                                                                                                                                                                                                    +
+                       |         ON CONFLICT (inbox_id)                                                                                                                                                                                                                                                                                                  +
+                       |             DO UPDATE SET base_bytes = inbox_storage.base_bytes + EXCLUDED.base_bytes,                                                                                                                                                                                                                                          +
+                       |                           base_objects = inbox_storage.base_objects + EXCLUDED.base_objects                                                                                                                                                                                                                                     +
+                       |         RETURNING $6                                                                                                                                                                                                                                                                                                            +
+                       |     )                                                                                                                                                                                                                                                                                                                           +
+                       |     SELECT (SELECT count(*) FROM folded)::integer                                                                                                                                                                                                                                                                               +
+                       |            + $7 * ((SELECT count(*) FROM workspaces) + (SELECT count(*) FROM inboxes))::integer
+plans                  | 8
+total_plan_time        | 9.360828
+min_plan_time          | 1.048634
+max_plan_time          | 1.560226
+mean_plan_time         | 1.1701035
+stddev_plan_time       | 0.15441433387642475
+calls                  | 12
+total_exec_time        | 943.875364
+min_exec_time          | 16.628103000000003
+max_exec_time          | 110.95413699999999
+mean_exec_time         | 78.65628033333334
+stddev_exec_time       | 22.601071934522334
+rows                   | 12
+shared_blks_hit        | 252057
+shared_blks_read       | 3
+shared_blks_dirtied    | 23
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 46
+temp_blks_written      | 231
+blk_read_time          | 0.050643
+blk_write_time         | 0
+temp_blk_read_time     | 0.210399
+temp_blk_write_time    | 3.2351380000000005
+wal_records            | 68106
+wal_fpi                | 16
+wal_bytes              | 4261654
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 10 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | f
+queryid                | 7917496306445329026
+query                  | INSERT INTO storage_delta (workspace_id, inbox_id, bytes, objects)                                                                                                                                                                                                                                                              +
+                       |         SELECT workspace_id, inbox_id, sum(raw_size_bytes), count(*)                                                                                                                                                                                                                                                            +
+                       |           FROM storage_new_rows                                                                                                                                                                                                                                                                                                 +
+                       |          GROUP BY workspace_id, inbox_id
+plans                  | 32
+total_plan_time        | 5.431811000000001
+min_plan_time          | 0.054992
+max_plan_time          | 0.401629
+mean_plan_time         | 0.16974409375
+stddev_plan_time       | 0.10802012786523843
+calls                  | 14949
+total_exec_time        | 856.3171079999996
+min_exec_time          | 0.021027999999999998
+max_exec_time          | 5.909027
+mean_exec_time         | 0.05728256793096518
+stddev_exec_time       | 0.0824587579778462
+rows                   | 14949
+shared_blks_hit        | 150810
+shared_blks_read       | 3
+shared_blks_dirtied    | 13
+shared_blks_written    | 8
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0.08113300000000001
+blk_write_time         | 0.443484
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 60285
+wal_fpi                | 391
+wal_bytes              | 7123766
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 11 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 6482038054102143134
+query                  | SELECT id FROM message                                                                                                                                                                                                                                                                                                          +
+                       |  WHERE inbox_id = $1 AND content_fingerprint = $2                                                                                                                                                                                                                                                                               +
+                       |  ORDER BY received_at, id LIMIT 1
+plans                  | 31
+total_plan_time        | 20.383322000000003
+min_plan_time          | 0.082143
+max_plan_time          | 2.100903
+mean_plan_time         | 0.6575265161290325
+stddev_plan_time       | 0.499963408013857
+calls                  | 14949
+total_exec_time        | 838.0537670000016
+min_exec_time          | 0.025618000000000002
+max_exec_time          | 4.044975
+mean_exec_time         | 0.05606085805070565
+stddev_exec_time       | 0.0576771133528761
+rows                   | 14949
+shared_blks_hit        | 60743
+shared_blks_read       | 51
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 1.607946
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 1
+wal_fpi                | 0
+wal_bytes              | 59
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 12 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | f
+queryid                | 2636982344237751327
+query                  | SELECT 1 FROM ONLY "public"."workspace" x WHERE "id" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x
+plans                  | 7
+total_plan_time        | 0.31935399999999997
+min_plan_time          | 0.031068
+max_plan_time          | 0.08048
+mean_plan_time         | 0.045621999999999996
+stddev_plan_time       | 0.017981240549925514
+calls                  | 29898
+total_exec_time        | 638.8648509999982
+min_exec_time          | 0.003396
+max_exec_time          | 4.389085
+mean_exec_time         | 0.021368146732222742
+stddev_exec_time       | 0.041602931281054044
+rows                   | 29898
+shared_blks_hit        | 71654
+shared_blks_read       | 0
+shared_blks_dirtied    | 2
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 9727
+wal_fpi                | 2
+wal_bytes              | 538924
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 13 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | f
+queryid                | 7175766088312609682
+query                  | SELECT 1 FROM ONLY "public"."message" x WHERE "id" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x
+plans                  | 118
+total_plan_time        | 14.232908999999996
+min_plan_time          | 0.035886
+max_plan_time          | 0.987048
+mean_plan_time         | 0.12061787288135589
+stddev_plan_time       | 0.0947338018488548
+calls                  | 14949
+total_exec_time        | 579.2678829999993
+min_exec_time          | 0.017504
+max_exec_time          | 8.08455
+mean_exec_time         | 0.03874960753227609
+stddev_exec_time       | 0.08122421162555273
+rows                   | 14949
+shared_blks_hit        | 74914
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 15313
+wal_fpi                | 0
+wal_bytes              | 828940
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 14 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | f
+queryid                | -2888427943479048956
+query                  | SELECT 1 FROM ONLY "public"."inbox" x WHERE "id" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x
+plans                  | 6
+total_plan_time        | 0.295198
+min_plan_time          | 0.030917
+max_plan_time          | 0.089786
+mean_plan_time         | 0.04919966666666667
+stddev_plan_time       | 0.0190228904977369
+calls                  | 14949
+total_exec_time        | 511.1723269999989
+min_exec_time          | 0.01651
+max_exec_time          | 1.4674930000000002
+mean_exec_time         | 0.03419441614823739
+stddev_exec_time       | 0.02441860725381804
+rows                   | 14949
+shared_blks_hit        | 74545
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 0
+wal_fpi                | 0
+wal_bytes              | 0
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 15 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -4972246064374320243
+query                  | INSERT INTO storage_reservation                                                                                                                                                                                                                                                                                                 +
+                       |     (message_id, workspace_id, inbox_id, object_keys, bytes, state, created_at, write_deadline_at, node_id, generation)                                                                                                                                                                                                         +
+                       | VALUES                                                                                                                                                                                                                                                                                                                          +
+                       | ($1, $2, $3, ARRAY[$4, $5]::text[], $6, 'RESERVED', $7, $8, $9, $10)
+plans                  | 16
+total_plan_time        | 0.7727250000000001
+min_plan_time          | 0.021409
+max_plan_time          | 0.072686
+mean_plan_time         | 0.0482953125
+stddev_plan_time       | 0.012352227793594312
+calls                  | 2232
+total_exec_time        | 495.0506169999997
+min_exec_time          | 0.088676
+max_exec_time          | 9.441478
+mean_exec_time         | 0.22179687141577076
+stddev_exec_time       | 0.29237074414519704
+rows                   | 2232
+shared_blks_hit        | 30278
+shared_blks_read       | 3
+shared_blks_dirtied    | 16
+shared_blks_written    | 10
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0.10208899999999999
+blk_write_time         | 0.618012
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 13507
+wal_fpi                | 53
+wal_bytes              | 2186044
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 16 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | f
+queryid                | -9162644585215643827
+query                  | INSERT INTO storage_delta (workspace_id, inbox_id, bytes, objects)                                                                                                                                                                                                                                                              +
+                       |         SELECT o.workspace_id, m.inbox_id, -sum(o.size_bytes), -count(*)                                                                                                                                                                                                                                                        +
+                       |           FROM storage_old_rows o                                                                                                                                                                                                                                                                                               +
+                       |           LEFT JOIN message m ON m.id = o.message_id                                                                                                                                                                                                                                                                            +
+                       |          GROUP BY o.workspace_id, m.inbox_id
+plans                  | 12
+total_plan_time        | 4.391497
+min_plan_time          | 0.211395
+max_plan_time          | 1.252122
+mean_plan_time         | 0.36595808333333335
+stddev_plan_time       | 0.26920602216594214
+calls                  | 186
+total_exec_time        | 365.6487789999998
+min_exec_time          | 0.940502
+max_exec_time          | 17.588143000000002
+mean_exec_time         | 1.9658536505376347
+stddev_exec_time       | 1.6562315996885184
+rows                   | 186
+shared_blks_hit        | 150719
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 755
+wal_fpi                | 1
+wal_bytes              | 69772
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 17 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 9210493031919855199
+query                  | DELETE FROM storage_reservation WHERE message_id IN ($1) AND state = 'RESERVED'
+plans                  | 20
+total_plan_time        | 2.1674089999999997
+min_plan_time          | 0.057677
+max_plan_time          | 0.222775
+mean_plan_time         | 0.10837045
+stddev_plan_time       | 0.04869889148581824
+calls                  | 2232
+total_exec_time        | 350.2399040000005
+min_exec_time          | 0.072093
+max_exec_time          | 1.598819
+mean_exec_time         | 0.1569175197132616
+stddev_exec_time       | 0.09757666782213874
+rows                   | 2232
+shared_blks_hit        | 11181
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 2232
+wal_fpi                | 0
+wal_bytes              | 120528
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 18 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 1080878182226291301
+query                  | INSERT INTO storage_reservation                                                                                                                                                                                                                                                                                                 +
+                       |                     (message_id, workspace_id, inbox_id, object_keys, bytes, state, created_at, write_deadline_at, node_id, generation)                                                                                                                                                                                         +
+                       |                 VALUES                                                                                                                                                                                                                                                                                                          +
+                       |                 ($1, $2, $3, ARRAY[$4, $5]::text[], $6, $31, $7, $8, $9, $10),                                                                                                                                                                                                                                                  +
+                       | ($11, $12, $13, ARRAY[$14, $15]::text[], $16, $32, $17, $18, $19, $20),                                                                                                                                                                                                                                                         +
+                       | ($21, $22, $23, ARRAY[$24, $25]::text[], $26, $33, $27, $28, $29, $30)
+plans                  | 18
+total_plan_time        | 1.5828389999999999
+min_plan_time          | 0.035836
+max_plan_time          | 0.142366
+mean_plan_time         | 0.0879355
+stddev_plan_time       | 0.023224291945312586
+calls                  | 949
+total_exec_time        | 344.69324099999955
+min_exec_time          | 0.15253399999999998
+max_exec_time          | 36.724517
+mean_exec_time         | 0.3632173245521607
+stddev_exec_time       | 1.2475093871313039
+rows                   | 2847
+shared_blks_hit        | 38010
+shared_blks_read       | 4
+shared_blks_dirtied    | 16
+shared_blks_written    | 10
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0.102891
+blk_write_time         | 0.712966
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 15508
+wal_fpi                | 17
+wal_bytes              | 2472341
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 19 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | f
+queryid                | 2502486626983792940
+query                  | DELETE FROM ONLY "public"."message" WHERE $1 OPERATOR(pg_catalog.=) "inbox_id"
+plans                  | 46
+total_plan_time        | 5.691694000000002
+min_plan_time          | 0.039614
+max_plan_time          | 0.625315
+mean_plan_time         | 0.12373247826086957
+stddev_plan_time       | 0.12920793707494355
+calls                  | 308
+total_exec_time        | 339.87987200000003
+min_exec_time          | 0.49401
+max_exec_time          | 7.902531000000001
+mean_exec_time         | 1.1035060779220782
+stddev_exec_time       | 0.6655277114759409
+rows                   | 61600
+shared_blks_hit        | 188812
+shared_blks_read       | 0
+shared_blks_dirtied    | 1332
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 929
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 14.616633000000006
+wal_records            | 64272
+wal_fpi                | 0
+wal_bytes              | 3478704
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 20 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 3227634843656409377
+query                  | INSERT INTO storage_reservation                                                                                                                                                                                                                                                                                                 +
+                       |                     (message_id, workspace_id, inbox_id, object_keys, bytes, state, created_at, write_deadline_at, node_id, generation)                                                                                                                                                                                         +
+                       |                 VALUES                                                                                                                                                                                                                                                                                                          +
+                       |                 ($1, $2, $3, ARRAY[$4, $5]::text[], $6, $501, $7, $8, $9, $10),                                                                                                                                                                                                                                                 +
+                       | ($11, $12, $13, ARRAY[$14, $15]::text[], $16, $502, $17, $18, $19, $20),                                                                                                                                                                                                                                                        +
+                       | ($21, $22, $23, ARRAY[$24, $25]::text[], $26, $503, $27, $28, $29, $30),                                                                                                                                                                                                                                                        +
+                       | ($31, $32, $33, ARRAY[$34, $35]::text[], $36, $504, $37, $38, $39, $40),                                                                                                                                                                                                                                                        +
+                       | ($41, $42, $43, ARRAY[$44, $45]::text[], $46, $505, $47, $48, $49, $50),                                                                                                                                                                                                                                                        +
+                       | ($51, $52, $53, ARRAY[$54, $55]::text[], $56, $506, $57, $58, $59, $60),                                                                                                                                                                                                                                                        +
+                       | ($61, $62, $63, ARRAY[$64, $65]::text[], $66, $507, $67, $68, $69, $70),                                                                                                                                                                                                                                                        +
+                       | ($71, $72, $73, ARRAY[$74, $75]::text[], $76, $508, $77, $78, $79, $80),                                                                                                                                                                                                                                                        +
+                       | ($81, $82, $83, ARRAY[$84, $85]::text[], $86, $509, $87, $88, $89, $90),                                                                                                                                                                                                                                                        +
+                       | ($91, $92, $93, ARRAY[$94, $95]::text[], $96, $510, $97, $98, $99, $100),                                                                                                                                                                                                                                                       +
+                       | ($101, $102, $103, ARRAY[$104, $105]::text[], $106, $511, $107, $108, $109, $110),                                                                                                                                                                                                                                              +
+                       | ($111, $112, $113, ARRAY[$114, $115]::text[], $116, $512, $117, $118, $119, $120),                                                                                                                                                                                                                                              +
+                       | ($121, $122, $123, ARRAY[$124, $125]::text[], $126, $513, $127, $128, $129, $130),                                                                                                                                                                                                                                              +
+                       | ($131, $132, $133, ARRAY[$134, $135]::text[], $136, $514, $137, $138, $139, $140),                                                                                                                                                                                                                                              +
+                       | ($141, $142, $143, ARRAY[$144, $145]::text[], $146, $515, $147, $148, $149, $150),                                                                                                                                                                                                                                              +
+                       | ($151, $152, $153, ARRAY[$154, $155]::text[], $156, $516, $157, $158, $159, $160),                                                                                                                                                                                                                                              +
+                       | ($161, $162, $163, ARRAY[$164, $165]::text[], $166, $517, $167, $168, $169, $170),                                                                                                                                                                                                                                              +
+                       | ($171, $172, $173, ARRAY[$174, $175]::text[], $176, $518, $177, $178, $179, $180),                                                                                                                                                                                                                                              +
+                       | ($181, $182, $183, ARRAY[$184, $185]::text[], $186, $519, $187, $188, $189, $190),                                                                                                                                                                                                                                              +
+                       | ($191, $192, $193, ARRAY[$194, $195]::text[], $196, $520, $197, $198, $199, $200),                                                                                                                                                                                                                                              +
+                       | ($201, $202, $203, ARRAY[$204, $205]::text[], $206, $521, $207, $208, $209, $210),                                                                                                                                                                                                                                              +
+                       | ($211, $212, $213, ARRAY[$214, $215]::text[], $216, $522, $217, $218, $219, $220),                                                                                                                                                                                                                                              +
+                       | ($221, $222, $223, ARRAY[$224, $225]::text[], $226, $523, $227, $228, $229, $230),                                                                                                                                                                                                                                              +
+                       | ($231, $232, $233, ARRAY[$234, $235]::text[], $236, $524, $237, $238, $239, $240),                                                                                                                                                                                                                                              +
+                       | ($241, $242, $243, ARRAY[$244, $245]::text[], $246, $525, $247, $248, $249, $250),                                                                                                                                                                                                                                              +
+                       | ($251, $252, $253, ARRAY[$254, $255]::text[], $256, $526, $257, $258, $259, $260),                                                                                                                                                                                                                                              +
+                       | ($261, $262, $263, ARRAY[$264, $265]::text[], $266, $527, $267, $268, $269, $270),                                                                                                                                                                                                                                              +
+                       | ($271, $272, $273, ARRAY[$274, $275]::text[], $276, $528, $277, $278, $279, $280),                                                                                                                                                                                                                                              +
+                       | ($281, $282, $283, ARRAY[$284, $285]::text[], $286, $529, $287, $288, $289, $290),                                                                                                                                                                                                                                              +
+                       | ($291, $292, $293, ARRAY[$294, $295]::text[], $296, $530, $297, $298, $299, $300),                                                                                                                                                                                                                                              +
+                       | ($301, $302, $303, ARRAY[$304, $305]::text[], $306, $531, $307, $308, $309, $310),                                                                                                                                                                                                                                              +
+                       | ($311, $312, $313, ARRAY[$314, $315]::text[], $316, $532, $317, $318, $319, $320),                                                                                                                                                                                                                                              +
+                       | ($321, $322, $323, ARRAY[$324, $325]::text[], $326, $533, $327, $328, $329, $330),                                                                                                                                                                                                                                              +
+                       | ($331, $332, $333, ARRAY[$334, $335]::text[], $336, $534, $337, $338, $339, $340),                                                                                                                                                                                                                                              +
+                       | ($341, $342, $343, ARRAY[$344, $345]::text[], $346, $535, $347, $348, $349, $350),                                                                                                                                                                                                                                              +
+                       | ($351, $352, $353, ARRAY[$354, $355]::text[], $356, $536, $357, $358, $359, $360),                                                                                                                                                                                                                                              +
+                       | ($361, $362, $363, ARRAY[$364, $365]::text[], $366, $537, $367, $368, $369, $370),                                                                                                                                                                                                                                              +
+                       | ($371, $372, $373, ARRAY[$374, $375]::text[], $376, $538, $377, $378, $379, $380),                                                                                                                                                                                                                                              +
+                       | ($381, $382, $383, ARRAY[$384, $385]::text[], $386, $539, $387, $388, $389, $390),                                                                                                                                                                                                                                              +
+                       | ($391, $392, $393, ARRAY[$394, $395]::text[], $396, $540, $397, $398, $399, $400),                                                                                                                                                                                                                                              +
+                       | ($401, $402, $403, ARRAY[$404, $405]::text[], $406, $541, $407, $408, $409, $410),                                                                                                                                                                                                                                              +
+                       | ($411, $412, $413, ARRAY[$414, $415]::text[], $416, $542, $417, $418, $419, $420),                                                                                                                                                                                                                                              +
+                       | ($421, $422, $423, ARRAY[$424, $425]::text[], $426, $543, $427, $428, $429, $430),                                                                                                                                                                                                                                              +
+                       | ($431, $432, $433, ARRAY[$434, $435]::text[], $436, $544, $437, $438, $439, $440),                                                                                                                                                                                                                                              +
+                       | ($441, $442, $443, ARRAY[$444, $445]::text[], $446, $545, $447, $448, $449, $450),                                                                                                                                                                                                                                              +
+                       | ($451, $452, $453, ARRAY[$454, $455]::text[], $456, $546, $457, $458, $459, $460),                                                                                                                                                                                                                                              +
+                       | ($461, $462, $463, ARRAY[$464, $465]::text[], $466, $547, $467, $468, $469, $470),                                                                                                                                                                                                                                              +
+                       | ($471, $472, $473, ARRAY[$474, $475]::text[], $476, $548, $477, $478, $479, $480),                                                                                                                                                                                                                                              +
+                       | ($481, $482, $483, ARRAY[$484, $485]::text[], $486, $549, $487, $488, $489, $490),                                                                                                                                                                                                                                              +
+                       | ($491, $492, $493, ARRAY[$494, $495]::text[], $496, $550, $497, $498, $499, $500)
+plans                  | 51
+total_plan_time        | 9.310259999999996
+min_plan_time          | 0.130854
+max_plan_time          | 0.761368
+mean_plan_time         | 0.18255411764705884
+stddev_plan_time       | 0.087456992064256
+calls                  | 112
+total_exec_time        | 267.22680500000007
+min_exec_time          | 1.650274
+max_exec_time          | 10.232339999999999
+mean_exec_time         | 2.3859536160714288
+stddev_exec_time       | 1.080990384224291
+rows                   | 5600
+shared_blks_hit        | 74453
+shared_blks_read       | 3
+shared_blks_dirtied    | 21
+shared_blks_written    | 13
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0.088115
+blk_write_time         | 0.896496
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 29004
+wal_fpi                | 71
+wal_bytes              | 4888384
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 21 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -8905713406559025000
+query                  | INSERT INTO storage_reservation                                                                                                                                                                                                                                                                                                 +
+                       |                     (message_id, workspace_id, inbox_id, object_keys, bytes, state, created_at, write_deadline_at, node_id, generation)                                                                                                                                                                                         +
+                       |                 VALUES                                                                                                                                                                                                                                                                                                          +
+                       |                 ($1, $2, $3, ARRAY[$4, $5]::text[], $6, 'RESERVED', $7, $8, $9, $10),                                                                                                                                                                                                                                           +
+                       | ($11, $12, $13, ARRAY[$14, $15]::text[], $16, 'RESERVED', $17, $18, $19, $20),                                                                                                                                                                                                                                                  +
+                       | ($21, $22, $23, ARRAY[$24, $25]::text[], $26, 'RESERVED', $27, $28, $29, $30),                                                                                                                                                                                                                                                  +
+                       | ($31, $32, $33, ARRAY[$34, $35]::text[], $36, 'RESERVED', $37, $38, $39, $40),                                                                                                                                                                                                                                                  +
+                       | ($41, $42, $43, ARRAY[$44, $45]::text[], $46, 'RESERVED', $47, $48, $49, $50),                                                                                                                                                                                                                                                  +
+                       | ($51, $52, $53, ARRAY[$54, $55]::text[], $56, 'RESERVED', $57, $58, $59, $60),                                                                                                                                                                                                                                                  +
+                       | ($61, $62, $63, ARRAY[$64, $65]::text[], $66, 'RESERVED', $67, $68, $69, $70),                                                                                                                                                                                                                                                  +
+                       | ($71, $72, $73, ARRAY[$74, $75]::text[], $76, 'RESERVED', $77, $78, $79, $80),                                                                                                                                                                                                                                                  +
+                       | ($81, $82, $83, ARRAY[$84, $85]::text[], $86, 'RESERVED', $87, $88, $89, $90),                                                                                                                                                                                                                                                  +
+                       | ($91, $92, $93, ARRAY[$94, $95]::text[], $96, 'RESERVED', $97, $98, $99, $100)
+plans                  | 29
+total_plan_time        | 2.984851
+min_plan_time          | 0.061494
+max_plan_time          | 0.165348
+mean_plan_time         | 0.10292589655172414
+stddev_plan_time       | 0.021373773080084705
+calls                  | 427
+total_exec_time        | 258.8218520000001
+min_exec_time          | 0.32821100000000003
+max_exec_time          | 2.057343
+mean_exec_time         | 0.6061401686182668
+stddev_exec_time       | 0.16723035638367356
+rows                   | 4270
+shared_blks_hit        | 56778
+shared_blks_read       | 6
+shared_blks_dirtied    | 13
+shared_blks_written    | 7
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0.088064
+blk_write_time         | 0.524888
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 22394
+wal_fpi                | 61
+wal_bytes              | 3818838
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 22 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -2361151999029720501
+query                  | SELECT count(*) FROM storage_delta
+plans                  | 7
+total_plan_time        | 3.7376150000000004
+min_plan_time          | 0.133379
+max_plan_time          | 1.442608
+mean_plan_time         | 0.533945
+stddev_plan_time       | 0.4797125579204399
+calls                  | 239
+total_exec_time        | 250.00305300000002
+min_exec_time          | 0.417288
+max_exec_time          | 3.481375
+mean_exec_time         | 1.0460378786610873
+stddev_exec_time       | 0.3497643551593912
+rows                   | 239
+shared_blks_hit        | 82171
+shared_blks_read       | 2
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0.018134
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 8
+wal_fpi                | 0
+wal_bytes              | 972
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 23 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 3883460056369246570
+query                  | SELECT message_id, bytes, state, object_keys FROM storage_reservation                                                                                                                                                                                                                                                           +
+                       |  WHERE message_id IN ($1)                                                                                                                                                                                                                                                                                                       +
+                       |  ORDER BY message_id                                                                                                                                                                                                                                                                                                            +
+                       |    FOR UPDATE
+plans                  | 20
+total_plan_time        | 5.190257000000001
+min_plan_time          | 0.07526
+max_plan_time          | 2.196912
+mean_plan_time         | 0.25951285000000013
+stddev_plan_time       | 0.44778548246222494
+calls                  | 2232
+total_exec_time        | 196.18512799999974
+min_exec_time          | 0.036266999999999994
+max_exec_time          | 6.237359
+mean_exec_time         | 0.08789656272401414
+stddev_exec_time       | 0.1635100153792517
+rows                   | 2232
+shared_blks_hit        | 8952
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 2305
+wal_fpi                | 0
+wal_bytes              | 126609
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 24 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 9109545786617266825
+query                  | SELECT id AS message_id, raw_object_key AS object_key FROM message WHERE id IN ($1)                                                                                                                                                                                                                                             +
+                       | UNION ALL                                                                                                                                                                                                                                                                                                                       +
+                       | SELECT message_id, object_key FROM attachment WHERE message_id IN ($2)
+plans                  | 49
+total_plan_time        | 19.884752999999996
+min_plan_time          | 0.128661
+max_plan_time          | 1.538085
+mean_plan_time         | 0.40581128571428576
+stddev_plan_time       | 0.29889411742567545
+calls                  | 2232
+total_exec_time        | 168.652942
+min_exec_time          | 0.039143000000000004
+max_exec_time          | 1.542143
+mean_exec_time         | 0.07556135394265256
+stddev_exec_time       | 0.057526681775001504
+rows                   | 4464
+shared_blks_hit        | 18077
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 26
+wal_fpi                | 0
+wal_bytes              | 1556
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 25 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -6314410203516162073
+query                  | DELETE FROM storage_reservation WHERE message_id IN ($1, $2, $3) AND state = $4
+plans                  | 52
+total_plan_time        | 6.254404000000003
+min_plan_time          | 0.065031
+max_plan_time          | 0.326669
+mean_plan_time         | 0.120277
+stddev_plan_time       | 0.05156084648145931
+calls                  | 949
+total_exec_time        | 151.5392330000001
+min_exec_time          | 0.071713
+max_exec_time          | 5.5568420000000005
+mean_exec_time         | 0.15968306954689135
+stddev_exec_time       | 0.19504812682750966
+rows                   | 2847
+shared_blks_hit        | 12497
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 2847
+wal_fpi                | 0
+wal_bytes              | 153738
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 26 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 5864668488786538354
+query                  | SELECT id, state FROM inbox WHERE id IN ($1) ORDER BY id FOR SHARE
+plans                  | 10
+total_plan_time        | 1.061719
+min_plan_time          | 0.06977
+max_plan_time          | 0.172602
+mean_plan_time         | 0.1061719
+stddev_plan_time       | 0.031882909526735476
+calls                  | 2232
+total_exec_time        | 124.71448199999998
+min_exec_time          | 0.028253
+max_exec_time          | 1.423391
+mean_exec_time         | 0.055875663978494576
+stddev_exec_time       | 0.04860703505580914
+rows                   | 2232
+shared_blks_hit        | 11130
+shared_blks_read       | 0
+shared_blks_dirtied    | 5
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 2250
+wal_fpi                | 5
+wal_bytes              | 162065
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 27 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -3783095880456707621
+query                  | SELECT * FROM inbox WHERE state = $3 AND expires_at <= $1 LIMIT $2
+plans                  | 189
+total_plan_time        | 65.91350099999997
+min_plan_time          | 0.072735
+max_plan_time          | 3.649999
+mean_plan_time         | 0.34874868253968266
+stddev_plan_time       | 0.27890635448958806
+calls                  | 186
+total_exec_time        | 111.10766000000002
+min_exec_time          | 0.340513
+max_exec_time          | 5.577921
+mean_exec_time         | 0.597353010752688
+stddev_exec_time       | 0.4097407750376075
+rows                   | 0
+shared_blks_hit        | 10770
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 16
+wal_fpi                | 0
+wal_bytes              | 912
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 28 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 4881598840461440546
+query                  | SELECT id AS message_id, raw_object_key AS object_key FROM message WHERE id IN ($1, $2, $3)                                                                                                                                                                                                                                     +
+                       | UNION ALL                                                                                                                                                                                                                                                                                                                       +
+                       | SELECT message_id, object_key FROM attachment WHERE message_id IN ($4, $5, $6)
+plans                  | 63
+total_plan_time        | 18.517157000000005
+min_plan_time          | 0.17679
+max_plan_time          | 0.727956
+mean_plan_time         | 0.2939231269841269
+stddev_plan_time       | 0.10513226038216456
+calls                  | 949
+total_exec_time        | 104.29838599999995
+min_exec_time          | 0.052597
+max_exec_time          | 0.803376
+mean_exec_time         | 0.1099034625922023
+stddev_exec_time       | 0.05384563692527205
+rows                   | 5694
+shared_blks_hit        | 19330
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 57
+wal_fpi                | 0
+wal_bytes              | 3393
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 29 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 6767162611491319962
+query                  | SELECT message_id, bytes, state, object_keys FROM storage_reservation                                                                                                                                                                                                                                                           +
+                       |  WHERE message_id IN ($1, $2, $3)                                                                                                                                                                                                                                                                                               +
+                       |  ORDER BY message_id                                                                                                                                                                                                                                                                                                            +
+                       |    FOR UPDATE
+plans                  | 52
+total_plan_time        | 9.426665999999996
+min_plan_time          | 0.075571
+max_plan_time          | 0.781655
+mean_plan_time         | 0.1812820384615385
+stddev_plan_time       | 0.09281854096009083
+calls                  | 949
+total_exec_time        | 97.21430800000016
+min_exec_time          | 0.04313
+max_exec_time          | 1.303209
+mean_exec_time         | 0.10243868071654365
+stddev_exec_time       | 0.0630498586378858
+rows                   | 2847
+shared_blks_hit        | 9650
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 2894
+wal_fpi                | 0
+wal_bytes              | 157571
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 30 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -5354362656891832455
+query                  | SELECT pg_notify($1, $2)
+plans                  | 10
+total_plan_time        | 0.13930800000000002
+min_plan_time          | 0.008886
+max_plan_time          | 0.046205
+mean_plan_time         | 0.0139308
+stddev_plan_time       | 0.010839688028721121
+calls                  | 14949
+total_exec_time        | 91.20907500000015
+min_exec_time          | 0.002686
+max_exec_time          | 0.448795
+mean_exec_time         | 0.006101349588601232
+stddev_exec_time       | 0.008926104730941714
+rows                   | 14949
+shared_blks_hit        | 0
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 0
+wal_fpi                | 0
+wal_bytes              | 0
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 31 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -960458924470780155
+query                  | DELETE FROM storage_reservation WHERE message_id IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) AND state = 'RESERVED'
+plans                  | 79
+total_plan_time        | 8.220735
+min_plan_time          | 0.065332
+max_plan_time          | 0.248864
+mean_plan_time         | 0.10405993670886074
+stddev_plan_time       | 0.03440643383951549
+calls                  | 427
+total_exec_time        | 89.08659599999994
+min_exec_time          | 0.11540399999999999
+max_exec_time          | 0.819938
+mean_exec_time         | 0.2086337142857141
+stddev_exec_time       | 0.07828327954548224
+rows                   | 4270
+shared_blks_hit        | 17881
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 4318
+wal_fpi                | 2
+wal_bytes              | 240292
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 32 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -3396042643594991031
+query                  | SELECT id AS message_id, raw_object_key AS object_key FROM message WHERE id IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50)+
+                       | UNION ALL                                                                                                                                                                                                                                                                                                                       +
+                       | SELECT message_id, object_key FROM attachment WHERE message_id IN ($51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70, $71, $72, $73, $74, $75, $76, $77, $78, $79, $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $100)
+plans                  | 87
+total_plan_time        | 37.17636700000001
+min_plan_time          | 0.264652
+max_plan_time          | 1.267281
+mean_plan_time         | 0.4273145632183907
+stddev_plan_time       | 0.12330548610309099
+calls                  | 112
+total_exec_time        | 88.76625999999997
+min_exec_time          | 0.517703
+max_exec_time          | 3.593744
+mean_exec_time         | 0.7925558928571429
+stddev_exec_time       | 0.3065636832620634
+rows                   | 11200
+shared_blks_hit        | 34558
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 84
+wal_fpi                | 0
+wal_bytes              | 5042
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 33 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -91646079157679767
+query                  | SELECT id AS message_id, raw_object_key AS object_key FROM message WHERE id IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)                                                                                                                                                                                                        +
+                       | UNION ALL                                                                                                                                                                                                                                                                                                                       +
+                       | SELECT message_id, object_key FROM attachment WHERE message_id IN ($11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+plans                  | 85
+total_plan_time        | 27.217674999999996
+min_plan_time          | 0.181809
+max_plan_time          | 0.490003
+mean_plan_time         | 0.3202079411764705
+stddev_plan_time       | 0.0631778361120143
+calls                  | 427
+total_exec_time        | 85.60481199999994
+min_exec_time          | 0.065082
+max_exec_time          | 13.908778
+mean_exec_time         | 0.20047965339578452
+stddev_exec_time       | 0.6657846858215976
+rows                   | 8540
+shared_blks_hit        | 27011
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 63
+wal_fpi                | 0
+wal_bytes              | 3769
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 34 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -1147610128146011753
+query                  | SELECT id, state FROM inbox WHERE id IN ($1, $2, $3) ORDER BY id FOR SHARE
+plans                  | 42
+total_plan_time        | 4.147016999999999
+min_plan_time          | 0.067466
+max_plan_time          | 0.179944
+mean_plan_time         | 0.0987385
+stddev_plan_time       | 0.02885380505174813
+calls                  | 949
+total_exec_time        | 85.19592100000013
+min_exec_time          | 0.038751999999999995
+max_exec_time          | 4.431934999999999
+mean_exec_time         | 0.08977441622760797
+stddev_exec_time       | 0.1466071706759622
+rows                   | 2847
+shared_blks_hit        | 14191
+shared_blks_read       | 0
+shared_blks_dirtied    | 7
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 2855
+wal_fpi                | 4
+wal_bytes              | 186622
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 35 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | f
+queryid                | -1548987074676832314
+query                  | INSERT INTO storage_deletion_debt (workspace_id, bytes, objects)                                                                                                                                                                                                                                                                +
+                       |         SELECT workspace_id, sum(raw_size_bytes), count(*)                                                                                                                                                                                                                                                                      +
+                       |           FROM storage_old_rows GROUP BY workspace_id
+plans                  | 11
+total_plan_time        | 0.945661
+min_plan_time          | 0.045004
+max_plan_time          | 0.215792
+mean_plan_time         | 0.0859691818181818
+stddev_plan_time       | 0.05000557285819285
+calls                  | 186
+total_exec_time        | 78.41269999999997
+min_exec_time          | 0.21627300000000002
+max_exec_time          | 1.9302460000000001
+mean_exec_time         | 0.4215736559139785
+stddev_exec_time       | 0.2545299768881194
+rows                   | 186
+shared_blks_hit        | 1791
+shared_blks_read       | 1
+shared_blks_dirtied    | 7
+shared_blks_written    | 3
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0.057988
+blk_write_time         | 0.229557
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 570
+wal_fpi                | 2
+wal_bytes              | 50716
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 36 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 6904631378198850146
+query                  | SELECT message_id, bytes, state, object_keys FROM storage_reservation                                                                                                                                                                                                                                                           +
+                       |  WHERE message_id IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)                                                                                                                                                                                                                                                                  +
+                       |  ORDER BY message_id                                                                                                                                                                                                                                                                                                            +
+                       |    FOR UPDATE
+plans                  | 79
+total_plan_time        | 14.878013000000001
+min_plan_time          | 0.083135
+max_plan_time          | 1.249318
+mean_plan_time         | 0.18832927848101264
+stddev_plan_time       | 0.129975134586517
+calls                  | 427
+total_exec_time        | 70.022244
+min_exec_time          | 0.070461
+max_exec_time          | 1.251171
+mean_exec_time         | 0.16398651990632307
+stddev_exec_time       | 0.0774647367490129
+rows                   | 4270
+shared_blks_hit        | 13608
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 4322
+wal_fpi                | 0
+wal_bytes              | 234522
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 37 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -4655872254347070527
+query                  | SELECT (SELECT count(*) FROM storage_delta) AS unfolded,                                                                                                                                                                                                                                                                        +
+                       |        (SELECT coalesce(sum(base_bytes), $1) FROM workspace_storage_account)                                                                                                                                                                                                                                                    +
+                       |      + (SELECT coalesce(sum(bytes), $2) FROM storage_delta) AS committed,                                                                                                                                                                                                                                                       +
+                       |        (SELECT coalesce(sum(base_objects), $3) FROM workspace_storage_account)                                                                                                                                                                                                                                                  +
+                       |      + (SELECT coalesce(sum(objects), $4) FROM storage_delta) AS objects,                                                                                                                                                                                                                                                       +
+                       |        (SELECT coalesce(sum(bytes), $5) FROM storage_reservation) AS reserved,                                                                                                                                                                                                                                                  +
+                       |        (SELECT coalesce(sum(cardinality(object_keys)), $6) FROM storage_reservation) AS reserved_objects
+plans                  | 7
+total_plan_time        | 3.523113
+min_plan_time          | 0.413921
+max_plan_time          | 0.571925
+mean_plan_time         | 0.5033018571428571
+stddev_plan_time       | 0.048063527783336814
+calls                  | 11
+total_exec_time        | 69.927929
+min_exec_time          | 3.356343
+max_exec_time          | 17.967349000000002
+mean_exec_time         | 6.357084454545454
+stddev_exec_time       | 3.741776801176035
+rows                   | 11
+shared_blks_hit        | 40984
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 174
+wal_fpi                | 0
+wal_bytes              | 43058
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 38 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | -3519614777388022591
+query                  | SELECT message_id, bytes, state, object_keys FROM storage_reservation                                                                                                                                                                                                                                                           +
+                       |  WHERE message_id IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50)                                                          +
+                       |  ORDER BY message_id                                                                                                                                                                                                                                                                                                            +
+                       |    FOR UPDATE
+plans                  | 86
+total_plan_time        | 21.621658000000007
+min_plan_time          | 0.16125
+max_plan_time          | 1.477752
+mean_plan_time         | 0.2514146279069767
+stddev_plan_time       | 0.14449955554490637
+calls                  | 112
+total_exec_time        | 67.19651999999999
+min_exec_time          | 0.358737
+max_exec_time          | 3.608451
+mean_exec_time         | 0.5999689285714286
+stddev_exec_time       | 0.3769931338492007
+rows                   | 5600
+shared_blks_hit        | 17484
+shared_blks_read       | 0
+shared_blks_dirtied    | 0
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 5741
+wal_fpi                | 0
+wal_bytes              | 312335
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 39 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | f
+queryid                | 6256657244618925480
+query                  | INSERT INTO storage_deletion_debt (workspace_id, bytes, objects)                                                                                                                                                                                                                                                                +
+                       |         SELECT workspace_id, sum(size_bytes), count(*)                                                                                                                                                                                                                                                                          +
+                       |           FROM storage_old_rows GROUP BY workspace_id
+plans                  | 11
+total_plan_time        | 1.595634
+min_plan_time          | 0.041598
+max_plan_time          | 0.400546
+mean_plan_time         | 0.14505763636363636
+stddev_plan_time       | 0.09777745512528367
+calls                  | 186
+total_exec_time        | 64.95889700000001
+min_exec_time          | 0.13374
+max_exec_time          | 3.563349
+mean_exec_time         | 0.3492413817204302
+stddev_exec_time       | 0.2883367695823636
+rows                   | 186
+shared_blks_hit        | 1543
+shared_blks_read       | 0
+shared_blks_dirtied    | 5
+shared_blks_written    | 3
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0.189212
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 571
+wal_fpi                | 0
+wal_bytes              | 50039
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+-[ RECORD 40 ]---------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+userid                 | 10
+dbid                   | 16388
+toplevel               | t
+queryid                | 3998547380055619125
+query                  | SELECT id, state FROM inbox WHERE id IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50) ORDER BY id FOR SHARE
+plans                  | 119
+total_plan_time        | 23.324903999999997
+min_plan_time          | 0.088445
+max_plan_time          | 0.890319
+mean_plan_time         | 0.19600759663865544
+stddev_plan_time       | 0.09352219051295527
+calls                  | 112
+total_exec_time        | 64.735591
+min_exec_time          | 0.41848
+max_exec_time          | 1.639684
+mean_exec_time         | 0.5779963482142855
+stddev_exec_time       | 0.14043058385492138
+rows                   | 5600
+shared_blks_hit        | 17504
+shared_blks_read       | 0
+shared_blks_dirtied    | 16
+shared_blks_written    | 0
+local_blks_hit         | 0
+local_blks_read        | 0
+local_blks_dirtied     | 0
+local_blks_written     | 0
+temp_blks_read         | 0
+temp_blks_written      | 0
+blk_read_time          | 0
+blk_write_time         | 0
+temp_blk_read_time     | 0
+temp_blk_write_time    | 0
+wal_records            | 5616
+wal_fpi                | 11
+wal_bytes              | 392543
+jit_functions          | 0
+jit_generation_time    | 0
+jit_inlining_count     | 0
+jit_inlining_time      | 0
+jit_optimization_count | 0
+jit_optimization_time  | 0
+jit_emission_count     | 0
+jit_emission_time      | 0
+
+## pg_stat_user_tables (testinbox_bench_diag)
+ relid | schemaname |            relname             | seq_scan |         last_seq_scan         | seq_tup_read | idx_scan |         last_idx_scan         | idx_tup_fetch | n_tup_ins | n_tup_upd | n_tup_del | n_tup_hot_upd | n_tup_newpage_upd | n_live_tup | n_dead_tup | n_mod_since_analyze | n_ins_since_vacuum | last_vacuum |        last_autovacuum        |         last_analyze          |       last_autoanalyze        | vacuum_count | autovacuum_count | analyze_count | autoanalyze_count 
+-------+------------+--------------------------------+----------+-------------------------------+--------------+----------+-------------------------------+---------------+-----------+-----------+-----------+---------------+-------------------+------------+------------+---------------------+--------------------+-------------+-------------------------------+-------------------------------+-------------------------------+--------------+------------------+---------------+-------------------
+ 17057 | public     | account_deletion               |        2 | 2026-11-06 13:12:37.786009+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.428133+00 |                               |            0 |                0 |             3 |                 0
+ 16417 | public     | api_key                        |        8 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.291138+00 |                               |            0 |                0 |             3 |                 0
+ 16497 | public     | attachment                     |        3 | 2026-11-06 13:12:37.438606+00 |            0 |   130280 | 2026-11-06 13:15:21.447557+00 |        130280 |    155880 |         0 |     97600 |             0 |                 0 |      58635 |      12403 |               16457 |               5097 |             | 2026-11-06 13:15:01.272687+00 | 2026-11-06 13:14:16.278979+00 | 2026-11-06 13:15:01.646339+00 |            0 |                3 |             3 |                 2
+ 17153 | public     | bench_commit_probe             |        2 | 2026-11-06 13:12:51.754559+00 |          500 |        0 |                               |             0 |       500 |         0 |       500 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             | 2026-11-06 13:12:59.573476+00 | 2026-11-06 13:14:16.445377+00 |                               |            0 |                1 |             3 |                 0
+ 16819 | public     | beta_admission                 |        6 | 2026-11-06 13:12:37.786009+00 |            0 |        1 | 2026-11-06 13:12:37.786009+00 |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.424711+00 |                               |            0 |                0 |             3 |                 0
+ 16808 | public     | beta_cohort                    |        1 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         1 |         0 |         0 |             0 |                 0 |          1 |          0 |                   0 |                  1 |             |                               | 2026-11-06 13:14:16.424+00    |                               |            0 |                0 |             3 |                 0
+ 16928 | public     | beta_waitlist                  |        3 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.425876+00 |                               |            0 |                0 |             3 |                 0
+ 16894 | public     | email_login_challenge          |        5 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.425509+00 |                               |            0 |                0 |             3 |                 0
+ 16458 | public     | exact_address_reservation      |        3 | 2026-11-06 13:12:36.410276+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:15.506579+00 |                               |            0 |                0 |             3 |                 0
+ 16389 | public     | flyway_schema_history          |       55 | 2026-11-06 13:12:38.426608+00 |          676 |        0 |                               |             0 |        26 |         0 |         0 |             0 |                 0 |         26 |          0 |                   0 |                 26 |             |                               | 2026-11-06 13:14:15.480292+00 |                               |            0 |                0 |             3 |                 0
+ 16796 | public     | human_account                  |        3 | 2026-11-06 13:12:37.786009+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.424857+00 |                               |            0 |                0 |             3 |                 0
+ 16888 | public     | human_auth_gate                |        1 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.425251+00 |                               |            0 |                0 |             3 |                 0
+ 16871 | public     | human_identity                 |        2 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.42513+00  |                               |            0 |                0 |             3 |                 0
+ 16962 | public     | human_request_budget           |        1 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.427259+00 |                               |            0 |                0 |             3 |                 0
+ 16955 | public     | human_request_global           |        1 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         1 |         0 |         0 |             0 |                 0 |          1 |          0 |                   0 |                  1 |             |                               | 2026-11-06 13:14:16.426204+00 |                               |            0 |                0 |             3 |                 0
+ 16855 | public     | human_session                  |        2 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.424993+00 |                               |            0 |                0 |             3 |                 0
+ 16549 | public     | idempotency_record             |        4 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.291347+00 |                               |            0 |                0 |             3 |                 0
+ 16436 | public     | inbox                          |      644 | 2026-11-06 13:15:21.178728+00 |      1412337 |   213845 | 2026-11-06 13:15:21.447557+00 |        292305 |      2616 |         0 |       488 |             0 |                 0 |       2128 |        488 |                 180 |                308 |             | 2026-11-06 13:12:59.368719+00 | 2026-11-06 13:14:15.505517+00 |                               |            0 |                1 |             3 |                 0
+ 16579 | public     | inbox_storage                  |     3780 | 2026-11-06 13:14:00.079021+00 |      8421602 |    47058 | 2026-11-06 13:15:21.447557+00 |         47058 |      2616 |     29342 |       488 |         27374 |              1968 |       2128 |       1111 |                4716 |                  0 |             | 2026-11-06 13:15:01.692838+00 | 2026-11-06 13:14:16.290169+00 | 2026-11-06 13:15:01.700927+00 |            0 |                3 |             3 |                 3
+ 17035 | public     | lifecycle_restore_clearance    |        1 | 2026-11-06 13:12:37.786009+00 |            0 |        0 |                               |             0 |         1 |         0 |         0 |             0 |                 0 |          1 |          0 |                   0 |                  1 |             |                               | 2026-11-06 13:14:16.426834+00 |                               |            0 |                0 |             3 |                 0
+ 16474 | public     | message                        |       10 | 2026-11-06 13:14:15.322352+00 |       156518 |   327608 | 2026-11-06 13:15:21.447557+00 |        349552 |    155880 |         0 |     97600 |             0 |                 0 |      58249 |      13200 |               18097 |               5511 |             | 2026-11-06 13:15:00.36257+00  | 2026-11-06 13:14:15.985335+00 | 2026-11-06 13:15:01.010192+00 |            0 |                3 |             3 |                 2
+ 16973 | public     | participant_workspace          |    33057 | 2026-11-06 13:15:21.447557+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.427417+00 |                               |            0 |                0 |             3 |                 0
+ 16405 | public     | project                        |      310 | 2026-11-06 13:14:15.322352+00 |        31216 |     2308 | 2026-11-06 13:12:51.754559+00 |          2308 |       200 |         0 |         0 |             0 |                 0 |        200 |          0 |                   0 |                200 |             |                               | 2026-11-06 13:14:15.494766+00 |                               |            0 |                0 |             3 |                 0
+ 16912 | public     | provider_login_state           |        4 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.425711+00 |                               |            0 |                0 |             3 |                 0
+ 16511 | public     | rate_bucket                    |      489 | 2026-11-06 13:15:20.257054+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.282203+00 |                               |            0 |                0 |             3 |                 0
+ 16635 | public     | storage_admission_latch        |     8042 | 2026-11-06 13:15:21.447557+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:15.483395+00 |                               |            0 |                0 |             3 |                 0
+ 16618 | public     | storage_ambiguity              |    12428 | 2026-11-06 13:15:21.447557+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.422344+00 |                               |            0 |                0 |             3 |                 0
+ 16652 | public     | storage_clock_episode          |        1 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:15.480821+00 |                               |            0 |                0 |             3 |                 0
+ 17013 | public     | storage_cohort_plan            |    48239 | 2026-11-06 13:15:21.447557+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.427963+00 |                               |            0 |                0 |             3 |                 0
+ 16758 | public     | storage_containment_watermark  |        1 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         1 |         0 |         0 |             0 |                 0 |          1 |          0 |                   0 |                  1 |             |                               | 2026-11-06 13:14:15.486486+00 |                               |            0 |                0 |             3 |                 0
+ 16709 | public     | storage_debt_watermark         |     8088 | 2026-11-06 13:15:21.447557+00 |         8087 |        4 | 2026-11-06 13:14:16.445493+00 |             4 |         1 |        26 |         0 |            26 |                 0 |          1 |         28 |                  13 |                  1 |             |                               | 2026-11-06 13:14:15.484412+00 |                               |            0 |                0 |             3 |                 0
+ 16664 | public     | storage_deletion_debt          |     8090 | 2026-11-06 13:15:21.447557+00 |      1708118 |       16 | 2026-11-06 13:15:02.680095+00 |            10 |       914 |         0 |       554 |             0 |                 0 |        362 |          0 |                 134 |                134 |             | 2026-11-06 13:14:59.378184+00 | 2026-11-06 13:14:15.482708+00 | 2026-11-06 13:14:59.39171+00  |            0 |                1 |             3 |                 2
+ 16594 | public     | storage_delta                  |    16413 | 2026-11-06 13:15:21.546786+00 |     33032421 |    32808 | 2026-11-06 13:15:21.447557+00 |        136555 |     80037 |         0 |     77865 |             0 |                 0 |       2950 |      12172 |               24782 |              12728 |             | 2026-11-06 13:15:01.675509+00 | 2026-11-06 13:14:16.284404+00 | 2026-11-06 13:15:01.68275+00  |            0 |                2 |             3 |                 3
+ 16682 | public     | storage_filesystem_observation |     8090 | 2026-11-06 13:15:21.447557+00 |        12113 |        4 | 2026-11-06 13:12:53.110377+00 |             0 |         2 |         0 |         0 |             0 |                 0 |          3 |          0 |                   1 |                  2 |             |                               | 2026-11-06 13:14:15.485761+00 |                               |            0 |                0 |             3 |                 0
+ 16722 | public     | storage_footprint_trust        |    16098 | 2026-11-06 13:15:21.447557+00 |        16097 |        7 | 2026-11-06 13:14:16.445493+00 |             7 |         1 |         3 |         0 |             3 |                 0 |          1 |          3 |                   0 |                  1 |             |                               | 2026-11-06 13:14:15.487054+00 |                               |            0 |                0 |             3 |                 0
+ 17070 | public     | storage_global_base            |    16127 | 2026-11-06 13:15:21.447557+00 |        16126 |        6 | 2026-11-06 13:12:53.110377+00 |             6 |         1 |        28 |         0 |            28 |                 0 |          1 |         15 |                  13 |                  1 |             |                               | 2026-11-06 13:14:16.428468+00 |                               |            0 |                0 |             3 |                 0
+ 16994 | public     | storage_legacy_share           |    16985 | 2026-11-06 13:15:21.447557+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.427823+00 |                               |            0 |                0 |             3 |                 0
+ 16627 | public     | storage_node                   |        5 | 2026-11-06 13:14:16.447022+00 |            3 |        1 | 2026-11-06 13:12:53.110377+00 |             0 |         2 |         1 |         1 |             1 |                 0 |          1 |          3 |                   2 |                  2 |             |                               | 2026-11-06 13:14:16.422959+00 |                               |            0 |                0 |             3 |                 0
+ 16703 | public     | storage_observation_walk       |        2 | 2026-11-06 13:14:16.445493+00 |            2 |        1 | 2026-11-06 13:12:53.106389+00 |             1 |         2 |         0 |         0 |             0 |                 0 |          3 |          0 |                   1 |                  2 |             |                               | 2026-11-06 13:14:15.483767+00 |                               |            0 |                0 |             3 |                 0
+ 17088 | public     | storage_partition_bound        |        1 | 2026-11-06 13:12:37.786009+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.445164+00 |                               |            0 |                0 |             3 |                 0
+ 16600 | public     | storage_reservation            |     8350 | 2026-11-06 13:15:21.447557+00 |      8515079 |   140511 | 2026-11-06 13:15:21.447557+00 |        165928 |     33684 |     32680 |     32680 |         27716 |              4964 |       1004 |       6817 |               14668 |               4892 |             | 2026-11-06 13:15:01.935031+00 | 2026-11-06 13:14:16.443961+00 | 2026-11-06 13:15:01.962053+00 |            0 |                3 |             3 |                 3
+ 16771 | public     | storage_sweep_run              |        2 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.423668+00 |                               |            0 |                0 |             3 |                 0
+ 16527 | public     | wait_lease                     |        3 | 2026-11-06 13:12:37.438606+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.282432+00 |                               |            0 |                0 |             3 |                 0
+ 16398 | public     | workspace                      |   135338 | 2026-11-06 13:15:21.447557+00 |     12905474 |    65308 | 2026-11-06 13:12:51.754559+00 |         65308 |       200 |         0 |         0 |             0 |                 0 |        200 |          0 |                   0 |                200 |             |                               | 2026-11-06 13:14:15.493677+00 |                               |            0 |                0 |             3 |                 0
+ 17001 | public     | workspace_deletion_charge      |    16073 | 2026-11-06 13:15:21.447557+00 |            0 |        0 |                               |             0 |         0 |         0 |         0 |             0 |                 0 |          0 |          0 |                   0 |                  0 |             |                               | 2026-11-06 13:14:16.42767+00  |                               |            0 |                0 |             3 |                 0
+ 16568 | public     | workspace_storage_account      |     8094 | 2026-11-06 13:15:21.447557+00 |      1618400 |     5066 | 2026-11-06 13:15:20.266886+00 |          5066 |       200 |      5266 |         0 |          4951 |               315 |        200 |        226 |                 792 |                  0 |             | 2026-11-06 13:15:01.685605+00 | 2026-11-06 13:14:16.285756+00 | 2026-11-06 13:15:01.686831+00 |            0 |                3 |             3 |                 3
+(46 rows)
+
+## pg_stat_bgwriter
+-[ RECORD 1 ]---------+------------------------------
+checkpoints_timed     | 1
+checkpoints_req       | 1
+checkpoint_write_time | 5
+checkpoint_sync_time  | 2
+buffers_checkpoint    | 2328
+buffers_clean         | 4742
+maxwritten_clean      | 18
+buffers_backend       | 20964
+buffers_backend_fsync | 0
+buffers_alloc         | 21910
+stats_reset           | 2026-11-06 13:09:57.154583+00
+

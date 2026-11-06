@@ -1,0 +1,79 @@
+# ADR-035 §11 global-admission benchmark
+
+**Verdict: INCOMPLETE**
+
+**Not ADR evidence** (`adrEvidence: false`): the inputs departed from §11:
+- offered rates [62.0] do not include §11's [31.0, 62.0]
+- concurrency [10, 100] does not include §11's [1, 10, 25, 50, 100]
+
+Incomplete because:
+- not ADR evidence: offered rates [62.0] do not include §11's [31.0, 62.0]
+- not ADR evidence: concurrency [10, 100] does not include §11's [1, 10, 25, 50, 100]
+- concurrency 1 missing at 62.0 events/s on >= 10000 workspaces
+- concurrency 25 missing at 62.0 events/s on >= 10000 workspaces
+- concurrency 50 missing at 62.0 events/s on >= 10000 workspaces
+
+| Environment | |
+|---|---|
+| git SHA | `80482e663eb8a8eed9a412357d3b67939af6f787` |
+| timestamp | 2026-11-06T13:12:37.790746401Z |
+| host class | staging-host vmi2932906 (Contabo VPS, 8 vCPU, 23 GiB) DIAGNOSTIC |
+| architecture / kernel | amd64 / Linux version 6.8.0-147-generic (buildd@lcy02-amd64-081) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 |
+| PostgreSQL | PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit |
+| JVM | 25.0.3+9-LTS |
+
+**Safety proof.** Database `testinbox_bench_diag`, created by this run: true; 
+tenant rows at start: workspace=0, inbox=0, message=0.
+
+**What was measured.** The database protocol only: write slot, T1 assembled as production ALL assembles it (IngestionWiring: FootprintWiring.admission over JdbcStorageAdmission(readsFootprint = FootprintWiring.readsFootprint(declarations)) with a declared filesystem, so the one statement also reads the footprint and cohort inputs; seeded trust, observation and watermark rows; no participant and no cohort plan, so the cohort pool is read but not required; probed before every scenario, see t1Probe), T1 (admission lock, one-statement snapshot, reservation insert), the fence rows, T2 (reservations FOR UPDATE, inboxes FOR KEY SHARE, message and attachment rows through JdbcMessageRepository.appendVisible so the ledger triggers run, pg_notify, reservations consumed), retention (ExpireInboxes.sweep hard-deleting one expired inbox per sweep) and compaction on its interval. Uploads are an in-memory stub whose fenced PUT is Stored instantly; T_put and the storage backend are qualified separately (ADR-035 §9a). lockWait is StorageProtocolMetrics.lockWait as GuardedStorage reports it: the whole admission call (lock wait, snapshot, decision, insert, commit), NOT the pg_advisory_xact_lock wait alone.
+
+Target: remote `testinbox_bench_diag`; seed 35; rates [62.0]; concurrency [10, 100]; workspaces [200, 10000]; backlog 1000 reservations + 500 deltas (floor, re-seeded after each compaction pass).
+
+Open loop, poisson arrivals, 60 s measured after 5 s warm-up; mix `1:60,3:25,10:12,50:3`; 24576 bytes per copy; 16 slots (4 per workspace); compaction every 5 s; retention deletes inboxes of 200 messages; reference mode NO_LOCK.
+
+## Criteria (ADR-035 §11)
+
+| Criterion | Pass | Observed | Threshold | Detail |
+|---|---|---:|---|---|
+| sustained2x | NO | 0.89 | achieved / offered >= 0.995 at 62.0 events/s at concurrency [10, 25, 50, 100] (concurrency 1 is the uncontended baseline, reported only) | worst achieved/offered over 4 scenario(s); terminal lag c10=1320 ms, c100=542 ms, c10=138 ms, c100=6586 ms |
+| t1P99 | NO | 12551.88 | T1 p99 <= 50.0 ms (completion - due, schedule lag included) at concurrency [10, 25, 50, 100]; concurrency 1 is reported only | worst T1 p99 over 4 scenario(s) |
+| retentionP99VsReference | NO | 2.06 | retention p99 <= 2.0 x the NO_LOCK reference's retention p99 (ADR-035 §11 mode c, no global ceiling) at the same offered load | worst chosen/reference retention p99 ratio over 4 scenario(s); reference mode NO_LOCK |
+| deadlocks | yes | 0 | 0 deadlocks (SQLSTATE 40P01) across every scenario | sum over 8 scenario(s) |
+| lockTimeoutRate | yes | 0 | lock_timeout rate < 0.001 of events, every CHOSEN scenario | worst per-scenario rate over 4 scenario(s) |
+| slotQueueingDeadlineMisses | NO | 32 | 0 events refused for W_slot (StorageUnavailableReason.SLOT_WAIT) across every scenario | sum over 8 scenario(s) |
+| otherErrors | yes | 0 | 0 errors other than lock_timeout, deadlock or slot wait, events and retention, across every scenario | sum over 8 scenario(s) |
+| retentionStarvedTicks | yes | 0 | 0 retention ticks that found nothing to delete, across every scenario | sum over 8 scenario(s) |
+
+## Scenarios
+
+| Scenario | Mode | Workspaces | Conc. | Offered/s | Achieved/s | Completed/scheduled | Terminal lag ms | T1 p50/p95/p99 | T1 tx p99 | T2 p50/p95/p99 | Event p99 | Retention p50/p95/p99 (n) | Starved | Lock wait p50/p99 | Slot wait p50/p99 | Deltas mean/max | lock_timeout (rate) | Deadlocks | Slot misses | Other errors |
+|---|---|---:|---:|---:|---:|---:|---:|---|---:|---|---:|---|---:|---|---|---|---|---:|---:|---:|
+| chosen-ws200-c10-r62 | CHOSEN | 200 | 10 | 62 | 60.68 | 1.0000 | 1320.06 | 60.01 / 417.29 / 1259.60 | 260.81 | 7.08 / 32.07 / 111.88 | 1279.80 | 21.26 / 38.03 / 69.50 (186) | 0 | 57.70 / 260.83 | 0.60 / 2.60 | 2061.11 / 5524 | 0 (0.0000) | 0 | 0 | 0 |
+| reference-ws200-c10-r62 | REFERENCE (NO_LOCK) | 200 | 10 | 62 | 61.84 | 1.0000 | 173.91 | 12.89 / 22.80 / 47.09 | 39.18 | 6.64 / 29.26 / 106.29 | 183.39 | 22.66 / 42.64 / 107.16 (186) | 0 | 11.57 / 39.23 | 0.30 / 1.73 | 2014 / 5382 | 0 (0.0000) | 0 | 0 | 0 |
+| chosen-ws200-c100-r62 | CHOSEN | 200 | 100 | 62 | 61.38 | 0.9987 | 542.31 | 862.82 / 4587.02 / 7366.58 | 427.14 | 7.69 / 34.66 / 120.06 | 7392.31 | 27.35 / 61.35 / 83.74 (186) | 0 | 212.44 / 427.16 | 241.49 / 6623.32 | 2069.18 / 5854 | 0 (0.0000) | 0 | 5 | 0 |
+| reference-ws200-c100-r62 | REFERENCE (NO_LOCK) | 200 | 100 | 62 | 61.89 | 1.0000 | 124.26 | 17.35 / 27.00 / 38.78 | 35.81 | 7.08 / 32.57 / 115.28 | 200.10 | 21.66 / 34.89 / 53.91 (186) | 0 | 15.92 / 35.87 | 0.30 / 2.13 | 2028.54 / 6038 | 0 (0.0000) | 0 | 0 | 0 |
+| chosen-ws10000-c10-r62 | CHOSEN | 10000 | 10 | 62 | 61.87 | 1.0000 | 138.02 | 19.95 / 102.69 / 169.47 | 141.39 | 6.19 / 29.54 / 107.08 | 243.25 | 19.66 / 35.90 / 65.96 (186) | 0 | 18.26 / 141.41 | 0.54 / 2.38 | 2122.34 / 5538 | 0 (0.0000) | 0 | 0 | 0 |
+| reference-ws10000-c10-r62 | REFERENCE (NO_LOCK) | 10000 | 10 | 62 | 62.00 | 1.0000 | 15.96 | 13.80 / 24.52 / 49.78 | 41.89 | 7.30 / 32.08 / 115.67 | 202.19 | 21.33 / 36.64 / 77.92 (186) | 0 | 12.42 / 41.90 | 0.31 / 2.02 | 2080.11 / 5490 | 0 (0.0000) | 0 | 0 | 0 |
+| chosen-ws10000-c100-r62 | CHOSEN | 10000 | 100 | 62 | 55.48 | 0.9927 | 6586.45 | 4994.70 / 9346.45 / 12551.88 | 581.45 | 8.05 / 35.84 / 117.75 | 12560.47 | 28.89 / 56.93 / 102.46 (186) | 0 | 225.33 / 581.48 | 40.44 / 8296.67 | 1927.89 / 5852 | 0 (0.0000) | 0 | 27 | 0 |
+| reference-ws10000-c100-r62 | REFERENCE (NO_LOCK) | 10000 | 100 | 62 | 62.00 | 1.0000 | 19.16 | 16.08 / 31.21 / 41.91 | 38.45 | 8.15 / 39.09 / 129.75 | 227.81 | 25.28 / 42.18 / 49.68 (186) | 0 | 14.46 / 38.47 | 0.32 / 2.70 | 2024.45 / 5932 | 0 (0.0000) | 0 | 0 | 0 |
+
+Latencies in ms. T1, event and retention are `completion − due` (open-loop schedule lag included).
+
+T1 snapshot statement (pg_stat_statements, measured phase): chosen-ws200-c10-r62: 3720 calls, 27 plans, plan 14.584 ms, exec mean 7.598 / max 50.2 ms; reference-ws200-c10-r62: 3720 calls, 38 plans, plan 14.336 ms, exec mean 5.820 / max 74.6 ms; chosen-ws200-c100-r62: 3715 calls, 164 plans, plan 14.731 ms, exec mean 7.051 / max 33.7 ms; reference-ws200-c100-r62: 3720 calls, 29 plans, plan 19.748 ms, exec mean 9.391 / max 28.9 ms; chosen-ws10000-c10-r62: 3720 calls, 56 plans, plan 12.371 ms, exec mean 4.861 / max 22.1 ms; reference-ws10000-c10-r62: 3720 calls, 42 plans, plan 13.576 ms, exec mean 6.536 / max 101.2 ms; chosen-ws10000-c100-r62: 3693 calls, 296 plans, plan 15.928 ms, exec mean 6.940 / max 53.6 ms; reference-ws10000-c100-r62: 3720 calls, 66 plans, plan 14.062 ms, exec mean 8.446 / max 49.1 ms
+
+Diagnostics 200 workspaces: `diagnostics-ws200.txt`; commit ms {samples=500, p50=0.597012, p95=1.282008, p99=1.801074}; pg_stat_statements available
+
+Diagnostics 10000 workspaces: `diagnostics-ws10000.txt`; commit ms {samples=500, p50=0.553481, p95=1.086273, p99=1.474006}; pg_stat_statements available
+
+## Error samples
+
+- chosen-ws200-c100-r62: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws200-c100-r62: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws200-c100-r62: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws200-c100-r62: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws200-c100-r62: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws10000-c100-r62: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws10000-c100-r62: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws10000-c100-r62: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws10000-c100-r62: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws10000-c100-r62: SLOT_WAIT: no write slot within 10000 ms
