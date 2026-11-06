@@ -120,20 +120,17 @@ assert_running() {
 }
 
 C() { /opt/mail-edge/contract.py get "$1"; }
-assert_running relay_recipient_maps          "$(C required.relay_recipient_maps)"
-assert_running local_header_rewrite_clients  "$(C required.local_header_rewrite_clients)"
-assert_running always_add_missing_headers    "$(C required.always_add_missing_headers)"
-assert_running default_transport             "$(C required.default_transport)"
-assert_running notify_classes                "$(C required.notify_classes)"
-assert_running bounce_queue_lifetime         "$(C required.bounce_queue_lifetime)"
-assert_running relayhost                     "$(C required.relayhost)"
-assert_running mynetworks                    "$(C required.mynetworks)"
-assert_running message_size_limit            "$(C required.message_size_limit)"
-assert_running smtpd_relay_restrictions      "$(C required.smtpd_relay_restrictions)"
-# The ADR-026 control, asserted HERE specifically: postconf expands
-# $default_destination_recipient_limit, so this is the only layer that sees the
-# value Postfix will actually apply to the relay transport.
-assert_running relay_destination_recipient_limit "$(C required.relay_destination_recipient_limit)"
+# Every `required:` key, derived from the manifest rather than listed by hand: a
+# fixed list here silently stopped asserting keys added later (it never covered
+# disable_vrfy_command), which is the rot the static gate avoids by iterating
+# the manifest.
+#
+# relay_destination_recipient_limit matters most at THIS layer: postconf
+# expands $default_destination_recipient_limit, so this is the only layer that
+# sees the value Postfix will actually apply to the relay transport (ADR-026).
+for key in $(/opt/mail-edge/contract.py keys required); do
+  assert_running "$key" "$(C "required.$key")"
+done
 # The Postfix version itself. The behaviours this rehearsal proves are
 # version-sensitive by design — local_header_rewrite_clients defaults, the
 # zero-length *_notice_recipient fatal, anvil accounting, and the size reserve
