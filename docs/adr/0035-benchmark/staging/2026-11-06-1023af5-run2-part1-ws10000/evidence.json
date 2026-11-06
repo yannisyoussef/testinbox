@@ -1,0 +1,6128 @@
+{
+  "schemaVersion" : 1,
+  "gitSha" : "1023af5dc7c9216a166ea3a629cbee661292e3d7",
+  "timestamp" : "2026-11-06T01:05:47.508823268Z",
+  "architecture" : "amd64",
+  "kernel" : "Linux version 6.8.0-147-generic (buildd@lcy02-amd64-081) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026",
+  "hostClass" : "staging-host vmi2932906 (Contabo VPS, 8 vCPU, 23 GiB)",
+  "postgresVersion" : "PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+  "jvmVersion" : "25.0.3+9-LTS",
+  "harness" : {
+    "measures" : "The database protocol only: write slot, T1 assembled as production ALL assembles it (IngestionWiring: FootprintWiring.admission over JdbcStorageAdmission(readsFootprint = FootprintWiring.readsFootprint(declarations)) with a declared filesystem, so the one statement also reads the footprint and cohort inputs; seeded trust, observation and watermark rows; no participant and no cohort plan, so the cohort pool is read but not required; probed before every scenario, see t1Probe), T1 (admission lock, one-statement snapshot, reservation insert), the fence rows, T2 (reservations FOR UPDATE, inboxes FOR KEY SHARE, message and attachment rows through JdbcMessageRepository.appendVisible so the ledger triggers run, pg_notify, reservations consumed), retention (ExpireInboxes.sweep hard-deleting one expired inbox per sweep) and compaction on its interval. Uploads are an in-memory stub whose fenced PUT is Stored instantly; T_put and the storage backend are qualified separately (ADR-035 §9a).",
+    "arrivals" : "POISSON",
+    "durationSeconds" : 30,
+    "warmupSeconds" : 3,
+    "expectedRate" : 260.0,
+    "referenceMode" : "NO_LOCK",
+    "recipientMix" : "1:60,3:25,10:12,50:3",
+    "bytesPerCopy" : 24576,
+    "slots" : 16,
+    "slotsPerWorkspace" : 4,
+    "compactionIntervalSeconds" : 5,
+    "retentionMessagesPerInbox" : 200,
+    "inboxesPerWorkspace" : 10,
+    "sustainedTolerance" : 0.995,
+    "seed" : 35,
+    "rates" : [ 260.0, 520.0 ],
+    "concurrency" : [ 1, 10, 25, 50, 100 ],
+    "workspaces" : [ 10000 ],
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "target" : {
+      "kind" : "remote",
+      "databaseName" : "testinbox_bench_gate"
+    },
+    "lockWaitDefinition" : "lockWait is StorageProtocolMetrics.lockWait as GuardedStorage reports it: the whole admission call (lock wait, snapshot, decision, insert, commit), NOT the pg_advisory_xact_lock wait alone."
+  },
+  "safety" : {
+    "databaseName" : "testinbox_bench_gate",
+    "createdByHarness" : true,
+    "tenantRowCountsAtStart" : {
+      "workspace" : 0,
+      "inbox" : 0,
+      "message" : 0
+    },
+    "acknowledgementVariable" : "TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK"
+  },
+  "scenarios" : [ {
+    "name" : "chosen-ws10000-c1-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 857,
+      "meanRows" : 1460.3080513418904,
+      "maxRows" : 8674
+    },
+    "concurrency" : 1,
+    "offeredRate" : 260.0,
+    "achievedRate" : 36.191891927113566,
+    "durationSeconds" : 215.517884937,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 185521.731091,
+    "copiesCommitted" : 31659,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 94101.745856,
+        "p95Ms" : 176926.179008,
+        "p99Ms" : 183518.280154,
+        "maxMs" : 185510.733787
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 11.372394,
+        "p95Ms" : 17.376996,
+        "p99Ms" : 22.343408,
+        "maxMs" : 75.963712
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 6.101796,
+        "p95Ms" : 26.112398,
+        "p99Ms" : 96.133112,
+        "maxMs" : 215.501973
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 94107.77742,
+        "p95Ms" : 176930.968809,
+        "p99Ms" : 183548.549284,
+        "maxMs" : 185521.731091
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 20.11153,
+        "p95Ms" : 38.186632,
+        "p99Ms" : 60.906405,
+        "maxMs" : 100.119553
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 11.398542,
+        "p95Ms" : 17.409947,
+        "p99Ms" : 22.409101,
+        "maxMs" : 76.110125
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.476768,
+        "p95Ms" : 1.155052,
+        "p99Ms" : 1.855595,
+        "maxMs" : 13.963859
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.023223607933092,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "reference-ws10000-c1-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 921,
+      "meanRows" : 1427.4484256243213,
+      "maxRows" : 8870
+    },
+    "concurrency" : 1,
+    "offeredRate" : 260.0,
+    "achievedRate" : 33.668478666653904,
+    "durationSeconds" : 231.670699387,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 201674.545541,
+    "copiesCommitted" : 31842,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 100360.480885,
+        "p95Ms" : 191730.317433,
+        "p99Ms" : 199644.332125,
+        "maxMs" : 201669.19217
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 11.679495,
+        "p95Ms" : 17.173409,
+        "p99Ms" : 22.710153,
+        "maxMs" : 100.797231
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 6.798043,
+        "p95Ms" : 30.505192,
+        "p99Ms" : 111.87753,
+        "maxMs" : 221.99109
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 100368.385679,
+        "p95Ms" : 191742.590534,
+        "p99Ms" : 199654.759116,
+        "maxMs" : 201674.545541
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 25.480502,
+        "p95Ms" : 54.076887,
+        "p99Ms" : 66.607259,
+        "maxMs" : 85.440125
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 11.701105,
+        "p95Ms" : 17.210689,
+        "p99Ms" : 22.820747,
+        "maxMs" : 100.821748
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.266876,
+        "p95Ms" : 0.743245,
+        "p99Ms" : 1.243357,
+        "maxMs" : 10.597509
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.020924512844129,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.benchmark.NoLockAdmissionStore",
+      "enforcement" : "TENANT_LIMITS",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws10000-c10-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 469,
+      "meanRows" : 2345.714285714286,
+      "maxRows" : 10154
+    },
+    "concurrency" : 10,
+    "offeredRate" : 260.0,
+    "achievedRate" : 66.06804376185471,
+    "durationSeconds" : 118.06010222,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 88063.948374,
+    "copiesCommitted" : 32111,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 43111.259206,
+        "p95Ms" : 84410.077053,
+        "p99Ms" : 87263.856861,
+        "maxMs" : 88049.20968
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 128.714347,
+        "p95Ms" : 184.402286,
+        "p99Ms" : 240.844101,
+        "maxMs" : 402.523422
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 7.433496,
+        "p95Ms" : 33.545626,
+        "p99Ms" : 116.305023,
+        "maxMs" : 210.061734
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 43126.112223,
+        "p95Ms" : 84425.258791,
+        "p99Ms" : 87274.124086,
+        "maxMs" : 88066.335208
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 27.926895,
+        "p95Ms" : 57.736291,
+        "p99Ms" : 83.171251,
+        "maxMs" : 119.322726
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 128.734786,
+        "p95Ms" : 184.411704,
+        "p99Ms" : 240.877544,
+        "maxMs" : 402.551586
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.530027,
+        "p95Ms" : 1.539017,
+        "p99Ms" : 2.602929,
+        "maxMs" : 12.666294
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.01133282882393,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "reference-ws10000-c10-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 176,
+      "meanRows" : 5353.886363636364,
+      "maxRows" : 13180
+    },
+    "concurrency" : 10,
+    "offeredRate" : 260.0,
+    "achievedRate" : 174.77751908018558,
+    "durationSeconds" : 44.62816523,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 14632.011384,
+    "copiesCommitted" : 31554,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 8341.246976,
+        "p95Ms" : 14469.447332,
+        "p99Ms" : 14523.375229,
+        "maxMs" : 14579.180056
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 23.635737,
+        "p95Ms" : 49.770068,
+        "p99Ms" : 79.884924,
+        "maxMs" : 191.579238
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 10.689672,
+        "p95Ms" : 51.24731,
+        "p99Ms" : 146.842226,
+        "maxMs" : 376.87919
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 8365.920358,
+        "p95Ms" : 14484.150276,
+        "p99Ms" : 14551.610924,
+        "maxMs" : 14760.647366
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 87.809592,
+        "p95Ms" : 692.666761,
+        "p99Ms" : 1089.652822,
+        "maxMs" : 1162.233594
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 23.665732,
+        "p95Ms" : 49.801105,
+        "p99Ms" : 79.907215,
+        "maxMs" : 191.632629
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 0.231842,
+        "p95Ms" : 1.305542,
+        "p99Ms" : 3.564028,
+        "maxMs" : 14.502984
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 12.853185076145452,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.benchmark.NoLockAdmissionStore",
+      "enforcement" : "TENANT_LIMITS",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws10000-c25-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 481,
+      "meanRows" : 2216.3451143451143,
+      "maxRows" : 8718
+    },
+    "concurrency" : 25,
+    "offeredRate" : 260.0,
+    "achievedRate" : 64.4514667766661,
+    "durationSeconds" : 121.021295404,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 91025.141558,
+    "copiesCommitted" : 31265,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 47549.810922,
+        "p95Ms" : 87066.348907,
+        "p99Ms" : 90135.958111,
+        "maxMs" : 91472.919431
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 216.601671,
+        "p95Ms" : 306.774958,
+        "p99Ms" : 384.293535,
+        "maxMs" : 516.392458
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 8.386491,
+        "p95Ms" : 37.360313,
+        "p99Ms" : 136.948348,
+        "maxMs" : 252.967299
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 47562.97119,
+        "p95Ms" : 87082.023543,
+        "p99Ms" : 90150.663411,
+        "maxMs" : 91497.499827
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 31.979216,
+        "p95Ms" : 76.863384,
+        "p99Ms" : 104.903356,
+        "maxMs" : 120.95543
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 216.620093,
+        "p95Ms" : 306.799584,
+        "p99Ms" : 384.315566,
+        "maxMs" : 516.482566
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 45.674379,
+        "p95Ms" : 601.573097,
+        "p99Ms" : 1046.650044,
+        "maxMs" : 2605.205561
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.020183254866783,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "reference-ws10000-c25-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 174,
+      "meanRows" : 5918.908045977011,
+      "maxRows" : 15614
+    },
+    "concurrency" : 25,
+    "offeredRate" : 260.0,
+    "achievedRate" : 175.23082355379688,
+    "durationSeconds" : 44.512716666,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 14516.56282,
+    "copiesCommitted" : 31472,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 5462.54376,
+        "p95Ms" : 13343.697438,
+        "p99Ms" : 14259.070842,
+        "maxMs" : 14779.052153
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 41.736404,
+        "p95Ms" : 95.712196,
+        "p99Ms" : 134.274708,
+        "maxMs" : 276.836873
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 18.431813,
+        "p95Ms" : 76.876751,
+        "p99Ms" : 217.208342,
+        "maxMs" : 516.404965
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 5509.163609,
+        "p95Ms" : 13389.464056,
+        "p99Ms" : 14292.602094,
+        "maxMs" : 14815.929125
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 381.752982,
+        "p95Ms" : 2114.918786,
+        "p99Ms" : 2592.319231,
+        "maxMs" : 2629.489827
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 41.761511,
+        "p95Ms" : 95.729519,
+        "p99Ms" : 134.326975,
+        "maxMs" : 276.904549
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 14.390826,
+        "p95Ms" : 216.844454,
+        "p99Ms" : 395.977831,
+        "maxMs" : 1048.954963
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 12.64959982046951,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.benchmark.NoLockAdmissionStore",
+      "enforcement" : "TENANT_LIMITS",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws10000-c50-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 485,
+      "meanRows" : 2187.2907216494846,
+      "maxRows" : 9372
+    },
+    "concurrency" : 50,
+    "offeredRate" : 260.0,
+    "achievedRate" : 63.87302948131718,
+    "durationSeconds" : 122.101614145,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7799,
+    "completionRatio" : 0.9998717948717949,
+    "terminalLagMs" : 92105.460299,
+    "copiesCommitted" : 31081,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7799,
+        "p50Ms" : 45392.954874,
+        "p95Ms" : 86823.636391,
+        "p99Ms" : 91164.846553,
+        "maxMs" : 93129.048576
+      },
+      "t1Transaction" : {
+        "samples" : 7799,
+        "p50Ms" : 219.857869,
+        "p95Ms" : 311.524448,
+        "p99Ms" : 399.751944,
+        "maxMs" : 604.993345
+      },
+      "t2" : {
+        "samples" : 7799,
+        "p50Ms" : 8.05242,
+        "p95Ms" : 35.998656,
+        "p99Ms" : 124.806912,
+        "maxMs" : 200.220959
+      },
+      "event" : {
+        "samples" : 7799,
+        "p50Ms" : 45408.585207,
+        "p95Ms" : 86843.152054,
+        "p99Ms" : 91172.914332,
+        "maxMs" : 93135.987682
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 34.296418,
+        "p95Ms" : 73.51523,
+        "p99Ms" : 126.044892,
+        "maxMs" : 162.509026
+      },
+      "lockWait" : {
+        "samples" : 7799,
+        "p50Ms" : 219.89156,
+        "p95Ms" : 311.616631,
+        "p99Ms" : 399.772442,
+        "maxMs" : 605.009786
+      },
+      "slotWait" : {
+        "samples" : 7799,
+        "p50Ms" : 73.357106,
+        "p95Ms" : 2399.452377,
+        "p99Ms" : 4272.631925,
+        "maxMs" : 8892.868293
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 13.012571766560445,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 1,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 1
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 1,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "reference-ws10000-c50-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 193,
+      "meanRows" : 5392.393782383419,
+      "maxRows" : 14698
+    },
+    "concurrency" : 50,
+    "offeredRate" : 260.0,
+    "achievedRate" : 158.4585006754374,
+    "durationSeconds" : 49.224244624,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 19228.090778,
+    "copiesCommitted" : 31498,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 8861.107188,
+        "p95Ms" : 18063.336475,
+        "p99Ms" : 18879.106779,
+        "maxMs" : 20229.161299
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 49.735354,
+        "p95Ms" : 118.772022,
+        "p99Ms" : 161.614366,
+        "maxMs" : 376.11179
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 18.394935,
+        "p95Ms" : 89.414005,
+        "p99Ms" : 251.082151,
+        "maxMs" : 629.372178
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 8907.806802,
+        "p95Ms" : 18093.12858,
+        "p99Ms" : 18920.023539,
+        "maxMs" : 20237.962764
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 3309.582576,
+        "p95Ms" : 6357.71782,
+        "p99Ms" : 6509.007207,
+        "maxMs" : 6600.957574
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 49.753408,
+        "p95Ms" : 118.806246,
+        "p99Ms" : 161.629725,
+        "maxMs" : 376.151844
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 59.077457,
+        "p95Ms" : 905.466493,
+        "p99Ms" : 1542.35873,
+        "maxMs" : 3509.144748
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 10.705911031557793,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.benchmark.NoLockAdmissionStore",
+      "enforcement" : "TENANT_LIMITS",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws10000-c100-r260",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 522,
+      "meanRows" : 2136.8352490421457,
+      "maxRows" : 9860
+    },
+    "concurrency" : 100,
+    "offeredRate" : 260.0,
+    "achievedRate" : 58.64545600396285,
+    "durationSeconds" : 131.382728092,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7705,
+    "completionRatio" : 0.9878205128205129,
+    "terminalLagMs" : 101386.574246,
+    "copiesCommitted" : 31599,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7705,
+        "p50Ms" : 55923.816996,
+        "p95Ms" : 96897.413097,
+        "p99Ms" : 100726.712737,
+        "maxMs" : 103115.819827
+      },
+      "t1Transaction" : {
+        "samples" : 7705,
+        "p50Ms" : 236.536989,
+        "p95Ms" : 372.115647,
+        "p99Ms" : 456.917701,
+        "maxMs" : 621.583713
+      },
+      "t2" : {
+        "samples" : 7705,
+        "p50Ms" : 7.192077,
+        "p95Ms" : 31.868061,
+        "p99Ms" : 112.599323,
+        "maxMs" : 263.961563
+      },
+      "event" : {
+        "samples" : 7705,
+        "p50Ms" : 55955.957953,
+        "p95Ms" : 96905.018373,
+        "p99Ms" : 100739.288112,
+        "maxMs" : 103122.60717
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 42.73981,
+        "p95Ms" : 116.383746,
+        "p99Ms" : 223.98017,
+        "maxMs" : 260.349006
+      },
+      "lockWait" : {
+        "samples" : 7705,
+        "p50Ms" : 236.556165,
+        "p95Ms" : 372.134112,
+        "p99Ms" : 456.93251,
+        "maxMs" : 621.599923
+      },
+      "slotWait" : {
+        "samples" : 7705,
+        "p50Ms" : 420.992664,
+        "p95Ms" : 5459.604544,
+        "p99Ms" : 8334.032085,
+        "maxMs" : 9964.966327
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 12.987930859181004,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 95,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 123
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 95,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "reference-ws10000-c100-r260",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 213,
+      "meanRows" : 5148.131455399061,
+      "maxRows" : 13734
+    },
+    "concurrency" : 100,
+    "offeredRate" : 260.0,
+    "achievedRate" : 141.62631002886243,
+    "durationSeconds" : 55.074512627,
+    "scheduledEvents" : 7800,
+    "completedEvents" : 7800,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 25078.358781,
+    "copiesCommitted" : 31416,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 7800,
+        "p50Ms" : 10398.676365,
+        "p95Ms" : 23568.508562,
+        "p99Ms" : 24938.608461,
+        "maxMs" : 26883.295088
+      },
+      "t1Transaction" : {
+        "samples" : 7800,
+        "p50Ms" : 55.208819,
+        "p95Ms" : 148.370761,
+        "p99Ms" : 218.271074,
+        "maxMs" : 491.723875
+      },
+      "t2" : {
+        "samples" : 7800,
+        "p50Ms" : 18.434873,
+        "p95Ms" : 105.152575,
+        "p99Ms" : 323.239968,
+        "maxMs" : 914.476085
+      },
+      "event" : {
+        "samples" : 7800,
+        "p50Ms" : 10446.45958,
+        "p95Ms" : 23608.534786,
+        "p99Ms" : 24977.051251,
+        "maxMs" : 26912.099237
+      },
+      "retention" : {
+        "samples" : 390,
+        "p50Ms" : 3853.411226,
+        "p95Ms" : 9018.424795,
+        "p99Ms" : 9331.437753,
+        "maxMs" : 9742.776956
+      },
+      "lockWait" : {
+        "samples" : 7800,
+        "p50Ms" : 55.231752,
+        "p95Ms" : 148.384076,
+        "p99Ms" : 218.293636,
+        "maxMs" : 491.738482
+      },
+      "slotWait" : {
+        "samples" : 7800,
+        "p50Ms" : 203.439867,
+        "p95Ms" : 2343.203338,
+        "p99Ms" : 4007.74865,
+        "maxMs" : 7383.035622
+      }
+    },
+    "retentionOfferedRate" : 13.0,
+    "retentionAchievedRate" : 9.832133614515701,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.benchmark.NoLockAdmissionStore",
+      "enforcement" : "TENANT_LIMITS",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws10000-c1-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1755,
+      "meanRows" : 1430.7749287749289,
+      "maxRows" : 14364
+    },
+    "concurrency" : 1,
+    "offeredRate" : 520.0,
+    "achievedRate" : 35.330745490448265,
+    "durationSeconds" : 441.541772851,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 411543.695928,
+    "copiesCommitted" : 63115,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 206611.764867,
+        "p95Ms" : 392009.335915,
+        "p99Ms" : 407799.25656,
+        "maxMs" : 411536.869195
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 11.991019,
+        "p95Ms" : 17.383132,
+        "p99Ms" : 22.929898,
+        "maxMs" : 82.54856
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 6.270197,
+        "p95Ms" : 27.042287,
+        "p99Ms" : 97.968228,
+        "maxMs" : 246.82835
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 206618.719367,
+        "p95Ms" : 392014.099987,
+        "p99Ms" : 407804.90053,
+        "maxMs" : 411543.695928
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 45.199566,
+        "p95Ms" : 175.972497,
+        "p99Ms" : 221.823991,
+        "maxMs" : 257.787543
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 12.012631,
+        "p95Ms" : 17.416882,
+        "p99Ms" : 23.029256,
+        "maxMs" : 82.572404
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.439178,
+        "p95Ms" : 1.109025,
+        "p99Ms" : 1.866736,
+        "maxMs" : 21.152862
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.01070796773988,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "reference-ws10000-c1-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1756,
+      "meanRows" : 1436.7756264236903,
+      "maxRows" : 14616
+    },
+    "concurrency" : 1,
+    "offeredRate" : 520.0,
+    "achievedRate" : 35.30332341970847,
+    "durationSeconds" : 441.884743103,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 411886.66618,
+    "copiesCommitted" : 62796,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 200758.66805,
+        "p95Ms" : 388556.059275,
+        "p99Ms" : 407856.117999,
+        "maxMs" : 411880.836132
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 11.807651,
+        "p95Ms" : 16.943839,
+        "p99Ms" : 23.35098,
+        "maxMs" : 70.243434
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 6.385213,
+        "p95Ms" : 26.692404,
+        "p99Ms" : 99.425974,
+        "maxMs" : 216.58813
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 200768.866595,
+        "p95Ms" : 388561.433535,
+        "p99Ms" : 408021.636095,
+        "maxMs" : 411886.66618
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 43.971542,
+        "p95Ms" : 147.565022,
+        "p99Ms" : 267.643509,
+        "maxMs" : 339.815337
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 11.82775,
+        "p95Ms" : 16.994402,
+        "p99Ms" : 23.410391,
+        "maxMs" : 70.282126
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.223566,
+        "p95Ms" : 0.578428,
+        "p99Ms" : 1.017465,
+        "maxMs" : 13.989766
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.011976617225006,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.benchmark.NoLockAdmissionStore",
+      "enforcement" : "TENANT_LIMITS",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws10000-c10-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 945,
+      "meanRows" : 2283.5809523809526,
+      "maxRows" : 16544
+    },
+    "concurrency" : 10,
+    "offeredRate" : 520.0,
+    "achievedRate" : 65.54590211026941,
+    "durationSeconds" : 238.001148779,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 208003.071856,
+    "copiesCommitted" : 61919,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 102863.260686,
+        "p95Ms" : 197686.430364,
+        "p99Ms" : 205983.528171,
+        "maxMs" : 207994.001842
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 130.279527,
+        "p95Ms" : 179.117233,
+        "p99Ms" : 238.58837,
+        "maxMs" : 381.968375
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 7.151701,
+        "p95Ms" : 31.199983,
+        "p99Ms" : 116.551817,
+        "maxMs" : 246.990915
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 102882.889555,
+        "p95Ms" : 197714.295015,
+        "p99Ms" : 206003.886458,
+        "maxMs" : 208003.071856
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 66.595066,
+        "p95Ms" : 239.464783,
+        "p99Ms" : 339.484168,
+        "maxMs" : 505.295483
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 130.312611,
+        "p95Ms" : 179.14232,
+        "p99Ms" : 238.609049,
+        "maxMs" : 382.006267
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.494461,
+        "p95Ms" : 1.352069,
+        "p99Ms" : 2.296568,
+        "maxMs" : 14.907837
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.008078703096313,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "reference-ws10000-c10-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 398,
+      "meanRows" : 4950.889447236181,
+      "maxRows" : 20780
+    },
+    "concurrency" : 10,
+    "offeredRate" : 520.0,
+    "achievedRate" : 153.8940943318959,
+    "durationSeconds" : 101.368412269,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 71370.335346,
+    "copiesCommitted" : 63444,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 31738.714953,
+        "p95Ms" : 67884.773518,
+        "p99Ms" : 70319.392899,
+        "maxMs" : 71143.143405
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 30.562817,
+        "p95Ms" : 64.612068,
+        "p99Ms" : 98.878151,
+        "maxMs" : 228.755602
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 10.806177,
+        "p95Ms" : 51.642399,
+        "p99Ms" : 159.906423,
+        "maxMs" : 377.632843
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 31781.625861,
+        "p95Ms" : 67920.685728,
+        "p99Ms" : 70346.589536,
+        "maxMs" : 71385.884744
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 4098.300956,
+        "p95Ms" : 8904.365811,
+        "p99Ms" : 9147.000551,
+        "maxMs" : 9263.82089
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 30.586891,
+        "p95Ms" : 64.626694,
+        "p99Ms" : 98.894522,
+        "maxMs" : 228.831053
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 0.228295,
+        "p95Ms" : 1.239598,
+        "p99Ms" : 3.485192,
+        "maxMs" : 22.555532
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 19.979459988085786,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.benchmark.NoLockAdmissionStore",
+      "enforcement" : "TENANT_LIMITS",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws10000-c25-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1006,
+      "meanRows" : 2158.461232604374,
+      "maxRows" : 13970
+    },
+    "concurrency" : 25,
+    "offeredRate" : 520.0,
+    "achievedRate" : 61.589069969920274,
+    "durationSeconds" : 253.291696199,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 223293.619276,
+    "copiesCommitted" : 63733,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 110363.00908,
+        "p95Ms" : 212725.598829,
+        "p99Ms" : 221225.404418,
+        "maxMs" : 223286.926573
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 231.164192,
+        "p95Ms" : 325.789966,
+        "p99Ms" : 427.170297,
+        "maxMs" : 620.806309
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 7.822059,
+        "p95Ms" : 35.039916,
+        "p99Ms" : 124.195178,
+        "maxMs" : 258.732251
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 110407.81747,
+        "p95Ms" : 212739.531515,
+        "p99Ms" : 221231.854128,
+        "maxMs" : 223307.661169
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 73.650922,
+        "p95Ms" : 463.450278,
+        "p99Ms" : 585.892385,
+        "maxMs" : 661.539752
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 231.19551,
+        "p95Ms" : 325.811316,
+        "p99Ms" : 427.190374,
+        "maxMs" : 620.834632
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 47.082308,
+        "p95Ms" : 619.043295,
+        "p99Ms" : 1090.25519,
+        "maxMs" : 3516.529509
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.005622768452156,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "reference-ws10000-c25-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 406,
+      "meanRows" : 5072.1970443349755,
+      "maxRows" : 20132
+    },
+    "concurrency" : 25,
+    "offeredRate" : 520.0,
+    "achievedRate" : 149.70844289527122,
+    "durationSeconds" : 104.202539939,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 74204.463016,
+    "copiesCommitted" : 60700,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 29770.783982,
+        "p95Ms" : 69603.585518,
+        "p99Ms" : 73122.685915,
+        "maxMs" : 73940.456841
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 53.999941,
+        "p95Ms" : 124.733982,
+        "p99Ms" : 182.64953,
+        "maxMs" : 444.587971
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 18.827283,
+        "p95Ms" : 79.576688,
+        "p99Ms" : 241.32734,
+        "maxMs" : 653.341311
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 29831.179625,
+        "p95Ms" : 69652.057696,
+        "p99Ms" : 73165.951062,
+        "maxMs" : 74232.294495
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 21164.503076,
+        "p95Ms" : 43447.969824,
+        "p99Ms" : 46180.551994,
+        "maxMs" : 46762.219048
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 54.01905,
+        "p95Ms" : 124.757847,
+        "p99Ms" : 182.726343,
+        "maxMs" : 444.608991
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 16.359957,
+        "p95Ms" : 260.505074,
+        "p99Ms" : 478.41687,
+        "maxMs" : 1656.858119
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 10.166342336791924,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.benchmark.NoLockAdmissionStore",
+      "enforcement" : "TENANT_LIMITS",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws10000-c50-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1018,
+      "meanRows" : 2233.746561886051,
+      "maxRows" : 16724
+    },
+    "concurrency" : 50,
+    "offeredRate" : 520.0,
+    "achievedRate" : 60.78276439633111,
+    "durationSeconds" : 256.503634786,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15591,
+    "completionRatio" : 0.999423076923077,
+    "terminalLagMs" : 226505.557863,
+    "copiesCommitted" : 62858,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15591,
+        "p50Ms" : 115612.6491,
+        "p95Ms" : 216266.407263,
+        "p99Ms" : 224366.642563,
+        "maxMs" : 226665.096489
+      },
+      "t1Transaction" : {
+        "samples" : 15591,
+        "p50Ms" : 232.436358,
+        "p95Ms" : 340.018613,
+        "p99Ms" : 446.658013,
+        "maxMs" : 590.085048
+      },
+      "t2" : {
+        "samples" : 15591,
+        "p50Ms" : 7.558823,
+        "p95Ms" : 33.87306,
+        "p99Ms" : 122.826207,
+        "maxMs" : 266.369594
+      },
+      "event" : {
+        "samples" : 15591,
+        "p50Ms" : 115641.829691,
+        "p95Ms" : 216289.033573,
+        "p99Ms" : 224455.479297,
+        "maxMs" : 226702.490655
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 113.667475,
+        "p95Ms" : 528.697592,
+        "p99Ms" : 773.093273,
+        "maxMs" : 863.467603
+      },
+      "lockWait" : {
+        "samples" : 15591,
+        "p50Ms" : 232.484687,
+        "p95Ms" : 340.035094,
+        "p99Ms" : 446.674553,
+        "maxMs" : 590.105708
+      },
+      "slotWait" : {
+        "samples" : 15591,
+        "p50Ms" : 66.051322,
+        "p95Ms" : 2565.403018,
+        "p99Ms" : 4639.401279,
+        "maxMs" : 9868.509209
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.009716343961767,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 9,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 9
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 9,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "reference-ws10000-c50-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 453,
+      "meanRows" : 4765.951434878587,
+      "maxRows" : 19444
+    },
+    "concurrency" : 50,
+    "offeredRate" : 520.0,
+    "achievedRate" : 134.23201735379337,
+    "durationSeconds" : 116.216684421,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15600,
+    "completionRatio" : 1.0,
+    "terminalLagMs" : 86218.607498,
+    "copiesCommitted" : 63107,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15600,
+        "p50Ms" : 41992.401603,
+        "p95Ms" : 81396.856601,
+        "p99Ms" : 85141.408522,
+        "maxMs" : 86311.731474
+      },
+      "t1Transaction" : {
+        "samples" : 15600,
+        "p50Ms" : 51.985527,
+        "p95Ms" : 127.894264,
+        "p99Ms" : 184.290977,
+        "maxMs" : 491.74407
+      },
+      "t2" : {
+        "samples" : 15600,
+        "p50Ms" : 24.454237,
+        "p95Ms" : 113.513083,
+        "p99Ms" : 300.820784,
+        "maxMs" : 840.506847
+      },
+      "event" : {
+        "samples" : 15600,
+        "p50Ms" : 42056.599842,
+        "p95Ms" : 81508.27098,
+        "p99Ms" : 85186.097576,
+        "maxMs" : 86350.808422
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 30001.269057,
+        "p95Ms" : 67159.375667,
+        "p99Ms" : 68511.18154,
+        "maxMs" : 68600.169944
+      },
+      "lockWait" : {
+        "samples" : 15600,
+        "p50Ms" : 52.023639,
+        "p95Ms" : 127.927674,
+        "p99Ms" : 184.332515,
+        "maxMs" : 491.871066
+      },
+      "slotWait" : {
+        "samples" : 15600,
+        "p50Ms" : 67.840897,
+        "p95Ms" : 1052.981403,
+        "p99Ms" : 1768.101598,
+        "maxMs" : 4864.916392
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 7.913823721031479,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "other" : 0,
+      "samples" : [ ],
+      "physicalFailures" : { }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 0,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.benchmark.NoLockAdmissionStore",
+      "enforcement" : "TENANT_LIMITS",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "chosen-ws10000-c100-r520",
+    "mode" : "CHOSEN",
+    "referenceMode" : null,
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 1156,
+      "meanRows" : 1902.719723183391,
+      "maxRows" : 13426
+    },
+    "concurrency" : 100,
+    "offeredRate" : 520.0,
+    "achievedRate" : 52.58254954458466,
+    "durationSeconds" : 291.370428644,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15321,
+    "completionRatio" : 0.9821153846153846,
+    "terminalLagMs" : 261372.351721,
+    "copiesCommitted" : 61405,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15321,
+        "p50Ms" : 126502.072727,
+        "p95Ms" : 247011.071381,
+        "p99Ms" : 259031.892596,
+        "maxMs" : 261959.586042
+      },
+      "t1Transaction" : {
+        "samples" : 15321,
+        "p50Ms" : 267.167928,
+        "p95Ms" : 397.222552,
+        "p99Ms" : 526.812524,
+        "maxMs" : 1103.796937
+      },
+      "t2" : {
+        "samples" : 15321,
+        "p50Ms" : 8.280085,
+        "p95Ms" : 37.173329,
+        "p99Ms" : 132.100849,
+        "maxMs" : 269.656896
+      },
+      "event" : {
+        "samples" : 15321,
+        "p50Ms" : 126512.370373,
+        "p95Ms" : 247039.521608,
+        "p99Ms" : 259043.523703,
+        "maxMs" : 261965.318601
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 109.16178,
+        "p95Ms" : 503.665235,
+        "p99Ms" : 573.899391,
+        "maxMs" : 603.109458
+      },
+      "lockWait" : {
+        "samples" : 15321,
+        "p50Ms" : 267.198425,
+        "p95Ms" : 397.238543,
+        "p99Ms" : 526.867036,
+        "maxMs" : 1103.814299
+      },
+      "slotWait" : {
+        "samples" : 15321,
+        "p50Ms" : 423.285733,
+        "p95Ms" : 5959.876625,
+        "p99Ms" : 8634.767224,
+        "maxMs" : 9986.599552
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 26.006981151043107,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 279,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 349
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 279,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+      "enforcement" : "ALL",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  }, {
+    "name" : "reference-ws10000-c100-r520",
+    "mode" : "REFERENCE",
+    "referenceMode" : "NO_LOCK",
+    "workspaceCount" : 10000,
+    "inboxCount" : 100000,
+    "reservationBacklog" : 1000,
+    "deltaBacklog" : 500,
+    "deltaBacklogObserved" : {
+      "samples" : 583,
+      "meanRows" : 4100.765008576329,
+      "maxRows" : 19108
+    },
+    "concurrency" : 100,
+    "offeredRate" : 520.0,
+    "achievedRate" : 102.59635372023662,
+    "durationSeconds" : 152.013199636,
+    "scheduledEvents" : 15600,
+    "completedEvents" : 15596,
+    "completionRatio" : 0.9997435897435898,
+    "terminalLagMs" : 122015.122713,
+    "copiesCommitted" : 63389,
+    "percentiles" : {
+      "t1" : {
+        "samples" : 15596,
+        "p50Ms" : 64556.709963,
+        "p95Ms" : 117596.534831,
+        "p99Ms" : 121093.121649,
+        "maxMs" : 123704.65938
+      },
+      "t1Transaction" : {
+        "samples" : 15596,
+        "p50Ms" : 72.195016,
+        "p95Ms" : 196.003549,
+        "p99Ms" : 282.7879,
+        "maxMs" : 808.613807
+      },
+      "t2" : {
+        "samples" : 15596,
+        "p50Ms" : 26.843816,
+        "p95Ms" : 152.849391,
+        "p99Ms" : 449.244299,
+        "maxMs" : 1210.929317
+      },
+      "event" : {
+        "samples" : 15596,
+        "p50Ms" : 64625.30833,
+        "p95Ms" : 117645.730739,
+        "p99Ms" : 121116.931109,
+        "maxMs" : 123715.121238
+      },
+      "retention" : {
+        "samples" : 780,
+        "p50Ms" : 49021.820708,
+        "p95Ms" : 110605.216885,
+        "p99Ms" : 115176.363196,
+        "maxMs" : 116699.723562
+      },
+      "lockWait" : {
+        "samples" : 15596,
+        "p50Ms" : 72.223498,
+        "p95Ms" : 196.102911,
+        "p99Ms" : 282.810833,
+        "maxMs" : 808.639815
+      },
+      "slotWait" : {
+        "samples" : 15596,
+        "p50Ms" : 289.416041,
+        "p95Ms" : 3383.397434,
+        "p99Ms" : 5464.378799,
+        "maxMs" : 9266.079592
+      }
+    },
+    "retentionOfferedRate" : 26.0,
+    "retentionAchievedRate" : 5.31837771087041,
+    "retentionStarvedTicks" : 0,
+    "errors" : {
+      "lockTimeouts" : 0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 4,
+      "other" : 0,
+      "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+      "physicalFailures" : {
+        "SLOT_WAIT" : 5
+      }
+    },
+    "lockTimeouts" : 0,
+    "lockTimeoutRate" : 0.0,
+    "deadlocks" : 0,
+    "deadlineMissesFromSlotQueueing" : 4,
+    "t1Statement" : null,
+    "t1Probe" : {
+      "storeClass" : "email.testinbox.benchmark.NoLockAdmissionStore",
+      "enforcement" : "TENANT_LIMITS",
+      "readsFootprint" : true,
+      "footprintRead" : true,
+      "footprintUnavailable" : null,
+      "cohortRequired" : false,
+      "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "budgetedWorkspaces" : 0,
+      "inactiveWorkspaces" : 0,
+      "locking" : "GLOBAL",
+      "partitioned" : false
+    },
+    "partitionFallbacks" : null,
+    "partitionFallbackReasons" : null,
+    "background" : null,
+    "probes" : null
+  } ],
+  "criteria" : {
+    "sustained2x" : {
+      "pass" : false,
+      "observed" : 0.10112028758573972,
+      "threshold" : "achieved / offered >= 0.995 at 520.0 events/s at concurrency [10, 25, 50, 100] (concurrency 1 is the uncontended baseline, reported only)",
+      "detail" : "worst achieved/offered over 4 scenario(s); terminal lag c10=208003 ms, c25=223294 ms, c50=226506 ms, c100=261372 ms"
+    },
+    "t1P99" : {
+      "pass" : false,
+      "observed" : 259031.892596,
+      "threshold" : "T1 p99 <= 50.0 ms (completion - due, schedule lag included) at concurrency [10, 25, 50, 100]; concurrency 1 is reported only",
+      "detail" : "worst T1 p99 over 4 scenario(s)"
+    },
+    "retentionP99VsReference" : {
+      "pass" : true,
+      "observed" : 0.8288039258968167,
+      "threshold" : "retention p99 <= 2.0 x the NO_LOCK reference's retention p99 (ADR-035 §11 mode c, no global ceiling) at the same offered load",
+      "detail" : "worst chosen/reference retention p99 ratio over 5 scenario(s); reference mode NO_LOCK"
+    },
+    "deadlocks" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "0 deadlocks (SQLSTATE 40P01) across every scenario",
+      "detail" : "sum over 20 scenario(s)"
+    },
+    "lockTimeoutRate" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "lock_timeout rate < 0.001 of events, every CHOSEN scenario",
+      "detail" : "worst per-scenario rate over 10 scenario(s)"
+    },
+    "slotQueueingDeadlineMisses" : {
+      "pass" : false,
+      "observed" : 388.0,
+      "threshold" : "0 events refused for W_slot (StorageUnavailableReason.SLOT_WAIT) across every scenario",
+      "detail" : "sum over 20 scenario(s)"
+    },
+    "otherErrors" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "0 errors other than lock_timeout, deadlock or slot wait, events and retention, across every scenario",
+      "detail" : "sum over 20 scenario(s)"
+    },
+    "retentionStarvedTicks" : {
+      "pass" : true,
+      "observed" : 0.0,
+      "threshold" : "0 retention ticks that found nothing to delete, across every scenario",
+      "detail" : "sum over 20 scenario(s)"
+    }
+  },
+  "adrEvidence" : true,
+  "adrEvidenceReasons" : [ ],
+  "incompleteReasons" : [ ],
+  "verdict" : "FAIL",
+  "diagnostics" : [ {
+    "workspaces" : 10000,
+    "file" : "diagnostics-ws10000.txt",
+    "pgStatStatements" : "pg_stat_statements unavailable (PreparedStatementCallback; uncategorized SQLException for SQL [SELECT count(*) FROM pg_stat_statements]; SQL state [55000]; error code [0]; ERROR: pg_stat_statements must be loaded via shared_preload_libraries); preload it to record plan/exec times",
+    "commitMs" : {
+      "samples" : 500,
+      "p50" : 0.734908,
+      "p95" : 2.005295,
+      "p99" : 4.387752
+    },
+    "statementSha256" : {
+      "CHOSEN and NO_LOCK (production T1, readsFootprint = true)" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+      "PARTITIONED (production COHORT_PARTITIONED T1)" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc"
+    }
+  } ],
+  "variant" : {
+    "name" : "PARTITIONED",
+    "status" : "Measurement of the production share-partitioned T1 (admission-locking = COHORT_PARTITIONED) over a closed 30-participant + legacy cohort, reported apart and never gate D evidence; the mode is a PROPOSED ADR-035 amendment, and its release needs an independent correctness review and an owner decision.",
+    "scenarios" : [ {
+      "name" : "partitioned-ws31-c1-r260",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 310,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 1100,
+        "meanRows" : 1202.138181818182,
+        "maxRows" : 8406
+      },
+      "concurrency" : 1,
+      "offeredRate" : 260.0,
+      "achievedRate" : 28.194737555148293,
+      "durationSeconds" : 276.647370267,
+      "scheduledEvents" : 7800,
+      "completedEvents" : 7800,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 246651.216421,
+      "copiesCommitted" : 31659,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 7800,
+          "p50Ms" : 133705.453921,
+          "p95Ms" : 236223.757345,
+          "p99Ms" : 244391.433728,
+          "maxMs" : 246634.971371
+        },
+        "t1Transaction" : {
+          "samples" : 7800,
+          "p50Ms" : 17.83946,
+          "p95Ms" : 24.517993,
+          "p99Ms" : 31.78018,
+          "maxMs" : 74.937975
+        },
+        "t2" : {
+          "samples" : 7800,
+          "p50Ms" : 6.596668,
+          "p95Ms" : 29.060514,
+          "p99Ms" : 105.983045,
+          "maxMs" : 221.573728
+        },
+        "event" : {
+          "samples" : 7800,
+          "p50Ms" : 133713.955247,
+          "p95Ms" : 236228.045443,
+          "p99Ms" : 244410.47636,
+          "maxMs" : 246651.216421
+        },
+        "retention" : {
+          "samples" : 390,
+          "p50Ms" : 21.988924,
+          "p95Ms" : 42.735224,
+          "p99Ms" : 55.338529,
+          "maxMs" : 76.503531
+        },
+        "lockWait" : {
+          "samples" : 7800,
+          "p50Ms" : 17.87092,
+          "p95Ms" : 24.565882,
+          "p99Ms" : 31.804044,
+          "maxMs" : 75.010319
+        },
+        "slotWait" : {
+          "samples" : 7800,
+          "p50Ms" : 0.485324,
+          "p95Ms" : 1.402662,
+          "p99Ms" : 2.273735,
+          "maxMs" : 12.438671
+        }
+      },
+      "retentionOfferedRate" : 13.0,
+      "retentionAchievedRate" : 13.021007528869385,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : { }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : null,
+      "probes" : null
+    }, {
+      "name" : "partitioned-ws31-c10-r260",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 310,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 193,
+        "meanRows" : 4445.253886010362,
+        "maxRows" : 13144
+      },
+      "concurrency" : 10,
+      "offeredRate" : 260.0,
+      "achievedRate" : 159.99005819481084,
+      "durationSeconds" : 48.753029332,
+      "scheduledEvents" : 7800,
+      "completedEvents" : 7800,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 18756.875486,
+      "copiesCommitted" : 31298,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 7800,
+          "p50Ms" : 11360.9995,
+          "p95Ms" : 17954.37912,
+          "p99Ms" : 18475.88663,
+          "maxMs" : 18635.351184
+        },
+        "t1Transaction" : {
+          "samples" : 7800,
+          "p50Ms" : 31.080617,
+          "p95Ms" : 82.216992,
+          "p99Ms" : 123.389007,
+          "maxMs" : 262.233724
+        },
+        "t2" : {
+          "samples" : 7800,
+          "p50Ms" : 8.597656,
+          "p95Ms" : 38.495088,
+          "p99Ms" : 103.842446,
+          "maxMs" : 406.580482
+        },
+        "event" : {
+          "samples" : 7800,
+          "p50Ms" : 11380.724581,
+          "p95Ms" : 17974.193723,
+          "p99Ms" : 18491.595813,
+          "maxMs" : 18816.848179
+        },
+        "retention" : {
+          "samples" : 390,
+          "p50Ms" : 55.699599,
+          "p95Ms" : 140.86567,
+          "p99Ms" : 223.28922,
+          "maxMs" : 237.01347
+        },
+        "lockWait" : {
+          "samples" : 7800,
+          "p50Ms" : 31.096457,
+          "p95Ms" : 82.337957,
+          "p99Ms" : 123.430745,
+          "maxMs" : 262.253631
+        },
+        "slotWait" : {
+          "samples" : 7800,
+          "p50Ms" : 0.4454,
+          "p95Ms" : 2.176995,
+          "p99Ms" : 5.308057,
+          "maxMs" : 111.280882
+        }
+      },
+      "retentionOfferedRate" : 13.0,
+      "retentionAchievedRate" : 12.9870839307429,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : { }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : null,
+      "probes" : null
+    }, {
+      "name" : "partitioned-ws31-c25-r260",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 310,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 271,
+        "meanRows" : 3417.409594095941,
+        "maxRows" : 12858
+      },
+      "concurrency" : 25,
+      "offeredRate" : 260.0,
+      "achievedRate" : 113.36071902164797,
+      "durationSeconds" : 68.80690302,
+      "scheduledEvents" : 7800,
+      "completedEvents" : 7800,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 38810.749174,
+      "copiesCommitted" : 32271,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 7800,
+          "p50Ms" : 20558.740647,
+          "p95Ms" : 37814.188973,
+          "p99Ms" : 38542.517904,
+          "maxMs" : 39053.066494
+        },
+        "t1Transaction" : {
+          "samples" : 7800,
+          "p50Ms" : 79.175576,
+          "p95Ms" : 283.332336,
+          "p99Ms" : 460.616826,
+          "maxMs" : 817.156702
+        },
+        "t2" : {
+          "samples" : 7800,
+          "p50Ms" : 12.78918,
+          "p95Ms" : 55.83026,
+          "p99Ms" : 147.673053,
+          "maxMs" : 553.413458
+        },
+        "event" : {
+          "samples" : 7800,
+          "p50Ms" : 20590.096692,
+          "p95Ms" : 37845.863771,
+          "p99Ms" : 38573.236633,
+          "maxMs" : 39265.573345
+        },
+        "retention" : {
+          "samples" : 390,
+          "p50Ms" : 108.212929,
+          "p95Ms" : 451.942467,
+          "p99Ms" : 624.899396,
+          "maxMs" : 670.849137
+        },
+        "lockWait" : {
+          "samples" : 7800,
+          "p50Ms" : 79.237151,
+          "p95Ms" : 283.350118,
+          "p99Ms" : 460.635011,
+          "maxMs" : 817.174866
+        },
+        "slotWait" : {
+          "samples" : 7800,
+          "p50Ms" : 9.493184,
+          "p95Ms" : 386.998593,
+          "p99Ms" : 792.262891,
+          "maxMs" : 3019.218464
+        }
+      },
+      "retentionOfferedRate" : 13.0,
+      "retentionAchievedRate" : 12.9672564072129,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : { }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : null,
+      "probes" : null
+    }, {
+      "name" : "partitioned-ws31-c50-r260",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 310,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 251,
+        "meanRows" : 3720.629482071713,
+        "maxRows" : 12254
+      },
+      "concurrency" : 50,
+      "offeredRate" : 260.0,
+      "achievedRate" : 121.5962612690044,
+      "durationSeconds" : 64.146709106,
+      "scheduledEvents" : 7800,
+      "completedEvents" : 7800,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 34150.55526,
+      "copiesCommitted" : 32294,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 7800,
+          "p50Ms" : 17967.571156,
+          "p95Ms" : 32625.513758,
+          "p99Ms" : 33906.403598,
+          "maxMs" : 35616.691912
+        },
+        "t1Transaction" : {
+          "samples" : 7800,
+          "p50Ms" : 72.858144,
+          "p95Ms" : 225.518288,
+          "p99Ms" : 346.893203,
+          "maxMs" : 1011.206446
+        },
+        "t2" : {
+          "samples" : 7800,
+          "p50Ms" : 14.739314,
+          "p95Ms" : 72.932422,
+          "p99Ms" : 201.441558,
+          "maxMs" : 532.529093
+        },
+        "event" : {
+          "samples" : 7800,
+          "p50Ms" : 18013.712909,
+          "p95Ms" : 32655.648303,
+          "p99Ms" : 33974.230511,
+          "maxMs" : 35636.822644
+        },
+        "retention" : {
+          "samples" : 390,
+          "p50Ms" : 460.992554,
+          "p95Ms" : 1148.496117,
+          "p99Ms" : 1413.897734,
+          "maxMs" : 1461.779074
+        },
+        "lockWait" : {
+          "samples" : 7800,
+          "p50Ms" : 72.88288,
+          "p95Ms" : 225.542904,
+          "p99Ms" : 346.968404,
+          "maxMs" : 1011.21887
+        },
+        "slotWait" : {
+          "samples" : 7800,
+          "p50Ms" : 19.663902,
+          "p95Ms" : 1332.157419,
+          "p99Ms" : 2396.478055,
+          "maxMs" : 6507.171909
+        }
+      },
+      "retentionOfferedRate" : 13.0,
+      "retentionAchievedRate" : 12.928220164830327,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : { }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : null,
+      "probes" : null
+    }, {
+      "name" : "partitioned-ws31-c100-r260",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 310,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 313,
+        "meanRows" : 3001.1629392971245,
+        "maxRows" : 10480
+      },
+      "concurrency" : 100,
+      "offeredRate" : 260.0,
+      "achievedRate" : 96.3383127216407,
+      "durationSeconds" : 80.819351928,
+      "scheduledEvents" : 7800,
+      "completedEvents" : 7786,
+      "completionRatio" : 0.9982051282051282,
+      "terminalLagMs" : 50823.198082,
+      "copiesCommitted" : 31287,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 7786,
+          "p50Ms" : 26756.001503,
+          "p95Ms" : 48402.968791,
+          "p99Ms" : 50662.01492,
+          "maxMs" : 53300.650546
+        },
+        "t1Transaction" : {
+          "samples" : 7786,
+          "p50Ms" : 90.965073,
+          "p95Ms" : 308.769492,
+          "p99Ms" : 458.065969,
+          "maxMs" : 894.653518
+        },
+        "t2" : {
+          "samples" : 7786,
+          "p50Ms" : 17.743509,
+          "p95Ms" : 94.913446,
+          "p99Ms" : 238.677126,
+          "maxMs" : 945.366286
+        },
+        "event" : {
+          "samples" : 7786,
+          "p50Ms" : 26826.291768,
+          "p95Ms" : 48424.989256,
+          "p99Ms" : 50698.423304,
+          "maxMs" : 53307.023412
+        },
+        "retention" : {
+          "samples" : 390,
+          "p50Ms" : 3187.773386,
+          "p95Ms" : 5270.963801,
+          "p99Ms" : 5786.30165,
+          "maxMs" : 5828.071602
+        },
+        "lockWait" : {
+          "samples" : 7786,
+          "p50Ms" : 90.981989,
+          "p95Ms" : 308.787496,
+          "p99Ms" : 458.088531,
+          "maxMs" : 894.666462
+        },
+        "slotWait" : {
+          "samples" : 7786,
+          "p50Ms" : 19.89704,
+          "p95Ms" : 4079.786497,
+          "p99Ms" : 6800.022257,
+          "maxMs" : 9934.381011
+        }
+      },
+      "retentionOfferedRate" : 13.0,
+      "retentionAchievedRate" : 11.570176520224528,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 14,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 14
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 14,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : null,
+      "probes" : null
+    }, {
+      "name" : "partitioned-ws31-c1-r520",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 310,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 2566,
+        "meanRows" : 1115.988308651598,
+        "maxRows" : 13410
+      },
+      "concurrency" : 1,
+      "offeredRate" : 520.0,
+      "achievedRate" : 24.150586009690226,
+      "durationSeconds" : 645.947058748,
+      "scheduledEvents" : 15600,
+      "completedEvents" : 15600,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 615948.981825,
+      "copiesCommitted" : 65397,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 15600,
+          "p50Ms" : 323191.436619,
+          "p95Ms" : 584780.871398,
+          "p99Ms" : 609509.110471,
+          "maxMs" : 615941.511852
+        },
+        "t1Transaction" : {
+          "samples" : 15600,
+          "p50Ms" : 19.920577,
+          "p95Ms" : 29.511246,
+          "p99Ms" : 105.670151,
+          "maxMs" : 185.771889
+        },
+        "t2" : {
+          "samples" : 15600,
+          "p50Ms" : 7.344097,
+          "p95Ms" : 33.702574,
+          "p99Ms" : 114.901796,
+          "maxMs" : 259.059342
+        },
+        "event" : {
+          "samples" : 15600,
+          "p50Ms" : 323452.766183,
+          "p95Ms" : 584785.524274,
+          "p99Ms" : 609535.049483,
+          "maxMs" : 615948.981825
+        },
+        "retention" : {
+          "samples" : 780,
+          "p50Ms" : 43.50936,
+          "p95Ms" : 156.41442,
+          "p99Ms" : 236.10412,
+          "maxMs" : 261.263322
+        },
+        "lockWait" : {
+          "samples" : 15600,
+          "p50Ms" : 19.946646,
+          "p95Ms" : 29.541215,
+          "p99Ms" : 105.687512,
+          "maxMs" : 185.79921
+        },
+        "slotWait" : {
+          "samples" : 15600,
+          "p50Ms" : 0.527432,
+          "p95Ms" : 1.524379,
+          "p99Ms" : 2.41058,
+          "maxMs" : 12.306129
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 26.01154933773245,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : { }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : null,
+      "probes" : null
+    }, {
+      "name" : "partitioned-ws31-c10-r520",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 310,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 533,
+        "meanRows" : 3500.8968105065665,
+        "maxRows" : 20378
+      },
+      "concurrency" : 10,
+      "offeredRate" : 520.0,
+      "achievedRate" : 115.3869072707163,
+      "durationSeconds" : 135.197314574,
+      "scheduledEvents" : 15600,
+      "completedEvents" : 15600,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 105199.237651,
+      "copiesCommitted" : 63902,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 15600,
+          "p50Ms" : 61158.146503,
+          "p95Ms" : 100989.178706,
+          "p99Ms" : 104155.942413,
+          "maxMs" : 105186.353941
+        },
+        "t1Transaction" : {
+          "samples" : 15600,
+          "p50Ms" : 39.380709,
+          "p95Ms" : 173.028703,
+          "p99Ms" : 332.095371,
+          "maxMs" : 741.609619
+        },
+        "t2" : {
+          "samples" : 15600,
+          "p50Ms" : 8.932127,
+          "p95Ms" : 42.212583,
+          "p99Ms" : 114.100186,
+          "maxMs" : 360.076242
+        },
+        "event" : {
+          "samples" : 15600,
+          "p50Ms" : 61171.823227,
+          "p95Ms" : 101029.490449,
+          "p99Ms" : 104186.166569,
+          "maxMs" : 105207.137244
+        },
+        "retention" : {
+          "samples" : 780,
+          "p50Ms" : 1279.88288,
+          "p95Ms" : 2310.633668,
+          "p99Ms" : 2537.615379,
+          "maxMs" : 2615.725803
+        },
+        "lockWait" : {
+          "samples" : 15600,
+          "p50Ms" : 39.404592,
+          "p95Ms" : 173.043962,
+          "p99Ms" : 332.112072,
+          "maxMs" : 741.650295
+        },
+        "slotWait" : {
+          "samples" : 15600,
+          "p50Ms" : 0.44554,
+          "p95Ms" : 2.397145,
+          "p99Ms" : 5.333774,
+          "maxMs" : 218.206151
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 25.065105022034714,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : { }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : null,
+      "probes" : null
+    }, {
+      "name" : "partitioned-ws31-c25-r520",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 310,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 428,
+        "meanRows" : 4267.813084112149,
+        "maxRows" : 19020
+      },
+      "concurrency" : 25,
+      "offeredRate" : 520.0,
+      "achievedRate" : 142.88444767993786,
+      "durationSeconds" : 109.179132182,
+      "scheduledEvents" : 15600,
+      "completedEvents" : 15600,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 79181.055259,
+      "copiesCommitted" : 62802,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 15600,
+          "p50Ms" : 40307.648142,
+          "p95Ms" : 75172.779158,
+          "p99Ms" : 78357.919117,
+          "maxMs" : 79090.987949
+        },
+        "t1Transaction" : {
+          "samples" : 15600,
+          "p50Ms" : 63.344023,
+          "p95Ms" : 184.225746,
+          "p99Ms" : 280.870116,
+          "maxMs" : 618.229862
+        },
+        "t2" : {
+          "samples" : 15600,
+          "p50Ms" : 12.792148,
+          "p95Ms" : 53.795839,
+          "p99Ms" : 143.934598,
+          "maxMs" : 488.981845
+        },
+        "event" : {
+          "samples" : 15600,
+          "p50Ms" : 40324.025416,
+          "p95Ms" : 75215.729302,
+          "p99Ms" : 78382.401064,
+          "maxMs" : 79236.173302
+        },
+        "retention" : {
+          "samples" : 780,
+          "p50Ms" : 10591.007533,
+          "p95Ms" : 18703.54569,
+          "p99Ms" : 19497.646501,
+          "maxMs" : 19583.628103
+        },
+        "lockWait" : {
+          "samples" : 15600,
+          "p50Ms" : 63.364,
+          "p95Ms" : 184.241413,
+          "p99Ms" : 280.9111,
+          "maxMs" : 618.277481
+        },
+        "slotWait" : {
+          "samples" : 15600,
+          "p50Ms" : 11.563608,
+          "p95Ms" : 294.811319,
+          "p99Ms" : 557.224513,
+          "maxMs" : 1516.276767
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 15.743210180378496,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : { }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : null,
+      "probes" : null
+    }, {
+      "name" : "partitioned-ws31-c50-r520",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 310,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 474,
+        "meanRows" : 3872.565400843882,
+        "maxRows" : 18512
+      },
+      "concurrency" : 50,
+      "offeredRate" : 520.0,
+      "achievedRate" : 129.06541043034932,
+      "durationSeconds" : 120.868945041,
+      "scheduledEvents" : 15600,
+      "completedEvents" : 15600,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 90870.868118,
+      "copiesCommitted" : 62666,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 15600,
+          "p50Ms" : 48645.768273,
+          "p95Ms" : 86745.06126,
+          "p99Ms" : 90009.455239,
+          "maxMs" : 91421.790086
+        },
+        "t1Transaction" : {
+          "samples" : 15600,
+          "p50Ms" : 71.751926,
+          "p95Ms" : 216.293529,
+          "p99Ms" : 320.806015,
+          "maxMs" : 629.34179
+        },
+        "t2" : {
+          "samples" : 15600,
+          "p50Ms" : 13.469509,
+          "p95Ms" : 62.480716,
+          "p99Ms" : 170.682673,
+          "maxMs" : 480.258459
+        },
+        "event" : {
+          "samples" : 15600,
+          "p50Ms" : 48705.750811,
+          "p95Ms" : 86776.059584,
+          "p99Ms" : 90036.426215,
+          "maxMs" : 91436.733099
+        },
+        "retention" : {
+          "samples" : 780,
+          "p50Ms" : 17777.833051,
+          "p95Ms" : 32728.707079,
+          "p99Ms" : 33597.471882,
+          "maxMs" : 33803.281501
+        },
+        "lockWait" : {
+          "samples" : 15600,
+          "p50Ms" : 71.775589,
+          "p95Ms" : 216.417077,
+          "p99Ms" : 320.852099,
+          "maxMs" : 629.393747
+        },
+        "slotWait" : {
+          "samples" : 15600,
+          "p50Ms" : 21.57175,
+          "p95Ms" : 1271.247886,
+          "p99Ms" : 2265.728234,
+          "maxMs" : 4596.949782
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 12.232450236066509,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : { }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : null,
+      "probes" : null
+    }, {
+      "name" : "partitioned-ws31-c100-r520",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 310,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 606,
+        "meanRows" : 2990.5742574257424,
+        "maxRows" : 15338
+      },
+      "concurrency" : 100,
+      "offeredRate" : 520.0,
+      "achievedRate" : 99.81765678110676,
+      "durationSeconds" : 156.044536631,
+      "scheduledEvents" : 15600,
+      "completedEvents" : 15576,
+      "completionRatio" : 0.9984615384615385,
+      "terminalLagMs" : 126046.459708,
+      "copiesCommitted" : 61575,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 15576,
+          "p50Ms" : 67564.037031,
+          "p95Ms" : 120857.028633,
+          "p99Ms" : 125041.230232,
+          "maxMs" : 127542.904288
+        },
+        "t1Transaction" : {
+          "samples" : 15576,
+          "p50Ms" : 89.65328,
+          "p95Ms" : 300.195089,
+          "p99Ms" : 460.916219,
+          "maxMs" : 939.059276
+        },
+        "t2" : {
+          "samples" : 15576,
+          "p50Ms" : 16.16025,
+          "p95Ms" : 87.220358,
+          "p99Ms" : 225.591331,
+          "maxMs" : 940.469935
+        },
+        "event" : {
+          "samples" : 15576,
+          "p50Ms" : 67632.791042,
+          "p95Ms" : 120887.680996,
+          "p99Ms" : 125055.608055,
+          "maxMs" : 127552.449858
+        },
+        "retention" : {
+          "samples" : 780,
+          "p50Ms" : 19109.754406,
+          "p95Ms" : 41753.797596,
+          "p99Ms" : 43925.954197,
+          "maxMs" : 44265.941083
+        },
+        "lockWait" : {
+          "samples" : 15576,
+          "p50Ms" : 89.667005,
+          "p95Ms" : 300.296166,
+          "p99Ms" : 460.948789,
+          "maxMs" : 939.078362
+        },
+        "slotWait" : {
+          "samples" : 15576,
+          "p50Ms" : 22.187076,
+          "p95Ms" : 4054.353704,
+          "p99Ms" : 6722.68083,
+          "maxMs" : 9994.95203
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 10.51328703889605,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 24,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 25
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 24,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : null,
+      "probes" : null
+    }, {
+      "name" : "partitioned-ws31-c100-r520-hot",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 10,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 1063,
+        "meanRows" : 639.3640639698965,
+        "maxRows" : 7158
+      },
+      "concurrency" : 100,
+      "offeredRate" : 520.0,
+      "achievedRate" : 57.06508904244434,
+      "durationSeconds" : 266.940790869,
+      "scheduledEvents" : 15600,
+      "completedEvents" : 15233,
+      "completionRatio" : 0.976474358974359,
+      "terminalLagMs" : 236942.713946,
+      "copiesCommitted" : 0,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 15233,
+          "p50Ms" : 121935.847565,
+          "p95Ms" : 225576.789075,
+          "p99Ms" : 234599.530524,
+          "maxMs" : 237588.94006
+        },
+        "t1Transaction" : {
+          "samples" : 15233,
+          "p50Ms" : 61.03172,
+          "p95Ms" : 92.012599,
+          "p99Ms" : 124.543447,
+          "maxMs" : 218.575184
+        },
+        "t2" : {
+          "samples" : 15233,
+          "p50Ms" : 3.393171,
+          "p95Ms" : 10.079897,
+          "p99Ms" : 15.112145,
+          "maxMs" : 81.015883
+        },
+        "event" : {
+          "samples" : 15233,
+          "p50Ms" : 121941.981385,
+          "p95Ms" : 225581.435628,
+          "p99Ms" : 234602.98828,
+          "maxMs" : 237595.92702
+        },
+        "retention" : {
+          "samples" : 780,
+          "p50Ms" : 73.095635,
+          "p95Ms" : 262.691223,
+          "p99Ms" : 548.585402,
+          "maxMs" : 581.637641
+        },
+        "lockWait" : {
+          "samples" : 15233,
+          "p50Ms" : 61.054483,
+          "p95Ms" : 92.104537,
+          "p99Ms" : 124.58274,
+          "maxMs" : 218.606332
+        },
+        "slotWait" : {
+          "samples" : 15233,
+          "p50Ms" : 290.054613,
+          "p95Ms" : 6238.083597,
+          "p99Ms" : 8790.414074,
+          "maxMs" : 9973.193652
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 26.006118824528382,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 367,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 422
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 367,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : null,
+      "probes" : null
+    }, {
+      "name" : "chosen-ws31-c100-r520-probe-rep1",
+      "mode" : "CHOSEN",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 3454,
+        "meanRows" : 1022.3034163288941,
+        "maxRows" : 2692
+      },
+      "concurrency" : 100,
+      "offeredRate" : 520.0,
+      "achievedRate" : 361.924737426,
+      "durationSeconds" : 84.887814573,
+      "scheduledEvents" : 31200,
+      "completedEvents" : 30723,
+      "completionRatio" : 0.9847115384615385,
+      "terminalLagMs" : 24889.73765,
+      "copiesCommitted" : 291,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 30723,
+          "p50Ms" : -1.531019643848464E9,
+          "p95Ms" : -1.53099228288725E9,
+          "p99Ms" : -1.530989770067168E9,
+          "maxMs" : 25428.785416
+        },
+        "t1Transaction" : {
+          "samples" : 30723,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 2115.40523
+        },
+        "t2" : {
+          "samples" : 30723,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 128.234989
+        },
+        "event" : {
+          "samples" : 30723,
+          "p50Ms" : 9973.778582,
+          "p95Ms" : 13978.194195,
+          "p99Ms" : 14989.216796,
+          "maxMs" : 25447.923387
+        },
+        "retention" : {
+          "samples" : 1560,
+          "p50Ms" : 13274.507255,
+          "p95Ms" : 21350.322771,
+          "p99Ms" : 21681.591725,
+          "maxMs" : 21745.706361
+        },
+        "lockWait" : {
+          "samples" : 30723,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 2115.438862
+        },
+        "slotWait" : {
+          "samples" : 30723,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 9947.759277
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 19.29982585796944,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 477,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 1362
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 477,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "GLOBAL",
+        "partitioned" : false
+      },
+      "partitionFallbacks" : null,
+      "partitionFallbackReasons" : null,
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 126233,
+        "admittedCopiesPerSecond" : 145.13068640593735,
+        "eventsReachingT1" : 30337,
+        "t1" : {
+          "samples" : 30337,
+          "p50Ms" : 476808.919082,
+          "p95Ms" : 782712.757254,
+          "p99Ms" : 804833.396842,
+          "maxMs" : 810450.748674
+        },
+        "unavailableRate" : 0.02766025641025641
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 236,
+          "latency" : {
+            "samples" : 236,
+            "p50Ms" : 398314.694466,
+            "p95Ms" : 678581.143598,
+            "p99Ms" : 696905.050534,
+            "maxMs" : 697410.969394
+          },
+          "unavailableRate" : 0.038135593220338986,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 382487.939838,
+            "p95Ms" : 631544.770648,
+            "p99Ms" : 652024.375283,
+            "maxMs" : 652662.990539
+          },
+          "unavailableRate" : 0.041666666666666664,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "partitioned-ws31-c100-r520-probe-rep1",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 1700,
+        "meanRows" : 1613.2223529411765,
+        "maxRows" : 5356
+      },
+      "concurrency" : 100,
+      "offeredRate" : 520.0,
+      "achievedRate" : 114.84042623507997,
+      "durationSeconds" : 262.790734843,
+      "scheduledEvents" : 31200,
+      "completedEvents" : 30179,
+      "completionRatio" : 0.967275641025641,
+      "terminalLagMs" : 202792.65792,
+      "copiesCommitted" : 2141,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 30179,
+          "p50Ms" : -1.532012647855113E9,
+          "p95Ms" : 60388.254205,
+          "p99Ms" : 168340.851054,
+          "maxMs" : 202839.253388
+        },
+        "t1Transaction" : {
+          "samples" : 30179,
+          "p50Ms" : 0.0,
+          "p95Ms" : 288.232669,
+          "p99Ms" : 633.47498,
+          "maxMs" : 1578.08573
+        },
+        "t2" : {
+          "samples" : 30179,
+          "p50Ms" : 0.0,
+          "p95Ms" : 20.820911,
+          "p99Ms" : 86.728865,
+          "maxMs" : 379.718597
+        },
+        "event" : {
+          "samples" : 30179,
+          "p50Ms" : 107603.523917,
+          "p95Ms" : 186565.718791,
+          "p99Ms" : 192107.301319,
+          "maxMs" : 202847.944179
+        },
+        "retention" : {
+          "samples" : 1560,
+          "p50Ms" : 75896.269039,
+          "p95Ms" : 146260.350348,
+          "p99Ms" : 153347.489676,
+          "maxMs" : 154582.364181
+        },
+        "lockWait" : {
+          "samples" : 30179,
+          "p50Ms" : 0.0,
+          "p95Ms" : 288.256524,
+          "p99Ms" : 633.496299,
+          "maxMs" : 1578.108222
+        },
+        "slotWait" : {
+          "samples" : 30179,
+          "p50Ms" : 0.0,
+          "p95Ms" : 1033.890928,
+          "p99Ms" : 7663.112153,
+          "maxMs" : 10071.083195
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 7.272864003248657,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 1021,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 1095
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 1021,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 107077,
+        "admittedCopiesPerSecond" : 243.84985769034714,
+        "eventsReachingT1" : 29380,
+        "t1" : {
+          "samples" : 29380,
+          "p50Ms" : 253222.11776,
+          "p95Ms" : 368941.290718,
+          "p99Ms" : 377253.961149,
+          "maxMs" : 380066.575224
+        },
+        "unavailableRate" : 0.0020833333333333333
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 215,
+          "latency" : {
+            "samples" : 215,
+            "p50Ms" : 307584.191266,
+            "p95Ms" : 360260.595834,
+            "p99Ms" : 365083.324235,
+            "maxMs" : 365268.379993
+          },
+          "unavailableRate" : 0.04186046511627907,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 172636.554109,
+            "p95Ms" : 271610.322514,
+            "p99Ms" : 274311.386524,
+            "maxMs" : 275063.498769
+          },
+          "unavailableRate" : 0.0,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "chosen-ws31-c100-r1-probe-paced-rep1",
+      "mode" : "CHOSEN",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 2743,
+        "meanRows" : 1147.6310608822457,
+        "maxRows" : 2832
+      },
+      "concurrency" : 100,
+      "offeredRate" : 0.7714285714285715,
+      "achievedRate" : 0.7382553641005638,
+      "durationSeconds" : 60.954518163,
+      "scheduledEvents" : 46,
+      "completedEvents" : 45,
+      "completionRatio" : 0.9782608695652174,
+      "terminalLagMs" : 2621.18483,
+      "copiesCommitted" : 315,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 45,
+          "p50Ms" : 2413.951328,
+          "p95Ms" : 7986.49334,
+          "p99Ms" : 8527.505206,
+          "maxMs" : 8527.505206
+        },
+        "t1Transaction" : {
+          "samples" : 45,
+          "p50Ms" : 426.681965,
+          "p95Ms" : 910.410333,
+          "p99Ms" : 1311.719108,
+          "maxMs" : 1311.719108
+        },
+        "t2" : {
+          "samples" : 45,
+          "p50Ms" : 23.753534,
+          "p95Ms" : 37.830901,
+          "p99Ms" : 42.0443,
+          "maxMs" : 42.0443
+        },
+        "event" : {
+          "samples" : 45,
+          "p50Ms" : 2443.023661,
+          "p95Ms" : 8030.309312,
+          "p99Ms" : 8573.38411,
+          "maxMs" : 8573.38411
+        },
+        "retention" : {
+          "samples" : 3,
+          "p50Ms" : 48.242819,
+          "p95Ms" : 59.063499,
+          "p99Ms" : 59.063499,
+          "maxMs" : 59.063499
+        },
+        "lockWait" : {
+          "samples" : 45,
+          "p50Ms" : 426.715166,
+          "p95Ms" : 910.440017,
+          "p99Ms" : 1311.750698,
+          "maxMs" : 1311.750698
+        },
+        "slotWait" : {
+          "samples" : 45,
+          "p50Ms" : 1747.043061,
+          "p95Ms" : 7415.974008,
+          "p99Ms" : 7877.622471,
+          "maxMs" : 7877.622471
+        }
+      },
+      "retentionOfferedRate" : 0.038571428571428576,
+      "retentionAchievedRate" : 0.05782776130521013,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 1,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 318
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 1,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "GLOBAL",
+        "partitioned" : false
+      },
+      "partitionFallbacks" : null,
+      "partitionFallbackReasons" : null,
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 127043,
+        "admittedCopiesPerSecond" : 184.12460968686406,
+        "eventsReachingT1" : 30892,
+        "t1" : {
+          "samples" : 30892,
+          "p50Ms" : 365004.78662,
+          "p95Ms" : 608263.660124,
+          "p99Ms" : 626324.399041,
+          "maxMs" : 630620.300791
+        },
+        "unavailableRate" : 0.009871794871794872
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 307119.842562,
+            "p95Ms" : 561300.487463,
+            "p99Ms" : 573558.695011,
+            "maxMs" : 573686.738108
+          },
+          "unavailableRate" : 0.0125,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 276170.689341,
+            "p95Ms" : 537259.735778,
+            "p99Ms" : 554358.033906,
+            "maxMs" : 557556.478047
+          },
+          "unavailableRate" : 0.025,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "partitioned-ws31-c100-r1-probe-paced-rep1",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 1084,
+        "meanRows" : 2097.8856088560888,
+        "maxRows" : 5028
+      },
+      "concurrency" : 100,
+      "offeredRate" : 0.7714285714285715,
+      "achievedRate" : 0.7319046082082795,
+      "durationSeconds" : 62.84972042,
+      "scheduledEvents" : 46,
+      "completedEvents" : 46,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 4516.387087,
+      "copiesCommitted" : 322,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 46,
+          "p50Ms" : 908.596934,
+          "p95Ms" : 2657.994968,
+          "p99Ms" : 4483.964148,
+          "maxMs" : 4483.964148
+        },
+        "t1Transaction" : {
+          "samples" : 46,
+          "p50Ms" : 74.191625,
+          "p95Ms" : 227.645782,
+          "p99Ms" : 816.568291,
+          "maxMs" : 816.568291
+        },
+        "t2" : {
+          "samples" : 46,
+          "p50Ms" : 46.478848,
+          "p95Ms" : 137.188927,
+          "p99Ms" : 186.318738,
+          "maxMs" : 186.318738
+        },
+        "event" : {
+          "samples" : 46,
+          "p50Ms" : 971.197421,
+          "p95Ms" : 2773.875872,
+          "p99Ms" : 4516.387087,
+          "maxMs" : 4516.387087
+        },
+        "retention" : {
+          "samples" : 3,
+          "p50Ms" : 48.6799,
+          "p95Ms" : 109.04622,
+          "p99Ms" : 109.04622,
+          "maxMs" : 109.04622
+        },
+        "lockWait" : {
+          "samples" : 46,
+          "p50Ms" : 74.236888,
+          "p95Ms" : 227.665207,
+          "p99Ms" : 816.589771,
+          "maxMs" : 816.589771
+        },
+        "slotWait" : {
+          "samples" : 46,
+          "p50Ms" : 618.911562,
+          "p95Ms" : 2502.535693,
+          "p99Ms" : 4179.677255,
+          "maxMs" : 4179.677255
+        }
+      },
+      "retentionOfferedRate" : 0.038571428571428576,
+      "retentionAchievedRate" : 0.05773572128627606,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : { }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 81459,
+        "admittedCopiesPerSecond" : 293.3633682439697,
+        "eventsReachingT1" : 27242,
+        "t1" : {
+          "samples" : 27242,
+          "p50Ms" : 116038.879801,
+          "p95Ms" : 207736.649088,
+          "p99Ms" : 216105.940037,
+          "maxMs" : 218401.44091
+        },
+        "unavailableRate" : 0.0
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 85065.615525,
+            "p95Ms" : 159513.604685,
+            "p99Ms" : 169101.510118,
+            "maxMs" : 169922.054484
+          },
+          "unavailableRate" : 0.0,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 108911.830303,
+            "p95Ms" : 165267.526531,
+            "p99Ms" : 171658.678345,
+            "maxMs" : 172318.318159
+          },
+          "unavailableRate" : 0.0,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "partitioned-ws31-c100-r520-probe-rep2",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 1600,
+        "meanRows" : 1700.1175,
+        "maxRows" : 4818
+      },
+      "concurrency" : 100,
+      "offeredRate" : 520.0,
+      "achievedRate" : 125.7020388594567,
+      "durationSeconds" : 240.783683977,
+      "scheduledEvents" : 31200,
+      "completedEvents" : 30267,
+      "completionRatio" : 0.9700961538461539,
+      "terminalLagMs" : 180785.607054,
+      "copiesCommitted" : 1925,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 30267,
+          "p50Ms" : -1.533554579588037E9,
+          "p95Ms" : 31335.027167,
+          "p99Ms" : 146868.78222,
+          "maxMs" : 178075.873138
+        },
+        "t1Transaction" : {
+          "samples" : 30267,
+          "p50Ms" : 0.0,
+          "p95Ms" : 254.40946,
+          "p99Ms" : 597.254496,
+          "maxMs" : 1354.304006
+        },
+        "t2" : {
+          "samples" : 30267,
+          "p50Ms" : 0.0,
+          "p95Ms" : 14.662361,
+          "p99Ms" : 82.883562,
+          "maxMs" : 379.056634
+        },
+        "event" : {
+          "samples" : 30267,
+          "p50Ms" : 85346.81314,
+          "p95Ms" : 164360.480758,
+          "p99Ms" : 169996.856154,
+          "maxMs" : 178094.832314
+        },
+        "retention" : {
+          "samples" : 1560,
+          "p50Ms" : 76608.161783,
+          "p95Ms" : 146067.727167,
+          "p99Ms" : 151814.756337,
+          "maxMs" : 153271.74104
+        },
+        "lockWait" : {
+          "samples" : 30267,
+          "p50Ms" : 0.0,
+          "p95Ms" : 254.426462,
+          "p99Ms" : 597.271808,
+          "maxMs" : 1354.332149
+        },
+        "slotWait" : {
+          "samples" : 30267,
+          "p50Ms" : 0.0,
+          "p95Ms" : 364.453416,
+          "p99Ms" : 7330.84915,
+          "maxMs" : 9995.864896
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 7.317980924561145,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 933,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 995
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 933,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 101796,
+        "admittedCopiesPerSecond" : 246.4555252730593,
+        "eventsReachingT1" : 29137,
+        "t1" : {
+          "samples" : 29137,
+          "p50Ms" : 239488.882155,
+          "p95Ms" : 343615.852143,
+          "p99Ms" : 351585.199216,
+          "maxMs" : 353845.264956
+        },
+        "unavailableRate" : 0.0016987179487179488
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 211,
+          "latency" : {
+            "samples" : 211,
+            "p50Ms" : 292632.408363,
+            "p95Ms" : 348673.45379,
+            "p99Ms" : 352667.755184,
+            "maxMs" : 353445.976173
+          },
+          "unavailableRate" : 0.037914691943127965,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 208258.297647,
+            "p95Ms" : 289558.239458,
+            "p99Ms" : 292881.086116,
+            "maxMs" : 294531.204966
+          },
+          "unavailableRate" : 0.004166666666666667,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "chosen-ws31-c100-r520-probe-rep2",
+      "mode" : "CHOSEN",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 3322,
+        "meanRows" : 1038.2390126429862,
+        "maxRows" : 2790
+      },
+      "concurrency" : 100,
+      "offeredRate" : 520.0,
+      "achievedRate" : 441.9012756543577,
+      "durationSeconds" : 69.762188295,
+      "scheduledEvents" : 31200,
+      "completedEvents" : 30828,
+      "completionRatio" : 0.9880769230769231,
+      "terminalLagMs" : 9764.111372,
+      "copiesCommitted" : 249,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 30828,
+          "p50Ms" : -1.534088567277534E9,
+          "p95Ms" : -1.534061273698839E9,
+          "p99Ms" : -1.534058771958922E9,
+          "maxMs" : 12681.719937
+        },
+        "t1Transaction" : {
+          "samples" : 30828,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 1919.501735
+        },
+        "t2" : {
+          "samples" : 30828,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 79.088057
+        },
+        "event" : {
+          "samples" : 30828,
+          "p50Ms" : 413.286379,
+          "p95Ms" : 2068.669151,
+          "p99Ms" : 2248.177878,
+          "maxMs" : 12705.995218
+        },
+        "retention" : {
+          "samples" : 1560,
+          "p50Ms" : 7761.242865,
+          "p95Ms" : 10872.55989,
+          "p99Ms" : 11022.918759,
+          "maxMs" : 11143.359165
+        },
+        "lockWait" : {
+          "samples" : 30828,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 1919.523807
+        },
+        "slotWait" : {
+          "samples" : 30828,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 9995.032001
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 22.80470219478169,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 372,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 1144
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 372,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "GLOBAL",
+        "partitioned" : false
+      },
+      "partitionFallbacks" : null,
+      "partitionFallbackReasons" : null,
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 122927,
+        "admittedCopiesPerSecond" : 147.01778521013216,
+        "eventsReachingT1" : 30446,
+        "t1" : {
+          "samples" : 30446,
+          "p50Ms" : 439271.681104,
+          "p95Ms" : 748668.087525,
+          "p99Ms" : 771099.810715,
+          "maxMs" : 776715.714941
+        },
+        "unavailableRate" : 0.024166666666666666
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 237,
+          "latency" : {
+            "samples" : 237,
+            "p50Ms" : 341123.097248,
+            "p95Ms" : 597627.487134,
+            "p99Ms" : 622482.369719,
+            "maxMs" : 635942.781276
+          },
+          "unavailableRate" : 0.0379746835443038,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 332238.210409,
+            "p95Ms" : 635337.986912,
+            "p99Ms" : 662813.307604,
+            "maxMs" : 668064.958493
+          },
+          "unavailableRate" : 0.0375,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "partitioned-ws31-c100-r1-probe-paced-rep2",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 1157,
+        "meanRows" : 2076.696629213483,
+        "maxRows" : 4566
+      },
+      "concurrency" : 100,
+      "offeredRate" : 0.7714285714285715,
+      "achievedRate" : 0.7519843543291332,
+      "durationSeconds" : 61.171485464,
+      "scheduledEvents" : 46,
+      "completedEvents" : 46,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 2838.152131,
+      "copiesCommitted" : 322,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 46,
+          "p50Ms" : 664.902252,
+          "p95Ms" : 4319.176975,
+          "p99Ms" : 6149.077678,
+          "maxMs" : 6149.077678
+        },
+        "t1Transaction" : {
+          "samples" : 46,
+          "p50Ms" : 82.384913,
+          "p95Ms" : 250.230596,
+          "p99Ms" : 499.778219,
+          "maxMs" : 499.778219
+        },
+        "t2" : {
+          "samples" : 46,
+          "p50Ms" : 46.966803,
+          "p95Ms" : 195.068747,
+          "p99Ms" : 269.239424,
+          "maxMs" : 269.239424
+        },
+        "event" : {
+          "samples" : 46,
+          "p50Ms" : 733.818138,
+          "p95Ms" : 4416.285988,
+          "p99Ms" : 6195.240776,
+          "maxMs" : 6195.240776
+        },
+        "retention" : {
+          "samples" : 3,
+          "p50Ms" : 51.584066,
+          "p95Ms" : 366.205414,
+          "p99Ms" : 366.205414,
+          "maxMs" : 366.205414
+        },
+        "lockWait" : {
+          "samples" : 46,
+          "p50Ms" : 82.413125,
+          "p95Ms" : 250.254231,
+          "p99Ms" : 499.803646,
+          "maxMs" : 499.803646
+        },
+        "slotWait" : {
+          "samples" : 46,
+          "p50Ms" : 413.289761,
+          "p95Ms" : 4120.456287,
+          "p99Ms" : 5910.21428,
+          "maxMs" : 5910.21428
+        }
+      },
+      "retentionOfferedRate" : 0.038571428571428576,
+      "retentionAchievedRate" : 0.05779963935283854,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 4
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 86022,
+        "admittedCopiesPerSecond" : 289.8262187537429,
+        "eventsReachingT1" : 27700,
+        "t1" : {
+          "samples" : 27700,
+          "p50Ms" : 128924.166391,
+          "p95Ms" : 227248.979755,
+          "p99Ms" : 235086.81116,
+          "maxMs" : 237927.899673
+        },
+        "unavailableRate" : 9.615384615384615E-5
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 104864.249802,
+            "p95Ms" : 161347.311057,
+            "p99Ms" : 166292.563777,
+            "maxMs" : 166976.483832
+          },
+          "unavailableRate" : 0.0,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 110739.244721,
+            "p95Ms" : 174056.751281,
+            "p99Ms" : 184410.610349,
+            "maxMs" : 186593.165092
+          },
+          "unavailableRate" : 0.004166666666666667,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "chosen-ws31-c100-r1-probe-paced-rep2",
+      "mode" : "CHOSEN",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 2545,
+        "meanRows" : 1194.1909626719057,
+        "maxRows" : 3190
+      },
+      "concurrency" : 100,
+      "offeredRate" : 0.7714285714285715,
+      "achievedRate" : 0.7420048393505295,
+      "durationSeconds" : 61.994204836,
+      "scheduledEvents" : 46,
+      "completedEvents" : 46,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 3660.871503,
+      "copiesCommitted" : 322,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 46,
+          "p50Ms" : 1830.962875,
+          "p95Ms" : 6249.392731,
+          "p99Ms" : 6844.371594,
+          "maxMs" : 6844.371594
+        },
+        "t1Transaction" : {
+          "samples" : 46,
+          "p50Ms" : 364.235955,
+          "p95Ms" : 596.107662,
+          "p99Ms" : 628.567384,
+          "maxMs" : 628.567384
+        },
+        "t2" : {
+          "samples" : 46,
+          "p50Ms" : 20.993551,
+          "p95Ms" : 30.001558,
+          "p99Ms" : 43.46292,
+          "maxMs" : 43.46292
+        },
+        "event" : {
+          "samples" : 46,
+          "p50Ms" : 1854.461841,
+          "p95Ms" : 6268.781432,
+          "p99Ms" : 6872.594931,
+          "maxMs" : 6872.594931
+        },
+        "retention" : {
+          "samples" : 3,
+          "p50Ms" : 28.321372,
+          "p95Ms" : 185.738955,
+          "p99Ms" : 185.738955,
+          "maxMs" : 185.738955
+        },
+        "lockWait" : {
+          "samples" : 46,
+          "p50Ms" : 364.276149,
+          "p95Ms" : 596.158685,
+          "p99Ms" : 628.594925,
+          "maxMs" : 628.594925
+        },
+        "slotWait" : {
+          "samples" : 46,
+          "p50Ms" : 1455.303944,
+          "p95Ms" : 5849.506548,
+          "p99Ms" : 6260.205215,
+          "maxMs" : 6260.205215
+        }
+      },
+      "retentionOfferedRate" : 0.038571428571428576,
+      "retentionAchievedRate" : 0.0578298179479092,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 195
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "GLOBAL",
+        "partitioned" : false
+      },
+      "partitionFallbacks" : null,
+      "partitionFallbackReasons" : null,
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 126725,
+        "admittedCopiesPerSecond" : 198.0850151498007,
+        "eventsReachingT1" : 31008,
+        "t1" : {
+          "samples" : 31008,
+          "p50Ms" : 339131.1359,
+          "p95Ms" : 562342.293485,
+          "p99Ms" : 576391.482577,
+          "maxMs" : 580415.231302
+        },
+        "unavailableRate" : 0.006153846153846154
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 246834.653742,
+            "p95Ms" : 436074.784699,
+            "p99Ms" : 451682.464543,
+            "maxMs" : 455530.650328
+          },
+          "unavailableRate" : 0.004166666666666667,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 232774.620483,
+            "p95Ms" : 427621.534032,
+            "p99Ms" : 445107.691858,
+            "maxMs" : 445823.177482
+          },
+          "unavailableRate" : 0.008333333333333333,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "chosen-ws31-c100-r520-probe-rep3",
+      "mode" : "CHOSEN",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 3195,
+        "meanRows" : 1066.1702660406886,
+        "maxRows" : 2616
+      },
+      "concurrency" : 100,
+      "offeredRate" : 520.0,
+      "achievedRate" : 439.2267590431657,
+      "durationSeconds" : 70.23251513,
+      "scheduledEvents" : 31200,
+      "completedEvents" : 30848,
+      "completionRatio" : 0.9887179487179487,
+      "terminalLagMs" : 10234.438207,
+      "copiesCommitted" : 290,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 30848,
+          "p50Ms" : -1.535992572563204E9,
+          "p95Ms" : -1.535965297807047E9,
+          "p99Ms" : -1.535962763767605E9,
+          "maxMs" : 13014.569063
+        },
+        "t1Transaction" : {
+          "samples" : 30848,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 1670.105627
+        },
+        "t2" : {
+          "samples" : 30848,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 121.572006
+        },
+        "event" : {
+          "samples" : 30848,
+          "p50Ms" : 143.69239,
+          "p95Ms" : 2815.734784,
+          "p99Ms" : 3114.227284,
+          "maxMs" : 13027.939078
+        },
+        "retention" : {
+          "samples" : 1560,
+          "p50Ms" : 5880.851203,
+          "p95Ms" : 8278.439732,
+          "p99Ms" : 8747.05588,
+          "maxMs" : 8833.477191
+        },
+        "lockWait" : {
+          "samples" : 30848,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 1670.15589
+        },
+        "slotWait" : {
+          "samples" : 30848,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 9990.618141
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 23.336601992442638,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 352,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 1010
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 352,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "GLOBAL",
+        "partitioned" : false
+      },
+      "partitionFallbacks" : null,
+      "partitionFallbackReasons" : null,
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 125088,
+        "admittedCopiesPerSecond" : 155.65120410270922,
+        "eventsReachingT1" : 30556,
+        "t1" : {
+          "samples" : 30556,
+          "p50Ms" : 432360.912608,
+          "p95Ms" : 718055.833707,
+          "p99Ms" : 739069.969393,
+          "maxMs" : 744453.844882
+        },
+        "unavailableRate" : 0.020641025641025643
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 235,
+          "latency" : {
+            "samples" : 235,
+            "p50Ms" : 374374.736828,
+            "p95Ms" : 608908.997547,
+            "p99Ms" : 618310.133605,
+            "maxMs" : 618846.600857
+          },
+          "unavailableRate" : 0.01702127659574468,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 345065.411411,
+            "p95Ms" : 603363.300963,
+            "p99Ms" : 623618.722416,
+            "maxMs" : 624559.28751
+          },
+          "unavailableRate" : 0.029166666666666667,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "partitioned-ws31-c100-r520-probe-rep3",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 1737,
+        "meanRows" : 1610.245250431779,
+        "maxRows" : 4720
+      },
+      "concurrency" : 100,
+      "offeredRate" : 520.0,
+      "achievedRate" : 141.35310276547216,
+      "durationSeconds" : 215.693885762,
+      "scheduledEvents" : 31200,
+      "completedEvents" : 30489,
+      "completionRatio" : 0.9772115384615384,
+      "terminalLagMs" : 155695.808839,
+      "copiesCommitted" : 1723,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 30489,
+          "p50Ms" : -1.536910207235531E9,
+          "p95Ms" : 13135.919889,
+          "p99Ms" : 120296.799272,
+          "maxMs" : 156101.479143
+        },
+        "t1Transaction" : {
+          "samples" : 30489,
+          "p50Ms" : 0.0,
+          "p95Ms" : 164.362534,
+          "p99Ms" : 592.323198,
+          "maxMs" : 1503.898558
+        },
+        "t2" : {
+          "samples" : 30489,
+          "p50Ms" : 0.0,
+          "p95Ms" : 10.888978,
+          "p99Ms" : 77.088071,
+          "maxMs" : 761.516558
+        },
+        "event" : {
+          "samples" : 30489,
+          "p50Ms" : 69947.665732,
+          "p95Ms" : 139035.69241,
+          "p99Ms" : 146755.136896,
+          "maxMs" : 156148.027622
+        },
+        "retention" : {
+          "samples" : 1560,
+          "p50Ms" : 65608.644574,
+          "p95Ms" : 130837.525136,
+          "p99Ms" : 142388.571011,
+          "maxMs" : 144094.284452
+        },
+        "lockWait" : {
+          "samples" : 30489,
+          "p50Ms" : 0.0,
+          "p95Ms" : 164.367232,
+          "p99Ms" : 592.338727,
+          "maxMs" : 1503.92065
+        },
+        "slotWait" : {
+          "samples" : 30489,
+          "p50Ms" : 0.0,
+          "p95Ms" : 49.45829,
+          "p99Ms" : 6960.544281,
+          "maxMs" : 10013.925015
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 7.644966790134545,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 711,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 780
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 711,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 111751,
+        "admittedCopiesPerSecond" : 249.00001146364627,
+        "eventsReachingT1" : 30077,
+        "t1" : {
+          "samples" : 30077,
+          "p50Ms" : 241759.116045,
+          "p95Ms" : 376410.577208,
+          "p99Ms" : 386581.104453,
+          "maxMs" : 390113.172154
+        },
+        "unavailableRate" : 0.0019230769230769232
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 207,
+          "latency" : {
+            "samples" : 207,
+            "p50Ms" : 272899.81474,
+            "p95Ms" : 334853.855072,
+            "p99Ms" : 348330.726406,
+            "maxMs" : 349001.909796
+          },
+          "unavailableRate" : 0.033816425120772944,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 167331.201505,
+            "p95Ms" : 275269.827231,
+            "p99Ms" : 288836.721694,
+            "maxMs" : 289790.605081
+          },
+          "unavailableRate" : 0.008333333333333333,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "chosen-ws31-c100-r1-probe-paced-rep3",
+      "mode" : "CHOSEN",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 2883,
+        "meanRows" : 1108.0908775580992,
+        "maxRows" : 2782
+      },
+      "concurrency" : 100,
+      "offeredRate" : 0.7714285714285715,
+      "achievedRate" : 0.7453427986284762,
+      "durationSeconds" : 60.374904115,
+      "scheduledEvents" : 46,
+      "completedEvents" : 45,
+      "completionRatio" : 0.9782608695652174,
+      "terminalLagMs" : 2041.570782,
+      "copiesCommitted" : 315,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 45,
+          "p50Ms" : 2212.812985,
+          "p95Ms" : 8103.819156,
+          "p99Ms" : 9168.738607,
+          "maxMs" : 9168.738607
+        },
+        "t1Transaction" : {
+          "samples" : 45,
+          "p50Ms" : 534.823207,
+          "p95Ms" : 895.838225,
+          "p99Ms" : 1279.364274,
+          "maxMs" : 1279.364274
+        },
+        "t2" : {
+          "samples" : 45,
+          "p50Ms" : 31.578476,
+          "p95Ms" : 57.607736,
+          "p99Ms" : 84.341909,
+          "maxMs" : 84.341909
+        },
+        "event" : {
+          "samples" : 45,
+          "p50Ms" : 2257.698156,
+          "p95Ms" : 8147.386579,
+          "p99Ms" : 9228.085941,
+          "maxMs" : 9228.085941
+        },
+        "retention" : {
+          "samples" : 3,
+          "p50Ms" : 56.807404,
+          "p95Ms" : 65.415837,
+          "p99Ms" : 65.415837,
+          "maxMs" : 65.415837
+        },
+        "lockWait" : {
+          "samples" : 45,
+          "p50Ms" : 534.847732,
+          "p95Ms" : 895.871687,
+          "p99Ms" : 1279.490379,
+          "maxMs" : 1279.490379
+        },
+        "slotWait" : {
+          "samples" : 45,
+          "p50Ms" : 1564.345153,
+          "p95Ms" : 7333.36912,
+          "p99Ms" : 8309.940224,
+          "maxMs" : 8309.940224
+        }
+      },
+      "retentionOfferedRate" : 0.038571428571428576,
+      "retentionAchievedRate" : 0.05781642678429511,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 1,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 358
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 1,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "GLOBAL",
+        "partitioned" : false
+      },
+      "partitionFallbacks" : null,
+      "partitionFallbackReasons" : null,
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 127421,
+        "admittedCopiesPerSecond" : 175.58161707020224,
+        "eventsReachingT1" : 30849,
+        "t1" : {
+          "samples" : 30849,
+          "p50Ms" : 395305.939441,
+          "p95Ms" : 645788.960759,
+          "p99Ms" : 661886.019276,
+          "maxMs" : 666600.230283
+        },
+        "unavailableRate" : 0.01125
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 286987.499441,
+            "p95Ms" : 504635.433516,
+            "p99Ms" : 524916.61053,
+            "maxMs" : 530082.879305
+          },
+          "unavailableRate" : 0.016666666666666666,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 328261.823142,
+            "p95Ms" : 557800.674178,
+            "p99Ms" : 582719.104804,
+            "maxMs" : 593334.132705
+          },
+          "unavailableRate" : 0.008333333333333333,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "partitioned-ws31-c100-r1-probe-paced-rep3",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 1165,
+        "meanRows" : 2079.6257510729615,
+        "maxRows" : 4820
+      },
+      "concurrency" : 100,
+      "offeredRate" : 0.7714285714285715,
+      "achievedRate" : 0.7621656089595817,
+      "durationSeconds" : 60.354336983,
+      "scheduledEvents" : 46,
+      "completedEvents" : 46,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 2021.00365,
+      "copiesCommitted" : 322,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 46,
+          "p50Ms" : 648.033724,
+          "p95Ms" : 2787.545316,
+          "p99Ms" : 3503.740247,
+          "maxMs" : 3503.740247
+        },
+        "t1Transaction" : {
+          "samples" : 46,
+          "p50Ms" : 86.579299,
+          "p95Ms" : 218.950724,
+          "p99Ms" : 492.446446,
+          "maxMs" : 492.446446
+        },
+        "t2" : {
+          "samples" : 46,
+          "p50Ms" : 39.422221,
+          "p95Ms" : 106.54032,
+          "p99Ms" : 516.551846,
+          "maxMs" : 516.551846
+        },
+        "event" : {
+          "samples" : 46,
+          "p50Ms" : 789.942523,
+          "p95Ms" : 2830.912263,
+          "p99Ms" : 3710.321911,
+          "maxMs" : 3710.321911
+        },
+        "retention" : {
+          "samples" : 3,
+          "p50Ms" : 181.244942,
+          "p95Ms" : 383.493813,
+          "p99Ms" : 383.493813,
+          "maxMs" : 383.493813
+        },
+        "lockWait" : {
+          "samples" : 46,
+          "p50Ms" : 86.603154,
+          "p95Ms" : 218.978255,
+          "p99Ms" : 492.475871,
+          "maxMs" : 492.475871
+        },
+        "slotWait" : {
+          "samples" : 46,
+          "p50Ms" : 398.530303,
+          "p95Ms" : 2604.401847,
+          "p99Ms" : 3259.857459,
+          "maxMs" : 3259.857459
+        }
+      },
+      "retentionOfferedRate" : 0.038571428571428576,
+      "retentionAchievedRate" : 0.05771742400653838,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : { }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 86579,
+        "admittedCopiesPerSecond" : 289.3250440225265,
+        "eventsReachingT1" : 27876,
+        "t1" : {
+          "samples" : 27876,
+          "p50Ms" : 125746.168525,
+          "p95Ms" : 230390.81349,
+          "p99Ms" : 237908.911344,
+          "maxMs" : 240295.690389
+        },
+        "unavailableRate" : 0.0
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 91098.35621,
+            "p95Ms" : 157583.72597,
+            "p99Ms" : 161259.513108,
+            "maxMs" : 163619.971653
+          },
+          "unavailableRate" : 0.0,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 88520.361919,
+            "p95Ms" : 162349.631153,
+            "p99Ms" : 172009.435655,
+            "maxMs" : 172255.381403
+          },
+          "unavailableRate" : 0.0,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "partitioned-ws31-c100-r520-probe-rep4",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 1770,
+        "meanRows" : 1567.084745762712,
+        "maxRows" : 4534
+      },
+      "concurrency" : 100,
+      "offeredRate" : 520.0,
+      "achievedRate" : 128.93866247459977,
+      "durationSeconds" : 234.584409513,
+      "scheduledEvents" : 31200,
+      "completedEvents" : 30247,
+      "completionRatio" : 0.9694551282051282,
+      "terminalLagMs" : 174586.33259,
+      "copiesCommitted" : 1627,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 30247,
+          "p50Ms" : -1.538527486772546E9,
+          "p95Ms" : 2826.761883,
+          "p99Ms" : 140606.692591,
+          "maxMs" : 175079.328449
+        },
+        "t1Transaction" : {
+          "samples" : 30247,
+          "p50Ms" : 0.0,
+          "p95Ms" : 107.021819,
+          "p99Ms" : 671.170463,
+          "maxMs" : 1954.809216
+        },
+        "t2" : {
+          "samples" : 30247,
+          "p50Ms" : 0.0,
+          "p95Ms" : 6.609361,
+          "p99Ms" : 85.702608,
+          "maxMs" : 421.485695
+        },
+        "event" : {
+          "samples" : 30247,
+          "p50Ms" : 88981.447105,
+          "p95Ms" : 160897.311122,
+          "p99Ms" : 167209.862441,
+          "maxMs" : 175099.222556
+        },
+        "retention" : {
+          "samples" : 1560,
+          "p50Ms" : 83627.502861,
+          "p95Ms" : 158912.088452,
+          "p99Ms" : 165052.037288,
+          "maxMs" : 166553.089715
+        },
+        "lockWait" : {
+          "samples" : 30247,
+          "p50Ms" : 0.0,
+          "p95Ms" : 107.041737,
+          "p99Ms" : 671.194437,
+          "maxMs" : 1954.82718
+        },
+        "slotWait" : {
+          "samples" : 30247,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.486006,
+          "p99Ms" : 6940.807195,
+          "maxMs" : 10001.382823
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 6.889072805203554,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 953,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 1052
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 953,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 108902,
+        "admittedCopiesPerSecond" : 237.8308990883063,
+        "eventsReachingT1" : 29794,
+        "t1" : {
+          "samples" : 29794,
+          "p50Ms" : 265006.054163,
+          "p95Ms" : 387723.223558,
+          "p99Ms" : 396126.672427,
+          "maxMs" : 398994.13922
+        },
+        "unavailableRate" : 0.002916666666666667
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 198,
+          "latency" : {
+            "samples" : 198,
+            "p50Ms" : 301860.075738,
+            "p95Ms" : 368367.641061,
+            "p99Ms" : 374641.284241,
+            "maxMs" : 374842.917064
+          },
+          "unavailableRate" : 0.04040404040404041,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 204313.231229,
+            "p95Ms" : 279158.078016,
+            "p99Ms" : 290097.561997,
+            "maxMs" : 293765.896566
+          },
+          "unavailableRate" : 0.0,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "chosen-ws31-c100-r520-probe-rep4",
+      "mode" : "CHOSEN",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 3314,
+        "meanRows" : 1045.3808086904044,
+        "maxRows" : 2612
+      },
+      "concurrency" : 100,
+      "offeredRate" : 520.0,
+      "achievedRate" : 390.90068463997375,
+      "durationSeconds" : 78.66959872,
+      "scheduledEvents" : 31200,
+      "completedEvents" : 30752,
+      "completionRatio" : 0.9856410256410256,
+      "terminalLagMs" : 18671.521797,
+      "copiesCommitted" : 359,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 30752,
+          "p50Ms" : -1.539113339431719E9,
+          "p95Ms" : -1.53908609742789E9,
+          "p99Ms" : -1.539083355462514E9,
+          "maxMs" : 26366.774235
+        },
+        "t1Transaction" : {
+          "samples" : 30752,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 1930.180263
+        },
+        "t2" : {
+          "samples" : 30752,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 146.953346
+        },
+        "event" : {
+          "samples" : 30752,
+          "p50Ms" : 11034.948241,
+          "p95Ms" : 15435.437353,
+          "p99Ms" : 15787.092288,
+          "maxMs" : 26387.174701
+        },
+        "retention" : {
+          "samples" : 1560,
+          "p50Ms" : 1864.906307,
+          "p95Ms" : 9051.470055,
+          "p99Ms" : 9879.851108,
+          "maxMs" : 10077.318362
+        },
+        "lockWait" : {
+          "samples" : 30752,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 1930.20008
+        },
+        "slotWait" : {
+          "samples" : 30752,
+          "p50Ms" : 0.0,
+          "p95Ms" : 0.0,
+          "p99Ms" : 0.0,
+          "maxMs" : 10000.290995
+        }
+      },
+      "retentionOfferedRate" : 26.0,
+      "retentionAchievedRate" : 22.320261599691587,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 448,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms", "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 1219
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 448,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "GLOBAL",
+        "partitioned" : false
+      },
+      "partitionFallbacks" : null,
+      "partitionFallbackReasons" : null,
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 126795,
+        "admittedCopiesPerSecond" : 151.94563890662087,
+        "eventsReachingT1" : 30444,
+        "t1" : {
+          "samples" : 30444,
+          "p50Ms" : 452249.451057,
+          "p95Ms" : 749008.048903,
+          "p99Ms" : 770232.7721,
+          "maxMs" : 775144.473454
+        },
+        "unavailableRate" : 0.02423076923076923
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 235,
+          "latency" : {
+            "samples" : 235,
+            "p50Ms" : 305939.905979,
+            "p95Ms" : 581321.898725,
+            "p99Ms" : 600664.956953,
+            "maxMs" : 604584.864426
+          },
+          "unavailableRate" : 0.02127659574468085,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 355690.435875,
+            "p95Ms" : 627746.622325,
+            "p99Ms" : 647377.403456,
+            "maxMs" : 647771.462445
+          },
+          "unavailableRate" : 0.0375,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "partitioned-ws31-c100-r1-probe-paced-rep4",
+      "mode" : "PARTITIONED",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 1181,
+        "meanRows" : 2036.4030482641829,
+        "maxRows" : 4760
+      },
+      "concurrency" : 100,
+      "offeredRate" : 0.7714285714285715,
+      "achievedRate" : 0.7410357221576809,
+      "durationSeconds" : 62.075280077,
+      "scheduledEvents" : 46,
+      "completedEvents" : 46,
+      "completionRatio" : 1.0,
+      "terminalLagMs" : 3741.946744,
+      "copiesCommitted" : 322,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 46,
+          "p50Ms" : 712.08667,
+          "p95Ms" : 4110.978342,
+          "p99Ms" : 4759.821712,
+          "maxMs" : 4759.821712
+        },
+        "t1Transaction" : {
+          "samples" : 46,
+          "p50Ms" : 92.139608,
+          "p95Ms" : 263.494706,
+          "p99Ms" : 417.0866,
+          "maxMs" : 417.0866
+        },
+        "t2" : {
+          "samples" : 46,
+          "p50Ms" : 47.977101,
+          "p95Ms" : 145.885638,
+          "p99Ms" : 170.946855,
+          "maxMs" : 170.946855
+        },
+        "event" : {
+          "samples" : 46,
+          "p50Ms" : 766.852346,
+          "p95Ms" : 4250.737837,
+          "p99Ms" : 4931.185756,
+          "maxMs" : 4931.185756
+        },
+        "retention" : {
+          "samples" : 3,
+          "p50Ms" : 72.863706,
+          "p95Ms" : 156.756939,
+          "p99Ms" : 156.756939,
+          "maxMs" : 156.756939
+        },
+        "lockWait" : {
+          "samples" : 46,
+          "p50Ms" : 92.1627,
+          "p95Ms" : 263.519102,
+          "p99Ms" : 417.10253,
+          "maxMs" : 417.10253
+        },
+        "slotWait" : {
+          "samples" : 46,
+          "p50Ms" : 453.00912,
+          "p95Ms" : 3794.204154,
+          "p99Ms" : 4515.26308,
+          "maxMs" : 4515.26308
+        }
+      },
+      "retentionOfferedRate" : 0.038571428571428576,
+      "retentionAchievedRate" : 0.0577759527045062,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 0,
+        "other" : 0,
+        "samples" : [ ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 2
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 0,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "7c47a8790422eebb0b9bf596203ce53717f8e4ffc1d2acdbc8658e44f28021bc",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "COHORT_PARTITIONED",
+        "partitioned" : true
+      },
+      "partitionFallbacks" : 0,
+      "partitionFallbackReasons" : { },
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 88185,
+        "admittedCopiesPerSecond" : 290.6058394139225,
+        "eventsReachingT1" : 27979,
+        "t1" : {
+          "samples" : 27979,
+          "p50Ms" : 130578.850717,
+          "p95Ms" : 235767.551431,
+          "p99Ms" : 242171.293024,
+          "maxMs" : 244495.03482
+        },
+        "unavailableRate" : 6.41025641025641E-5
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 94119.314331,
+            "p95Ms" : 185981.42579,
+            "p99Ms" : 192165.85333,
+            "maxMs" : 192817.344116
+          },
+          "unavailableRate" : 0.0,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 95094.327725,
+            "p95Ms" : 163998.396017,
+            "p99Ms" : 176626.444255,
+            "maxMs" : 178568.840724
+          },
+          "unavailableRate" : 0.0,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    }, {
+      "name" : "chosen-ws31-c100-r1-probe-paced-rep4",
+      "mode" : "CHOSEN",
+      "referenceMode" : null,
+      "workspaceCount" : 31,
+      "inboxCount" : 7,
+      "reservationBacklog" : 1000,
+      "deltaBacklog" : 500,
+      "deltaBacklogObserved" : {
+        "samples" : 2689,
+        "meanRows" : 1152.690219412421,
+        "maxRows" : 2904
+      },
+      "concurrency" : 100,
+      "offeredRate" : 0.7714285714285715,
+      "achievedRate" : 0.7425956385310136,
+      "durationSeconds" : 60.598255181,
+      "scheduledEvents" : 46,
+      "completedEvents" : 45,
+      "completionRatio" : 0.9782608695652174,
+      "terminalLagMs" : 2264.921848,
+      "copiesCommitted" : 315,
+      "percentiles" : {
+        "t1" : {
+          "samples" : 45,
+          "p50Ms" : 1937.794821,
+          "p95Ms" : 4988.464077,
+          "p99Ms" : 9216.187317,
+          "maxMs" : 9216.187317
+        },
+        "t1Transaction" : {
+          "samples" : 45,
+          "p50Ms" : 341.639139,
+          "p95Ms" : 790.589958,
+          "p99Ms" : 1029.414821,
+          "maxMs" : 1029.414821
+        },
+        "t2" : {
+          "samples" : 45,
+          "p50Ms" : 19.752227,
+          "p95Ms" : 37.33313,
+          "p99Ms" : 62.686593,
+          "maxMs" : 62.686593
+        },
+        "event" : {
+          "samples" : 45,
+          "p50Ms" : 1968.982382,
+          "p95Ms" : 5018.339103,
+          "p99Ms" : 9249.338115,
+          "maxMs" : 9249.338115
+        },
+        "retention" : {
+          "samples" : 3,
+          "p50Ms" : 32.580645,
+          "p95Ms" : 32.621322,
+          "p99Ms" : 32.621322,
+          "maxMs" : 32.621322
+        },
+        "lockWait" : {
+          "samples" : 45,
+          "p50Ms" : 341.671339,
+          "p95Ms" : 790.614505,
+          "p99Ms" : 1029.444386,
+          "maxMs" : 1029.444386
+        },
+        "slotWait" : {
+          "samples" : 45,
+          "p50Ms" : 1331.668494,
+          "p95Ms" : 4668.103819,
+          "p99Ms" : 8660.124902,
+          "maxMs" : 8660.124902
+        }
+      },
+      "retentionOfferedRate" : 0.038571428571428576,
+      "retentionAchievedRate" : 0.05782385160043242,
+      "retentionStarvedTicks" : 0,
+      "errors" : {
+        "lockTimeouts" : 0,
+        "deadlocks" : 0,
+        "deadlineMissesFromSlotQueueing" : 1,
+        "other" : 0,
+        "samples" : [ "SLOT_WAIT: no write slot within 10000 ms" ],
+        "physicalFailures" : {
+          "SLOT_WAIT" : 246
+        }
+      },
+      "lockTimeouts" : 0,
+      "lockTimeoutRate" : 0.0,
+      "deadlocks" : 0,
+      "deadlineMissesFromSlotQueueing" : 1,
+      "t1Statement" : null,
+      "t1Probe" : {
+        "storeClass" : "email.testinbox.persistence.JdbcStorageAdmission",
+        "enforcement" : "ALL",
+        "readsFootprint" : true,
+        "footprintRead" : true,
+        "footprintUnavailable" : null,
+        "cohortRequired" : true,
+        "snapshotStatementSha256" : "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0",
+        "budgetedWorkspaces" : 1,
+        "inactiveWorkspaces" : 0,
+        "locking" : "GLOBAL",
+        "partitioned" : false
+      },
+      "partitionFallbacks" : null,
+      "partitionFallbackReasons" : null,
+      "background" : {
+        "offeredRate" : 520.0,
+        "events" : 31200,
+        "admittedCopies" : 124114,
+        "admittedCopiesPerSecond" : 183.49964709428417,
+        "eventsReachingT1" : 30961,
+        "t1" : {
+          "samples" : 30961,
+          "p50Ms" : 353610.740279,
+          "p95Ms" : 595045.400577,
+          "p99Ms" : 612830.072479,
+          "maxMs" : 617265.109203
+        },
+        "unavailableRate" : 0.00766025641025641
+      },
+      "probes" : {
+        "inside" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 290384.438912,
+            "p95Ms" : 505676.137576,
+            "p99Ms" : 521587.694022,
+            "maxMs" : 524687.950808
+          },
+          "unavailableRate" : 0.0125,
+          "reachesT1" : true
+        },
+        "cold" : {
+          "events" : 240,
+          "targetReachedEvents" : 240,
+          "latency" : {
+            "samples" : 240,
+            "p50Ms" : 277800.366592,
+            "p95Ms" : 514896.952369,
+            "p99Ms" : 526721.750376,
+            "maxMs" : 531279.489172
+          },
+          "unavailableRate" : 0.0125,
+          "reachesT1" : true
+        },
+        "unknown" : {
+          "events" : 240,
+          "targetReachedEvents" : 0,
+          "latency" : null,
+          "unavailableRate" : 0.0,
+          "reachesT1" : false
+        }
+      }
+    } ],
+    "probePooled" : [ {
+      "point" : "heaviest",
+      "mode" : "CHOSEN",
+      "repetitions" : 4,
+      "classes" : {
+        "inside" : {
+          "events" : 960,
+          "targetReachedEvents" : 943,
+          "minimumSampleMet" : true,
+          "latency" : {
+            "samples" : 943,
+            "p50Ms" : 354109.263049,
+            "p95Ms" : 613751.792818,
+            "p99Ms" : 681737.02699,
+            "maxMs" : 697410.969394
+          },
+          "unavailableRate" : 0.02863202545068929
+        },
+        "cold" : {
+          "events" : 960,
+          "targetReachedEvents" : 960,
+          "minimumSampleMet" : true,
+          "latency" : {
+            "samples" : 960,
+            "p50Ms" : 352366.495136,
+            "p95Ms" : 623618.722416,
+            "p99Ms" : 651388.518679,
+            "maxMs" : 668064.958493
+          },
+          "unavailableRate" : 0.036458333333333336
+        },
+        "unknown" : {
+          "events" : 960,
+          "targetReachedEvents" : 0,
+          "minimumSampleMet" : false,
+          "latency" : null,
+          "unavailableRate" : null
+        }
+      },
+      "insideMinusColdP99Ms" : 30348.50831100007
+    }, {
+      "point" : "heaviest",
+      "mode" : "PARTITIONED",
+      "repetitions" : 4,
+      "classes" : {
+        "inside" : {
+          "events" : 960,
+          "targetReachedEvents" : 831,
+          "minimumSampleMet" : true,
+          "latency" : {
+            "samples" : 831,
+            "p50Ms" : 292054.804495,
+            "p95Ms" : 361097.124019,
+            "p99Ms" : 370454.671017,
+            "maxMs" : 374842.917064
+          },
+          "unavailableRate" : 0.03850782190132371
+        },
+        "cold" : {
+          "events" : 960,
+          "targetReachedEvents" : 960,
+          "minimumSampleMet" : true,
+          "latency" : {
+            "samples" : 960,
+            "p50Ms" : 187895.90695,
+            "p95Ms" : 279268.791291,
+            "p99Ms" : 291410.098245,
+            "maxMs" : 294531.204966
+          },
+          "unavailableRate" : 0.003125
+        },
+        "unknown" : {
+          "events" : 960,
+          "targetReachedEvents" : 0,
+          "minimumSampleMet" : false,
+          "latency" : null,
+          "unavailableRate" : null
+        }
+      },
+      "insideMinusColdP99Ms" : 79044.57277199998
+    }, {
+      "point" : "paced",
+      "mode" : "CHOSEN",
+      "repetitions" : 4,
+      "classes" : {
+        "inside" : {
+          "events" : 960,
+          "targetReachedEvents" : 960,
+          "minimumSampleMet" : true,
+          "latency" : {
+            "samples" : 960,
+            "p50Ms" : 283915.458158,
+            "p95Ms" : 517540.456637,
+            "p99Ms" : 565258.410289,
+            "maxMs" : 573686.738108
+          },
+          "unavailableRate" : 0.011458333333333333
+        },
+        "cold" : {
+          "events" : 960,
+          "targetReachedEvents" : 960,
+          "minimumSampleMet" : true,
+          "latency" : {
+            "samples" : 960,
+            "p50Ms" : 273149.97643,
+            "p95Ms" : 532376.261529,
+            "p99Ms" : 563940.76529,
+            "maxMs" : 593334.132705
+          },
+          "unavailableRate" : 0.013541666666666667
+        },
+        "unknown" : {
+          "events" : 960,
+          "targetReachedEvents" : 0,
+          "minimumSampleMet" : false,
+          "latency" : null,
+          "unavailableRate" : null
+        }
+      },
+      "insideMinusColdP99Ms" : 1317.644999000011
+    }, {
+      "point" : "paced",
+      "mode" : "PARTITIONED",
+      "repetitions" : 4,
+      "classes" : {
+        "inside" : {
+          "events" : 960,
+          "targetReachedEvents" : 960,
+          "minimumSampleMet" : true,
+          "latency" : {
+            "samples" : 960,
+            "p50Ms" : 93528.904511,
+            "p95Ms" : 163977.016197,
+            "p99Ms" : 187126.041479,
+            "maxMs" : 192817.344116
+          },
+          "unavailableRate" : 0.0
+        },
+        "cold" : {
+          "events" : 960,
+          "targetReachedEvents" : 960,
+          "minimumSampleMet" : true,
+          "latency" : {
+            "samples" : 960,
+            "p50Ms" : 100535.055269,
+            "p95Ms" : 168429.160577,
+            "p99Ms" : 176626.444255,
+            "maxMs" : 186593.165092
+          },
+          "unavailableRate" : 0.0010416666666666667
+        },
+        "unknown" : {
+          "events" : 960,
+          "targetReachedEvents" : 0,
+          "minimumSampleMet" : false,
+          "latency" : null,
+          "unavailableRate" : null
+        }
+      },
+      "insideMinusColdP99Ms" : 10499.597223999997
+    } ],
+    "criteria" : {
+      "sustained2x" : {
+        "pass" : false,
+        "observed" : 0.19195703227135916,
+        "threshold" : "achieved / offered >= 0.995 at 520.0 events/s at concurrency [10, 25, 50, 100] (concurrency 1 is the uncontended baseline, reported only)",
+        "detail" : "worst achieved/offered over 4 scenario(s); terminal lag c10=105199 ms, c25=79181 ms, c50=90871 ms, c100=126046 ms"
+      },
+      "t1P99" : {
+        "pass" : false,
+        "observed" : 125041.230232,
+        "threshold" : "T1 p99 <= 50.0 ms (completion - due, schedule lag included) at concurrency [10, 25, 50, 100]; concurrency 1 is reported only",
+        "detail" : "worst T1 p99 over 4 scenario(s)"
+      },
+      "retentionP99VsReference" : {
+        "pass" : false,
+        "observed" : null,
+        "threshold" : "retention p99 <= 2.0 x the NO_LOCK reference's retention p99 (ADR-035 §11 mode c, no global ceiling) at the same offered load",
+        "detail" : "a scenario has no reference run"
+      },
+      "deadlocks" : {
+        "pass" : true,
+        "observed" : 0.0,
+        "threshold" : "0 deadlocks (SQLSTATE 40P01) across every scenario",
+        "detail" : "sum over 20 scenario(s)"
+      },
+      "lockTimeoutRate" : {
+        "pass" : true,
+        "observed" : 0.0,
+        "threshold" : "lock_timeout rate < 0.001 of events, every CHOSEN scenario",
+        "detail" : "worst per-scenario rate over 10 scenario(s)"
+      },
+      "slotQueueingDeadlineMisses" : {
+        "pass" : false,
+        "observed" : 42.0,
+        "threshold" : "0 events refused for W_slot (StorageUnavailableReason.SLOT_WAIT) across every scenario",
+        "detail" : "sum over 20 scenario(s)"
+      },
+      "otherErrors" : {
+        "pass" : true,
+        "observed" : 0.0,
+        "threshold" : "0 errors other than lock_timeout, deadlock or slot wait, events and retention, across every scenario",
+        "detail" : "sum over 20 scenario(s)"
+      },
+      "retentionStarvedTicks" : {
+        "pass" : true,
+        "observed" : 0.0,
+        "threshold" : "0 retention ticks that found nothing to delete, across every scenario",
+        "detail" : "sum over 20 scenario(s)"
+      }
+    },
+    "informationalVerdict" : "INCOMPLETE"
+  }
+}

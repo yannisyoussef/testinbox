@@ -1,0 +1,5 @@
+2026-11-06 06:24:45,664 INFO Starting unattended upgrades script
+2026-11-06 06:24:45,667 INFO Allowed origins are: o=Ubuntu,a=noble, o=Ubuntu,a=noble-security, o=UbuntuESMApps,a=noble-apps-security, o=UbuntuESM,a=noble-infra-security
+2026-11-06 06:24:45,668 INFO Initial blacklist: 
+2026-11-06 06:24:45,668 INFO Initial whitelist (not strict): 
+2026-11-06 06:24:52,634 INFO No packages found that can be upgraded unattended and no pending auto-removals
