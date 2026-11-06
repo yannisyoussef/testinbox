@@ -197,7 +197,9 @@ steady state:
   p99 207.6 ms at 64 clients, T1 and T2 serialized) because those writers
   updated its hot row.
 - **The epoch row is read without a lock** (no `FOR SHARE`, no `KEY SHARE`).
-  T-C1 asserts that from `pg_locks`. Otherwise every T1 would take a shared
+  T-C1 asserts it behaviourally: while a fast path is paused mid-transaction,
+  another session's `SELECT … FROM storage_admission_epoch FOR UPDATE NOWAIT`
+  must succeed. Row locks are not visible in `pg_locks`. Otherwise every T1 would take a shared
   lock on one global row, which is a hot row in another form (MultiXact
   churn).
 - **What does still serialize:**
@@ -332,12 +334,12 @@ storage_escrow_scope           -- PRIMARY KEY (kind, scope_id); fillfactor 50
 
 | Function | Purpose |
 |---|---|
-| `storage_t1_fence(drain)` | `(35, 1)`, then every lane `FOR UPDATE` when `drain` |
+| `storage_t1_fence(drain)` | `(35, 1)`, then every lane `FOR UPDATE` when `drain`; after acquiring both, it runs `set_config('testinbox.t1_fence', 'drained', true)` (transaction-local). The flag lives exactly as long as the locks: reset at commit or rollback, reverted on a subtransaction abort, which also releases the locks that subtransaction took. It asserts lock order, not a security boundary: revoke is executable by no application role (§13.2) |
 | `storage_escrow_lock(…)` | §4.2 step 3 |
 | `storage_escrow_admit(…)` | §4.2 step 5 |
 | `storage_escrow_refill_scope(…)` | §4.3 |
 | `storage_escrow_refill_global()` | §4.4 |
-| `storage_escrow_revoke(cause)` | the generation bump (and `escrow_enabled = false` when the cause is a mixed version), and nothing else. It **requires** the drain fence to be held already by its caller's first statement, and refuses otherwise (it checks `pg_locks` for `(35, 1)` and the lanes held by this backend). It is always the caller's **last** write (§4.8) |
+| `storage_escrow_revoke(cause)` | the generation bump (and `escrow_enabled = false` when the cause is a mixed version), and nothing else. It **requires** the drain fence to be held already by its caller's first statement, and refuses otherwise: it refuses unless `current_setting('testinbox.t1_fence', true) = 'drained'` (set by `storage_t1_fence(true)`, below). Not `pg_locks`: lane row locks live in the tuple's xmax and are not in the shared lock table (correctness confirmation, 637fea7). It is always the caller's **last** write (§4.8) |
 | `storage_escrow_audit()` | §6.3 |
 | `storage_escrow_lane_footprint_total()` | Σ spendable lane footprint grants, for rule (P) (§6.1) |
 | `storage_footprint_bound(p, n, …)` | IMMUTABLE; `FootprintModel.bound` in SQL, pinned to Kotlin by P-F (§11.2) |
@@ -677,7 +679,10 @@ row, from many writers, including A′ and OFF code once V28 is applied. So:
 **The audit behind that rule** (both artifacts, A′ and SLE):
 
 - beta admission takes `beta_cohort FOR UPDATE`, then `(35, 1)`
-  (`JdbcBetaAdmissions.lockPolicy`), before its `workspace` INSERT;
+  (`JdbcBetaAdmissions.lockPolicy`), and under SLE then calls
+  `storage_t1_fence(true)` **immediately**, before its `workspace` INSERT
+  (an epoch-bumping write). Its order is therefore 4, 5, 14, with no exception
+  to the canonical rule (correctness confirmation, 637fea7);
 - the bootstrap `ensureWorkspace` (`Ops.kt`) takes nothing later;
 - rule (P) holds `(35, 1)` before its pending row;
 - the compactor holds `(35, 2)` before its watermark write, and takes no
@@ -1244,12 +1249,12 @@ test names the mutant it kills.
 
 | Test | What it proves | Mutant it kills |
 |---|---|---|
-| T-C1 | two fast paths on different slots never block each other; no lock on the epoch row (`pg_locks`, L2) | lane keyed by node only; epoch read `FOR SHARE` |
+| T-C1 | two fast paths on different slots never block each other; no lock on the epoch row (L2): another session's `FOR UPDATE NOWAIT` on it succeeds while a fast path is paused mid-transaction | lane keyed by node only; epoch read `FOR SHARE` |
 | T-C2 | fast path ↔ global refill, both orders; E4–E6 after each; the slow path's refill sees its own insert | refill without lane locks; **regrant before the event's insert** (must over-grant by c, H1) |
 | T-C3 | lifecycle fence ↔ fast path, both orders: the fence sees the reservation; the next event is `Inactive` | fence without drain |
 | T-C4 | rule (P) ↔ fast path, latched between lock and spend: E7 holds | rule (P) without Σ g (must over-admit) |
 | T-C5 | observation INSERT racing a fast path: old-epoch spends commit; new ones escalate; Lemma 1 holds against both | epoch trigger dropped |
-| T-C6 | every pair among fast path, slow path, keeper, scope refill, lifecycle, pool reserve, beta admission, workspace provisioning, node revoke, rule (P), observation insert, `storage_repair_ledger`, recompute, the audit's violation transaction, T2 and retention, forced into every wait order, under **A′ and escrow code**: 0 deadlocks. Includes rule (P) concurrent with repair + revoke, and with recompute | reversed lock order (must deadlock); epoch row taken before `(35, 1)`; **`(35, 2)` taken before the fence in repair or recompute (must deadlock against rule (P))** |
+| T-C6 | every pair among fast path, slow path, keeper, scope refill, lifecycle, pool reserve, beta admission, workspace provisioning, node revoke, rule (P), observation insert, `storage_repair_ledger`, recompute, the audit's violation transaction, T2 and retention, forced into every wait order, under **A′ and escrow code**: 0 deadlocks. Includes rule (P) concurrent with repair + revoke, and with recompute | reversed lock order (must deadlock); epoch row taken before `(35, 1)`; **`(35, 2)` taken before the fence in repair or recompute (must deadlock against rule (P))**; **a revoke without the fence (must be refused by the `testinbox.t1_fence` guard)**; beta admission's `workspace` INSERT before its fence |
 | T-C7 | a scope wait > `L_w` escalates; a stalled holder makes the slow path time out globally; never a scope-attributed `451` | `451` on scope timeout |
 | T-C8 | `ORDER BY … FOR UPDATE` locks in key order under contention | — (pins PostgreSQL behaviour) |
 | T-C9 | mixed versions: A′ ingestion **and A′ API** registration, an A′ lifecycle fence and A′ rule (P) → drain, revoke, disable; decisions equal mode a's; no over-admission across the transition; a new API (`escrow-v1`) never disables | trigger without drain; NULL from the API ignored |
