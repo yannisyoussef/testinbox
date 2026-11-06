@@ -43,9 +43,22 @@ class MicrometerLimitMetricsTest {
     }
 
     @Test
+    fun `refunds are counted in tokens, per category and outcome`() {
+        metrics.rateRefund(RateCategory.INGEST, refunded = true, tokens = 2)
+        metrics.rateRefund(RateCategory.INGEST, refunded = true, tokens = 3)
+        metrics.rateRefund(RateCategory.INGEST, refunded = false, tokens = 1)
+
+        registry.counter("testinbox_rate_refund_total", "category", "INGEST", "outcome", "refunded").count() shouldBe 5.0
+        registry.counter("testinbox_rate_refund_total", "category", "INGEST", "outcome", "failed").count() shouldBe 1.0
+    }
+
+    @Test
     fun `every label value is drawn from a closed enum, never from caller-controlled data`() {
         RateCategory.entries.forEach { metrics.rateDecision(it, allowed = false) }
         QuotaDimension.entries.forEach { metrics.quotaRejected(it) }
+        // Refunds exist for INGEST only: its two outcomes.
+        metrics.rateRefund(RateCategory.INGEST, refunded = true, tokens = 1)
+        metrics.rateRefund(RateCategory.INGEST, refunded = false, tokens = 1)
 
         val categoryNames = RateCategory.entries.map { it.name }.toSet()
         val quotaNames = QuotaDimension.entries.map { it.name }.toSet()
@@ -55,7 +68,7 @@ class MicrometerLimitMetricsTest {
                     when (tag.key) {
                         "category" -> tag.value in categoryNames
                         "quota" -> tag.value in quotaNames
-                        "outcome" -> tag.value in setOf("allowed", "rejected")
+                        "outcome" -> tag.value in setOf("allowed", "rejected", "refunded", "failed")
                         else -> false
                     }
                 // An unbounded label would let a caller choose how much memory
@@ -65,6 +78,6 @@ class MicrometerLimitMetricsTest {
             }
         }
         // Cardinality is therefore bounded by the enums, not by traffic.
-        (registry.meters.size <= categoryNames.size * 2 + quotaNames.size) shouldBe true
+        (registry.meters.size <= categoryNames.size * 2 + quotaNames.size + 2) shouldBe true
     }
 }

@@ -130,6 +130,31 @@ object TokenBucket {
         now: Instant,
     ): Long = Math.floor(refill(state, policy, now).tokens).toLong()
 
+    /**
+     * Gives back [tokens] whole tokens that [spend] actually took (ADR-027 §4
+     * as amended by the owner decision of 2026-11-06: an `INGEST` charge whose
+     * event was proven refused before T1).
+     *
+     * The bucket is first refilled to [now] exactly as [spend] refills it, and
+     * the refund is then added and **clamped at capacity**. Refilling first
+     * keeps one clock: elapsed time is credited once, at the refill rate, and
+     * never again on top of the refunded tokens. The clamp means a refund can
+     * never raise a bucket above what an untouched bucket could hold: an
+     * absorbed refund is lost, never banked. The caller guarantees that
+     * [tokens] never exceeds what was taken; this function cannot know that,
+     * so it only refuses a non-positive count.
+     */
+    fun refund(
+        state: State,
+        policy: RatePolicy,
+        now: Instant,
+        tokens: Int,
+    ): State {
+        require(tokens > 0) { "a refund gives back at least one token, was $tokens" }
+        val refilled = refill(state, policy, now)
+        return State((refilled.tokens + tokens).coerceAtMost(policy.capacity.toDouble()), refilled.updatedAt)
+    }
+
     /** A full bucket for a scope seen for the first time. */
     fun initial(
         policy: RatePolicy,

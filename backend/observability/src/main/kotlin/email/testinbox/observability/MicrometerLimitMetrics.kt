@@ -36,4 +36,24 @@ class MicrometerLimitMetrics(
     override fun quotaRejected(dimension: QuotaDimension) {
         registry.counter("testinbox_quota_rejected_total", "quota", dimension.name).increment()
     }
+
+    /**
+     * Tokens given back for events refused before T1 (owner decision
+     * 2026-11-06), or kept because the refund could not be applied. Counted
+     * in tokens, labelled only by the closed category and a two-value outcome.
+     */
+    override fun rateRefund(
+        category: RateCategory,
+        refunded: Boolean,
+        tokens: Int,
+    ) {
+        registry
+            .counter(
+                "testinbox_rate_refund_total",
+                "category",
+                category.name,
+                "outcome",
+                if (refunded) "refunded" else "failed",
+            ).increment(tokens.toDouble())
+    }
 }

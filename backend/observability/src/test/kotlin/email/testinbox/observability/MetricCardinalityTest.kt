@@ -88,6 +88,9 @@ class MetricCardinalityTest {
         RateCategory.entries.forEach { limits.rateDecision(it, allowed = true) }
         RateCategory.entries.forEach { limits.rateDecision(it, allowed = false) }
         QuotaDimension.entries.forEach { limits.quotaRejected(it) }
+        // Refunds exist for INGEST only (owner decision 2026-11-06): its two outcomes.
+        limits.rateRefund(RateCategory.INGEST, refunded = true, tokens = 2)
+        limits.rateRefund(RateCategory.INGEST, refunded = false, tokens = 1)
 
         val apiKeys = MicrometerApiKeyMetrics(registry)
         AuthOutcome.entries.forEach { apiKeys.authCompleted(it) }
@@ -193,7 +196,7 @@ class MetricCardinalityTest {
                 CompactionOutcome.entries.map { it.name.lowercase() }.toSet() +
                 StorageAdmissionOutcome.entries.map { it.name.lowercase() }.toSet() +
                 MicrometerStorageProtocolMetrics.SWEEP_OUTCOMES.toSet() +
-                setOf("allowed", "rejected"),
+                setOf("allowed", "rejected", "refunded", "failed"),
             "operation" to
                 BlobOperation.entries.map { it.name }.toSet() +
                 ApiKeyOperation.entries.map { it.name }.toSet() +
@@ -305,7 +308,8 @@ class MetricCardinalityTest {
         // (one inbound counter, one admission outcome, two auth outcomes and two
         // quota dimensions), every one from a closed enum: 164 series. The
         // share-partitioned T1 (PROPOSED) added eight more, all closed enums: two
-        // admission-locking gauges and six fallback reasons: 172 series today.
+        // admission-locking gauges and six fallback reasons: 172 series. The INGEST
+        // refund (owner decision 2026-11-06) added two, its closed outcomes: 175 today.
         io.kotest.assertions.withClue("series=$before") { (before < 180) shouldBe true }
     }
 
@@ -340,6 +344,7 @@ class MetricCardinalityTest {
             "testinbox_wait_listen_degraded_polling",
             "testinbox_object_storage_operation_duration_seconds",
             "testinbox_rate_decision_total",
+            "testinbox_rate_refund_total",
             "testinbox_quota_rejected_total",
             "testinbox_wait_slot_rejected_total",
             "testinbox_wait_slots_active",

@@ -1,5 +1,6 @@
 package email.testinbox.persistence
 
+import email.testinbox.application.port.RateCharge
 import email.testinbox.application.port.RateDecision
 import email.testinbox.application.port.RateLimiter
 import email.testinbox.domain.InboxId
@@ -94,6 +95,98 @@ class JdbcRateLimiter(
                 }.optional()
                 .orElse(null) ?: return policy.capacity
         return TokenBucket.available(TokenBucket.State(snapshot.tokens, snapshot.updatedAt), policy, snapshot.serverNow)
+    }
+
+    /**
+     * Gives back [charges] in ONE `REQUIRES_NEW` transaction (owner decision
+     * 2026-11-06, ADR-027 §4 as amended). Per bucket, under the same
+     * `FOR UPDATE` row lock a spend takes, the bucket is refilled to the
+     * transaction's `now()` exactly as a spend refills it, the bucket's count
+     * of charges is added, and the result is clamped at capacity
+     * ([TokenBucket.refund]). So:
+     *
+     * - **concurrency**: a refund serializes with every spend and every other
+     *   refund of the same bucket on its row lock. Buckets are locked in one
+     *   global order (workspace, category, inbox with the workspace bucket
+     *   first), and a spend holds one row at a time, so two refunds cannot
+     *   deadlock each other or a spend;
+     * - **overflow**: `tokens ≤ capacity` after every refund, and a refund
+     *   adds at most the number of charges it was handed;
+     * - **all or nothing**: every bucket of the attempt commits together, or
+     *   none does and the exception says so. The caller never retries.
+     *
+     * A bucket row that no longer exists (its workspace or inbox was deleted,
+     * `ON DELETE CASCADE`) is skipped, never recreated: there is nothing left
+     * to give back to. `updated_at` never moves backwards.
+     */
+    override fun refund(charges: List<RateCharge>) {
+        if (charges.isEmpty()) return
+        val perBucket =
+            charges
+                .groupingBy { it }
+                .eachCount()
+                .entries
+                .sortedWith(
+                    compareBy<Map.Entry<RateCharge, Int>>(
+                        { it.key.workspaceId.value },
+                        { it.key.category.name },
+                        { it.key.inboxId?.value },
+                    ),
+                )
+        ownTransaction.executeWithoutResult {
+            perBucket.forEach { (bucket, tokens) -> refundBucket(bucket, tokens) }
+        }
+    }
+
+    private fun refundBucket(
+        bucket: RateCharge,
+        tokens: Int,
+    ) {
+        val policy = policies(bucket.category, bucket.inboxId != null)
+        val snapshot =
+            jdbc
+                .sql(
+                    """
+                    SELECT tokens, updated_at, now() AS server_now
+                      FROM rate_bucket
+                     WHERE workspace_id = :workspaceId AND category = :category
+                       AND inbox_id IS NOT DISTINCT FROM :inboxId
+                       FOR UPDATE
+                    """.trimIndent(),
+                ).param("workspaceId", bucket.workspaceId.value)
+                .param("category", bucket.category.name)
+                .param("inboxId", bucket.inboxId?.value)
+                .query { rs, _ ->
+                    Snapshot(
+                        tokens = rs.getDouble("tokens"),
+                        updatedAt = Timestamps.fromDb(rs, "updated_at")!!,
+                        serverNow = Timestamps.fromDb(rs, "server_now")!!,
+                    )
+                }.optional()
+                .orElse(null) ?: return
+        val refunded =
+            TokenBucket.refund(
+                TokenBucket.State(snapshot.tokens, snapshot.updatedAt),
+                policy,
+                snapshot.serverNow,
+                tokens,
+            )
+        // GREATEST: a refund that waited on the row lock behind a spend which
+        // committed a later updated_at refilled nothing (elapsed clamps at 0)
+        // and must not move updated_at back, or the next spend would refill
+        // the same interval twice.
+        jdbc
+            .sql(
+                """
+                UPDATE rate_bucket SET tokens = :tokens, updated_at = GREATEST(updated_at, now())
+                 WHERE workspace_id = :workspaceId AND category = :category
+                   AND inbox_id IS NOT DISTINCT FROM :inboxId
+                """.trimIndent(),
+            ).param("tokens", refunded.tokens)
+            .param("workspaceId", bucket.workspaceId.value)
+            .param("category", bucket.category.name)
+            .param("inboxId", bucket.inboxId?.value)
+            .update()
     }
 
     private fun consume(

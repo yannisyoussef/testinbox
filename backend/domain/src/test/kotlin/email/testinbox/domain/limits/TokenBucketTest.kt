@@ -5,6 +5,7 @@ import io.kotest.matchers.longs.shouldBeGreaterThanOrEqual
 import io.kotest.matchers.shouldBe
 import io.kotest.property.Arb
 import io.kotest.property.arbitrary.double
+import io.kotest.property.arbitrary.filter
 import io.kotest.property.arbitrary.long
 import io.kotest.property.checkAll
 import kotlinx.coroutines.runBlocking
@@ -146,5 +147,77 @@ class TokenBucketTest {
         decision.allowed shouldBe true
         (decision.remaining <= huge.capacity) shouldBe true
         (decision.state.tokens.isFinite()) shouldBe true
+    }
+
+    // --- refund (owner decision 2026-11-06, ADR-027 §4 as amended) -------------------------------------
+
+    @Test
+    fun `a refund at the instant of the spend gives back exactly the token taken`() {
+        val spent = TokenBucket.spend(TokenBucket.initial(policy, start), policy, start).state
+        val refunded = TokenBucket.refund(spent, policy, start, 1)
+        refunded shouldBe TokenBucket.initial(policy, start)
+    }
+
+    @Test
+    fun `a refund never raises a bucket above capacity - an absorbed refund is lost, never banked`() {
+        val full = TokenBucket.initial(policy, start)
+        TokenBucket.refund(full, policy, start, 1).tokens shouldBe 3.0
+        TokenBucket.refund(full, policy, start.plusSeconds(3600), 3).tokens shouldBe 3.0
+        TokenBucket.refund(TokenBucket.State(2.5, start), policy, start, 2).tokens shouldBe 3.0
+    }
+
+    @Test
+    fun `a refund credits elapsed time once, then the refund, on one clock`() {
+        val empty = TokenBucket.State(0.0, start)
+        val refunded = TokenBucket.refund(empty, policy, start.plusSeconds(1), 1)
+        refunded shouldBe TokenBucket.State(2.0, start.plusSeconds(1)) // 1 refilled + 1 given back
+        // A clock moving backwards credits no time and does not move updatedAt back.
+        TokenBucket.refund(empty, policy, start.minusSeconds(10), 1) shouldBe TokenBucket.State(1.0, start)
+    }
+
+    @Test
+    fun `a refund refuses a non-positive count`() {
+        runCatching { TokenBucket.refund(TokenBucket.initial(policy, start), policy, start, 0) }.isFailure shouldBe true
+    }
+
+    @Test
+    fun `property - a spend then its refund leaves the bucket exactly as if the charge never happened`() {
+        // The refill-clock argument: refill is a clamped sum, so
+        // min(C, min(C, x + g1) - 1 + g2 + 1) = min(C, x + g1 + g2), which is the
+        // untouched bucket at the refund instant. Nothing is created by the round trip.
+        runBlocking {
+            checkAll(
+                Arb.double(0.0..3.0).filter { it.isFinite() },
+                Arb.long(0L..10_000L),
+                Arb.long(0L..10_000L),
+            ) { tokens, toSpendMillis, toRefundMillis ->
+                val state = TokenBucket.State(tokens, start)
+                val spentAt = start.plusMillis(toSpendMillis)
+                val refundAt = spentAt.plusMillis(toRefundMillis)
+                val spend = TokenBucket.spend(state, policy, spentAt)
+                if (spend.allowed) {
+                    val roundTrip = TokenBucket.refund(spend.state, policy, refundAt, 1)
+                    val untouched = TokenBucket.available(state, policy, refundAt)
+                    // Equal up to floating-point rounding, and never above.
+                    (roundTrip.tokens <= minOf(3.0, tokens + (toSpendMillis + toRefundMillis) / 1000.0) + 1e-9) shouldBe true
+                    Math.floor(roundTrip.tokens + 1e-9).toLong() shouldBe untouched
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `property - however many tokens are refunded, the bucket stays within capacity`() {
+        runBlocking {
+            checkAll(
+                Arb.double(0.0..3.0).filter { it.isFinite() },
+                Arb.long(0L..100_000L),
+                Arb.long(1L..1_000L),
+            ) { tokens, elapsedMillis, count ->
+                val refunded = TokenBucket.refund(TokenBucket.State(tokens, start), policy, start.plusMillis(elapsedMillis), count.toInt())
+                (refunded.tokens <= 3.0) shouldBe true
+                refunded.tokens shouldBeGreaterThanOrEqual tokens.coerceAtMost(3.0)
+            }
+        }
     }
 }

@@ -414,6 +414,17 @@ class FakeRateLimiter : RateLimiter {
     val exhaustedInboxes = mutableSetOf<InboxId>()
     val calls = mutableListOf<Pair<RateCategory, InboxId?>>()
 
+    /** Every refund call, in order: one list of charges per call. */
+    val refunds = java.util.Collections.synchronizedList(mutableListOf<List<email.testinbox.application.port.RateCharge>>())
+
+    /** When set, [refund] throws it after recording the call. */
+    var refundFailure: RuntimeException? = null
+
+    override fun refund(charges: List<email.testinbox.application.port.RateCharge>) {
+        refunds += charges
+        refundFailure?.let { throw it }
+    }
+
     override fun tryConsume(
         workspaceId: WorkspaceId,
         category: RateCategory,

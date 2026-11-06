@@ -51,7 +51,38 @@ interface RateLimiter {
         workspaceId: WorkspaceId,
         category: RateCategory,
     ): Long? = null
+
+    /**
+     * Gives back tokens that [tryConsume] actually took, one per element of
+     * [charges] (the same bucket may appear several times). Only
+     * `ReceiveInboundDelivery` calls this, and only for an `INGEST` event
+     * proven refused before T1 (owner decision 2026-11-06, ADR-027 §4 as
+     * amended); an ArchUnit rule keeps it that way.
+     *
+     * Implementations must:
+     * - apply every refund in ONE transaction of its own, so an attempt's
+     *   refund is all or nothing, and take the same row locks a spend takes;
+     * - refill to the database's `now()` first and clamp at capacity, so a
+     *   bucket never holds more than an untouched bucket could;
+     * - never create a bucket: a bucket that no longer exists (its workspace
+     *   or inbox was deleted) has nothing to give back to;
+     * - throw when the outcome is not known to have committed. The caller
+     *   never retries a refund, so an uncertain commit can never be applied
+     *   twice; the charge then stays, which is the pre-refund behaviour.
+     */
+    fun refund(charges: List<RateCharge>)
 }
+
+/**
+ * One token actually taken from one bucket by [RateLimiter.tryConsume]: the
+ * workspace bucket of [category] when [inboxId] is null, that inbox's bucket
+ * otherwise. A refund gives back exactly these and nothing else.
+ */
+data class RateCharge(
+    val workspaceId: WorkspaceId,
+    val category: RateCategory,
+    val inboxId: InboxId? = null,
+)
 
 /**
  * Read side of quota enforcement. Both counts are **derived from the rows
@@ -129,6 +160,17 @@ interface LimitMetrics {
     ) {}
 
     fun quotaRejected(dimension: QuotaDimension) {}
+
+    /**
+     * [tokens] charges of [category] given back ([refunded] true) or kept
+     * because the refund could not be applied ([refunded] false), for an
+     * event refused before T1. Never a workspace or inbox label.
+     */
+    fun rateRefund(
+        category: RateCategory,
+        refunded: Boolean,
+        tokens: Int,
+    ) {}
 
     companion object {
         val NOOP: LimitMetrics = object : LimitMetrics {}
