@@ -603,3 +603,12 @@ default, so the inventory check is not affected.)
 
 No new floor in `deploy/rollback-floors.txt`: nothing an older artifact does
 can make a T1 partition, and the partitioned mode is lab-only.
+
+**A partial migration (V24 applied, V25 not) is roll forward only.** The
+migrator runs Flyway's defaults, so each migration commits in its own
+transaction and a failed V25 leaves V24 applied. Complete V25 with the same
+candidate's migrator once the cause is fixed. Until then that candidate's api
+and ingestion refuse readiness (the schema does not match their bundle). A
+rolled-back artifact (V23 or earlier) runs on the V24-only schema as "schema
+ahead", which is healthy: V24 is expand-only and its triggers run inside the
+base writers' own transactions.
