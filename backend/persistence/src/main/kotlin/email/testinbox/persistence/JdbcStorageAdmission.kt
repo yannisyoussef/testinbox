@@ -326,6 +326,12 @@ open class JdbcStorageAdmission(
      * base is the V24 `storage_global_base` row, kept equal to Σ workspace
      * bases by definer triggers in the base writers' own transactions; a
      * missing row is never read as 0 (see [FootprintSql.GLOBAL_CTES]).
+     *
+     * Gate D A′: the global and per-workspace reservation sums read V27's stored
+     * `object_count` (`cardinality(object_keys)`, computed by PostgreSQL), so both
+     * can be answered from the covering `ix_storage_reservation_usage`. The per-inbox
+     * sum keeps `cardinality(object_keys)`: no inbox index carries the count, so it
+     * reads the same heap rows either way.
      */
     private val footprintCtes = if (readsFootprint) ",\n${FootprintSql.FOOTPRINT_CTES}" else ""
     private val footprintColumns = if (readsFootprint) FootprintSql.COLUMNS else FootprintSql.NONE
@@ -401,7 +407,7 @@ open class JdbcStorageAdmission(
              -- the recipient count times the ledger backlog.
              ws_delta AS (SELECT d.workspace_id AS id, sum(d.bytes) AS bytes, sum(d.objects) AS objects FROM storage_delta d
                            WHERE d.workspace_id IN (SELECT id FROM ws) GROUP BY d.workspace_id),
-             ws_reserved AS (SELECT r.workspace_id AS id, sum(r.bytes) AS bytes, sum(cardinality(r.object_keys)) AS objects
+             ws_reserved AS (SELECT r.workspace_id AS id, sum(r.bytes) AS bytes, sum(r.object_count) AS objects
                                FROM storage_reservation r
                               WHERE r.workspace_id IN (SELECT id FROM ws) GROUP BY r.workspace_id),
              ws_charge AS (SELECT workspace_id AS id,sum(bytes) AS bytes,sum(objects) AS objects
@@ -549,6 +555,24 @@ open class JdbcStorageAdmission(
      * One multi-row insert. It is bounded by the 50-recipient event cap, and
      * it commits or fails as a whole with T1, so an event's admitted set is
      * never partly reserved.
+     *
+     * **The insert and T1's COMMIT travel in ONE round trip** (gate D A′, owner
+     * decision 2026-11-06, #124 6684712608): the driver sends both statements
+     * before it reads a reply, so `(35, 1)` is released by the COMMIT right
+     * after the insert instead of a client round trip later. Nothing about the
+     * transaction changes: the same insert, then the same COMMIT, in the same
+     * server transaction, under the same `synchronous_commit = on`; the lock is
+     * still released only by that COMMIT. If the insert fails, PostgreSQL skips
+     * the COMMIT (an error discards the rest of the batch), the transaction is
+     * aborted and the template rolls it back, exactly as before. Once the batch
+     * has committed, the template's own commit finds no open transaction and
+     * the driver sends nothing.
+     *
+     * The row count is checked after the COMMIT now. It can only be
+     * `reservations.size`: a multi-row `INSERT … VALUES` without `ON CONFLICT`
+     * inserts every row or raises. Were it ever different, T1 would still fail
+     * the event closed, its reservations counting until cleanup releases them
+     * (an over-count, never an under-count).
      */
     private fun insert(reservations: List<StorageReservationDraft>) {
         if (reservations.isEmpty()) return
@@ -562,7 +586,8 @@ open class JdbcStorageAdmission(
                 INSERT INTO storage_reservation
                     (message_id, workspace_id, inbox_id, object_keys, bytes, state, created_at, write_deadline_at, node_id, generation)
                 VALUES
-                $values
+                $values;
+                COMMIT
                 """.trimIndent(),
             )
         reservations.forEachIndexed { i, r ->

@@ -50,9 +50,31 @@ production's does.
   database: the synthetic ledger would not reconcile), a monitor observation
   written by the harness's login role (declared as the monitor role), the
   watermark row.
-- **No participant and no cohort plan** exist for CHOSEN and NO_LOCK, so the
-  cohort pool is read but not *required* at 10 000 workspaces (W1). Every
-  cohort column is still computed in the statement.
+- **The closed beta's 31 cohort shares beside the population** (owner
+  decision 2026-11-06, #124 6684712608), for CHOSEN and NO_LOCK in every
+  population: 30 workspaces with the ADR-037 participant share (128 MiB
+  payload, 256 MiB footprint) and one legacy share, 10 inboxes each, seeded
+  by `Seeder.cohortShares`. T1's one statement then reads 31 shares, their
+  deltas, reservations and charges, builds the 31-share pool, and prices
+  every copy to a share against its budget, as it does in the beta. Events
+  reach the share inboxes like any other inbox; the synthetic backlog
+  (deltas, reservations) and retention's expired inboxes stay outside them,
+  so no share is filled by bytes no T1 admitted. `--no-cohort-shares`
+  reproduces run 3's population and is not ADR evidence.
+  - **They are legacy-share rows, not participant rows.** A participant row
+    makes the pool *required*, and a required pool is approved only when no
+    workspace lacks a share (`unknown = 0`, `CohortStorageRuntime`). Beside
+    ≥ 10 000 unshared workspaces that never holds, so every CHOSEN T1 would
+    be a `COHORT_UNAPPROVED` 451 and the run would measure nothing. The 30
+    participant-sized rows are therefore legacy rows carrying the participant
+    figures. What this does **not** run is the required pool's approval
+    (plan, fingerprint, bound and node checks): no population of 10 000
+    unshared workspaces can pass it, and in the beta, where it does, there is
+    no such population. That residual is not measured by the gate population;
+    it is known, and named here rather than assumed away.
+- **No cohort plan** exists for CHOSEN and NO_LOCK, so the cohort pool is
+  read but not *required* (W1). Every cohort column is still computed in the
+  statement.
 - **Proven per scenario.** Before warm-up, every scenario runs one real T1 of
   its store that reserves nothing (`ProtocolAssembly.probe`): the footprint
   figures must have been read and production's `FootprintPolicy` must find
@@ -305,6 +327,14 @@ criterion's `detail` names the mode it compared against.
   pass 1 weighting) on one thread; enough `EXPIRED` inboxes are seeded per
   scenario. A sweep that finds nothing is a *starved tick*, counted and never
   a sample.
+- **Measured window** (owner decision 2026-11-06, #124 6684712608: "a
+  measured window of at least 33 seconds"). `--duration-seconds`, or by
+  default `max(30, ⌈100 / (2R / 20)⌉)`: the shortest window of at least
+  30 s in which the 2R scenarios can produce the 100 retention samples the
+  verdict requires. 30 s at R = 260, as before; **33 s at R = 31**
+  (⌈3.1 × 33⌉ = 103 sweeps). At 30 s every R = 31 run was INCOMPLETE by
+  construction (93 samples, run 3). A longer window does not loosen
+  `sustained2x`: below.
 
 ## Pass criterion (encoded in `GateEvaluator`, nowhere else)
 
@@ -313,7 +343,7 @@ the closed beta's R_gated 31 → 62/s, amendment D):
 
 | Criterion (`criteria` key) | Threshold |
 |---|---|
-| `sustained2x` | achieved / offered ≥ **0.995** on every concurrency (`harness.sustainedTolerance`). The achieved rate is `completed / (last completion − first due)`, so the last events' own latency is inside the window; 0.995 allows a terminal lag of 0.5 % of the run, 150 ms at 30 s, which is three times the T1 p99 bound with the whole of T2 on top. A run that is merely finishing its last events stays inside it; one that fell behind by a few hundred milliseconds does not. The naive derived form `1 − p99(event)/duration` was considered and rejected: the terminal tail is one event's latency, which exceeds p99 one time in a hundred, so that form fails a healthy run whenever its last event happens to be a slow one. `terminalLagMs` (last completion − last due) and `completionRatio` (completed / scheduled) are reported per scenario for the same question asked directly. |
+| `sustained2x` | achieved / offered ≥ **0.995** on every concurrency (`harness.sustainedTolerance`). The achieved rate is `completed / (last completion − first due)`, so the last events' own latency is inside the window; 0.995 allows a terminal lag of 0.5 % of the run, 150 ms at 30 s, which is three times the T1 p99 bound with the whole of T2 on top. **The allowance is the 30 s one whatever the window** (owner decision 2026-11-06: "keep the 150 ms terminal-lag allowance ... unchanged"; `GateEvaluator.sustainedRatio`, `harness.sustainedReferenceWindowSeconds`): a scenario that scheduled more than ⌊rate × 30⌋ events is also read as the same completion fraction and terminal lag over a 30 s window, `(completed / scheduled) × N₃₀ / ((N₃₀ − 1) + rate × terminalLag)`, and the lower reading counts. At 30 s or less the reading is achieved / offered to the bit. Exactly, with every event completed, today's allowance is `30 s × (1/0.995 − 1) + 1/rate`: 166.9 ms at 62/s (150.8 ms plus one mean gap), held there at 33 s and 60 s, where achieved / offered alone would allow 182 ms and 317 ms. A flat 150 ms was not used: it would tighten 30 s results (run 3's 158 ms at 0.9953 passes today). A run that is merely finishing its last events stays inside it; one that fell behind by a few hundred milliseconds does not. The naive derived form `1 − p99(event)/duration` was considered and rejected: the terminal tail is one event's latency, which exceeds p99 one time in a hundred, so that form fails a healthy run whenever its last event happens to be a slow one. `terminalLagMs` (last completion − last due) and `completionRatio` (completed / scheduled) are reported per scenario for the same question asked directly. |
 | `t1P99` | T1 p99 ≤ **50 ms** (completion − due) |
 | `retentionP99VsReference` | retention p99 ≤ **2 ×** the NO_LOCK reference's retention p99 at the same `(workspaces, concurrency, rate)`; a CEILING_OFF reference does not count |
 
@@ -409,6 +439,58 @@ preflight, evidence shape, options) run under `./gradlew build` with every
 other module and need no database. `scripts/verify-test-results.sh` carries a
 floor for `backend/benchmark`; raise it when tests are added.
 
+## Focused A′ measurement (`--focused`, never gate evidence)
+
+The owner's A′ decision (2026-11-06, #124 6684712608) asks for focused
+measurements while the candidate changes, and no repeated full runs. `--focused`
+is that measurement, reproducible from one flag: CHOSEN only, `--expected-rate 31
+--rates 62 --concurrency 10,100 --workspaces 10000` with the 31 cohort shares,
+`--duration-seconds 60`, no reference. It is recorded `adrEvidence: false`
+(`--focused`) and its verdict is INCOMPLETE by construction.
+
+Per scenario it adds `t1Steps` to the evidence (also available in any run with
+`--t1-steps`) and writes `FOCUSED.md`, whose main table is **T1 step by step**:
+
+- **Steps**, client side, per T1 (`HoldTiming`, a JDBC proxy over the scenario's
+  pool that observes T1's statements and changes none of them; the T1 adapter
+  stays production's class): `preLock` (call start → lock sent), `lockWait` (lock
+  sent → returned), **`hold`** (lock returned → commit returned: the server's
+  hold to within about one round trip), and inside it `toSnapshot`, `snapshot`
+  (its round trip), `decide` (snapshot returned → write sent: row mapping, the
+  cohort JSON, the decision, the insert's text), `insert` (its round trip; it
+  carries the COMMIT since A′), `toCommit`, `commit`; then `afterCommit`. Mean
+  and p50/p95/p99 each.
+- **Server side**: the snapshot's mean execution time and the plans made during
+  the phase (`pg_stat_statements`, when preloaded).
+- **T1 p99** (completion − due), as the gate reads it.
+- Kept apart: throughput (achieved, completed/scheduled, terminal lag) and
+  correctness (lock timeouts, deadlocks, other errors); ρ = rate × mean hold
+  [derived] and the M/M/1 wait p99 from it [estimate], labelled as such; and
+  the generic plan the run's statistics give T1 at the end of the phase
+  (`EXPLAIN (ANALYZE, BUFFERS)`, with `Heap Fetches` and the in-flight tables'
+  `relpages`/`relallvisible`) [diagnostic].
+
+**Warm connections (every run, not only `--focused`).** Before each measured
+phase every connection of the scenario's pool executes T1's statement past
+pgjdbc's `prepareThreshold` under `force_generic_plan`, untimed and rolled
+back, so each holds the server-prepared statement and its generic plan, as a
+long-lived production pool does. A fresh pool of c + 6 connections otherwise
+planned inside the lock during the measurement (12–16 ms a plan on the staging
+host; 164–296 plans a minute at c100 in the 80482e6 diagnostic run). The pool's
+size is unchanged (it is part of §11's concurrency model). Plans still made
+during a phase are invalidations by autovacuum/analyze, which mode a must make
+inside the lock: a READ COMMITTED portal takes its snapshot at Bind.
+
+```bash
+# On a quiet host, outside any gate window: a labelled NON-GATE focused run.
+TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK=I_UNDERSTAND_THIS_DESTROYS_THE_TARGET_DATABASE \
+  scripts/storage-benchmark.sh --jdbc-url jdbc:postgresql://<db>:5432/testinbox_bench_focused \
+    --username <user> --create-database --host-class "<host class>" --focused
+```
+
+Laptop focused figures are indicative only; the dev host is about three
+times slower per statement than an Apple-silicon laptop.
+
 ## Evidence JSON (`schemaVersion` 1)
 
 Another script reads `verdict` and recomputes `criteria` from `scenarios`.
@@ -444,7 +526,10 @@ Written with Jackson (`tools.jackson`), keys in this order:
     "reservationBacklog": 1000,
     "deltaBacklog": 500,                      // the seeded floor
     "target": { "kind": "remote", "databaseName": "testinbox_bench" },   // kind: "local" | "remote"
-    "lockWaitDefinition": "lockWait is StorageProtocolMetrics.lockWait as GuardedStorage reports it: the whole admission call …, NOT the pg_advisory_xact_lock wait alone."
+    "lockWaitDefinition": "lockWait is StorageProtocolMetrics.lockWait as GuardedStorage reports it: the whole admission call …, NOT the pg_advisory_xact_lock wait alone.",
+    "cohortShares": 31,                       // the beta's shares beside each population; 0 with --no-cohort-shares
+    "sustainedReferenceWindowSeconds": 30,    // sustained2x's terminal-lag allowance is this window's
+    "focused": false                          // true for --focused (never gate evidence)
   },
   "safety": {
     "databaseName": "testinbox_bench",

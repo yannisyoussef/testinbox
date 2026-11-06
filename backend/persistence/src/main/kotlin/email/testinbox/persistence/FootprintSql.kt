@@ -26,6 +26,11 @@ internal object FootprintSql {
      * exists, so the population is scanned only in that degenerate state, which
      * reconciliation reports as GLOBAL drift and the repair ends (V24); under
      * `ALL` the verifier also revokes trust while it lasts.
+     *
+     * Gate D A′ (owner decision 2026-11-06, #124 6684712608): the reservation objects
+     * are `sum(object_count)`, V27's stored `cardinality(object_keys)`, so `g_reserved`
+     * can be answered from `ix_storage_reservation_usage` instead of the whole heap.
+     * Same figure, to the value (`AdmissionStatementEquivalenceTest`).
      */
     const val GLOBAL_CTES = """g_base AS (SELECT base_bytes AS bytes, base_objects AS objects FROM storage_global_base WHERE id = 1
                                     UNION ALL
@@ -34,7 +39,7 @@ internal object FootprintSql {
                                               FROM workspace_storage_account) s
                                      WHERE NOT EXISTS (SELECT 1 FROM storage_global_base WHERE id = 1)),
                          g_delta AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(objects), 0) AS objects FROM storage_delta),
-                         g_reserved AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(cardinality(object_keys)), 0) AS objects
+                         g_reserved AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(object_count), 0) AS objects
                                           FROM storage_reservation)"""
 
     /**
@@ -94,7 +99,7 @@ internal object FootprintSql {
 
     /** The same columns, typed, for the rows that do not carry them. */
     const val NONE = """NULL::numeric, NULL::numeric, NULL::numeric, NULL::numeric, NULL::boolean, NULL::bigint,
-                           NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text, NULL::jsonb"""
+                           NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::bigint, NULL::text, NULL::json"""
 
     /** The figures of a row carrying [COLUMNS]; null when a sum does not fit a signed 64-bit figure (corrupt totals). */
     fun read(rs: ResultSet): ObservedFootprint? {

@@ -86,12 +86,15 @@ class ScenarioRunner(
     /** The PARTITIONED variant's closed cohort (its population IS [cohort]); null for the gate's own runner. */
     private val closedCohort: ClosedCohort? = null,
 ) {
-    /** Retention's expired inboxes: anywhere in the gate population, only in the legacy workspace of a closed cohort. */
+    /**
+     * Retention's expired inboxes: anywhere in the gate population outside its cohort
+     * shares, only in the legacy workspace of a closed cohort.
+     */
     private val retentionPopulation: SeededPopulation =
         closedCohort?.let { closed ->
             val legacy = closed.legacyWorkspace(population)
             SeededPopulation(1, population.inboxes.filter { it.workspaceId == legacy })
-        } ?: population
+        } ?: population.unshared
 
     /** The delta floor: random bytes for the gate population, usage-neutral pairs for a closed cohort. */
     private fun seedDeltas() =
@@ -100,7 +103,7 @@ class ScenarioRunner(
         ) {
             seeder.neutralDeltas(population, options.deltaBacklog)
         } else {
-            seeder.deltas(population, options.deltaBacklog)
+            seeder.deltas(population.unshared, options.deltaBacklog)
         }
 
     private val raw = ByteArray(options.rawBytes) { (it % 251).toByte() }
@@ -123,7 +126,7 @@ class ScenarioRunner(
         log.info("scenario {} starting", name)
         val retentionRate = options.retentionRateFor(spec.offeredRate)
         // Probe scenarios run for their own duration, so they never stretch the gate's matrix.
-        val duration = if (spec.probe) options.probeDurationSeconds else options.durationSeconds
+        val duration = if (spec.probe) options.probeDurationSeconds else options.measuredSeconds
         val retentionTargets = Math.ceil(retentionRate * (duration + options.warmupSeconds) * RETENTION_HEADROOM).toInt() + 5
         seeder.retentionTargets(
             retentionPopulation,
@@ -133,7 +136,9 @@ class ScenarioRunner(
             attachment.size.toLong(),
         )
         // A probe run drives two event streams (the hot flood and the background), each with the scenario's workers.
-        target.pool((if (spec.probe) 2 else 1) * spec.concurrency + POOL_MARGIN).use { pool ->
+        target.pool((if (spec.probe) 2 else 1) * spec.concurrency + POOL_MARGIN).use { hikari ->
+            // --t1-steps / --focused: T1's statements are observed (never changed) to time its steps.
+            val pool = if (options.stepTiming) HoldTiming.wrap(hikari) else hikari
             val declarations =
                 HarnessDeclarations.of(
                     HarnessDeclarations.enforcement(spec.mode, options.referenceMode),
@@ -150,6 +155,7 @@ class ScenarioRunner(
                 val probe = prepare(protocol, name, spec.mode)
 
                 warmUp(protocol, spec)
+                warmConnections(hikari, protocol)
 
                 errors.clear().also { diagnostics?.resetStatements() } // warm-up failures and statements are not the scenario's
                 val records = Collections.synchronizedList(ArrayList<EventRecord>())
@@ -162,28 +168,7 @@ class ScenarioRunner(
                 val heartbeats = startHeartbeats(protocol)
                 val retentionEvents = Math.ceil(retentionRate * duration).toInt()
                 val retentionThread =
-                    Thread({
-                        val report =
-                            OpenLoopScheduler(retentionRate, options.arrivals, options.seed + 1).run(retentionEvents, 1) { due ->
-                                val deleted =
-                                    try {
-                                        protocol.retention.sweep().hardDeleted
-                                    } catch (
-                                        @Suppress("TooGenericExceptionCaught") e: RuntimeException,
-                                    ) {
-                                        retentionFailures += e
-                                        throw e
-                                    }
-                                if (deleted == 0) {
-                                    retentionStarved.incrementAndGet()
-                                    false
-                                } else {
-                                    retentionLatencies += System.nanoTime() - due.scheduledNanos
-                                    true
-                                }
-                            }
-                        retentionAchieved.set(java.lang.Double.doubleToLongBits(report.achievedPerSecond))
-                    }, "bench-retention")
+                    retentionThread(protocol, retentionRate, retentionEvents, retentionLatencies, retentionStarved, retentionFailures)
                 val events = (spec.offeredRate * duration).toInt()
                 val scheduler = OpenLoopScheduler(spec.offeredRate, options.arrivals, options.seed)
                 retentionThread.start()
@@ -202,6 +187,8 @@ class ScenarioRunner(
                 deltaSampler.shutdownNow()
                 heartbeats?.shutdownNow()
                 val t1Statement = diagnostics?.t1Stats()
+                // --focused: the plan the run's statistics give T1 now, before the backlog is restored.
+                val planNow = if (options.focused) diagnostics?.planNow(protocol.statement, population) else null
 
                 val observation =
                     Observation(
@@ -219,6 +206,15 @@ class ScenarioRunner(
                         t1Probe = probe,
                         t1Statement = t1Statement,
                         partitionFallbacks = if (spec.mode == AdmissionMode.PARTITIONED) protocol.store.partitionFallbacks else null,
+                        t1Steps =
+                            if (options.stepTiming) {
+                                T1StepsSummary.of(
+                                    records.filter { it.failure == null }.map { it.timings },
+                                )
+                            } else {
+                                null
+                            },
+                        planAtEnd = planNow,
                         partitionFallbackReasons =
                             if (spec.mode == AdmissionMode.PARTITIONED) protocol.fallbackReasons.mapValues { it.value.get() } else null,
                         probes = probes?.summaries(),
@@ -241,6 +237,39 @@ class ScenarioRunner(
         }
     }
 
+    /** Retention sweeps, open loop on their own thread: a starved sweep is counted, never a sample. */
+    @Suppress("LongParameterList") // the measured phase's own collectors
+    private fun retentionThread(
+        protocol: ProtocolAssembly,
+        retentionRate: Double,
+        retentionEvents: Int,
+        retentionLatencies: MutableList<Long>,
+        retentionStarved: AtomicInteger,
+        retentionFailures: MutableList<Throwable>,
+    ): Thread =
+        Thread({
+            val report =
+                OpenLoopScheduler(retentionRate, options.arrivals, options.seed + 1).run(retentionEvents, 1) { due ->
+                    val deleted =
+                        try {
+                            protocol.retention.sweep().hardDeleted
+                        } catch (
+                            @Suppress("TooGenericExceptionCaught") e: RuntimeException,
+                        ) {
+                            retentionFailures += e
+                            throw e
+                        }
+                    if (deleted == 0) {
+                        retentionStarved.incrementAndGet()
+                        false
+                    } else {
+                        retentionLatencies += System.nanoTime() - due.scheduledNanos
+                        true
+                    }
+                }
+            retentionAchieved.set(java.lang.Double.doubleToLongBits(report.achievedPerSecond))
+        }, "bench-retention")
+
     /** Warm-up: plans, pool connections and the JIT, untimed and discarded. */
     private fun warmUp(
         protocol: ProtocolAssembly,
@@ -251,6 +280,51 @@ class ScenarioRunner(
             OpenLoopScheduler(spec.offeredRate, options.arrivals, options.seed - 1).run(warmupEvents, spec.concurrency) {
                 runEvent(protocol, EventRecord(EventTimings(), it.scheduledNanos), threadRandom())
             }
+        }
+    }
+
+    /**
+     * Every connection of the scenario's pool, untimed, before the measured phase: T1's
+     * statement executed past pgjdbc's `prepareThreshold` under `force_generic_plan`, so
+     * each connection holds the server-prepared statement and its generic plan, as a
+     * long-lived production pool does. Without it a fresh pool of c + 6 connections plans
+     * inside the lock during the measurement (12–16 ms a plan on the staging host,
+     * 164–296 plans a minute at c100 in the 80482e6 diagnostic run). The pool's size is
+     * unchanged. Read-only, and rolled back.
+     */
+    private fun warmConnections(
+        pool: com.zaxxer.hikari.HikariDataSource,
+        protocol: ProtocolAssembly,
+    ) {
+        val texts =
+            listOfNotNull(protocol.store.snapshotStatement, protocol.store.partitionedStatement)
+                .map {
+                    org.springframework.jdbc.core.namedparam.NamedParameterUtils
+                        .parseSqlStatementIntoString(it)
+                }
+        val scope = population.inboxes.first()
+        val connections = List(pool.maximumPoolSize) { pool.connection }
+        try {
+            for (c in connections) {
+                c.autoCommit = false
+                try {
+                    c.createStatement().use { it.execute("SET LOCAL plan_cache_mode = force_generic_plan") }
+                    for (text in texts) {
+                        repeat(WARM_EXECUTIONS) {
+                            c.prepareStatement(text).use { ps ->
+                                ps.setObject(1, c.createArrayOf("uuid", arrayOf(scope.workspaceId)), java.sql.Types.ARRAY)
+                                ps.setObject(2, c.createArrayOf("uuid", arrayOf(scope.inboxId)), java.sql.Types.ARRAY)
+                                ps.executeQuery().close()
+                            }
+                        }
+                    }
+                } finally {
+                    c.rollback()
+                    c.autoCommit = true
+                }
+            }
+        } finally {
+            connections.forEach { it.close() }
         }
     }
 
@@ -713,6 +787,9 @@ class ScenarioRunner(
         private const val RETENTION_HEADROOM = 1.5
         private const val ERROR_SAMPLES = 5
         private const val DELTA_SAMPLE_MILLIS = 250L
+
+        /** pgjdbc's default `prepareThreshold` (5) server-prepares on the 5th use; two more run the generic plan. */
+        private const val WARM_EXECUTIONS = 7
 
         /** StorageNodeRuntime's production heartbeat interval. */
         private const val HEARTBEAT_MILLIS = 10_000L

@@ -100,6 +100,13 @@ data class DeploymentSettings(
     val ingest: LimitsProperties.RateProperties = LimitsProperties().ingest,
     /** The per-inbox share of it (`testinbox.limits.ingest-per-inbox`); never above [ingest]. */
     val ingestPerInbox: LimitsProperties.RateProperties = LimitsProperties().ingestPerInbox,
+    /**
+     * pgJDBC connection properties given outside the URL (Hikari's
+     * `data-source-properties`), where the deployable runs T1's one-round-trip
+     * commit (the gateway); null where it does not (the API). Non-null turns on
+     * [DriverProtocolSafety] for these AND the URL's own parameters.
+     */
+    val databaseDriverProperties: Map<String, String>? = null,
 )
 
 /**
@@ -206,6 +213,7 @@ object DeploymentSafety {
             addAll(checkProduction(settings))
             addAll(StorageEnforcementSafety.check(settings))
             addAll(IngestEnvelopeSafety.check(settings))
+            addAll(DriverProtocolSafety.check(settings))
         }
 
     private fun checkMailDomain(settings: DeploymentSettings): List<DeploymentViolation> =

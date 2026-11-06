@@ -110,6 +110,10 @@ data class ScenarioResult(
      * probe floods only) and so enter no latency figure; 0 everywhere else.
      */
     val eventsWithoutT1: Int = 0,
+    /** `--t1-steps` / `--focused` only: T1 step by step, lock hold included ([HoldTiming]); null otherwise. */
+    val t1Steps: T1StepsSummary? = null,
+    /** `--focused` only: the T1 statement's generic plan from the statistics at the end of the measured phase ([Diagnostics.planNow]). */
+    val planAtEnd: String? = null,
 ) {
     /** completed / scheduled: separate from the achieved rate, which also carries the terminal lag. */
     val completionRatio: Double get() = if (scheduledEvents == 0) 0.0 else completedEvents.toDouble() / scheduledEvents
