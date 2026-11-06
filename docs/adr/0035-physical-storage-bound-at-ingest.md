@@ -1081,6 +1081,13 @@ and it is not pre-built. Nothing outside PostgreSQL is introduced.
 > (2026-11-05, gate D): still mode a, correct within mode a first" below. No
 > criterion above changes.
 
+> **Dated note (2026-11-06):** for the closed beta, the expected rate above is
+> no longer 260 events/s. It is R = r × (30 + L), the highest sustained T1
+> event rate the configured `INGEST` limits admit; with the owner's r = 1 and
+> L = 1, gate D runs at 31 and 62 events/s. Every other parameter, criterion
+> and threshold above is unchanged. See "Owner decision note (2026-11-06):
+> amendment D, the closed-beta workload envelope" below.
+
 ### 12. SMTP and edge behaviour
 
 | Situation | Gateway reply to the edge | Stored | Tenant sees |
@@ -2320,6 +2327,148 @@ reopened.
 `docs/security/threat-model.md`; pointers in ADR-025, ADR-027, ADR-037 and
 `docs/dev/cohort-storage.md`; the partitioned correctness document §7.2 and
 the PROPOSED note; CLAUDE.md invariant 8.
+
+## Owner decision note (2026-11-06): amendment D, the closed-beta workload envelope — ACCEPTED
+
+**Authority: owner decision of 2026-11-06 (about 04:10Z)**, relayed by Ops
+and quoted exactly from its citable record, #124 comment
+[6676738358](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6676738358):
+
+> "I approve route D+A for the initial closed beta:
+> - Per-workspace INGEST refill r = 1 recipient copy/s.
+> - Per-workspace burst b = 60 copies.
+> - With 30 participant workspaces plus one legacy workspace, benchmark at R = 31 and 2R = 62 events/s.
+> - Keep every other gate D criterion unchanged.
+> - Do not adopt A4 or change production PostgreSQL settings.
+>
+> Proceed with the proposed A1–A3 optimisations, correctness review and benchmark rerun on the existing host class. Preserve results, transactional semantics and accounting invariants.
+>
+> Enforce the approved workload envelope in configuration and deployment checks. Make the per-inbox settings compatible with the lower workspace allowance. Document that these are incoming recipient-copy limits, not outgoing-mail limits.
+>
+> Correct amendment D before recording acceptance: excess INGEST traffic is currently discarded with an unchanged SMTP response; it is not queued awaiting budget refill. Distinguish that from write-slot waiting and retry behavior. Explain both accurately in the beta limits documentation.
+>
+> I accept the reduced beta limits and the explicitly documented residual that the sustained-load benchmark does not prove burst performance. Do not claim that burst 60 guarantees delivery within W_slot.
+>
+> Continue unrelated authorized release work and E7 in parallel. Reuse valid qualification evidence unless an optimisation changes a relevant dependency. If D+A fails, return the measured cause and the next concrete option; do not silently relax criteria or change host class.
+>
+> This approves the workload amendment and implementation work. It does not authorize admission, production enforcement activation or a broader cohort."
+
+The amendment put to the owner is text D of the gate D decision paper (#124
+comment 6676468704, section 5 "D."). The owner accepted it on condition of
+one correction. The paper said "Bursts (b copies per workspace) are queued by
+the write slots and bounded by `W_slot`". That is wrong: a copy over its
+`INGEST` budget is never queued, it is discarded (below). The text below is
+the corrected amendment, and it is the one accepted. This note changes no
+text above it. §11's table, its pass criterion and the earlier dated notes
+stand as written, read with this amendment for the closed beta.
+
+### Amendment D, as corrected and accepted
+
+> While admission is limited to the closed beta (at most 30 participant
+> workspaces plus L legacy workspaces), ADR-035 §11's expected rate is the
+> highest sustained T1 event rate the configured `INGEST` limits admit:
+> **R = r × (30 + L) events/s**. Here r is the per-workspace `INGEST` refill,
+> in incoming recipient copies per second, configured wherever `ALL` is
+> active. Every admitted event charges at least one copy.
+>
+> **Chosen values:** r = 1 copy/s, b = 60 copies per workspace, L = 1. So
+> **R = 31 events/s and 2R = 62 events/s.**
+>
+> Gate D runs at R and 2R. Every other §11 parameter, criterion and threshold
+> is unchanged, and gate D still runs on the staging host class. Unchanged
+> means: concurrency 1/10/25/50/100; 1 000 live reservations plus a compaction
+> interval's deltas; ≥ 10 000 workspaces; the multi-recipient mix; 2R
+> sustained at ≥ 0.995 of offered and T1 p99 ≤ 50 ms at concurrency
+> 10/25/50/100; retention p99 ≤ 2× the NO_LOCK reference; zero deadlocks,
+> `lock_timeout` < 0.1 %, no slot-queueing deadline miss and no other error.
+>
+> **Excess `INGEST` traffic is discarded, not queued.** `INGEST` is charged
+> per resolved recipient copy, first against the inbox's budget and then
+> against the workspace's. A copy refused by either budget is discarded
+> in-process: nothing is stored, nothing waits for the budget to refill, and
+> nothing retries it. The SMTP reply does not change. It stays the uniform
+> `250` of ADR-025 and ADR-027 §1, so neither the edge nor the sender can
+> tell. The discard is logged with metadata only
+> (`smtp_discard reason=ingest_rate_limited`) and counted
+> (`testinbox_rate_decision_total{category="INGEST",outcome="rejected"}`).
+>
+> **Admitted events wait for write slots, and may be deferred and retried.**
+> That is a different mechanism. An event with at least one copy inside its
+> budgets then waits for a write slot (§4 step 5, the slots of §5), for at
+> most `W_slot` = 10 s. If no slot frees in time, the whole `DATA` is answered
+> `451` and nothing is committed. The mail edge keeps the message and retries
+> it no sooner than 120 s later (`minimal_backoff_time`,
+> `deploy/mail-edge/contract.yaml`), until its 4 h queue lifetime runs out
+> (§12). That is waiting and retry, not discard. The budget check comes first,
+> so a discarded copy never occupies or waits for a slot.
+>
+> **Residual, accepted by the owner.** Gate D offers Poisson arrivals at R and
+> 2R: it measures sustained load and does not prove burst performance. Each
+> workspace may present up to b = 60 copies at once (31 × 60 = 1 860 across
+> the cohort). Nothing here claims that a burst of b copies, or any burst, is
+> delivered within `W_slot`. Part of a burst may wait the full `W_slot`, be
+> answered `451`, and arrive only after the edge's retry, or later.
+>
+> **Enforcement.** The deployment refuses `ALL` while the configured r × the
+> number of mail-receiving workspaces exceeds R_gated, the R of the passing
+> gate D evidence. The activation gate refuses gate D evidence run at any
+> rate other than R_gated.
+>
+> **Re-gating.** Raising r or b, or admitting workspaces beyond the cohort,
+> requires a new passing gate D at the new R first.
+>
+> **Scope.** This approves the workload amendment and its implementation. It
+> does not authorize admission, production enforcement activation or a
+> broader cohort.
+
+### How it is implemented (the team's reading, not the owner's words)
+
+The full Ops-facing account, including the numbers and the difference between
+discard and slot waiting, is
+[`docs/dev/beta-limits.md`](../dev/beta-limits.md).
+
+- **Configuration.** The shared document of both deployables'
+  `application-deployed.yaml` (so staging and production carry the same
+  envelope, ADR-034) sets the per-workspace `INGEST` budget to b = 60 and
+  r = 1.0/s (`testinbox.limits.ingest.*`), and the per-inbox budget to 30 and
+  0.5/s (`testinbox.limits.ingest-per-inbox.*`). The per-inbox values keep
+  the anti-starvation purpose of ADR-027 §4 under the lower allowance: one
+  flooded address can spend at most half of its workspace's burst and half of
+  its refill, so the workspace's other inboxes always keep the rest. The
+  library defaults (300 and 10/s, 60 and 2/s) are unchanged and stay the
+  development values.
+- **N, the mail-receiving workspaces.** N = 30 + L. The 30 is
+  `BetaCohortPolicy.MAX_PARTICIPANTS`, which the admission sequence already
+  enforces. L is declared (`testinbox.storage.declared-legacy-workspaces`,
+  0–32). Startup cannot count workspaces, so it does not try. Instead, once a
+  cohort pool is required every workspace must hold a share (the pool's
+  "unknown" check), and a pool with more legacy shares than L is never
+  proven, never reserved and never approved. An understated L therefore fails
+  closed: admission answers `CAPACITY_UNAVAILABLE`.
+- **R_gated** is a new declaration, `testinbox.storage.gated-expected-rate`.
+  It has no default. Ops sets it from the passing gate D evidence. Under
+  `ALL`, `DeploymentSafety` (`IngestEnvelopeSafety`) refuses to start while
+  R_gated or L is missing; while r × (30 + L) > R_gated (compared exactly, in
+  decimal); while the per-workspace burst exceeds the approved b = 60; or
+  while limits are disabled, because INGEST is then unbounded. Gate D does
+  not measure bursts, so raising b is held to a new owner decision rather than
+  left to configuration. In every mode it refuses a per-inbox capacity or
+  refill above the workspace's.
+- **Gate D.** Every node exports R_gated as
+  `testinbox_storage_gated_expected_rate`. `check-storage-activation.sh` gate
+  D reads it from every node, blocks when it is absent or the nodes disagree,
+  and judges the evidence at that rate. It refuses evidence whose
+  `harness.expectedRate` differs. `--expected-rate` may confirm the
+  declaration, never replace it. The 260 constant is gone from the script.
+  The harness keeps 260 only as the default of `--expected-rate`, and no
+  longer marks another expected rate as non-evidence, because which R counts
+  is now a property of the deployment. The closed-beta run is
+  `--expected-rate 31 --rates 31,62` with every other flag as before.
+- **Unchanged.** The admission protocol, transactional semantics, ledger and
+  accounting invariants; the SMTP replies (no limit changes one, ADR-027 §1
+  and CLAUDE.md invariant 8); I9 and its dated exception, whose sampling
+  bound is the same `INGEST` budgets, now lower; the staging host class; and
+  production PostgreSQL settings (A4 is not adopted).
 
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
