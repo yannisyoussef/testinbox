@@ -14,6 +14,19 @@ slot-queueing deadline misses, other errors, starved retention ticks).
 No latency threshold exists for concurrency 1. `scripts/check-storage-activation.sh`
 gate D recomputes the same split.
 
+**Expected rate, amendment D (2026-11-06, owner decision).** For the closed
+beta, §11's expected rate R is r × (30 + L), the highest sustained T1 rate the
+configured `INGEST` limits admit; with r = 1 and L = 1 it is **31 events/s**,
+so the gate runs at 31 and 62. Every other parameter and criterion below is
+unchanged. R is no longer pinned in the harness: `--expected-rate` defaults to
+260 as before, and a run is ADR evidence when its `--rates` include R and 2R.
+Which R counts is decided by the deployment: `check-storage-activation.sh`
+gate D reads R_gated from every node (`testinbox_storage_gated_expected_rate`,
+set from `TESTINBOX_STORAGE_GATED_EXPECTED_RATE`) and refuses evidence whose
+`harness.expectedRate` differs ([beta-limits.md](beta-limits.md)). The
+closed-beta run is the documented command with
+`--expected-rate 31 --rates 31,62` added and nothing else changed.
+
 One staging-host-class run is recorded: **FAIL at `c10dd3d`** (2026-11-03,
 `docs/adr/0035-benchmark/staging/2026-11-03-c10dd3d-FAIL/`, #129). Its
 harness built T1 without `readsFootprint`, so it under-measured production
@@ -295,7 +308,8 @@ criterion's `detail` names the mode it compared against.
 
 ## Pass criterion (encoded in `GateEvaluator`, nowhere else)
 
-Read on the CHOSEN scenarios at 2× `--expected-rate` (default 260 → 520/s):
+Read on the CHOSEN scenarios at 2× `--expected-rate` (default 260 → 520/s;
+the closed beta's R_gated 31 → 62/s, amendment D):
 
 | Criterion (`criteria` key) | Threshold |
 |---|---|
@@ -332,12 +346,14 @@ rate), but a run whose inputs depart from §11 is recorded with
 `"adrEvidence": false` and the reasons in `adrEvidenceReasons`, and its
 verdict is forced to `INCOMPLETE` whatever it measured (criteria are still
 computed, for information). The departures (`AdrConformance`):
-`--expected-rate` ≠ 260; `--rates` not ⊇ {260, 520}; `--concurrency` not ⊇
+`--rates` not ⊇ {R, 2R} for R = `--expected-rate` (since amendment D, R itself
+is not a departure: gate D binds it to the deployment's R_gated); `--concurrency` not ⊇
 {1, 10, 25, 50, 100}; `--reservation-backlog` < 1 000; `--delta-backlog`
 < 500; no population ≥ 10 000 in `--workspaces`; `--local`; no
 `--host-class` (the default `unspecified`); `--no-reference`; a reference
-mode other than `no-lock`. `--expected-rate` and the rest can therefore
-never produce a `PASS`.
+mode other than `no-lock`. A departure can therefore never produce a
+`PASS`, and a `PASS` at an R other than the deployment's R_gated never passes
+gate D.
 
 ## Safety: the harness destroys its target
 

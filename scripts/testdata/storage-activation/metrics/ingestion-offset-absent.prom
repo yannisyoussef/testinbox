@@ -18,3 +18,6 @@ testinbox_storage_enforcement_mode{service="testinbox-ingestion",environment="st
 # TYPE testinbox_storage_admission_locking gauge
 testinbox_storage_admission_locking{service="testinbox-ingestion",environment="staging",mode="global"} 1.0
 testinbox_storage_admission_locking{service="testinbox-ingestion",environment="staging",mode="cohort_partitioned"} 0.0
+# HELP testinbox_storage_gated_expected_rate R_gated: the §11 expected rate of the passing gate D evidence (ADR-035 amendment D)
+# TYPE testinbox_storage_gated_expected_rate gauge
+testinbox_storage_gated_expected_rate{service="testinbox-ingestion",environment="staging"} 260.0
