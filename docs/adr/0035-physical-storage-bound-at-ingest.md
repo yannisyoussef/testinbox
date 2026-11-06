@@ -2619,6 +2619,73 @@ covered by the R = 31 evidence.
   the same `INGEST` budgets, now lower; the host class; production PostgreSQL
   settings.
 
+## Amendment note (2026-11-06): global storage faults are answered uniformly before recipient resolution, including recovery
+
+Recorded with the fix, for the owner's merge review (the issue #102 precedent).
+It restates §8 and §12 for ADR-025 and changes no limit, ceiling or reply
+mapping.
+
+- **The property.** A global storage fault gets the same reply for every
+  event, decided before any recipient resolves, for as long as the fault lasts
+  and **while it recovers**. The breaker's half-open trial is the non-tenant
+  proof (the witness, a fresh clock measurement, the Ops evidence), run on the
+  pre-resolution path by whichever event arrives first, never by an event's
+  upload. A failed proof re-trips with the §8 backoff, and every event in the
+  window gets the same `451`. The backoff schedule is unchanged.
+- **The real-event trial is claimed before resolution.** Quota, a full
+  filesystem and an ambiguous upload keep their real-event confirmation (§8,
+  issue #102). It starts only once the non-tenant proof has passed, and it is
+  held by one event at a time, chosen before resolution. Every other event
+  gets the same pre-resolution `451` until that event is over. If it reaches no
+  upload, the next event takes the claim.
+  - **Claimed after parsing.** The claim is taken once the message has been
+    parsed, and before its first recipient resolves. Parsing does not depend
+    on the recipients, so the answer stays uniform. A slow message therefore
+    never holds the gate shut for other events; before parsing, an event meets
+    only a check that never claims.
+  - **A lease.** A claim is held for at most `L_claim`. That is the slot wait,
+    plus T1's lock timeout, plus `E`, plus a margin for resolution and T2:
+    3 min as shipped, and it is derived from those values. A claim held longer
+    is a failed trial: a new trip generation, the doubled backoff and a new
+    proof. The stale claimant's later end changes nothing, and each expiry is
+    counted.
+- **One trial at a time, per trip.** Every trial is bound to the trip it was
+  issued for. A trial that a later trip overtook can no longer end, close or
+  fail a newer one. So two trials, and two real-event uploads to a possibly
+  full store, never run at once.
+- **§8, opening causes.** A `403` refusal of a fenced upload that comes
+  **more than `ε_max` before the copy's write deadline** opens the breaker
+  with its own kind. Storage judges expiry by its own clock, which may be up
+  to `ε_max` off.
+  Credentials and bucket policy say nothing about a recipient. Only the
+  witness reopens it, after the normal backoff, so one spurious `403` costs one
+  backoff and never a latch. A `403` within `ε_max` of the deadline, or after
+  it, may be an expired URL from one slow upload: that event's own `451`, and
+  no trip. The §16 metric
+  keeps `kind=deadline` for both.
+- **§8, quota.** The quota trial is the witness and then the claimed real
+  event. A bucket at or over its hard quota refuses even the zero-byte witness.
+- **Remaining split: the trial event itself** (inherent to #102). While the
+  real-event trial is in flight, its own event's reply depends on whether it
+  reached an upload. A full filesystem needs a newer observation for each such
+  trial. Under `OFF`, an ambiguous upload escalates after one.
+- **Quota precondition.** Under `ALL`, admitted payload and footprint are
+  bounded by the ceilings. So the quota residual (a bucket quota that keeps
+  passing the witness while real uploads fail) is **unreachable while the
+  bucket hard quota is at least *G_F* with margin**. That precondition is
+  **verified at activation**, not assumed. **Under `OFF`, or if the
+  precondition fails**, a persistent split is possible. It is observable only
+  if a delivery notice reaches a sender; closing that path is tracked as EP-8.
+- **Unchanged.** Write-slot, lock-timeout and other after-resolution `451`s.
+  The slot cap is the owner-accepted I9 exception above.
+- **Verification.**
+  - Byte-identical SMTP transcripts for known, unknown and at-ceiling
+    recipients through the open, half-open and real-event phases, and for
+    concurrent events while the real-event trial is claimed.
+  - Qualification criterion: **zero `DENIED` trips at 2R with healthy
+    credentials.**
+  - At activation: bucket hard quota ≥ *G_F* plus margin.
+
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
 - **ADR-027 §2.** The storage-quota paragraph and the overshoot bound are

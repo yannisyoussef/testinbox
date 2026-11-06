@@ -105,6 +105,7 @@ class MicrometerStorageProtocolMetrics(
         registry.counter(COMMIT_FENCED)
         registry.counter(LATE_OBJECT)
         registry.counter(WITNESS_FAILED)
+        registry.counter(BREAKER_CLAIM_EXPIRED)
     }
 
     private fun gauge(
@@ -180,6 +181,10 @@ class MicrometerStorageProtocolMetrics(
         registry.counter(WITNESS_FAILED).increment()
     }
 
+    override fun breakerClaimExpired() {
+        registry.counter(BREAKER_CLAIM_EXPIRED).increment()
+    }
+
     override fun activationViolation(violated: Boolean) = activationViolation.set(if (violated) 1 else 0)
 
     override fun activationGate(
@@ -217,6 +222,7 @@ class MicrometerStorageProtocolMetrics(
         const val RELEASED = "testinbox_storage_reservation_released_total"
         const val LATE_OBJECT = "testinbox_storage_late_object_total"
         const val WITNESS_FAILED = "testinbox_storage_witness_failed_total"
+        const val BREAKER_CLAIM_EXPIRED = "testinbox_storage_breaker_claim_expired_total"
         const val BREAKER_OPEN = "testinbox_storage_breaker_open"
         const val BREAKER_ESCALATED = "testinbox_storage_breaker_escalated"
         const val LATCHED = "testinbox_storage_admission_latched"

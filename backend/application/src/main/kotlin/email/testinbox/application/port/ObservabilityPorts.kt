@@ -492,6 +492,9 @@ interface StorageProtocolMetrics {
 
     fun witnessFailed() {}
 
+    /** A breaker's real-event claim outlived its lease `L_claim` and was failed (no labels). */
+    fun breakerClaimExpired() {}
+
     // --- TI-STORAGE-006: activation and enablement observability (ADR-035 §14, §16) ---
 
     /** `testinbox_storage_activation_violation`: 1 while a non-OFF node's barrier is broken (ADR-035 §14 Phase 4). */
