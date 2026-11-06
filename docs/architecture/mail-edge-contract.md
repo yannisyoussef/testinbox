@@ -44,7 +44,7 @@ repository; they are cited as Ops reported them.
 
 | record | reference |
 |---|---|
-| authorization | `launch-20261028/LAUNCH-RUNBOOK.md` line 3, as quoted by Ops: "**Authorization:** owner GO 2026-10-28, 'complete the owner-only TestInbox beta release today'. Its scope is real internet mail for the owner's own validation. Excluded: public registrations, other testers, unrestricted API/web access, unrelated DNS/firewall/egress/WAF changes, storage enforcement, optional maintenance, hardening extras (CAA, null MX, MTA-STS/TLS-RPT stay follow-ups)." Independent reviews: `launch-20261028/REVIEW-security.md`, `REVIEW-ops.md` |
+| authorization | `launch-20261028/LAUNCH-RUNBOOK.md` (sha256 `25dd94da4c1f8188…`, per #124 comment 6686721348) line 3, as quoted by Ops: "**Authorization:** owner GO 2026-10-28, 'complete the owner-only TestInbox beta release today'. Its scope is real internet mail for the owner's own validation. Excluded: public registrations, other testers, unrestricted API/web access, unrelated DNS/firewall/egress/WAF changes, storage enforcement, optional maintenance, hardening extras (CAA, null MX, MTA-STS/TLS-RPT stay follow-ups)." Independent reviews: `launch-20261028/REVIEW-security.md`, `REVIEW-ops.md` |
 | result | `launch-20261028/RESULT.md` (sha256 `b80374ae679a6917…`): "RESULT = PASS (owner-only beta left enabled)" |
 | closeout | `closeout/PHASE2-CLOSEOUT.md` (sha256 `f5a1067d92a09009…`): acceptance A1–A7 PASS on day 2 (2026-10-29 14:02Z). Owner acceptance was recorded by the ops lead; there is no separate owner-signed file. The owner statement above is the citable owner confirmation |
 | evidence index | `closeout/EVIDENCE-INDEX.md` (sha256 `e05ec55b63d17a6f…`) |
@@ -74,29 +74,47 @@ repository; they are cited as Ops reported them.
   normal review; this documentation-only correction leaves them as they are.
 - **The [known gaps](#known-gaps) are now gaps on a live edge.** They were
   written as "all matter before public SMTP". They are tracked, not closed.
-- **Two exposures found after launch** (#124):
+- **Two exposures found after launch**, both addressed by the open draft
+  [#147](https://github.com/yannisyoussef/testinbox/pull/147) together with
+  Ops' lockstep host change in `infinity-core`:
   - **ETRN.** The contract sets neither ETRN key, so Postfix's defaults leave
     ETRN enabled for the tenant domain: on the rehearsal image
-    `ETRN inbox.testinbox.email` answers `250 Queuing started` (comment
-    6685855763). Ops confirmed the live edge has the same settings and
-    advertises ETRN (comment 6685928762), so any internet client can force an
-    immediate flush of the deferred queue. A fix is in progress in
-    `infinity-core`, with a matching contract change here. **Not closed.**
-  - **DSN.** EHLO advertises DSN. Whether a client's `NOTIFY=SUCCESS` can make
-    the edge emit a notice despite the no-DSN invariant is under investigation.
-    **Not closed.**
+    `ETRN inbox.testinbox.email` answers `250 Queuing started`. Ops confirmed
+    the live edge has the same settings and advertises ETRN, so any internet
+    client can force an immediate flush of the deferred queue. **Not closed**
+    until #147 and the host change land and Ops verifies a `5xx` on the live
+    edge.
+  - **DSN.** EHLO advertises DSN. #147 reports that on the rehearsal image the
+    edge generated delivery-status notices on a client's request
+    (`NOTIFY=SUCCESS`), despite the no-DSN invariant. **Not closed** until #147
+    and the host change land and the live edge is verified.
 - **The B2 recipient allow-list (`infinity-core` !166).** Ops' records name it
   as merged and reconciled before the listener went public. This repository has
   not reviewed what it does, or how it relates to the empty
   `relay_recipient_maps` and the uniform `250` this contract requires; Ops'
   acceptance A3 reports an unknown recipient "relayed and discarded, no DSN".
-- **ADR-004's gates.** This repository holds no record of how ADR-004's
+- **ADR-004's gates and acceptance row V, as Ops maps them (for the record
+  only).** Ops matched ADR-004's
   [remaining gates](../adr/0004-initial-inbound-provider-strategy.md#gates-that-remain-closed)
-  (1, 4, 4a, 5 and 6) or row V of
-  [`production-ops-acceptance.md`](../dev/production-ops-acceptance.md) (edge
-  queue alerting before any public MX) were dispositioned for the owner-only
-  beta. This correction does not mark any of them discharged. Ops' launch
-  records and their independent reviews are where that is answered.
+  and row V of [`production-ops-acceptance.md`](../dev/production-ops-acceptance.md)
+  to its launch records by content, reading the records only (#124, comment
+  6686721348). Paths are as Ops gives them, under `/opt/infinity/workspace/`;
+  sha256 prefixes in parentheses. Full detail:
+  `ti-delivery-002/stage-b/fasttrack/edge-docs/ADR004-GATE-RECORDS.md`.
+
+  | gate | Ops' finding | Ops record |
+  |---|---|---|
+  | **1** named owner and runbooks | **Partly**, for the owner-only window. The `operational-owner.md` sign-off is **unsigned**. There is **no runbook for patching, provider incidents or CVE response** | `ti-008-beta/launch/OWNER-FORM-1A-3A-4A.md` (`371074e3b9645def`) names the owner; `ti-008-beta/launch-20261028/LAUNCH-RUNBOOK.md` (`25dd94da4c1f8188`) |
+  | **4** apex contacts | Discharged, 2026-10-28 16:39Z. Cloudflare Email Routing forwarding to Microsoft 365, not a mailbox provider; the owner accepted that design on 2026-10-27 | `launch-20261028/fwd-checks-20261028.md` (`5c1efe792ea3a3b6`) |
+  | **4a** `postmaster@inbox.testinbox.email` | Discharged at the RCPT stage, before and after MX: "tenant-domain replies byte-identical" | `launch-20261028/g3ext-rcpt.txt` (`c1e1e2fdc2ea472c`); repeated after MX in `a6-rcpt-after-mx.txt` |
+  | **5** privacy, terms and legal | **NOT FOUND**: no Ops record discharges it; the records still list it as blocked | `ti-008-beta/launch/README.md` (`3d8343e412052623`), closeout P-2/P-4 |
+  | **6** production readiness | **No single record**; only per-item records (the monitoring fire-test, secrets, the D3 storage cutover, the guards). **Backups cover the control plane only** | — |
+  | **row V** edge queue-age alerting before any public MX | Alert **present and live-loaded before MX**: Grafana rule uid `edge-queue-ageing` (oldest message over 3600 s for 5 min, critical), installed 2026-09-16, live-loaded per a ruler read at 2026-10-28 16:34Z (MX at 18:12:03Z). It has **never been fired deliberately on the live system**, only in offline promtool and CI tests. There is **no alert on the deferred-mail count** | `SESSION-STATE.md.bak-20260919-134815` (`103036bef3952475`); the oldest rules backup (`a1b67659c2d39762`); `ruler.json` (`7b4e7abc72bbc921`) |
+
+  Gates 1, 5 and 6 are recorded as Ops states them, partial, not found and no
+  single record, and are **not** discharged. Whether any of them, or row V's
+  missing live fire and deferred-count alert, needs action is the **owner's
+  decision**. This record does not reopen the completed launch qualification.
 
 ---
 

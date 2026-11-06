@@ -40,10 +40,20 @@ isolation — are rows A, B and C.
 > **2026-11-06.** Row **M** describes the dark state that held until the
 > owner-only beta launch of 2026-10-28, when public tcp/25 and the public MX
 > were enabled ([correction](../architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing)).
-> It is no longer the production state. Row **V** reads PENDING above, and this
-> repository holds no record of whether edge queue-age alerting existed before
-> the MX was published; this note does not mark it discharged. Ops' launch
-> records are where that is answered.
+> It is no longer the production state.
+>
+> Row **V**, as Ops maps it to its records (#124, comment 6686721348; for the
+> record only): the Grafana rule uid `edge-queue-ageing` (oldest message over
+> 3600 s for 5 min, critical) was **present and live-loaded before the MX**:
+> installed 2026-09-16 (`SESSION-STATE.md.bak-20260919-134815`,
+> `103036bef3952475`; oldest rules backup `a1b67659c2d39762`) and seen in a
+> Grafana ruler read at 2026-10-28 16:34Z (`ruler.json`, `7b4e7abc72bbc921`),
+> before the MX went live at 18:12:03Z. It has **never been fired deliberately
+> on the live system** (only offline promtool and CI tests), so the row's "one
+> deliberate trigger" proof is not met, and there is **no alert on the
+> deferred-mail count**. The row's status above is left as written. Whether
+> either point needs action is the owner's decision; this note does not reopen
+> the launch qualification.
 
 ## What this does not cover
 

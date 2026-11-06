@@ -22,8 +22,8 @@ and its stated conditions are what the decision was finally made against.
 > "dormant" edge it describes is superseded; dates, the owner statement and
 > Ops' records are in
 > [`mail-edge-contract.md` § Correction](../architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing).
-> This repository holds no record of how the gates below were dispositioned for
-> that launch, and the pointer marks none of them discharged.
+> Ops' mapping of the gates below to its launch records is recorded there for
+> the record only; this pointer marks none of them discharged.
 
 ## Context
 
