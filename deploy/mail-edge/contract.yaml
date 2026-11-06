@@ -67,12 +67,41 @@ required:
   default_transport: discard
   notify_classes: ""
   bounce_queue_lifetime: "0"
+  # No delay warnings ("Delayed Mail (still being retried)"). 0h is Postfix's
+  # default and is pinned anyway: no delivery-status notice of any class may
+  # reach a sender, and with any non-zero value a deferred message from a
+  # tenant-domain envelope sender produced a delay notice that the edge
+  # RELAYED INTO INGESTION (observed on 3.8.6 with 1s; foreign senders' went to
+  # discard). A default is not a decision; a pinned value is.
+  delay_warning_time: "0h"
   # No smart host: normal operation requires no Internet SMTP egress.
   relayhost: ""
   # Pinned, never derived from the container subnet.
   mynetworks: 127.0.0.0/8 [::1]/128
   smtpd_relay_restrictions: permit_mynetworks, reject_unauth_destination
   disable_vrfy_command: "yes"
+  # No client may drive the queue. Postfix's defaults (empty restrictions,
+  # fast_flush_domains = $relay_domains) let ANY client force a flush of the
+  # tenant domain's deferred mail with `ETRN inbox.testinbox.email` — observed
+  # as `250 Queuing started` from a non-mynetworks client on Postfix 3.8.6.
+  # The restriction is the control (554 for every argument); the empty flush
+  # list is defence in depth (459 without the restriction). Hiding the ETRN
+  # EHLO keyword does NOT disable the command — verified: the discard alone
+  # still answers 250 — which is why both of these are required.
+  smtpd_etrn_restrictions: reject
+  fast_flush_domains: ""
+  # No DSN extension. With DSN advertised, `RCPT TO:<...> NOTIFY=SUCCESS` made
+  # the edge GENERATE a success notice ("Action: relayed", Remote-MTA = the
+  # ingestion hop and its reply text) for every relayed message, and for an
+  # envelope sender in the tenant domain that notice was relayed into
+  # ingestion. notify_classes and bounce_queue_lifetime do not govern it.
+  # Discarding the keyword makes smtpd refuse RET/ENVID/NOTIFY/ORCPT with
+  # `501 5.7.1 DSN support is disabled`, identically for every recipient, so
+  # no client can request a success notice. etrn is listed too so ETRN is not
+  # advertised while it is refused; silent-discard keeps the per-session
+  # "discarding EHLO keywords" line out of the log.
+  # See docs/architecture/mail-edge-contract.md, "Client-triggered flushes and DSN".
+  smtpd_discard_ehlo_keywords: silent-discard, dsn, etrn
   # [ADR-026] The control that keeps one DATA transaction one inbound event.
   #
   # It must be relay_* , not smtp_* . Postfix derives per-transport overrides

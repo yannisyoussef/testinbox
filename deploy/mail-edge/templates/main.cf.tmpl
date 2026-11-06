@@ -68,6 +68,25 @@ disable_vrfy_command = yes
 smtpd_reject_unlisted_recipient = no
 smtpd_reject_unlisted_sender = no
 
+# --- no client-triggered queue runs, no DSN extension ------------------------
+# [INVARIANT] ETRN is refused for every client. Left at Postfix's defaults
+# (smtpd_etrn_restrictions empty, fast_flush_domains = $relay_domains) any
+# Internet client can force a flush of the tenant domain's deferred queue with
+# `ETRN inbox.testinbox.email` and is answered `250 Queuing started`. The
+# restriction is the control; the empty flush list is defence in depth.
+smtpd_etrn_restrictions = reject
+fast_flush_domains =
+# [INVARIANT] The DSN extension is not offered. While it is, a client can ask
+# for a SUCCESS notice (`RCPT ... NOTIFY=SUCCESS`), which the edge generates
+# for every relayed message — naming the ingestion hop and its reply — and
+# relays into ingestion whenever the envelope sender is in the tenant domain.
+# notify_classes and bounce_queue_lifetime do not govern that notice. With the
+# keyword discarded smtpd answers RET/ENVID/NOTIFY/ORCPT with
+# `501 5.7.1 DSN support is disabled`, the same for every recipient.
+# Discarding `etrn` only hides the keyword; it does NOT disable the command,
+# which is why smtpd_etrn_restrictions above is still required.
+smtpd_discard_ehlo_keywords = silent-discard, dsn, etrn
+
 # --- never bounce, never notify --------------------------------------------
 # [INVARIANT] The edge must never emit a DSN:
 #   - it would require outbound 25, which is permanently blocked on the host;
@@ -84,7 +103,15 @@ notify_classes =
 # bounce is handed to the transport for the SENDER's domain, which is never in
 # transport_maps, so it falls to default_transport = discard and is dropped
 # before it can leave.
+# EXCEPT when the envelope sender is itself in the tenant domain: that domain
+# IS in transport_maps, so the notice relays into ingestion. Success notices are
+# closed off by smtpd_discard_ehlo_keywords above; the residual failure-bounce
+# path is a recorded known gap in docs/architecture/mail-edge-contract.md.
 bounce_queue_lifetime = 0
+# [INVARIANT] No delay warnings. 0h is the Postfix default and is pinned
+# explicitly: with any non-zero value a deferred message from a tenant-domain
+# envelope sender yields a "Delayed Mail" notice that relays into ingestion.
+delay_warning_time = 0h
 soft_bounce = no
 
 # [INVARIANT] Queue expiry = operational signal + discard, never return-to-sender.
