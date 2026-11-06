@@ -86,8 +86,16 @@ only to copies that **passed** their budgets, and they delay rather than drop.
 | Wait | none | up to `W_slot` = 10 s on that node |
 | SMTP reply | `250` (uniform, unchanged) | `451` for the whole `DATA`; nothing is committed |
 | The message | discarded, never stored | kept by the mail edge, which retries it no sooner than 120 s later (`minimal_backoff_time`) and keeps retrying for up to its 4 h queue lifetime (`maximal_queue_lifetime`, `deploy/mail-edge/contract.yaml`) |
-| Lost? | yes, that copy | only if the condition outlives the edge's 4 h queue (ADR-035 §12; queue-age alerting is an Ops prerequisite before public MX) |
+| Lost? | yes, that copy | if the condition outlives the edge's 4 h queue (ADR-035 §12; queue-age alerting is an Ops prerequisite before public MX), or if a retry finds the budget empty and is discarded |
+| Budget spent? | an inbox token, if the inbox budget admitted the copy and the workspace budget then refused it | the event's copies were charged **before** the slot wait, so the edge's retry is charged **again** |
 | Signal | `testinbox_rate_decision_total{category="INGEST",outcome="rejected"}`, `smtp_discard` log | `testinbox_storage_slot_wait_seconds`, and the edge's deferred queue |
+
+Because a slot-wait `451` has already spent the event's budget, its retry
+competes for the budget again. A workspace that sustains bursts near b can
+therefore have retried copies **discarded** on a later attempt rather than
+delivered late. This is part of the burst residual below. A `451` from an open
+breaker, the latch or the activation guard is decided before any recipient
+resolves and spends nothing.
 
 The edge never forwards either outcome to an external sender. It is
 store-and-forward and sends no DSN (ADR-035 §12). A `451` only delays
@@ -115,66 +123,128 @@ later. The owner accepted this residual explicitly.
 
 ## Enforcement: how a deployment is held to the envelope
 
-The envelope is enforced at startup and at activation, so the limits or the
-cohort cannot grow past what gate D covered without a new gate D run.
+The owner approved exactly r = 1, b = 60 and L = 1 (so R = 31), and authorized
+no broader cohort. The code pins those values, so the envelope cannot grow by
+configuration at all.
 
 **At startup (`DeploymentSafety`, `IngestEnvelopeSafety`).** Under
 `testinbox.storage.enforcement=ALL` a process refuses to start while:
 
-- `testinbox.storage.gated-expected-rate` (R_gated) is not declared;
-- `testinbox.storage.declared-legacy-workspaces` (L) is not declared;
-- r × (30 + L) exceeds R_gated. The 30 is the beta's fixed participant places
-  (`BetaCohortPolicy.MAX_PARTICIPANTS`). The comparison is exact (decimal),
-  so 0.1 × 30 is 3, not 3.0000000000000004;
-- the per-workspace burst exceeds 60. Gate D does not measure bursts, so a
-  larger b is a new owner decision, not a configuration change;
-- limits are disabled (`testinbox.limits.enabled=false`), which leaves INGEST
+- the per-workspace refill r is above **1** copy/s;
+- the per-workspace burst b is above **60** copies (gate D does not measure
+  bursts);
+- `testinbox.storage.declared-legacy-workspaces` (L) is missing or above
+  **1**;
+- `testinbox.storage.gated-expected-rate` (R_gated) is missing or is not
+  exactly **31** (compared in decimal, so `31` and `31.0` are equal and
+  `30.999` is refused);
+- limits are disabled (`testinbox.limits.enabled=false`) or the refill is
   unbounded.
 
-In every mode it also refuses a per-inbox capacity or refill above the
-per-workspace one. Every gap is reported at once, by setting name.
+Together the pins imply the amendment's inequality: r × (30 + L) ≤ 1 × 31 =
+R_gated. Lowering r, b or L is allowed, because it only lowers load, and the
+R = 31 evidence still covers it. In every mode, a per-inbox capacity or refill
+above the per-workspace one is refused. Every gap is reported at once, by
+setting name.
 
-**At run time (the cohort pool).** Once a cohort pool is required, every
-workspace must hold a participant or legacy share. A pool holding more legacy
-shares than the declared L is never proven, never reserved
-(`storage-budget reserve` refuses it) and never approved. Admission then
-answers `CAPACITY_UNAVAILABLE`. So an L that understates the real population
-fails closed. Put `declaredLegacyWorkspaces` in the reviewed pool file's
-`declarations` too, so `storage-budget check` judges the same bound.
+**At run time, before a cohort plan exists.** Until `storage-budget reserve`
+records a cohort plan, no pool is required, and **every workspace in the
+database receives mail**. N is then the whole population, not 30 + L. So each
+node under `ALL` re-checks, on its activation watch's cadence, that the
+database holds at most 30 + L `workspace` rows (31). It counts only up to that
+bound and reads `workspace(id)` and `storage_cohort_plan`, both already granted
+for T1.
 
-**At activation (gate D of `scripts/check-storage-activation.sh`).** Every
-node exports its R_gated as `testinbox_storage_gated_expected_rate`. Gate D
-reads it from every metrics endpoint. It blocks when the gauge is absent
-anywhere or the nodes disagree, and it judges the evidence at that rate. It
-refuses evidence whose `harness.expectedRate` is not R_gated. `--expected-rate`
-is an optional cross-check that must equal the declaration.
+If the population is above the bound, the node's activation guard answers
+`451` for **every** event, before any recipient resolves, exactly as a broken
+node inventory does. That is a deployment-wide infrastructure refusal, never a
+per-workspace one (the I9 rule). The edge keeps the mail and retries it. The
+guard clears on the next pass that finds the population back inside the bound.
+The `testinbox_storage_activation_gate_ready{gate="workspace_envelope"}` series
+and `testinbox_storage_activation_violation` show it. An unreadable population
+also fails closed.
+
+**At run time, once a plan exists.** The pool bounds the population. Every
+workspace must hold a participant or legacy share. A pool with more legacy
+shares than L is never proven, never reserved (`storage-budget reserve`
+refuses it) and never approved, so admission answers `CAPACITY_UNAVAILABLE`.
+Put `declaredLegacyWorkspaces` in the reviewed pool file's `declarations` too,
+so that `storage-budget check` judges the same bound.
+
+**At activation (`scripts/check-storage-activation.sh`).**
+- **Gate D** reads R_gated from every node
+  (`testinbox_storage_gated_expected_rate`). It blocks when the gauge is absent
+  anywhere or the nodes disagree, and refuses evidence whose
+  `harness.expectedRate` is not R_gated. `--expected-rate` is an optional
+  cross-check that must equal the declaration.
+- **Gate W** reads 30 + L from every node
+  (`testinbox_storage_envelope_max_workspaces`). Under `ALL` it blocks while no
+  cohort plan exists and the database (or `--population-state`) holds more
+  workspaces than that. Once a plan exists it defers to the pool (gate G).
+
+**In Ops' production policy.** `check-testinbox-prod` should pin
+`TESTINBOX_STORAGE_GATED_EXPECTED_RATE` to the passing evidence's value, `31`,
+and `TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES` to `1`, so that the record of
+what gate D proved cannot drift after activation. The application refuses any
+other R_gated under `ALL` anyway; the policy makes the drift visible before a
+restart would.
 
 ## For Ops: what to set, and mirror in the production policy
 
 | Variable | Beta value | Note |
 |---|---|---|
 | `TESTINBOX_LIMITS_INGEST_CAPACITY` | `60` | b; default in the deployed profile; refused above 60 under `ALL` |
-| `TESTINBOX_LIMITS_INGEST_REFILL_PER_SECOND` | `1.0` | r; default in the deployed profile |
+| `TESTINBOX_LIMITS_INGEST_REFILL_PER_SECOND` | `1.0` | r; default in the deployed profile; refused above 1.0 under `ALL` |
 | `TESTINBOX_LIMITS_INGEST_PER_INBOX_CAPACITY` | `30` | default in the deployed profile; ≤ b |
 | `TESTINBOX_LIMITS_INGEST_PER_INBOX_REFILL_PER_SECOND` | `0.5` | default in the deployed profile; ≤ r |
-| `TESTINBOX_STORAGE_GATED_EXPECTED_RATE` | the `harness.expectedRate` of the **passing** gate D evidence (`31` for this envelope) | no default; required under `ALL` |
-| `TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES` | `1` | L; no default; required under `ALL`; 0–32 |
+| `TESTINBOX_STORAGE_GATED_EXPECTED_RATE` | `31` | R_gated: the passing gate D evidence's `harness.expectedRate`; no default; required, and exactly 31, under `ALL`; pin it in `check-testinbox-prod` |
+| `TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES` | `1` | L; no default; required, and at most 1, under `ALL`; pin it in `check-testinbox-prod` |
 
 Set them identically on the API and the ingestion gateway: both run the same
-startup check. The four limit variables need not be set while the deployed
-profile's defaults are wanted, but a policy that pins them makes drift visible.
-Spring's relaxed binding also accepts `TESTINBOX_LIMITS_INGESTPERINBOX_*` for
-the per-inbox keys; use the names above.
+startup check. The reference staging topology (`deploy/staging/compose.yaml`)
+passes all six through to both services, with the deployed profile's values as
+the defaults for the four limits. The four limit variables need not be set
+while the deployed profile's defaults are wanted, but a policy that pins them
+makes drift visible. Spring's relaxed binding also accepts
+`TESTINBOX_LIMITS_INGESTPERINBOX_*` for the per-inbox keys; use the names above.
 
-Do not set R_gated from anything but passing gate D evidence. The gate run for
-this envelope is the documented harness command
+The gate run for this envelope is the documented harness command
 (`docs/dev/storage-benchmark.md`) with `--expected-rate 31 --rates 31,62` and
 every other flag unchanged.
 
+## For staging users: excess mail is discarded silently there too
+
+Staging carries the same envelope as production (the shared deployed layer).
+The limits apply in **every** storage enforcement mode, `OFF` included, which
+is what staging runs. So on staging, too, a workspace that receives more than
+60 copies at once, or more than 1 copy/s sustained (an inbox: 30 at once,
+0.5/s), loses the excess. Those copies are **discarded silently**: SMTP still
+answers `250`, and the only trace is
+`testinbox_rate_decision_total{category="INGEST",outcome="rejected"}` and the
+`smtp_discard reason=ingest_rate_limited` log line. A load or soak test that
+needs more must run elsewhere: the lab, or a local stack with the library
+defaults.
+
+The repository's own traffic stays well inside it:
+- **Post-deployment synthetic suite:** 3 known-inbox copies per run.
+- **Rehearsal:** the mail-edge contract tests add about 9, and the edge
+  atomicity and queue proofs about 3. The storage and abuse proofs use unknown
+  recipients, which never reach the limiter.
+- **Totals:** about 15 copies per run, all in one workspace, at most 2 to any
+  one inbox. That is a quarter of the workspace burst and well under the
+  inbox's 30.
+- **Repeated runs:** each rehearsal starts from a fresh database (`down -v`),
+  so its buckets start full. On the live staging estate, back-to-back
+  synthetic runs refill 3 copies in 3 seconds.
+- **Edge retries:** a `451` decided before recipients resolve (an open
+  breaker, the latch, the activation guard) charges nothing. A slot-wait
+  `451` has already been charged, so each retry is charged again (see the
+  table above).
+
 ## Changing the envelope
 
-Raising r or b, or admitting workspaces beyond the cohort (30 participants
-plus L), requires a new passing gate D at the new R first. The deployment
-check enforces the order: a larger r or L does not start under `ALL` until
-R_gated is raised, and R_gated is only raised from new evidence. A larger b
-does not start at all without a code change, because the owner approved 60.
+Changing r, b or L, the cohort size, or R is an **owner decision**, followed by
+a new passing gate D at the new R, and then a code change to the pins in
+`IngestEnvelopeSafety`. No configuration can do it: under `ALL` the deployment
+refuses r > 1, b > 60, L > 1 and any R_gated but 31. The decision of
+2026-11-06 authorizes none of these changes, and no broader cohort.

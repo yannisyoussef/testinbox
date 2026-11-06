@@ -836,16 +836,30 @@ pool, and gate F proves the rest. **Today no shipped record satisfies
 condition 1**, so production cannot start `ALL` with this artifact.
 
 **The gated workload envelope (ADR-035 amendment D, owner decision
-2026-11-06).** In every environment, `ALL` also refuses to start unless
-`TESTINBOX_STORAGE_GATED_EXPECTED_RATE` (R_gated, the expected rate of the
-passing gate D evidence: `31` for the approved envelope) and
-`TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES` (L: `1`) are set, the
-per-workspace INGEST refill × (30 + L) does not exceed R_gated, the
-per-workspace burst is at most 60, and limits are enabled. Every mode refuses
-a per-inbox INGEST value above the per-workspace one. Gate D of
-`check-storage-activation.sh` reads R_gated from every node
-(`testinbox_storage_gated_expected_rate`) and refuses evidence run at another
-rate. What the limits are, that they govern **incoming** mail only, and how a
+2026-11-06).** In every environment, `ALL` also refuses to start unless:
+- `TESTINBOX_STORAGE_GATED_EXPECTED_RATE` (R_gated) is exactly `31`, the
+  expected rate of the passing gate D evidence;
+- `TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES` (L) is set and at most `1`;
+- the per-workspace INGEST refill is at most 1 copy/s and the burst at most 60;
+- limits are enabled.
+
+These are the owner-approved values, pinned in code. Changing any of them is
+an owner decision plus a new passing gate D, never configuration. Every mode
+refuses a per-inbox INGEST value above the per-workspace one.
+
+**Before a cohort plan exists**, every workspace in the database receives
+mail. So each `ALL` node also holds the database to at most 30 + L
+`workspace` rows. Above that it answers `451` for every event (its activation
+guard, never a per-tenant refusal) until the count is back inside the bound.
+Gate W of `check-storage-activation.sh` blocks `ALL` on the same condition.
+Gate D reads R_gated from every node (`testinbox_storage_gated_expected_rate`)
+and refuses evidence run at another rate.
+
+Pin `TESTINBOX_STORAGE_GATED_EXPECTED_RATE=31` and
+`TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES=1` in `check-testinbox-prod`, so
+the record of what gate D proved cannot drift after activation.
+
+What the limits are, that they govern **incoming** mail only, and how a
 discarded over-budget copy differs from a `451` slot deferral:
 [beta-limits.md](beta-limits.md).
 
