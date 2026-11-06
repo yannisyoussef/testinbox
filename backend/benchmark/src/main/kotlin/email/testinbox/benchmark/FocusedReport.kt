@@ -63,10 +63,17 @@ object FocusedReport {
             appendLine()
             appendLine(
                 "Server figures are pg_stat_statements over the measured phase (n/a when it is not preloaded; plans need " +
-                    "pg_stat_statements.track_planning). Every pool connection was warmed past prepareThreshold before the phase, " +
-                    "so a plan inside it is an invalidation (autovacuum/analyze), not a cold connection.",
+                    "pg_stat_statements.track_planning). " +
+                    if (options.coldPool) {
+                        "COLD pool: the phase starts on new physical connections, so its plans are cold-connection plans " +
+                            "and invalidation re-plans together; the next section separates them."
+                    } else {
+                        "WARM pool (--warm-pool): every pool connection was warmed past prepareThreshold before the phase, " +
+                            "so a plan inside it is an invalidation (autovacuum/analyze) or a connection Hikari replaced."
+                    },
             )
             appendLine()
+            appendPlanning(results, options)
             appendLine("## Throughput and correctness [measured]")
             appendLine()
             appendLine(
@@ -113,6 +120,62 @@ object FocusedReport {
                 appendLine("```")
             }
         }
+
+    /** The connection lifecycle and T1's in-lock planning, per scenario ([PoolPhase], [T1Planning]). */
+    private fun StringBuilder.appendPlanning(
+        results: List<ScenarioResult>,
+        options: BenchmarkOptions,
+    ) {
+        val lifecycle = PoolLifecycle.of(options)
+        val n = PoolLifecycle.PREPARE_THRESHOLD
+        appendLine("## Connection lifecycle and in-lock planning")
+        appendLine()
+        appendLine(
+            "coldPool ${lifecycle.coldPool}; poolMaxLifetime ${lifecycle.maxLifetime} " +
+                "(production ${PoolLifecycle.PRODUCTION_MAX_LIFETIME}); keepalive ${lifecycle.keepalive}. " +
+                "Hikari retires a connection at 75–100 % of maxLifetime. A cold T1 is one whose " +
+                "snapshot was among the first $n executions of its text on its physical connection (pgJDBC prepareThreshold): " +
+                "each such execution plans inside the lock.",
+        )
+        appendLine()
+        appendLine("| | " + results.joinToString(" | ") { it.name } + " |")
+        appendLine("|---|" + results.joinToString("") { "---|" })
+
+        fun row(
+            label: String,
+            cell: (ScenarioResult) -> String?,
+        ) = appendLine("| $label | " + results.joinToString(" | ") { cell(it) ?: "n/a" } + " |")
+        row("pool size / connections opened before phase / in phase [measured, Hikari]") { s ->
+            s.pool?.let { "${it.poolSize} / ${it.connectionsOpenedBeforePhase} / ${it.connectionsOpenedInPhase}" }
+        }
+        row("physical connections running T1 / first used in phase [measured, client]") { s ->
+            s.t1Planning?.client?.let { "${it.physicalConnections} / ${it.firstUsedInPhase}" }
+        }
+        row("snapshot executions / cold-connection plans in lock [measured, client]") { s ->
+            s.t1Planning?.client?.let { "${it.snapshotExecutions} / ${it.coldSnapshotExecutions}" }
+        }
+        row("plans in phase × mean plan ms, total ms [measured, server]") { s ->
+            s.t1Planning?.server?.let { "${it.plans} × ${ms(it.meanPlanMs)}, ${ms(it.totalPlanMs)}" }
+        }
+        row("invalidation re-plans in lock [derived: server − client cold]") { s -> s.t1Planning?.invalidationReplans?.toString() }
+        row("snapshot mean ms, cold / warm T1 [measured, client]") { s ->
+            s.t1Planning?.client?.let { "${it.coldSnapshotMeanMs?.let(::ms) ?: "-"} / ${it.warmSnapshotMeanMs?.let(::ms) ?: "-"}" }
+        }
+        row("cold plan's in-lock cost ms [derived: cold − warm snapshot]") { s -> s.t1Planning?.coldPlanCostMs?.let(::ms) }
+        row("T1s on a cold / warm connection [measured, client]") { s ->
+            s.t1Planning?.client?.let { "${it.coldT1?.samples ?: 0} / ${it.warmT1?.samples ?: 0}" }
+        }
+        row("**T1 p99, cold / warm connection** (completion − due)") { s ->
+            s.t1Planning?.client?.let { "${it.coldT1?.p99Ms?.let(::ms) ?: "-"} / ${it.warmT1?.p99Ms?.let(::ms) ?: "-"}" }
+        }
+        appendLine()
+        appendLine(
+            "Server plan time is per kind only when the other kind is 0: PostgreSQL reports plans in aggregate, and a re-plan " +
+                "cannot be attributed to a T1 client side. Only the snapshot is counted; the reservation insert also plans on " +
+                "a cold connection.",
+        )
+        appendLine()
+    }
 
     /** M/M/1: the p99 of the queueing wait, or null when the queue is unstable. 0 when fewer than 1 % of arrivals wait. */
     fun waitP99Ms(

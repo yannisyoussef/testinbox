@@ -55,6 +55,29 @@ object AdrConformance {
         if (options.focused) {
             reasons += "--focused: a focused A′ measurement, never gate evidence"
         }
+        reasons += poolLifecycle(options)
         return reasons
     }
+
+    /**
+     * The review condition of 2026-11-06: gate evidence is faithful to production's pool
+     * lifecycle, so T1's in-lock planning on new connections is inside the measurement
+     * ([PoolLifecycle]). A warmed pool removes it; another lifetime recycles at a rate
+     * production does not (shorter: more cold connections; longer: fewer).
+     */
+    private fun poolLifecycle(options: BenchmarkOptions): List<String> =
+        buildList {
+            if (!options.coldPool) {
+                add(
+                    "--warm-pool: every connection was warmed past pgJDBC's prepareThreshold before the phase, which removes " +
+                        "the in-lock planning production's new connections do (cold after each deploy and each maxLifetime)",
+                )
+            }
+            if (options.effectivePoolMaxLifetime != PoolLifecycle.PRODUCTION_MAX_LIFETIME) {
+                add(
+                    "--pool-max-lifetime ${options.effectivePoolMaxLifetime} is not production's " +
+                        "${PoolLifecycle.PRODUCTION_MAX_LIFETIME} (HikariCP's default, which ingestion does not override)",
+                )
+            }
+        }
 }

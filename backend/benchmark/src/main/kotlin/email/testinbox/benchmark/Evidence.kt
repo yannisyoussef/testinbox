@@ -48,6 +48,8 @@ data class HarnessDescription(
     val sustainedReferenceWindowSeconds: Int = GateEvaluator.SUSTAINED_REFERENCE_WINDOW_SECONDS,
     /** A `--focused` A′ measurement: never gate evidence. */
     val focused: Boolean = false,
+    /** The scenario pools' connection lifecycle ([PoolLifecycle]); the defaults are production's. */
+    val pool: PoolLifecycle = PoolLifecycle(true, PoolLifecycle.PRODUCTION_MAX_LIFETIME, PoolLifecycle.PRODUCTION_KEEPALIVE),
 )
 
 data class SafetyRecord(
@@ -115,6 +117,12 @@ class Evidence(
                     "cohortShares" to harness.cohortShares,
                     "sustainedReferenceWindowSeconds" to harness.sustainedReferenceWindowSeconds,
                     "focused" to harness.focused,
+                    "coldPool" to harness.pool.coldPool,
+                    "poolMaxLifetime" to harness.pool.maxLifetime.toString(),
+                    "poolMaxLifetimeMs" to harness.pool.maxLifetime.toMillis(),
+                    "poolKeepaliveMs" to harness.pool.keepalive.toMillis(),
+                    "poolLifecycleSource" to PoolLifecycle.PRODUCTION_SOURCE,
+                    "prepareThreshold" to PoolLifecycle.PREPARE_THRESHOLD,
                 ),
             "safety" to
                 linkedMapOf(
@@ -182,6 +190,8 @@ class Evidence(
             appendLine()
             appendLine("**What was measured.** ${harness.measures} ${harness.lockWaitDefinition}")
             appendLine()
+            appendLine(poolSentence(harness.pool))
+            appendLine()
             appendLine(
                 "Target: ${harness.targetKind} `${harness.targetDatabaseName}`; seed ${harness.seed}; rates ${harness.rates}; " +
                     "concurrency ${harness.concurrency}; workspaces ${harness.workspaces}; backlog ${harness.reservationBacklog} " +
@@ -223,6 +233,16 @@ class Evidence(
             if (statements.isNotEmpty()) {
                 appendLine()
                 appendLine("T1 snapshot statement (pg_stat_statements, measured phase): " + statements.joinToString("; ") { stmtCell(it) })
+            }
+            val pools = scenarios.filter { it.pool != null }
+            if (pools.isNotEmpty()) {
+                appendLine()
+                appendLine(
+                    "Physical connections opened (Hikari) before / during the measured phase: " +
+                        pools.joinToString(
+                            "; ",
+                        ) { "${it.name}: ${it.pool!!.connectionsOpenedBeforePhase} / ${it.pool.connectionsOpenedInPhase}" },
+                )
             }
             appendDiagnosticsAndVariant()
             val samples = (scenarios + variantScenarios).flatMap { s -> s.errorSamples.map { "${s.name}: $it" } }
@@ -322,6 +342,18 @@ class Evidence(
                         t.steps.mapValues { (_, v) -> linkedMapOf("meanMs" to v.meanMs) + (latency(v.latency) ?: emptyMap()) }
                 },
             "partitionFallbackReasons" to s.partitionFallbackReasons,
+            "pool" to
+                s.pool?.let {
+                    linkedMapOf(
+                        "coldPool" to it.coldPool,
+                        "maxLifetimeMs" to it.maxLifetimeMs,
+                        "keepaliveMs" to it.keepaliveMs,
+                        "poolSize" to it.poolSize,
+                        "connectionsOpenedBeforePhase" to it.connectionsOpenedBeforePhase,
+                        "connectionsOpenedInPhase" to it.connectionsOpenedInPhase,
+                    )
+                },
+            "t1Planning" to s.t1Planning?.let(::planningTree),
             "background" to
                 s.background?.let {
                     linkedMapOf(
@@ -393,6 +425,42 @@ class Evidence(
         }
     }
 
+    private fun planningTree(p: T1Planning): Map<String, Any?> =
+        linkedMapOf(
+            "definition" to PLANNING_DEFINITION,
+            "prepareThreshold" to p.prepareThreshold,
+            "client" to
+                p.client?.let {
+                    linkedMapOf(
+                        "snapshotExecutions" to it.snapshotExecutions,
+                        "coldSnapshotExecutions" to it.coldSnapshotExecutions,
+                        "physicalConnections" to it.physicalConnections,
+                        "firstUsedInPhase" to it.firstUsedInPhase,
+                        "coldT1" to latency(it.coldT1),
+                        "warmT1" to latency(it.warmT1),
+                        "coldSnapshotMeanMs" to it.coldSnapshotMeanMs,
+                        "warmSnapshotMeanMs" to it.warmSnapshotMeanMs,
+                    )
+                },
+            "server" to
+                p.server?.let { linkedMapOf("plans" to it.plans, "totalPlanMs" to it.totalPlanMs, "meanPlanMs" to it.meanPlanMs) },
+            "derived" to linkedMapOf("invalidationReplans" to p.invalidationReplans, "coldPlanCostMs" to p.coldPlanCostMs),
+        )
+
+    private fun poolSentence(pool: PoolLifecycle): String =
+        "**Connection lifecycle.** " +
+            (
+                if (pool.coldPool) {
+                    "Cold pool: after the warm-up every scenario connection was replaced by a new physical connection that had " +
+                        "executed nothing (a just-deployed ingestion node), so T1 plans inside the lock on each connection's " +
+                        "first ${PoolLifecycle.PREPARE_THRESHOLD} executions"
+                } else {
+                    "WARM pool (--warm-pool): every connection executed T1 past pgJDBC's prepareThreshold before the phase, " +
+                        "which removes the in-lock planning of production's new connections"
+                }
+            ) + "; Hikari maxLifetime ${pool.maxLifetime}, keepalive ${pool.keepalive} (production: " +
+            "${PoolLifecycle.PRODUCTION_MAX_LIFETIME}, ${PoolLifecycle.PRODUCTION_KEEPALIVE})."
+
     private fun stmtCell(s: ScenarioResult): String =
         s.t1Statement!!.let {
             "${s.name}: ${it.calls} calls, ${it.plans} plans, plan ${"%.3f".format(it.meanPlanMs)} ms, " +
@@ -428,6 +496,13 @@ class Evidence(
                 "it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, " +
                 "decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then " +
                 "afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion."
+        const val PLANNING_DEFINITION =
+            "In-lock planning of T1's snapshot over the measured phase, never a §11 criterion. client (--t1-steps/--focused " +
+                "only): snapshot executions per physical connection; one that is among its connection's first prepareThreshold " +
+                "executions plans once inside the lock (coldSnapshotExecutions), and a completed T1 whose snapshot was one is " +
+                "a coldT1 (T1 completion - due), the rest warmT1. server: pg_stat_statements plans and plan time of the " +
+                "snapshot statement (both kinds together; 0 without track_planning). derived: invalidationReplans = server " +
+                "plans - client cold plans; coldPlanCostMs = mean cold snapshot - mean warm snapshot round trip."
         const val VARIANT_STATUS =
             "Measurement of the production share-partitioned T1 (admission-locking = COHORT_PARTITIONED) over a closed " +
                 "30-participant + legacy cohort, reported apart and never gate D evidence; the mode is a PROPOSED ADR-035 " +

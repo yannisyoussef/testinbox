@@ -105,6 +105,61 @@ class HoldTimingTest {
     }
 
     @Test
+    fun `each snapshot execution is counted on its physical connection, and a T1 records its ordinal there`() {
+        // The driver connections under the pool's handles (Hikari's unwrap(Connection) returns them).
+        val physicalA = fake(Connection::class.java) { _, _ -> null }
+        val physicalB = fake(Connection::class.java) { _, _ -> null }
+
+        fun handleOver(physical: Connection): Connection =
+            fake(Connection::class.java) { name, args ->
+                when (name) {
+                    "prepareStatement" -> statement(args!![0] as String)
+                    "unwrap" -> physical
+                    else -> null
+                }
+            }
+        val handles = ArrayDeque(listOf(handleOver(physicalA), handleOver(physicalA), handleOver(physicalB)))
+        val ledger = ConnectionLedger()
+        val pool =
+            HoldTiming.wrap(
+                fake(DataSource::class.java) { name, _ ->
+                    if (name ==
+                        "getConnection"
+                    ) {
+                        handles.removeFirst()
+                    } else {
+                        null
+                    }
+                },
+                ledger,
+            )
+        val a = pool.connection
+        val aAgain = pool.connection
+        val b = pool.connection
+        // Four snapshots on A with no event on the thread (the probe, the warm-up): pgJDBC's count advances all the same.
+        repeat(4) { a.prepareStatement(SNAPSHOT).executeQuery() }
+        // Neither the lock nor the insert is a snapshot.
+        a.prepareStatement(LOCK).executeQuery()
+        ledger.startPhase()
+
+        fun timed(c: Connection): Int {
+            val timings = EventTimings()
+            EventTimings.current.set(timings)
+            try {
+                t1(c)
+            } finally {
+                EventTimings.current.remove()
+            }
+            return timings.steps.snapshotOrdinal
+        }
+        // The same physical connection through another pool handle: its 5th execution, still a cold plan.
+        timed(aAgain) shouldBe 5
+        timed(a) shouldBe 6
+        timed(b) shouldBe 1
+        ledger.phase() shouldBe LedgerPhase(snapshotExecutions = 3, coldExecutions = 2, physicalConnections = 2, firstUsedInPhase = 1)
+    }
+
+    @Test
     fun `the step summary is null without a complete T1, and each step is the difference of its two stamps`() {
         T1StepsSummary.of(listOf(EventTimings())).shouldBeNull()
         val events =

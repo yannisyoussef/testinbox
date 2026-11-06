@@ -14,6 +14,8 @@ data class StatementStats(
     val meanExecMs: Double,
     val maxExecMs: Double,
     val rowsPerCall: Double,
+    /** `total_plan_time` over the phase; 0 unless `track_planning` is on. */
+    val totalPlanMs: Double = 0.0,
 )
 
 /**
@@ -50,16 +52,22 @@ class Diagnostics(
         if (statementsUnavailable == null) runCatching { jdbc.sql("SELECT pg_stat_statements_reset()").query().listOfRows() }
     }
 
-    /** The T1 snapshot statement's figures since the last reset: the `SELECT 'GLOBAL'` statement with the most calls. */
+    /**
+     * The T1 snapshot statement's figures since the last reset: of the statements whose text has
+     * the snapshot's `… AS scope, … now() AS t0` row, the one with the most calls. Matched on
+     * identifiers and a function call because `pg_stat_statements` normalizes every constant to
+     * `$n`: its text never contains `'GLOBAL'`, which this matched before (so it found nothing).
+     */
     fun t1Stats(): StatementStats? {
         if (statementsUnavailable != null) return null
         return jdbc
             .sql(
                 """
-                SELECT calls, plans, mean_plan_time, mean_exec_time, max_exec_time, rows::float8 / greatest(calls, 1) AS rows_per_call
+                SELECT calls, plans, mean_plan_time, total_plan_time, mean_exec_time, max_exec_time,
+                       rows::float8 / greatest(calls, 1) AS rows_per_call
                   FROM pg_stat_statements
                  WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
-                   AND query LIKE '%SELECT ''GLOBAL''%'
+                   AND query LIKE '% AS scope,%' AND query LIKE '%now() AS t0%'
                  ORDER BY calls DESC LIMIT 1
                 """.trimIndent(),
             ).query { rs, _ ->
@@ -70,6 +78,7 @@ class Diagnostics(
                     rs.getDouble("mean_exec_time"),
                     rs.getDouble("max_exec_time"),
                     rs.getDouble("rows_per_call"),
+                    rs.getDouble("total_plan_time"),
                 )
             }.optional()
             .orElse(null)
