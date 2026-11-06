@@ -1,0 +1,1 @@
+p8-n30 fails at R per the coordinator's rule: FOCUSED.md 'T1 p50 / p95 / p99' p99 at r31 = 533.41 / 518.68 / 508.36 / 548.71 ms (> 250 ms). Marker created 2026-11-06T20:11:30Z
