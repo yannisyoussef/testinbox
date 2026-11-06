@@ -147,12 +147,13 @@ object IngestEnvelopeSafety {
                 add(DeploymentViolation(WORKSPACE_REFILL, "is ${workspace.refillPerSecond}; an unbounded refill fits no gated rate"))
                 return@buildList
             }
-            val population = mailReceivingWorkspaces(storage)
-            if (gated == null || population == null || !gated.isFinite() || gated <= 0.0) return@buildList
+            // Missing or malformed figures are already reported above or by sanity().
+            val population = mailReceivingWorkspaces(storage) ?: return@buildList
+            val bound = gated?.takeIf { it.isFinite() && it > 0.0 } ?: return@buildList
             // A non-positive refill is refused by RatePolicy when the limiter is built; it admits nothing here.
             if (workspace.refillPerSecond <= 0.0) return@buildList
             val admitted = BigDecimal(workspace.refillPerSecond.toString()).multiply(BigDecimal(population))
-            if (admitted > BigDecimal(gated.toString())) {
+            if (admitted > BigDecimal(bound.toString())) {
                 add(
                     DeploymentViolation(
                         WORKSPACE_REFILL,
