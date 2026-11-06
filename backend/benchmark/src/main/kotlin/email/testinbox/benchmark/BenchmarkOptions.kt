@@ -68,7 +68,8 @@ data class BenchmarkOptions(
     val concurrency: List<Int> = listOf(1, 10, 25, 50, 100),
     val rates: List<Double> = listOf(GateEvaluator.EXPECTED_RATE, 2 * GateEvaluator.EXPECTED_RATE),
     val expectedRate: Double = GateEvaluator.EXPECTED_RATE,
-    val durationSeconds: Int = 30,
+    /** The measured window of each matrix scenario; null derives it ([measuredSeconds]). */
+    val durationSeconds: Int? = null,
     val warmupSeconds: Int = 3,
     val reservationBacklog: Int = 1_000,
     val deltaBacklog: Int = 500,
@@ -97,11 +98,51 @@ data class BenchmarkOptions(
     val probeRepetitions: Int = 4,
     /** Seconds of each timing-probe run: its own, so the probes never stretch the gate's matrix. */
     val probeDurationSeconds: Int = 60,
+    /**
+     * The closed beta's 31 cohort shares (30 participant-sized + 1 legacy) seeded beside
+     * each gate population, so T1's cohort read is the one the beta pays for (owner
+     * decision 2026-11-06, #124 6684712608; [Seeder.cohortShares]). On by default: a run
+     * without them departs from the gate population ([AdrConformance]).
+     */
+    val cohortShares: Boolean = true,
+    /**
+     * `--focused`: the A′ focused measurement (#124 6684712608), never gate evidence.
+     * CHOSEN only at 2R = 62/s, concurrency 10 and 100, 10 000 workspaces with the
+     * cohort shares, 60 s; the T1 lock hold is timed per event ([HoldTiming]).
+     */
+    val focused: Boolean = false,
 ) {
     fun retentionRateFor(offered: Double): Double = retentionRate ?: (offered / RETENTION_RATIO)
 
+    /**
+     * The measured window: `--duration-seconds`, or by default the shortest window
+     * of at least [MIN_MEASURED_SECONDS] in which the 2R scenarios can produce
+     * [GateEvaluator.MIN_RETENTION_SAMPLES] retention samples (owner decision
+     * 2026-11-06: "a measured window of at least 33 seconds"). At R = 260 that is
+     * 30 s, as before (26 sweeps/s); at amendment D's R = 31 it is 33 s
+     * (⌈100 / 3.1⌉ = 33, ⌈3.1 × 33⌉ = 103 sweeps). Without it every R = 31 run was
+     * INCOMPLETE by construction (93 samples at 30 s). A longer window does not
+     * loosen sustained2x: [GateEvaluator] holds its terminal-lag allowance at the
+     * 30 s one.
+     */
+    val measuredSeconds: Int
+        get() =
+            durationSeconds ?: maxOf(
+                MIN_MEASURED_SECONDS,
+                Math.ceil(GateEvaluator.MIN_RETENTION_SAMPLES / retentionRateFor(2 * expectedRate)).toInt(),
+            )
+
     companion object {
         const val RETENTION_RATIO = 20.0
+
+        /** The harness's measured window before amendment D, and still the shortest it derives. */
+        const val MIN_MEASURED_SECONDS = 30
+
+        /** The focused measurement's fixed points (`--focused`). */
+        const val FOCUSED_EXPECTED_RATE = 31.0
+        val FOCUSED_CONCURRENCY = listOf(10, 100)
+        const val FOCUSED_WORKSPACES = 10_000
+        const val FOCUSED_SECONDS = 60
 
         @Suppress("CyclomaticComplexMethod", "LongMethod") // one branch per flag
         fun parse(args: List<String>): BenchmarkOptions {
@@ -241,6 +282,25 @@ data class BenchmarkOptions(
                         options = options.copy(probeRepetitions = value(flag).toIntOrNull() ?: throw UsageException("$flag needs a number"))
                     }
 
+                    "--no-cohort-shares" -> {
+                        options = options.copy(cohortShares = false)
+                    }
+
+                    // A preset: the flags after it may still override a field, and the evidence records what ran.
+                    "--focused" -> {
+                        options =
+                            options.copy(
+                                focused = true,
+                                workspaces = listOf(FOCUSED_WORKSPACES),
+                                expectedRate = FOCUSED_EXPECTED_RATE,
+                                rates = listOf(2 * FOCUSED_EXPECTED_RATE),
+                                concurrency = FOCUSED_CONCURRENCY,
+                                durationSeconds = FOCUSED_SECONDS,
+                                reference = false,
+                                cohortShares = true,
+                            )
+                    }
+
                     "--help", "-h" -> {
                         throw UsageException(USAGE)
                     }
@@ -277,6 +337,7 @@ data class BenchmarkOptions(
             }
             if (probeRepetitions < 1) throw UsageException("--probe-repetitions must be at least 1")
             if (probeDurationSeconds < 1) throw UsageException("--probe-duration-seconds must be at least 1")
+            if (focused && partitionedVariant) throw UsageException("--focused measures CHOSEN only; it takes no --partitioned-variant")
             if (partitionedVariant && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
                 throw UsageException("the partitioned cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
             }
@@ -323,6 +384,18 @@ data class BenchmarkOptions(
                                               part of the verdict
               --probe-repetitions <n>         timing-probe runs per load point and mode in the variant (default 4)
               --probe-duration-seconds <n>    seconds of each timing-probe run (default 60)
+              --no-cohort-shares              omit the closed beta's 31 cohort shares from the gate population (run 3's
+                                              population; not ADR evidence since the owner decision of 2026-11-06)
+
+            Measured window: --duration-seconds, by default the shortest window >= 30 s in which the 2R scenarios
+            yield 100 retention samples: 30 s at R = 260, 33 s at R = 31. sustained2x keeps the 30 s terminal-lag
+            allowance whatever the window.
+
+            Focused measurement (A′, never gate evidence):
+              --focused                       CHOSEN only, --expected-rate 31 --rates 62 --concurrency 10,100
+                                              --workspaces 10000 (with the cohort shares) --duration-seconds 60
+                                              --no-reference; times the T1 lock hold per event and reports it with the
+                                              T1 statement time and the T1 p99 (FOCUSED.md beside the evidence)
 
             Output:
               --host-class <text>             operator-supplied host class, recorded in the evidence

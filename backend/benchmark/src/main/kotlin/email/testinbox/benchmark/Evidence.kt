@@ -42,6 +42,12 @@ data class HarnessDescription(
     val targetKind: String,
     val targetDatabaseName: String,
     val lockWaitDefinition: String,
+    /** Cohort shares seeded beside each gate population (31, or 0 with --no-cohort-shares). */
+    val cohortShares: Int = 0,
+    /** sustained2x's terminal-lag allowance is the one of a window this long ([GateEvaluator.sustainedRatio]). */
+    val sustainedReferenceWindowSeconds: Int = GateEvaluator.SUSTAINED_REFERENCE_WINDOW_SECONDS,
+    /** A `--focused` A′ measurement: never gate evidence. */
+    val focused: Boolean = false,
 )
 
 data class SafetyRecord(
@@ -106,6 +112,9 @@ class Evidence(
                     "deltaBacklog" to harness.deltaBacklog,
                     "target" to linkedMapOf("kind" to harness.targetKind, "databaseName" to harness.targetDatabaseName),
                     "lockWaitDefinition" to harness.lockWaitDefinition,
+                    "cohortShares" to harness.cohortShares,
+                    "sustainedReferenceWindowSeconds" to harness.sustainedReferenceWindowSeconds,
+                    "focused" to harness.focused,
                 ),
             "safety" to
                 linkedMapOf(
@@ -307,6 +316,18 @@ class Evidence(
                 },
             "partitionFallbacks" to s.partitionFallbacks,
             "eventsWithoutT1" to s.eventsWithoutT1,
+            "hold" to
+                s.hold?.let {
+                    linkedMapOf(
+                        "definition" to HOLD_DEFINITION,
+                        "hold" to latency(it.hold),
+                        "meanHoldMs" to it.meanHoldMs,
+                        "snapshot" to latency(it.snapshot),
+                        "meanSnapshotMs" to it.meanSnapshotMs,
+                        "insert" to latency(it.insert),
+                        "commit" to latency(it.commit),
+                    )
+                },
             "partitionFallbackReasons" to s.partitionFallbackReasons,
             "background" to
                 s.background?.let {
@@ -408,6 +429,10 @@ class Evidence(
 
     companion object {
         const val SCHEMA_VERSION = 1
+        const val HOLD_DEFINITION =
+            "--focused only, client side: return of pg_advisory_xact_lock(35, 1) to return of the T1 commit, per event " +
+                "(the server's hold to within about one round trip); snapshot, insert and commit are those statements' " +
+                "client-observed times inside it. A focused measurement, never a §11 criterion."
         const val VARIANT_STATUS =
             "Measurement of the production share-partitioned T1 (admission-locking = COHORT_PARTITIONED) over a closed " +
                 "30-participant + legacy cohort, reported apart and never gate D evidence; the mode is a PROPOSED ADR-035 " +

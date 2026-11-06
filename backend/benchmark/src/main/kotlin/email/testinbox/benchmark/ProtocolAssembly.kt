@@ -69,6 +69,41 @@ class EventTimings {
 
     @Volatile var slotWaitNanos: Long = 0
 
+    // --focused only ([HoldTiming]): T1's lock hold and the client-observed steps inside it; 0 = not observed.
+    @Volatile var holdNanos: Long = 0
+
+    @Volatile var snapshotNanos: Long = 0
+
+    @Volatile var insertNanos: Long = 0
+
+    @Volatile var commitNanos: Long = 0
+
+    @Volatile private var lockGrantedNanos: Long = 0
+
+    /** A T1 step returned: the lock grant opens the hold; the snapshot and insert inside it are timed. */
+    fun stepFinished(
+        step: HoldTiming.Step,
+        started: Long,
+        ended: Long,
+    ) {
+        if (holdNanos != 0L) return // T1 is over: a later statement on this thread is T2's
+        when (step) {
+            HoldTiming.Step.LOCK -> lockGrantedNanos = ended
+            HoldTiming.Step.SNAPSHOT -> if (lockGrantedNanos != 0L) snapshotNanos = ended - started
+            HoldTiming.Step.INSERT -> if (lockGrantedNanos != 0L) insertNanos = ended - started
+        }
+    }
+
+    /** A commit returned: the first one after the lock grant ends T1's hold. */
+    fun commitFinished(
+        started: Long,
+        ended: Long,
+    ) {
+        if (holdNanos != 0L || lockGrantedNanos == 0L) return
+        commitNanos = ended - started
+        holdNanos = ended - lockGrantedNanos
+    }
+
     companion object {
         val current: ThreadLocal<EventTimings?> = ThreadLocal()
     }

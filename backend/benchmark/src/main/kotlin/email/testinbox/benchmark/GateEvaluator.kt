@@ -97,7 +97,7 @@ class GateEvaluator(
     }
 
     private fun sustained(chosen: List<ScenarioResult>): Pair<String, Criterion> {
-        val worst = chosen.minOfOrNull { it.achievedRate / it.offeredRate }
+        val worst = chosen.minOfOrNull(::sustainedRatio)
         return SUSTAINED to
             Criterion(
                 SUSTAINED,
@@ -105,12 +105,16 @@ class GateEvaluator(
                 observed = worst,
                 threshold =
                     "achieved / offered >= $SUSTAINED_TOLERANCE at ${2 * expectedRate} events/s at concurrency " +
-                        "${loadGatedConcurrency.sorted()} (concurrency 1 is the uncontended baseline, reported only)",
+                        "${loadGatedConcurrency.sorted()} (concurrency 1 is the uncontended baseline, reported only); " +
+                        "a window longer than $SUSTAINED_REFERENCE_WINDOW_SECONDS s is also read over a " +
+                        "$SUSTAINED_REFERENCE_WINDOW_SECONDS s window, so its terminal-lag allowance stays the " +
+                        "$SUSTAINED_REFERENCE_WINDOW_SECONDS s one",
                 detail =
                     if (worst == null) {
                         "no CHOSEN scenario at 2x the expected rate"
                     } else {
-                        "worst achieved/offered over ${chosen.size} scenario(s); terminal lag " +
+                        "worst achieved/offered (read over $SUSTAINED_REFERENCE_WINDOW_SECONDS s where the window is longer) over " +
+                            "${chosen.size} scenario(s); terminal lag " +
                             chosen.joinToString { "c${it.concurrency}=${"%.0f".format(it.terminalLagMs)} ms" }
                     },
             )
@@ -272,6 +276,37 @@ class GateEvaluator(
     ): Boolean = Math.abs(actual - wanted) <= wanted * RATE_TOLERANCE
 
     companion object {
+        /**
+         * The sustained2x reading of one scenario: achieved / offered, and, when its
+         * measured window is longer than [SUSTAINED_REFERENCE_WINDOW_SECONDS], the
+         * same ratio its completion fraction and terminal lag give over a window of
+         * exactly that length, whichever is lower (owner decision 2026-11-06, #124
+         * 6684712608: "keep the 150 ms terminal-lag allowance ... unchanged").
+         *
+         * Today's criterion over a window of N = ⌊rate × 30⌋ events, C completed, last
+         * completion L after the last due time, is `C / ((N − 1) + rate × L)`
+         * (achieved = C / (span + L), span = (N − 1) / rate), so its terminal-lag
+         * allowance is `30 s × (1/0.995 − 1) + 1/rate` with every event completed:
+         * 150.8 ms + one mean gap, 166.9 ms at 62/s. Over a longer window the same
+         * ratio would allow more (182 ms at 33 s, 317 ms at 60 s). Read over the
+         * 30 s window instead, the allowance is the 30 s one whatever the window;
+         * at a window of at most 30 s the reading IS today's ratio, unchanged to the
+         * bit. A flat 150 ms was not used: it would tighten today's 30 s results
+         * (run 3's 158 ms terminal lag at 0.9953 passes today).
+         */
+        fun sustainedRatio(s: ScenarioResult): Double {
+            val ratio = s.achievedRate / s.offeredRate
+            val reference = Math.floor(s.offeredRate * SUSTAINED_REFERENCE_WINDOW_SECONDS).toInt()
+            if (s.scheduledEvents <= reference || reference < 2) return ratio
+            val completion = s.completedEvents.toDouble() / s.scheduledEvents
+            val overReference = completion * reference / ((reference - 1) + s.offeredRate * s.terminalLagMs / MILLIS)
+            return minOf(ratio, overReference)
+        }
+
+        /** The window sustained2x's terminal-lag allowance is defined over (today's measured window). */
+        const val SUSTAINED_REFERENCE_WINDOW_SECONDS = 30
+        private const val MILLIS = 1_000.0
+
         const val EXPECTED_RATE = 260.0
         val REQUIRED_CONCURRENCY = setOf(1, 10, 25, 50, 100)
 
@@ -283,7 +318,8 @@ class GateEvaluator(
          * "Sustained" needs a tolerance, because the achieved rate is
          * `completed / (last completion − first due)` and the last events'
          * own latency is inside that window. 0.995 allows a terminal lag of
-         * 0.5 % of the run (150 ms at 30 s): three times the T1 p99 bound,
+         * 0.5 % of the run (150 ms at 30 s, and held at the 30 s allowance for
+         * a longer window by [sustainedRatio]): three times the T1 p99 bound,
          * with the whole of T2 on top. A system that is merely finishing its
          * last events stays inside it; one that fell behind by even a few
          * hundred milliseconds does not. The naive derived form

@@ -128,7 +128,7 @@ class Harness(
                         HarnessDescription(
                             measures = MEASURES,
                             arrivals = options.arrivals,
-                            durationSeconds = options.durationSeconds,
+                            durationSeconds = options.measuredSeconds,
                             warmupSeconds = options.warmupSeconds,
                             expectedRate = options.expectedRate,
                             referenceMode = if (options.reference) options.referenceMode else null,
@@ -149,6 +149,9 @@ class Harness(
                             targetKind = if (options.local) "local" else "remote",
                             targetDatabaseName = target.databaseName,
                             lockWaitDefinition = LOCK_WAIT_DEFINITION,
+                            cohortShares = if (options.cohortShares) Seeder.PARTICIPANTS + 1 else 0,
+                            sustainedReferenceWindowSeconds = GateEvaluator.SUSTAINED_REFERENCE_WINDOW_SECONDS,
+                            focused = options.focused,
                         ),
                     safety =
                         SafetyRecord(
@@ -166,6 +169,11 @@ class Harness(
                 )
             val (json, markdown) = evidence.write(directory)
             println(evidence.toMarkdown())
+            if (options.focused) {
+                val focused = FocusedReport.render(results, options)
+                Files.writeString(directory.resolve(FocusedReport.FILE), focused)
+                println(focused)
+            }
             println("evidence: ${json.toAbsolutePath()}")
             println("summary:  ${markdown.toAbsolutePath()}")
             println("VERDICT: ${gate.verdict}")
@@ -217,9 +225,11 @@ class Harness(
                 options.deltaBacklog,
                 options.reservationBacklog,
             )
-            val population = seeder.population(workspaces, options.inboxesPerWorkspace)
-            seeder.deltas(population, options.deltaBacklog)
-            seeder.reservations(population, options.reservationBacklog)
+            val seeded = seeder.population(workspaces, options.inboxesPerWorkspace)
+            // Owner decision 2026-11-06 (#124 6684712608): the beta's 31 cohort shares beside the population.
+            val population = if (options.cohortShares) seeder.cohortShares(seeded, options.inboxesPerWorkspace) else seeded
+            seeder.deltas(population.unshared, options.deltaBacklog)
+            seeder.reservations(population.unshared, options.reservationBacklog)
             val runner = ScenarioRunner(target, options, population, seeder, admin, monitorRole, diagnostics = diagnostics)
             bytesPerCopy = runner.bytesPerCopy
             val commit = diagnostics.commitProbe()
@@ -357,7 +367,9 @@ class Harness(
             "The database protocol only: write slot, T1 assembled as production ALL assembles it (IngestionWiring: " +
                 "FootprintWiring.admission over JdbcStorageAdmission(readsFootprint = FootprintWiring.readsFootprint(declarations)) " +
                 "with a declared filesystem, so the one statement also reads the footprint and cohort inputs; seeded trust, " +
-                "observation and watermark rows; no participant and no cohort plan, so the cohort pool is read but not required; " +
+                "observation and watermark rows; the closed beta's 31 cohort shares beside the population (30 participant-sized " +
+                "and 1 legacy, as legacy-share rows: no participant row and no cohort plan, so the cohort pool is read, every copy " +
+                "to a share is priced against its budget, and the pool is not required; unless --no-cohort-shares); " +
                 "probed before every scenario, see t1Probe), T1 (admission lock, one-statement snapshot, reservation insert), " +
                 "the fence rows, T2 (reservations FOR UPDATE, inboxes FOR KEY SHARE, message and attachment rows through " +
                 "JdbcMessageRepository.appendVisible so the ledger triggers run, pg_notify, reservations consumed), retention " +

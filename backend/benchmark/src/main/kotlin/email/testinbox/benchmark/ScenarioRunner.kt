@@ -86,12 +86,15 @@ class ScenarioRunner(
     /** The PARTITIONED variant's closed cohort (its population IS [cohort]); null for the gate's own runner. */
     private val closedCohort: ClosedCohort? = null,
 ) {
-    /** Retention's expired inboxes: anywhere in the gate population, only in the legacy workspace of a closed cohort. */
+    /**
+     * Retention's expired inboxes: anywhere in the gate population outside its cohort
+     * shares, only in the legacy workspace of a closed cohort.
+     */
     private val retentionPopulation: SeededPopulation =
         closedCohort?.let { closed ->
             val legacy = closed.legacyWorkspace(population)
             SeededPopulation(1, population.inboxes.filter { it.workspaceId == legacy })
-        } ?: population
+        } ?: population.unshared
 
     /** The delta floor: random bytes for the gate population, usage-neutral pairs for a closed cohort. */
     private fun seedDeltas() =
@@ -100,7 +103,7 @@ class ScenarioRunner(
         ) {
             seeder.neutralDeltas(population, options.deltaBacklog)
         } else {
-            seeder.deltas(population, options.deltaBacklog)
+            seeder.deltas(population.unshared, options.deltaBacklog)
         }
 
     private val raw = ByteArray(options.rawBytes) { (it % 251).toByte() }
@@ -123,7 +126,7 @@ class ScenarioRunner(
         log.info("scenario {} starting", name)
         val retentionRate = options.retentionRateFor(spec.offeredRate)
         // Probe scenarios run for their own duration, so they never stretch the gate's matrix.
-        val duration = if (spec.probe) options.probeDurationSeconds else options.durationSeconds
+        val duration = if (spec.probe) options.probeDurationSeconds else options.measuredSeconds
         val retentionTargets = Math.ceil(retentionRate * (duration + options.warmupSeconds) * RETENTION_HEADROOM).toInt() + 5
         seeder.retentionTargets(
             retentionPopulation,
@@ -133,7 +136,9 @@ class ScenarioRunner(
             attachment.size.toLong(),
         )
         // A probe run drives two event streams (the hot flood and the background), each with the scenario's workers.
-        target.pool((if (spec.probe) 2 else 1) * spec.concurrency + POOL_MARGIN).use { pool ->
+        target.pool((if (spec.probe) 2 else 1) * spec.concurrency + POOL_MARGIN).use { hikari ->
+            // --focused: T1's statements are observed (never changed) to time the lock hold.
+            val pool = if (options.focused) HoldTiming.wrap(hikari) else hikari
             val declarations =
                 HarnessDeclarations.of(
                     HarnessDeclarations.enforcement(spec.mode, options.referenceMode),
@@ -202,6 +207,8 @@ class ScenarioRunner(
                 deltaSampler.shutdownNow()
                 heartbeats?.shutdownNow()
                 val t1Statement = diagnostics?.t1Stats()
+                // --focused: the plan the run's statistics give T1 now, before the backlog is restored.
+                val planNow = if (options.focused) diagnostics?.planNow(protocol.statement, population) else null
 
                 val observation =
                     Observation(
@@ -219,6 +226,8 @@ class ScenarioRunner(
                         t1Probe = probe,
                         t1Statement = t1Statement,
                         partitionFallbacks = if (spec.mode == AdmissionMode.PARTITIONED) protocol.store.partitionFallbacks else null,
+                        hold = if (options.focused) HoldSummary.of(records.filter { it.failure == null }.map { it.timings }) else null,
+                        planAtEnd = planNow,
                         partitionFallbackReasons =
                             if (spec.mode == AdmissionMode.PARTITIONED) protocol.fallbackReasons.mapValues { it.value.get() } else null,
                         probes = probes?.summaries(),
