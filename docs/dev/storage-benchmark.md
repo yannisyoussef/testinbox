@@ -512,7 +512,7 @@ is not a departure: gate D binds it to the deployment's R_gated); `--concurrency
 < 500; no population ≥ 10 000 in `--workspaces`; `--local`; no
 `--host-class` (the default `unspecified`); `--no-reference`; a reference
 mode other than `no-lock`; `--no-cohort-shares`; `--focused`;
-`--cohort-participants` other than 30; `--warm-pool`;
+`--cohort-participants` other than 30; `--pool-size`; `--warm-pool`;
 a `--pool-max-lifetime` other than production's 30 min (the connection
 lifecycle above). A departure can therefore never produce a `PASS`, and a
 `PASS` at an R other than the deployment's R_gated never passes gate D.
@@ -618,6 +618,21 @@ R = r × (N + L) is lower. The pool is still reserved for all thirty places. The
 count is recorded as `harness.cohortParticipants` and in FOCUSED.md, and any
 value but 30 is a further `adrEvidence: false` reason. It never changes the
 gate population's 31 cohort shares.
+
+`--pool-size <N>` (1–200, accepted only with `--focused` or `--focused-cohort`)
+sets every scenario pool's `maximumPoolSize` to N instead of the harness's
+c + 6. Client concurrency c is unchanged, so c clients contend for N
+connections, as SMTP sessions do for production's ingestion pool
+(`TESTINBOX_DB_POOL_SIZE`, default 8). The pool is shared with the scenario's
+retention sweeps, compactor and heartbeats, as before. A client waits for a
+connection up to Hikari's `connectionTimeout`, which the harness states
+explicitly at production's value, 30 s (Hikari's default; the ingestion gateway
+does not override it). The connection is borrowed inside the admission call, so
+the wait is inside T1's measured completion − due and its `preLock` step. A
+connection timeout fails the event and is counted under other errors, with its
+sample in `errorSamples`. Recorded as `harness.poolSize` (null for c + 6), per
+scenario as Hikari's own `pool.poolSize`, and in FOCUSED.md's pool line. It is
+never gate evidence: §11's concurrency model is unchanged.
 
 ## Connection lifecycle (`--cold-pool`, `--warm-pool`, `--pool-max-lifetime`)
 
@@ -776,6 +791,7 @@ Written with Jackson (`tools.jackson`), keys in this order:
     "sustainedReferenceWindowSeconds": 30,    // sustained2x's terminal-lag allowance is this window's
     "focused": false,                         // true for --focused (never gate evidence)
     "cohortParticipants": 30,                 // the closed cohort's participants; --cohort-participants (never gate evidence unless 30)
+    "poolSize": null,                         // --pool-size N (never gate evidence); null is the harness's c + 6
     "coldPool": true,                         // false with --warm-pool (never gate evidence)
     "poolMaxLifetime": "PT30M", "poolMaxLifetimeMs": 1800000,   // --pool-max-lifetime; production's by default
     "poolKeepaliveMs": 120000,                // production's 2 min, 0 when not below the lifetime

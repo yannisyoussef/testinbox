@@ -53,6 +53,8 @@ data class HarnessDescription(
      * PARTITIONED variant): 30, or fewer with `--cohort-participants`, never gate evidence.
      */
     val cohortParticipants: Int = Seeder.PARTICIPANTS,
+    /** `--pool-size`: every scenario pool's `maximumPoolSize`; null when it is the harness's c + 6. */
+    val poolSize: Int? = null,
     /** The scenario pools' connection lifecycle ([PoolLifecycle]); the defaults are production's. */
     val pool: PoolLifecycle = PoolLifecycle(true, PoolLifecycle.PRODUCTION_MAX_LIFETIME, PoolLifecycle.PRODUCTION_KEEPALIVE),
 )
@@ -123,6 +125,7 @@ class Evidence(
                     "sustainedReferenceWindowSeconds" to harness.sustainedReferenceWindowSeconds,
                     "focused" to harness.focused,
                     "cohortParticipants" to harness.cohortParticipants,
+                    "poolSize" to harness.poolSize,
                     "coldPool" to harness.pool.coldPool,
                     "poolMaxLifetime" to harness.pool.maxLifetime.toString(),
                     "poolMaxLifetimeMs" to harness.pool.maxLifetime.toMillis(),

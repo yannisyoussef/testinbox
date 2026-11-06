@@ -44,6 +44,9 @@ data class PoolLifecycle(
     fun applyTo(config: HikariConfig) {
         config.maxLifetime = maxLifetime.toMillis()
         config.keepaliveTime = keepalive.toMillis()
+        // Stated, not changed: production's (Hikari's default). With --pool-size a client waits for a
+        // connection up to this long, inside T1; a timeout fails the event and is counted as an error.
+        config.connectionTimeout = PRODUCTION_CONNECTION_TIMEOUT.toMillis()
     }
 
     companion object {
@@ -52,6 +55,9 @@ data class PoolLifecycle(
 
         /** HikariCP's default `keepaliveTime` (since 5.0); not overridden by the ingestion gateway either. */
         val PRODUCTION_KEEPALIVE: Duration = Duration.ofMinutes(2)
+
+        /** HikariCP's default `connectionTimeout`; the ingestion gateway does not override it either. */
+        val PRODUCTION_CONNECTION_TIMEOUT: Duration = Duration.ofSeconds(30)
 
         /**
          * HikariCP refuses a `maxLifetime` below 30 s: it logs a warning and silently uses its

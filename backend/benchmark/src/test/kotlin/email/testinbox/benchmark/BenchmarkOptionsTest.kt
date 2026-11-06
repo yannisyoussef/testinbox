@@ -134,6 +134,27 @@ class BenchmarkOptionsTest {
     }
 
     @Test
+    fun `--pool-size is a focused run's, 1 to 200`() {
+        BenchmarkOptions.parse(listOf("--local", "--focused")).poolSize shouldBe null
+        BenchmarkOptions.parse(listOf("--local", "--focused", "--pool-size", "8")).poolSize shouldBe 8
+        BenchmarkOptions.parse(listOf("--local", "--focused-cohort", "--pool-size", "1")).poolSize shouldBe 1
+        BenchmarkOptions.parse(listOf("--local", "--pool-size", "200", "--focused-cohort")).poolSize shouldBe 200
+        listOf(
+            listOf("--local", "--pool-size", "8"),
+            listOf("--jdbc-url", "jdbc:postgresql://db/ti_bench", "--pool-size", "8"),
+            listOf("--local", "--partitioned-variant", "--pool-size", "8"),
+        ).forEach { args ->
+            shouldThrow<UsageException> { BenchmarkOptions.parse(args) }.message shouldContain "--focused or --focused-cohort"
+        }
+        shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--focused", "--pool-size", "201")) }
+            .message shouldContain "1..200"
+        listOf("0", "-3", "eight").forEach { value ->
+            shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--focused", "--pool-size", value)) }
+                .message shouldContain "positive integer"
+        }
+    }
+
+    @Test
     fun `the closed cohort's N + 1 workspaces must hold the largest event`() {
         // (10 + 1) × 5 = 55 >= 50; (10 + 1) × 4 = 44 < 50.
         BenchmarkOptions

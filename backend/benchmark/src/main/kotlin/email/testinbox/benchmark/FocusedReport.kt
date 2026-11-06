@@ -133,7 +133,8 @@ object FocusedReport {
         appendLine()
         appendLine(
             "coldPool ${lifecycle.coldPool}; poolMaxLifetime ${lifecycle.maxLifetime} " +
-                "(production ${PoolLifecycle.PRODUCTION_MAX_LIFETIME}); keepalive ${lifecycle.keepalive}. " +
+                "(production ${PoolLifecycle.PRODUCTION_MAX_LIFETIME}); keepalive ${lifecycle.keepalive}; " +
+                poolSizeSentence(options) +
                 "Hikari retires a connection at 75–100 % of maxLifetime. A cold T1 is one whose " +
                 "snapshot was among the first $n executions of its text on its physical connection (pgJDBC prepareThreshold): " +
                 "each such execution plans inside the lock.",
@@ -177,6 +178,13 @@ object FocusedReport {
         )
         appendLine()
     }
+
+    private fun poolSizeSentence(options: BenchmarkOptions): String =
+        options.poolSize?.let {
+            "pool size $it (--pool-size; production's TESTINBOX_DB_POOL_SIZE defaults to 8): the scenario's clients " +
+                "contend for $it connections, a client waits up to ${PoolLifecycle.PRODUCTION_CONNECTION_TIMEOUT.seconds} s " +
+                "(connectionTimeout) and that wait is inside T1. "
+        } ?: "pool size c + ${ScenarioRunner.POOL_MARGIN} per scenario (the harness's default). "
 
     /** M/M/1: the p99 of the queueing wait, or null when the queue is unstable. 0 when fewer than 1 % of arrivals wait. */
     fun waitP99Ms(
