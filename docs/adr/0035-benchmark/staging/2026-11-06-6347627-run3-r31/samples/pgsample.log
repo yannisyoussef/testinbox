@@ -1,0 +1,865 @@
+06:10:28 adv_wait=0 adv_held=0 idle-db
+06:10:30 adv_wait=0 adv_held=0 idle-db
+06:10:32 adv_wait=0 adv_held=1 idle/Client:ClientRead=2 active/cpu:-/--_Transient_claim_state_remains=1 idle in transaction/Client:ClientRead=1
+06:10:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/IO:WALSync/COMMIT=1
+06:10:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:10:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/ANALYZE=1
+06:10:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:10:42 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/Timeout:VacuumTruncate/autovacuum:_VACUUM_public.storag=1 idle in transaction/Client:ClientRead=1
+06:10:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:10:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle/cpu:-=1
+06:10:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:10:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:10:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:10:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:10:56 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:10:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:11:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:11:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:11:04 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:11:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:11:08 adv_wait=0 adv_held=1 idle/Client:ClientRead=9 active/cpu:-/SELECT_storage_compact_ledger($1=1 idle in transaction/cpu:-=1
+06:11:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:11:12 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:11:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:11:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:11:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:11:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:11:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:11:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:11:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/UPDATE_storage_reservation_SET_f=1
+06:11:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:11:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:11:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:11:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:11:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:11:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:11:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle/cpu:-=1
+06:11:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALWrite/UPDATE_storage_reservation_SET_f=1 active/cpu:-/autovacuum:_VACUUM_ANALYZE_publi=1
+06:11:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:11:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:11:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:11:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:11:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:11:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=7 active/cpu:-/ANALYZE=1
+06:11:56 adv_wait=3 adv_held=1 idle/Client:ClientRead=15 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=3 active/Client:ClientRead/SELECT_id_FROM_message_WHERE_in=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:11:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:12:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:12:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:12:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:12:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:12:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/UPDATE_storage_reservation_SET_f=1
+06:12:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/cpu:-=1
+06:12:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/cpu:-=1
+06:12:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:12:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:12:18 adv_wait=0 adv_held=1 idle/Client:ClientRead=19 idle/cpu:-=1
+06:12:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1
+06:12:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=18 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:12:24 adv_wait=1 adv_held=1 idle/Client:ClientRead=17 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:12:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/cpu:-=1
+06:12:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:12:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:12:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=14 active/cpu:-/ANALYZE=1
+06:12:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:12:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:12:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=17 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/INSERT_INTO_storage_reservation_=1 idle in transaction/Client:ClientRead=1
+06:12:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=17 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=2 idle in transaction/Client:ClientRead=1
+06:12:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=20 active/cpu:-/autovacuum:_VACUUM_public.messag=1
+06:12:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:12:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/Client:ClientRead/UPDATE_storage_reservation_SET_f=1
+06:12:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:12:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:12:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/Client:ClientRead=1
+06:12:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=18 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:12:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/Client:ClientRead=1
+06:12:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:13:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:13:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/Client:ClientRead=1
+06:13:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:13:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/ANALYZE=1
+06:13:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:13:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=16 active/cpu:-/ANALYZE=1
+06:13:12 adv_wait=15 adv_held=1 idle/Client:ClientRead=19 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=15 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:13:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:13:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/Client:ClientRead/UPDATE_storage_reservation_SET_f=1
+06:13:18 adv_wait=0 adv_held=1 idle/Client:ClientRead=35
+06:13:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:13:22 adv_wait=0 adv_held=1 idle/Client:ClientRead=34 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:13:24 adv_wait=0 adv_held=1 idle/Client:ClientRead=33 active/cpu:-/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:13:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 idle/cpu:-=1
+06:13:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/Client:ClientRead/SELECT_id_AS_message_id,_raw_obj=1
+06:13:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:13:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:13:34 adv_wait=0 adv_held=1 idle/Client:ClientRead=33 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/SELECT_storage_compact_ledger($1=1
+06:13:36 adv_wait=0 adv_held=1 idle/Client:ClientRead=34 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:13:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:13:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:13:42 adv_wait=1 adv_held=1 idle/Client:ClientRead=33 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/Timeout:VacuumDelay/autovacuum:_VACUUM_ANALYZE_publi=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:13:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:13:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/LWLock:WALWrite/WITH_m_AS_(_INSERT_INTO_mess=1
+06:13:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:13:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=32 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/LWLock:WALWrite/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:13:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:13:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:13:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:13:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:14:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 idle in transaction/cpu:-=1
+06:14:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:14:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:14:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/SELECT_id_FROM_message_WHERE_in=1 idle/cpu:-=1
+06:14:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 idle/cpu:-=1
+06:14:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:14:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/IO:WALSync/COMMIT=1
+06:14:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 idle in transaction/cpu:-=1
+06:14:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 idle/cpu:-=1
+06:14:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:14:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:14:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:14:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:14:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:14:28 adv_wait=15 adv_held=1 idle/Client:ClientRead=27 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=15 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:14:30 adv_wait=14 adv_held=1 idle/Client:ClientRead=44 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/Client:ClientRead/SELECT_count(*)_FROM_storage_amb=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:14:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:14:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 idle/cpu:-=1
+06:14:36 adv_wait=1 adv_held=1 idle/Client:ClientRead=58 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:14:38 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:14:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/IO:WALSync/DELETE_FROM_inbox_WHERE_id_=_$1=1
+06:14:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=60 active/Timeout:VacuumDelay/autovacuum:_VACUUM_ANALYZE_publi=1
+06:14:44 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/IO:WALSync/COMMIT=1
+06:14:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:14:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:14:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/Client:ClientRead/SELECT_id_FROM_message_WHERE_in=1 active/cpu:-/SELECT_id_FROM_message_WHERE_in=1
+06:14:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/IO:WALSync/COMMIT=1
+06:14:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:14:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:14:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:15:00 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:15:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/ANALYZE=1
+06:15:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:15:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=17 active/cpu:-/ANALYZE=1
+06:15:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:15:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:15:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:15:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:15:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:15:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:15:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:15:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=57 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:15:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:15:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:15:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/Lock:object/COMMIT=1 active/cpu:-/COMMIT=1
+06:15:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 idle in transaction/cpu:-=1
+06:15:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:15:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/Client:ClientRead/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:15:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:15:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:15:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/ANALYZE=1
+06:15:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/Timeout:VacuumDelay/autovacuum:_VACUUM_public.messag=1 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:15:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=13 active/cpu:-/ANALYZE=1
+06:15:46 adv_wait=13 adv_held=1 idle/Client:ClientRead=46 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=13 active/IO:WALSync/COMMIT=1
+06:15:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=107 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:15:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/Client:ClientRead=1
+06:15:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:15:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:15:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:15:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/cpu:-=1
+06:16:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/UPDATE_storage_reservation_SET_f=1
+06:16:04 adv_wait=0 adv_held=1 idle/Client:ClientRead=108 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:16:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:08 adv_wait=0 adv_held=1 idle/Client:ClientRead=109 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:16:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:12 adv_wait=0 adv_held=1 idle/Client:ClientRead=109 active/IO:WALSync/COMMIT=1
+06:16:14 adv_wait=1 adv_held=1 idle/Client:ClientRead=108 active/IO:WALSync/COMMIT=1 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1
+06:16:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:16:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:16:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=4
+06:16:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=48
+06:16:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=94
+06:16:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle/cpu:-=1
+06:16:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/cpu:-=1
+06:16:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=108 active/Client:ClientRead/UPDATE_storage_reservation_SET_f=1 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:16:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/Timeout:VacuumDelay/autovacuum:_VACUUM_ANALYZE_publi=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:16:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=108 idle in transaction/Client:ClientRead=2
+06:16:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=108 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/UPDATE_storage_reservation_SET_f=1
+06:16:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/cpu:-=1
+06:16:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:16:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:17:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:17:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:17:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=5 active/cpu:-/ANALYZE=1
+06:17:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:17:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:17:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=9 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 idle in transaction/cpu:-=1
+06:17:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/Client:ClientRead/INSERT_INTO_attachment_(id,_work=1
+06:17:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:17:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle/cpu:-=1
+06:17:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:17:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:17:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/Client:ClientRead/SHOW_TRANSACTION_ISOLATION_LEVEL=1
+06:17:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle/cpu:-=1
+06:17:26 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:17:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:17:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/COMMIT=1
+06:17:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/SELECT_id_FROM_message_WHERE_in=1
+06:17:34 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/IO:WALSync/COMMIT=1
+06:17:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:17:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:17:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:17:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:17:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:17:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:17:48 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:17:50 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:17:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/ANALYZE=1
+06:17:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:17:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:17:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=4 active/IO:WALSync/INSERT_INTO_storage_delta_(works=1
+06:18:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/IO:WALWrite=1
+06:18:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:18:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:18:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:18:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/COMMIT=1
+06:18:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/SELECT_message_id,_bytes,_state,=1
+06:18:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:18:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:18:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:18:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:18:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:18:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:18:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:18:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:18:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:18:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:18:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=9 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:18:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/SELECT_id,_state_FROM_inbox_WHER=1
+06:18:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:18:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/COMMIT=1
+06:18:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/COMMIT=1
+06:18:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:18:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:18:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:18:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:18:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/ANALYZE=1
+06:18:52 adv_wait=6 adv_held=1 idle/Client:ClientRead=11 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=6 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/SELECT_id_AS_message_id,_raw_obj=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:18:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/Client:ClientRead=1
+06:18:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/Client:ClientRead=1
+06:18:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:19:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:19:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1
+06:19:04 adv_wait=0 adv_held=1 idle/Client:ClientRead=18 active/Client:ClientRead/COMMIT=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:19:06 adv_wait=0 adv_held=1 idle/Client:ClientRead=19 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:19:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1
+06:19:10 adv_wait=1 adv_held=1 idle/Client:ClientRead=16 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:19:12 adv_wait=8 adv_held=1 idle/Client:ClientRead=11 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=8 active/IO:DataFileExtend/INSERT_INTO_storage_reservation_=1
+06:19:14 adv_wait=4 adv_held=1 idle/Client:ClientRead=13 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=4 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:19:16 adv_wait=2 adv_held=1 idle/Client:ClientRead=16 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=2 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle/cpu:-=1
+06:19:18 adv_wait=2 adv_held=1 idle/Client:ClientRead=15 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=2 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:19:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:19:22 adv_wait=0 adv_held=1 idle/Client:ClientRead=19 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:19:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:19:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:19:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:19:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:19:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=17 active/cpu:-/ANALYZE=1
+06:19:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/cpu:-=1
+06:19:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:19:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle/cpu:-=1
+06:19:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:19:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:19:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/IO:WALSync=1
+06:19:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:19:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/IO:WALSync/COMMIT=1
+06:19:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:19:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:19:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=14 active/cpu:-/INSERT_INTO_message_(id,_workspa=2 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:19:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=18 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 idle in transaction/cpu:-=1
+06:19:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/Client:ClientRead=1
+06:20:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/Client:ClientRead=1
+06:20:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=17 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/SELECT_*_FROM_inbox_WHERE_state_=1 active/cpu:-/UPDATE_storage_reservation_SET_f=1
+06:20:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=18 active/cpu:-/DELETE_FROM_storage_reservation_=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:20:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:20:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:20:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:20:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:20:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=20 active/cpu:-/ANALYZE=1
+06:20:16 adv_wait=13 adv_held=1 idle/Client:ClientRead=20 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=13 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:20:18 adv_wait=15 adv_held=1 idle/Client:ClientRead=19 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=15 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:20:20 adv_wait=0 adv_held=1 idle/Client:ClientRead=34 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:20:22 adv_wait=0 adv_held=1 idle/Client:ClientRead=33 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:20:24 adv_wait=1 adv_held=1 idle/Client:ClientRead=30 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/SELECT_id_FROM_message_WHERE_in=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:20:26 adv_wait=1 adv_held=1 idle/Client:ClientRead=32 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:20:28 adv_wait=0 adv_held=1 idle/Client:ClientRead=33 active/Client:ClientRead/SELECT_count(*)_FROM_storage_amb=1 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:20:30 adv_wait=1 adv_held=1 idle/Client:ClientRead=32 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 idle in transaction/cpu:-=1 idle/cpu:-=1
+06:20:32 adv_wait=4 adv_held=1 idle/Client:ClientRead=29 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=3 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/UPDATE_storage_reservation_SET_f=1 idle in transaction/cpu:-=1
+06:20:34 adv_wait=3 adv_held=1 idle/Client:ClientRead=30 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=3 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle/cpu:-=1
+06:20:36 adv_wait=1 adv_held=1 idle/Client:ClientRead=32 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/INSERT_INTO_storage_reservation_=1 idle in transaction/Client:ClientRead=1
+06:20:38 adv_wait=2 adv_held=1 idle/Client:ClientRead=31 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=2 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:20:40 adv_wait=0 adv_held=1 idle/Client:ClientRead=34 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:20:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/IO:WALSync/COMMIT=1 idle in transaction/cpu:-=1
+06:20:44 adv_wait=2 adv_held=1 idle/Client:ClientRead=30 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=2 active/Client:ClientRead/DELETE_FROM_storage_reservation_=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 active/cpu:-/autovacuum:_VACUUM_ANALYZE_publi=1 idle in transaction/cpu:-=1
+06:20:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:20:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:20:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:20:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/IO:DataFileExtend/WITH_m_AS_(_INSERT_INTO_mess=1
+06:20:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:20:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:20:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=21 active/cpu:-/ANALYZE=1
+06:21:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:21:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=2
+06:21:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 idle in transaction/cpu:-=1
+06:21:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/IO:WALSync/COMMIT=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:21:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:21:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:21:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:21:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:21:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/IO:WALSync/COMMIT=1
+06:21:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:21:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 idle in transaction/cpu:-=1
+06:21:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/IO:WALSync/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:21:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle/cpu:-=1
+06:21:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:21:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:21:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=31 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/LWLock:LockManager/UPDATE_storage_reservation_SET_f=1 idle/cpu:-=1
+06:21:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:21:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:21:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:21:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:21:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=15 active/cpu:-/ANALYZE=1
+06:21:42 adv_wait=14 adv_held=1 idle/Client:ClientRead=45 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/cpu:-/SELECT_n.nspname_=_ANY(current_s=1
+06:21:44 adv_wait=15 adv_held=1 idle/Client:ClientRead=44 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/Timeout:VacuumDelay/autovacuum:_VACUUM_public.inbox_=1 idle in transaction/Client:ClientRead=1 idle/cpu:-=1
+06:21:46 adv_wait=14 adv_held=1 idle/Client:ClientRead=44 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/cpu:-/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:21:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=56 idle in transaction/Client:ClientRead=2 idle in transaction/cpu:-=2
+06:21:50 adv_wait=2 adv_held=1 idle/Client:ClientRead=55 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=2 active/Client:ClientRead/UPDATE_storage_reservation_SET_f=1 active/cpu:-/DELETE_FROM_storage_reservation_=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:21:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 idle in transaction/Client:ClientRead=1
+06:21:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:21:56 adv_wait=0 adv_held=1 idle/Client:ClientRead=57 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:21:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 idle in transaction/Client:ClientRead=1
+06:22:00 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:22:02 adv_wait=0 adv_held=1 idle/Client:ClientRead=57 active/Client:ClientRead/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:22:04 adv_wait=0 adv_held=1 idle/Client:ClientRead=56 active/Client:ClientRead/SELECT_id_AS_message_id,_raw_obj=1 active/cpu:-/SELECT_id_AS_message_id,_raw_obj=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle/cpu:-=1
+06:22:06 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:22:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 idle/cpu:-=1
+06:22:10 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/IO:WALSync/COMMIT=1
+06:22:12 adv_wait=6 adv_held=1 idle/Client:ClientRead=53 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=6 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:22:14 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/IO:WALSync/COMMIT=1
+06:22:16 adv_wait=2 adv_held=1 idle/Client:ClientRead=57 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=2 active/IO:WALSync/COMMIT=1
+06:22:18 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/cpu:-/COMMIT=1
+06:22:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:22:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:22:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:22:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=29 active/IO:WALSync/ANALYZE=1
+06:22:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/SELECT_id_AS_message_id,_raw_obj=1
+06:22:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=57 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 idle in transaction/Client:ClientRead=1 idle in transaction/cpu:-=1
+06:22:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/UPDATE_storage_reservation_SET_f=1
+06:22:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 idle in transaction/cpu:-=1
+06:22:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:22:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/IO:WALSync/COMMIT=1 idle in transaction/cpu:-=1
+06:22:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/IO:WALSync/COMMIT=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:22:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/Client:ClientRead/SELECT_id_FROM_message_WHERE_in=1
+06:22:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 active/cpu:-/autovacuum:_VACUUM_ANALYZE_publi=1
+06:22:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:22:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/SELECT_message_id,_bytes,_state,=1
+06:22:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:22:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:22:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:22:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1
+06:22:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1
+06:23:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:23:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:23:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:23:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:23:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=29 active/cpu:-/ANALYZE=1
+06:23:10 adv_wait=15 adv_held=1 idle/Client:ClientRead=62 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=15 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:23:12 adv_wait=14 adv_held=1 idle/Client:ClientRead=94 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:23:14 adv_wait=14 adv_held=1 idle/Client:ClientRead=94 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:23:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:23:18 adv_wait=0 adv_held=1 idle/Client:ClientRead=109 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:23:20 adv_wait=0 adv_held=1 idle/Client:ClientRead=108 active/IO:WALSync/COMMIT=1 idle in transaction/cpu:-=1
+06:23:22 adv_wait=1 adv_held=1 idle/Client:ClientRead=108 idle in transaction/cpu:-=1 idle/IO:WALSync=1
+06:23:24 adv_wait=1 adv_held=1 idle/Client:ClientRead=107 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle/cpu:-=1
+06:23:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:23:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/UPDATE_storage_reservation_SET_f=1
+06:23:30 adv_wait=8 adv_held=1 idle/Client:ClientRead=100 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=8 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:23:32 adv_wait=0 adv_held=1 idle/Client:ClientRead=109 active/cpu:-/COMMIT=1
+06:23:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:23:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/Client:ClientRead=1
+06:23:38 adv_wait=0 adv_held=1 idle/Client:ClientRead=109 idle in transaction/IO:WALSync=1
+06:23:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:23:42 adv_wait=8 adv_held=1 idle/Client:ClientRead=97 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=8 idle in transaction/cpu:-=2 active/IO:WALSync/COMMIT=1 active/LWLock:WALWrite/UPDATE_storage_reservation_SET_f=1 idle/cpu:-=1
+06:23:44 adv_wait=6 adv_held=1 idle/Client:ClientRead=101 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=6 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 active/cpu:-/autovacuum:_VACUUM_ANALYZE_publi=1 idle in transaction/cpu:-=1
+06:23:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/ANALYZE=1
+06:23:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:23:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:23:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:23:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=39
+06:23:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=88
+06:23:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/Client:ClientRead=1
+06:24:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=106 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=3 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:24:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=108 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:24:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/UPDATE_storage_reservation_SET_f=1
+06:24:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=107 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/SET_LOCAL_statement_timeout_=_'1=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:24:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/Client:ClientRead/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:24:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/Client:ClientRead=1
+06:24:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1
+06:24:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:24:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:24:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:24:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/IO:WALSync=1
+06:24:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=108 active/Client:ClientRead/INSERT_INTO_attachment_(id,_work=1 idle in transaction/Client:ClientRead=1
+06:24:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=108 active/Client:ClientRead/UPDATE_storage_reservation_SET_f=1 active/IO:WALSync/COMMIT=1
+06:24:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:24:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:24:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/TRUNCATE_workspace,_storage_ambi=1
+06:24:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/IO:DataFileExtend/WITH_i_AS_(_INSERT_INTO_inbo=1
+06:24:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/LWLock:WALWrite/WITH_i_AS_(_INSERT_INTO_inbo=1
+06:24:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_i_AS_(_INSERT_INTO_inbo=1
+06:24:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_i_AS_(_INSERT_INTO_inbo=1
+06:24:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_i_AS_(_INSERT_INTO_inbo=1
+06:24:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_i_AS_(_INSERT_INTO_inbo=1
+06:24:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_i_AS_(_INSERT_INTO_inbo=1
+06:24:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_i_AS_(_INSERT_INTO_inbo=1
+06:24:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_i_AS_(_INSERT_INTO_inbo=1
+06:24:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:24:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:24:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle/cpu:-=1
+06:24:56 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:24:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:25:00 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:25:02 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:25:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:25:06 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:25:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:25:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/SELECT_id,_state_FROM_inbox_WHER=1
+06:25:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:25:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:25:16 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:25:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:25:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:25:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:25:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:25:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:25:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:25:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:25:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/ANALYZE=1
+06:25:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:25:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:25:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:25:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:25:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:25:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:25:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:25:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:25:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:25:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:25:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:25:56 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/SELECT_storage_compact_ledger($1=1
+06:25:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:26:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:26:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:26:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:26:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:26:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:26:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:26:12 adv_wait=7 adv_held=1 idle/Client:ClientRead=10 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=7 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:26:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=18 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1 idle in transaction/cpu:-=1
+06:26:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:26:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle/cpu:-=1
+06:26:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:26:22 adv_wait=0 adv_held=1 idle/Client:ClientRead=19 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:26:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:26:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/Client:ClientRead/SELECT_pg_notify($1,_$2)=1
+06:26:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle/cpu:-=1
+06:26:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:26:32 adv_wait=1 adv_held=1 idle/Client:ClientRead=17 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:26:34 adv_wait=0 adv_held=1 idle/Client:ClientRead=18 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:26:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:26:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:26:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:26:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:26:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:26:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:26:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:26:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/ANALYZE=1
+06:26:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=18 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:26:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:26:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:26:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=18 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:27:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:27:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:27:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/Client:ClientRead/SELECT_message_id,_bytes,_state,=1
+06:27:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=18 active/IO:WALSync/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:27:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:27:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 idle in transaction/Client:ClientRead=1
+06:27:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:27:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:27:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:27:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:27:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:27:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:27:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/ANALYZE=1
+06:27:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:27:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=7 active/cpu:-/ANALYZE=1
+06:27:30 adv_wait=14 adv_held=1 idle/Client:ClientRead=20 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:27:32 adv_wait=0 adv_held=1 idle/Client:ClientRead=33 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:27:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:27:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:27:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:27:40 adv_wait=0 adv_held=1 idle/Client:ClientRead=34 idle in transaction/Client:ClientRead=1
+06:27:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:27:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/autovacuum:_VACUUM_ANALYZE_publi=1
+06:27:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:27:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 idle in transaction/cpu:-=1
+06:27:50 adv_wait=0 adv_held=1 idle/Client:ClientRead=33 idle in transaction/cpu:-=2
+06:27:52 adv_wait=2 adv_held=1 idle/Client:ClientRead=30 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=2 active/IO:WALWrite/UPDATE_storage_reservation_SET_f=1 active/cpu:-/COMMIT=1 active/cpu:-/SELECT_id_AS_message_id,_raw_obj=1
+06:27:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:27:56 adv_wait=0 adv_held=1 idle/Client:ClientRead=34 idle in transaction/cpu:-=1
+06:27:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:28:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 idle in transaction/Client:ClientRead=1
+06:28:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:28:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:28:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:28:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=22 active/cpu:-/ANALYZE=1
+06:28:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 idle/cpu:-=1
+06:28:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:28:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:28:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:28:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:28:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:28:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/Client:ClientRead/INSERT_INTO_attachment_(id,_work=1 idle in transaction/cpu:-=1
+06:28:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:28:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=32 active/IO:WALSync/COMMIT=1 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:28:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:28:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:28:32 adv_wait=0 adv_held=1 idle/Client:ClientRead=33 active/Client:ClientRead/UPDATE_storage_reservation_SET_f=1 active/cpu:-/SELECT_storage_compact_ledger($1=1
+06:28:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/IO:WALSync/COMMIT=1
+06:28:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:28:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 idle in transaction/Client:ClientRead=1
+06:28:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:28:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/SELECT_(SELECT_count(*)_FROM_sto=1
+06:28:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:28:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:28:48 adv_wait=11 adv_held=1 idle/Client:ClientRead=32 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=11 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:28:50 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:28:52 adv_wait=0 adv_held=1 idle/Client:ClientRead=58 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle/cpu:-=1
+06:28:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:28:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:28:58 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:29:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/Client:ClientRead/INSERT_INTO_attachment_(id,_work=1
+06:29:04 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:29:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:29:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 idle in transaction/cpu:-=1
+06:29:18 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:29:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/IO:WALSync/COMMIT=1
+06:29:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/ANALYZE=1
+06:29:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:29:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/ANALYZE=1
+06:29:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 idle in transaction/cpu:-=1
+06:29:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/Client:ClientRead/SELECT_id_FROM_message_WHERE_in=1 idle in transaction/cpu:-=1
+06:29:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=57 active/Client:ClientRead/SELECT_reason_FROM_storage_admis=1 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 idle in transaction/cpu:-=1
+06:29:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/Client:ClientRead/SELECT_id,_state_FROM_inbox_WHER=1
+06:29:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 idle in transaction/Client:ClientRead=1
+06:29:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 idle in transaction/cpu:-=1
+06:29:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:29:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:29:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/Client:ClientRead/SELECT_message_id,_bytes,_state,=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:29:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:30:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:30:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:30:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:30:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=13 active/cpu:-/ANALYZE=1
+06:30:08 adv_wait=14 adv_held=1 idle/Client:ClientRead=44 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/cpu:-/SELECT_id,_state_FROM_inbox_WHER=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:30:10 adv_wait=15 adv_held=1 idle/Client:ClientRead=90 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=15 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:30:12 adv_wait=0 adv_held=1 idle/Client:ClientRead=109 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:30:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:30:16 adv_wait=0 adv_held=1 idle/Client:ClientRead=108 active/cpu:-/SELECT_storage_compact_ledger($1=1 idle in transaction/cpu:-=1
+06:30:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:30:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/cpu:-=1
+06:30:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:30:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/cpu:-=1
+06:30:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:30:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:30:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:30:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:30:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:30:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/cpu:-=1
+06:30:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/cpu:-=1
+06:30:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:30:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/ANALYZE=1
+06:30:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:30:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:30:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=47
+06:30:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=96
+06:30:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:30:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:30:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle/cpu:-=1
+06:30:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=108 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 idle/cpu:-=1
+06:31:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=107 idle in transaction/cpu:-=2 active/cpu:-/SELECT_id,_state_FROM_inbox_WHER=1
+06:31:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:31:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:31:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/cpu:-=1
+06:31:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:31:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:31:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/cpu:-=1
+06:31:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:31:16 adv_wait=0 adv_held=1 idle/Client:ClientRead=109 active/cpu:-/SELECT_storage_compact_ledger($1=1
+06:31:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/Client:ClientRead=1
+06:31:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/IO:WALSync/COMMIT=1
+06:31:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/ANALYZE=1
+06:31:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:31:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:31:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:31:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/ANALYZE=1
+06:31:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:31:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:31:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/COMMIT=1
+06:31:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:31:40 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:31:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:31:44 adv_wait=0 adv_held=1 idle/Client:ClientRead=9 active/Timeout:VacuumDelay/autovacuum:_VACUUM_ANALYZE_publi=1 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:31:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:31:48 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:31:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle/cpu:-=1
+06:31:52 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:31:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:31:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:31:58 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:32:00 adv_wait=0 adv_held=2 idle/Client:ClientRead=9 active/cpu:-/SELECT_storage_compact_ledger($1=1 idle in transaction/Client:ClientRead=1
+06:32:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1
+06:32:04 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:32:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:32:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:32:10 adv_wait=0 adv_held=1 idle/Client:ClientRead=11
+06:32:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:32:14 adv_wait=0 adv_held=1 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:32:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:DataFileRead/DELETE_FROM_inbox_WHERE_state_=_=1
+06:32:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:32:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:32:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:32:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:32:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:32:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:32:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:32:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:32:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:32:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/IO:DataFileExtend=1
+06:32:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:32:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle/cpu:-=1
+06:32:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:32:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_storage_reservation_=1 active/cpu:-/autovacuum:_VACUUM_ANALYZE_publi=1
+06:32:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:32:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:32:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:32:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:32:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/UPDATE_storage_reservation_SET_f=1
+06:32:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=11
+06:32:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/Client:ClientRead/SELECT_id_AS_message_id,_raw_obj=1
+06:33:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=9 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:33:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:33:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/Client:ClientRead=1
+06:33:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:33:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 idle in transaction/cpu:-=1
+06:33:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:33:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:33:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:33:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:33:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:33:20 adv_wait=0 adv_held=1 idle/Client:ClientRead=17 active/cpu:-/SELECT_count(*)_FROM_storage_amb=2 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:33:22 adv_wait=6 adv_held=1 idle/Client:ClientRead=10 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=6 active/Client:ClientRead/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:33:24 adv_wait=0 adv_held=1 idle/Client:ClientRead=18 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:33:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:33:28 adv_wait=0 adv_held=1 idle/Client:ClientRead=19 active/cpu:-/SELECT_storage_compact_ledger($1=1
+06:33:30 adv_wait=0 adv_held=1 idle/Client:ClientRead=19 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:33:32 adv_wait=0 adv_held=1 idle/Client:ClientRead=17 active/cpu:-/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:33:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=18 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1 idle in transaction/cpu:-=1
+06:33:36 adv_wait=1 adv_held=1 idle/Client:ClientRead=17 active/Client:ClientRead/INSERT_INTO_attachment_(id,_work=1 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:33:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:33:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:33:42 adv_wait=1 adv_held=1 idle/Client:ClientRead=18 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 idle in transaction/Client:ClientRead=1
+06:33:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/Timeout:VacuumDelay/autovacuum:_VACUUM_ANALYZE_publi=1 active/cpu:-/SELECT_id_FROM_message_WHERE_in=1
+06:33:46 adv_wait=0 adv_held=1 idle/Client:ClientRead=18 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:33:48 adv_wait=3 adv_held=1 idle/Client:ClientRead=14 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=3 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1 idle in transaction/cpu:-=1
+06:33:50 adv_wait=0 adv_held=1 idle/Client:ClientRead=18 active/IO:WALWrite/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:33:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:33:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/SELECT_(SELECT_count(*)_FROM_sto=1
+06:33:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:33:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:34:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:34:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:34:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=17 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1 idle in transaction/cpu:-=1
+06:34:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=17 idle in transaction/Client:ClientRead=2 idle in transaction/cpu:-=1
+06:34:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=18 active/IO:WALSync/COMMIT=1 active/LWLock:WALWrite/UPDATE_storage_reservation_SET_f=1
+06:34:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=17 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:34:12 adv_wait=0 adv_held=1 idle/Client:ClientRead=17 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/SELECT_storage_compact_ledger($1=1 idle in transaction/Client:ClientRead=1
+06:34:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:34:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=17 active/cpu:-/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/IO:WALSync=1
+06:34:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=16 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/COMMIT=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 idle in transaction/cpu:-=1
+06:34:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:34:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/COMMIT=1
+06:34:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:34:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:34:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:34:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=18 active/Client:ClientRead/COMMIT=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:34:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:34:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=20
+06:34:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=14 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=2 active/LWLock:WALWrite/UPDATE_storage_reservation_SET_f=1 active/cpu:-/UPDATE_storage_reservation_SET_f=1 idle in transaction/cpu:-=1 idle/cpu:-=1
+06:34:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=19 active/cpu:-/ANALYZE=1
+06:34:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:34:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:34:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1 active/cpu:-/autovacuum:_VACUUM_public.attach=1
+06:34:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:34:48 adv_wait=11 adv_held=1 idle/Client:ClientRead=22 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=11 idle in transaction/cpu:-=1 idle/cpu:-=1
+06:34:50 adv_wait=14 adv_held=1 idle/Client:ClientRead=19 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/cpu:-/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:34:52 adv_wait=12 adv_held=1 idle/Client:ClientRead=16 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=13 idle/cpu:-=3 active/cpu:-/DELETE_FROM_storage_reservation_=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:34:54 adv_wait=1 adv_held=1 idle/Client:ClientRead=32 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:34:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/Client:ClientRead/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:34:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:35:00 adv_wait=0 adv_held=1 idle/Client:ClientRead=32 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle/cpu:-=1
+06:35:02 adv_wait=3 adv_held=1 idle/Client:ClientRead=29 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=3 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1 idle in transaction/cpu:-=1
+06:35:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 idle/cpu:-=1
+06:35:06 adv_wait=1 adv_held=1 idle/Client:ClientRead=32 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:35:08 adv_wait=7 adv_held=1 idle/Client:ClientRead=25 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=7 active/Client:ClientRead/COMMIT=1 active/Client:ClientRead/SET_LOCAL_statement_timeout_=_'1=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:35:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:35:12 adv_wait=1 adv_held=1 idle/Client:ClientRead=32 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:35:14 adv_wait=2 adv_held=1 idle/Client:ClientRead=32 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=2 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:35:16 adv_wait=1 adv_held=1 idle/Client:ClientRead=31 idle in transaction/cpu:-=2 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:35:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:35:20 adv_wait=0 adv_held=1 idle/Client:ClientRead=32 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:35:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 idle in transaction/Client:ClientRead=1
+06:35:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/ANALYZE=1
+06:35:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:35:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:35:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:35:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=5 active/cpu:-/ANALYZE=1 active/cpu:-/SET_application_name_=_'PostgreS=1
+06:35:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 idle in transaction/Client:ClientRead=1
+06:35:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1
+06:35:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:35:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 idle in transaction/Client:ClientRead=1
+06:35:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:35:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=35 active/Timeout:VacuumTruncate/autovacuum:_VACUUM_public.messag=1
+06:35:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=33 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:35:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:35:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 idle in transaction/Client:ClientRead=1
+06:35:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/SELECT_(SELECT_count(*)_FROM_sto=1
+06:35:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=32 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1 active/IO:WALSync/COMMIT=1 idle/cpu:-=1
+06:35:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:35:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=35
+06:36:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1
+06:36:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=31 active/Client:ClientRead/SELECT_message_id,_bytes,_state,=1 active/IO:WALSync/COMMIT=1 active/cpu:-/INSERT_INTO_storage_reservation_=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:36:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=29 active/LWLock:BufferContent/WITH_ws_AS_(SELECT_DISTINCT_unne=3 active/LWLock:LockManager/UPDATE_storage_reservation_SET_f=1 active/cpu:-/INSERT_INTO_storage_reservation_=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:36:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/IO:WALSync/COMMIT=1
+06:36:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=34 active/cpu:-/ANALYZE=1
+06:36:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:36:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:36:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:36:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=10 active/cpu:-/ANALYZE=1
+06:36:18 adv_wait=14 adv_held=1 idle/Client:ClientRead=43 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/cpu:-/SELECT_id_FROM_message_WHERE_in=1 active/cpu:-/SELECT_typinput='pg_catalog.arra=1
+06:36:20 adv_wait=14 adv_held=1 idle/Client:ClientRead=44 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/SELECT_typinput='pg_catalog.arra=1
+06:36:22 adv_wait=14 adv_held=1 idle/Client:ClientRead=44 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=13 active/cpu:-/SELECT_id_FROM_message_WHERE_in=1 idle in transaction/Client:ClientRead=1 idle/cpu:-=1
+06:36:24 adv_wait=2 adv_held=1 idle/Client:ClientRead=55 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=2 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 idle in transaction/cpu:-=1
+06:36:26 adv_wait=0 adv_held=1 idle/Client:ClientRead=58 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:36:28 adv_wait=0 adv_held=1 idle/Client:ClientRead=58 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/IO:DataFileRead=1
+06:36:30 adv_wait=0 adv_held=1 idle/Client:ClientRead=58 active/IO:WALSync/COMMIT=1 idle in transaction/cpu:-=1
+06:36:32 adv_wait=3 adv_held=1 idle/Client:ClientRead=52 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=4 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/SELECT_count(*)_FROM_storage_amb=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:36:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:36:36 adv_wait=0 adv_held=1 idle/Client:ClientRead=58 active/cpu:-/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:36:38 adv_wait=7 adv_held=1 idle/Client:ClientRead=52 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=6 idle in transaction/Lock:advisory=1 idle in transaction/cpu:-=1
+06:36:40 adv_wait=1 adv_held=1 idle/Client:ClientRead=56 active/Client:ClientRead/INSERT_INTO_attachment_(id,_work=1 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:36:42 adv_wait=1 adv_held=1 idle/Client:ClientRead=57 active/Client:ClientRead/COMMIT=1 active/Client:ClientRead/SELECT_pg_advisory_xact_lock($1,=1 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1
+06:36:44 adv_wait=3 adv_held=1 idle/Client:ClientRead=55 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=3 active/cpu:-/SELECT_id_FROM_message_WHERE_in=1 active/cpu:-/autovacuum:_VACUUM_ANALYZE_publi=1 idle in transaction/cpu:-=1
+06:36:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=57 active/Client:ClientRead/COMMIT=1 active/cpu:-/DELETE_FROM_storage_reservation_=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1
+06:36:48 adv_wait=0 adv_held=1 idle/Client:ClientRead=59 active/cpu:-/COMMIT=1
+06:36:50 adv_wait=0 adv_held=1 idle/Client:ClientRead=58 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:36:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:36:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/IO:WALSync/ANALYZE=1
+06:36:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:36:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:37:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:37:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/IO:WALSync/WITH_m_AS_(_INSERT_INTO_mess=1
+06:37:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=30 active/LWLock:LockManager/WITH_ws_AS_(SELECT_DISTINCT_unne=5 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=3 active/cpu:-/SELECT_count(*)_FROM_storage_amb=2 active/LWLock:LockManager/SELECT_reason_FROM_storage_admis=2 active/cpu:-/INSERT_INTO_message_(id,_workspa=2 idle in transaction/Client:ClientRead=1 idle in transaction/cpu:-=1
+06:37:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 idle/cpu:-=1
+06:37:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:37:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=55 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=2 active/IO:WALSync/COMMIT=1 active/LWLock:WALWrite/UPDATE_storage_reservation_SET_f=1 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:37:12 adv_wait=0 adv_held=1 idle/Client:ClientRead=54 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/LWLock:WALWrite/UPDATE_storage_reservation_SET_f=1 active/Client:ClientRead/SELECT_pg_notify($1,_$2)=1 active/cpu:-/SELECT_storage_compact_ledger($1=1 idle in transaction/Client:ClientRead=1 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:37:14 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/INSERT_INTO_attachment_(id,_work=1
+06:37:16 adv_wait=0 adv_held=0 idle/Client:ClientRead=60
+06:37:18 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/COMMIT=1
+06:37:20 adv_wait=0 adv_held=0 idle/Client:ClientRead=54 active/cpu:-/INSERT_INTO_message_(id,_workspa=2 active/LWLock:WALWrite/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1 idle/cpu:-=1
+06:37:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=55 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:37:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 idle in transaction/cpu:-=1
+06:37:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 idle in transaction/cpu:-=1
+06:37:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/IO:WALSync/COMMIT=1 idle/cpu:-=1
+06:37:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=57 active/cpu:-/DELETE_FROM_inbox_WHERE_id_=_$1=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:37:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 idle in transaction/Client:ClientRead=2
+06:37:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=58 active/IO:WALSync/COMMIT=1 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:37:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/LWLock:LockManager/UPDATE_storage_reservation_SET_f=1
+06:37:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=59 active/cpu:-/ANALYZE=1
+06:37:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:37:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:37:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/Timeout:VacuumDelay/autovacuum:_VACUUM_public.attach=1 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:37:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:37:48 adv_wait=0 adv_held=0 idle/Client:ClientRead=37 active/cpu:-/ANALYZE=1
+06:37:50 adv_wait=14 adv_held=1 idle/Client:ClientRead=70 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=14 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:37:52 adv_wait=14 adv_held=1 idle/Client:ClientRead=87 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=15 idle/cpu:-=5 active/Client:ClientRead/SELECT_count(*)_FROM_storage_amb=1 active/cpu:-/SELECT_count(*)_FROM_storage_amb=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:37:54 adv_wait=0 adv_held=1 idle/Client:ClientRead=109 active/Client:ClientRead/INSERT_INTO_storage_reservation_=1
+06:37:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/cpu:-=1
+06:37:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:38:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:38:02 adv_wait=0 adv_held=1 idle/Client:ClientRead=108 active/cpu:-/DELETE_FROM_storage_reservation_=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:38:04 adv_wait=0 adv_held=1 idle/Client:ClientRead=108 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:38:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/cpu:-=1
+06:38:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=107 active/IO:WALSync/UPDATE_storage_reservation_SET_f=1 active/cpu:-/DELETE_FROM_storage_reservation_=1 active/cpu:-/SELECT_pg_notify($1,_$2)=1
+06:38:10 adv_wait=0 adv_held=1 idle/Client:ClientRead=108 active/cpu:-/INSERT_INTO_storage_reservation_=1 idle in transaction/Lock:advisory=1
+06:38:12 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:38:14 adv_wait=1 adv_held=1 idle/Client:ClientRead=108 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:38:16 adv_wait=0 adv_held=1 idle/Client:ClientRead=108 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1
+06:38:18 adv_wait=0 adv_held=1 idle/Client:ClientRead=108 active/cpu:-/INSERT_INTO_storage_reservation_=1 idle in transaction/cpu:-=1
+06:38:20 adv_wait=1 adv_held=1 idle/Client:ClientRead=107 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/INSERT_INTO_storage_reservation_=1 idle in transaction/Client:ClientRead=1
+06:38:22 adv_wait=0 adv_held=0 idle/Client:ClientRead=106 active/Client:ClientRead/INSERT_INTO_attachment_(id,_work=1 active/Lock:advisory/SELECT_pg_advisory_xact_lock($1,=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/IO:WALSync=1
+06:38:24 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/IO:DataFileRead/DELETE_FROM_inbox_WHERE_state_=_=1
+06:38:26 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/ANALYZE=1
+06:38:28 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/IO:DataFileRead/WITH_m_AS_(_INSERT_INTO_mess=1
+06:38:30 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:38:32 adv_wait=0 adv_held=0 idle/Client:ClientRead=3 active/cpu:-/WITH_m_AS_(_INSERT_INTO_mess=1
+06:38:34 adv_wait=0 adv_held=0 idle/Client:ClientRead=23 active/cpu:-/ANALYZE=1
+06:38:36 adv_wait=0 adv_held=0 idle/Client:ClientRead=69 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 idle in transaction/Client:ClientRead=1
+06:38:38 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:38:40 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:38:42 adv_wait=0 adv_held=0 idle/Client:ClientRead=108 active/Client:ClientRead/UPDATE_storage_reservation_SET_f=1 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:38:44 adv_wait=0 adv_held=0 idle/Client:ClientRead=108 active/Timeout:VacuumDelay/autovacuum:_VACUUM_public.messag=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:38:46 adv_wait=0 adv_held=0 idle/Client:ClientRead=107 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/cpu:-=1 idle/IO:WALSync=1
+06:38:48 adv_wait=0 adv_held=1 idle/Client:ClientRead=106 active/cpu:-/INSERT_INTO_attachment_(id,_work=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/SELECT_storage_compact_ledger($1=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1
+06:38:50 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle in transaction/Client:ClientRead=1
+06:38:52 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 idle/cpu:-=1
+06:38:54 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:38:56 adv_wait=0 adv_held=0 idle/Client:ClientRead=106 active/cpu:-/INSERT_INTO_storage_reservation_=1 active/cpu:-/UPDATE_storage_reservation_SET_f=1 active/cpu:-/WITH_ws_AS_(SELECT_DISTINCT_unne=1 idle in transaction/Client:ClientRead=1
+06:38:58 adv_wait=0 adv_held=0 idle/Client:ClientRead=110
+06:39:00 adv_wait=0 adv_held=0 idle/Client:ClientRead=108 active/Client:ClientRead/SELECT_message_id,_bytes,_state,=1 active/Client:ClientRead/SET_LOCAL_synchronous_commit_=_o=1
+06:39:02 adv_wait=0 adv_held=0 idle/Client:ClientRead=106 active/Client:ClientRead/UPDATE_storage_reservation_SET_f=1 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 idle in transaction/Client:ClientRead=1 idle in transaction/cpu:-=1
+06:39:04 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/Client:ClientRead/INSERT_INTO_message_(id,_workspa=1
+06:39:06 adv_wait=0 adv_held=0 idle/Client:ClientRead=108 active/cpu:-/INSERT_INTO_message_(id,_workspa=1 active/cpu:-/INSERT_INTO_storage_reservation_=1
+06:39:08 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/DELETE_FROM_inbox_WHERE_state_=_=1
+06:39:10 adv_wait=0 adv_held=0 idle/Client:ClientRead=109 active/cpu:-/ANALYZE=1
+06:39:12 adv_wait=0 adv_held=0 idle-db
+06:39:14 adv_wait=0 adv_held=0 idle-db
+06:39:16 adv_wait=0 adv_held=0 idle-db

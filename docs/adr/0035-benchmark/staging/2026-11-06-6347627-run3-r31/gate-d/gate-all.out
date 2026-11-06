@@ -1,0 +1,16 @@
+ADR-035 activation barrier — mode ALL — evaluated 2026-11-06T06:39:53Z
+GATE                   VERDICT       DETAIL
+---------------------- ------------- ------
+A-sessions             NOT RUN       no --sessions-file and TESTINBOX_ACTIVATION_DB_URL is unset
+A-inventory            NOT RUN       no --nodes-file and TESTINBOX_ACTIVATION_DB_URL is unset
+B-physical-baseline    NOT RUN       no --api-metrics supplied
+C-clock-offset         NOT RUN       no --api-metrics / --ingestion-metrics supplied
+D-benchmark            BLOCKED       no metrics endpoint: R_gated (testinbox_storage_gated_expected_rate) is unobserved, so §11's expected rate is unknown
+L-lock-protocol        NOT RUN       no metrics endpoint, no TESTINBOX_ACTIVATION_DB_URL and no --nodes-file admission_locking column: the T1 lock protocol is unobserved
+E-floor-staging        NOT RUN       no --api-metrics / --ingestion-metrics supplied (the running git_sha comes from testinbox_build)
+E-floor-production     PASS          4 ADR-035 floor(s) on origin/master and listed in master's floors file
+Q-qualification        NOT RUN       no --backend-identity supplied
+F-filesystem           NOT RUN       no --filesystem-evidence supplied
+G-cohort               DEFERRED      not yet evidenced: the cohort gate is `storage-budget check <reviewed pool file>` (docs/dev/cohort-storage.md), which can pass only after the switch to ALL and the offline reservation; rerun with --cohort-check-output and --cohort-pool-file: that run, with gate G PASS, is the required evidence before capacity_ready is set
+----
+ACTIVATION BLOCKED
