@@ -130,6 +130,9 @@ class GuardedStorage(
         require(copies.isNotEmpty()) { "an event with no candidate never reaches storage" }
         require(copies.all { it.bytes == bytesPerCopy }) { "every copy of an event has the same exact footprint" }
         ensureOpen()
+        // Normally a no-op: the use case already passed this gate before resolving recipients.
+        // A caller that did not still never meets a half-open breaker it cannot recover.
+        breakerGate()?.let { throw it }
         val trial = admitThroughBreaker()
         var trialEnded = trial == null
         try {
@@ -153,10 +156,15 @@ class GuardedStorage(
     }
 
     /**
-     * Whether storage would refuse this event before T1 (latch, or a breaker
-     * that is open and not yet due a trial), checked BEFORE recipients are
-     * resolved. The SMTP reply for an unhealthy storage is then the same `451`
-     * whatever the recipients are: known or not, inside a limit or not.
+     * Whether storage would refuse this event before T1 (latch, activation, an
+     * open OR half-open breaker, slots, footprint), checked BEFORE recipients
+     * are resolved. The SMTP reply for an unhealthy storage is then the same
+     * `451` whatever the recipients are: known or not, inside a limit or not.
+     *
+     * A half-open breaker's trial runs HERE, on this pre-resolution path: the
+     * non-tenant witness (and clock measurement) decides recovery, so the
+     * answer during recovery does not depend on the recipients either
+     * ([breakerGate]).
      */
     fun unavailable(): StorageUnavailableException? =
         latch.latched()?.let { reason ->
@@ -164,9 +172,7 @@ class GuardedStorage(
             StorageUnavailableException(StorageUnavailableReason.LATCHED, "storage admission is latched: $reason")
         } ?: activation.violated()?.let { detail ->
             StorageUnavailableException(StorageUnavailableReason.ACTIVATION_VIOLATED, "storage activation invariant broken: $detail")
-        } ?: if (breaker.isBlocked()) {
-            StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open")
-        } else if (slots.exhaustedBeforeResolution()) {
+        } ?: breakerGate() ?: if (slots.exhaustedBeforeResolution()) {
             StorageUnavailableException(StorageUnavailableReason.SLOT_WAIT, "every write slot is held by unresolved ambiguity")
         } else {
             footprint.unavailable()?.let { reason ->
@@ -321,41 +327,91 @@ class GuardedStorage(
         }
     }
 
-    /** The breaker's real-event trial (quota, storage-full or ambiguous) this event is, or null. */
-    private fun admitThroughBreaker(): StorageBreaker.Admission.Trial? =
+    /**
+     * The breaker, decided before any recipient resolves (ADR-025): null when
+     * the event may go on, the `451` otherwise. An open breaker, or one whose
+     * trial is running, refuses. A half-open one hands THIS caller its trial,
+     * and the trial is the non-tenant proof ([probe]) run right here, never a
+     * tenant event: so every event of the half-open window, known recipients
+     * or not, inside a limit or not, gets the same answer. A failed proof
+     * re-trips with the doubled backoff; a passed one closes the kinds a probe
+     * can prove, and leaves quota, a full filesystem and an ambiguous upload
+     * to their real-event trial (ADR-035 §8, issue #102) in
+     * [admitThroughBreaker].
+     */
+    private fun breakerGate(): StorageUnavailableException? =
         when (val admission = breaker.admit()) {
-            StorageBreaker.Admission.Closed -> {
+            StorageBreaker.Admission.Closed, StorageBreaker.Admission.Proven -> {
                 null
+            }
+
+            is StorageBreaker.Admission.Blocked -> {
+                StorageUnavailableException(
+                    StorageUnavailableReason.BREAKER_OPEN,
+                    "storage breaker open",
+                )
+            }
+
+            is StorageBreaker.Admission.Trial -> {
+                proveRecovery(admission)
+            }
+        }
+
+    /** The half-open proof of [trial], before resolution. Ends the trial whatever happens. */
+    private fun proveRecovery(trial: StorageBreaker.Admission.Trial): StorageUnavailableException? {
+        var ended = false
+        try {
+            val failed = probe(trial.kinds)
+            val admitted =
+                if (failed != null) {
+                    breaker.trip(failed)
+                    false
+                } else {
+                    breaker.proven(trial)
+                }
+            ended = true
+            metrics.breakerOpen(breaker.isOpen)
+            metrics.breakerEscalated(breaker.isEscalated)
+            return if (admitted) {
+                null
+            } else {
+                StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker half-open probe failed")
+            }
+        } finally {
+            // Only an Error escaping the probe gets here unended: the next caller proves instead.
+            if (!ended) breaker.abandonTrial()
+        }
+    }
+
+    /**
+     * The real-event trial (quota, storage-full or ambiguous) this event is,
+     * or null. Reached only after [breakerGate]: an event here never runs a
+     * probe, and a breaker that is not [StorageBreaker.Admission.Proven] for
+     * it is a `451` (a trip or another event's trial since its gate).
+     */
+    private fun admitThroughBreaker(): StorageBreaker.Admission.Trial? =
+        when (val admission = breaker.admitRealEvent()) {
+            is StorageBreaker.Admission.Trial -> {
+                admission
             }
 
             is StorageBreaker.Admission.Blocked -> {
                 throw StorageUnavailableException(StorageUnavailableReason.BREAKER_OPEN, "storage breaker open (${admission.kinds})")
             }
 
-            is StorageBreaker.Admission.Trial -> {
-                val failed = probe(admission.kinds)
-                if (failed != null) {
-                    breaker.trip(failed)
-                    throw StorageUnavailableException(
-                        StorageUnavailableReason.BREAKER_OPEN,
-                        "storage breaker half-open probe failed (${admission.kinds})",
-                    )
-                }
-                if (admission.needsRealEvent) {
-                    admission
-                } else {
-                    breaker.close(admission)
-                    metrics.breakerOpen(breaker.isOpen)
-                    metrics.breakerEscalated(breaker.isEscalated)
-                    null
-                }
+            StorageBreaker.Admission.Closed, StorageBreaker.Admission.Proven -> {
+                null
             }
         }
 
     /**
-     * The half-open probes for every open kind except quota: a fresh
-     * clock-offset measurement for a clock offset, a zero-risk witness write
-     * for anything else. Returns the kind that failed, or null.
+     * The half-open probes: a fresh clock-offset measurement for a clock
+     * offset, a zero-risk witness write for every other kind except a full
+     * filesystem (Ops evidence, read by the breaker, is its non-tenant proof:
+     * a zero-byte write succeeds on a full filesystem, contract §8). Quota is
+     * witnessed too: a store at or over its hard quota refuses even a
+     * zero-byte write, and its real-event trial still follows. Returns the
+     * kind that failed, or null.
      */
     private fun probe(kinds: Set<StorageBreaker.Kind>): StorageBreaker.Kind? {
         fun passes(check: () -> Boolean) =
@@ -366,11 +422,8 @@ class GuardedStorage(
         if (StorageBreaker.Kind.CLOCK_OFFSET in kinds && !passes { ClockOffset.measure(inspection, clock).withinBound() }) {
             return StorageBreaker.Kind.CLOCK_OFFSET
         }
-        // Quota and a full filesystem both accept a zero-byte probe: their trial is the real event.
-        val witnessed =
-            kinds.filter {
-                it != StorageBreaker.Kind.CLOCK_OFFSET && it != StorageBreaker.Kind.QUOTA && it != StorageBreaker.Kind.STORAGE_FULL
-            }
+        // A full filesystem accepts a zero-byte probe: evidence, then the real event, is its proof.
+        val witnessed = kinds.filter { it != StorageBreaker.Kind.CLOCK_OFFSET && it != StorageBreaker.Kind.STORAGE_FULL }
         if (witnessed.isNotEmpty() && !passes { inspection.witness("_probe/${node.nodeId}/${UUID.randomUUID()}") }) {
             return witnessed.first()
         }
@@ -476,6 +529,8 @@ class GuardedStorage(
 
                 last == UploadOutcome.Refused(UploadRefusal.QUOTA) -> PhysicalFailureKind.QUOTA
 
+                // A 403 refuses the fenced upload itself (credentials, policy, deadline): the metric keeps
+                // its ADR-035 §16 label, the breaker its own kind.
                 last == UploadOutcome.Refused(UploadRefusal.DENIED) -> PhysicalFailureKind.DEADLINE
 
                 last == UploadOutcome.NotStarted -> PhysicalFailureKind.UNAVAILABLE
@@ -494,7 +549,14 @@ class GuardedStorage(
 
             PhysicalFailureKind.UNAVAILABLE -> breaker.trip(StorageBreaker.Kind.UNAVAILABLE)
 
-            else -> Unit // a missed deadline is definitive and says nothing about storage health
+            // Revoked or rotated credentials, a bucket policy, or a missed deadline: definitive, and
+            // nothing about the recipient. Untripped, only events that reach an upload (known,
+            // under-ceiling recipients) would get this 451, for as long as it lasts (ADR-025). Tripped,
+            // it is the pre-resolution 451 for everyone until the witness proves storage writable
+            // again; the normal backoff, so one spurious 403 costs one backoff, never a latch.
+            PhysicalFailureKind.DEADLINE -> breaker.trip(StorageBreaker.Kind.DENIED)
+
+            else -> Unit
         }
         if (breaker.isOpen) metrics.breakerOpen(true)
         noteEscalation(escalatedBefore)

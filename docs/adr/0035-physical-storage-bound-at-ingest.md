@@ -2619,6 +2619,43 @@ covered by the R = 31 evidence.
   the same `INGEST` budgets, now lower; the host class; production PostgreSQL
   settings.
 
+## Amendment note (2026-11-06): global storage faults are answered uniformly before recipient resolution, including recovery
+
+Recorded with the fix, for the owner's merge review (the issue #102 precedent).
+It restates §8 and §12 for ADR-025 and changes no limit, ceiling or reply
+mapping.
+
+- **The property.** A global storage fault gets the same reply for every
+  event, decided before any recipient resolves, for as long as the fault lasts
+  and **while it recovers**. The breaker's half-open trial is no longer run by
+  the first event that reaches an upload. It is the non-tenant proof (the
+  witness, a fresh clock measurement, the Ops evidence), run on the
+  pre-resolution path by whichever event arrives first. A failed proof
+  re-trips with the §8 backoff, and every event in the window gets the same
+  `451`. The backoff schedule is unchanged.
+- **§8, opening causes.** A `403` refusal of the fenced upload
+  (`AccessDenied`, `SignatureDoesNotMatch`) opens the breaker with its own
+  kind. Credentials, bucket policy and a missed deadline say nothing about a
+  recipient. Only the witness reopens it, after the normal backoff, so one
+  spurious `403` costs one backoff and never a latch. The §16 metric keeps
+  `kind=deadline`.
+- **§8, quota.** The quota trial is the witness and then one real event. A
+  bucket at or over its hard quota refuses even the zero-byte witness. The
+  real-event confirmation of quota, a full filesystem and an ambiguous upload
+  (§8, issue #102) stays. It only starts once the non-tenant proof has passed.
+- **Residual (not closed by this note).** Once that proof has passed, the
+  first real upload can still fail. This happens with a quota that is lagging
+  within one message of its limit, or with evidence that is wrong. Until that
+  upload re-trips the breaker, events that reach an upload and events that do
+  not can be answered differently. This is the same transient split as a
+  fault's onset. A full filesystem needs a newer observation for each such
+  trial. Under `OFF`, an ambiguous upload escalates after one. A quota that
+  keeps passing the witness can reopen the window at every backoff (at most
+  every 2 min) for as long as it lasts. Closing that is an owner decision,
+  for example an evidence gate for quota or a sized non-tenant probe.
+  Write-slot, lock-timeout and other after-resolution `451`s are unchanged:
+  the slot cap is the owner-accepted I9 exception above.
+
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
 - **ADR-027 §2.** The storage-quota paragraph and the overshoot bound are

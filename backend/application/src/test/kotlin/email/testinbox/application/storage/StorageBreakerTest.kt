@@ -406,4 +406,77 @@ class StorageBreakerTest {
             pool.shutdownNow()
         }
     }
+
+    // --- the pre-resolution gate and the non-tenant proof (ADR-025, 2026-11-06) ---------------------
+
+    @Test
+    fun `a proof that passes for a real-event kind admits events, then exactly one real-event trial`() {
+        breaker.trip(Kind.QUOTA)
+        breaker.admitRealEvent() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) // never before the proof
+        advance(breaker.currentBackoff)
+        val proof = breaker.admit() as Admission.Trial
+        breaker.admitRealEvent() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) // the proof is still running
+        breaker.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA))
+
+        breaker.proven(proof) shouldBe true
+        breaker.isOpen shouldBe true // a real event still has to confirm it (ADR-035 §8)
+        breaker.awaitsRealEvent shouldBe true
+        repeat(3) { breaker.admit() shouldBe Admission.Proven } // every gate passes: no second proof
+
+        val real = breaker.admitRealEvent()
+        real shouldBe Admission.Trial(setOf(Kind.QUOTA), 1)
+        breaker.admitRealEvent() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) // one at a time
+        breaker.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) // and the gate refuses everyone meanwhile
+
+        breaker.abandonTrial() // that event stored nothing (refused by its ceiling): the proof still stands
+        breaker.admit() shouldBe Admission.Proven
+        breaker.close(breaker.admitRealEvent() as Admission.Trial)
+        breaker.isOpen shouldBe false
+        breaker.awaitsRealEvent shouldBe false
+    }
+
+    @Test
+    fun `a failed real-event trial after the proof is a failed trial - doubled backoff, and the gate shuts again`() {
+        breaker.trip(Kind.QUOTA)
+        advance(breaker.currentBackoff)
+        breaker.proven(breaker.admit() as Admission.Trial)
+        breaker.admitRealEvent().shouldBeInstanceOf<Admission.Trial>()
+        breaker.trip(Kind.QUOTA)
+        breaker.currentBackoff shouldBe Duration.ofSeconds(30)
+        breaker.awaitsRealEvent shouldBe false
+        breaker.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA))
+    }
+
+    @Test
+    fun `kinds a probe proves close on the proof alone, DENIED among them`() {
+        breaker.trip(Kind.DENIED)
+        breaker.trip(Kind.CLOCK_OFFSET)
+        advance(breaker.currentBackoff)
+        val proof = breaker.admit() as Admission.Trial
+        proof.needsRealEvent shouldBe false
+        breaker.proven(proof) shouldBe true
+        breaker.isOpen shouldBe false
+    }
+
+    @Test
+    fun `a proof overtaken by a trip admits nothing, and leaves the newer trip alone`() {
+        breaker.trip(Kind.UNAVAILABLE)
+        advance(breaker.currentBackoff)
+        val proof = breaker.admit() as Admission.Trial
+        breaker.trip(Kind.DENIED) // a heartbeat or an older event tripped while the witness ran
+        breaker.proven(proof) shouldBe false
+        breaker.openKinds shouldBe setOf(Kind.UNAVAILABLE, Kind.DENIED)
+        breaker.admit() shouldBe Admission.Blocked(setOf(Kind.UNAVAILABLE, Kind.DENIED))
+    }
+
+    @Test
+    fun `a STORAGE_FULL proof reads its evidence, and once proven reads it no more`() {
+        full.trip(Kind.STORAGE_FULL)
+        advance(Duration.ofMinutes(1))
+        evidence = true
+        full.proven(full.admit() as Admission.Trial) shouldBe true
+        val checks = evidenceChecks
+        repeat(3) { full.admit() shouldBe Admission.Proven }
+        evidenceChecks shouldBe checks // no database read per event while the real event is awaited
+    }
 }
