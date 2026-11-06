@@ -55,6 +55,11 @@ object AdrConformance {
         if (options.focused) {
             reasons += "--focused: a focused A′ measurement, never gate evidence"
         }
+        if (options.cohortParticipants != Seeder.PARTICIPANTS) {
+            reasons +=
+                "--cohort-participants ${options.cohortParticipants}: a closed cohort of ${options.cohortParticipants + 1} " +
+                "workspaces, not the beta's ${Seeder.PARTICIPANTS} participants + 1 legacy; never gate evidence"
+        }
         reasons += poolLifecycle(options)
         return reasons
     }

@@ -98,6 +98,55 @@ class BenchmarkOptionsTest {
     }
 
     @Test
+    fun `--cohort-participants sizes the --focused-cohort closed cohort, 1 to 30, and nothing else`() {
+        BenchmarkOptions.parse(listOf("--local")).cohortParticipants shouldBe 30
+        BenchmarkOptions.parse(listOf("--local", "--focused-cohort")).cohortParticipants shouldBe 30
+        val ten = BenchmarkOptions.parse(listOf("--local", "--focused-cohort", "--cohort-participants", "10"))
+        ten.cohortParticipants shouldBe 10
+        ten.focusedCohort shouldBe true
+        // Either order: the preset keeps a value given before it.
+        BenchmarkOptions.parse(listOf("--local", "--cohort-participants", "15", "--focused-cohort")).cohortParticipants shouldBe 15
+        // One participant + legacy needs 25 inboxes each for a 50-recipient event.
+        BenchmarkOptions
+            .parse(listOf("--local", "--focused-cohort", "--cohort-participants", "1", "--inboxes-per-workspace", "25"))
+            .cohortParticipants shouldBe 1
+        BenchmarkOptions.parse(listOf("--local", "--focused-cohort", "--cohort-participants", "30")).cohortParticipants shouldBe 30
+
+        // Only with --focused-cohort, even at its default value.
+        listOf(
+            listOf("--local", "--cohort-participants", "10"),
+            listOf("--local", "--cohort-participants", "30"),
+            listOf("--local", "--focused", "--cohort-participants", "10"),
+            listOf("--local", "--partitioned-variant", "--cohort-participants", "10"),
+        ).forEach { args ->
+            shouldThrow<UsageException> { BenchmarkOptions.parse(args) }.message shouldContain "--focused-cohort"
+        }
+        shouldThrow<UsageException> {
+            BenchmarkOptions.parse(listOf("--local", "--focused-cohort", "--cohort-participants", "31"))
+        }.message shouldContain "1..30"
+        listOf("0", "-1", "ten").forEach { value ->
+            shouldThrow<UsageException> {
+                BenchmarkOptions.parse(listOf("--local", "--focused-cohort", "--cohort-participants", value))
+            }.message shouldContain "positive integer"
+        }
+        shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--focused-cohort", "--cohort-participants")) }
+            .message shouldContain "needs a value"
+    }
+
+    @Test
+    fun `the closed cohort's N + 1 workspaces must hold the largest event`() {
+        // (10 + 1) × 5 = 55 >= 50; (10 + 1) × 4 = 44 < 50.
+        BenchmarkOptions
+            .parse(listOf("--local", "--focused-cohort", "--cohort-participants", "10", "--inboxes-per-workspace", "5"))
+            .inboxesPerWorkspace shouldBe 5
+        shouldThrow<UsageException> {
+            BenchmarkOptions.parse(listOf("--local", "--focused-cohort", "--cohort-participants", "10", "--inboxes-per-workspace", "4"))
+        }.message shouldContain "closed cohort needs at least 50 inboxes"
+        // At 30 participants, 2 inboxes each (62) still suffice, as before.
+        BenchmarkOptions.parse(listOf("--local", "--focused-cohort", "--inboxes-per-workspace", "2")).inboxesPerWorkspace shouldBe 2
+    }
+
+    @Test
     fun `the pool is cold with production's lifetime unless told otherwise`() {
         val defaults = BenchmarkOptions.parse(listOf("--local"))
         defaults.coldPool shouldBe true

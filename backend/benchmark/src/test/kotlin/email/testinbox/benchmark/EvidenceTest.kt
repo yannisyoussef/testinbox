@@ -57,6 +57,7 @@ class EvidenceTest {
         adrReasons: List<String> = emptyList(),
         pool: PoolLifecycle = PoolLifecycle.of(BenchmarkOptions(local = true)),
         scenarios: List<ScenarioResult> = listOf(scenario),
+        cohortParticipants: Int = Seeder.PARTICIPANTS,
     ) = Evidence(
         environment =
             Environment(
@@ -94,6 +95,7 @@ class EvidenceTest {
                 targetDatabaseName = "testinbox_bench",
                 lockWaitDefinition = "the whole admission call",
                 pool = pool,
+                cohortParticipants = cohortParticipants,
             ),
         safety =
             SafetyRecord(
@@ -178,6 +180,23 @@ class EvidenceTest {
         criterion["observed"].asDouble() shouldBe 12.5
         criterion["threshold"].asString() shouldContain "50.0 ms"
         tree["criteria"][GateEvaluator.RETENTION]["observed"].isNull shouldBe true
+    }
+
+    @Test
+    fun `the closed cohort's participant count is recorded, 30 unless --cohort-participants says otherwise`() {
+        val gate = GateEvaluator().evaluate(listOf(scenario))
+        Evidence.MAPPER.readTree(evidence(gate).toJson())["harness"]["cohortParticipants"].asInt() shouldBe 30
+        Evidence.MAPPER
+            .readTree(evidence(gate, cohortParticipants = 10).toJson())["harness"]["cohortParticipants"]
+            .asInt() shouldBe 10
+    }
+
+    @Test
+    fun `FOCUSED md names the closed cohort's size`() {
+        val ten = BenchmarkOptions.parse(listOf("--local", "--focused-cohort", "--cohort-participants", "10"))
+        FocusedReport.render(emptyList(), ten) shouldContain "the closed cohort of 11 workspaces (10 participants + 1 legacy)"
+        FocusedReport.render(emptyList(), BenchmarkOptions.parse(listOf("--local", "--focused-cohort"))) shouldContain
+            "the closed cohort of 31 workspaces (30 participants + 1 legacy)"
     }
 
     @Test

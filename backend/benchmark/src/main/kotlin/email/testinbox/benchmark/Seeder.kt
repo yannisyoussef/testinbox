@@ -262,16 +262,21 @@ class Seeder(
     }
 
     /**
-     * The W1 cohort at its maximum, for the PARTITIONED variant ([ClosedCohort]):
-     * [PARTICIPANTS] ACTIVE, verified participants (the ADR-037 fixed 128/256 MiB
-     * shares, by V19's defaults) and one legacy share, each with
-     * [inboxesPerWorkspace] inboxes, provisioned the way `AdmitBetaParticipant`
-     * leaves them (account, admission, marker). Inserting the markers needs the
-     * operator authority: the harness is the owner of its own benchmark database.
+     * The W1 cohort ([ClosedCohort]), at its maximum by default: [participants] ACTIVE,
+     * verified participants (the ADR-037 fixed 128/256 MiB shares, by V19's defaults,
+     * whatever their number) and one legacy share, each with [inboxesPerWorkspace]
+     * inboxes, provisioned the way `AdmitBetaParticipant` leaves them (account,
+     * admission, marker). The legacy workspace is `workspaceIds[participants]`.
+     * Inserting the markers needs the operator authority: the harness is the owner of
+     * its own benchmark database.
      */
-    fun cohort(inboxesPerWorkspace: Int): SeededPopulation {
-        val cohort = population(PARTICIPANTS + 1, inboxesPerWorkspace)
-        cohort.workspaceIds.take(PARTICIPANTS).forEachIndexed { index, ws ->
+    fun cohort(
+        inboxesPerWorkspace: Int,
+        participants: Int = PARTICIPANTS,
+    ): SeededPopulation {
+        require(participants in 1..PARTICIPANTS) { "the cohort has 1..$PARTICIPANTS participants" }
+        val cohort = population(participants + 1, inboxesPerWorkspace)
+        cohort.workspaceIds.take(participants).forEachIndexed { index, ws ->
             val account = UUID.randomUUID()
             jdbc
                 .sql(
@@ -297,7 +302,7 @@ class Seeder(
         }
         jdbc
             .sql("INSERT INTO storage_legacy_share (workspace_id, payload_limit_bytes, footprint_limit_bytes) VALUES (:ws, :p, :f)")
-            .param("ws", cohort.workspaceIds[PARTICIPANTS])
+            .param("ws", cohort.workspaceIds[participants])
             .param("p", LEGACY_PAYLOAD_BYTES)
             .param("f", LEGACY_FOOTPRINT_BYTES)
             .update()

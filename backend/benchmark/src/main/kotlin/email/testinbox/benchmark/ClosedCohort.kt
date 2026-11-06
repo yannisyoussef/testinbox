@@ -16,7 +16,8 @@ import java.util.UUID
 /**
  * The only population the production share-partitioned T1 partitions, for the
  * PARTITIONED variant (PROPOSED ADR-035 amendment, gate D W1): a CLOSED cohort —
- * thirty ACTIVE participants and one legacy share, and no other workspace —
+ * thirty ACTIVE participants (or [participants], for `--focused-cohort
+ * --cohort-participants`) and one legacy share, and no other workspace —
  * whose pool is reserved and approved by production's `ReserveCohortStorage`,
  * which also records the V25 partition bound. Every node the plan expects is
  * live with the plan's binding. In any other population the production T1
@@ -25,7 +26,7 @@ import java.util.UUID
  * scenario records how many T1s fell back.
  *
  * What it changes against the gate's population, recorded in the evidence:
- * - 31 workspaces instead of the gate's population (an unshared workspace with
+ * - [participants] + 1 workspaces (31 by default) instead of the gate's population (an unshared workspace with
  *   usage is exactly what the partition guard refuses to partition);
  * - the delta backlog is seeded as +x / −x pairs, usage-neutral, so the floor of
  *   unfolded rows T1 scans stays the configured one without growing a share past
@@ -39,6 +40,8 @@ class ClosedCohort(
     private val template: TransactionTemplate,
     private val seeder: Seeder,
     private val monitorRole: String,
+    /** Participants beside the legacy share: the beta's 30, or fewer with `--cohort-participants` (never gate evidence). */
+    val participants: Int = Seeder.PARTICIPANTS,
 ) {
     val declarations: StorageDeclarations =
         HarnessDeclarations.of(StorageEnforcement.ALL, monitorRole, HarnessDeclarations.locking(AdmissionMode.PARTITIONED))
@@ -48,7 +51,7 @@ class ClosedCohort(
 
     /** Seeds the cohort, its reservation backlog and its live nodes, then reserves and approves the pool. */
     fun seed(options: BenchmarkOptions): SeededPopulation {
-        val cohort = seeder.cohort(options.inboxesPerWorkspace)
+        val cohort = seeder.cohort(options.inboxesPerWorkspace, participants)
         seeder.reservations(cohort, options.reservationBacklog)
         registerExpectedNodes()
         FootprintSeed.seed(admin)
@@ -75,7 +78,7 @@ class ClosedCohort(
             .update()
     }
 
-    fun legacyWorkspace(cohort: SeededPopulation): UUID = cohort.workspaceIds[Seeder.PARTICIPANTS]
+    fun legacyWorkspace(cohort: SeededPopulation): UUID = cohort.workspaceIds[participants]
 
     private val apiNode = HarnessDeclarations.API_NODES.single()
     private val ingestionNode = HarnessDeclarations.INGESTION_NODES.single()

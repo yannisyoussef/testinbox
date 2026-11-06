@@ -511,7 +511,8 @@ is not a departure: gate D binds it to the deployment's R_gated); `--concurrency
 {1, 10, 25, 50, 100}; `--reservation-backlog` < 1 000; `--delta-backlog`
 < 500; no population ≥ 10 000 in `--workspaces`; `--local`; no
 `--host-class` (the default `unspecified`); `--no-reference`; a reference
-mode other than `no-lock`; `--no-cohort-shares`; `--focused`; `--warm-pool`;
+mode other than `no-lock`; `--no-cohort-shares`; `--focused`;
+`--cohort-participants` other than 30; `--warm-pool`;
 a `--pool-max-lifetime` other than production's 30 min (the connection
 lifecycle above). A departure can therefore never produce a `PASS`, and a
 `PASS` at an R other than the deployment's R_gated never passes gate D.
@@ -605,6 +606,18 @@ Per scenario it adds `t1Steps` to the evidence (also available in any run with
 
 FOCUSED.md also carries the **connection lifecycle and in-lock planning**
 table (below).
+
+`--focused-cohort` runs the same measurement on the beta's production state:
+the closed cohort of 30 participants + 1 legacy share (`ClosedCohort`), its pool
+reserved and approved through `ReserveCohortStorage`, so REQUIRED, with every
+event to those 31 workspaces. `--cohort-participants <N>` (1–30, default 30,
+accepted only with `--focused-cohort`) seeds N participants instead, each with
+the same ADR-037 share, and sends every event to the N + 1 workspaces: it
+measures mode a's T1 for a smaller first cohort, whose expected rate
+R = r × (N + L) is lower. The pool is still reserved for all thirty places. The
+count is recorded as `harness.cohortParticipants` and in FOCUSED.md, and any
+value but 30 is a further `adrEvidence: false` reason. It never changes the
+gate population's 31 cohort shares.
 
 ## Connection lifecycle (`--cold-pool`, `--warm-pool`, `--pool-max-lifetime`)
 
@@ -762,6 +775,7 @@ Written with Jackson (`tools.jackson`), keys in this order:
     "cohortShares": 31,                       // the beta's shares beside each population; 0 with --no-cohort-shares
     "sustainedReferenceWindowSeconds": 30,    // sustained2x's terminal-lag allowance is this window's
     "focused": false,                         // true for --focused (never gate evidence)
+    "cohortParticipants": 30,                 // the closed cohort's participants; --cohort-participants (never gate evidence unless 30)
     "coldPool": true,                         // false with --warm-pool (never gate evidence)
     "poolMaxLifetime": "PT30M", "poolMaxLifetimeMs": 1800000,   // --pool-max-lifetime; production's by default
     "poolKeepaliveMs": 120000,                // production's 2 min, 0 when not below the lifetime

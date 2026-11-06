@@ -149,6 +149,7 @@ class Harness(
                             cohortShares = if (options.cohortShares) Seeder.PARTICIPANTS + 1 else 0,
                             sustainedReferenceWindowSeconds = GateEvaluator.SUSTAINED_REFERENCE_WINDOW_SECONDS,
                             focused = options.focused,
+                            cohortParticipants = options.cohortParticipants,
                             pool = PoolLifecycle.of(options),
                         ),
                     safety =
@@ -232,11 +233,11 @@ class Harness(
 
         /**
          * `--focused-cohort`: CHOSEN (mode a) on the beta's production state, the closed
-         * cohort with its pool approved and REQUIRED, every event to its 31 workspaces.
-         * Never gate evidence (the run is `--focused`).
+         * cohort with its pool approved and REQUIRED, every event to its N + 1 workspaces
+         * (N = `--cohort-participants`, 30 by default). Never gate evidence (the run is `--focused`).
          */
         fun closedCohortChosen() {
-            val closed = ClosedCohort(admin, adminTemplate, seeder, monitorRole)
+            val closed = ClosedCohort(admin, adminTemplate, seeder, monitorRole, options.cohortParticipants)
             val cohort = closed.seed(options)
             val runner = ScenarioRunner(target, options, cohort, seeder, admin, monitorRole, cohort, diagnostics, closed)
             bytesPerCopy = runner.bytesPerCopy
