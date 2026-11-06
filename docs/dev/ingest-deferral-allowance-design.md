@@ -1253,7 +1253,15 @@ here is accepted.
 Each one is listed with its mechanism, bound or metric, and the
 minimisation done.
 
-## 9. RL-9 correction (PROPOSED: not agreed, not implemented)
+## 9. RL-9 correction (PROPOSED: invariants agreed by both reviewers; not accepted, not implemented)
+
+**Review status (2026-11-06).** The correctness and security reviewers each
+returned **AGREE** on this section, conditional on the INV-R9-6(i) chaining
+bound and EP-8 (4)'s exact rule, both applied in this commit. That agreement
+is on the invariants only. It is **not** owner acceptance of any residual or
+trade-off, and it activates nothing. C1/C2 credit still depends on Ops' lab
+items 1–6 and on the §9.9 edge preconditions; EP-8's remedy is the owner's
+decision.
 
 **Authority.** Owner decision, #124 comment
 [6686873641](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6686873641),
@@ -1639,7 +1647,10 @@ Where the two reviews overlap, the stricter wording is adopted, and noted.
      the stamp over WireGuard and compares it, round-trip corrected (EP-3),
      with the **database clock (`now()`)** that λ uses. Comparing it with
      the node's clock is allowed only when chained with ADR-035's
-     node-to-DB offset guard. This is not the edge's own view.
+     node-to-DB offset guard, and then
+     |edge − node| + |node − DB| ≤ ε_skew. The two offsets add; a
+     node-to-DB bound looser than 1 s would otherwise let t_a drift past
+     ε_skew. This is not the edge's own view.
      - The latest canary must be **≤ 5 min old** (at most 4 missed
        samples).
      - **|offset| ≤ ε_skew = 1 s.**
@@ -1922,6 +1933,33 @@ practice today". It is **an observation, not a proof**.
     unaffected.
   - It is an app change behind the uniform reply, so it needs its own
     security review.
+  - **The rule, stated exactly:**
+    - Discard applies only to a transaction from an `xforward-peers` edge
+      with `MAIL FROM:<>` and `PROTO` ∉ {SMTP, ESMTP, ESMTPS, ESMTPA,
+      ESMTPSA}.
+    - An absent or `[UNAVAILABLE]` `PROTO` from an edge counts as not
+      `smtpd`-originated.
+    - A `trusted-clients` peer (no XFORWARD) is handled normally.
+    - The discriminator is `PROTO` under lab item 6, not the null sender
+      alone. A null-sender message received from the internet reports an
+      smtpd protocol, so genuine bounces are delivered.
+  - **Where it happens:** at the same point as ADR-025's unknown-recipient
+    discard, **before recipient resolution**.
+    - There is no `INGEST` charge, no allowance row, no per-IDENT marker,
+      no credit, no stored row and no stored content.
+    - ADR-019/026 and I-2 are unaffected.
+    - Logging is metadata only.
+    - It adds one metric, `inbound_edge_notice_discarded_total`, with no
+      labels.
+  - **Forgery and oracles:**
+    - `PROTO` is set by the edge, not the sender. Only `pickup` and the
+      bounce daemon produce a non-smtpd origin, and only local accounts can
+      use `pickup` (EP-5).
+    - The edge still sees the uniform `250`, so there is no oracle.
+  - **AT-EP8:** send a forced expiry as the participant's own inbox address,
+    once to an existing recipient and once to an unknown one. Its inbox stays
+    empty in both cases. A null-sender message from the internet to an
+    inbox is delivered.
 - **(1), otherwise.** `check_sender_access` refuses a relay-domain
   `MAIL FROM` from non-`mynetworks` clients.
   - The refusal comes before `RCPT`, so it reveals nothing about any
