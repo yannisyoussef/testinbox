@@ -10,6 +10,7 @@ import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpMethod
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
+import tools.jackson.databind.JsonNode
 import tools.jackson.databind.ObjectMapper
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -75,9 +76,15 @@ class IdempotencyApiTest : ApiIntegrationTestBase() {
         problem["type"].asString() shouldContain "idempotency-key-reused"
         // Terminal: retrying with this key cannot succeed, so no Retry-After.
         changed.headers.getFirst("Retry-After") shouldBe null
-        // And it must not leak the original request back to the caller.
-        changed.body!!.contains("600") shouldBe false
+        // And it must not leak the original request back to the caller. Checked
+        // structurally: the problem carries random ids, so a raw substring test
+        // for "600" fails whenever one of them happens to contain it.
+        changed.body!!.shouldNotContain("ttlSeconds")
+        scalars(problem).filter { it.isNumber && it.asLong() == 600L } shouldBe emptyList()
+        scalars(problem).filter { it.isString && it.asString() == "600" } shouldBe emptyList()
     }
+
+    private fun scalars(node: JsonNode): List<JsonNode> = if (node.isContainer) node.values().flatMap { scalars(it) } else listOf(node)
 
     @Test
     fun `the conflict never echoes the key the client sent`() {
