@@ -515,12 +515,12 @@ SMTP and the MX were authorized for the owner-only production beta launch
   - lifetime 4 h.
 
   The schedule excludes operator flushes (`edge-stop.sh`: `postsuper -H ALL;
-  postqueue -f`; `postsuper -r`). Each use adds at most one presentation to
-  every held or deferred message. Today these uses appear only as journal
-  lines (EP-6 would log them).
+  postqueue -f`) and requeues (`postsuper -r`). Each use adds at most one
+  presentation to every held or deferred message. Today these uses appear
+  only as journal lines; EP-6 would log them.
 - **Edge clock steps.** A forward step of the edge clock makes every due
   deferred message retry at once, which adds attempts to K just as operator
-  flushes do. A canary offset alarm (INV-R9-6) is therefore also an alarm for
+  flushes do. A canary offset alarm (EP-3, recommended) is therefore an alarm for
   this privacy model.
 - **No client-triggered retries.** No SMTP client can trigger an early retry
   once ETRN is refused. ETRN is **open on the live edge today**, so the model
@@ -534,10 +534,22 @@ SMTP and the MX were authorized for the owner-only production beta launch
     #147);
   - `NOTIFY=SUCCESS,DELAY` producing no notice;
   - the expiry-bounce path into the relay domain closed (EP-8, §9.9).
-- **Reconcile reload.** Reconcile's `systemctl reload postfix` (falling back
-  to restart) runs on a config change at most every 2 min. It is assumed not
-  to advance next-attempt times. This is **unverified**: Ops reports it with
-  the ETRN post-deploy check.
+- **Reload and restart, measured in the lab** (6688294528). Reconcile runs
+  `systemctl reload postfix` on a config change (falling back to restart),
+  checking at most every 2 min.
+  - **Stored retry times are never advanced.** Every attempt falls within
+    [stored − 1 s, stored + `queue_run_delay`), the same window as a
+    periodic scan. So the scan-phase reset adds no attempts.
+  - **The in-flight exception.** If a reload hits a delivery that is in
+    flight, that attempt's backoff is lost. The next attempt comes at the
+    first mail arrival after reload + 60 s, which anyone can trigger,
+    otherwise at reload + 300 s. A restart during an in-flight delivery
+    retries at once.
+  - **Model:** each reload or restart adds at most one attempt to each
+    message in flight at that instant.
+- **Requeue** (`postsuper -r`) gives a new queue ID but keeps the old IDENT
+  and `arrival_time`. It triggers an immediate attempt and resets the
+  backoff, so it adds an attempt to K, just as a flush does.
 - **Concurrency limits.**
   - edge relay concurrency: 20 (the Postfix default; pin proposed in §6);
   - write slots: 16 per node and 4 per workspace;
@@ -555,13 +567,42 @@ SMTP and the MX were authorized for the owner-only production beta launch
   - a global token above σ′ was available, which reflects aggregate fresh
     and retry load.
 - One ordinal per paid probe gives at most log₂(K+1) bits.
-- The attempt count is K ≤ 121 + reload-advanced attempts + operator flushes
-  within the message's lifetime:
-  - **≈ 4.8 bits** for K ≈ 26 on the observed schedule;
-  - **≤ ≈ 6.9 bits** at K = 121, which holds only if Ops verifies that
-    reloads do not advance next-attempt times;
-  - **≤ ≈ 7.9 bits** otherwise (at most 120 reloads in 4 h, so K ≤ 241). In
-    that case the figure returns to the owner.
+- **The attempt count, on the measured model:**
+
+  > K ≤ K_sched + N_rr + N_op + N_step
+
+  - K_sched is the schedule's own attempts in L = 4 h. An attempt can come
+    1 s before its stored time, so the spacing is ≥ 119 s and
+    K_sched ≤ 1 + ⌊14 400/119⌋ = **122**. On the observed age-based backoff
+    (120, 240, 480, then 600 s), it is **≈ 26**.
+  - N_rr is the reloads and restarts in the message's lifetime that hit it
+    while it was in flight. Each adds at most one. Worst case, it is every
+    reload or restart in the window.
+  - N_op is operator flushes and requeues.
+  - N_step is forward steps of the edge clock.
+- **Bits = log₂(K + 1).** Let N = N_rr + N_op + N_step.
+
+  | N | Hard (K_sched = 122) | Typical (K_sched ≈ 26) |
+  |---|---|---|
+  | 0 | log₂ 123 ≈ **6.94** | log₂ 27 ≈ **4.75** |
+  | 1 | log₂ 124 ≈ 6.95 | log₂ 28 ≈ 4.81 |
+  | 10 | log₂ 133 ≈ 7.06 | log₂ 37 ≈ 5.21 |
+  | 30 | log₂ 153 ≈ 7.26 | log₂ 57 ≈ 5.83 |
+  | 120 (reconcile at its maximum, every 2 min for 4 h) | log₂ 243 ≈ **7.92** | log₂ 147 ≈ 7.20 |
+
+- **The parameter.** N_rr is set by the reload and restart rate. Ops is
+  reporting the 30-day count, n₃₀. The worst 4 h window has N_rr ≤ n₃₀, and
+  the average window has N_rr ≈ n₃₀/180.
+  - The expected count is far smaller. A reload adds an attempt only to a
+    message in flight at that instant, and a probe's attempts last seconds
+    while their spacing is minutes.
+  - The bound must be worst-case all the same.
+- **Escalation.** The ≈ 6.9-bit hard figure holds only at N = 0. Any
+  realistic rate makes the hard bound exceed 6.9 bits: at a reconcile reload
+  in the window, or an operator flush, requeue or clock step. It reaches
+  ≈ 7.9 bits at the reconcile maximum. **Under the I9 exception's escalation
+  clause, that figure returns to the owner** with the measured n₃₀. The
+  typical figure stays ≤ ≈ 5.8 bits for N ≤ 30.
 - This is not a bound on every timing observation.
 - I-17's immediate deferral changes the `451`'s latency, not the ordinal.
 
@@ -585,16 +626,22 @@ SMTP and the MX were authorized for the owner-only production beta launch
 > - ETRN refused, verified on the live edge;
 > - no delivery-status notice of any class reaching a sender, verified on the
 >   live edge;
-> - operator flushes counted as extra attempts;
+> - operator flushes and requeues counted as extra attempts;
+> - reloads and restarts counted as at most one extra attempt per message in
+>   flight at that instant (lab-measured; stored retry times are never
+>   advanced);
 > - S-C2 enforced;
 > - the enforced concurrency limits (edge relay concurrency 20; 16 write
 >   slots per node, 4 per workspace; global T1 scheduling).
 >
-> Under that model, one paid probe reveals at most log₂(K+1) bits, with
-> K ≤ 121 + reload-advanced attempts + operator flushes within the message's
-> lifetime: about 4.8 bits (K ≈ 26). The ≈ 6.9-bit bound holds only if Ops
-> verifies that reloads do not advance next-attempt times. Otherwise the
-> bound is ≤ ≈ 7.9 bits, and the figure returns to the owner. Probe events stay
+> Under that model, one paid probe reveals at most log₂(K+1) bits, where
+> K ≤ 122 + N_rr + N_op + N_step within the message's lifetime: N_rr counts
+> reloads or restarts that hit it in flight, N_op operator flushes or
+> requeues, and N_step edge clock steps. On the observed schedule that is
+> about 4.8 bits (K ≈ 26). The hard figure is about 6.94 bits at N = 0, and
+> exceeds 6.9 bits for any N ≥ 1, reaching about 7.9 bits at 120 per 4 h.
+> The figure under the measured reload and restart rate returns to the
+> owner. Probe events stay
 > bounded by the probed workspace's `INGEST` budget. This is not a universal
 > bound on timing information.
 >
@@ -625,8 +672,11 @@ SMTP and the MX were authorized for the owner-only production beta launch
 
 **Add to `contract.yaml` under `required:`** (every profile):
 
-- `smtp_send_xforward_command: "yes"`;
-- `enable_long_queue_ids: "yes"`;
+- `smtp_send_xforward_command: "yes"`. The live value is **unverified: Ops
+  is confirming it (#124 6688582662)**. If it is `no`, this is EP-0, a
+  behaviour change toward ingestion only;
+- `enable_long_queue_ids: "yes"`. The live value is **unverified** for the
+  same reason (EP-1);
 - `smtpd_authorized_xforward_hosts: ""`;
 - `smtpd_authorized_xclient_hosts: ""`;
 - `smtpd_etrn_restrictions: reject`;
@@ -1090,10 +1140,11 @@ They run on Testcontainers Postgres and MinIO, with the real
       (I-22).
 23. **AT-23 Edge schedule** (rehearsal image, then live by Ops).
     - Measures deferred messages' next-attempt times across
-      `postfix reload`, `restart` and an operator flush, and reports the
-      extra presentations each one adds.
-    - The ≈ 6.9-bit figure stands only if reloads add none; otherwise
-      ≤ ≈ 7.9 bits.
+      `postfix reload`, `restart`, an operator flush and `postsuper -r`.
+    - Asserts the measured model: stored retry times are never advanced, and
+      each reload or restart adds at most one attempt per message in flight.
+      This is already shown in the lab (6688294528).
+    - Reports n₃₀ for §4's K.
     - `NOTIFY=SUCCESS,DELAY` produces no notice.
     - ETRN gets `554`.
 
@@ -1227,14 +1278,18 @@ here is accepted.
 
 - Scheduling refusals are global, so they fall under I9 as written.
 - There is one delivery ordinal per paid probe:
-  - about 4.8 bits;
-  - at most 6.9 bits under the model;
-  - at most 7.9 bits if reloads advance next-attempt times. That case
-    returns to the owner.
+  - about 4.8 bits on the observed schedule;
+  - at most log₂(123 + N), where N counts reloads and restarts hitting the
+    message in flight, plus operator flushes, requeues and clock steps
+    (§4);
+  - about 6.94 bits at N = 0, above 6.9 for any N ≥ 1, and about 7.9 bits
+    at 120 per 4 h.
+  - The figure under the measured n₃₀ returns to the owner.
 - It depends on Ops' live verifications:
   - ETRN refused;
   - no delivery-status notice of any class;
-  - the reload effect.
+  - the reload and restart count n₃₀;
+  - the live XFORWARD and long-ID values (EP-0, EP-1).
 
 **(v) The final residual list for explicit acceptance (§8(c)).**
 
@@ -1253,15 +1308,16 @@ here is accepted.
 Each one is listed with its mechanism, bound or metric, and the
 minimisation done.
 
-## 9. RL-9 correction (PROPOSED: invariants agreed by both reviewers; not accepted, not implemented)
+## 9. RL-9 correction (PROPOSED: reduced to C3 after Ops' lab; back to both reviewers; not accepted, not implemented)
 
-**Review status (2026-11-06).** The correctness and security reviewers each
-returned **AGREE** on this section, conditional on the INV-R9-6(i) chaining
-bound and EP-8 (4)'s exact rule, both applied in this commit. That agreement
-is on the invariants only. It is **not** owner acceptance of any residual or
-trade-off, and it activates nothing. C1/C2 credit still depends on Ops' lab
-items 1–6 and on the §9.9 edge preconditions; EP-8's remedy is the owner's
-decision.
+**Review status (2026-11-06).** Both reviewers agreed the invariants at
+`32539dd`. That agreement covered three carriers. Ops' lab then measured them
+(#124 comment
+[6688294528](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688294528)):
+neither edge carrier is usable, so **the correction reduces to C3**, the
+time ingestion first saw the identity. That is a material change, so §9 goes
+back to both reviewers. The earlier agreement is not owner acceptance of
+anything, and nothing here activates anything.
 
 **Authority.** Owner decision, #124 comment
 [6686873641](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6686873641),
@@ -1277,18 +1333,12 @@ verbatim:
 > correctness and security reviewers agree on the proposed invariants."
 
 This proposal changes no burst size, relay concurrency or edge timestamp.
-
-**Ops' input** (#124 comment
-[6686924864](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6686924864)):
-
-- No relay concurrency or timing change is acceptable without a measured
-  case. Pinning the *current* values is a no-change hardening, and Ops
-  treats every value this proposal relies on as pinned (§9.7).
-- Whether the edge can attest an arrival time is being **measured** on a
-  Postfix 3.8.6 lab mirror, not the live edge. **So every part of this
-  proposal that relies on a trusted arrival time is CONDITIONAL on that lab
-  result for its specific carrier (§9.2).** The fallbacks for a failed
-  measurement are stated there.
+**Pending:** the live values of `smtp_send_xforward_command` and
+`enable_long_queue_ids` are **unverified; Ops is confirming them (#124
+[6688582662](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688582662))**.
+The lab notes the edge template sets neither, so both may be at Postfix's
+default `no`. In that case the edge sends no XFORWARD today, and EP-0 (§9.9)
+becomes a precondition of the whole allowance design.
 
 ### 9.1 The problem
 
@@ -1299,479 +1349,295 @@ at most b tokens.
 
 **What is lost.** A workspace sending within its envelope at rate r through
 a hold of H seconds loses about r·H − b copies, all behind a `250`. For
-example, a 10 min outage loses about 540 of 600 copies.
+example, a 10 min hold loses about 540 of 600 copies.
 
-**What holds mail at the edge:**
+**What holds the mail:**
 
-- ingestion is unreachable, or the destination is marked dead;
-- pre-resolution `451`s (breaker, latch, activation, footprint), which
-  charge nothing;
-- an operator hold, then the `edge-stop.sh` flush;
-- catch-up work occupying the 20 relay sessions;
-- the edge's own queueing.
+- (h1) pre-resolution `451`s (breaker, latch, activation, footprint,
+  ambiguity-exhausted slots), which charge nothing;
+- (h2) ingestion unreachable, or the destination marked dead;
+- (h3) an operator hold, then the `edge-stop.sh` flush;
+- (h4) catch-up work occupying the 20 relay sessions;
+- (h5) the edge's own queueing.
 
 **Not affected:** mail deferred *after* charging. It already holds an
 allowance.
 
-**Genuinely over-allowance traffic** is traffic whose arrival stream *at the
-edge* exceeds (b, r). The natural criterion is therefore: judge conformance
-at the time the mail reached the edge, not the time it reached ingestion.
+**Genuinely over-allowance traffic** exceeds (b, r) at the time it first
+arrived. This section can attest only one such time: ingestion's own first
+sight of a copy (§9.2).
 
-### 9.2 A trusted edge-arrival time: candidate carriers, all conditional
+### 9.2 Arrival-time carriers: measured; only C3 is usable
 
-**None of these is assumed.** Each carrier is usable only if Ops' lab
-measurement passes for it (§9.7, lab items 1–6).
+**Measured and rejected: the edge carriers C1 and C2.** These are the lab
+results (Postfix 3.8.6 lab mirror, not the live edge, 6688294528, items 1, 3,
+4 and 5):
 
-**C1, primary: the long queue ID's time field, carried in `XFORWARD IDENT`.**
+| Carrier | What it marks | Stability |
+|---|---|---|
+| C1, the long queue ID's time field | the **first valid `RCPT`**, when the queue file opens under `smtpd_delay_open_until_valid_rcpt = yes` | stable across defer, reload, restart and hold or release. A requeue gives a **new ID and time** |
+| C2, the top edge `Received:` date | **`MAIL FROM`** | unchanged on retry. Told apart from sender headers only by position. A requeue prepends another header (pickup's), so it is no longer first |
+| `postqueue -j` `arrival_time` | **`MAIL FROM`** | kept through restart and requeue. Never sent to ingestion |
 
-- **Encoding.** A long queue ID begins with the queue file's creation time:
-  6 base-52 characters for the seconds, then 4 for the microseconds, in the
-  vowel-free alphabet.
-- **App-side pre-check.** This is not the measurement. On the rehearsal
-  image, four IDs decoded to `postqueue -j` `arrival_time` exactly,
-  including one taken through `postsuper -r`.
-- **What it would need.** No new transport and no content parsing. IDENT is
-  accepted only from single-host edge peers (I-4, I-20), and the edge refuses
-  a sender's `XFORWARD`.
-- **Conditional on lab items 1, 2, 4 and 5.**
-- **Conditions both reviewers attached** (RQ-2):
-  - a version pin (3.8.6);
-  - a decode test;
-  - AT-R9-1 cross-checking every decoded value against `arrival_time`;
-  - an undecodable or clamped value gives no credit;
-  - whether `postsuper -r` keeps the ID is for the lab to establish (item 1).
-- **Caveats.** The encoding is Postfix's internal format (`mail_queue.h`).
-  The time comes from the edge host's clock (INV-R9-6).
+- **No carrier marks the end of `DATA`, and no end-of-`DATA` signal reaches
+  ingestion.** The only end-of-`DATA` traces are the `cleanup` and `qmgr`
+  log lines and the first relay attempt itself.
+- **The trickle test:** with the live settings (no per-request deadline), a
+  client sending 1 byte every 90 s held one `DATA` open for **270 s** and was
+  accepted. No total transaction limit was observed within the lab's 5 min
+  cap.
 
-**C2, fallback if C1 fails: the edge-added `Received:` timestamp.**
+So an edge time can precede the true end of the message by the edge's whole
+transaction time, D_max, counted from `MAIL FROM`. Credit would then have to
+start D_max after it. With the deadline on and CHUNKING off, using the
+symbols below:
 
-- **Conditional on lab items 3 and 5.**
-- **Parse rule (the security reviewer's):** parse only the **first** header
-  field of the relayed copy.
-  - It must match `by <edge myhostname> (Postfix) with ESMTP[S][A] id <IDENT>`.
-  - The date is taken after the **last** `;`.
-  - HELO and rDNS text are ignored.
-  - Any mismatch gives no credit.
-  - Accepted only from edge peers.
-- **Costs.** The time is second resolution, it is carried in content bytes,
-  and the parse needs its own review.
+> D_max = (R + O + J + E)·(T + T_srv) + E·s + T + M/ρ
 
-**D_max: the proposed bound** (Ops facts, #124 comment
-[6687098958](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6687098958)).
-
-A trickled `DATA` can make a carrier's time mark an earlier point than the
-end of the message. If it does, a copy's true arrival lies up to D_max after
-t_a, so two rules apply:
-
-- claims draw only from slots ≥ t_a + D_max + ε_skew;
-- a copy is late only if λ − D_max > ε_late.
-
-**Today D_max is unbounded.** The live edge has
-`smtpd_per_request_deadline = no`, `smtpd_timeout = 120s` per read, and
-`smtpd_min_data_rate = 500`, which applies only with the deadline on. A
-client sending a byte every < 120 s keeps `DATA` open indefinitely. Ops is
-measuring this (lab item 5). With the deadline off, **any command line**,
-not only `DATA`, can be trickled indefinitely. With the deadline on, the
-bound applies per request. Turning the deadline on at 500 B/s bounds a
-15 MiB `DATA` to 120 + 15 728 640/500 ≈ 31 577 s ≈ 8.8 h, which is useless.
-
-**While D_max is unbounded, C1 and C2 give no credit: they fail closed.**
-This rule stays until EP-4 (§9.9) is in force on the live edge and lab item 5
-confirms it.
-
-**Proposed values for the edge** (Ops assesses them against real senders;
-nothing is assumed):
-
-- `smtpd_per_request_deadline = yes`;
-- `smtpd_min_data_rate = 65536` (64 KiB/s);
-- `smtpd_timeout = 120s`, unchanged. The stress-adaptive form
-  (`${stress?…}`) is kept, and D_max uses the value that applies when the
-  edge is not under stress;
-- **`chunking` added to `smtpd_discard_ehlo_keywords`.**
-  - Postfix 3.8 advertises CHUNKING, and every `BDAT` is its own request
-    with its own T + n/ρ. Many 1-byte chunks therefore make D_max unbounded
-    for both C1 and C2.
-  - Delivery impact is negligible, because senders fall back to `DATA`.
-  - PR #147 currently pins that key to `silent-discard, dsn, etrn`, so EP-4
-    changes that pin to `silent-discard, dsn, etrn, chunking`.
-  - Without this, C1 and C2 fail closed.
-
-**The D_max formulas** (correctness; these supersede the security
-reviewer's C1 formula). They hold with the deadline on and CHUNKING off.
-
-**Symbols:**
-
-| Symbol | Meaning | Default |
+| Symbol | Meaning | Value |
 |---|---|---|
 | T | `smtpd_timeout` | 120 s |
 | M | `message_size_limit` | 15 728 640 |
-| ρ | `smtpd_min_data_rate` | 65 536 under EP-4 |
+| ρ | `smtpd_min_data_rate` | 65 536 with EP-4; 500 today |
 | R | `smtpd_recipient_limit` | 50 |
-| O | `smtpd_recipient_overshoot_limit` | 1 000. Over-limit `RCPT`s get a `452` and do not count as errors |
-| J | `smtpd_junk_command_limit` | 100. `NOOP` and `VRFY` count; `RSET` and `EHLO` end the transaction |
+| O | `smtpd_recipient_overshoot_limit` | 1 000 |
+| J | `smtpd_junk_command_limit` | 100 |
 | E | `smtpd_hard_error_limit` | 20 |
 | s | `smtpd_error_sleep_time` | 1 s |
-| T_srv | the edge's own processing time per command | — |
+| T_srv | per-command processing | ≈ 0 |
 
-**C2, the edge's `Received:`.** The time is the `DATA` command (hypothesis,
-lab items 3 and 5), and the date has 1 s resolution:
+How large D_max is at each setting:
 
-> D_max(C2) = T + M/ρ + 1 s = 120 + 240 + 1 = **361 s**.
-
-**C1, the queue ID.** The queue file opens at the first valid `RCPT`
-(`smtpd_delay_open_until_valid_rcpt = yes`):
-
-> D_max(C1) = (R − 1 + O + J + E)·(T + T_srv) + E·s + T + M/ρ
-
-- At the defaults with EP-4: ≈ 1 169 × 120 + 20 + 360 ≈ **140 700 s
-  (≈ 39 h)**. That is more than the 4 h lifetime.
-- Even with O = J = 0: ≈ 8 700 s.
-
-**C1 therefore gives credit only if lab item 5 shows that its time marks the
-end of `DATA`.** In that case D_max = 0 for that carrier, and EP-4 is not
-needed for it.
-
-**Why 64 KiB/s.** Credit cannot cover the first D_max + ε_late of a hold,
-because of the rule above. So the RL-9 residual per episode is
-≤ r·(D_max + ε_late):
-
-- 64 KiB/s: about 391 copies per workspace per episode (C2, D_max 361 s);
-- 32 KiB/s: D_max 600 s, about 630 copies. That is closer to RFC 5321's
-  10-minute recommendation for the `DATA` termination.
-
-64 KiB/s is the smallest change that makes C2 useful for holds of tens of
-minutes.
-
-**Slow-sender impact, for Ops to assess from edge logs.** Under the deadline,
-a `DATA` of N bytes must complete within 120 + N/65 536 s. The minimum
-sustained client rate is:
-
-| Message size | Minimum rate |
+| Setting | D_max |
 |---|---|
-| 100 kB | ≈ 0.8 kB/s |
-| 1 MiB | ≈ 7.7 kB/s |
-| 15 MiB | ≈ 43.7 kB/s |
+| Today: deadline off | **unbounded**: any command line can be trickled |
+| Defaults, with EP-4 | (50 + 1000 + 100 + 20)·120 + 20 + 120 + 240 ≈ **140 800 s ≈ 39 h**, beyond the 4 h lifetime |
+| Tightest plausible pins (R = 50, O = 0, J = 0, E = 1, T = 120 s, ρ = 64 KiB/s) | 51·120 + 1 + 120 + 240 ≈ **6 480 s ≈ 1.8 h** |
+| Even with T = 30 s, far below RFC 5321's 5 min | 51·30 + 1 + 30 + 240 ≈ **1 800 s** |
 
-A slower client is cut off with a temporary failure and its MTA retries. A
-persistently slow sender of large mail never succeeds, and its own MTA
-eventually bounces the message: real loss for that sender. The setting is
-stricter than RFC 5321 §4.5.3.2's recommended per-block and termination
-timeouts. Ops pins it only after that assessment.
+Credit cannot cover the first D_max + ε_late of a hold, so the per-episode
+loss stays ≤ r·(D_max + ε_late): about 6 500 copies at the tightest
+plausible pins. That is more than any hold this section is meant to fix.
+Those pins would also refuse legitimate clients: any overshooting `RCPT`, a
+`NOOP` or a single error would end the session.
 
-**C3, the narrower fallback: the first time ingestion saw the IDENT.**
+**Neither edge carrier gives usable credit**, unless the owner accepts much
+tighter recipient, overshoot, junk and error limits, and even then D_max is
+hours. C1 and C2 are therefore **rejected on the measurement**. They are kept
+here with their evidence.
 
-- **How.** At the first presentation, ingestion writes a durable row keyed by
-  IDENT. It writes it even when it answers with a pre-resolution `451`. It
-  uses that row's time in place of t_a.
-- **Dependencies.** It needs only IDENT stability (lab item 2), with no edge
-  time and no D_max.
+**C3, adopted: first sight at ingestion.**
+
+- **What t_fs is.** At the first presentation of an (edge, IDENT), ingestion
+  durably records t_fs = DB `now()`. It does this even when it answers with a
+  pre-resolution `451`.
+- **Why it can't be pre-dated.** By then the whole message has been received,
+  and t_fs is taken from the database clock. No sender trickle and no edge
+  clock enters it.
+- **Requeue.** A requeued copy keeps the **old** IDENT (lab item 2), so it
+  matches the same first-sight row.
 - **Failure.** A failed first-sight write gives no credit.
-- **What it covers.** Pre-resolution `451`s and later deferrals.
-- **What it does not cover.** Mail held at the edge before its first sight:
-  ingestion unreachable or the destination dead, operator holds, and
-  catch-up coupling. That mail stays in RL-9.
+- **What it covers:** (h1), pre-resolution `451`s (by far the most common
+  hold where ingestion is up), and any later deferral of a copy already seen.
+- **What it does not cover:** holds at the edge before first sight, (h2) to
+  (h5). These stay in RL-9.
 
-**C4, if IDENT itself is not stable (lab item 2 fails).** No correction is
-possible, and the allowance design must be revisited. RL-9 goes to the owner
-unchanged.
+**C4, if IDENT itself is unstable.** No correction is possible. The lab found
+IDENT stable on retries and kept across a requeue (item 2), so C4 does not
+apply.
 
-**Eligible origin (lab item 6).** Only queue files received by the edge's
-`smtpd` are eligible. Following Ops' suggestion, that includes loopback
-clients: the edge assigns their times, so a sender cannot pre-date them
-beyond D_max. These origins are **ineligible**:
+**Eligible origin (lab item 6, confirmed in the lab, not on the live
+edge).**
 
-- `pickup` (local submission). `authorized_submit_users = static:anyone`,
-  so every login account can submit, and the client writes the maildrop
-  file;
-- internal notices, including an expiry bounce for a tenant-domain sender.
-  The bounce path is ineligible.
-
-Ingestion must tell these apart without trusting sender data, and IDENT
-alone cannot do it. Proposal:
-
-- **Advertise one more XFORWARD attribute, `PROTO`.** It is not personal
-  data. `NAME`, `ADDR`, `HELO` and `PORT` stay unadvertised (I-10).
-- **Eligibility rule.** Eligible only when `PROTO` ∈ {SMTP, ESMTP, ESMTPS,
-  ESMTPA, ESMTPSA}. The value is used only for this decision, and is never
-  stored or logged.
-- **Conditional on lab item 6.** The lab records `PROTO` (and `SOURCE`, as a
-  possible second discriminator) for each origin:
-  - Internet `smtpd`;
-  - loopback `smtpd`;
-  - `sendmail`/`pickup`, including `sendmail -bs`;
-  - bounces and notices.
-- **If `PROTO` does not discriminate:** recommend that Ops restrict
-  `authorized_submit_users`, and that bounce relaying is addressed, as a
-  separate reviewed edge change. Until then, no late copy gets credit.
-
-**Rejected outright:** DSN `ENVID`, which the sender sets.
+- **What the lab found:** mail the edge's `smtpd` received always carries
+  `ADDR`, `PORT`, `PROTO`, `HELO` and `IDENT`, with `SOURCE=REMOTE` under the
+  edge's empty `local_header_rewrite_clients`. Every other origin carries
+  **only** `SOURCE=LOCAL`, with no `PROTO`: `pickup`, `sendmail -bs` (which
+  goes through postdrop and pickup), expiry bounces and delay notices.
+- **The rule:** only copies whose `PROTO` is in {SMTP, ESMTP, ESMTPS, ESMTPA,
+  ESMTPSA} are eligible for credit. An absent `PROTO` means ineligible.
+  - Ingestion advertises `PROTO` alongside `IDENT`. `PROTO` is not personal
+    data, and it is never stored or logged.
+  - `NAME`, `ADDR`, `HELO` and `PORT` stay unadvertised (I-10).
+- **What `PROTO` cannot do:** it cannot tell a bounce from a delay notice
+  from a local injection. Neither this rule nor EP-8 (4) needs it to.
+- **No forgery:** a client's own `XFORWARD` to the edge is refused with
+  `550`.
 
 ### 9.3 Candidates
 
-| | Distinguishes over-allowance from bunched mail | Forgeable or gameable | Effect on T1 | Interaction with the I9 exception | Verdict |
+| | Distinguishes over-allowance from bunched mail | Forgeable or gameable | Effect on T1 | I9 | Verdict |
 |---|---|---|---|---|---|
-| **(a)** charge at virtual time t_a (rate limiter run against t_a) | exactly | not forgeable | bunched admits arrive at once | none new | **no.** Out-of-order release makes it refuse conformant mail unless its tolerance grows with the hold. Exact handling needs a per-arrival ledger |
-| **(b)** credit inside Ops-declared outage or hold windows | only inside declared windows. Misses coupling and undeclared outages | over-allowance mail sent inside a window gets credit unless bounded, which reduces to (d) | as (d) | as (d) | **no.** Depends on manual declarations |
-| **(c)** charge at the first presentation, even on a pre-resolution `451` | only for pre-resolution `451`s | no | none | changes ADR-025's pre-check ordering | **no.** Partial, and needs the DB during outages |
-| **(d)** overflow credit since edge arrival | yes, see below | not forgeable. Credit exists only as allowance the workspace did not use | credited events are scheduled as catch-up | lateness-based class, no new channel | **recommended** |
+| **(a)** a rate limiter run at virtual arrival time | exactly, given a trusted time | no edge time is usable (§9.2) | bunched admits arrive at once | none new | **no** |
+| **(b)** credit inside Ops-declared windows | only inside declared windows | sender-shaped inside a window | as (d) | as (d) | **no** |
+| **(c)** charge at the first presentation, even on a pre-resolution `451` | (h1) only | no | none | changes ADR-025's pre-check ordering | **no** |
+| **(d)** overflow credit since first sight (C3) | for (h1) and re-presented copies | not forgeable; credit is only allowance the workspace did not use | credited events are scheduled as catch-up | lateness-based class | **recommended** |
 
-### 9.4 How (d) works
+### 9.4 How (d) works with C3
 
 **Credit is the refill the cap threw away.**
 
 - For each `INGEST` bucket (per inbox and per workspace), refill that the cap
-  discards is recorded as **overflow**, in 60 s slots.
-  - It is written in the same transaction as the refill, after the bucket's
-    `FOR UPDATE`.
-  - Slots older than L + δ are dropped.
-- **Lateness** is λ = DB `now()` − t_a, or λ − D_max under lab item 5.
+  discards is recorded as **overflow**, in 60 s slots, on the database clock.
+- It is written in the refilling transaction, after the bucket's
+  `FOR UPDATE`. Slots older than L + δ are dropped.
+- **Lateness:** λ = DB `now()` − t_fs.
 
-**A late copy can claim one unit of credit, once.** All of these must hold:
+**A late copy can claim one unit, once.** All of these must hold:
 
-- it has an eligible carrier and origin (§9.2);
+- it has an eligible origin;
 - λ > ε_late;
 - it finds no whole token;
-- **no earlier presentation of its IDENT reached the INGEST charging step**
-  (the marker below).
+- **no earlier presentation of its IDENT reached the `INGEST` charging step**
+  (the marker).
 
-It then claims one unclaimed overflow unit, under these rules:
+It then claims one unclaimed overflow unit from a slot starting at ≥ t_fs.
+The claim is narrow-first, under the bucket's `FOR UPDATE` (I-13). A copy
+that cannot claim is discarded, as today.
 
-- the unit's slot must start ≥ t_a + ε_skew (+ D_max under lab item 5), and
-  ε_skew is less than the slot length;
-- narrow-first;
-- every ledger read and write happens after the bucket's `FOR UPDATE`
-  (I-13).
+**The marker** closes the co-address exploit.
 
-A copy that cannot claim is discarded, as today.
+- **What it is:** a durable per-(edge, IDENT) record, written in the charge
+  transaction for charged and limiter-discarded copies alike.
+- **Pre-resolution `451`s** write the first-sight record, but no marker.
+- **Requeue:** a requeued copy keeps the old IDENT, so the marker still
+  matches it and blocks re-credit. Its allowance, which is also keyed by
+  IDENT, still redeems.
+- **Retention:** it expires at L + δ.
 
-**The marker** (correctness; it closes the co-address exploit).
+**Guarantees.**
 
-- **What it is.** A durable per-(edge, IDENT) row.
-- **When it is written.** In the charge transaction, for charged and
-  limiter-discarded copies alike. Pre-resolution `451`s write none.
-- **The exploit it closes.** An attacker floods W past its allowance and
-  co-addresses a saturated workspace, so every event hits `SLOT_WAIT` and is
-  retried. Without the marker, the late retries would claim credit for
-  copies that were already discarded.
-- **Retention.** It expires at L + δ, with the allowance rows' cleanup.
-- **Cost.** One durable write per identified event (§9.8).
+- For every bucket and every s ≤ t, the spends and claims made during [s, t]
+  by copies with t_fs ≥ s are ≤ tokens(s) + r·(t − s).
+- Over a hold that began after first sight, admissions are ≤ b + r·H.
+- Over shorter windows, admissions can exceed b + r·T by unclaimed overflow
+  (≤ r·(L + δ)).
+- Shape within a hold is not policed (RQ-1).
 
-**What is guaranteed** (correctness change 1, and the security reviewer's
-honest statement; both adopted):
+**Scheduling.** An event with λ > ε_late is catch-up in the carved bucket,
+and keeps its allowances when deferred. Late events without an allowance
+count as catch-up demand in I-23. Fresh events never use credit, so I-21,
+I-18 and G-D/G-C are unchanged.
 
-- **Arrival-indexed bound.** For every bucket and every s ≤ t: the spends and
-  claims made during [s, t] by copies with t_a ≥ s are ≤ tokens(s) +
-  r·(t − s). This holds because claims draw only on overflow from slots after
-  t_a.
-- **Over a hold of H:** admissions ≤ b + r·H. A sender conforming at the edge
-  is admitted in full; a sender over its allowance is still discarded beyond
-  that.
-- **Over shorter windows, measured at ingestion,** admissions can exceed
-  b + r·T. The excess comes from copies with t_a < s claiming older overflow,
-  and is bounded by the unclaimed overflow (≤ r·(L + δ)). The arrival-indexed
-  bound does not remove this excess, because it constrains only copies that
-  arrived after s.
-- **Shape within a hold is not policed.** This is owner item RQ-1.
-
-**Scheduling (the qualified envelope).**
-
-- Every event with λ > ε_late is scheduled as **catch-up** in the carved
-  bucket, however its copies were paid. It keeps its allowances when
-  deferred, including a credit-paid copy, which keeps an ordinary allowance.
-- Late events without an allowance are counted as catch-up demand in I-23's
-  Q(D) (security change 12).
-- Fresh events never use credit, so I-21, I-18 and G-D/G-C are unchanged.
-- Bunched mail is *delayed* within R-REC, not discarded.
-
-**I9.**
-
-- The class depends only on the event's lateness, never on a workspace's
-  credit, so the scheduling refusal stays global.
-- Admission and discard stay invisible over SMTP (`250`). Credit is part of
-  the `INGEST` budget the exception's bound already names.
+**I9.** The class depends on lateness only, never on a workspace's credit.
+Admission and discard stay behind the uniform `250`.
 
 ### 9.5 Proposed invariants
 
-Where the two reviews overlap, the stricter wording is adopted, and noted.
-
-1. **INV-R9-1 (trusted time, conditional).**
-   - t_a comes only from a carrier whose Ops lab measurement passed: C1,
-     else C2, else C3 within its narrower scope.
-   - The carrier must come from a single-host allow-listed edge peer, with
-     an IDENT of long-ID shape.
-   - **C1:** decoded from the time field; an undecodable value gives no
-     credit.
-   - **C2:** only the first header field, matching
-     `by <myhostname> (Postfix) with ESMTP[S][A] id <IDENT>`, with the date
-     after the last `;`. HELO and rDNS text are ignored, and any mismatch
+1. **INV-R9-1 (trusted time: C3 only).**
+   - t_fs is DB `now()` at the first presentation of an (edge, IDENT). The
+     edge must be a single-host `xforward-peers` peer, and the IDENT must
+     have long-ID shape.
+   - The record is written even on a pre-resolution `451`. A failed write
      gives no credit.
-   - t_a is clamped to [now − (L + δ), now + ε_skew]. A value outside that
-     range gives no credit.
-   - t_a + D_max(carrier) replaces t_a for lateness and slot eligibility
-     whenever the carrier's mark precedes the end of `DATA` (lab item 5).
-   - No other header or content is ever used.
-2. **INV-R9-2 (credit source).**
-   - Credit is only overflow, the refill the cap discarded, recorded in the
-     refilling transaction.
-   - It never exceeds the recorded amount and expires at L + δ.
-   - It is never returned (I-1).
-3. **INV-R9-3 (eligibility).** A copy may claim credit only if all of the
-   following hold:
-   - λ > ε_late;
-   - it has no whole token;
-   - its origin is eligible (§9.2);
-   - **no earlier presentation of its IDENT reached the INGEST charging
-     step.** A durable per-(edge, IDENT) marker is written in the charge
-     transaction for charged and limiter-discarded copies alike, and
-     pre-resolution `451`s write no marker;
-   - the unit's slot starts at ≥ t_a + ε_skew, with ε_skew < slot length;
-   - the claim is narrow-first, once per unit;
-   - every ledger read or write happens only after the bucket's
-     `FOR UPDATE` (I-13).
+   - No edge time is ever used: not the queue-ID time, not a `Received:`
+     date, not `arrival_time`. That is C1/C2, measured and rejected.
+2. **INV-R9-2 (credit source).** Credit is only overflow, recorded in the
+   refilling transaction. It is never more than recorded, expires at L + δ,
+   and is never returned (I-1).
+3. **INV-R9-3 (eligibility).**
+   - **When:** λ > ε_late, with no whole token.
+   - **Origin:** `PROTO` must be in the SMTP family.
+   - **Marker:** no earlier presentation of the IDENT reached charging. The
+     marker is written for charged and limiter-discarded copies alike, and
+     pre-resolution `451`s write none.
+   - **Slot:** the claimed slot starts at ≥ t_fs.
+   - **Claim:** narrow-first and once per unit. Every ledger access happens
+     after `FOR UPDATE`.
 4. **INV-R9-4 (envelope).**
-   - For every bucket and every s ≤ t, the spends and claims made during
-     [s, t] by copies with t_a ≥ s are ≤ tokens(s) + r·(t − s).
-   - Over a hold, admissions are ≤ b + r·H.
-   - Over shorter windows they can exceed b + r·T by unclaimed overflow
-     (≤ r·(L + δ)).
-   - Shape within a hold is not policed. This is the stricter, honest
-     statement, adopted from the security review (change 11).
+   - The arrival-indexed bound holds on t_fs.
+   - Over a hold that began after first sight, admissions are ≤ b + r·H.
+   - Over shorter windows, admissions exceed b + r·T by at most the unclaimed
+     overflow (≤ r·(L + δ)).
+   - Shape within a hold is not policed.
 5. **INV-R9-5 (class).**
-   - λ > ε_late means a catch-up event.
-   - Late events without an allowance count as catch-up demand in I-23.
-   - Fresh events never use credit, so I-21 is unchanged.
-6. **INV-R9-6 (skew).** Credit and the late class are on only while both of
-   these hold.
-   - **(i) An independent measurement is recent (a gate for C1 and C2).**
-     The edge's minutely metrics timer stamps its clock. Ingestion reads
-     the stamp over WireGuard and compares it, round-trip corrected (EP-3),
-     with the **database clock (`now()`)** that λ uses. Comparing it with
-     the node's clock is allowed only when chained with ADR-035's
-     node-to-DB offset guard, and then
-     |edge − node| + |node − DB| ≤ ε_skew. The two offsets add; a
-     node-to-DB bound looser than 1 s would otherwise let t_a drift past
-     ε_skew. This is not the edge's own view.
-     - The latest canary must be **≤ 5 min old** (at most 4 missed
-       samples).
-     - **|offset| ≤ ε_skew = 1 s.**
-     - C3 uses only the database clock and does not need the canary.
-     - A canary offset alarm is also a privacy-model alarm (§4).
-   - **(ii) No anomaly.** Not most new identities are arriving late while no
-     hold is known.
-   - Ops' exported `timesyncd` offset gauge is **recommended, not
-     sufficient**. It is the edge's own view. If used, its sample must be
-     ≤ 10 min old and within ε_skew.
-   - **NTS is recommended, not a gate** (EP-7). `timesyncd` cannot do NTS;
-     it needs chrony 4.5 plus an egress rule. The canary already bounds the
-     offset that matters to ingestion, whatever the edge's time source.
+   - λ > ε_late means catch-up.
+   - Late events without an allowance count in I-23.
+   - Fresh events never use credit.
+6. **INV-R9-6 (clock).**
+   - Credit uses only the database clock: t_fs, `now()` and the slots.
+   - No edge clock enters credit, so the canary is **not** a credit gate.
+     It stays recommended as a §4 privacy-model alarm (EP-3).
 7. **INV-R9-7 (restart).**
-   - Overflow, claims and markers are durable in PostgreSQL.
-   - t_a survives edge restarts and retries (lab).
+   - First-sight records, markers, overflow and claims are durable.
+   - IDENT survives edge restarts and requeues (lab).
    - A restored database has none of them (I-16).
-8. **INV-R9-8 (labels).** Closed enums only. Metrics: overflow recorded,
-   credit claimed or refused by reason, a lateness histogram and the canary
-   offset.
+8. **INV-R9-8 (labels).** Closed enums only.
 9. **INV-R9-9 (injection).**
-   - Only `smtpd` on port 25 and Ops-local `pickup` may inject relayable
-     mail.
-   - The contract records the `master.cf` service list: today only
-     `0.0.0.0:25 smtpd`, with no `qmqpd` and no submission listener.
-   - `pickup` and notice origins are ineligible for credit.
-   - **Correction:** requeues, spool restores and hold releases are
-     **not** logged today; `postsuper` writes only a journal line. For C1
-     and C2 credit, Ops' append-only operator-action wrapper (EP-6) is a
-     precondition. Under it, every requeue, restore and hold or release is
-     recorded with time, operator, action and affected queue IDs.
-   - **Why the wrapper and not ineligibility.** If lab item 1 shows these
-     actions keep the queue ID and time, ingestion cannot tell such a file
-     from any other held message. Ineligibility is then not implementable
-     without a trusted per-file signal. Such mail was held by our own
-     process, so credit is the intended outcome. What is missing is
-     accountability, which the wrapper provides. If lab item 1 shows they
-     mint a new ID and time, those files cannot pre-date anything. The
-     wrapper is still needed for spool restores.
-   - The t_a of every such file is clamped like any other.
+   - Only `smtpd` on port 25 and `pickup` can inject. Today `pickup` is open
+     to every local account (EP-5).
+   - `pickup`, bounce and notice origins are ineligible, through
+     `PROTO`-absent.
+   - Operator actions are **not** logged today. C3 does not need them to be:
+     a requeue keeps the IDENT, so it changes neither the first-sight record
+     nor the marker.
 
-**I-2, restated** (correctness change 4). For every `INGEST` bucket:
-
-> tokens spent + credits claimed = copies whose T1 committed
-> + allowances outstanding + allowances forfeited + allowances expired
-> + copies discarded by the limiter after a spend
+**I-2, restated.** For every `INGEST` bucket: tokens spent + credits claimed
+= copies whose T1 committed + allowances outstanding + allowances forfeited +
+allowances expired + copies discarded by the limiter after a spend.
 
 **I-23** counts late events without an allowance as catch-up demand.
 
-**Values for review:**
+**Values:**
 
 - **ε_late = 30 s.** First-attempt relays take under 1 s end to end (Ops:
-  n = 56 over the full log retention from 2026-09-29, `d` p99 0.79 s). The 200–400 s tail is retries. The sample is
-  small, so 30 s is a margin, not a measurement.
-- **ε_skew = 1 s.** The live offset was +126 µs, one sample.
+  n = 56 over the full retention from 2026-09-29, `d` p99 0.79 s). The sample
+  is small, so 30 s is a margin, not a measurement.
 - **Slot = 60 s.**
-- **D_max:** C2 361 s at 64 KiB/s with CHUNKING off (EP-4). C1 is ≈ 39 h by the formula, so it gives credit only if lab item 5 shows an end-of-`DATA` time. D_max is unbounded today, so C1 and C2 give no credit.
+- **ε_skew and D_max** no longer apply to credit.
 
 ### 9.6 Proposed acceptance tests
 
-1. **AT-R9-1 carrier** (Ops lab first, then rehearsal and live). For the
-   carrier in use:
-   - t_a = `postqueue -j` `arrival_time` for fresh mail, deferred mail,
-     after reload, after `stop/start`, after `postsuper -r`, and after an
-     `edge-stop.sh` hold and flush;
-   - IDENT is identical on every retry;
-   - for C2, a HELO containing `; <date>` and folded header lines are parsed
-     correctly or give no credit.
-2. **AT-R9-2 outage.** A workspace sends at r for 10 min while ingestion is
-   down.
-   - On recovery, all 600 copies are stored.
+1. **AT-R9-1 first sight.**
+   - A pre-resolution `451` writes t_fs and no marker.
+   - A retry with the same IDENT matches it.
+   - A failed write gives no credit.
+   - After a `postsuper -r` on the edge, the copy still matches: old IDENT,
+     same record.
+2. **AT-R9-2 pre-resolution hold.** A breaker or latch `451` storm runs for
+   10 min while a workspace sends at r.
+   - On recovery all 600 copies are stored.
    - At 2r, exactly b + r·H are admitted.
-3. **AT-R9-3 other hold causes.** The same results hold for a pre-resolution
-   `451` storm, an operator hold, and catch-up coupling.
-4. **AT-R9-4 over-allowance.** A sender over its allowance is discarded
-   exactly as today, whether its mail arrives on time or late.
+3. **AT-R9-3 uncovered holds.** Ingestion unreachable, an operator hold and
+   catch-up coupling still lose up to r·H − b per workspace. These are the
+   documented residual, asserted as such.
+4. **AT-R9-4 over-allowance.** Discarded exactly as today, whether the mail
+   is on time or late.
 5. **AT-R9-5 no credit.** None of these gets credit:
    - a non-peer;
    - a short ID or `[UNAVAILABLE]`;
-   - an undecodable t_a;
-   - a future t_a, or one older than L + δ;
    - an on-time copy;
-   - an ineligible `PROTO` (`pickup`, a bounce);
-   - stale or absent skew evidence.
+   - an absent `PROTO` (`pickup`, `sendmail -bs`, a bounce, a delay notice);
+   - no first-sight record.
 6. **AT-R9-6 concurrency.** N concurrent late copies against k units produce
    exactly k claims, with no `40P01`.
-7. **AT-R9-7 fresh unaffected.** AT-21 is rerun with late arrivals injected:
-   fresh is never refused, and I-18 holds.
-8. **AT-R9-8 skew.**
-   - A canary offset beyond ε_skew disables credit.
-   - So does a stale canary (> 5 min).
-   - So does the late-majority anomaly.
-9. **AT-R9-9 I9.** An event's class is identical whether W pays with tokens
-   or with credit.
+7. **AT-R9-7 fresh unaffected.** AT-21 is rerun with late arrivals: fresh is
+   never refused, and I-18 holds.
+8. **AT-R9-8 no edge time.**
+   - No code path decodes a queue-ID time, parses `Received:` or reads
+     `arrival_time` for credit.
+   - Shifting the edge clock changes no credit decision.
+9. **AT-R9-9 I9.** An event's class is identical whether W pays with tokens or
+   with credit.
 10. **AT-R9-10 co-address exploit.** A copy discarded at one presentation and
-    late at the next claims nothing (the marker).
-11. **AT-R9-11 old overflow.** An idle workspace's 4 h of overflow cannot be
-    claimed by copies whose t_a is after it.
-12. **AT-R9-12 envelope property.** A property test of INV-R9-4's
-    arrival-indexed bound, including slot boundaries, skew, and D_max (lab
-    item 5).
+    late at the next claims nothing. The same holds across a requeue, because
+    the IDENT is unchanged.
+11. **AT-R9-11 old overflow.** Overflow recorded before t_fs cannot be
+    claimed.
+12. **AT-R9-12 envelope property.** A property test of INV-R9-4 on t_fs,
+    including slot boundaries.
 13. **AT-R9-13 injection.**
-    - The contract test asserts `master.cf`'s service list: only port-25
-      `smtpd`, no `qmqpd` and no submission listener.
-    - `pickup` and bounce copies are ineligible.
-    - With EP-6, every `postsuper -r`, restore and hold release produces an
-      append-only record.
-14. **AT-R9-14 D_max fail-closed.**
-    - With `smtpd_per_request_deadline = no`, or with no lab item 5 result,
-      C1 and C2 claim nothing.
-    - With EP-4 in force:
-      - `BDAT` is refused, because CHUNKING is not advertised;
-      - a trickled `DATA`, a trickled command line, and an `RCPT` overshoot
-        are each cut off within the formula's D_max;
-      - C2 claims start only at ≥ t_a + D_max(C2) + ε_skew.
+    - The `master.cf` service list is only port-25 `smtpd`.
+    - `pickup`, `-bs`, bounce and notice copies are ineligible.
+14. **AT-R9-14 requeue.**
+    - A requeued copy (new queue ID, old IDENT) redeems its allowance once.
+    - The marker blocks any credit for it.
 
-### 9.7 Edge values relied on, the Ops lab, and questions
+### 9.7 Edge values, the lab, and questions
 
-**Relied on, current values, which Ops treats as pinned:**
+**Relied on.** Current values, which Ops treats as pinned (EP-2):
 
-| Value | Current setting |
+| Value | Setting |
 |---|---|
 | relay concurrency | 20 |
 | backoff | 120 / 600 s |
@@ -1779,134 +1645,95 @@ Where the two reviews overlap, the stricter wording is adopted, and noted.
 | lifetime | 4 h |
 | `bounce_queue_lifetime` | 0 |
 | recipient limits | 50 / 50 |
-| `smtp_send_xforward_command` | yes |
 | `smtpd_authorized_xforward_hosts` | empty |
+| `local_header_rewrite_clients` | empty, so `SOURCE=REMOTE` for `smtpd` mail |
 | `master.cf` | only `0.0.0.0:25 smtpd` |
 
-- **Changes needed:**
-  - `enable_long_queue_ids = yes` (C1; RL-7);
-  - advertising `PROTO` from ingestion (an app change).
-- **Every edge change §9 depends on** is listed in §9.9, as one reviewed
-  change set for Ops.
+- **`smtp_send_xforward_command` and `enable_long_queue_ids` are
+  unverified.** Ops is confirming them (#124 6688582662). They are not
+  asserted either way here; see EP-0 and EP-1.
 
-**Ops lab items** (Postfix 3.8.6 mirror; results labelled lab):
+**Ops lab results** (lab mirror, 6688294528):
 
-1. Is the arrival time encoded in long queue IDs, stable across defer,
-   reload, restart, hold or release, and `postsuper -r`?
-2. Which XFORWARD attributes does 3.8.6 send, and is IDENT identical on a
-   retry?
-3. The edge-added `Received:` timestamp: its source, stability, and whether
-   it can be told apart from sender headers.
-4. Does `postqueue -j` `arrival_time` survive restart and requeue? The same
-   run measures the reload effect on retry times.
-5. With a trickled `DATA`, does each carrier's time mark the start of the
-   transaction or the end of `DATA`? What is the edge's enforced maximum
-   transaction time today?
-6. `XFORWARD PROTO` and `SOURCE` for four origins:
-   - Internet `smtpd`;
-   - loopback `smtpd`;
-   - `sendmail`/`pickup`, including `sendmail -bs`. That is a stand-alone
-     `smtpd`, which may report `ESMTP`;
-   - bounces and notices.
+- **Item 1:** C1 marks the first valid `RCPT`. A requeue gives a new ID.
+- **Item 2:** IDENT is stable on retry and kept across a requeue, and
+  XFORWARD carries no timestamp.
+- **Item 3:** C2 marks `MAIL FROM`, and is distinguishable only by position.
+- **Item 4:** `arrival_time` is kept through restart and requeue.
+- **Item 5:** nothing marks the end of `DATA`, and a trickled `DATA` stayed
+  open 270 s.
+- **Item 6:** confirmed. Non-`smtpd` origins send only `SOURCE=LOCAL`.
+- **Reload and restart:** §4.
 
-   This item also gates EP-8 option (4).
+**Questions still open:**
 
-**Questions** (answered on the live edge, 6687028563, and folded in above):
-
-- **Q-R9-5, clock.** `systemd-timesyncd` against `ntp.ubuntu.com`, stratum 2,
-  offset +126 µs, one sample.
-  - **What the design needs:** the independent canary (INV-R9-6(i), EP-3),
-    at most 5 min old, with |offset| ≤ 1 s.
-  - **Ops' gauge** is welcome as an early warning, at most 10 min old, but is
-    not sufficient on its own.
-  - **NTS** is recommended.
-- **Q-R9-6, first-attempt latency.** Under 1 s p99 (n = 56 over the full
-  retention from 2026-09-29, corrected in #124 comment 6687301964). ε_late = 30 s is
-  a margin over a small sample, and a longer log or metric history should
-  confirm it.
-- **Q-R9-7, injection.**
-  - `pickup` is open to every local account, and expiry bounces can relay.
-    Both are ineligible (§9.2, INV-R9-9).
-  - `postmaster@` is not re-injected.
-  - `postsuper -r`, spool restore and the operator release are lab item 1.
-  - Only `0.0.0.0:25 smtpd` listens.
+- the live XFORWARD and long-ID values (above);
+- the 30-day reload and restart count, with causes, for §4.
 
 ### 9.8 What it changes, and the owner items
 
 **What changes in the agreed design:**
 
-- **§2.1:** IDENT (and, under lab item 6, `PROTO`) yields t_a and
-  eligibility, only for a lab-qualified carrier.
-- **The `INGEST` limiter** gains the overflow ledger, credit claims and the
-  per-IDENT marker, all under the existing row lock.
-- **Invariant updates:** I-1 holds; I-2 is restated; I-23 counts late demand;
-  catch-up becomes "allowance taken **or** λ > ε_late".
+- **§2.1:** ingestion advertises `PROTO` alongside `IDENT`.
+- **The `INGEST` limiter** gains:
+  - the first-sight record;
+  - the overflow ledger and credit claims;
+  - the marker.
+
+  All of them sit under the existing row lock.
+- **Catch-up** becomes "allowance taken **or** λ > ε_late".
 - **Unchanged:** T1, G-D/G-C, R-REC and the carved bucket.
 - **RL-9 shrinks to:**
-  - bunching within ε_late, at most r·ε_late per workspace per episode;
+  - holds before first sight: ingestion unreachable or the destination dead,
+    operator holds, catch-up coupling, and edge queueing;
+  - bunching within ε_late;
   - identity-less and ineligible-origin mail;
-  - periods when skew disables credit;
-  - under C3, edge-side holds before first sight;
-  - while D_max is unbounded (lab item 5), all edge-side holds.
-- **Pre-existing, not changed by this design:** the command-phase slowloris.
-  The edge runs up to 100 `smtpd` processes, 20 per client IP, at 120 s per
-  command while the deadline is off.
+  - first-sight write failures.
+- **Pre-existing, not changed:** the command-phase slowloris. The edge runs up
+  to 100 `smtpd` processes, 20 per IP, at 120 s per command, with the
+  deadline off.
 
-**Owner items** (for the decision packet; none accepted):
+**Owner items** (none accepted):
 
-1. **RQ-1, shape within a hold.**
-   - Credit admits at most b + r·H over a hold, but does not police the
-     arrival-time shape within it.
-   - Accept that, or require a per-arrival ledger (option (a)), which is
-     exact but heavier and needs its own review.
-2. **The cost of the marker.** One durable write per identified event, kept
-   for L + δ. That is up to about 476 k rows across the cohort, in line with
-   the allowance table.
-3. **Under C3**, or while D_max is unbounded, edge-side holds before first
-   sight stay in RL-9.
-4. **Edge changes that would widen the correction** (§9.9; each needs Ops'
-   measured case).
-   - Most consequential: EP-4, the deadline plus 64 KiB/s, which cuts off
-     persistently slow senders of large mail.
-   - Also EP-3 (canary), EP-5 (`authorized_submit_users`, conditional) and
-     EP-6 (operator-action wrapper).
-   - **Without EP-4, only C3 credit exists.**
-   - **Making C1 useful** needs one of two things:
-     - lowering O, J and E, which restricts legitimate senders beyond EP-4's
-       slow-sender cut-off;
-     - or proving an end-of-`DATA` time in the lab.
-5. **RQ-2.** C1's reliance on Postfix's internal queue-ID encoding, under the
-   conditions in §9.2.
+1. **RQ-1.** Shape within a hold is not policed. Accept that, or require a
+   per-arrival ledger, option (a), which needs a trusted time that does not
+   exist (§9.2).
+2. **The marker and first-sight cost.** One durable write per identified
+   event. With the marker, that is up to about 476 k rows across the cohort
+   over L + δ.
+3. **The remaining RL-9.** Holds at the edge before first sight are not
+   corrected:
+   - ingestion unreachable;
+   - an operator hold;
+   - catch-up coupling.
+
+   Correcting them needs a trusted end-of-`DATA` time from the edge, and none
+   exists. The only way to make an edge time usable would be recipient,
+   overshoot, junk and error limits tight enough to refuse legitimate
+   clients, and D_max would still be hours (§9.2).
+4. **EP-4 is optional.** The deadline plus 64 KiB/s no longer unlocks credit.
+   It remains a sender-facing hardening against the slowloris, and nothing in
+   this design requires it.
 
 ### 9.9 Edge preconditions: one change set for Ops to review
 
-These are every edge change §9 depends on, each with what it unlocks.
-
-- **Required:** a gate for the credit classes named.
-- **Conditional:** needed only if a lab result fails.
-- **Recommended:** not a gate.
-
-None is assumed, and each needs Ops' review. The ETRN and DSN keys of PR
-#147 belong to the privacy model (§4), not to §9.
+None is assumed. Each needs Ops' review. The ETRN and DSN keys of PR #147
+belong to §4.
 
 | # | Edge change | Status | Unlocks |
 |---|---|---|---|
-| EP-1 | `enable_long_queue_ids = yes`, switched while no tenant mail is deferred | **required** | all credit (C1, C2, C3) and the allowance design itself (RL-7) |
-| EP-2 | Pin the current values as a no-change hardening: relay concurrency 20, backoff 120/600 s, `queue_run_delay` 120 s, lifetime 4 h, `bounce_queue_lifetime` 0, recipient limits 50/50, `smtpd_delay_open_until_valid_rcpt = yes`, `smtp_send_xforward_command = yes`, empty `smtpd_authorized_xforward_hosts`, the `master.cf` service list (only `0.0.0.0:25 smtpd`, no `qmqpd`, no submission), and the D_max inputs: `smtpd_timeout`, `message_size_limit`, `smtpd_recipient_overshoot_limit`, `smtpd_junk_command_limit`, `smtpd_soft_error_limit`, `smtpd_hard_error_limit`, `smtpd_error_sleep_time` | **required** | all credit |
-| EP-3 | Clock canary: the minutely metrics timer exposes a timestamp that ingestion reads over WireGuard (≤ 5 min stale, \|offset\| ≤ 1 s) | **required** | C1 and C2 (not C3) |
-| EP-4 | `smtpd_per_request_deadline = yes`, `smtpd_min_data_rate = 65536`, and `smtpd_timeout` 120 s unchanged (stress form kept; the non-stress value is used). Also `chunking` added to `smtpd_discard_ehlo_keywords`, which changes #147's pin to `silent-discard, dsn, etrn, chunking`. This affects slow senders (§9.2) | **required** unless lab item 5 shows an end-of-`DATA` time | C2, with D_max 361 s. C1 only with an end-of-`DATA` time, since its formula gives ≈ 39 h |
-| EP-5 | Restrict `authorized_submit_users` to the Ops accounts that need local submission. Today any local account can inject relay-domain mail through `pickup`, bypassing the `smtpd` limits | **recommended** whatever lab item 6 shows. **Required** if lab item 6 shows `PROTO` cannot tell `smtpd` mail from `pickup` or notices | all credit (origin eligibility) |
-| EP-6 | Append-only operator-action wrapper for `edge-stop.sh` and recovery: requeue, restore, hold and release, recording time, operator, action and queue IDs | **required** | C1 and C2 (INV-R9-9) |
-| EP-7 | NTS: chrony 4.5 replacing `timesyncd`, plus an egress rule for NTS-KE (TCP 4460) and NTP (UDP 123) to the chosen servers. Two reviewed changes | **recommended** | none directly; it hardens the edge clock behind EP-3 |
-| EP-8 | Close the expiry-bounce path into the relay domain. The remedy is the owner's decision (below) | **required** for §4's "no DSN of any class", and before any activation that can produce a persistent per-recipient `451`. **Not** an RL-9 gate | the §4 privacy condition |
+| EP-0 | `smtp_send_xforward_command = yes` on the relay transport | **conditional**: required for the whole allowance design and for EP-8 (4) **if the live value is `no`**. It changes behaviour toward ingestion only | identity, C3, EP-8 (4) |
+| EP-1 | `enable_long_queue_ids = yes`, switched while no tenant mail is deferred. The live value is unverified | **required**, unless it is already `yes` live | IDENT uniqueness: the allowance design and C3 (RL-7) |
+| EP-2 | Pin the current values as a no-change hardening: relay concurrency 20, backoff 120/600 s, `queue_run_delay` 120 s, lifetime 4 h, `bounce_queue_lifetime` 0, recipient limits 50/50, empty `smtpd_authorized_xforward_hosts`, empty `local_header_rewrite_clients`, and the `master.cf` service list. This excludes the two unverified keys above | **required** | all credit |
+| EP-3 | Clock canary: the minutely edge timer is read over WireGuard against DB `now()` | **recommended**, as a §4 privacy-model alarm; no longer a credit gate | none for credit |
+| EP-4 | `smtpd_per_request_deadline = yes`, `smtpd_min_data_rate = 65536`, `chunking` in `smtpd_discard_ehlo_keywords`, stress form kept | **optional**, a sender-facing hardening that nothing requires. It affects slow senders | none for credit |
+| EP-5 | Restrict `authorized_submit_users` | **recommended**; `pickup` origins are already ineligible through `PROTO` | none for credit; it narrows local injection |
+| EP-6 | Append-only operator-action wrapper | **recommended**. It would make the operator term of §4's K auditable | none for credit |
+| EP-7 | NTS: chrony 4.5 plus an egress rule for TCP 4460 and UDP 123 | **recommended** | none for credit |
+| EP-8 | Close the expiry-bounce path into the relay domain (below) | **required** for §4's "no DSN of any class", and before any activation that can produce a persistent per-recipient `451` | §4 |
 
-**What each credit class needs, in total:**
-
-- **C3:** EP-1, EP-2 and EP-5 (if required).
-- **C2:** those, plus EP-3, EP-4 and EP-6, and lab items 3 and 5.
-- **C1:** the same as C2, plus lab items 1, 2 and 4, **and** lab item 5
-  showing an end-of-`DATA` time. Otherwise D_max(C1) ≈ 39 h, which exceeds
-  the lifetime.
+**C3 needs EP-0 (if the live value is `no`), EP-1 (unless it is already
+`yes`) and EP-2.**
 
 **EP-8 in detail** (#124 comments 6687275537, 6687301964 and 6687332923).
 
@@ -1924,11 +1751,12 @@ practice today". It is **an observation, not a proof**.
 
 **Remedies.** The owner decides; none is assumed.
 
-- **(4), preferred if lab item 6 confirms the discriminator.** Ingestion
+- **(4), preferred. Lab item 6 confirmed the discriminator, in the lab and not yet on the live edge (6688294528).** Ingestion
   discards edge-originated notices (null sender, not `smtpd`-originated per
   `PROTO`) behind the uniform `250`. That is ADR-025's unknown-recipient
   treatment.
-  - It needs no edge change.
+  - It needs no edge change beyond EP-0, if XFORWARD is off on the live
+    edge.
   - Genuine internet bounces, and testers sending as an inbox address, are
     unaffected.
   - It is an app change behind the uniform reply, so it needs its own
@@ -1940,8 +1768,11 @@ practice today". It is **an observation, not a proof**.
     - An absent or `[UNAVAILABLE]` `PROTO` from an edge counts as not
       `smtpd`-originated.
     - A `trusted-clients` peer (no XFORWARD) is handled normally.
-    - The discriminator is `PROTO` under lab item 6, not the null sender
-      alone. A null-sender message received from the internet reports an
+    - The discriminator is `PROTO`, not the null sender alone. The lab
+      measured that every non-`smtpd` origin (`pickup`, `sendmail -bs`,
+      bounce, delay notice) sends only `SOURCE=LOCAL`, with no `PROTO`. So
+      "`PROTO` absent or not SMTP-family" matches the measurement. It cannot
+      tell those origins apart, and does not need to. A null-sender message received from the internet reports an
       smtpd protocol, so genuine bounces are delivered.
   - **Where it happens:** at the same point as ADR-025's unknown-recipient
     discard, **before recipient resolution**.
