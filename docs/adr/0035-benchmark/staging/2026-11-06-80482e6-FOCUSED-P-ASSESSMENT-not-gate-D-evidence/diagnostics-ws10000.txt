@@ -1,0 +1,758 @@
+# Gate D diagnostics: 10000 workspaces (NOT a §11 criterion)
+
+## Settings
+autovacuum = on (default)
+autovacuum_max_workers = 3 (default)
+autovacuum_naptime = 60 s (default)
+autovacuum_vacuum_cost_delay = 2 ms (default)
+checkpoint_timeout = 300 s (default)
+commit_delay = 0 (default)
+effective_cache_size = 524288 8kB (default)
+fsync = on (default)
+full_page_writes = on (default)
+huge_pages = try (default)
+jit = on (default)
+max_connections = 300 (command line)
+max_wal_size = 1024 MB (configuration file)
+plan_cache_mode = auto (default)
+random_page_cost = 4 (default)
+server_version = 16.15 (default)
+shared_buffers = 16384 8kB (configuration file)
+shared_preload_libraries =  (default)
+synchronous_commit = on (default)
+wal_buffers = 512 8kB (default)
+wal_sync_method = fdatasync (default)
+work_mem = 4096 kB (default)
+
+## Commit cost (synchronous_commit = on, one small row, timed alone)
+p50 0.68723 ms, p95 1.617131 ms, p99 2.092407 ms, max 3.400122 ms (500 commits)
+
+## CHOSEN and NO_LOCK (production T1, readsFootprint = true): the GENERIC plan (PREPARE, plan_cache_mode = force_generic_plan), EXPLAIN (ANALYZE, BUFFERS, SETTINGS) EXECUTE over 10 recipients
+generic_plans = 7, custom_plans = 0
+Append  (cost=1798.20..2248.77 rows=21 width=498) (actual time=4.241..5.965 rows=12 loops=1)
+  Buffers: shared hit=2192
+  CTE ws
+    ->  HashAggregate  (cost=0.09..0.22 rows=10 width=16) (actual time=0.015..0.018 rows=1 loops=1)
+          Group Key: unnest($1)
+          Batches: 1  Memory Usage: 24kB
+          ->  ProjectSet  (cost=0.00..0.07 rows=10 width=16) (actual time=0.008..0.009 rows=1 loops=1)
+                ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.001..0.001 rows=1 loops=1)
+  CTE ib
+    ->  HashAggregate  (cost=0.09..0.22 rows=10 width=16) (actual time=0.014..0.016 rows=10 loops=1)
+          Group Key: unnest($2)
+          Batches: 1  Memory Usage: 24kB
+          ->  ProjectSet  (cost=0.00..0.07 rows=10 width=16) (actual time=0.002..0.004 rows=10 loops=1)
+                ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.001..0.001 rows=1 loops=1)
+  CTE g_base
+    ->  Append  (cost=0.00..314.06 rows=2 width=40) (actual time=0.014..0.021 rows=1 loops=1)
+          Buffers: shared hit=2
+          ->  Seq Scan on storage_global_base storage_global_base_1  (cost=0.00..1.01 rows=1 width=16) (actual time=0.014..0.015 rows=1 loops=1)
+                Filter: (id = 1)
+                Buffers: shared hit=1
+          ->  Result  (cost=313.02..313.04 rows=1 width=64) (actual time=0.003..0.004 rows=0 loops=1)
+                One-Time Filter: (NOT $2)
+                Buffers: shared hit=1
+                InitPlan 3 (returns $2)
+                  ->  Seq Scan on storage_global_base  (cost=0.00..1.01 rows=1 width=0) (actual time=0.002..0.002 rows=1 loops=1)
+                        Filter: (id = 1)
+                        Buffers: shared hit=1
+                ->  Aggregate  (cost=312.00..312.01 rows=1 width=64) (never executed)
+                      ->  Seq Scan on workspace_storage_account  (cost=0.00..262.00 rows=10000 width=16) (never executed)
+  CTE g_delta
+    ->  Aggregate  (cost=8.28..8.29 rows=1 width=64) (actual time=0.386..0.387 rows=1 loops=1)
+          Buffers: shared hit=227
+          ->  Bitmap Heap Scan on storage_delta  (cost=4.26..8.27 rows=1 width=16) (actual time=0.382..0.383 rows=0 loops=1)
+                Buffers: shared hit=227
+                ->  Bitmap Index Scan on ix_storage_delta_inbox  (cost=0.00..4.25 rows=1 width=0) (actual time=0.379..0.379 rows=0 loops=1)
+                      Buffers: shared hit=227
+  CTE g_reserved
+    ->  Aggregate  (cost=1377.50..1377.51 rows=1 width=40) (actual time=3.029..3.030 rows=1 loops=1)
+          Buffers: shared hit=1360
+          ->  Seq Scan on storage_reservation  (cost=0.00..1370.00 rows=1000 width=156) (actual time=0.007..2.818 rows=1000 loops=1)
+                Buffers: shared hit=1360
+  CTE fp_newest
+    ->  Limit  (cost=1.06..1.06 rows=1 width=112) (actual time=0.109..0.110 rows=1 loops=1)
+          Buffers: shared hit=1
+          ->  Sort  (cost=1.06..1.07 rows=4 width=112) (actual time=0.107..0.108 rows=1 loops=1)
+                Sort Key: storage_filesystem_observation.started_seq DESC, storage_filesystem_observation.id DESC
+                Sort Method: top-N heapsort  Memory: 25kB
+                Buffers: shared hit=1
+                ->  Seq Scan on storage_filesystem_observation  (cost=0.00..1.04 rows=4 width=112) (actual time=0.011..0.012 rows=4 loops=1)
+                      Buffers: shared hit=1
+  CTE cp_shares
+    ->  Append  (cost=0.00..0.01 rows=2 width=33) (actual time=0.026..0.027 rows=0 loops=1)
+          ->  Seq Scan on participant_workspace  (cost=0.00..0.00 rows=1 width=33) (actual time=0.005..0.005 rows=0 loops=1)
+          ->  Seq Scan on storage_legacy_share  (cost=0.00..0.00 rows=1 width=33) (actual time=0.005..0.006 rows=0 loops=1)
+  CTE fp_debt
+    ->  Aggregate  (cost=27.97..27.98 rows=1 width=128) (actual time=0.564..0.568 rows=1 loops=1)
+          Buffers: shared hit=17
+          InitPlan 9 (returns $8)
+            ->  CTE Scan on fp_newest  (cost=0.00..0.02 rows=1 width=8) (actual time=0.111..0.112 rows=1 loops=1)
+                  Buffers: shared hit=1
+          ->  Hash Left Join  (cost=0.08..25.88 rows=206 width=32) (actual time=0.248..0.475 rows=616 loops=1)
+                Hash Cond: (d_3.workspace_id = cp_shares.workspace_id)
+                Buffers: shared hit=17
+                ->  Seq Scan on storage_deletion_debt d_3  (cost=0.00..25.24 rows=206 width=32) (actual time=0.135..0.272 rows=616 loops=1)
+                      Filter: ((incurred_at = 'infinity'::timestamp with time zone) OR (seq >= COALESCE($8, '0'::bigint)))
+                      Buffers: shared hit=17
+                ->  Hash  (cost=0.06..0.06 rows=2 width=16) (actual time=0.067..0.068 rows=0 loops=1)
+                      Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                      ->  Unique  (cost=0.05..0.06 rows=2 width=16) (actual time=0.067..0.067 rows=0 loops=1)
+                            ->  Sort  (cost=0.05..0.06 rows=2 width=16) (actual time=0.066..0.066 rows=0 loops=1)
+                                  Sort Key: cp_shares.workspace_id
+                                  Sort Method: quicksort  Memory: 25kB
+                                  ->  CTE Scan on cp_shares  (cost=0.00..0.04 rows=2 width=16) (actual time=0.027..0.027 rows=0 loops=1)
+  CTE cp_unattributed
+    ->  Aggregate  (cost=13.75..13.77 rows=1 width=64) (actual time=0.016..0.020 rows=1 loops=1)
+          InitPlan 11 (returns $10)
+            ->  CTE Scan on fp_debt  (cost=0.00..0.02 rows=1 width=32) (actual time=0.001..0.001 rows=1 loops=1)
+          InitPlan 12 (returns $11)
+            ->  CTE Scan on fp_debt fp_debt_1  (cost=0.00..0.02 rows=1 width=32) (actual time=0.001..0.001 rows=1 loops=1)
+          ->  Nested Loop Anti Join  (cost=0.28..13.70 rows=1 width=16) (actual time=0.007..0.009 rows=0 loops=1)
+                ->  Nested Loop Anti Join  (cost=0.00..0.07 rows=1 width=24) (actual time=0.007..0.008 rows=0 loops=1)
+                      Join Filter: (s_1.workspace_id = c_1.workspace_id)
+                      ->  Seq Scan on workspace_deletion_charge c_1  (cost=0.00..0.00 rows=1 width=40) (actual time=0.006..0.006 rows=0 loops=1)
+                      ->  CTE Scan on cp_shares s_1  (cost=0.00..0.04 rows=2 width=16) (never executed)
+                ->  Index Only Scan using storage_deletion_debt_pkey on storage_deletion_debt d_4  (cost=0.28..8.29 rows=1 width=8) (never executed)
+                      Index Cond: (id = c_1.debt_id)
+                      Heap Fetches: 0
+  InitPlan 14 (returns $14)
+    ->  CTE Scan on g_base  (cost=0.00..0.04 rows=2 width=32) (actual time=0.017..0.021 rows=1 loops=1)
+          Buffers: shared hit=2
+  InitPlan 15 (returns $15)
+    ->  CTE Scan on g_delta  (cost=0.00..0.02 rows=1 width=32) (actual time=0.397..0.397 rows=1 loops=1)
+          Buffers: shared hit=227
+  InitPlan 16 (returns $16)
+    ->  CTE Scan on g_reserved  (cost=0.00..0.02 rows=1 width=32) (actual time=3.032..3.033 rows=1 loops=1)
+          Buffers: shared hit=1360
+  InitPlan 17 (returns $17)
+    ->  CTE Scan on g_base g_base_1  (cost=0.00..0.04 rows=2 width=32) (actual time=0.002..0.002 rows=1 loops=1)
+  InitPlan 18 (returns $18)
+    ->  CTE Scan on g_delta g_delta_1  (cost=0.00..0.02 rows=1 width=32) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 19 (returns $19)
+    ->  CTE Scan on g_reserved g_reserved_1  (cost=0.00..0.02 rows=1 width=8) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 20 (returns $20)
+    ->  CTE Scan on g_base g_base_2  (cost=0.00..0.04 rows=2 width=32) (actual time=0.000..0.001 rows=1 loops=1)
+  InitPlan 21 (returns $21)
+    ->  CTE Scan on g_delta g_delta_2  (cost=0.00..0.02 rows=1 width=32) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 22 (returns $22)
+    ->  CTE Scan on g_reserved g_reserved_2  (cost=0.00..0.02 rows=1 width=32) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 23 (returns $23)
+    ->  CTE Scan on g_base g_base_3  (cost=0.00..0.04 rows=2 width=32) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 24 (returns $24)
+    ->  CTE Scan on g_delta g_delta_3  (cost=0.00..0.02 rows=1 width=32) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 25 (returns $25)
+    ->  CTE Scan on g_reserved g_reserved_3  (cost=0.00..0.02 rows=1 width=8) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 26 (returns $26)
+    ->  CTE Scan on fp_debt fp_debt_2  (cost=0.00..0.02 rows=1 width=32) (actual time=0.567..0.567 rows=1 loops=1)
+          Buffers: shared hit=17
+  InitPlan 27 (returns $27)
+    ->  CTE Scan on fp_debt fp_debt_3  (cost=0.00..0.02 rows=1 width=32) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 28 (returns $28)
+    ->  Seq Scan on storage_footprint_trust  (cost=0.00..1.01 rows=1 width=1) (actual time=0.009..0.009 rows=1 loops=1)
+          Filter: (id = 1)
+          Buffers: shared hit=1
+  InitPlan 29 (returns $29)
+    ->  Seq Scan on storage_debt_watermark  (cost=0.00..1.01 rows=1 width=8) (actual time=0.008..0.008 rows=1 loops=1)
+          Filter: (id = 1)
+          Buffers: shared hit=1
+  InitPlan 30 (returns $30)
+    ->  Seq Scan on storage_footprint_trust storage_footprint_trust_1  (cost=0.00..1.01 rows=1 width=8) (actual time=0.003..0.003 rows=1 loops=1)
+          Filter: (id = 1)
+          Buffers: shared hit=1
+  InitPlan 31 (returns $31)
+    ->  CTE Scan on fp_newest fp_newest_1  (cost=0.00..0.02 rows=1 width=8) (actual time=0.001..0.002 rows=1 loops=1)
+  InitPlan 32 (returns $32)
+    ->  CTE Scan on fp_newest fp_newest_2  (cost=0.00..0.02 rows=1 width=8) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 33 (returns $33)
+    ->  CTE Scan on fp_newest fp_newest_3  (cost=0.00..0.02 rows=1 width=8) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 34 (returns $34)
+    ->  CTE Scan on fp_newest fp_newest_4  (cost=0.00..0.02 rows=1 width=8) (actual time=0.001..0.002 rows=1 loops=1)
+  InitPlan 35 (returns $35)
+    ->  CTE Scan on fp_newest fp_newest_5  (cost=0.00..0.02 rows=1 width=32) (actual time=0.003..0.003 rows=1 loops=1)
+  InitPlan 36 (returns $36)
+    ->  Seq Scan on participant_workspace participant_workspace_1  (cost=0.00..0.00 rows=1 width=0) (actual time=0.002..0.002 rows=0 loops=1)
+  InitPlan 37 (returns $37)
+    ->  Seq Scan on storage_cohort_plan  (cost=0.00..0.00 rows=1 width=0) (actual time=0.009..0.009 rows=0 loops=1)
+  InitPlan 38 (returns $38)
+    ->  Seq Scan on storage_cohort_plan storage_cohort_plan_1  (cost=0.00..0.00 rows=1 width=32) (actual time=0.001..0.002 rows=0 loops=1)
+          Filter: approved
+  InitPlan 39 (returns $39)
+    ->  Seq Scan on storage_cohort_plan storage_cohort_plan_2  (cost=0.00..0.00 rows=1 width=32) (actual time=0.001..0.002 rows=0 loops=1)
+          Filter: approved
+  InitPlan 40 (returns $40)
+    ->  Seq Scan on storage_cohort_plan storage_cohort_plan_3  (cost=0.00..0.00 rows=1 width=8) (actual time=0.004..0.004 rows=0 loops=1)
+  InitPlan 41 (returns $41)
+    ->  Seq Scan on storage_cohort_plan storage_cohort_plan_4  (cost=0.00..0.00 rows=1 width=8) (actual time=0.001..0.001 rows=0 loops=1)
+  InitPlan 42 (returns $42)
+    ->  Aggregate  (cost=0.08..0.09 rows=1 width=8) (actual time=0.015..0.017 rows=1 loops=1)
+          Buffers: shared hit=1
+          ->  Limit  (cost=0.00..0.06 rows=1 width=4) (actual time=0.011..0.013 rows=1 loops=1)
+                Buffers: shared hit=1
+                ->  Nested Loop Anti Join  (cost=0.00..634.02 rows=9998 width=4) (actual time=0.010..0.011 rows=1 loops=1)
+                      Join Filter: (s_2.workspace_id = w.id)
+                      Buffers: shared hit=1
+                      ->  Seq Scan on workspace w  (cost=0.00..184.00 rows=10000 width=16) (actual time=0.006..0.007 rows=1 loops=1)
+                            Buffers: shared hit=1
+                      ->  CTE Scan on cp_shares s_2  (cost=0.00..0.04 rows=2 width=16) (actual time=0.000..0.000 rows=0 loops=1)
+  InitPlan 46 (returns $48)
+    ->  Seq Scan on storage_cohort_plan p_2  (cost=0.00..1.21 rows=1 width=1) (actual time=0.001..0.005 rows=0 loops=1)
+          Filter: approved
+          SubPlan 43
+            ->  Nested Loop Anti Join  (cost=0.00..1.28 rows=9 width=0) (never executed)
+                  Join Filter: (n.node_id = expected.expected)
+                  ->  Function Scan on unnest expected  (cost=0.00..0.10 rows=10 width=32) (never executed)
+                  ->  Materialize  (cost=0.00..1.03 rows=1 width=8) (never executed)
+                        ->  Seq Scan on storage_node n  (cost=0.00..1.02 rows=1 width=8) (never executed)
+                              Filter: ((NOT clean_shutdown) AND (cohort_capability = 'cohort-storage-v1'::text) AND (cohort_mode = 'ALL'::text) AND (cohort_binding = p_2.binding) AND (heartbeat_at >= (now() - '00:05:00'::interval)))
+          SubPlan 44
+            ->  Seq Scan on storage_node n_1  (cost=0.00..1.03 rows=1 width=0) (never executed)
+                  Filter: ((NOT clean_shutdown) AND ((cohort_capability IS DISTINCT FROM 'cohort-storage-v1'::text) OR (cohort_mode IS DISTINCT FROM 'ALL'::text) OR (cohort_binding IS DISTINCT FROM p_2.binding) OR (node_id <> ALL (p_2.expected_nodes))))
+          SubPlan 45
+            ->  CTE Scan on fp_newest fp_newest_6  (cost=0.00..0.04 rows=1 width=1) (never executed)
+  InitPlan 47 (returns $49)
+    ->  CTE Scan on cp_unattributed  (cost=0.00..0.02 rows=1 width=32) (actual time=0.018..0.019 rows=1 loops=1)
+  InitPlan 48 (returns $50)
+    ->  CTE Scan on cp_unattributed cp_unattributed_1  (cost=0.00..0.02 rows=1 width=32) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 49 (returns $51)
+    ->  CTE Scan on fp_newest fp_newest_7  (cost=0.00..0.02 rows=1 width=8) (actual time=0.001..0.001 rows=1 loops=1)
+  InitPlan 50 (returns $55)
+    ->  Aggregate  (cost=50.22..50.23 rows=1 width=32) (actual time=0.046..0.057 rows=1 loops=1)
+          ->  Hash Left Join  (cost=33.69..50.18 rows=2 width=217) (actual time=0.043..0.053 rows=0 loops=1)
+                Hash Cond: (s_3.workspace_id = c_2.workspace_id)
+                ->  Merge Left Join  (cost=33.64..50.12 rows=2 width=153) (actual time=0.041..0.050 rows=0 loops=1)
+                      Merge Cond: (s_3.workspace_id = storage_reservation_1.workspace_id)
+                      ->  Nested Loop Left Join  (cost=16.97..33.35 rows=2 width=113) (actual time=0.040..0.045 rows=0 loops=1)
+                            ->  Merge Left Join  (cost=16.68..16.74 rows=2 width=97) (actual time=0.039..0.044 rows=0 loops=1)
+                                  Merge Cond: (s_3.workspace_id = storage_delta_1.workspace_id)
+                                  ->  Sort  (cost=0.05..0.06 rows=2 width=33) (actual time=0.038..0.039 rows=0 loops=1)
+                                        Sort Key: s_3.workspace_id
+                                        Sort Method: quicksort  Memory: 25kB
+                                        ->  CTE Scan on cp_shares s_3  (cost=0.00..0.04 rows=2 width=33) (actual time=0.001..0.001 rows=0 loops=1)
+                                  ->  GroupAggregate  (cost=16.63..16.66 rows=1 width=80) (never executed)
+                                        Group Key: storage_delta_1.workspace_id
+                                        ->  Sort  (cost=16.63..16.64 rows=1 width=32) (never executed)
+                                              Sort Key: storage_delta_1.workspace_id
+                                              ->  Nested Loop  (cost=4.31..16.62 rows=1 width=32) (never executed)
+                                                    ->  Unique  (cost=0.05..0.06 rows=2 width=16) (never executed)
+                                                          ->  Sort  (cost=0.05..0.06 rows=2 width=16) (never executed)
+                                                                Sort Key: cp_shares_1.workspace_id
+                                                                ->  CTE Scan on cp_shares cp_shares_1  (cost=0.00..0.04 rows=2 width=16) (never executed)
+                                                    ->  Bitmap Heap Scan on storage_delta storage_delta_1  (cost=4.26..8.27 rows=1 width=32) (never executed)
+                                                          Recheck Cond: (workspace_id = cp_shares_1.workspace_id)
+                                                          ->  Bitmap Index Scan on ix_storage_delta_workspace  (cost=0.00..4.26 rows=1 width=0) (never executed)
+                                                                Index Cond: (workspace_id = cp_shares_1.workspace_id)
+                            ->  Index Scan using workspace_storage_account_pkey on workspace_storage_account a_2  (cost=0.29..8.30 rows=1 width=32) (never executed)
+                                  Index Cond: (workspace_id = s_3.workspace_id)
+                      ->  GroupAggregate  (cost=16.68..16.73 rows=2 width=56) (never executed)
+                            Group Key: storage_reservation_1.workspace_id
+                            ->  Sort  (cost=16.68..16.68 rows=2 width=172) (never executed)
+                                  Sort Key: storage_reservation_1.workspace_id
+                                  ->  Nested Loop  (cost=0.33..16.67 rows=2 width=172) (never executed)
+                                        ->  Unique  (cost=0.05..0.06 rows=2 width=16) (never executed)
+                                              ->  Sort  (cost=0.05..0.06 rows=2 width=16) (never executed)
+                                                    Sort Key: cp_shares_2.workspace_id
+                                                    ->  CTE Scan on cp_shares cp_shares_2  (cost=0.00..0.04 rows=2 width=16) (never executed)
+                                        ->  Index Scan using ix_storage_reservation_workspace on storage_reservation storage_reservation_1  (cost=0.28..8.29 rows=1 width=172) (never executed)
+                                              Index Cond: (workspace_id = cp_shares_2.workspace_id)
+                ->  Hash  (cost=0.03..0.03 rows=1 width=80) (never executed)
+                      ->  Subquery Scan on c_2  (cost=0.01..0.03 rows=1 width=80) (never executed)
+                            ->  HashAggregate  (cost=0.01..0.02 rows=1 width=80) (never executed)
+                                  Group Key: workspace_deletion_charge_1.workspace_id
+                                  ->  Seq Scan on workspace_deletion_charge workspace_deletion_charge_1  (cost=0.00..0.00 rows=1 width=32) (never executed)
+  ->  Result  (cost=0.00..0.01 rows=1 width=498) (actual time=4.240..4.240 rows=1 loops=1)
+        Buffers: shared hit=1610
+  ->  Hash Left Join  (cost=85.93..188.47 rows=10 width=498) (actual time=0.829..0.850 rows=1 loops=1)
+        Hash Cond: (ws.id = c.id)
+        Buffers: shared hit=255
+        ->  Merge Left Join  (cost=85.56..187.94 rows=10 width=169) (actual time=0.785..0.797 rows=1 loops=1)
+              Merge Cond: (ws.id = e.workspace_id)
+              Buffers: shared hit=255
+              ->  Merge Left Join  (cost=84.50..186.83 rows=10 width=168) (actual time=0.745..0.753 rows=1 loops=1)
+                    Merge Cond: (ws.id = d.workspace_id)
+                    Buffers: shared hit=255
+                    ->  Nested Loop Left Join  (cost=84.25..167.52 rows=10 width=104) (actual time=0.252..0.258 rows=1 loops=1)
+                          Buffers: shared hit=5
+                          ->  Merge Left Join  (cost=83.97..84.49 rows=10 width=88) (actual time=0.217..0.222 rows=1 loops=1)
+                                Merge Cond: (ws.id = r.workspace_id)
+                                Buffers: shared hit=2
+                                ->  Sort  (cost=0.44..0.47 rows=10 width=48) (actual time=0.136..0.139 rows=1 loops=1)
+                                      Sort Key: ws.id
+                                      Sort Method: quicksort  Memory: 25kB
+                                      ->  Hash Left Join  (cost=0.03..0.28 rows=10 width=48) (actual time=0.094..0.098 rows=1 loops=1)
+                                            Hash Cond: (ws.id = l.workspace_id)
+                                            ->  Hash Left Join  (cost=0.01..0.24 rows=10 width=32) (actual time=0.058..0.061 rows=1 loops=1)
+                                                  Hash Cond: (ws.id = p.workspace_id)
+                                                  ->  CTE Scan on ws  (cost=0.00..0.20 rows=10 width=16) (actual time=0.017..0.018 rows=1 loops=1)
+                                                  ->  Hash  (cost=0.00..0.00 rows=1 width=32) (actual time=0.005..0.005 rows=0 loops=1)
+                                                        Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                                                        ->  Seq Scan on participant_workspace p  (cost=0.00..0.00 rows=1 width=32) (actual time=0.004..0.005 rows=0 loops=1)
+                                            ->  Hash  (cost=0.00..0.00 rows=1 width=32) (actual time=0.002..0.003 rows=0 loops=1)
+                                                  Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                                                  ->  Seq Scan on storage_legacy_share l  (cost=0.00..0.00 rows=1 width=32) (actual time=0.002..0.002 rows=0 loops=1)
+                                ->  GroupAggregate  (cost=83.52..83.77 rows=10 width=56) (actual time=0.078..0.080 rows=0 loops=1)
+                                      Group Key: r.workspace_id
+                                      Buffers: shared hit=2
+                                      ->  Sort  (cost=83.52..83.55 rows=10 width=172) (actual time=0.077..0.078 rows=0 loops=1)
+                                            Sort Key: r.workspace_id
+                                            Sort Method: quicksort  Memory: 25kB
+                                            Buffers: shared hit=2
+                                            ->  Nested Loop  (cost=0.50..83.36 rows=10 width=172) (actual time=0.048..0.049 rows=0 loops=1)
+                                                  Buffers: shared hit=2
+                                                  ->  HashAggregate  (cost=0.23..0.33 rows=10 width=16) (actual time=0.009..0.009 rows=1 loops=1)
+                                                        Group Key: ws_1.id
+                                                        Batches: 1  Memory Usage: 24kB
+                                                        ->  CTE Scan on ws ws_1  (cost=0.00..0.20 rows=10 width=16) (actual time=0.004..0.005 rows=1 loops=1)
+                                                  ->  Index Scan using ix_storage_reservation_workspace on storage_reservation r  (cost=0.28..8.29 rows=1 width=172) (actual time=0.036..0.036 rows=0 loops=1)
+                                                        Index Cond: (workspace_id = ws_1.id)
+                                                        Buffers: shared hit=2
+                          ->  Index Scan using workspace_storage_account_pkey on workspace_storage_account a  (cost=0.29..8.30 rows=1 width=32) (actual time=0.032..0.032 rows=1 loops=1)
+                                Index Cond: (workspace_id = ws.id)
+                                Buffers: shared hit=3
+                    ->  GroupAggregate  (cost=0.25..19.27 rows=1 width=80) (actual time=0.491..0.493 rows=0 loops=1)
+                          Group Key: d.workspace_id
+                          Buffers: shared hit=250
+                          ->  Nested Loop Semi Join  (cost=0.25..19.25 rows=1 width=32) (actual time=0.489..0.491 rows=0 loops=1)
+                                Join Filter: (d.workspace_id = ws_2.id)
+                                Buffers: shared hit=250
+                                ->  Index Only Scan using ix_storage_delta_workspace on storage_delta d  (cost=0.25..18.92 rows=1 width=32) (actual time=0.488..0.489 rows=0 loops=1)
+                                      Heap Fetches: 0
+                                      Buffers: shared hit=250
+                                ->  CTE Scan on ws ws_2  (cost=0.00..0.20 rows=10 width=16) (never executed)
+              ->  Sort  (cost=1.06..1.07 rows=1 width=17) (actual time=0.037..0.041 rows=0 loops=1)
+                    Sort Key: e.workspace_id
+                    Sort Method: quicksort  Memory: 25kB
+                    ->  Subquery Scan on e  (cost=1.01..1.05 rows=1 width=17) (actual time=0.005..0.008 rows=0 loops=1)
+                          ->  Nested Loop Left Join  (cost=1.01..1.04 rows=1 width=17) (actual time=0.004..0.007 rows=0 loops=1)
+                                Join Filter: (h.id = a_1.account_id)
+                                InitPlan 51 (returns $56)
+                                  ->  Seq Scan on lifecycle_restore_clearance  (cost=0.00..1.01 rows=1 width=0) (never executed)
+                                ->  Nested Loop Left Join  (cost=0.00..0.01 rows=1 width=48) (actual time=0.003..0.004 rows=0 loops=1)
+                                      Join Filter: ((a_1.cohort_id = p_1.cohort_id) AND (a_1.place = p_1.place))
+                                      ->  Seq Scan on participant_workspace p_1  (cost=0.00..0.00 rows=1 width=52) (actual time=0.002..0.003 rows=0 loops=1)
+                                      ->  Seq Scan on beta_admission a_1  (cost=0.00..0.00 rows=1 width=68) (never executed)
+                                ->  Seq Scan on human_account h  (cost=0.00..0.00 rows=1 width=56) (never executed)
+        ->  Hash  (cost=0.36..0.36 rows=1 width=80) (actual time=0.006..0.014 rows=0 loops=1)
+              Buckets: 1024  Batches: 1  Memory Usage: 8kB
+              ->  Subquery Scan on c  (cost=0.33..0.36 rows=1 width=80) (actual time=0.006..0.007 rows=0 loops=1)
+                    ->  HashAggregate  (cost=0.33..0.35 rows=1 width=80) (actual time=0.005..0.006 rows=0 loops=1)
+                          Group Key: workspace_deletion_charge.workspace_id
+                          Batches: 1  Memory Usage: 24kB
+                          ->  Nested Loop Semi Join  (cost=0.00..0.33 rows=1 width=32) (actual time=0.002..0.002 rows=0 loops=1)
+                                Join Filter: (workspace_deletion_charge.workspace_id = ws_3.id)
+                                ->  Seq Scan on workspace_deletion_charge  (cost=0.00..0.00 rows=1 width=32) (actual time=0.001..0.002 rows=0 loops=1)
+                                ->  CTE Scan on ws ws_3  (cost=0.00..0.20 rows=10 width=16) (never executed)
+  ->  Hash Left Join  (cost=85.11..261.99 rows=10 width=498) (actual time=0.653..0.794 rows=10 loops=1)
+        Hash Cond: (ib.id = r_1.id)
+        Buffers: shared hit=327
+        ->  Nested Loop Left Join  (cost=1.08..177.80 rows=10 width=112) (actual time=0.486..0.617 rows=10 loops=1)
+              Join Filter: (d_1.id = ib.id)
+              Buffers: shared hit=307
+              ->  Nested Loop Left Join  (cost=0.83..168.90 rows=10 width=48) (actual time=0.070..0.196 rows=10 loops=1)
+                    Buffers: shared hit=80
+                    ->  Nested Loop Left Join  (cost=0.42..84.55 rows=10 width=32) (actual time=0.044..0.106 rows=10 loops=1)
+                          Buffers: shared hit=40
+                          ->  CTE Scan on ib  (cost=0.00..0.20 rows=10 width=16) (actual time=0.016..0.017 rows=10 loops=1)
+                          ->  Index Scan using inbox_pkey on inbox x  (cost=0.42..8.44 rows=1 width=32) (actual time=0.008..0.008 rows=1 loops=10)
+                                Index Cond: (id = ib.id)
+                                Buffers: shared hit=40
+                    ->  Index Scan using inbox_storage_pkey on inbox_storage s  (cost=0.42..8.44 rows=1 width=32) (actual time=0.008..0.008 rows=1 loops=10)
+                          Index Cond: (inbox_id = ib.id)
+                          Buffers: shared hit=40
+              ->  Materialize  (cost=0.25..8.75 rows=1 width=80) (actual time=0.041..0.042 rows=0 loops=10)
+                    Buffers: shared hit=227
+                    ->  Subquery Scan on d_1  (cost=0.25..8.75 rows=1 width=80) (actual time=0.404..0.405 rows=0 loops=1)
+                          Buffers: shared hit=227
+                          ->  GroupAggregate  (cost=0.25..8.74 rows=1 width=80) (actual time=0.403..0.403 rows=0 loops=1)
+                                Group Key: d_2.inbox_id
+                                Buffers: shared hit=227
+                                ->  Nested Loop Semi Join  (cost=0.25..8.71 rows=1 width=32) (actual time=0.402..0.402 rows=0 loops=1)
+                                      Join Filter: (d_2.inbox_id = ib_1.id)
+                                      Buffers: shared hit=227
+                                      ->  Index Only Scan using ix_storage_delta_inbox on storage_delta d_2  (cost=0.25..8.39 rows=1 width=32) (actual time=0.401..0.401 rows=0 loops=1)
+                                            Heap Fetches: 0
+                                            Buffers: shared hit=227
+                                      ->  CTE Scan on ib ib_1  (cost=0.00..0.20 rows=10 width=16) (never executed)
+        ->  Hash  (cost=83.90..83.90 rows=10 width=56) (actual time=0.115..0.117 rows=0 loops=1)
+              Buckets: 1024  Batches: 1  Memory Usage: 8kB
+              Buffers: shared hit=20
+              ->  Subquery Scan on r_1  (cost=83.55..83.90 rows=10 width=56) (actual time=0.115..0.116 rows=0 loops=1)
+                    Buffers: shared hit=20
+                    ->  GroupAggregate  (cost=83.55..83.80 rows=10 width=56) (actual time=0.113..0.115 rows=0 loops=1)
+                          Group Key: r_2.inbox_id
+                          Buffers: shared hit=20
+                          ->  Sort  (cost=83.55..83.57 rows=10 width=172) (actual time=0.112..0.113 rows=0 loops=1)
+                                Sort Key: r_2.inbox_id
+                                Sort Method: quicksort  Memory: 25kB
+                                Buffers: shared hit=20
+                                ->  Nested Loop  (cost=0.50..83.38 rows=10 width=172) (actual time=0.065..0.066 rows=0 loops=1)
+                                      Buffers: shared hit=20
+                                      ->  HashAggregate  (cost=0.23..0.33 rows=10 width=16) (actual time=0.012..0.013 rows=10 loops=1)
+                                            Group Key: ib_2.id
+                                            Batches: 1  Memory Usage: 24kB
+                                            ->  CTE Scan on ib ib_2  (cost=0.00..0.20 rows=10 width=16) (actual time=0.001..0.005 rows=10 loops=1)
+                                      ->  Index Scan using ix_storage_reservation_inbox on storage_reservation r_2  (cost=0.28..8.30 rows=1 width=172) (actual time=0.005..0.005 rows=0 loops=10)
+                                            Index Cond: (inbox_id = ib_2.id)
+                                            Buffers: shared hit=20
+Settings: plan_cache_mode = 'force_generic_plan'
+Planning Time: 0.173 ms
+Execution Time: 7.980 ms
+## PARTITIONED (production COHORT_PARTITIONED T1): the GENERIC plan (PREPARE, plan_cache_mode = force_generic_plan), EXPLAIN (ANALYZE, BUFFERS, SETTINGS) EXECUTE over 10 recipients
+generic_plans = 7, custom_plans = 0
+Append  (cost=124.01..575.08 rows=21 width=526) (actual time=1.549..3.363 rows=12 loops=1)
+  Buffers: shared hit=611
+  CTE ws
+    ->  HashAggregate  (cost=0.09..0.22 rows=10 width=16) (actual time=0.010..0.012 rows=1 loops=1)
+          Group Key: unnest($1)
+          Batches: 1  Memory Usage: 24kB
+          ->  ProjectSet  (cost=0.00..0.07 rows=10 width=16) (actual time=0.005..0.006 rows=1 loops=1)
+                ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.001 rows=1 loops=1)
+  CTE ib
+    ->  HashAggregate  (cost=0.09..0.22 rows=10 width=16) (actual time=0.012..0.014 rows=10 loops=1)
+          Group Key: unnest($2)
+          Batches: 1  Memory Usage: 24kB
+          ->  ProjectSet  (cost=0.00..0.07 rows=10 width=16) (actual time=0.003..0.005 rows=10 loops=1)
+                ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.001..0.001 rows=1 loops=1)
+  CTE fp_newest
+    ->  Limit  (cost=1.06..1.06 rows=1 width=112) (actual time=0.032..0.034 rows=1 loops=1)
+          Buffers: shared hit=1
+          ->  Sort  (cost=1.06..1.07 rows=4 width=112) (actual time=0.032..0.033 rows=1 loops=1)
+                Sort Key: storage_filesystem_observation.started_seq DESC, storage_filesystem_observation.id DESC
+                Sort Method: top-N heapsort  Memory: 25kB
+                Buffers: shared hit=1
+                ->  Seq Scan on storage_filesystem_observation  (cost=0.00..1.04 rows=4 width=112) (actual time=0.006..0.007 rows=4 loops=1)
+                      Buffers: shared hit=1
+  CTE cp_shares
+    ->  Append  (cost=0.00..0.01 rows=2 width=33) (actual time=0.005..0.006 rows=0 loops=1)
+          ->  Seq Scan on participant_workspace  (cost=0.00..0.00 rows=1 width=33) (actual time=0.002..0.003 rows=0 loops=1)
+          ->  Seq Scan on storage_legacy_share  (cost=0.00..0.00 rows=1 width=33) (actual time=0.002..0.002 rows=0 loops=1)
+  CTE fp_debt
+    ->  Aggregate  (cost=27.97..27.98 rows=1 width=128) (actual time=0.544..0.548 rows=1 loops=1)
+          Buffers: shared hit=17
+          InitPlan 5 (returns $4)
+            ->  CTE Scan on fp_newest  (cost=0.00..0.02 rows=1 width=8) (actual time=0.037..0.038 rows=1 loops=1)
+                  Buffers: shared hit=1
+          ->  Hash Left Join  (cost=0.08..25.88 rows=206 width=32) (actual time=0.097..0.446 rows=616 loops=1)
+                Hash Cond: (d_3.workspace_id = cp_shares.workspace_id)
+                Buffers: shared hit=17
+                ->  Seq Scan on storage_deletion_debt d_3  (cost=0.00..25.24 rows=206 width=32) (actual time=0.052..0.273 rows=616 loops=1)
+                      Filter: ((incurred_at = 'infinity'::timestamp with time zone) OR (seq >= COALESCE($4, '0'::bigint)))
+                      Buffers: shared hit=17
+                ->  Hash  (cost=0.06..0.06 rows=2 width=16) (actual time=0.027..0.028 rows=0 loops=1)
+                      Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                      ->  Unique  (cost=0.05..0.06 rows=2 width=16) (actual time=0.026..0.027 rows=0 loops=1)
+                            ->  Sort  (cost=0.05..0.06 rows=2 width=16) (actual time=0.026..0.026 rows=0 loops=1)
+                                  Sort Key: cp_shares.workspace_id
+                                  Sort Method: quicksort  Memory: 25kB
+                                  ->  CTE Scan on cp_shares  (cost=0.00..0.04 rows=2 width=16) (actual time=0.005..0.005 rows=0 loops=1)
+  CTE cp_unattributed
+    ->  Aggregate  (cost=13.75..13.77 rows=1 width=64) (actual time=0.012..0.016 rows=1 loops=1)
+          InitPlan 7 (returns $6)
+            ->  CTE Scan on fp_debt  (cost=0.00..0.02 rows=1 width=32) (actual time=0.005..0.005 rows=1 loops=1)
+          InitPlan 8 (returns $7)
+            ->  CTE Scan on fp_debt fp_debt_1  (cost=0.00..0.02 rows=1 width=32) (actual time=0.000..0.000 rows=1 loops=1)
+          ->  Nested Loop Anti Join  (cost=0.28..13.70 rows=1 width=16) (actual time=0.002..0.004 rows=0 loops=1)
+                ->  Nested Loop Anti Join  (cost=0.00..0.07 rows=1 width=24) (actual time=0.002..0.003 rows=0 loops=1)
+                      Join Filter: (s_1.workspace_id = c_1.workspace_id)
+                      ->  Seq Scan on workspace_deletion_charge c_1  (cost=0.00..0.00 rows=1 width=40) (actual time=0.001..0.002 rows=0 loops=1)
+                      ->  CTE Scan on cp_shares s_1  (cost=0.00..0.04 rows=2 width=16) (never executed)
+                ->  Index Only Scan using storage_deletion_debt_pkey on storage_deletion_debt d_4  (cost=0.28..8.29 rows=1 width=8) (never executed)
+                      Index Cond: (id = c_1.debt_id)
+                      Heap Fetches: 0
+  ->  Result  (cost=80.76..81.02 rows=1 width=526) (actual time=1.548..1.582 rows=1 loops=1)
+        Buffers: shared hit=29
+        InitPlan 10 (returns $10)
+          ->  CTE Scan on fp_debt fp_debt_2  (cost=0.00..0.02 rows=1 width=32) (actual time=0.547..0.547 rows=1 loops=1)
+                Buffers: shared hit=17
+        InitPlan 11 (returns $11)
+          ->  CTE Scan on fp_debt fp_debt_3  (cost=0.00..0.02 rows=1 width=32) (actual time=0.001..0.001 rows=1 loops=1)
+        InitPlan 12 (returns $12)
+          ->  Seq Scan on storage_footprint_trust  (cost=0.00..1.01 rows=1 width=1) (actual time=0.041..0.042 rows=1 loops=1)
+                Filter: (id = 1)
+                Buffers: shared hit=1
+        InitPlan 13 (returns $13)
+          ->  Seq Scan on storage_debt_watermark  (cost=0.00..1.01 rows=1 width=8) (actual time=0.013..0.014 rows=1 loops=1)
+                Filter: (id = 1)
+                Buffers: shared hit=1
+        InitPlan 14 (returns $14)
+          ->  Seq Scan on storage_footprint_trust storage_footprint_trust_1  (cost=0.00..1.01 rows=1 width=8) (actual time=0.003..0.003 rows=1 loops=1)
+                Filter: (id = 1)
+                Buffers: shared hit=1
+        InitPlan 15 (returns $15)
+          ->  CTE Scan on fp_newest fp_newest_1  (cost=0.00..0.02 rows=1 width=8) (actual time=0.001..0.001 rows=1 loops=1)
+        InitPlan 16 (returns $16)
+          ->  CTE Scan on fp_newest fp_newest_2  (cost=0.00..0.02 rows=1 width=8) (actual time=0.001..0.001 rows=1 loops=1)
+        InitPlan 17 (returns $17)
+          ->  CTE Scan on fp_newest fp_newest_3  (cost=0.00..0.02 rows=1 width=8) (actual time=0.000..0.001 rows=1 loops=1)
+        InitPlan 18 (returns $18)
+          ->  CTE Scan on fp_newest fp_newest_4  (cost=0.00..0.02 rows=1 width=8) (actual time=0.000..0.001 rows=1 loops=1)
+        InitPlan 19 (returns $19)
+          ->  CTE Scan on fp_newest fp_newest_5  (cost=0.00..0.02 rows=1 width=32) (actual time=0.001..0.002 rows=1 loops=1)
+        InitPlan 20 (returns $20)
+          ->  Seq Scan on participant_workspace participant_workspace_1  (cost=0.00..0.00 rows=1 width=0) (actual time=0.001..0.001 rows=0 loops=1)
+        InitPlan 21 (returns $21)
+          ->  Seq Scan on storage_cohort_plan  (cost=0.00..0.00 rows=1 width=0) (actual time=0.007..0.007 rows=0 loops=1)
+        InitPlan 22 (returns $22)
+          ->  Seq Scan on storage_cohort_plan storage_cohort_plan_1  (cost=0.00..0.00 rows=1 width=32) (actual time=0.001..0.001 rows=0 loops=1)
+                Filter: approved
+        InitPlan 23 (returns $23)
+          ->  Seq Scan on storage_cohort_plan storage_cohort_plan_2  (cost=0.00..0.00 rows=1 width=32) (actual time=0.003..0.003 rows=0 loops=1)
+                Filter: approved
+        InitPlan 24 (returns $24)
+          ->  Seq Scan on storage_cohort_plan storage_cohort_plan_3  (cost=0.00..0.00 rows=1 width=8) (actual time=0.001..0.001 rows=0 loops=1)
+        InitPlan 25 (returns $25)
+          ->  Seq Scan on storage_cohort_plan storage_cohort_plan_4  (cost=0.00..0.00 rows=1 width=8) (actual time=0.004..0.004 rows=0 loops=1)
+        InitPlan 26 (returns $26)
+          ->  Aggregate  (cost=0.08..0.09 rows=1 width=8) (actual time=0.012..0.014 rows=1 loops=1)
+                Buffers: shared hit=1
+                ->  Limit  (cost=0.00..0.06 rows=1 width=4) (actual time=0.009..0.011 rows=1 loops=1)
+                      Buffers: shared hit=1
+                      ->  Nested Loop Anti Join  (cost=0.00..634.02 rows=9998 width=4) (actual time=0.008..0.010 rows=1 loops=1)
+                            Join Filter: (s_2.workspace_id = w.id)
+                            Buffers: shared hit=1
+                            ->  Seq Scan on workspace w  (cost=0.00..184.00 rows=10000 width=16) (actual time=0.007..0.007 rows=1 loops=1)
+                                  Buffers: shared hit=1
+                            ->  CTE Scan on cp_shares s_2  (cost=0.00..0.04 rows=2 width=16) (actual time=0.000..0.001 rows=0 loops=1)
+        InitPlan 30 (returns $32)
+          ->  Seq Scan on storage_cohort_plan p_2  (cost=0.00..1.21 rows=1 width=1) (actual time=0.001..0.004 rows=0 loops=1)
+                Filter: approved
+                SubPlan 27
+                  ->  Nested Loop Anti Join  (cost=0.00..1.28 rows=9 width=0) (never executed)
+                        Join Filter: (n.node_id = expected.expected)
+                        ->  Function Scan on unnest expected  (cost=0.00..0.10 rows=10 width=32) (never executed)
+                        ->  Materialize  (cost=0.00..1.03 rows=1 width=8) (never executed)
+                              ->  Seq Scan on storage_node n  (cost=0.00..1.02 rows=1 width=8) (never executed)
+                                    Filter: ((NOT clean_shutdown) AND (cohort_capability = 'cohort-storage-v1'::text) AND (cohort_mode = 'ALL'::text) AND (cohort_binding = p_2.binding) AND (heartbeat_at >= (now() - '00:05:00'::interval)))
+                SubPlan 28
+                  ->  Seq Scan on storage_node n_1  (cost=0.00..1.03 rows=1 width=0) (never executed)
+                        Filter: ((NOT clean_shutdown) AND ((cohort_capability IS DISTINCT FROM 'cohort-storage-v1'::text) OR (cohort_mode IS DISTINCT FROM 'ALL'::text) OR (cohort_binding IS DISTINCT FROM p_2.binding) OR (node_id <> ALL (p_2.expected_nodes))))
+                SubPlan 29
+                  ->  CTE Scan on fp_newest fp_newest_6  (cost=0.00..0.04 rows=1 width=1) (never executed)
+        InitPlan 31 (returns $33)
+          ->  CTE Scan on cp_unattributed  (cost=0.00..0.02 rows=1 width=32) (actual time=0.014..0.014 rows=1 loops=1)
+        InitPlan 32 (returns $34)
+          ->  CTE Scan on cp_unattributed cp_unattributed_1  (cost=0.00..0.02 rows=1 width=32) (actual time=0.000..0.001 rows=1 loops=1)
+        InitPlan 33 (returns $35)
+          ->  CTE Scan on fp_newest fp_newest_7  (cost=0.00..0.02 rows=1 width=8) (actual time=0.000..0.001 rows=1 loops=1)
+        InitPlan 34 (returns $39)
+          ->  Aggregate  (cost=50.22..50.23 rows=1 width=32) (actual time=0.025..0.036 rows=1 loops=1)
+                ->  Hash Left Join  (cost=33.69..50.18 rows=2 width=217) (actual time=0.023..0.034 rows=0 loops=1)
+                      Hash Cond: (s_3.workspace_id = c_2.workspace_id)
+                      ->  Merge Left Join  (cost=33.64..50.12 rows=2 width=153) (actual time=0.023..0.031 rows=0 loops=1)
+                            Merge Cond: (s_3.workspace_id = storage_reservation.workspace_id)
+                            ->  Nested Loop Left Join  (cost=16.97..33.35 rows=2 width=113) (actual time=0.022..0.027 rows=0 loops=1)
+                                  ->  Merge Left Join  (cost=16.68..16.74 rows=2 width=97) (actual time=0.022..0.026 rows=0 loops=1)
+                                        Merge Cond: (s_3.workspace_id = storage_delta.workspace_id)
+                                        ->  Sort  (cost=0.05..0.06 rows=2 width=33) (actual time=0.022..0.022 rows=0 loops=1)
+                                              Sort Key: s_3.workspace_id
+                                              Sort Method: quicksort  Memory: 25kB
+                                              ->  CTE Scan on cp_shares s_3  (cost=0.00..0.04 rows=2 width=33) (actual time=0.000..0.001 rows=0 loops=1)
+                                        ->  GroupAggregate  (cost=16.63..16.66 rows=1 width=80) (never executed)
+                                              Group Key: storage_delta.workspace_id
+                                              ->  Sort  (cost=16.63..16.64 rows=1 width=32) (never executed)
+                                                    Sort Key: storage_delta.workspace_id
+                                                    ->  Nested Loop  (cost=4.31..16.62 rows=1 width=32) (never executed)
+                                                          ->  Unique  (cost=0.05..0.06 rows=2 width=16) (never executed)
+                                                                ->  Sort  (cost=0.05..0.06 rows=2 width=16) (never executed)
+                                                                      Sort Key: cp_shares_1.workspace_id
+                                                                      ->  CTE Scan on cp_shares cp_shares_1  (cost=0.00..0.04 rows=2 width=16) (never executed)
+                                                          ->  Bitmap Heap Scan on storage_delta  (cost=4.26..8.27 rows=1 width=32) (never executed)
+                                                                Recheck Cond: (workspace_id = cp_shares_1.workspace_id)
+                                                                ->  Bitmap Index Scan on ix_storage_delta_workspace  (cost=0.00..4.26 rows=1 width=0) (never executed)
+                                                                      Index Cond: (workspace_id = cp_shares_1.workspace_id)
+                                  ->  Index Scan using workspace_storage_account_pkey on workspace_storage_account a_2  (cost=0.29..8.30 rows=1 width=32) (never executed)
+                                        Index Cond: (workspace_id = s_3.workspace_id)
+                            ->  GroupAggregate  (cost=16.68..16.73 rows=2 width=56) (never executed)
+                                  Group Key: storage_reservation.workspace_id
+                                  ->  Sort  (cost=16.68..16.68 rows=2 width=172) (never executed)
+                                        Sort Key: storage_reservation.workspace_id
+                                        ->  Nested Loop  (cost=0.33..16.67 rows=2 width=172) (never executed)
+                                              ->  Unique  (cost=0.05..0.06 rows=2 width=16) (never executed)
+                                                    ->  Sort  (cost=0.05..0.06 rows=2 width=16) (never executed)
+                                                          Sort Key: cp_shares_2.workspace_id
+                                                          ->  CTE Scan on cp_shares cp_shares_2  (cost=0.00..0.04 rows=2 width=16) (never executed)
+                                              ->  Index Scan using ix_storage_reservation_workspace on storage_reservation  (cost=0.28..8.29 rows=1 width=172) (never executed)
+                                                    Index Cond: (workspace_id = cp_shares_2.workspace_id)
+                      ->  Hash  (cost=0.03..0.03 rows=1 width=80) (never executed)
+                            ->  Subquery Scan on c_2  (cost=0.01..0.03 rows=1 width=80) (never executed)
+                                  ->  HashAggregate  (cost=0.01..0.02 rows=1 width=80) (never executed)
+                                        Group Key: workspace_deletion_charge_1.workspace_id
+                                        ->  Seq Scan on workspace_deletion_charge workspace_deletion_charge_1  (cost=0.00..0.00 rows=1 width=32) (never executed)
+        InitPlan 35 (returns $40)
+          ->  Nested Loop  (cost=0.00..0.01 rows=1 width=1) (actual time=0.002..0.003 rows=0 loops=1)
+                ->  Seq Scan on storage_cohort_plan p_3  (cost=0.00..0.00 rows=1 width=65) (actual time=0.002..0.002 rows=0 loops=1)
+                      Filter: id
+                ->  Seq Scan on storage_partition_bound b  (cost=0.00..0.00 rows=1 width=64) (never executed)
+                      Filter: id
+        InitPlan 36 (returns $41)
+          ->  Nested Loop Anti Join  (cost=0.00..0.67 rows=8 width=0) (actual time=0.012..0.013 rows=1 loops=1)
+                Join Filter: (s_4.workspace_id = ws_4.id)
+                ->  CTE Scan on ws ws_4  (cost=0.00..0.20 rows=10 width=16) (actual time=0.011..0.011 rows=1 loops=1)
+                ->  CTE Scan on cp_shares s_4  (cost=0.00..0.04 rows=2 width=16) (actual time=0.000..0.000 rows=0 loops=1)
+        InitPlan 38 (returns $43)
+          ->  Nested Loop Anti Join  (cost=0.09..25.89 rows=1 width=0) (actual time=0.014..0.016 rows=0 loops=1)
+                Join Filter: (c_3.debt_id = d_5.id)
+                Buffers: shared hit=1
+                InitPlan 37 (returns $42)
+                  ->  CTE Scan on fp_newest fp_newest_8  (cost=0.00..0.02 rows=1 width=8) (actual time=0.001..0.001 rows=1 loops=1)
+                ->  Hash Semi Join  (cost=0.07..25.86 rows=1 width=8) (actual time=0.013..0.015 rows=0 loops=1)
+                      Hash Cond: (d_5.workspace_id = s_5.workspace_id)
+                      Buffers: shared hit=1
+                      ->  Seq Scan on storage_deletion_debt d_5  (cost=0.00..25.24 rows=206 width=24) (actual time=0.009..0.009 rows=1 loops=1)
+                            Filter: ((incurred_at = 'infinity'::timestamp with time zone) OR (seq >= COALESCE($42, '0'::bigint)))
+                            Buffers: shared hit=1
+                      ->  Hash  (cost=0.04..0.04 rows=2 width=16) (actual time=0.001..0.001 rows=0 loops=1)
+                            Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                            ->  CTE Scan on cp_shares s_5  (cost=0.00..0.04 rows=2 width=16) (actual time=0.000..0.000 rows=0 loops=1)
+                ->  Seq Scan on workspace_deletion_charge c_3  (cost=0.00..0.00 rows=1 width=8) (never executed)
+  ->  Subquery Scan on "*SELECT* 2"  (cost=85.93..188.60 rows=10 width=526) (actual time=0.850..0.863 rows=1 loops=1)
+        Buffers: shared hit=255
+        ->  Hash Left Join  (cost=85.93..188.47 rows=10 width=502) (actual time=0.847..0.860 rows=1 loops=1)
+              Hash Cond: (ws.id = c.id)
+              Buffers: shared hit=255
+              ->  Merge Left Join  (cost=85.56..187.94 rows=10 width=169) (actual time=0.792..0.802 rows=1 loops=1)
+                    Merge Cond: (ws.id = e.workspace_id)
+                    Buffers: shared hit=255
+                    ->  Merge Left Join  (cost=84.50..186.83 rows=10 width=168) (actual time=0.754..0.761 rows=1 loops=1)
+                          Merge Cond: (ws.id = d.workspace_id)
+                          Buffers: shared hit=255
+                          ->  Nested Loop Left Join  (cost=84.25..167.52 rows=10 width=104) (actual time=0.182..0.187 rows=1 loops=1)
+                                Buffers: shared hit=5
+                                ->  Merge Left Join  (cost=83.97..84.49 rows=10 width=88) (actual time=0.149..0.153 rows=1 loops=1)
+                                      Merge Cond: (ws.id = r.workspace_id)
+                                      Buffers: shared hit=2
+                                      ->  Sort  (cost=0.44..0.47 rows=10 width=48) (actual time=0.087..0.090 rows=1 loops=1)
+                                            Sort Key: ws.id
+                                            Sort Method: quicksort  Memory: 25kB
+                                            ->  Hash Left Join  (cost=0.03..0.28 rows=10 width=48) (actual time=0.043..0.047 rows=1 loops=1)
+                                                  Hash Cond: (ws.id = l.workspace_id)
+                                                  ->  Hash Left Join  (cost=0.01..0.24 rows=10 width=32) (actual time=0.022..0.025 rows=1 loops=1)
+                                                        Hash Cond: (ws.id = p.workspace_id)
+                                                        ->  CTE Scan on ws  (cost=0.00..0.20 rows=10 width=16) (actual time=0.000..0.002 rows=1 loops=1)
+                                                        ->  Hash  (cost=0.00..0.00 rows=1 width=32) (actual time=0.002..0.002 rows=0 loops=1)
+                                                              Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                                                              ->  Seq Scan on participant_workspace p  (cost=0.00..0.00 rows=1 width=32) (actual time=0.002..0.002 rows=0 loops=1)
+                                                  ->  Hash  (cost=0.00..0.00 rows=1 width=32) (actual time=0.002..0.002 rows=0 loops=1)
+                                                        Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                                                        ->  Seq Scan on storage_legacy_share l  (cost=0.00..0.00 rows=1 width=32) (actual time=0.001..0.001 rows=0 loops=1)
+                                      ->  GroupAggregate  (cost=83.52..83.77 rows=10 width=56) (actual time=0.059..0.060 rows=0 loops=1)
+                                            Group Key: r.workspace_id
+                                            Buffers: shared hit=2
+                                            ->  Sort  (cost=83.52..83.55 rows=10 width=172) (actual time=0.058..0.060 rows=0 loops=1)
+                                                  Sort Key: r.workspace_id
+                                                  Sort Method: quicksort  Memory: 25kB
+                                                  Buffers: shared hit=2
+                                                  ->  Nested Loop  (cost=0.50..83.36 rows=10 width=172) (actual time=0.038..0.039 rows=0 loops=1)
+                                                        Buffers: shared hit=2
+                                                        ->  HashAggregate  (cost=0.23..0.33 rows=10 width=16) (actual time=0.003..0.003 rows=1 loops=1)
+                                                              Group Key: ws_1.id
+                                                              Batches: 1  Memory Usage: 24kB
+                                                              ->  CTE Scan on ws ws_1  (cost=0.00..0.20 rows=10 width=16) (actual time=0.000..0.001 rows=1 loops=1)
+                                                        ->  Index Scan using ix_storage_reservation_workspace on storage_reservation r  (cost=0.28..8.29 rows=1 width=172) (actual time=0.033..0.033 rows=0 loops=1)
+                                                              Index Cond: (workspace_id = ws_1.id)
+                                                              Buffers: shared hit=2
+                                ->  Index Scan using workspace_storage_account_pkey on workspace_storage_account a  (cost=0.29..8.30 rows=1 width=32) (actual time=0.031..0.032 rows=1 loops=1)
+                                      Index Cond: (workspace_id = ws.id)
+                                      Buffers: shared hit=3
+                          ->  GroupAggregate  (cost=0.25..19.27 rows=1 width=80) (actual time=0.570..0.571 rows=0 loops=1)
+                                Group Key: d.workspace_id
+                                Buffers: shared hit=250
+                                ->  Nested Loop Semi Join  (cost=0.25..19.25 rows=1 width=32) (actual time=0.570..0.570 rows=0 loops=1)
+                                      Join Filter: (d.workspace_id = ws_2.id)
+                                      Buffers: shared hit=250
+                                      ->  Index Only Scan using ix_storage_delta_workspace on storage_delta d  (cost=0.25..18.92 rows=1 width=32) (actual time=0.569..0.569 rows=0 loops=1)
+                                            Heap Fetches: 0
+                                            Buffers: shared hit=250
+                                      ->  CTE Scan on ws ws_2  (cost=0.00..0.20 rows=10 width=16) (never executed)
+                    ->  Sort  (cost=1.06..1.07 rows=1 width=17) (actual time=0.036..0.038 rows=0 loops=1)
+                          Sort Key: e.workspace_id
+                          Sort Method: quicksort  Memory: 25kB
+                          ->  Subquery Scan on e  (cost=1.01..1.05 rows=1 width=17) (actual time=0.005..0.007 rows=0 loops=1)
+                                ->  Nested Loop Left Join  (cost=1.01..1.04 rows=1 width=17) (actual time=0.004..0.006 rows=0 loops=1)
+                                      Join Filter: (h.id = a_1.account_id)
+                                      InitPlan 39 (returns $44)
+                                        ->  Seq Scan on lifecycle_restore_clearance  (cost=0.00..1.01 rows=1 width=0) (never executed)
+                                      ->  Nested Loop Left Join  (cost=0.00..0.01 rows=1 width=48) (actual time=0.003..0.004 rows=0 loops=1)
+                                            Join Filter: ((a_1.cohort_id = p_1.cohort_id) AND (a_1.place = p_1.place))
+                                            ->  Seq Scan on participant_workspace p_1  (cost=0.00..0.00 rows=1 width=52) (actual time=0.003..0.003 rows=0 loops=1)
+                                            ->  Seq Scan on beta_admission a_1  (cost=0.00..0.00 rows=1 width=68) (never executed)
+                                      ->  Seq Scan on human_account h  (cost=0.00..0.00 rows=1 width=56) (never executed)
+              ->  Hash  (cost=0.36..0.36 rows=1 width=80) (actual time=0.005..0.007 rows=0 loops=1)
+                    Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                    ->  Subquery Scan on c  (cost=0.33..0.36 rows=1 width=80) (actual time=0.005..0.007 rows=0 loops=1)
+                          ->  HashAggregate  (cost=0.33..0.35 rows=1 width=80) (actual time=0.004..0.006 rows=0 loops=1)
+                                Group Key: workspace_deletion_charge.workspace_id
+                                Batches: 1  Memory Usage: 24kB
+                                ->  Nested Loop Semi Join  (cost=0.00..0.33 rows=1 width=32) (actual time=0.003..0.004 rows=0 loops=1)
+                                      Join Filter: (workspace_deletion_charge.workspace_id = ws_3.id)
+                                      ->  Seq Scan on workspace_deletion_charge  (cost=0.00..0.00 rows=1 width=32) (actual time=0.002..0.003 rows=0 loops=1)
+                                      ->  CTE Scan on ws ws_3  (cost=0.00..0.20 rows=10 width=16) (never executed)
+  ->  Subquery Scan on "*SELECT* 3"  (cost=85.11..262.11 rows=10 width=526) (actual time=0.735..0.899 rows=10 loops=1)
+        Buffers: shared hit=327
+        ->  Hash Left Join  (cost=85.11..261.99 rows=10 width=502) (actual time=0.731..0.891 rows=10 loops=1)
+              Hash Cond: (ib.id = r_1.id)
+              Buffers: shared hit=327
+              ->  Nested Loop Left Join  (cost=1.08..177.80 rows=10 width=112) (actual time=0.565..0.712 rows=10 loops=1)
+                    Join Filter: (d_1.id = ib.id)
+                    Buffers: shared hit=307
+                    ->  Nested Loop Left Join  (cost=0.83..168.90 rows=10 width=48) (actual time=0.074..0.215 rows=10 loops=1)
+                          Buffers: shared hit=80
+                          ->  Nested Loop Left Join  (cost=0.42..84.55 rows=10 width=32) (actual time=0.046..0.116 rows=10 loops=1)
+                                Buffers: shared hit=40
+                                ->  CTE Scan on ib  (cost=0.00..0.20 rows=10 width=16) (actual time=0.013..0.015 rows=10 loops=1)
+                                ->  Index Scan using inbox_pkey on inbox x  (cost=0.42..8.44 rows=1 width=32) (actual time=0.009..0.009 rows=1 loops=10)
+                                      Index Cond: (id = ib.id)
+                                      Buffers: shared hit=40
+                          ->  Index Scan using inbox_storage_pkey on inbox_storage s  (cost=0.42..8.44 rows=1 width=32) (actual time=0.009..0.009 rows=1 loops=10)
+                                Index Cond: (inbox_id = ib.id)
+                                Buffers: shared hit=40
+                    ->  Materialize  (cost=0.25..8.75 rows=1 width=80) (actual time=0.049..0.049 rows=0 loops=10)
+                          Buffers: shared hit=227
+                          ->  Subquery Scan on d_1  (cost=0.25..8.75 rows=1 width=80) (actual time=0.477..0.479 rows=0 loops=1)
+                                Buffers: shared hit=227
+                                ->  GroupAggregate  (cost=0.25..8.74 rows=1 width=80) (actual time=0.477..0.478 rows=0 loops=1)
+                                      Group Key: d_2.inbox_id
+                                      Buffers: shared hit=227
+                                      ->  Nested Loop Semi Join  (cost=0.25..8.71 rows=1 width=32) (actual time=0.476..0.476 rows=0 loops=1)
+                                            Join Filter: (d_2.inbox_id = ib_1.id)
+                                            Buffers: shared hit=227
+                                            ->  Index Only Scan using ix_storage_delta_inbox on storage_delta d_2  (cost=0.25..8.39 rows=1 width=32) (actual time=0.475..0.475 rows=0 loops=1)
+                                                  Heap Fetches: 0
+                                                  Buffers: shared hit=227
+                                            ->  CTE Scan on ib ib_1  (cost=0.00..0.20 rows=10 width=16) (never executed)
+              ->  Hash  (cost=83.90..83.90 rows=10 width=56) (actual time=0.117..0.119 rows=0 loops=1)
+                    Buckets: 1024  Batches: 1  Memory Usage: 8kB
+                    Buffers: shared hit=20
+                    ->  Subquery Scan on r_1  (cost=83.55..83.90 rows=10 width=56) (actual time=0.117..0.118 rows=0 loops=1)
+                          Buffers: shared hit=20
+                          ->  GroupAggregate  (cost=83.55..83.80 rows=10 width=56) (actual time=0.116..0.117 rows=0 loops=1)
+                                Group Key: r_2.inbox_id
+                                Buffers: shared hit=20
+                                ->  Sort  (cost=83.55..83.57 rows=10 width=172) (actual time=0.115..0.116 rows=0 loops=1)
+                                      Sort Key: r_2.inbox_id
+                                      Sort Method: quicksort  Memory: 25kB
+                                      Buffers: shared hit=20
+                                      ->  Nested Loop  (cost=0.50..83.38 rows=10 width=172) (actual time=0.082..0.082 rows=0 loops=1)
+                                            Buffers: shared hit=20
+                                            ->  HashAggregate  (cost=0.23..0.33 rows=10 width=16) (actual time=0.013..0.015 rows=10 loops=1)
+                                                  Group Key: ib_2.id
+                                                  Batches: 1  Memory Usage: 24kB
+                                                  ->  CTE Scan on ib ib_2  (cost=0.00..0.20 rows=10 width=16) (actual time=0.001..0.007 rows=10 loops=1)
+                                            ->  Index Scan using ix_storage_reservation_inbox on storage_reservation r_2  (cost=0.28..8.30 rows=1 width=172) (actual time=0.006..0.006 rows=0 loops=10)
+                                                  Index Cond: (inbox_id = ib_2.id)
+                                                  Buffers: shared hit=20
+Settings: plan_cache_mode = 'force_generic_plan'
+Planning Time: 0.107 ms
+Execution Time: 5.327 ms
+## pg_stat_statements (top 15 by total execution time, since the last reset)
+pg_stat_statements unavailable (PreparedStatementCallback; uncategorized SQLException for SQL [SELECT count(*) FROM pg_stat_statements]; SQL state [55000]; error code [0]; ERROR: pg_stat_statements must be loaded via shared_preload_libraries); preload it to record plan/exec times
+
+## Churn tables
+inbox_storage: live 99999, dead 4946, autovacuums 1, last autovacuum 2026-11-06 13:31:05.519198+00, reloptions fillfactor=80
+storage_deletion_debt: live 618, dead 0, autovacuums 3, last autovacuum 2026-11-06 13:35:03.729985+00, reloptions -
+storage_delta: live 224, dead 32846, autovacuums 5, last autovacuum 2026-11-06 13:35:08.234697+00, reloptions autovacuum_vacuum_scale_factor=0,autovacuum_vacuum_threshold=5000,autovacuum_vacuum_cost_delay=0,autovacuum_vacuum_insert_scale_factor=0,autovacuum_vacuum_insert_threshold=5000
+storage_global_base: live 1, dead 0, autovacuums 0, last autovacuum never, reloptions fillfactor=10,autovacuum_vacuum_scale_factor=0,autovacuum_vacuum_threshold=200,autovacuum_vacuum_cost_delay=0
+storage_reservation: live 1000, dead 16619, autovacuums 5, last autovacuum 2026-11-06 13:35:08.939389+00, reloptions fillfactor=70,autovacuum_vacuum_scale_factor=0,autovacuum_vacuum_threshold=2000,autovacuum_vacuum_cost_delay=0,autovacuum_analyze_scale_factor=0,autovacuum_analyze_threshold=2000
+workspace: live 10000, dead 0, autovacuums 1, last autovacuum 2026-11-06 13:30:03.627568+00, reloptions -
+workspace_deletion_charge: live 0, dead 0, autovacuums 0, last autovacuum never, reloptions -
+workspace_storage_account: live 10000, dead 2565, autovacuums 4, last autovacuum 2026-11-06 13:35:08.25299+00, reloptions fillfactor=80

@@ -1,0 +1,143 @@
+gate run start 2026-11-06T13:29:46Z
+13:29:49.177 INFO  storage-benchmark - preflight: database 'testinbox_bench_pfocus' (created by this run), tenant rows at start: workspace=0, inbox=0, message=0; TESTINBOX_BENCHMARK_DESTRUCTIVE_ACK acknowledged
+13:29:51.858 WARN  storage-benchmark - pg_stat_statements unavailable (PreparedStatementCallback; uncategorized SQLException for SQL [SELECT count(*) FROM pg_stat_statements]; SQL state [55000]; error code [0]; ERROR: pg_stat_statements must be loaded via shared_preload_libraries); preload it to record plan/exec times
+13:29:51.916 INFO  storage-benchmark - seeding 10000 workspaces x 10 inboxes, 500 deltas, 1000 reservations
+13:30:15.481 INFO  e.t.b.ScenarioRunner - scenario chosen-ws10000-c10-r62 starting
+13:30:32.475 INFO  e.t.b.ScenarioRunner - scenario chosen-ws10000-c10-r62: production T1 probe T1Probe(mode=CHOSEN, storeClass=email.testinbox.persistence.JdbcStorageAdmission, enforcement=ALL, readsFootprint=true, footprintRead=true, footprintUnavailable=null, cohortRequired=false, snapshotStatementSha256=0135227453cb5afa256e598593e7d421f36a1c90174d816b7c98b92e59fd6b2a, budgetedWorkspaces=0, inactiveWorkspaces=0, locking=GLOBAL, partitioned=false)
+13:31:38.592 INFO  e.t.b.ScenarioRunner - scenario chosen-ws10000-c10-r62 done: offered 62.0 achieved 62.0 T1 p99 741.686015 ms, lock timeouts 0, deadlocks 0
+13:31:41.104 INFO  e.t.b.ScenarioRunner - scenario reference-ws10000-c10-r62 starting
+13:31:56.052 INFO  e.t.b.ScenarioRunner - scenario reference-ws10000-c10-r62: production T1 probe T1Probe(mode=REFERENCE, storeClass=email.testinbox.benchmark.NoLockAdmissionStore, enforcement=TENANT_LIMITS, readsFootprint=true, footprintRead=true, footprintUnavailable=null, cohortRequired=false, snapshotStatementSha256=0135227453cb5afa256e598593e7d421f36a1c90174d816b7c98b92e59fd6b2a, budgetedWorkspaces=0, inactiveWorkspaces=0, locking=GLOBAL, partitioned=false)
+13:33:01.281 INFO  e.t.b.ScenarioRunner - scenario reference-ws10000-c10-r62 done: offered 62.0 achieved 61.9 T1 p99 49.981602 ms, lock timeouts 0, deadlocks 0
+13:33:04.889 INFO  e.t.b.ScenarioRunner - scenario chosen-ws10000-c100-r62 starting
+13:33:21.568 INFO  e.t.b.ScenarioRunner - scenario chosen-ws10000-c100-r62: production T1 probe T1Probe(mode=CHOSEN, storeClass=email.testinbox.persistence.JdbcStorageAdmission, enforcement=ALL, readsFootprint=true, footprintRead=true, footprintUnavailable=null, cohortRequired=false, snapshotStatementSha256=0135227453cb5afa256e598593e7d421f36a1c90174d816b7c98b92e59fd6b2a, budgetedWorkspaces=0, inactiveWorkspaces=0, locking=GLOBAL, partitioned=false)
+13:34:31.669 INFO  e.t.b.ScenarioRunner - scenario chosen-ws10000-c100-r62 done: offered 62.0 achieved 62.0 T1 p99 1232.819047 ms, lock timeouts 0, deadlocks 0
+13:34:34.638 INFO  e.t.b.ScenarioRunner - scenario reference-ws10000-c100-r62 starting
+13:34:49.580 INFO  e.t.b.ScenarioRunner - scenario reference-ws10000-c100-r62: production T1 probe T1Probe(mode=REFERENCE, storeClass=email.testinbox.benchmark.NoLockAdmissionStore, enforcement=TENANT_LIMITS, readsFootprint=true, footprintRead=true, footprintUnavailable=null, cohortRequired=false, snapshotStatementSha256=0135227453cb5afa256e598593e7d421f36a1c90174d816b7c98b92e59fd6b2a, budgetedWorkspaces=0, inactiveWorkspaces=0, locking=GLOBAL, partitioned=false)
+13:35:54.693 INFO  e.t.b.ScenarioRunner - scenario reference-ws10000-c100-r62 done: offered 62.0 achieved 62.0 T1 p99 37.451153 ms, lock timeouts 0, deadlocks 0
+13:35:58.997 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c10-r62 starting
+13:36:14.006 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c10-r62: production T1 probe T1Probe(mode=PARTITIONED, storeClass=email.testinbox.persistence.JdbcStorageAdmission, enforcement=ALL, readsFootprint=true, footprintRead=true, footprintUnavailable=null, cohortRequired=true, snapshotStatementSha256=0957d3ee207f3bc0ecaff329617776ef05561ed514951d43e53e1dc2b4dd037b, budgetedWorkspaces=1, inactiveWorkspaces=0, locking=COHORT_PARTITIONED, partitioned=true)
+13:37:19.102 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c10-r62 done: offered 62.0 achieved 61.9 T1 p99 82.483688 ms, lock timeouts 0, deadlocks 0
+13:37:22.090 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r62 starting
+13:37:33.850 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r62: production T1 probe T1Probe(mode=PARTITIONED, storeClass=email.testinbox.persistence.JdbcStorageAdmission, enforcement=ALL, readsFootprint=true, footprintRead=true, footprintUnavailable=null, cohortRequired=true, snapshotStatementSha256=0957d3ee207f3bc0ecaff329617776ef05561ed514951d43e53e1dc2b4dd037b, budgetedWorkspaces=1, inactiveWorkspaces=0, locking=COHORT_PARTITIONED, partitioned=true)
+13:38:38.888 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r62 done: offered 62.0 achieved 62.0 T1 p99 125.471058 ms, lock timeouts 0, deadlocks 0
+13:38:42.055 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r62-hot starting
+13:38:54.314 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r62-hot: production T1 probe T1Probe(mode=PARTITIONED, storeClass=email.testinbox.persistence.JdbcStorageAdmission, enforcement=ALL, readsFootprint=true, footprintRead=true, footprintUnavailable=null, cohortRequired=true, snapshotStatementSha256=0957d3ee207f3bc0ecaff329617776ef05561ed514951d43e53e1dc2b4dd037b, budgetedWorkspaces=1, inactiveWorkspaces=0, locking=COHORT_PARTITIONED, partitioned=true)
+13:40:15.384 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r62-hot done: offered 62.0 achieved 54.5 T1 p99 11122.453456 ms, lock timeouts 0, deadlocks 0
+13:40:17.576 INFO  e.t.b.ScenarioRunner - scenario chosen-ws31-c100-r62-probe-rep1 starting
+13:40:29.678 INFO  e.t.b.ScenarioRunner - scenario chosen-ws31-c100-r62-probe-rep1: production T1 probe T1Probe(mode=CHOSEN, storeClass=email.testinbox.persistence.JdbcStorageAdmission, enforcement=ALL, readsFootprint=true, footprintRead=true, footprintUnavailable=null, cohortRequired=true, snapshotStatementSha256=0135227453cb5afa256e598593e7d421f36a1c90174d816b7c98b92e59fd6b2a, budgetedWorkspaces=1, inactiveWorkspaces=0, locking=GLOBAL, partitioned=false)
+13:42:33.293 INFO  e.t.b.ScenarioRunner - scenario chosen-ws31-c100-r62-probe-rep1 done: offered 62.0 achieved 53.5 T1 p99 10090.898593 ms, lock timeouts 0, deadlocks 0
+13:42:36.445 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r62-probe-rep1 starting
+13:42:48.408 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r62-probe-rep1: production T1 probe T1Probe(mode=PARTITIONED, storeClass=email.testinbox.persistence.JdbcStorageAdmission, enforcement=ALL, readsFootprint=true, footprintRead=true, footprintUnavailable=null, cohortRequired=true, snapshotStatementSha256=0957d3ee207f3bc0ecaff329617776ef05561ed514951d43e53e1dc2b4dd037b, budgetedWorkspaces=1, inactiveWorkspaces=0, locking=COHORT_PARTITIONED, partitioned=true)
+13:43:55.626 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r62-probe-rep1 done: offered 62.0 achieved 62.0 T1 p99 285.870866 ms, lock timeouts 0, deadlocks 0
+13:43:58.820 INFO  e.t.b.ScenarioRunner - scenario chosen-ws31-c100-r1-probe-paced-rep1 starting
+13:44:01.050 INFO  e.t.b.ScenarioRunner - scenario chosen-ws31-c100-r1-probe-paced-rep1: production T1 probe T1Probe(mode=CHOSEN, storeClass=email.testinbox.persistence.JdbcStorageAdmission, enforcement=ALL, readsFootprint=true, footprintRead=true, footprintUnavailable=null, cohortRequired=true, snapshotStatementSha256=0135227453cb5afa256e598593e7d421f36a1c90174d816b7c98b92e59fd6b2a, budgetedWorkspaces=1, inactiveWorkspaces=0, locking=GLOBAL, partitioned=false)
+13:45:59.253 INFO  e.t.b.ScenarioRunner - scenario chosen-ws31-c100-r1-probe-paced-rep1 done: offered 0.8 achieved 0.7 T1 p99 8642.803503 ms, lock timeouts 0, deadlocks 0
+13:46:00.820 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r1-probe-paced-rep1 starting
+13:46:01.942 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r1-probe-paced-rep1: production T1 probe T1Probe(mode=PARTITIONED, storeClass=email.testinbox.persistence.JdbcStorageAdmission, enforcement=ALL, readsFootprint=true, footprintRead=true, footprintUnavailable=null, cohortRequired=true, snapshotStatementSha256=0957d3ee207f3bc0ecaff329617776ef05561ed514951d43e53e1dc2b4dd037b, budgetedWorkspaces=1, inactiveWorkspaces=0, locking=COHORT_PARTITIONED, partitioned=true)
+13:47:04.711 INFO  e.t.b.ScenarioRunner - scenario partitioned-ws31-c100-r1-probe-paced-rep1 done: offered 0.8 achieved 0.8 T1 p99 474.027909 ms, lock timeouts 0, deadlocks 0
+# ADR-035 §11 global-admission benchmark
+
+**Verdict: INCOMPLETE**
+
+**Not ADR evidence** (`adrEvidence: false`): the inputs departed from §11:
+- offered rates [62.0] do not include §11's [31.0, 62.0]
+- concurrency [10, 100] does not include §11's [1, 10, 25, 50, 100]
+
+Incomplete because:
+- not ADR evidence: offered rates [62.0] do not include §11's [31.0, 62.0]
+- not ADR evidence: concurrency [10, 100] does not include §11's [1, 10, 25, 50, 100]
+- concurrency 1 missing at 62.0 events/s on >= 10000 workspaces
+- concurrency 25 missing at 62.0 events/s on >= 10000 workspaces
+- concurrency 50 missing at 62.0 events/s on >= 10000 workspaces
+
+| Environment | |
+|---|---|
+| git SHA | `80482e663eb8a8eed9a412357d3b67939af6f787` |
+| timestamp | 2026-11-06T13:29:51.763185512Z |
+| host class | staging-host vmi2932906 (Contabo VPS, 8 vCPU, 23 GiB) FOCUSED-P |
+| architecture / kernel | amd64 / Linux version 6.8.0-147-generic (buildd@lcy02-amd64-081) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #147-Ubuntu SMP PREEMPT_DYNAMIC Thu Sep 24 11:33:16 UTC 2026 |
+| PostgreSQL | PostgreSQL 16.15 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit |
+| JVM | 25.0.3+9-LTS |
+
+**Safety proof.** Database `testinbox_bench_pfocus`, created by this run: true; 
+tenant rows at start: workspace=0, inbox=0, message=0.
+
+**What was measured.** The database protocol only: write slot, T1 assembled as production ALL assembles it (IngestionWiring: FootprintWiring.admission over JdbcStorageAdmission(readsFootprint = FootprintWiring.readsFootprint(declarations)) with a declared filesystem, so the one statement also reads the footprint and cohort inputs; seeded trust, observation and watermark rows; no participant and no cohort plan, so the cohort pool is read but not required; probed before every scenario, see t1Probe), T1 (admission lock, one-statement snapshot, reservation insert), the fence rows, T2 (reservations FOR UPDATE, inboxes FOR KEY SHARE, message and attachment rows through JdbcMessageRepository.appendVisible so the ledger triggers run, pg_notify, reservations consumed), retention (ExpireInboxes.sweep hard-deleting one expired inbox per sweep) and compaction on its interval. Uploads are an in-memory stub whose fenced PUT is Stored instantly; T_put and the storage backend are qualified separately (ADR-035 §9a). lockWait is StorageProtocolMetrics.lockWait as GuardedStorage reports it: the whole admission call (lock wait, snapshot, decision, insert, commit), NOT the pg_advisory_xact_lock wait alone.
+
+Target: remote `testinbox_bench_pfocus`; seed 35; rates [62.0]; concurrency [10, 100]; workspaces [10000]; backlog 1000 reservations + 500 deltas (floor, re-seeded after each compaction pass).
+
+Open loop, poisson arrivals, 60 s measured after 5 s warm-up; mix `1:60,3:25,10:12,50:3`; 24576 bytes per copy; 16 slots (4 per workspace); compaction every 5 s; retention deletes inboxes of 200 messages; reference mode NO_LOCK.
+
+## Criteria (ADR-035 §11)
+
+| Criterion | Pass | Observed | Threshold | Detail |
+|---|---|---:|---|---|
+| sustained2x | yes | 1.00 | achieved / offered >= 0.995 at 62.0 events/s at concurrency [10, 25, 50, 100] (concurrency 1 is the uncontended baseline, reported only) | worst achieved/offered over 2 scenario(s); terminal lag c10=26 ms, c100=34 ms |
+| t1P99 | NO | 1232.82 | T1 p99 <= 50.0 ms (completion - due, schedule lag included) at concurrency [10, 25, 50, 100]; concurrency 1 is reported only | worst T1 p99 over 2 scenario(s) |
+| retentionP99VsReference | yes | 1.23 | retention p99 <= 2.0 x the NO_LOCK reference's retention p99 (ADR-035 §11 mode c, no global ceiling) at the same offered load | worst chosen/reference retention p99 ratio over 2 scenario(s); reference mode NO_LOCK |
+| deadlocks | yes | 0 | 0 deadlocks (SQLSTATE 40P01) across every scenario | sum over 4 scenario(s) |
+| lockTimeoutRate | yes | 0 | lock_timeout rate < 0.001 of events, every CHOSEN scenario | worst per-scenario rate over 2 scenario(s) |
+| slotQueueingDeadlineMisses | yes | 0 | 0 events refused for W_slot (StorageUnavailableReason.SLOT_WAIT) across every scenario | sum over 4 scenario(s) |
+| otherErrors | yes | 0 | 0 errors other than lock_timeout, deadlock or slot wait, events and retention, across every scenario | sum over 4 scenario(s) |
+| retentionStarvedTicks | yes | 0 | 0 retention ticks that found nothing to delete, across every scenario | sum over 4 scenario(s) |
+
+## Scenarios
+
+| Scenario | Mode | Workspaces | Conc. | Offered/s | Achieved/s | Completed/scheduled | Terminal lag ms | T1 p50/p95/p99 | T1 tx p99 | T2 p50/p95/p99 | Event p99 | Retention p50/p95/p99 (n) | Starved | Lock wait p50/p99 | Slot wait p50/p99 | Deltas mean/max | lock_timeout (rate) | Deadlocks | Slot misses | Other errors |
+|---|---|---:|---:|---:|---:|---:|---:|---|---:|---|---:|---|---:|---|---|---|---|---:|---:|---:|
+| chosen-ws10000-c10-r62 | CHOSEN | 10000 | 10 | 62 | 61.99 | 1.0000 | 26.37 | 22.14 / 394.81 / 741.69 | 218.50 | 7.56 / 36.48 / 121.78 | 783.33 | 21.53 / 36.25 / 68.06 (186) | 0 | 20.26 / 218.53 | 0.65 / 3.13 | 2161.35 / 5570 | 0 (0.0000) | 0 | 0 | 0 |
+| reference-ws10000-c10-r62 | REFERENCE (NO_LOCK) | 10000 | 10 | 62 | 61.93 | 1.0000 | 88.58 | 12.67 / 24.24 / 49.98 | 43.59 | 7.23 / 34.14 / 108.77 | 194.73 | 21.82 / 43.16 / 89.93 (186) | 0 | 11.27 / 43.62 | 0.31 / 1.89 | 2063.93 / 5522 | 0 (0.0000) | 0 | 0 | 0 |
+| chosen-ws10000-c100-r62 | CHOSEN | 10000 | 100 | 62 | 61.98 | 1.0000 | 34.27 | 28.35 / 524.82 / 1232.82 | 358.31 | 7.83 / 36.32 / 123.46 | 1255.46 | 23.54 / 40.96 / 66.95 (186) | 0 | 26.45 / 358.33 | 0.68 / 929.54 | 2052.79 / 5844 | 0 (0.0000) | 0 | 0 | 0 |
+| reference-ws10000-c100-r62 | REFERENCE (NO_LOCK) | 10000 | 100 | 62 | 61.99 | 1.0000 | 29.04 | 13.44 / 26.54 / 37.45 | 33.34 | 8.07 / 37.74 / 130.58 | 244.79 | 24.26 / 39.45 / 54.21 (186) | 0 | 11.84 / 33.37 | 0.33 / 2.31 | 2047.55 / 5932 | 0 (0.0000) | 0 | 0 | 0 |
+
+Latencies in ms. T1, event and retention are `completion − due` (open-loop schedule lag included).
+
+Diagnostics 10000 workspaces: `diagnostics-ws10000.txt`; commit ms {samples=500, p50=0.68723, p95=1.617131, p99=2.092407}; pg_stat_statements pg_stat_statements unavailable (PreparedStatementCallback; uncategorized SQLException for SQL [SELECT count(*) FROM pg_stat_statements]; SQL state [55000]; error code [0]; ERROR: pg_stat_statements must be loaded via shared_preload_libraries); preload it to record plan/exec times
+
+## Variant, reported apart: PARTITIONED
+
+**Measurement of the production share-partitioned T1 (admission-locking = COHORT_PARTITIONED) over a closed 30-participant + legacy cohort, reported apart and never gate D evidence; the mode is a PROPOSED ADR-035 amendment, and its release needs an independent correctness review and an owner decision.** Informational reading of the §11 criteria against the same NO_LOCK references: INCOMPLETE.
+
+| Criterion | Pass | Observed | Detail |
+|---|---|---:|---|
+| sustained2x | yes | 1.00 | worst achieved/offered over 2 scenario(s); terminal lag c10=72 ms, c100=25 ms |
+| t1P99 | NO | 125.47 | worst T1 p99 over 2 scenario(s) |
+| retentionP99VsReference | NO | n/a | a scenario has no reference run |
+| deadlocks | yes | 0 | sum over 4 scenario(s) |
+| lockTimeoutRate | yes | 0 | worst per-scenario rate over 2 scenario(s) |
+| slotQueueingDeadlineMisses | yes | 0 | sum over 4 scenario(s) |
+| otherErrors | yes | 0 | sum over 4 scenario(s) |
+| retentionStarvedTicks | yes | 0 | sum over 4 scenario(s) |
+
+| Scenario | Mode | Workspaces | Conc. | Offered/s | Achieved/s | Completed/scheduled | Terminal lag ms | T1 p50/p95/p99 | T1 tx p99 | T2 p50/p95/p99 | Event p99 | Retention p50/p95/p99 (n) | Starved | Lock wait p50/p99 | Slot wait p50/p99 | Deltas mean/max | lock_timeout (rate) | Deadlocks | Slot misses | Other errors |
+|---|---|---:|---:|---:|---:|---:|---:|---|---:|---|---:|---|---:|---|---|---|---|---:|---:|---:|
+| partitioned-ws31-c10-r62 | PARTITIONED | 31 | 10 | 62 | 61.94 | 1.0000 | 71.79 | 24.16 / 47.42 / 82.48 | 76.94 | 7.03 / 30.28 / 102.03 | 198.52 | 20.69 / 41.98 / 73.30 (186) | 0 | 22.30 / 76.97 | 0.59 / 3.79 | 2013.98 / 5524 | 0 (0.0000) | 0 | 0 | 0 |
+| partitioned-ws31-c100-r62 | PARTITIONED | 31 | 100 | 62 | 61.99 | 1.0000 | 24.59 | 22.38 / 48.92 / 125.47 | 111.14 | 8.26 / 40.69 / 116.27 | 252.26 | 22.81 / 40.97 / 80.38 (186) | 0 | 20.28 / 111.16 | 0.66 / 9.33 | 2002.86 / 5932 | 0 (0.0000) | 0 | 0 | 0 |
+| partitioned-ws31-c100-r62-hot | PARTITIONED | 31 | 100 | 62 | 54.46 | 0.9852 | 7311.54 | 473.66 / 7982.27 / 11122.45 | 134.47 | 4.04 / 13.88 / 26.53 | 11131.96 | 22.59 / 43.43 / 89.66 (186) | 0 | 60.12 / 134.50 | 202.37 / 7996.85 | 826.22 / 3706 | 0 (0.0000) | 0 | 55 | 0 |
+| chosen-ws31-c100-r62-probe-rep1 | CHOSEN | 31 | 100 | 62 | 53.55 | 0.9890 | 8718.36 | 3349.83 / 8869.55 / 10090.90 | 867.64 | 7.67 / 21.64 / 36.22 | 7860.42 | 33.57 / 79.11 / 97.23 (186) | 0 | 404.76 / 867.67 | 2874.53 / 9650.32 | 1218.74 / 2592 | 0 (0.0000) | 0 | 41 | 0 |
+| partitioned-ws31-c100-r62-probe-rep1 | PARTITIONED | 31 | 100 | 62 | 62.01 | 1.0000 | 8.86 | 47.74 / 151.61 / 285.87 | 225.63 | 8.34 / 23.28 / 42.21 | 125.69 | 25.82 / 57.74 / 97.19 (186) | 0 | 26.29 / 225.65 | 0.71 / 37.27 | 1983.21 / 4054 | 0 (0.0000) | 0 | 0 | 0 |
+| chosen-ws31-c100-r1-probe-paced-rep1 | CHOSEN | 31 | 100 | 0.77 | 0.74 | 0.9783 | 2230.49 | 1984.03 / 6657.78 / 8642.80 | 811.22 | 22.82 / 48.86 / 65.61 | 8714.52 | 32.67 / 88.32 / 88.32 (3) | 0 | 381.43 / 811.26 | 1574.85 / 8007.69 | 1240.92 / 2554 | 0 (0.0000) | 0 | 1 | 0 |
+| partitioned-ws31-c100-r1-probe-paced-rep1 | PARTITIONED | 31 | 100 | 0.77 | 0.79 | 1.0000 | 92.81 | 68.67 / 156.42 / 474.03 | 335.43 | 22.63 / 39.16 / 92.21 | 604.75 | 33.78 / 38.44 / 38.44 (3) | 0 | 24.68 / 335.46 | 0.66 / 9.59 | 1840.36 / 3582 | 0 (0.0000) | 0 | 0 | 0 |
+
+## Error samples
+
+- partitioned-ws31-c100-r62-hot: SLOT_WAIT: no write slot within 10000 ms
+- partitioned-ws31-c100-r62-hot: SLOT_WAIT: no write slot within 10000 ms
+- partitioned-ws31-c100-r62-hot: SLOT_WAIT: no write slot within 10000 ms
+- partitioned-ws31-c100-r62-hot: SLOT_WAIT: no write slot within 10000 ms
+- partitioned-ws31-c100-r62-hot: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws31-c100-r62-probe-rep1: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws31-c100-r62-probe-rep1: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws31-c100-r62-probe-rep1: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws31-c100-r62-probe-rep1: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws31-c100-r62-probe-rep1: SLOT_WAIT: no write slot within 10000 ms
+- chosen-ws31-c100-r1-probe-paced-rep1: SLOT_WAIT: no write slot within 10000 ms
+
+evidence: /out/20261106-132951/evidence.json
+summary:  /out/20261106-132951/SUMMARY.md
+VERDICT: INCOMPLETE
+
+real	17m20.021s
+user	0m0.140s
+sys	0m0.071s
+rc=3 end 2026-11-06T13:47:06Z
