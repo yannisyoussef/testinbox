@@ -1,5 +1,6 @@
 package email.testinbox.application.deployment
 
+import email.testinbox.application.LimitsProperties
 import email.testinbox.application.storage.AdmissionLocking
 import email.testinbox.application.storage.EffectiveStoragePolicy
 import email.testinbox.application.storage.FootprintWiring
@@ -90,6 +91,15 @@ data class DeploymentSettings(
      * missed" is false.
      */
     val eventsVisibilityLag: Duration? = null,
+    /**
+     * The per-workspace `INGEST` budget this process is configured with
+     * (`testinbox.limits.ingest`): burst `b` and refill `r`, in incoming recipient
+     * copies. Under `ALL` it must fit the gated workload envelope
+     * ([IngestEnvelopeSafety]).
+     */
+    val ingest: LimitsProperties.RateProperties = LimitsProperties().ingest,
+    /** The per-inbox share of it (`testinbox.limits.ingest-per-inbox`); never above [ingest]. */
+    val ingestPerInbox: LimitsProperties.RateProperties = LimitsProperties().ingestPerInbox,
 )
 
 /**
@@ -195,6 +205,7 @@ object DeploymentSafety {
             addAll(checkLimits(settings))
             addAll(checkProduction(settings))
             addAll(StorageEnforcementSafety.check(settings))
+            addAll(IngestEnvelopeSafety.check(settings))
         }
 
     private fun checkMailDomain(settings: DeploymentSettings): List<DeploymentViolation> =

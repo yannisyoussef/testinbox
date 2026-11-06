@@ -62,6 +62,8 @@ class IngestionDeploymentSafetyCheck(
                         proxyReadTimeout = properties.deployment.proxyReadTimeout,
                         edgeRequestCeiling = properties.deployment.edgeRequestCeiling,
                         limitsEnabled = properties.limits.enabled,
+                        ingest = properties.limits.ingest,
+                        ingestPerInbox = properties.limits.ingestPerInbox,
                         activeProfiles = springEnvironment.activeProfiles.toSet(),
                         // No public HTTP origin, so the production base-URL rule does not apply here.
                         publicSurface = false,

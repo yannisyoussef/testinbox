@@ -132,7 +132,13 @@ class ApiMetricsWiring {
         registry: MeterRegistry,
         policy: StorageCapacityPolicy,
         declarations: StorageDeclarations,
-    ): StorageProtocolMetrics = MicrometerStorageProtocolMetrics(registry, policy, declarations.enforcement)
+    ): StorageProtocolMetrics =
+        MicrometerStorageProtocolMetrics(
+            registry,
+            policy,
+            declarations.enforcement,
+            gatedExpectedRate = declarations.gatedExpectedRate,
+        )
 
     /** Credential lifecycle audit trail (TI-002 §14) on its own `testinbox.audit` logger. */
     @Bean

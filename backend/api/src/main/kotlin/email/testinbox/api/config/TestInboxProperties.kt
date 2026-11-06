@@ -71,6 +71,15 @@ data class TestInboxProperties(
         val filesystem: email.testinbox.application.FilesystemProperties = email.testinbox.application.FilesystemProperties(),
         /** The lab-only qualification record (issue #102); refused at startup anywhere but environment `lab`. */
         val qualification: email.testinbox.application.QualificationProperties = email.testinbox.application.QualificationProperties(),
+        /**
+         * *R_gated*, events/s (`TESTINBOX_STORAGE_GATED_EXPECTED_RATE`): the §11
+         * expected rate of the passing gate D evidence (ADR-035 amendment D).
+         * `ALL` is refused while it is absent or below the configured INGEST
+         * envelope (`IngestEnvelopeSafety`).
+         */
+        val gatedExpectedRate: Double? = null,
+        /** *L* (`TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES`): legacy-share workspaces beside the thirty participant places. */
+        val declaredLegacyWorkspaces: Int? = null,
     )
 
     /** The framework-free declarations `DeploymentSafety` and `EffectiveStoragePolicy` read (ADR-035 §18). */
@@ -89,6 +98,8 @@ data class TestInboxProperties(
             nodeId = storage.nodeId,
             nodeRole = email.testinbox.application.storage.NodeRole.API,
             filesystem = storage.filesystem,
+            gatedExpectedRate = storage.gatedExpectedRate,
+            declaredLegacyWorkspaces = storage.declaredLegacyWorkspaces,
         )
 
     /**

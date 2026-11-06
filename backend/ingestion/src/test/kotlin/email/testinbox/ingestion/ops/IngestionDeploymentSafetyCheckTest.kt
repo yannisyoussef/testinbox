@@ -232,4 +232,55 @@ class IngestionDeploymentSafetyCheckTest {
                 email.testinbox.domain.storage.StorageEnforcement.OFF
         }
     }
+
+    // --- ADR-035 amendment D: the gated INGEST envelope ---------------------------------------------
+
+    @Test
+    fun `the envelope declarations bind on the gateway - this pins their property names`() {
+        runner
+            .withPropertyValues(
+                *deployed,
+                "testinbox.storage.gated-expected-rate=31",
+                "testinbox.storage.declared-legacy-workspaces=1",
+                "testinbox.limits.ingest.capacity=60",
+                "testinbox.limits.ingest.refill-per-second=1.0",
+                "testinbox.limits.ingest-per-inbox.capacity=30",
+                "testinbox.limits.ingest-per-inbox.refill-per-second=0.5",
+            ).run { context ->
+                assertThat(context).hasNotFailed()
+                val properties = context.getBean(IngestionProperties::class.java)
+                val declarations = properties.storageDeclarations(emptyList())
+                declarations.gatedExpectedRate shouldBe 31.0
+                declarations.declaredLegacyWorkspaces shouldBe 1
+                properties.limits.ingest shouldBe
+                    email.testinbox.application.LimitsProperties
+                        .RateProperties(60, 1.0)
+                properties.limits.ingestPerInbox shouldBe
+                    email.testinbox.application.LimitsProperties
+                        .RateProperties(30, 0.5)
+            }
+    }
+
+    @Test
+    fun `ALL on a gateway without R_gated and L is refused, naming both, beside every other gap`() {
+        runner.withPropertyValues(*deployed, "testinbox.storage.enforcement=ALL").run { context ->
+            assertThat(context).hasFailed()
+            val message = context.startupFailure!!.stackTraceToString()
+            message shouldContain "testinbox.storage.gated-expected-rate is not declared"
+            message shouldContain "testinbox.storage.declared-legacy-workspaces is not declared"
+            // The library default burst (300) is above the approved b = 60.
+            message shouldContain "testinbox.limits.ingest.capacity is 300"
+        }
+    }
+
+    @Test
+    fun `a per-inbox INGEST budget above the workspace's fails startup even under OFF`() {
+        runner
+            .withPropertyValues(*deployed, "testinbox.limits.ingest.capacity=60", "testinbox.limits.ingest.refill-per-second=1.0")
+            .run { context ->
+                // The library per-inbox default (60, 2/s) refills faster than this workspace budget.
+                assertThat(context).hasFailed()
+                context.startupFailure!!.stackTraceToString() shouldContain "testinbox.limits.ingest-per-inbox.refill-per-second"
+            }
+    }
 }
