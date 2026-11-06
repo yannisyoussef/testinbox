@@ -1,0 +1,447 @@
+UID          PID    PPID  C STIME TTY          TIME CMD
+root           2       0  0 Oct19 ?        00:00:05 [kthreadd]
+root           3       2  0 Oct19 ?        00:00:00  \_ [pool_workqueue_release]
+root           4       2  0 Oct19 ?        00:00:00  \_ [kworker/R-rcu_g]
+root           5       2  0 Oct19 ?        00:00:00  \_ [kworker/R-rcu_p]
+root           6       2  0 Oct19 ?        00:00:00  \_ [kworker/R-slub_]
+root           7       2  0 Oct19 ?        00:00:00  \_ [kworker/R-netns]
+root          12       2  0 Oct19 ?        00:00:00  \_ [kworker/R-mm_pe]
+root          13       2  0 Oct19 ?        00:00:00  \_ [rcu_tasks_kthread]
+root          14       2  0 Oct19 ?        00:00:00  \_ [rcu_tasks_rude_kthread]
+root          15       2  0 Oct19 ?        00:00:00  \_ [rcu_tasks_trace_kthread]
+root          16       2  0 Oct19 ?        00:11:19  \_ [ksoftirqd/0]
+root          17       2  0 Oct19 ?        01:52:12  \_ [rcu_preempt]
+root          18       2  0 Oct19 ?        00:00:36  \_ [migration/0]
+root          19       2  0 Oct19 ?        00:00:00  \_ [idle_inject/0]
+root          20       2  0 Oct19 ?        00:00:00  \_ [cpuhp/0]
+root          21       2  0 Oct19 ?        00:00:00  \_ [cpuhp/1]
+root          22       2  0 Oct19 ?        00:00:00  \_ [idle_inject/1]
+root          23       2  0 Oct19 ?        00:00:36  \_ [migration/1]
+root          24       2  0 Oct19 ?        00:12:34  \_ [ksoftirqd/1]
+root          27       2  0 Oct19 ?        00:00:00  \_ [cpuhp/2]
+root          28       2  0 Oct19 ?        00:00:00  \_ [idle_inject/2]
+root          29       2  0 Oct19 ?        00:00:35  \_ [migration/2]
+root          30       2  0 Oct19 ?        00:09:46  \_ [ksoftirqd/2]
+root          33       2  0 Oct19 ?        00:00:00  \_ [cpuhp/3]
+root          34       2  0 Oct19 ?        00:00:00  \_ [idle_inject/3]
+root          35       2  0 Oct19 ?        00:00:34  \_ [migration/3]
+root          36       2  0 Oct19 ?        00:09:20  \_ [ksoftirqd/3]
+root          39       2  0 Oct19 ?        00:00:00  \_ [cpuhp/4]
+root          40       2  0 Oct19 ?        00:00:00  \_ [idle_inject/4]
+root          41       2  0 Oct19 ?        00:00:34  \_ [migration/4]
+root          42       2  0 Oct19 ?        00:09:21  \_ [ksoftirqd/4]
+root          44       2  0 Oct19 ?        00:00:33  \_ [kworker/4:0H-kblockd]
+root          45       2  0 Oct19 ?        00:00:00  \_ [cpuhp/5]
+root          46       2  0 Oct19 ?        00:00:00  \_ [idle_inject/5]
+root          47       2  0 Oct19 ?        00:00:34  \_ [migration/5]
+root          48       2  0 Oct19 ?        00:09:24  \_ [ksoftirqd/5]
+root          50       2  0 Oct19 ?        00:02:28  \_ [kworker/5:0H-kblockd]
+root          51       2  0 Oct19 ?        00:00:00  \_ [cpuhp/6]
+root          52       2  0 Oct19 ?        00:00:00  \_ [idle_inject/6]
+root          53       2  0 Oct19 ?        00:00:34  \_ [migration/6]
+root          54       2  0 Oct19 ?        00:09:09  \_ [ksoftirqd/6]
+root          56       2  0 Oct19 ?        00:01:34  \_ [kworker/6:0H-kblockd]
+root          57       2  0 Oct19 ?        00:00:00  \_ [cpuhp/7]
+root          58       2  0 Oct19 ?        00:00:00  \_ [idle_inject/7]
+root          59       2  0 Oct19 ?        00:00:34  \_ [migration/7]
+root          60       2  0 Oct19 ?        00:09:16  \_ [ksoftirqd/7]
+root          63       2  0 Oct19 ?        00:00:00  \_ [kdevtmpfs]
+root          64       2  0 Oct19 ?        00:00:00  \_ [kworker/R-inet_]
+root          65       2  0 Oct19 ?        00:00:00  \_ [kauditd]
+root          66       2  0 Oct19 ?        00:00:23  \_ [khungtaskd]
+root          67       2  0 Oct19 ?        00:00:00  \_ [oom_reaper]
+root          69       2  0 Oct19 ?        00:00:00  \_ [kworker/R-write]
+root          71       2  0 Oct19 ?        00:07:45  \_ [kcompactd0]
+root          72       2  0 Oct19 ?        00:00:00  \_ [ksmd]
+root          73       2  0 Oct19 ?        00:00:08  \_ [khugepaged]
+root          74       2  0 Oct19 ?        00:00:00  \_ [kworker/R-kinte]
+root          75       2  0 Oct19 ?        00:00:00  \_ [kworker/R-kbloc]
+root          76       2  0 Oct19 ?        00:00:00  \_ [kworker/R-blkcg]
+root          77       2  0 Oct19 ?        00:00:00  \_ [irq/9-acpi]
+root          80       2  0 Oct19 ?        00:00:00  \_ [kworker/R-tpm_d]
+root          81       2  0 Oct19 ?        00:00:00  \_ [kworker/R-ata_s]
+root          82       2  0 Oct19 ?        00:00:00  \_ [kworker/R-md]
+root          83       2  0 Oct19 ?        00:00:00  \_ [kworker/R-md_bi]
+root          84       2  0 Oct19 ?        00:00:00  \_ [kworker/R-edac-]
+root          85       2  0 Oct19 ?        00:00:00  \_ [kworker/R-devfr]
+root          86       2  0 Oct19 ?        00:00:00  \_ [watchdogd]
+root          88       2  0 Oct19 ?        00:00:00  \_ [kworker/R-quota]
+root          90       2  0 Oct19 ?        00:02:58  \_ [kswapd0]
+root          91       2  0 Oct19 ?        00:00:00  \_ [ecryptfs-kthread]
+root          92       2  0 Oct19 ?        00:00:00  \_ [kworker/R-kthro]
+root          93       2  0 Oct19 ?        00:00:00  \_ [kworker/R-acpi_]
+root          94       2  0 Oct19 ?        00:00:00  \_ [scsi_eh_0]
+root          95       2  0 Oct19 ?        00:00:00  \_ [kworker/R-scsi_]
+root          96       2  0 Oct19 ?        00:00:00  \_ [scsi_eh_1]
+root          97       2  0 Oct19 ?        00:00:00  \_ [kworker/R-scsi_]
+root          98       2  0 Oct19 ?        00:00:00  \_ [scsi_eh_2]
+root          99       2  0 Oct19 ?        00:00:00  \_ [kworker/R-scsi_]
+root         105       2  0 Oct19 ?        00:00:00  \_ [kworker/R-mld]
+root         107       2  0 Oct19 ?        00:00:00  \_ [kworker/R-ipv6_]
+root         114       2  0 Oct19 ?        00:00:00  \_ [kworker/R-kstrp]
+root         118       2  0 Oct19 ?        00:00:00  \_ [kworker/u17:0]
+root         123       2  0 Oct19 ?        00:00:00  \_ [kworker/R-crypt]
+root         133       2  0 Oct19 ?        00:00:00  \_ [kworker/R-charg]
+root         250       2  0 Oct19 ?        00:00:00  \_ [kworker/R-raid5]
+root         299       2  0 Oct19 ?        00:54:51  \_ [jbd2/sda1-8]
+root         300       2  0 Oct19 ?        00:00:00  \_ [kworker/R-ext4-]
+root         393       2  0 Oct19 ?        00:00:00  \_ [kworker/R-kmpat]
+root         394       2  0 Oct19 ?        00:00:00  \_ [kworker/R-kmpat]
+root         533       2  0 Oct19 ?        00:02:14  \_ [jbd2/loop0-8]
+root         534       2  0 Oct19 ?        00:00:00  \_ [kworker/R-ext4-]
+root         547       2  0 Oct19 ?        00:00:00  \_ [jbd2/sda16-8]
+root         548       2  0 Oct19 ?        00:00:00  \_ [kworker/R-ext4-]
+root     1506169       2  0 Oct19 ?        00:00:00  \_ [kworker/R-tls-s]
+root     1388746       2  0 Oct23 ?        00:00:00  \_ [kworker/R-ib-co]
+root     1388747       2  0 Oct23 ?        00:00:00  \_ [kworker/R-ib-co]
+root     1388748       2  0 Oct23 ?        00:00:00  \_ [kworker/R-ib_mc]
+root     1388749       2  0 Oct23 ?        00:00:00  \_ [kworker/R-ib_nl]
+root     2801856       2  0 Oct23 ?        00:02:06  \_ [kworker/3:1H-kblockd]
+root     2204010       2  0 Oct25 ?        00:01:45  \_ [kworker/0:0H-kblockd]
+root     2897717       2  0 Oct25 ?        00:01:53  \_ [kworker/2:0H-kblockd]
+root     3698417       2  0 Oct25 ?        00:01:27  \_ [kworker/7:2H-kblockd]
+root     2165573       2  0 Oct26 ?        00:01:35  \_ [kworker/1:0H-kblockd]
+root      590589       2  0 Oct30 ?        00:02:03  \_ [kworker/7:0H-kblockd]
+root      309680       2  0 Oct31 ?        00:02:37  \_ [kworker/4:2H-kblockd]
+root     3851455       2  0 Nov02 ?        00:02:05  \_ [kworker/0:1H-kblockd]
+root      897245       2  0 Nov02 ?        00:02:06  \_ [kworker/1:2H-kblockd]
+root     2491482       2  0 Nov04 ?        00:01:06  \_ [kworker/2:2H-kblockd]
+root      535518       2  0 Nov05 ?        00:00:00  \_ [psimon]
+root     1484699       2  0 Nov05 ?        00:01:11  \_ [kworker/6:1H-kblockd]
+root     2468607       2  0 Nov05 ?        00:00:00  \_ [psimon]
+root     1055847       2  0 Nov06 ?        00:00:17  \_ [kworker/5:1H-kblockd]
+root     1955342       2  0 Nov06 ?        00:00:12  \_ [kworker/3:0H-kblockd]
+root     3055410       2  0 Nov06 ?        00:00:03  \_ [kworker/u16:5-ext4-rsv-conversion]
+root     3056125       2  0 Nov06 ?        00:00:01  \_ [kworker/2:2-cgroup_free]
+root     3120830       2  0 Nov06 ?        00:00:02  \_ [kworker/u16:0-events_power_efficient]
+root     3199861       2  0 Nov06 ?        00:00:01  \_ [kworker/u16:7-ext4-rsv-conversion]
+root     3215967       2  0 Nov06 ?        00:00:00  \_ [kworker/1:0-events]
+root     3216670       2  0 Nov06 ?        00:00:00  \_ [kworker/6:2-events]
+root     3218933       2  0 Nov06 ?        00:00:00  \_ [kworker/3:1-events]
+root     3230890       2  0 Nov06 ?        00:00:00  \_ [kworker/0:0-events]
+root     3231034       2  0 Nov06 ?        00:00:00  \_ [kworker/4:2-cgroup_free]
+root     3236198       2  0 Nov06 ?        00:00:00  \_ [kworker/u16:1-ext4-rsv-conversion]
+root     3236660       2  0 Nov06 ?        00:00:00  \_ [kworker/7:1-cgroup_free]
+root     3246136       2  0 Nov06 ?        00:00:00  \_ [kworker/u16:2-ext4-rsv-conversion]
+root     3257470       2  0 00:02 ?        00:00:00  \_ [kworker/5:3-events]
+root     3262298       2  0 00:04 ?        00:00:00  \_ [kworker/u16:3-flush-8:0]
+root     3265870       2  0 00:05 ?        00:00:00  \_ [kworker/1:1-events]
+root     3267096       2  0 00:05 ?        00:00:00  \_ [kworker/4:1-events]
+root     3269267       2  0 00:06 ?        00:00:00  \_ [kworker/2:1-events]
+root     3270443       2  0 00:06 ?        00:00:00  \_ [kworker/0:1-events]
+root     3275816       2  0 00:08 ?        00:00:00  \_ [kworker/5:1-events]
+root     3278480       2  0 00:08 ?        00:00:00  \_ [kworker/7:2-events]
+root     3281461       2  0 00:09 ?        00:00:00  \_ [kworker/6:0-cgroup_release]
+root     3281638       2  0 00:09 ?        00:00:00  \_ [kworker/3:2-cgroup_bpf_destroy]
+root     3287175       2  0 00:11 ?        00:00:00  \_ [kworker/2:0-events]
+root     3289891       2  0 00:12 ?        00:00:00  \_ [kworker/4:0-cgroup_bpf_destroy]
+root     3292700       2  0 00:13 ?        00:00:00  \_ [kworker/0:2-events]
+root     3292731       2  0 00:13 ?        00:00:00  \_ [kworker/5:0-rcu_gp]
+root     3294699       2  0 00:14 ?        00:00:00  \_ [kworker/u16:4-flush-8:0]
+root     3294700       2  0 00:14 ?        00:00:00  \_ [kworker/u16:6-flush-8:0]
+root     3299031       2  0 00:15 ?        00:00:00  \_ [kworker/3:0-mm_percpu_wq]
+root     3299472       2  0 00:15 ?        00:00:00  \_ [kworker/6:1-rcu_gp]
+root     3302547       2  0 00:16 ?        00:00:00  \_ [kworker/7:0]
+root     3304626       2  0 00:17 ?        00:00:00  \_ [kworker/5:2]
+root     3304669       2  0 00:17 ?        00:00:00  \_ [kworker/u16:8-writeback]
+root     3304670       2  0 00:17 ?        00:00:00  \_ [kworker/u16:9-ext4-rsv-conversion]
+root     3304671       2  0 00:17 ?        00:00:00  \_ [kworker/u16:10]
+root           1       0  0 Oct19 ?        00:50:13 /usr/lib/systemd/systemd --system --deserialize=111
+message+     767       1  0 Oct19 ?        00:10:57 @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+root         781       1  0 Oct19 ?        00:02:27 /usr/lib/systemd/systemd-logind
+root         812       1 14 Oct19 ?        2-15:07:28 /usr/bin/containerd
+root         821       1  0 Oct19 ?        00:00:00 /usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal
+root         975       1  0 Oct19 ttyS0    00:00:00 /sbin/agetty -o -p -- \u --keep-baud 115200,57600,38400,9600 - vt220
+root         983       1 14 Oct19 ?        2-16:37:53 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+root        2168       1  0 Oct19 ?        00:13:27 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 8fa1d4fb9156a68743980e40cf6e7e1a0e4c650f72ca3458c5aebbfb9e987308 -address /run/containerd/containerd.sock
+root        2378    2168  0 Oct19 ?        00:01:55  \_ haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg
+root        3966    2378  0 Oct19 ?        01:46:25      \_ haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg
+root        2169       1  0 Oct19 ?        00:04:00 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 9b40f45148baeed02f564f039b42aaefd05ec76547ed76d909d44309bfaa3249 -address /run/containerd/containerd.sock
+nobody      2380    2169  3 Oct19 ?        15:19:12  \_ /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+root        2470       1  0 Oct19 ?        00:13:22 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 8a2c50d7e246adaf36c4a25d48646c22eefcb9ef3377d3830bde66287e8582a2 -address /run/containerd/containerd.sock
+root        3100    2470  1 Oct19 ?        06:49:34  \_ /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_container_labels=false --whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service,com.docker.compose.project.working_dir
+root        2516       1  0 Oct19 ?        00:25:31 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 14f00cdf66820ef8f8a85a507f1eee5a9887009158098636271c23b2f6eb85b9 -address /run/containerd/containerd.sock
+root        3111    2516  0 Oct19 ?        01:04:12  \_ minio server /data --console-address :9001
+root        2554       1  0 Oct19 ?        00:35:57 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 0e6419f36ddf36de817a6ec4d6b89f349113aa7cad9a5b7cc280f8de3b8eeaa7 -address /run/containerd/containerd.sock
+70          3151    2554  0 Oct19 ?        00:04:12  \_ postgres
+70          5013    3151  0 Oct19 ?        00:00:44      \_ postgres: checkpointer 
+70          5014    3151  0 Oct19 ?        00:00:31      \_ postgres: background writer 
+70          5097    3151  0 Oct19 ?        00:03:52      \_ postgres: walwriter 
+70          5098    3151  0 Oct19 ?        00:00:15      \_ postgres: autovacuum launcher 
+70          5099    3151  0 Oct19 ?        00:00:04      \_ postgres: logical replication launcher 
+70         11038    3151  0 Oct19 ?        00:05:10      \_ postgres: keycloak keycloak 172.20.7.3(33580) idle
+70         11573    3151  0 Oct19 ?        00:01:42      \_ postgres: keycloak keycloak 172.20.7.3(33590) idle
+root        2829       1  0 Oct19 ?        00:03:40 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 9b7e7970e807fa49f870563a29cc876df9036053a9c39d9c745dcb5abab47349 -address /run/containerd/containerd.sock
+yannis      4341    2829  0 Oct19 ?        00:00:00  \_ /bin/sh /opt/keycloak/bin/kc.sh start
+yannis      7040    4341  0 Oct19 ?        03:13:36      \_ java -Dkc.script.pid=1 -Djava.util.concurrent.ForkJoinPool.common.threadFactory=io.quarkus.bootstrap.forkjoin.QuarkusForkJoinWorkerThreadFactory -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.err.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -XX:+ExitOnOutOfMemoryError -Djava.security.egd=file:/dev/urandom -XX:+UseG1GC -XX:FlightRecorderOptions=stackdepth=512 -Djdk.tls.rejectClientInitiatedRenegotiation=true -XX:MaxRAMPercentage=70 -XX:MinRAMPercentage=70 -XX:InitialRAMPercentage=50 --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.security=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Duser.language=en -Duser.country=US -Dkc.home.dir=/opt/keycloak/bin/.. -Djboss.server.config.dir=/opt/keycloak/bin/../conf -Djava.util.logging.manager=org.jboss.logmanager.LogManager -Dpicocli.disable.closures=true -Dquarkus-log-max-startup-records=10000 -cp /opt/keycloak/bin/../lib/quarkus-run.jar io.quarkus.bootstrap.runner.QuarkusEntryPoint start
+root        2912       1  0 Oct19 ?        00:04:09 /usr/bin/containerd-shim-runc-v2 -namespace moby -id f3556cd6c4d635109d06eeb7a097420ca9920d7d9cfd8cf6fce270c387f9d98a -address /run/containerd/containerd.sock
+10001       4354    2912  1 Oct19 ?        08:31:48  \_ /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+root        2930       1  0 Oct19 ?        00:06:09 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 0f292f81490279b966b157c0a86faeef787a9b6adea5044546868074817685b7 -address /run/containerd/containerd.sock
+root        4262    2930  0 Oct19 ?        00:02:00  \_ haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg
+root        6364    4262  0 Oct19 ?        01:30:36      \_ haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg
+root        2984       1  0 Oct19 ?        00:35:14 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 3ab641d8f9365e4383e1195d687418e5e17f68ad6b9102d091aa74df8e334af7 -address /run/containerd/containerd.sock
+infra       4529    2984  0 Oct19 ?        03:06:52  \_ redis-server *:6379
+root        2997       1  0 Oct19 ?        00:22:20 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 1a2391b4975f605c8aa2f6f7e6e55d9b458bf26fba695dbc3d4d622450869c81 -address /run/containerd/containerd.sock
+nobody      4263    2997  0 Oct19 ?        00:55:52  \_ java -Xmx64m @/run/sink/token.args -De2e.twilioStub.host=0.0.0.0 -De2e.twilioStub.port=58099 -De2e.twilioStub.alphaSender=NKAMA /stub/TwilioCaptureStub.java
+root        3009       1  0 Oct19 ?        00:36:52 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 6e837cb3ca448a4de65ac2c842c8018374ef4ce2d227cd3382d8191538b0d1aa -address /run/containerd/containerd.sock
+root        4335    3009  0 Oct19 ?        02:04:59  \_ minio server /data --console-address :9001
+root        3157       1  0 Oct19 ?        00:24:30 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 8cafa58d5794ad6a143a2419255bd44d4bd6fa1b8aae8921d40fb4f05166a737 -address /run/containerd/containerd.sock
+infra       4337    3157  0 Oct19 ?        02:52:13  \_ /opt/erlang/lib/erlang/erts-14.2.5.12/bin/beam.smp -W w -MBas ageffcbf -MHas ageffcbf -MBlmbcs 512 -MHlmbcs 512 -MMmcs 30 -pc unicode -P 1048576 -t 5000000 -stbt db -zdbbl 128000 -sbwt none -sbwtdcpu none -sbwtdio none -- -root /opt/erlang/lib/erlang -bindir /opt/erlang/lib/erlang/erts-14.2.5.12/bin -progname erl -- -home /var/lib/rabbitmq -- -pa  -noshell -noinput -s rabbit boot -boot start_sasl -syslog logger [] -syslog syslog_error_logger false -kernel prevent_overlapping_partitions false
+infra       5366    4337  0 Oct19 ?        00:00:00      \_ erl_child_setup 65536
+infra       5864    5366  0 Oct19 ?        00:00:00      |   \_ sh -s disksup
+infra       5872    5366  0 Oct19 ?        00:00:04      |   \_ /opt/erlang/lib/erlang/lib/os_mon-2.9.1/priv/bin/memsup
+infra       5874    5366  0 Oct19 ?        00:00:00      |   \_ /opt/erlang/lib/erlang/lib/os_mon-2.9.1/priv/bin/cpu_sup
+infra       6471    5366  0 Oct19 ?        00:00:09      |   \_ /opt/erlang/lib/erlang/erts-14.2.5.12/bin/inet_gethost 4
+infra       6472    6471  0 Oct19 ?        00:00:12      |   |   \_ /opt/erlang/lib/erlang/erts-14.2.5.12/bin/inet_gethost 4
+infra       8756    5366  0 Oct19 ?        00:01:17      |   \_ /bin/sh -s rabbit_disk_monitor
+infra       6521    4337  0 Oct19 ?        00:02:27      \_ /opt/erlang/lib/erlang/erts-14.2.5.12/bin/epmd -daemon
+root        3260       1  0 Oct19 ?        00:36:14 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 4e90e01ca3e69c991b302a22a37c0e4612bf957bc9456d41ae61ec66aa358111 -address /run/containerd/containerd.sock
+infra       4528    3260  0 Oct19 ?        00:05:02  \_ postgres
+infra       5860    4528  0 Oct19 ?        00:00:02      \_ postgres: checkpointer 
+infra       5861    4528  0 Oct19 ?        00:00:24      \_ postgres: background writer 
+infra       5958    4528  0 Oct19 ?        00:00:25      \_ postgres: walwriter 
+infra       5963    4528  0 Oct19 ?        00:00:15      \_ postgres: autovacuum launcher 
+infra       5964    4528  0 Oct19 ?        00:00:04      \_ postgres: logical replication launcher 
+root        3291       1  0 Oct19 ?        00:27:11 /usr/bin/containerd-shim-runc-v2 -namespace moby -id bd61a6173cbba7b83b769b145650b19e23a85098abeb08784836020a4697c9f3 -address /run/containerd/containerd.sock
+root        4520    3291  0 Oct19 ?        00:00:00  \_ /usr/bin/dumb-init /bin/sh /usr/local/bin/docker-entrypoint.sh vault server -config=/vault/config/vault.hcl
+dhcpcd      5528    4520  1 Oct19 ?        05:33:31      \_ vault server -config=/vault/config/vault.hcl
+root        3293       1  0 Oct19 ?        00:36:04 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 1f1558967cebdf07b9586cc348f5dc76fb114fc12d1de0b34ea36e2e92ea09a7 -address /run/containerd/containerd.sock
+infra       4516    3293  0 Oct19 ?        00:05:21  \_ postgres
+infra       6140    4516  0 Oct19 ?        00:00:02      \_ postgres: checkpointer 
+infra       6141    4516  0 Oct19 ?        00:00:25      \_ postgres: background writer 
+infra       6185    4516  0 Oct19 ?        00:00:26      \_ postgres: walwriter 
+infra       6186    4516  0 Oct19 ?        00:00:15      \_ postgres: autovacuum launcher 
+infra       6187    4516  0 Oct19 ?        00:00:04      \_ postgres: logical replication launcher 
+infra    3232421    4516  0 Nov06 ?        00:00:00      \_ postgres: nkama nkama 172.20.5.6(34966) idle
+infra    3235667    4516  0 Nov06 ?        00:00:00      \_ postgres: nkama nkama 172.20.5.6(47386) idle
+infra    3235861    4516  0 Nov06 ?        00:00:00      \_ postgres: nkama nkama 172.20.5.6(47400) idle
+infra    3237815    4516  0 Nov06 ?        00:00:00      \_ postgres: nkama nkama 172.20.5.6(46794) idle
+infra    3241196    4516  0 Nov06 ?        00:00:00      \_ postgres: nkama nkama 172.20.5.6(59622) idle
+infra    3243877    4516  0 Nov06 ?        00:00:00      \_ postgres: nkama nkama 172.20.5.6(34902) idle
+infra    3245575    4516  0 Nov06 ?        00:00:00      \_ postgres: nkama nkama 172.20.5.6(55996) idle
+infra    3246418    4516  0 Nov06 ?        00:00:00      \_ postgres: nkama nkama 172.20.5.6(46530) idle
+infra    3251964    4516  0 00:01 ?        00:00:00      \_ postgres: nkama nkama 172.20.5.6(38750) idle
+infra    3264430    4516  0 00:04 ?        00:00:00      \_ postgres: nkama nkama 172.20.5.6(58766) idle
+root        3314       1  0 Oct19 ?        00:25:40 /usr/bin/containerd-shim-runc-v2 -namespace moby -id cdc493c73cc7d2bcad92ba03b34b1c1c980b798cabd6036c52a1878603e0adf4 -address /run/containerd/containerd.sock
+root        4551    3314  0 Oct19 ?        02:31:31  \_ java -XX:MaxRAMPercentage=75.0 -cp @/app/jib-classpath-file ga.nkama.NkamaBackendApplication
+root        3372       1  0 Oct19 ?        00:36:22 /usr/bin/containerd-shim-runc-v2 -namespace moby -id beb7c8e6f3af9616a7270f361d9026e386565860d00908ff84d0661e5b23c8fc -address /run/containerd/containerd.sock
+70          4360    3372  0 Oct19 ?        00:04:33  \_ postgres
+70          5155    4360  0 Oct19 ?        00:00:03      \_ postgres: checkpointer 
+70          5156    4360  0 Oct19 ?        00:00:24      \_ postgres: background writer 
+70          5308    4360  0 Oct19 ?        00:00:27      \_ postgres: walwriter 
+70          5309    4360  0 Oct19 ?        00:00:15      \_ postgres: autovacuum launcher 
+70          5310    4360  0 Oct19 ?        00:00:04      \_ postgres: logical replication launcher 
+70       3248047    4360  0 Nov06 ?        00:00:00      \_ postgres: authentication authentication 172.20.8.4(38270) idle
+70       3249273    4360  0 00:00 ?        00:00:00      \_ postgres: authentication authentication 172.20.8.4(56928) idle
+70       3249487    4360  0 00:00 ?        00:00:00      \_ postgres: authentication authentication 172.20.8.4(56932) idle
+70       3253745    4360  0 00:01 ?        00:00:00      \_ postgres: authentication authentication 172.20.8.4(52314) idle
+70       3258915    4360  0 00:03 ?        00:00:00      \_ postgres: authentication authentication 172.20.8.4(42394) idle
+70       3270810    4360  0 00:06 ?        00:00:00      \_ postgres: authentication authentication 172.20.8.4(43640) idle
+70       3278533    4360  0 00:08 ?        00:00:00      \_ postgres: authentication authentication 172.20.8.4(47226) idle
+70       3281858    4360  0 00:09 ?        00:00:00      \_ postgres: authentication authentication 172.20.8.4(39526) idle
+70       3284803    4360  0 00:10 ?        00:00:00      \_ postgres: authentication authentication 172.20.8.4(34618) idle
+70       3291444    4360  0 00:13 ?        00:00:00      \_ postgres: authentication authentication 172.20.8.4(35348) idle
+root        3485       1  0 Oct19 ?        00:09:36 /usr/bin/containerd-shim-runc-v2 -namespace moby -id ae846752ffb061ecea2d6edafbbabb54b06fc6d1d7448e48011b820489ff9115 -address /run/containerd/containerd.sock
+root        4674    3485  0 Oct19 ?        00:00:00  \_ /usr/bin/dumb-init -- extra/entrypoint.sh node server/server.js
+root        6785    4674  1 Oct19 ?        06:20:00      \_ node server/server.js
+root        8448    4674  0 Oct19 ?        00:01:26      \_ /usr/sbin/nscd
+root        3548       1  0 Oct19 ?        00:03:59 /usr/bin/containerd-shim-runc-v2 -namespace moby -id a47f5adcccdf0cabc3641a934caf1c50a4e8773931909082195267ae9bea47b8 -address /run/containerd/containerd.sock
+nobody      4706    3548  1 Oct19 ?        04:51:50  \_ /bin/node_exporter --path.rootfs=/host --path.procfs=/host/proc --path.sysfs=/host/sys --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/) --collector.textfile.directory=/textfile
+root        3590       1  0 Oct19 ?        00:34:38 /usr/bin/containerd-shim-runc-v2 -namespace moby -id e70153f8fdfe77ceea765b2675cb180605b7f813aa86881b0dede8485f964f17 -address /run/containerd/containerd.sock
+infra       4538    3590  0 Oct19 ?        03:00:37  \_ redis-server *:6379
+root        3609       1  0 Oct19 ?        00:05:04 /usr/bin/containerd-shim-runc-v2 -namespace moby -id d85ea0e4b16daa41504bd0a0e953b027c925ef57b5fd2e83dbf5a94732ef7447 -address /run/containerd/containerd.sock
+root        4531    3609  2 Oct19 ?        12:51:49  \_ /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+root        3619       1  0 Oct19 ?        00:51:25 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 4feda10160c29e7761a132d54bb55c5483bd45d264828e3b0b1e1da5c44f3d1f -address /run/containerd/containerd.sock
+root        4533    3619  0 Oct19 ?        00:00:04  \_ /bin/bash /assets/init-container
+root        8011    4533  0 Oct19 ?        00:00:50      \_ runsvdir -P /opt/gitlab/service log: ...........................................................................................................................................................................................................................................................................................................................................................................................................
+root        8134    8011  0 Oct19 ?        00:00:00      |   \_ runsv sshd
+root        8142    8134  0 Oct19 ?        00:00:13      |   |   \_ svlogd -tt /var/log/gitlab/sshd
+root        8143    8134  0 Oct19 ?        00:01:00      |   |   \_ sshd: /usr/sbin/sshd -D -f /assets/sshd_config -e [listener] 1 of 100-200 startups
+root     3300313    8143  0 00:16 ?        00:00:00      |   |       \_ sshd: [accepted]
+dhcpcd   3300315 3300313  0 00:16 ?        00:00:00      |   |           \_ sshd: [net]
+root       11483    8011  0 Oct19 ?        00:00:00      |   \_ runsv redis
+root       11490   11483  0 Oct19 ?        00:00:05      |   |   \_ svlogd -tt /var/log/gitlab/redis
+edge-ac+   11493   11483  1 Oct19 ?        07:01:23      |   |   \_ /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+root       11484    8011  0 Oct19 ?        00:00:02      |   \_ runsv logrotate
+root       11488   11484  0 Oct19 ?        00:00:00      |   |   \_ svlogd -tt /var/log/gitlab/logrotate
+root     3263871   11484  0 00:04 ?        00:00:00      |   |   \_ /bin/sh /opt/gitlab/embedded/bin/gitlab-logrotate-wrapper
+root     3296525 3263871  0 00:14 ?        00:00:00      |   |       \_ sleep 3000
+root       11485    8011  0 Oct19 ?        00:00:00      |   \_ runsv gitaly
+root       11486   11485  0 Oct19 ?        00:00:33      |   |   \_ svlogd /var/log/gitlab/gitaly
+systemd+   11487   11485  0 Oct19 ?        00:11:08      |   |   \_ /opt/gitlab/embedded/bin/gitaly-wrapper /opt/gitlab/embedded/bin/gitaly serve /var/opt/gitlab/gitaly/config.toml
+systemd+   11536   11487  0 Oct19 ?        01:16:13      |   |       \_ /opt/gitlab/embedded/bin/gitaly serve /var/opt/gitlab/gitaly/config.toml
+root       11645    8011  0 Oct19 ?        00:00:00      |   \_ runsv postgresql
+root       11646   11645  0 Oct19 ?        00:00:00      |   |   \_ svlogd -tt /var/log/gitlab/postgresql
+systemd+   11647   11645  0 Oct19 ?        00:22:59      |   |   \_ /opt/gitlab/embedded/bin/postgres -D /var/opt/gitlab/postgresql/data
+systemd+   11702   11647  0 Oct19 ?        00:02:14      |   |       \_ postgres: checkpointer 
+systemd+   11703   11647  0 Oct19 ?        00:00:26      |   |       \_ postgres: background writer 
+systemd+   12119   11647  0 Oct19 ?        00:00:49      |   |       \_ postgres: walwriter 
+systemd+   12120   11647  0 Oct19 ?        00:00:43      |   |       \_ postgres: autovacuum launcher 
+systemd+   12121   11647  0 Oct19 ?        00:00:04      |   |       \_ postgres: logical replication launcher 
+systemd+ 3021348   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3047434   11647  0 Nov06 ?        00:00:01      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3067343   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3087571   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3087589   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3104813   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3104827   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3150171   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3194739   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3194799   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3202933   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3208182   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3214220   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3231145   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3232647   11647  0 Nov06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3248737   11647  0 00:00 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3248858   11647  0 00:00 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3258033   11647  0 00:03 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3268391   11647  0 00:06 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3272083   11647  0 00:07 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3278361   11647  0 00:08 ?        00:00:02      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3280436   11647  0 00:09 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3285450   11647  0 00:11 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3297266   11647  0 00:15 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3300307   11647  0 00:16 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3300308   11647  0 00:16 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3300309   11647  0 00:16 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3300310   11647  0 00:16 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3300311   11647  0 00:16 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3300312   11647  0 00:16 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3300314   11647  0 00:16 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3300316   11647  0 00:16 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3300317   11647  0 00:16 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3303346   11647  0 00:17 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3303362   11647  0 00:17 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3303833   11647  1 00:17 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+systemd+ 3304276   11647  0 00:17 ?        00:00:00      |   |       \_ postgres: gitlab gitlabhq_production [local] idle
+root       12959    8011  0 Oct19 ?        00:00:00      |   \_ runsv gitlab-workhorse
+root       12966   12959  0 Oct19 ?        00:02:52      |   |   \_ svlogd /var/log/gitlab/gitlab-workhorse
+systemd+   12968   12959  0 Oct19 ?        01:09:13      |   |   \_ /opt/gitlab/embedded/bin/gitlab-workhorse -listenNetwork unix -listenUmask 0 -listenAddr /var/opt/gitlab/gitlab-workhorse/sockets/socket -authBackend http://localhost:8080 -authSocket /var/opt/gitlab/gitlab-rails/sockets/gitlab.socket -documentRoot /opt/gitlab/embedded/service/gitlab-rails/public -pprofListenAddr  -prometheusListenAddr localhost:9229 -secretPath /opt/gitlab/embedded/service/gitlab-rails/.gitlab_workhorse_secret -logFormat json -config config.toml
+root       12960    8011  0 Oct19 ?        00:00:00      |   \_ runsv sidekiq
+root       12965   12960  0 Oct19 ?        00:16:12      |   |   \_ svlogd /var/log/gitlab/sidekiq
+systemd+   12967   12960  0 Oct19 ?        00:01:03      |   |   \_ ruby /opt/gitlab/embedded/service/gitlab-rails/bin/sidekiq-cluster -e production -r /opt/gitlab/embedded/service/gitlab-rails -c 20 --timeout 25 *
+systemd+   14357   12967 19 Oct19 ?        3-14:26:52      |   |       \_ sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+systemd+   14359   12967  0 Oct19 ?        00:02:41      |   |       \_ sidekiq_exporter
+root       12961    8011  0 Oct19 ?        00:00:00      |   \_ runsv puma
+root       12978   12961  0 Oct19 ?        00:00:00      |   |   \_ svlogd -tt /var/log/gitlab/puma
+systemd+   12979   12961  0 Oct19 ?        00:44:11      |   |   \_ puma 8.0.2 (unix:///var/opt/gitlab/gitlab-rails/sockets/gitlab.socket,tcp://127.0.0.1:8080) [gitlab-puma-worker]
+systemd+ 3277732   12979  9 00:08 ?        00:00:50      |   |       \_ puma: cluster worker 1: 825 [gitlab-puma-worker]
+systemd+ 3303479   12979 29 00:17 ?        00:00:11      |   |       \_ puma: cluster worker 0: 825 [gitlab-puma-worker]
+root       12962    8011  0 Oct19 ?        00:00:00      |   \_ runsv gitlab-kas
+root       12963   12962  0 Oct19 ?        00:00:00      |   |   \_ svlogd -tt /var/log/gitlab/gitlab-kas
+systemd+   12964   12962  0 Oct19 ?        03:09:16      |   |   \_ /opt/gitlab/embedded/bin/gitlab-kas --configuration-file /var/opt/gitlab/gitlab-kas/gitlab-kas-config.yml
+root       13173    8011  0 Oct19 ?        00:00:00      |   \_ runsv registry
+root       13181   13173  0 Oct19 ?        00:06:22      |   |   \_ svlogd -tt /var/log/gitlab/registry
+993        13182   13173  0 Oct19 ?        01:59:02      |   |   \_ /opt/gitlab/embedded/bin/registry serve ./config.yml
+root       13882    8011  0 Oct19 ?        00:00:00      |   \_ runsv nginx
+root       13883   13882  0 Oct19 ?        00:00:00      |       \_ svlogd -tt /var/log/gitlab/nginx
+root       13884   13882  0 Oct19 ?        00:00:00      |       \_ nginx: master process /opt/gitlab/embedded/sbin/nginx -p /var/opt/gitlab/nginx
+infra      13885   13884  0 Oct19 ?        00:04:15      |           \_ nginx: worker process
+infra      13886   13884  0 Oct19 ?        00:04:24      |           \_ nginx: worker process
+infra      13888   13884  0 Oct19 ?        00:04:28      |           \_ nginx: worker process
+infra      13889   13884  0 Oct19 ?        00:04:26      |           \_ nginx: worker process
+infra      13890   13884  0 Oct19 ?        00:04:19      |           \_ nginx: worker process
+infra      13891   13884  0 Oct19 ?        00:04:20      |           \_ nginx: worker process
+infra      13892   13884  0 Oct19 ?        00:04:21      |           \_ nginx: worker process
+infra      13893   13884  0 Oct19 ?        00:04:23      |           \_ nginx: worker process
+infra      13894   13884  0 Oct19 ?        00:00:18      |           \_ nginx: cache manager process
+root       13616    4533  0 Oct19 ?        00:00:00      \_ /bin/bash /opt/gitlab/bin/gitlab-ctl tail
+root       13617   13616  0 Oct19 ?        00:00:01          \_ /opt/gitlab/embedded/bin/ruby /opt/gitlab/embedded/bin/omnibus-ctl gitlab /opt/gitlab/embedded/service/omnibus-ctl* tail
+root       13949   13617  0 Oct19 ?        00:00:00              \_ sh -c find -L /var/log/gitlab -type f -not -path '*/sasl/*' | grep -E -v '(config|lock|@|bz2|gz|gzip|tbz2|tgz|txz|xz|zip)' | xargs tail --follow=name --retry
+root       13952   13949  0 Oct19 ?        00:00:00                  \_ xargs tail --follow=name --retry
+root       13953   13952  0 Oct19 ?        00:29:35                      \_ tail --follow=name --retry /var/log/gitlab/redis/state /var/log/gitlab/redis/current /var/log/gitlab/gitlab-workhorse/state /var/log/gitlab/gitlab-workhorse/current /var/log/gitlab/sidekiq/state /var/log/gitlab/sidekiq/current /var/log/gitlab/logrotate/current /var/log/gitlab/gitlab-rails/user_experience_slis.log /var/log/gitlab/gitlab-rails/api_json.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-41-21.log /var/log/gitlab/gitlab-rails/audit_json.log /var/log/gitlab/gitlab-rails/active_context.log /var/log/gitlab/gitlab-rails/production_json.log /var/log/gitlab/gitlab-rails/database_load_balancing.log /var/log/gitlab/gitlab-rails/exceptions_json.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-49-15.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-58-29.log /var/log/gitlab/gitlab-rails/grpc.log /var/log/gitlab/gitlab-rails/sidekiq_client.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-43-34.log /var/log/gitlab/gitlab-rails/service_measurement.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-09-10-19-56-02.log /var/log/gitlab/gitlab-rails/product_usage_data.log /var/log/gitlab/gitlab-rails/auth.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-52-00.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-47-55.log /var/log/gitlab/gitlab-rails/production.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-46-27.log /var/log/gitlab/gitlab-rails/event_collection.log /var/log/gitlab/gitlab-rails/graphql_json.log /var/log/gitlab/gitlab-rails/backup_json.log /var/log/gitlab/gitlab-rails/git_json.log /var/log/gitlab/gitlab-rails/migrations.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-45-03.log /var/log/gitlab/gitlab-rails/application_json.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-50-39.log /var/log/gitlab/postgresql/state /var/log/gitlab/postgresql/current /var/log/gitlab/sshd/current /var/log/gitlab/nginx/gitlab_access.log /var/log/gitlab/nginx/gitlab_registry_access.log /var/log/gitlab/nginx/access.log /var/log/gitlab/nginx/gitlab_registry_error.log /var/log/gitlab/nginx/current /var/log/gitlab/nginx/gitlab_error.log /var/log/gitlab/nginx/error.log /var/log/gitlab/gitaly/state /var/log/gitlab/gitaly/current /var/log/gitlab/puma/puma_stderr.log /var/log/gitlab/puma/puma_stdout.log /var/log/gitlab/puma/state /var/log/gitlab/puma/current /var/log/gitlab/gitlab-kas/state /var/log/gitlab/gitlab-kas/current /var/log/gitlab/registry/db-migrations-2026-10-11-02-34-39.log /var/log/gitlab/registry/db-migrations-2026-09-25-02-33-45.log /var/log/gitlab/registry/db-migrations-2026-06-02-05-01-47.log /var/log/gitlab/registry/state /var/log/gitlab/registry/db-migrations-2026-10-19-10-03-27.log /var/log/gitlab/registry/db-migrations-2026-06-02-16-08-26.log /var/log/gitlab/registry/db-migrations-2026-08-21-02-32-16.log /var/log/gitlab/registry/db-migrations-2026-06-03-02-31-37.log /var/log/gitlab/registry/current /var/log/gitlab/registry/db-migrations-2026-09-06-02-32-08.log /var/log/gitlab/registry/db-migrations-2026-10-15-02-33-11.log /var/log/gitlab/registry/db-migrations-2026-08-07-02-32-12.log /var/log/gitlab/registry/db-migrations-2026-09-12-02-32-10.log /var/log/gitlab/registry/db-migrations-2026-07-18-02-31-55.log /var/log/gitlab/registry/db-migrations-2026-07-03-02-32-42.log /var/log/gitlab/registry/db-migrations-2026-09-10-19-59-22.log /var/log/gitlab/registry/db-migrations-2026-07-30-02-32-51.log /var/log/gitlab/gitlab-shell/gitlab-shell.log
+yannis   1505872       1  0 Oct19 ?        00:18:14 /usr/lib/systemd/systemd --user
+yannis   1505874 1505872  0 Oct19 ?        00:00:00  \_ (sd-pam)
+yannis   1508610 1505872  0 Oct19 ?        00:00:00  \_ /usr/bin/dbus-daemon --session --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+root     2167818       1  0 Oct19 ?        00:23:41 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 36da284f9009e5606e6f5711711d3bf22d08650fab5a6b20d009cc1a5dba4aa8 -address /run/containerd/containerd.sock
+yannis   2167842 2167818  0 Oct19 ?        01:38:06  \_ java -Dkc.config.built=true -Djava.util.concurrent.ForkJoinPool.common.threadFactory=io.quarkus.bootstrap.forkjoin.QuarkusForkJoinWorkerThreadFactory -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.err.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -XX:+ExitOnOutOfMemoryError -Djava.security.egd=file:/dev/urandom -XX:+UseG1GC -XX:FlightRecorderOptions=stackdepth=512 -XX:MaxRAMPercentage=70 -XX:MinRAMPercentage=70 -XX:InitialRAMPercentage=50 --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.security=ALL-UNNAMED -Duser.language=en -Duser.country=US -Dkc.home.dir=/opt/keycloak/bin/.. -Djboss.server.config.dir=/opt/keycloak/bin/../conf -Djava.util.logging.manager=org.jboss.logmanager.LogManager -Dpicocli.disable.closures=true -Dquarkus-log-max-startup-records=10000 -cp /opt/keycloak/bin/../lib/quarkus-run.jar io.quarkus.bootstrap.runner.QuarkusEntryPoint start --optimized=false --import-realm
+root     2178077       1  0 Oct19 ?        00:23:46 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 6d340de4c9f34f9a36f08c9737eb9e5c09af528fd2a48cd2d3ff7db04d39ae21 -address /run/containerd/containerd.sock
+message+ 2178101 2178077  0 Oct19 ?        00:00:00  \_ nginx: master process nginx -g daemon off;
+message+ 2178177 2178101  0 Oct19 ?        00:00:27      \_ nginx: worker process
+root     2712404       1  0 Oct19 ?        00:28:51 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 8f9aa520141f6e315be9dbf126e90c5b84eab287a1b63b48f5169de54df25740 -address /run/containerd/containerd.sock
+10001    2712442 2712404  0 Oct19 ?        02:49:16  \_ java -jar /app/app.jar
+syslog    408750       1  0 Oct24 ?        00:02:26 /usr/sbin/rsyslogd -n -iNONE
+root      408798       1  0 Oct24 ?        00:33:04 /usr/bin/python3 /usr/bin/fail2ban-server -xf start
+root     3144535       1  0 Oct26 tty1     00:00:00 /sbin/agetty -o -p -- \u --noclear - linux
+root       90209       1  0 Oct27 ?        00:20:01 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 87ba0b8028838af3509be1f1f3344d4d5c15d034187b12459265495d04372ad2 -address /run/containerd/containerd.sock
+70         90236   90209  0 Oct27 ?        00:02:58  \_ postgres -c max_connections=100 -c idle_in_transaction_session_timeout=30s
+70         90347   90236  0 Oct27 ?        00:00:29      \_ postgres: checkpointer 
+70         90348   90236  0 Oct27 ?        00:00:20      \_ postgres: background writer 
+70         90350   90236  0 Oct27 ?        00:03:11      \_ postgres: walwriter 
+70         90351   90236  0 Oct27 ?        00:00:09      \_ postgres: autovacuum launcher 
+70         90352   90236  0 Oct27 ?        00:00:02      \_ postgres: logical replication launcher 
+70       1194793   90236  0 Nov04 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(44498) idle
+70       1195024   90236  0 Nov04 ?        00:00:05      \_ postgres: testinbox_staging testinbox 172.20.11.2(44928) idle
+70       1195186   90236  0 Nov04 ?        00:00:05      \_ postgres: testinbox_staging testinbox 172.20.11.3(34388) idle
+70       3231274   90236  0 Nov06 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.2(58980) idle
+70       3233335   90236  0 Nov06 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(43806) idle
+70       3234434   90236  0 Nov06 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.2(55668) idle
+70       3235968   90236  0 Nov06 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(50352) idle
+70       3237054   90236  0 Nov06 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(44356) idle
+70       3238042   90236  0 Nov06 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.2(52462) idle
+70       3242114   90236  0 Nov06 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(52622) idle
+70       3242927   90236  0 Nov06 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(45960) idle
+70       3247358   90236  0 Nov06 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(47416) idle
+70       3247816   90236  0 Nov06 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.2(53240) idle
+70       3255165   90236  0 00:02 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(48534) idle
+70       3262880   90236  0 00:04 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.2(52712) idle
+70       3275637   90236  0 00:08 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(33576) idle
+70       3277935   90236  0 00:08 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(56404) idle
+70       3279883   90236  0 00:09 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(58524) idle
+70       3282047   90236  0 00:09 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(52196) idle
+70       3285182   90236  0 00:11 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.2(52312) idle
+70       3288258   90236  0 00:11 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.2(40490) idle
+70       3290732   90236  0 00:12 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(34830) idle
+70       3292755   90236  0 00:13 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(38146) idle
+70       3296638   90236  0 00:14 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(46176) idle
+70       3303615   90236  0 00:17 ?        00:00:00      \_ postgres: testinbox_staging testinbox 172.20.11.3(47124) idle
+root     3279762       1  0 Oct29 ?        00:03:32 /usr/bin/containerd-shim-runc-v2 -namespace moby -id a074c6f2e8b02152e2657707dc384db11c100351ab50e38a6d1021b56e717e8c -address /run/containerd/containerd.sock
+472      3279786 3279762  1 Oct29 ?        02:37:05  \_ grafana server --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --packaging=docker cfg:default.log.mode=console cfg:default.paths.data=/var/lib/grafana cfg:default.paths.logs=/var/log/grafana cfg:default.paths.plugins=/var/lib/grafana/plugins cfg:default.paths.provisioning=/etc/grafana/provisioning
+yannis   2128473       1  0 Nov03 ?        00:03:37 tmux new -s infra
+yannis   2128474 2128473  0 Nov03 pts/1    00:00:00  \_ -bash
+yannis   2128977 2128474  4 Nov03 pts/1    04:20:05      \_ claude
+yannis   3278339 2128977  0 00:08 ?        00:00:00          \_ /bin/bash -c source /home/yannis/.claude/shell-snapshots/snapshot-bash-1793674625924-6v1bvx.sh 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && { \builtin unalias -- 'which'; \builtin unset -f -- 'which'; } >/dev/null 2>&1 || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'tail -n 0 -F /opt/infinity/workspace/ti-delivery-002/stage-b/storage/bench3/m3-rerun/logs/runs.log | awk '"'"'/ERROR|Exception|FATAL|too many|REFUSED|VERDICT|^run |all-done| done: / {print substr($0,1,170); fflush()}'"'"'' < /dev/null && pwd -P >| /tmp/claude-a7eb-cwd
+yannis   3278340 3278339  0 00:08 ?        00:00:00          |   \_ tail -n 0 -F /opt/infinity/workspace/ti-delivery-002/stage-b/storage/bench3/m3-rerun/logs/runs.log
+yannis   3278341 3278339  0 00:08 ?        00:00:00          |   \_ awk /ERROR|Exception|FATAL|too many|REFUSED|VERDICT|^run |all-done| done: / {print substr($0,1,170); fflush()}
+yannis   3305267 2128977  0 00:17 ?        00:00:00          \_ /bin/bash -c source /home/yannis/.claude/shell-snapshots/snapshot-bash-1793674625924-6v1bvx.sh 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && { \builtin unalias -- 'which'; \builtin unset -f -- 'which'; } >/dev/null 2>&1 || true && { \builtin unalias -- 'unsetenv'; \builtin unset -f -- 'unsetenv'; } >/dev/null 2>&1 || true && eval 'cd /opt/infinity/workspace/ti-delivery-002/stage-b/storage/bench3/m3-rerun && until /usr/bin/grep -q '"'"'^all-done'"'"' logs/runs.log; do sleep 2; done; /usr/bin/grep -E '"'"'^run |all-done|VERDICT|torn down'"'"' logs/runs.log | cut -c1-120; ./baseline.sh post; touch loadlog.stop; for p in $(awk '"'"'/^(vmstat|mpstat|pgsample|conncount|psloop) pid/{print $3}'"'"' logs/pids.txt); do ps -p $p -o pid=,cmd= > logs/.ps.tmp && pkill -s $p && echo "stopped session $p ($(cat logs/.ps.tmp)) $(date -u +%FT%TZ)" >> logs/pids.txt; done; sleep 30; ps -eo pid,sid,cmd | awk '"'"'$2>=3255797 && $2<=3276200'"'"' | cut -c1-80; rm -f secret/*.env; for k in a n v; do case $k in a) docker ps -a --format '"'"'{{.Names}}'"'"';; n) docker network ls --format '"'"'{{.Name}}'"'"';; v) docker volume ls --format '"'"'{{.Name}}'"'"';; esac | /usr/bin/grep -c '"'"'^ws-b3'"'"' || true; done; /usr/bin/grep -c '"'"'^==='"'"' logs/ps-snapshots.log; ls out/m3-rerun/*/' < /dev/null && pwd -P >| /tmp/claude-cb76-cwd
+yannis   3305271 3305267  1 00:17 ?        00:00:00              \_ /bin/bash ./baseline.sh post
+yannis   3305395 3305271  0 00:17 ?        00:00:00                  \_ ps -ef --forest
+root     2010290       1  0 Nov03 ?        00:01:05 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 53b7154f171f1e52409334d96f0f97cf8e4e6631014e94f7afcd2653b66692d6 -address /run/containerd/containerd.sock
+root     2010328 2010290  1 Nov03 ?        01:26:30  \_ traefik traefik
+root     2310576       1  0 Nov03 ?        00:04:13 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 7562f148d7afe5d5f888be8fbd4cc0f6fb496a143de0ea1f25e96c2ce6ed1347 -address /run/containerd/containerd.sock
+yannis   2310599 2310576  0 Nov03 ?        00:02:46  \_ next-server (v
+root     1193848       1  0 Nov04 ?        00:04:07 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 64ce3769112bbd09ff16c2ccd7db7a7cd8bbc92de0088e55249351b03bb8d8b4 -address /run/containerd/containerd.sock
+10001    1193897 1193848  0 Nov04 ?        00:11:02  \_ java -cp . org.springframework.boot.loader.launch.JarLauncher
+root     1193850       1  0 Nov04 ?        00:04:05 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 8f8a68fe86ed2b896ff72b07090f4409b594d9a06599a4cab659063d029ad087 -address /run/containerd/containerd.sock
+10001    1193904 1193850  0 Nov04 ?        00:22:36  \_ java -cp . org.springframework.boot.loader.launch.JarLauncher
+root     1195474       1  0 Nov04 ?        00:04:02 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 0a7c767a17f5699e16273f4618e6d815003ef1829d7785fa961e412ebadf5289 -address /run/containerd/containerd.sock
+yannis   1195516 1195474  0 Nov04 ?        00:02:59  \_ next-server (v
+root      535258       1  0 Nov05 ?        00:00:01 /usr/sbin/cron -f -P
+root      535295       1  0 Nov05 ?        00:00:25 /sbin/multipathd -d -s
+root      535300       1  0 Nov05 ?        00:00:50 /usr/lib/systemd/systemd-journald
+root      535316       1  0 Nov05 ?        00:00:02 sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups
+root     1825690  535316  0 Nov06 ?        00:00:00  \_ sshd: yannis [priv]
+yannis   1825808 1825690  0 Nov06 ?        00:00:15      \_ sshd: yannis@pts/0
+yannis   1825809 1825808  0 Nov06 pts/0    00:00:00          \_ -bash
+yannis   1829173 1825809  0 Nov06 pts/0    00:00:00              \_ tmux attach -t infra
+systemd+  535335       1  0 Nov05 ?        00:00:02 /usr/lib/systemd/systemd-timesyncd
+polkitd   535381       1  0 Nov05 ?        00:00:08 /usr/lib/polkit-1/polkitd --no-debug
+root      535387       1  0 Nov05 ?        00:00:02 /usr/lib/systemd/systemd-udevd
+root      535390       1  0 Nov05 ?        00:00:08 /usr/libexec/udisks2/udisksd
+systemd+  535407       1  0 Nov05 ?        00:01:06 /usr/lib/systemd/systemd-resolved
+systemd+  535521       1  0 Nov05 ?        00:00:06 /usr/lib/systemd/systemd-networkd
+root      535621       1  0 Nov05 ?        00:00:00 /usr/sbin/ModemManager
+root     3042234       1  0 Nov06 ?        00:00:00 /usr/libexec/fwupd/fwupd
+yannis   3255797       1  0 00:02 ?        00:00:00 /bin/bash ./loadlog.sh
+yannis   3304015 3255797  0 00:17 ?        00:00:00  \_ sleep 26
+yannis   3255807       1  0 00:02 ?        00:00:00 vmstat -t -w -n 5
+yannis   3255822       1  0 00:02 ?        00:00:00 mpstat 5
+yannis   3255825       1  0 00:02 ?        00:00:00 /bin/bash ./dstats.sh
+yannis   3304275 3255825  0 00:17 ?        00:00:00  \_ sleep 28
+yannis   3255834       1  0 00:02 ?        00:00:00 /bin/bash ./pgsample.sh
+yannis   3305394 3255834  0 00:17 ?        00:00:00  \_ sleep 2
+yannis   3255844       1  0 00:02 ?        00:00:00 /bin/bash ./conncount.sh
+yannis   3305396 3255844  0 00:17 ?        00:00:00  \_ sleep 2
+yannis   3255859       1  0 00:02 ?        00:00:00 /bin/bash ./psloop.sh
+yannis   3302548 3255859  0 00:16 ?        00:00:00  \_ sleep 60

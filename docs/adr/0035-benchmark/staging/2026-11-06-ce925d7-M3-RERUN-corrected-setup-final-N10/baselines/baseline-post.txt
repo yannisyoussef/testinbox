@@ -1,0 +1,247 @@
+# baseline post at 2026-11-06T23:17:43Z
+## uptime
+ 00:17:43 up 18 days, 13:15,  2 users,  load average: 3.97, 3.55, 3.35
+## ps -eo pid,user,pcpu,etime,args --sort=-pcpu | head -60
+    PID USER     %CPU     ELAPSED COMMAND
+3305274 yannis    400       00:00 ps -eo pid,user,pcpu,etime,args --sort=-pcpu
+3303479 systemd+ 30.7       00:36 puma: cluster worker 0: 825 [gitlab-puma-worker]
+  14357 systemd+ 19.4 18-13:14:04 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+    983 root     14.5 18-13:15:23 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812 root     14.1 18-13:15:25 /usr/bin/containerd
+3277732 systemd+  9.1       09:10 puma: cluster worker 1: 825 [gitlab-puma-worker]
+2128977 yannis    4.6  3-20:21:35 claude
+   2380 nobody    3.4 18-13:15:18 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531 root      2.8 18-13:15:17 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354 10001     1.9 18-13:15:17 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 root      1.7  3-09:26:04 traefik traefik
+  11493 edge-ac+  1.5 18-13:14:29 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100 root      1.5 18-13:15:18 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_container_labels=false --whitelisted_containe
+   6785 root      1.4 18-13:15:09 node server/server.js
+3279786 472       1.3  8-08:35:47 grafana server --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --packaging=docker cfg:default.log.mode=console cfg:default.paths.data=/var/lib/grafana cfg:default.paths.logs=/var/log/grafana cfg:defau
+   5528 dhcpcd    1.2 18-13:15:14 vault server -config=/vault/config/vault.hcl
+3303833 systemd+  1.1       00:28 postgres: gitlab gitlabhq_production [local] idle
+   4706 nobody    1.0 18-13:15:17 /bin/node_exporter --path.rootfs=/host --path.procfs=/host/proc --path.sysfs=/host/sys --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/) --collector.textfile.directory=/textfile
+1193904 10001     0.7  2-03:59:20 java -cp . org.springframework.boot.loader.launch.JarLauncher
+   7040 yannis    0.7 18-13:15:08 java -Dkc.script.pid=1 -Djava.util.concurrent.ForkJoinPool.common.threadFactory=io.quarkus.bootstrap.forkjoin.QuarkusForkJoinWorkerThreadFactory -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8 -
+  12964 systemd+  0.7 18-13:14:17 /opt/gitlab/embedded/bin/gitlab-kas --configuration-file /var/opt/gitlab/gitlab-kas/gitlab-kas-config.yml
+   4529 infra     0.6 18-13:15:17 redis-server *:6379
+   4538 infra     0.6 18-13:15:17 redis-server *:6379
+2712442 10001     0.6 18-03:56:12 java -jar /app/app.jar
+   4337 infra     0.6 18-13:15:17 /opt/erlang/lib/erlang/erts-14.2.5.12/bin/beam.smp -W w -MBas ageffcbf -MHas ageffcbf -MBlmbcs 512 -MHlmbcs 512 -MMmcs 30 -pc unicode -P 1048576 -t 5000000 -stbt db -zdbbl 128000 -sbwt none -sbwtdcpu none -sbwtdio no
+   4551 root      0.5 18-13:15:17 java -XX:MaxRAMPercentage=75.0 -cp @/app/jib-classpath-file ga.nkama.NkamaBackendApplication
+   4335 root      0.4 18-13:15:17 minio server /data --console-address :9001
+  13182 993       0.4 18-13:14:16 /opt/gitlab/embedded/bin/registry serve ./config.yml
+     17 root      0.4 18-13:15:30 [rcu_preempt]
+   3966 root      0.3 18-13:15:17 haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg
+3304669 root      0.3       00:07 [kworker/u16:8-writeback]
+3278361 systemd+  0.3       09:03 postgres: gitlab gitlabhq_production [local] idle
+2167842 yannis    0.3 18-05:43:05 java -Dkc.config.built=true -Djava.util.concurrent.ForkJoinPool.common.threadFactory=io.quarkus.bootstrap.forkjoin.QuarkusForkJoinWorkerThreadFactory -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=256m -Dfile.encoding=UT
+1193897 10001     0.3  2-03:59:20 java -cp . org.springframework.boot.loader.launch.JarLauncher
+   6364 root      0.3 18-13:15:11 haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg
+3304276 systemd+  0.3       00:18 postgres: gitlab gitlabhq_production [local] idle
+  11536 systemd+  0.2 18-13:14:29 /opt/gitlab/embedded/bin/gitaly serve /var/opt/gitlab/gitaly/config.toml
+  12968 systemd+  0.2 18-13:14:17 /opt/gitlab/embedded/bin/gitlab-workhorse -listenNetwork unix -listenUmask 0 -listenAddr /var/opt/gitlab/gitlab-workhorse/sockets/socket -authBackend http://localhost:8080 -authSocket /var/opt/gitlab/gitlab-rails/soc
+   3111 root      0.2 18-13:15:18 minio server /data --console-address :9001
+   4263 nobody    0.2 18-13:15:17 java -Xmx64m @/run/sink/token.args -De2e.twilioStub.host=0.0.0.0 -De2e.twilioStub.port=58099 -De2e.twilioStub.alphaSender=NKAMA /stub/TwilioCaptureStub.java
+    299 root      0.2 18-13:15:27 [jbd2/sda1-8]
+   3619 root      0.1 18-13:15:17 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 4feda10160c29e7761a132d54bb55c5483bd45d264828e3b0b1e1da5c44f3d1f -address /run/containerd/containerd.sock
+      1 root      0.1 18-13:15:30 /usr/lib/systemd/systemd --system --deserialize=111
+ 408798 root      0.1 13-19:09:43 /usr/bin/python3 /usr/bin/fail2ban-server -xf start
+  12979 systemd+  0.1 18-13:14:17 puma 8.0.2 (unix:///var/opt/gitlab/gitlab-rails/sockets/gitlab.socket,tcp://127.0.0.1:8080) [gitlab-puma-worker]
+   3009 root      0.1 18-13:15:18 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 6e837cb3ca448a4de65ac2c842c8018374ef4ce2d227cd3382d8191538b0d1aa -address /run/containerd/containerd.sock
+  90209 root      0.1 10-01:48:51 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 87ba0b8028838af3509be1f1f3344d4d5c15d034187b12459265495d04372ad2 -address /run/containerd/containerd.sock
+   3372 root      0.1 18-13:15:18 /usr/bin/containerd-shim-runc-v2 -namespace moby -id beb7c8e6f3af9616a7270f361d9026e386565860d00908ff84d0661e5b23c8fc -address /run/containerd/containerd.sock
+   3260 root      0.1 18-13:15:18 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 4e90e01ca3e69c991b302a22a37c0e4612bf957bc9456d41ae61ec66aa358111 -address /run/containerd/containerd.sock
+   3293 root      0.1 18-13:15:18 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 1f1558967cebdf07b9586cc348f5dc76fb114fc12d1de0b34ea36e2e92ea09a7 -address /run/containerd/containerd.sock
+   2554 root      0.1 18-13:15:18 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 0e6419f36ddf36de817a6ec4d6b89f349113aa7cad9a5b7cc280f8de3b8eeaa7 -address /run/containerd/containerd.sock
+1193848 root      0.1  2-03:59:20 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 64ce3769112bbd09ff16c2ccd7db7a7cd8bbc92de0088e55249351b03bb8d8b4 -address /run/containerd/containerd.sock
+   2984 root      0.1 18-13:15:18 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 3ab641d8f9365e4383e1195d687418e5e17f68ad6b9102d091aa74df8e334af7 -address /run/containerd/containerd.sock
+1193850 root      0.1  2-03:59:20 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 8f8a68fe86ed2b896ff72b07090f4409b594d9a06599a4cab659063d029ad087 -address /run/containerd/containerd.sock
+   3590 root      0.1 18-13:15:17 /usr/bin/containerd-shim-runc-v2 -namespace moby -id e70153f8fdfe77ceea765b2675cb180605b7f813aa86881b0dede8485f964f17 -address /run/containerd/containerd.sock
+1195474 root      0.1  2-03:59:03 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 0a7c767a17f5699e16273f4618e6d815003ef1829d7785fa961e412ebadf5289 -address /run/containerd/containerd.sock
+3300307 systemd+  0.1       01:34 postgres: gitlab gitlabhq_production [local] idle
+  13953 root      0.1 18-13:14:09 tail --follow=name --retry /var/log/gitlab/redis/state /var/log/gitlab/redis/current /var/log/gitlab/gitlab-workhorse/state /var/log/gitlab/gitlab-workhorse/current /var/log/gitlab/sidekiq/state /var/log/gitlab/sidek
+2712404 root      0.1 18-03:56:13 /usr/bin/containerd-shim-runc-v2 -namespace moby -id 8f9aa520141f6e315be9dbf126e90c5b84eab287a1b63b48f5169de54df25740 -address /run/containerd/containerd.sock
+## ps -eo pid,ppid,etimes,pcpu,args --sort=-pcpu (top 40)
+    PID    PPID ELAPSED %CPU COMMAND
+3305277 3305271       0  400 ps -eo pid,ppid,etimes,pcpu,args --sort=-pcpu
+3303479   12979      36 30.6 puma: cluster worker 0: 825 [gitlab-puma-worker]
+  14357   12967 1602844 19.4 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+    983       1 1602923 14.5 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 1602925 14.1 /usr/bin/containerd
+3305271 3305267       0 11.1 /bin/bash ./baseline.sh post
+3277732   12979     550  9.1 puma: cluster worker 1: 825 [gitlab-puma-worker]
+2128977 2128474  332495  4.6 claude
+   2380    2169 1602918  3.4 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 1602917  2.8 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354    2912 1602917  1.9 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290  293164  1.7 traefik traefik
+  11493   11483 1602869  1.5 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 1602918  1.5 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_container_labels=false --whitelisted_container_lab
+   6785    4674 1602909  1.4 node server/server.js
+3279786 3279762  722147  1.3 grafana server --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --packaging=docker cfg:default.log.mode=console cfg:default.paths.data=/var/lib/grafana cfg:default.paths.logs=/var/log/grafana cfg:default.pa
+   5528    4520 1602914  1.2 vault server -config=/vault/config/vault.hcl
+3303833   11647      28  1.1 postgres: gitlab gitlabhq_production [local] idle
+   4706    3548 1602917  1.0 /bin/node_exporter --path.rootfs=/host --path.procfs=/host/proc --path.sysfs=/host/sys --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/) --collector.textfile.directory=/textfile
+1193904 1193850  187160  0.7 java -cp . org.springframework.boot.loader.launch.JarLauncher
+   7040    4341 1602908  0.7 java -Dkc.script.pid=1 -Djava.util.concurrent.ForkJoinPool.common.threadFactory=io.quarkus.bootstrap.forkjoin.QuarkusForkJoinWorkerThreadFactory -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8 -Dsun.
+  12964   12962 1602857  0.7 /opt/gitlab/embedded/bin/gitlab-kas --configuration-file /var/opt/gitlab/gitlab-kas/gitlab-kas-config.yml
+   4529    2984 1602917  0.6 redis-server *:6379
+   4538    3590 1602917  0.6 redis-server *:6379
+2712442 2712404 1569373  0.6 java -jar /app/app.jar
+   4337    3157 1602917  0.6 /opt/erlang/lib/erlang/erts-14.2.5.12/bin/beam.smp -W w -MBas ageffcbf -MHas ageffcbf -MBlmbcs 512 -MHlmbcs 512 -MMmcs 30 -pc unicode -P 1048576 -t 5000000 -stbt db -zdbbl 128000 -sbwt none -sbwtdcpu none -sbwtdio none --
+   4551    3314 1602917  0.5 java -XX:MaxRAMPercentage=75.0 -cp @/app/jib-classpath-file ga.nkama.NkamaBackendApplication
+   4335    3009 1602917  0.4 minio server /data --console-address :9001
+  13182   13173 1602856  0.4 /opt/gitlab/embedded/bin/registry serve ./config.yml
+     17       2 1602930  0.4 [rcu_preempt]
+   3966    2378 1602917  0.3 haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg
+3304669       2       7  0.3 [kworker/u16:8-writeback]
+3278361   11647     543  0.3 postgres: gitlab gitlabhq_production [local] idle
+2167842 2167818 1575785  0.3 java -Dkc.config.built=true -Djava.util.concurrent.ForkJoinPool.common.threadFactory=io.quarkus.bootstrap.forkjoin.QuarkusForkJoinWorkerThreadFactory -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=256m -Dfile.encoding=UTF-8 -
+1193897 1193848  187160  0.3 java -cp . org.springframework.boot.loader.launch.JarLauncher
+   6364    4262 1602911  0.3 haproxy -W -db -f /usr/local/etc/haproxy/haproxy.cfg
+3304276   11647      18  0.3 postgres: gitlab gitlabhq_production [local] idle
+  11536   11487 1602869  0.2 /opt/gitlab/embedded/bin/gitaly serve /var/opt/gitlab/gitaly/config.toml
+  12968   12959 1602857  0.2 /opt/gitlab/embedded/bin/gitlab-workhorse -listenNetwork unix -listenUmask 0 -listenAddr /var/opt/gitlab/gitlab-workhorse/sockets/socket -authBackend http://localhost:8080 -authSocket /var/opt/gitlab/gitlab-rails/sockets/
+## docker ps
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+## docker ps count
+32
+## systemctl list-timers --all
+NEXT                            LEFT LAST                               PASSED UNIT                                ACTIVATES
+Sat 2026-11-07 00:17:46 CET       1s Sat 2026-11-07 00:16:46 CET       58s ago infinity-container-restarts.timer   infinity-container-restarts.service
+Sat 2026-11-07 00:17:46 CET       1s Sat 2026-11-07 00:16:46 CET       58s ago infinity-edge-metrics-collect.timer infinity-edge-metrics-collect.service
+Sat 2026-11-07 00:17:46 CET       1s Sat 2026-11-07 00:16:46 CET       58s ago infinity-vault-health.timer         infinity-vault-health.service
+Sat 2026-11-07 00:17:46 CET       1s Sat 2026-11-07 00:16:46 CET       58s ago infinity-vault-unseal.timer         infinity-vault-unseal.service
+Sat 2026-11-07 00:17:46 CET       1s Sat 2026-11-07 00:16:46 CET       58s ago nkama-deploy.timer                  nkama-deploy.service
+Sat 2026-11-07 00:18:30 CET      45s Sat 2026-11-07 00:16:16 CET  1min 28s ago infinity-deploy@dev.timer           infinity-deploy@dev.service
+Sat 2026-11-07 00:20:00 CET 2min 15s Sat 2026-11-07 00:10:11 CET      7min ago sysstat-collect.timer               sysstat-collect.service
+Sat 2026-11-07 00:21:38 CET 3min 53s Fri 2026-11-06 23:22:46 CET     54min ago fwupd-refresh.timer                 fwupd-refresh.service
+Sat 2026-11-07 00:27:35 CET     9min Sat 2026-11-07 00:12:35 CET      5min ago infinity-reboot-pending.timer       infinity-reboot-pending.service
+Sat 2026-11-07 01:00:00 CET    42min Sat 2026-11-07 00:00:00 CET     17min ago aeroclub-salt-rotate.timer          aeroclub-salt-rotate.service
+Sat 2026-11-07 01:30:56 CET 1h 13min Fri 2026-11-06 01:32:56 CET       22h ago infinity-backup.timer               infinity-backup.service
+Sat 2026-11-07 02:54:12 CET 2h 36min Fri 2026-11-06 06:40:46 CET       17h ago apt-daily.timer                     apt-daily.service
+Sat 2026-11-07 04:00:00 CET 3h 42min Fri 2026-11-06 04:00:00 CET       20h ago nkama-dev-reaper.timer              nkama-dev-reaper.service
+Sat 2026-11-07 05:19:32 CET  5h 1min Fri 2026-11-06 05:24:47 CET       18h ago testinbox-qualification-check.timer testinbox-qualification-check.service
+Sat 2026-11-07 05:31:53 CET 5h 14min Fri 2026-11-06 17:28:10 CET        6h ago infinity-edge-acme.timer            infinity-edge-acme.service
+Sat 2026-11-07 05:38:28 CET 5h 20min Fri 2026-11-06 02:48:51 CET       21h ago man-db.timer                        man-db.service
+Sat 2026-11-07 06:42:10 CET       6h Fri 2026-11-06 06:24:13 CET       17h ago apt-daily-upgrade.timer             apt-daily-upgrade.service
+Sat 2026-11-07 09:57:14 CET       9h Fri 2026-11-06 21:13:13 CET   3h 4min ago motd-news.timer                     motd-news.service
+Sat 2026-11-07 11:09:31 CET      10h Fri 2026-11-06 11:09:31 CET       13h ago update-notifier-download.timer      update-notifier-download.service
+Sat 2026-11-07 11:18:26 CET      11h Fri 2026-11-06 11:18:26 CET       12h ago systemd-tmpfiles-clean.timer        systemd-tmpfiles-clean.service
+Sun 2026-11-08 00:00:00 CET      23h Sat 2026-11-07 00:00:00 CET     17min ago dpkg-db-backup.timer                dpkg-db-backup.service
+Sun 2026-11-08 00:00:00 CET      23h Sat 2026-11-07 00:00:00 CET     17min ago infinity-host-acl.timer             infinity-host-acl.service
+Sun 2026-11-08 00:00:00 CET      23h Sat 2026-11-07 00:00:00 CET     17min ago logrotate.timer                     logrotate.service
+Sun 2026-11-08 00:07:00 CET      23h Sat 2026-11-07 00:07:00 CET     10min ago sysstat-summary.timer               sysstat-summary.service
+Sun 2026-11-08 00:35:00 CET      24h Sat 2026-11-07 00:04:26 CET     13min ago infinity-kaas-internal-tls.timer    infinity-kaas-internal-tls.service
+Sun 2026-11-08 03:10:24 CET 1 day 2h Sun 2026-11-01 03:10:47 CET    5 days ago e2scrub_all.timer                   e2scrub_all.service
+Mon 2026-11-09 01:00:45 CET   2 days Mon 2026-11-02 00:53:50 CET    4 days ago fstrim.timer                        fstrim.service
+Tue 2026-11-10 04:17:05 CET   3 days Fri 2026-11-06 04:32:31 CET       19h ago infinity-geoipupdate.timer          infinity-geoipupdate.service
+Tue 2026-11-10 17:27:27 CET   3 days Thu 2026-11-05 01:45:54 CET 1 day 22h ago update-notifier-motd.timer          update-notifier-motd.service
+-                                  - -                                       - apport-autoreport.timer             apport-autoreport.service
+-                                  - -                                       - infinity-post-reboot-check.timer    infinity-post-reboot-check.service
+-                                  - -                                       - snapd.snap-repair.timer             snapd.snap-repair.service
+-                                  - -                                       - ua-timer.timer                      ua-timer.service
+
+33 timers listed.
+## pgrep test/build/selftest (must be empty apart from the estate baseline)
+3100 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_container_labels=false --whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service,com.docker.compose.project.working_dir
+8011 runsvdir -P /opt/gitlab/service log: ...........................................................................................................................................................................................................................................................................................................................................................................................................
+8142 svlogd -tt /var/log/gitlab/sshd
+11486 svlogd /var/log/gitlab/gitaly
+11487 /opt/gitlab/embedded/bin/gitaly-wrapper /opt/gitlab/embedded/bin/gitaly serve /var/opt/gitlab/gitaly/config.toml
+11488 svlogd -tt /var/log/gitlab/logrotate
+11490 svlogd -tt /var/log/gitlab/redis
+11493 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+11536 /opt/gitlab/embedded/bin/gitaly serve /var/opt/gitlab/gitaly/config.toml
+11646 svlogd -tt /var/log/gitlab/postgresql
+11647 /opt/gitlab/embedded/bin/postgres -D /var/opt/gitlab/postgresql/data
+12959 runsv gitlab-workhorse
+12962 runsv gitlab-kas
+12963 svlogd -tt /var/log/gitlab/gitlab-kas
+12964 /opt/gitlab/embedded/bin/gitlab-kas --configuration-file /var/opt/gitlab/gitlab-kas/gitlab-kas-config.yml
+12965 svlogd /var/log/gitlab/sidekiq
+12966 svlogd /var/log/gitlab/gitlab-workhorse
+12967 ruby /opt/gitlab/embedded/service/gitlab-rails/bin/sidekiq-cluster -e production -r /opt/gitlab/embedded/service/gitlab-rails -c 20 --timeout 25 *
+12968 /opt/gitlab/embedded/bin/gitlab-workhorse -listenNetwork unix -listenUmask 0 -listenAddr /var/opt/gitlab/gitlab-workhorse/sockets/socket -authBackend http://localhost:8080 -authSocket /var/opt/gitlab/gitlab-rails/sockets/gitlab.socket -documentRoot /opt/gitlab/embedded/service/gitlab-rails/public -pprofListenAddr  -prometheusListenAddr localhost:9229 -secretPath /opt/gitlab/embedded/service/gitlab-rails/.gitlab_workhorse_secret -logFormat json -config config.toml
+12978 svlogd -tt /var/log/gitlab/puma
+12979 puma 8.0.2 (unix:///var/opt/gitlab/gitlab-rails/sockets/gitlab.socket,tcp://127.0.0.1:8080) [gitlab-puma-worker]
+13181 svlogd -tt /var/log/gitlab/registry
+13182 /opt/gitlab/embedded/bin/registry serve ./config.yml
+13616 /bin/bash /opt/gitlab/bin/gitlab-ctl tail
+13617 /opt/gitlab/embedded/bin/ruby /opt/gitlab/embedded/bin/omnibus-ctl gitlab /opt/gitlab/embedded/service/omnibus-ctl* tail
+13883 svlogd -tt /var/log/gitlab/nginx
+13884 nginx: master process /opt/gitlab/embedded/sbin/nginx -p /var/opt/gitlab/nginx
+13949 sh -c find -L /var/log/gitlab -type f -not -path '*/sasl/*' | grep -E -v '(config|lock|@|bz2|gz|gzip|tbz2|tgz|txz|xz|zip)' | xargs tail --follow=name --retry
+13953 tail --follow=name --retry /var/log/gitlab/redis/state /var/log/gitlab/redis/current /var/log/gitlab/gitlab-workhorse/state /var/log/gitlab/gitlab-workhorse/current /var/log/gitlab/sidekiq/state /var/log/gitlab/sidekiq/current /var/log/gitlab/logrotate/current /var/log/gitlab/gitlab-rails/user_experience_slis.log /var/log/gitlab/gitlab-rails/api_json.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-41-21.log /var/log/gitlab/gitlab-rails/audit_json.log /var/log/gitlab/gitlab-rails/active_context.log /var/log/gitlab/gitlab-rails/production_json.log /var/log/gitlab/gitlab-rails/database_load_balancing.log /var/log/gitlab/gitlab-rails/exceptions_json.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-49-15.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-58-29.log /var/log/gitlab/gitlab-rails/grpc.log /var/log/gitlab/gitlab-rails/sidekiq_client.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-43-34.log /var/log/gitlab/gitlab-rails/service_measurement.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-09-10-19-56-02.log /var/log/gitlab/gitlab-rails/product_usage_data.log /var/log/gitlab/gitlab-rails/auth.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-52-00.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-47-55.log /var/log/gitlab/gitlab-rails/production.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-46-27.log /var/log/gitlab/gitlab-rails/event_collection.log /var/log/gitlab/gitlab-rails/graphql_json.log /var/log/gitlab/gitlab-rails/backup_json.log /var/log/gitlab/gitlab-rails/git_json.log /var/log/gitlab/gitlab-rails/migrations.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-45-03.log /var/log/gitlab/gitlab-rails/application_json.log /var/log/gitlab/gitlab-rails/gitlab-rails-db-migrate-2026-06-02-04-50-39.log /var/log/gitlab/postgresql/state /var/log/gitlab/postgresql/current /var/log/gitlab/sshd/current /var/log/gitlab/nginx/gitlab_access.log /var/log/gitlab/nginx/gitlab_registry_access.log /var/log/gitlab/nginx/access.log /var/log/gitlab/nginx/gitlab_registry_error.log /var/log/gitlab/nginx/current /var/log/gitlab/nginx/gitlab_error.log /var/log/gitlab/nginx/error.log /var/log/gitlab/gitaly/state /var/log/gitlab/gitaly/current /var/log/gitlab/puma/puma_stderr.log /var/log/gitlab/puma/puma_stdout.log /var/log/gitlab/puma/state /var/log/gitlab/puma/current /var/log/gitlab/gitlab-kas/state /var/log/gitlab/gitlab-kas/current /var/log/gitlab/registry/db-migrations-2026-10-11-02-34-39.log /var/log/gitlab/registry/db-migrations-2026-09-25-02-33-45.log /var/log/gitlab/registry/db-migrations-2026-06-02-05-01-47.log /var/log/gitlab/registry/state /var/log/gitlab/registry/db-migrations-2026-10-19-10-03-27.log /var/log/gitlab/registry/db-migrations-2026-06-02-16-08-26.log /var/log/gitlab/registry/db-migrations-2026-08-21-02-32-16.log /var/log/gitlab/registry/db-migrations-2026-06-03-02-31-37.log /var/log/gitlab/registry/current /var/log/gitlab/registry/db-migrations-2026-09-06-02-32-08.log /var/log/gitlab/registry/db-migrations-2026-10-15-02-33-11.log /var/log/gitlab/registry/db-migrations-2026-08-07-02-32-12.log /var/log/gitlab/registry/db-migrations-2026-09-12-02-32-10.log /var/log/gitlab/registry/db-migrations-2026-07-18-02-31-55.log /var/log/gitlab/registry/db-migrations-2026-07-03-02-32-42.log /var/log/gitlab/registry/db-migrations-2026-09-10-19-59-22.log /var/log/gitlab/registry/db-migrations-2026-07-30-02-32-51.log /var/log/gitlab/gitlab-shell/gitlab-shell.log
+3021348 postgres: gitlab gitlabhq_production [local] idle
+3047434 postgres: gitlab gitlabhq_production [local] idle
+3067343 postgres: gitlab gitlabhq_production [local] idle
+3087571 postgres: gitlab gitlabhq_production [local] idle
+3087589 postgres: gitlab gitlabhq_production [local] idle
+3104813 postgres: gitlab gitlabhq_production [local] idle
+3104827 postgres: gitlab gitlabhq_production [local] idle
+3150171 postgres: gitlab gitlabhq_production [local] idle
+3194739 postgres: gitlab gitlabhq_production [local] idle
+3194799 postgres: gitlab gitlabhq_production [local] idle
+3202933 postgres: gitlab gitlabhq_production [local] idle
+3208182 postgres: gitlab gitlabhq_production [local] idle
+3214220 postgres: gitlab gitlabhq_production [local] idle
+3231145 postgres: gitlab gitlabhq_production [local] idle
+3232647 postgres: gitlab gitlabhq_production [local] idle
+3248737 postgres: gitlab gitlabhq_production [local] idle
+3248858 postgres: gitlab gitlabhq_production [local] idle
+3258033 postgres: gitlab gitlabhq_production [local] idle
+3263871 /bin/sh /opt/gitlab/embedded/bin/gitlab-logrotate-wrapper
+3268391 postgres: gitlab gitlabhq_production [local] idle
+3272083 postgres: gitlab gitlabhq_production [local] idle
+3277732 puma: cluster worker 1: 825 [gitlab-puma-worker]
+3278361 postgres: gitlab gitlabhq_production [local] idle
+3280436 postgres: gitlab gitlabhq_production [local] idle
+3285450 postgres: gitlab gitlabhq_production [local] idle
+3297266 postgres: gitlab gitlabhq_production [local] idle
+3300307 postgres: gitlab gitlabhq_production [local] idle
+3300308 postgres: gitlab gitlabhq_production [local] idle
+3300309 postgres: gitlab gitlabhq_production [local] idle
+3300310 postgres: gitlab gitlabhq_production [local] idle
+3300311 postgres: gitlab gitlabhq_production [local] idle
+3300312 postgres: gitlab gitlabhq_production [local] idle
+3300314 postgres: gitlab gitlabhq_production [local] idle
+3300316 postgres: gitlab gitlabhq_production [local] idle
+3300317 postgres: gitlab gitlabhq_production [local] idle
+3303346 postgres: gitlab gitlabhq_production [local] idle
+3303362 postgres: gitlab gitlabhq_production [local] idle
+3303479 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3303833 postgres: gitlab gitlabhq_production [local] idle
+3304276 postgres: gitlab gitlabhq_production [local] idle

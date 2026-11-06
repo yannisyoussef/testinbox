@@ -1,0 +1,903 @@
+=== 2026-11-06T23:02:35Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3255881 3255859 yannis    600       00:00 ps -eo pid,ppid,user,pcpu,etime,args --sort=-pcpu
+3255843 3255841 yannis   75.0       00:00 docker ps --format {{.Names}}
+3255794 3255774 root     50.0       00:00 docker login registry.yvnn.is -u dev-nkama-registry --password-stdin
+3255806 3255804 deploy   50.0       00:00 docker compose --env-file .env.vault exec -T -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_CACERT=/vault/tls/ca.crt vault vault status
+3255772 3255770 root     44.4       00:00 docker ps -aq
+3255812 3255811 yannis   20.0       00:00 top -bn2 -d2 -w 200
+  14357   12967 systemd+ 19.4 18-12:58:56 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+    983       1 root     14.5 18-13:00:15 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:00:17 /usr/bin/containerd
+3255774       1 root     12.5       00:00 bash /opt/infinity/stacks/nkama/deploy-poll.sh
+3255769       1 root     11.1       00:00 bash /opt/infinity/stacks/monitoring/collect-edge-metrics.sh
+3255771       1 root     11.1       00:00 bash /home/deploy/infinity-core/infra/vault/health-metrics.sh
+3255773       1 deploy   11.1       00:00 bash /home/deploy/infinity-core/infra/vault/unseal.sh
+3219567   12979 systemd+  9.4       12:35 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3255768       1 root      9.0       00:00 bash /opt/infinity/stacks/monitoring/collect-container-restarts.sh
+3162447   12979 systemd+  8.0       24:09 puma: cluster worker 1: 825 [gitlab-puma-worker]
+2128977 2128474 yannis    4.6  3-20:06:27 claude
+   2380    2169 nobody    3.4 18-13:00:10 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 root      2.8 18-13:00:09 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354    2912 10001     1.9 18-13:00:09 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:10:56 traefik traefik
+  11493   11483 edge-ac+  1.5 18-12:59:21 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:00:10 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:00:01 node server/server.js
+--- docker ps
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:03:36Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3259690 3255859 yannis    400       00:00 ps -eo pid,ppid,user,pcpu,etime,args --sort=-pcpu
+3259682 3259471 root      250       00:00 docker inspect --format {{.Name}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.RestartCount}}|{{.State.Restartin
+3259646    3291 root      113       00:00 [vault] <defunct>
+3259565 3259512 deploy   25.0       00:00 /usr/libexec/docker/cli-plugins/docker-compose compose --env-file .env.vault exec -T -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_CACERT=/vault/tls/ca.crt vault vault status
+  14357   12967 systemd+ 19.4 18-12:59:57 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+3259513 3259505 root     19.6       00:00 ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /opt/infinity/secrets/edge-collector/id_ed25519 yannis@173.212.236.72
+3259651 3259477 root     18.1       00:00 docker pull -q registry.yvnn.is/nkama/nkama:dev
+    983       1 root     14.5 18-13:01:16 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:01:17 /usr/bin/containerd
+3219567   12979 systemd+  9.2       13:36 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3162447   12979 systemd+  8.1       25:10 puma: cluster worker 1: 825 [gitlab-puma-worker]
+3259512 3259511 deploy    7.0       00:00 docker compose --env-file .env.vault exec -T -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_CACERT=/vault/tls/ca.crt vault vault status
+2128977 2128474 yannis    4.6  3-20:07:28 claude
+   2380    2169 nobody    3.4 18-13:01:11 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 root      2.8 18-13:01:10 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354    2912 10001     1.9 18-13:01:10 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:11:57 traefik traefik
+3259474       1 deploy    1.6       00:00 bash /home/deploy/infinity-core/infra/vault/unseal.sh
+3259477       1 root      1.6       00:00 bash /opt/infinity/stacks/nkama/deploy-poll.sh
+3259472       1 root      1.5       00:00 bash /opt/infinity/stacks/monitoring/collect-edge-metrics.sh
+  11493   11483 edge-ac+  1.5 18-13:00:22 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+3259471       1 root      1.5       00:00 bash /opt/infinity/stacks/monitoring/collect-container-restarts.sh
+   3100    2470 root      1.5 18-13:01:11 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:01:02 node server/server.js
+--- docker ps
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:04:37Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3263360 3255859 yannis    300       00:00 ps -eo pid,ppid,user,pcpu,etime,args --sort=-pcpu
+3263329 3263026 root     23.0       00:00 docker pull -q registry.yvnn.is/nkama/nkama:prod
+  14357   12967 systemd+ 19.4 18-13:00:57 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+    983       1 root     14.5 18-13:02:17 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:02:18 /usr/bin/containerd
+3263055 3263051 root     10.5       00:00 ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /opt/infinity/secrets/edge-collector/id_ed25519 yannis@173.212.236.72
+3219567   12979 systemd+  8.8       14:36 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3162447   12979 systemd+  8.0       26:10 puma: cluster worker 1: 825 [gitlab-puma-worker]
+2128977 2128474 yannis    4.6  3-20:08:28 claude
+   2380    2169 nobody    3.4 18-13:02:11 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 root      2.8 18-13:02:10 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354    2912 10001     1.9 18-13:02:10 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:12:57 traefik traefik
+  11493   11483 edge-ac+  1.5 18-13:01:23 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:02:11 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:02:02 node server/server.js
+3279786 3279762 472       1.3  8-08:22:40 grafana server --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --packaging=docker cfg:default.log.mode=console cfg:default.paths.data=/var/lib/grafana cfg:default
+   5528    4520 dhcpcd    1.2 18-13:02:07 vault server -config=/vault/config/vault.hcl
+   4706    3548 nobody    1.0 18-13:02:10 /bin/node_exporter --path.rootfs=/host --path.procfs=/host/proc --path.sysfs=/host/sys --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/) --collector.text
+3263026       1 root      1.0       00:00 bash /opt/infinity/stacks/nkama/deploy-poll.sh
+3263021       1 root      1.0       00:00 bash /opt/infinity/stacks/monitoring/collect-edge-metrics.sh
+1193904 1193850 10001     0.7  2-03:46:13 java -cp . org.springframework.boot.loader.launch.JarLauncher
+   7040    4341 yannis    0.7 18-13:02:01 java -Dkc.script.pid=1 -Djava.util.concurrent.ForkJoinPool.common.threadFactory=io.quarkus.bootstrap.forkjoin.QuarkusForkJoinWorkerThreadFactory -XX:MetaspaceSize=96M -XX:MaxMeta
+  12964   12962 systemd+  0.7 18-13:01:11 /opt/gitlab/embedded/bin/gitlab-kas --configuration-file /var/opt/gitlab/gitlab-kas/gitlab-kas-config.yml
+--- docker ps
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:05:37Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3266912 3255859 yannis    500       00:00 ps -eo pid,ppid,user,pcpu,etime,args --sort=-pcpu
+3266905 3266904 root      133       00:00 docker exec -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_CACERT=/vault/tls/ca.crt vault-vault-1 vault status -format=json
+3266894 3266861 deploy    100       00:00 /usr/libexec/docker/cli-plugins/docker-compose compose --env-file .env.vault exec -T -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_CACERT=/vault/tls/ca.crt vault vault status
+  14357   12967 systemd+ 19.4 18-13:01:58 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+3266861 3266857 deploy   17.6       00:00 docker compose --env-file .env.vault exec -T -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_CACERT=/vault/tls/ca.crt vault vault status
+3266865 3266822 root     17.6       00:00 docker login registry.yvnn.is -u dev-nkama-registry --password-stdin
+3266816 3266814 root     15.0       00:00 docker ps -aq
+    983       1 root     14.5 18-13:03:17 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:03:18 /usr/bin/containerd
+3219567   12979 systemd+  8.6       15:37 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3162447   12979 systemd+  7.9       27:11 puma: cluster worker 1: 825 [gitlab-puma-worker]
+3266822       1 root      5.2       00:00 bash /opt/infinity/stacks/nkama/deploy-poll.sh
+3266815       1 deploy    5.0       00:00 bash /home/deploy/infinity-core/infra/vault/unseal.sh
+3266807       1 root      4.7       00:00 bash /opt/infinity/stacks/monitoring/collect-edge-metrics.sh
+3266811       1 root      4.7       00:00 bash /home/deploy/infinity-core/infra/vault/health-metrics.sh
+2128977 2128474 yannis    4.6  3-20:09:28 claude
+3266805       1 root      4.5       00:00 bash /opt/infinity/stacks/monitoring/collect-container-restarts.sh
+   2380    2169 nobody    3.4 18-13:03:12 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 root      2.8 18-13:03:11 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354    2912 10001     1.9 18-13:03:11 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:13:57 traefik traefik
+  11493   11483 edge-ac+  1.5 18-13:02:23 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:03:11 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:03:02 node server/server.js
+--- docker ps
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:06:38Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+  14357   12967 systemd+ 19.4 18-13:02:58 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+    983       1 root     14.5 18-13:04:18 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:04:19 /usr/bin/containerd
+3219567   12979 systemd+  8.5       16:37 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3162447   12979 systemd+  7.7       28:11 puma: cluster worker 1: 825 [gitlab-puma-worker]
+2128977 2128474 yannis    4.6  3-20:10:29 claude
+   2380    2169 nobody    3.4 18-13:04:12 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 root      2.8 18-13:04:11 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354    2912 10001     1.9 18-13:04:11 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:14:58 traefik traefik
+  11493   11483 edge-ac+  1.5 18-13:03:24 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:04:12 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:04:03 node server/server.js
+3279786 3279762 472       1.3  8-08:24:41 grafana server --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --packaging=docker cfg:default.log.mode=console cfg:default.paths.data=/var/lib/grafana cfg:default
+   5528    4520 dhcpcd    1.2 18-13:04:08 vault server -config=/vault/config/vault.hcl
+   4706    3548 nobody    1.0 18-13:04:11 /bin/node_exporter --path.rootfs=/host --path.procfs=/host/proc --path.sysfs=/host/sys --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/) --collector.text
+1193904 1193850 10001     0.7  2-03:48:14 java -cp . org.springframework.boot.loader.launch.JarLauncher
+   7040    4341 yannis    0.7 18-13:04:02 java -Dkc.script.pid=1 -Djava.util.concurrent.ForkJoinPool.common.threadFactory=io.quarkus.bootstrap.forkjoin.QuarkusForkJoinWorkerThreadFactory -XX:MetaspaceSize=96M -XX:MaxMeta
+  12964   12962 systemd+  0.7 18-13:03:12 /opt/gitlab/embedded/bin/gitlab-kas --configuration-file /var/opt/gitlab/gitlab-kas/gitlab-kas-config.yml
+   4529    2984 infra     0.6 18-13:04:11 redis-server *:6379
+   4538    3590 infra     0.6 18-13:04:11 redis-server *:6379
+2712442 2712404 10001     0.6 18-03:45:07 java -jar /app/app.jar
+   4337    3157 infra     0.6 18-13:04:11 /opt/erlang/lib/erlang/erts-14.2.5.12/bin/beam.smp -W w -MBas ageffcbf -MHas ageffcbf -MBlmbcs 512 -MHlmbcs 512 -MMmcs 30 -pc unicode -P 1048576 -t 5000000 -stbt db -zdbbl 128000
+   4551    3314 root      0.5 18-13:04:11 java -XX:MaxRAMPercentage=75.0 -cp @/app/jib-classpath-file ga.nkama.NkamaBackendApplication
+--- docker ps
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:07:38Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3274147 3255859 yannis    500       00:00 ps -eo pid,ppid,user,pcpu,etime,args --sort=-pcpu
+3274084    3291 root     85.0       00:00 vault status
+3274002 3273963 deploy   25.5       00:00 /usr/libexec/docker/cli-plugins/docker-compose compose --env-file .env.vault exec -T -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_CACERT=/vault/tls/ca.crt vault vault status
+3273969 3273966 root     21.5       00:00 ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /opt/infinity/secrets/edge-collector/id_ed25519 yannis@173.212.236.72
+3274094 3273928 root     21.4       00:00 docker pull -q registry.yvnn.is/nkama/nkama:dev
+  14357   12967 systemd+ 19.4 18-13:03:59 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+3273932 3273927 deploy   18.5       00:00 docker manifest inspect registry.yvnn.is/infinity/testinbox-web:develop
+    983       1 root     14.5 18-13:05:18 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:05:19 /usr/bin/containerd
+3219567   12979 systemd+  8.4       17:38 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3273963 3273961 deploy    7.8       00:00 docker compose --env-file .env.vault exec -T -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_CACERT=/vault/tls/ca.crt vault vault status
+3162447   12979 systemd+  7.6       29:12 puma: cluster worker 1: 825 [gitlab-puma-worker]
+2128977 2128474 yannis    4.6  3-20:11:30 claude
+   2380    2169 nobody    3.4 18-13:05:13 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 root      2.8 18-13:05:12 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354    2912 10001     1.9 18-13:05:12 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+3273928       1 root      1.8       00:00 bash /opt/infinity/stacks/nkama/deploy-poll.sh
+3273925       1 deploy    1.8       00:00 bash /home/deploy/infinity-core/infra/vault/unseal.sh
+3273919       1 root      1.7       00:00 bash /opt/infinity/stacks/monitoring/collect-edge-metrics.sh
+2010328 2010290 root      1.7  3-09:15:59 traefik traefik
+3273915       1 root      1.7       00:00 bash /opt/infinity/stacks/monitoring/collect-container-restarts.sh
+  11493   11483 edge-ac+  1.5 18-13:04:24 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:05:13 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+3273539       1 deploy    1.4       00:03 bash /home/deploy/infinity-core/infra/deploy-poll.sh dev
+--- docker ps
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:08:39Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3278040 3255859 yannis    400       00:00 ps -eo pid,ppid,user,pcpu,etime,args --sort=-pcpu
+3277240 3277215 yannis    137       00:17 /opt/java/openjdk/bin/java -classpath /src/backend/benchmark/build/install/storage-benchmark/lib/benchmark-0.1.0-SNAPSHOT.jar:/src/backend/benchmark/build/install/storage-benchma
+3277732   12979 systemd+ 86.2       00:06 puma: cluster worker 1: 825 [gitlab-puma-worker]
+3277348 3276316 70       24.9       00:15 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41146) idle
+  14357   12967 systemd+ 19.4 18-13:04:59 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+    983       1 root     14.5 18-13:06:19 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+3277838 3276316 70       14.2       00:03 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(38694) UPDATE
+    812       1 root     14.1 18-13:06:20 /usr/bin/containerd
+3277837 3276316 70       14.0       00:03 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(38682) idle
+3277841 3276316 70        9.8       00:03 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(38706) idle
+3219567   12979 systemd+  8.4       18:38 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3277839 3276316 70        8.2       00:03 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(38698) idle
+3277842 3276316 70        7.2       00:03 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(38718) idle
+3277840 3276316 70        6.8       00:03 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(38700) idle
+3277352 3276316 70        5.3       00:15 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41152) idle
+2128977 2128474 yannis    4.6  3-20:12:30 claude
+   2380    2169 nobody    3.4 18-13:06:14 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 root      2.8 18-13:06:12 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354    2912 10001     1.9 18-13:06:12 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:16:59 traefik traefik
+  11493   11483 edge-ac+  1.5 18-13:05:25 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:06:13 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:06:04 node server/server.js
+3279786 3279762 472       1.3  8-08:26:42 grafana server --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --packaging=docker cfg:default.log.mode=console cfg:default.paths.data=/var/lib/grafana cfg:default
+--- docker ps
+ws-b3-sle-m3-rerun 201fbb8886b2 Up 17 seconds
+ws-b3-pg cf78e76683b9 Up 25 seconds
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:09:40Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3280820 3280811 root      258       00:00 /opt/rabbitmq/escript/rabbitmq-diagnostics -B -- -root /opt/erlang/lib/erlang -bindir /opt/erlang/lib/erlang/erts-14.2.5.12/bin -progname erl -- -home /var/lib/rabbitmq -- -noshe
+3277240 3277215 yannis   54.1       01:18 /opt/java/openjdk/bin/java -classpath /src/backend/benchmark/build/install/storage-benchmark/lib/benchmark-0.1.0-SNAPSHOT.jar:/src/backend/benchmark/build/install/storage-benchma
+3280711 3276316 70       31.6       00:01 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(56448) idle in transaction
+  14357   12967 systemd+ 19.4 18-13:06:00 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+3280714 3276316 70       19.0       00:01 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(56450) idle
+3280715 3276316 70       17.7       00:01 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(56460) idle
+3277732   12979 systemd+ 16.2       01:06 puma: cluster worker 1: 825 [gitlab-puma-worker]
+    983       1 root     14.5 18-13:07:20 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+3280811    3157 root     14.2       00:00 /bin/sh /opt/rabbitmq/sbin/rabbitmq-diagnostics -q check_port_connectivity
+    812       1 root     14.1 18-13:07:21 /usr/bin/containerd
+3277348 3276316 70        8.9       01:16 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41146) idle
+3219567   12979 systemd+  8.2       19:39 puma: cluster worker 0: 825 [gitlab-puma-worker]
+2128977 2128474 yannis    4.6  3-20:13:31 claude
+   2380    2169 nobody    3.4 18-13:07:14 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 root      2.8 18-13:07:13 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354    2912 10001     1.9 18-13:07:13 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:18:00 traefik traefik
+  11493   11483 edge-ac+  1.5 18-13:06:26 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:07:14 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:07:05 node server/server.js
+3277352 3276316 70        1.3       01:16 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41152) idle
+3279786 3279762 472       1.3  8-08:27:43 grafana server --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --packaging=docker cfg:default.log.mode=console cfg:default.paths.data=/var/lib/grafana cfg:default
+   5528    4520 dhcpcd    1.2 18-13:07:10 vault server -config=/vault/config/vault.hcl
+   4706    3548 nobody    1.0 18-13:07:13 /bin/node_exporter --path.rootfs=/host --path.procfs=/host/proc --path.sysfs=/host/sys --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/) --collector.text
+--- docker ps
+ws-b3-sle-m3-rerun 201fbb8886b2 Up About a minute
+ws-b3-pg cf78e76683b9 Up About a minute
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:10:41Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3283971 3255859 yannis    500       00:00 ps -eo pid,ppid,user,pcpu,etime,args --sort=-pcpu
+3277240 3277215 yannis   43.9       02:19 /opt/java/openjdk/bin/java -classpath /src/backend/benchmark/build/install/storage-benchmark/lib/benchmark-0.1.0-SNAPSHOT.jar:/src/backend/benchmark/build/install/storage-benchma
+  14357   12967 systemd+ 19.4 18-13:07:01 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+    983       1 root     14.5 18-13:08:21 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:08:22 /usr/bin/containerd
+3277732   12979 systemd+ 12.3       02:07 puma: cluster worker 1: 825 [gitlab-puma-worker]
+3281464 3276316 70        9.2       00:58 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(56542) idle
+3281463 3276316 70        9.0       00:58 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(56528) idle
+3219567   12979 systemd+  8.3       20:40 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3281467 3276316 70        6.9       00:58 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(56558) idle
+3277348 3276316 70        5.2       02:17 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41146) idle
+2128977 2128474 yannis    4.6  3-20:14:32 claude
+3281468 3276316 70        4.0       00:58 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(56568) idle
+   2380    2169 nobody    3.4 18-13:08:15 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 root      2.8 18-13:08:14 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+3283877 3283876 yannis    2.8       00:01 top -bn2 -d2 -w 200
+   4354    2912 10001     1.9 18-13:08:14 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:19:01 traefik traefik
+3281478 3276316 70        1.5       00:58 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(56572) idle
+  11493   11483 edge-ac+  1.5 18-13:07:27 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:08:15 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:08:06 node server/server.js
+3279786 3279762 472       1.3  8-08:28:44 grafana server --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --packaging=docker cfg:default.log.mode=console cfg:default.paths.data=/var/lib/grafana cfg:default
+3281498 3276316 70        1.2       00:58 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(56582) idle
+--- docker ps
+ws-b3-sle-m3-rerun 201fbb8886b2 Up 2 minutes
+ws-b3-pg cf78e76683b9 Up 2 minutes
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:11:41Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3286878 3255859 yannis    400       00:00 ps -eo pid,ppid,user,pcpu,etime,args --sort=-pcpu
+3277240 3277215 yannis   37.8       03:20 /opt/java/openjdk/bin/java -classpath /src/backend/benchmark/build/install/storage-benchmark/lib/benchmark-0.1.0-SNAPSHOT.jar:/src/backend/benchmark/build/install/storage-benchma
+  14357   12967 systemd+ 19.4 18-13:08:02 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+    983       1 root     14.5 18-13:09:21 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:09:22 /usr/bin/containerd
+3277732   12979 systemd+ 12.6       03:08 puma: cluster worker 1: 825 [gitlab-puma-worker]
+3284641 3276316 70       12.0       00:52 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(32904) idle
+3284643 3276316 70       10.7       00:52 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(32908) idle
+3219567   12979 systemd+  8.1       21:41 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3284644 3276316 70        8.0       00:52 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(32922) DELETE
+3277348 3276316 70        5.4       03:18 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41146) idle
+2128977 2128474 yannis    4.6  3-20:15:33 claude
+   2380    2169 nobody    3.4 18-13:09:16 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+3284665 3276316 70        3.0       00:52 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(32938) idle
+   4531    3609 root      2.8 18-13:09:15 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+3284667 3276316 70        2.2       00:52 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(32952) idle
+   4354    2912 10001     1.9 18-13:09:15 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:20:02 traefik traefik
+  11493   11483 edge-ac+  1.5 18-13:08:27 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:09:16 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:09:07 node server/server.js
+3284668 3276316 70        1.3       00:52 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(32956) idle
+3279786 3279762 472       1.3  8-08:29:44 grafana server --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --packaging=docker cfg:default.log.mode=console cfg:default.paths.data=/var/lib/grafana cfg:default
+   5528    4520 dhcpcd    1.2 18-13:09:12 vault server -config=/vault/config/vault.hcl
+--- docker ps
+ws-b3-sle-m3-rerun 201fbb8886b2 Up 3 minutes
+ws-b3-pg cf78e76683b9 Up 3 minutes
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:12:42Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3290165 3255859 yannis    400       00:00 ps -eo pid,ppid,user,pcpu,etime,args --sort=-pcpu
+3290105 3290097 root      269       00:00 /opt/rabbitmq/escript/rabbitmq-diagnostics -B -- -root /opt/erlang/lib/erlang -bindir /opt/erlang/lib/erlang/erts-14.2.5.12/bin -progname erl -- -home /var/lib/rabbitmq -- -noshe
+3277240 3277215 yannis   34.2       04:20 /opt/java/openjdk/bin/java -classpath /src/backend/benchmark/build/install/storage-benchmark/lib/benchmark-0.1.0-SNAPSHOT.jar:/src/backend/benchmark/build/install/storage-benchma
+  14357   12967 systemd+ 19.4 18-13:09:03 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+    983       1 root     14.5 18-13:10:22 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:10:23 /usr/bin/containerd
+3288120 3276316 70       13.4       00:46 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(45046) idle
+3277732   12979 systemd+ 11.7       04:09 puma: cluster worker 1: 825 [gitlab-puma-worker]
+3288121 3276316 70       10.5       00:46 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(45052) idle
+3219567   12979 systemd+  8.1       22:42 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3288122 3276316 70        5.5       00:46 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(45060) idle
+2128977 2128474 yannis    4.6  3-20:16:33 claude
+3277348 3276316 70        4.2       04:18 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41146) idle
+3290097    3157 root      3.4       00:00 /bin/sh /opt/rabbitmq/sbin/rabbitmq-diagnostics -q check_port_connectivity
+   2380    2169 nobody    3.4 18-13:10:17 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 root      2.8 18-13:10:16 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+3288123 3276316 70        2.1       00:46 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(45070) idle
+   4354    2912 10001     1.9 18-13:10:16 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:21:03 traefik traefik
+3277352 3276316 70        1.6       04:18 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41152) idle
+  11493   11483 edge-ac+  1.5 18-13:09:28 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:10:16 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:10:08 node server/server.js
+3279786 3279762 472       1.3  8-08:30:45 grafana server --homepath=/usr/share/grafana --config=/etc/grafana/grafana.ini --packaging=docker cfg:default.log.mode=console cfg:default.paths.data=/var/lib/grafana cfg:default
+--- docker ps
+ws-b3-sle-m3-rerun 201fbb8886b2 Up 4 minutes
+ws-b3-pg cf78e76683b9 Up 4 minutes
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:13:43Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3277240 3277215 yannis   33.3       05:21 /opt/java/openjdk/bin/java -classpath /src/backend/benchmark/build/install/storage-benchmark/lib/benchmark-0.1.0-SNAPSHOT.jar:/src/backend/benchmark/build/install/storage-benchma
+  14357   12967 systemd+ 19.4 18-13:10:04 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+    983       1 root     14.5 18-13:11:23 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:11:24 /usr/bin/containerd
+3291423 3276316 70       12.5       00:37 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(43410) idle
+3291422 3276316 70       11.1       00:37 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(43398) idle
+3277732   12979 systemd+ 11.0       05:10 puma: cluster worker 1: 825 [gitlab-puma-worker]
+3291427 3276316 70        8.5       00:37 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(43436) idle
+3291424 3276316 70        8.0       00:37 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(43422) idle
+3219567   12979 systemd+  7.9       23:43 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3291425 3276316 70        7.8       00:37 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(43424) COMMIT
+3291426 3276316 70        7.5       00:37 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(43428) idle
+3291428 3276316 70        7.1       00:37 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(43442) idle
+3291429 3276316 70        7.0       00:37 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(43446) idle
+2128977 2128474 yannis    4.6  3-20:17:34 claude
+3277348 3276316 70        3.5       05:19 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41146) idle
+   2380    2169 nobody    3.4 18-13:11:18 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+3277352 3276316 70        3.0       05:19 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41152) idle
+   4531    3609 root      2.8 18-13:11:17 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354    2912 10001     1.9 18-13:11:17 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:22:03 traefik traefik
+  11493   11483 edge-ac+  1.5 18-13:10:29 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:11:17 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:11:08 node server/server.js
+--- docker ps
+ws-b3-sle-m3-rerun 201fbb8886b2 Up 5 minutes
+ws-b3-pg cf78e76683b9 Up 5 minutes
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:14:44Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3296148 3255859 yannis    400       00:00 ps -eo pid,ppid,user,pcpu,etime,args --sort=-pcpu
+3277240 3277215 yannis   33.0       06:23 /opt/java/openjdk/bin/java -classpath /src/backend/benchmark/build/install/storage-benchmark/lib/benchmark-0.1.0-SNAPSHOT.jar:/src/backend/benchmark/build/install/storage-benchma
+  14357   12967 systemd+ 19.4 18-13:11:05 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+3294839 3276316 70       16.3       00:29 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(35878) idle
+3294838 3276316 70       15.2       00:29 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(35872) idle
+    983       1 root     14.5 18-13:12:24 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:12:25 /usr/bin/containerd
+3277732   12979 systemd+ 10.8       06:11 puma: cluster worker 1: 825 [gitlab-puma-worker]
+3294854 3276316 70       10.2       00:29 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(35894) idle
+3294860 3276316 70       10.0       00:29 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(35898) idle
+3294863 3276316 70        8.0       00:29 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(35916) idle
+3219567   12979 systemd+  7.9       24:44 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3294862 3276316 70        7.3       00:29 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(35906) idle
+3294879 3276316 70        6.8       00:29 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(35938) idle
+3294864 3276316 70        6.6       00:29 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(35930) INSERT
+2128977 2128474 yannis    4.6  3-20:18:36 claude
+3277352 3276316 70        3.9       06:20 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41152) idle
+   2380    2169 nobody    3.4 18-13:12:19 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+3277348 3276316 70        3.0       06:21 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41146) idle
+   4531    3609 root      2.8 18-13:12:18 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+   4354    2912 10001     1.9 18-13:12:18 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:23:05 traefik traefik
+  11493   11483 edge-ac+  1.5 18-13:11:30 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:12:19 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+--- docker ps
+ws-b3-sle-m3-rerun 201fbb8886b2 Up 6 minutes
+ws-b3-pg cf78e76683b9 Up 6 minutes
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:15:45Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3277240 3277215 yannis   33.1       07:23 /opt/java/openjdk/bin/java -classpath /src/backend/benchmark/build/install/storage-benchmark/lib/benchmark-0.1.0-SNAPSHOT.jar:/src/backend/benchmark/build/install/storage-benchma
+  14357   12967 systemd+ 19.4 18-13:12:06 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+3298085 3276316 70       17.5       00:20 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(46924) idle
+3298086 3276316 70       16.6       00:20 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(46934) SELECT waiting
+    983       1 root     14.5 18-13:13:25 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:13:26 /usr/bin/containerd
+3298087 3276316 70       12.8       00:20 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(46948) idle
+3277732   12979 systemd+ 10.1       07:12 puma: cluster worker 1: 825 [gitlab-puma-worker]
+3298089 3276316 70        9.4       00:20 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(46952) idle
+3298088 3276316 70        8.8       00:20 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(46950) BIND
+3219567   12979 systemd+  7.8       25:45 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3298091 3276316 70        7.7       00:20 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(46972) idle
+3298090 3276316 70        6.8       00:20 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(46958) idle
+3298092 3276316 70        6.2       00:20 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(46980) idle
+3277352 3276316 70        4.7       07:21 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41152) idle
+2128977 2128474 yannis    4.6  3-20:19:37 claude
+   2380    2169 nobody    3.4 18-13:13:20 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+   4531    3609 root      2.8 18-13:13:19 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+3277348 3276316 70        2.6       07:22 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41146) idle
+   4354    2912 10001     1.9 18-13:13:19 /usr/bin/loki -config.file=/etc/loki/loki-config.yml
+2010328 2010290 root      1.7  3-09:24:06 traefik traefik
+  11493   11483 edge-ac+  1.5 18-13:12:31 /opt/gitlab/embedded/bin/redis-server unixsocket:/var/opt/gitlab/redis/redis.socket
+   3100    2470 root      1.5 18-13:13:19 /usr/bin/cadvisor -logtostderr --docker_only=true --housekeeping_interval=30s --max_housekeeping_interval=60s --enable_metrics=cpu,memory,network,diskIO,oom_event --store_contain
+   6785    4674 root      1.4 18-13:13:11 node server/server.js
+--- docker ps
+ws-b3-sle-m3-rerun 201fbb8886b2 Up 7 minutes
+ws-b3-pg cf78e76683b9 Up 7 minutes
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+=== 2026-11-06T23:16:46Z
+    PID    PPID USER     %CPU     ELAPSED COMMAND
+3302451 3255859 yannis    400       00:00 ps -eo pid,ppid,user,pcpu,etime,args --sort=-pcpu
+3302418    3291 root      116       00:00 vault status
+3277240 3277215 yannis   32.7       08:24 /opt/java/openjdk/bin/java -classpath /src/backend/benchmark/build/install/storage-benchmark/lib/benchmark-0.1.0-SNAPSHOT.jar:/src/backend/benchmark/build/install/storage-benchma
+3302319 3302277 deploy   26.3       00:00 /usr/libexec/docker/cli-plugins/docker-compose compose --env-file .env.vault exec -T -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_CACERT=/vault/tls/ca.crt vault vault status
+3301686 3276316 70       22.7       00:12 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(45920) idle
+  14357   12967 systemd+ 19.4 18-13:13:07 sidekiq 7.3.9 queues:default,mailers [0 of 20 busy]
+3302267 3302260 root     18.7       00:00 ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /opt/infinity/secrets/edge-collector/id_ed25519 yannis@173.212.236.72
+3301687 3276316 70       18.0       00:12 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(45930) SELECT
+3302396 3302239 root     17.6       00:00 docker pull -q registry.yvnn.is/nkama/nkama:dev
+    983       1 root     14.5 18-13:14:26 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+    812       1 root     14.1 18-13:14:27 /usr/bin/containerd
+3301688 3276316 70       10.9       00:12 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(45934) idle
+3277732   12979 systemd+  9.4       08:13 puma: cluster worker 1: 825 [gitlab-puma-worker]
+3301689 3276316 70        8.7       00:12 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(45938) idle
+3302277 3302271 deploy    8.6       00:00 docker compose --env-file .env.vault exec -T -e VAULT_ADDR=https://127.0.0.1:8200 -e VAULT_CACERT=/vault/tls/ca.crt vault vault status
+3219567   12979 systemd+  7.8       26:46 puma: cluster worker 0: 825 [gitlab-puma-worker]
+3302219 3302217 root      7.5       00:00 docker ps -aq
+3301690 3276316 70        5.5       00:12 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(45944) idle
+3277352 3276316 70        5.2       08:22 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(41152) idle
+2128977 2128474 yannis    4.6  3-20:20:38 claude
+   2380    2169 nobody    3.4 18-13:14:21 /bin/prometheus --config.file=/etc/prometheus/prometheus.yml --storage.tsdb.path=/prometheus --storage.tsdb.retention.time=15d --web.enable-lifecycle
+3301691 3276316 70        3.0       00:12 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(45950) idle
+   4531    3609 root      2.8 18-13:14:20 /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yml
+3301692 3276316 70        2.8       00:12 postgres: bench ti_bench_m3_n10_rerun 172.20.4.3(45954) idle
+--- docker ps
+ws-b3-sle-m3-rerun 201fbb8886b2 Up 8 minutes
+ws-b3-pg cf78e76683b9 Up 8 minutes
+testinbox-web-1 e71b85b28be0 Up 2 days (healthy)
+testinbox-ingestion-1 b43d93b235ce Up 2 days (healthy)
+testinbox-api-1 e81282e11167 Up 2 days (healthy)
+testinbox-site-web-1 registry.yvnn.is/infinity/testinbox-web:develop Up 3 days (healthy)
+testinbox-postgres-1 postgres:16-alpine Up 10 days (healthy)
+authentication-auth-1 registry.yvnn.is/infinity/authentication-service:develop Up 2 weeks (healthy)
+nkama-wellknown-web-1 736aa11ab9f9 Up 2 weeks (healthy)
+traefik traefik:v3.7.1 Up 3 days
+sms-sink-dev-sink-1 107215954359 Up 2 weeks (healthy)
+prometheus prom/prometheus:v3.1.0 Up 2 weeks
+keycloak 09a381c715ab Up 2 weeks (healthy)
+nkama-prod-app-1 fee3c7222584 Up 2 weeks (healthy)
+keycloak-db 4b7183ac05f8 Up 2 weeks (healthy)
+grafana grafana/grafana:11.4.0 Up 8 days
+testinbox-minio-1 3f97c5651cb6 Up 2 weeks (healthy)
+authentication-postgres-1 cf78e76683b9 Up 2 weeks (healthy)
+authentication-redis-1 ff02b58f971e Up 2 weeks (healthy)
+keycloak-keycloak-db-1 cf78e76683b9 Up 2 weeks (healthy)
+vault-vault-1 750bb37c1638 Up 2 weeks (healthy)
+nkama-prod-minio-1 14cea493d9a3 Up 2 weeks (healthy)
+node-exporter prom/node-exporter:v1.8.2 Up 2 weeks
+gitlab gitlab/gitlab-ce:19.2.5-ce.0 Up 2 weeks (healthy)
+cadvisor gcr.io/cadvisor/cadvisor:v0.55.1 Up 2 weeks (healthy)
+keycloak-keycloak-1 quay.io/keycloak/keycloak:26.7.0 Up 2 weeks
+nkama-prod-postgres-1 postgres:16 Up 2 weeks (healthy)
+nkama-prod-rabbitmq-1 rabbitmq:3.13-management Up 2 weeks (healthy)
+nkama-prod-redis-1 6ab0b6e73817 Up 2 weeks (healthy)
+uptime-kuma louislam/uptime-kuma:1.23.16 Up 2 weeks (healthy)
+promtail grafana/promtail:3.3.2 Up 2 weeks
+mon-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
+loki grafana/loki:3.3.2 Up 2 weeks
+traefik-socket-proxy tecnativa/docker-socket-proxy:0.3.0 Up 2 weeks
