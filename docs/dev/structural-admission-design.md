@@ -1065,11 +1065,10 @@ and forwards (S-C2).
 - *Sampling* is bounded by those budgets, as in the exception.
 
 **A pre-existing disclosure, out of scope here.** The security review found a
-pre-existing timing disclosure in the current ingest path. Admitted copies are
-written one after another before the event's joint commit, so an
-authenticated workspace holder can learn something about other recipients of
-a co-addressed message from its own delivery timing. It is out of this
-design's scope, and is with the owner. It is also why padding T1 would be
+pre-existing timing disclosure in the current ingest path, in the ADR-025
+recipient-existence class, observable only by an authenticated workspace
+holder. It is independent of the storage mode and of this design, is out of
+this design's scope, and is with the owner. It is also why padding T1 would be
 pointless (§9.3).
 
 ### 9.3 What the owner is asked (OD-3), and the mitigation adopted
