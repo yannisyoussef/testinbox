@@ -1,0 +1,63 @@
+{
+  "mode": "ALL",
+  "evaluatedAt": "2026-11-06T06:05:11Z",
+  "gates": [
+    {
+      "gate": "A-sessions",
+      "verdict": "NOT_RUN",
+      "detail": "no --sessions-file and TESTINBOX_ACTIVATION_DB_URL is unset"
+    },
+    {
+      "gate": "A-inventory",
+      "verdict": "NOT_RUN",
+      "detail": "no --nodes-file and TESTINBOX_ACTIVATION_DB_URL is unset"
+    },
+    {
+      "gate": "B-physical-baseline",
+      "verdict": "NOT_RUN",
+      "detail": "no --api-metrics supplied"
+    },
+    {
+      "gate": "C-clock-offset",
+      "verdict": "NOT_RUN",
+      "detail": "no --api-metrics / --ingestion-metrics supplied"
+    },
+    {
+      "gate": "D-benchmark",
+      "verdict": "BLOCKED",
+      "detail": "benchmark verdict is 'FAIL', not PASS; sustained2x: chosen-ws10000-c10-r520 achieved 65.54590211026941 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws10000-c25-r520 achieved 61.589069969920274 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws10000-c50-r520 achieved 60.78276439633111 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws10000-c100-r520 achieved 52.58254954458466 of 520.0/s offered (ratio below 0.995); t1P99: chosen-ws10000-c10-r520 T1 p99 205983.528171 ms > 50 ms; t1P99: chosen-ws10000-c25-r520 T1 p99 221225.404418 ms > 50 ms; t1P99: chosen-ws10000-c50-r520 T1 p99 224366.642563 ms > 50 ms; t1P99: chosen-ws10000-c100-r520 T1 p99 259031.892596 ms > 50 ms; slotQueueingDeadlineMisses: 388 across all scenarios; criterion sustained2x reported pass=false (observed 0.10112028758573972, threshold achieved / offered >= 0.995 at 520.0 events/s at concurrency [10, 25, 50, 100] (concurrency 1 is the uncontended baseline, reported only)); criterion t1P99 reported pass=false (observed 259031.892596, threshold T1 p99 <= 50.0 ms (completion - due, schedule lag included) at concurrency [10, 25, 50, 100]; concurrency 1 is reported only); criterion slotQueueingDeadlineMisses reported pass=false (observed 388.0, threshold 0 events refused for W_slot (StorageUnavailableReason.SLOT_WAIT) across every scenario)"
+    },
+    {
+      "gate": "L-lock-protocol",
+      "verdict": "NOT_RUN",
+      "detail": "no metrics endpoint, no TESTINBOX_ACTIVATION_DB_URL and no --nodes-file admission_locking column: the T1 lock protocol is unobserved"
+    },
+    {
+      "gate": "E-floor-staging",
+      "verdict": "NOT_RUN",
+      "detail": "no --api-metrics / --ingestion-metrics supplied (the running git_sha comes from testinbox_build)"
+    },
+    {
+      "gate": "E-floor-production",
+      "verdict": "PASS",
+      "detail": "4 ADR-035 floor(s) on origin/master and listed in master's floors file"
+    },
+    {
+      "gate": "Q-qualification",
+      "verdict": "NOT_RUN",
+      "detail": "no --backend-identity supplied"
+    },
+    {
+      "gate": "F-filesystem",
+      "verdict": "NOT_RUN",
+      "detail": "no --filesystem-evidence supplied"
+    },
+    {
+      "gate": "G-cohort",
+      "verdict": "DEFERRED",
+      "detail": "not yet evidenced: the cohort gate is `storage-budget check <reviewed pool file>` (docs/dev/cohort-storage.md), which can pass only after the switch to ALL and the offline reservation; rerun with --cohort-check-output and --cohort-pool-file: that run, with gate G PASS, is the required evidence before capacity_ready is set"
+    }
+  ],
+  "verdict": "BLOCKED",
+  "cohortGate": "storage-budget check (docs/dev/cohort-storage.md); DEFERRED under ALL until its output and the reviewed pool file are supplied"
+}
