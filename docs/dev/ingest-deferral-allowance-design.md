@@ -612,6 +612,9 @@ Ops reconcile of §6.
       only).
     - The decision is made at connect time and depends only on the peer
       address.
+    - The refusal is the transient greeting `421 4.3.2 Service not
+      available`, then close, never a 5xx, so a mis-listed edge defers its
+      mail rather than bouncing it.
 
 ### (b) Acceptance tests
 
@@ -729,7 +732,9 @@ They run on Testcontainers Postgres and MinIO, with the real
       non-single-host `xforward-peers`, a non-single-host `trusted-clients`,
       broken scheduling pins, or a broken hold inequality.
     - I-20: under deployed `ALL`, a peer in neither list is refused at
-      connect. A listed trusted client connects, and gets no identity.
+      connect with `421 4.3.2`, never a 5xx, and an edge that is not on the
+      list keeps the message queued. A listed trusted client connects, and
+      gets no identity.
 
 ### (c) Residuals
 
