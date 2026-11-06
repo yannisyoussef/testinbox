@@ -664,3 +664,12 @@ the same candidate's migrator is safe. No new floor in
 grants are table-level) or `deploy/backup/scope.txt` (`storage_reservation` is
 already classified, never backed up). A failed V27 leaves V26 applied and is
 roll forward only, like V26 above.
+
+**A driver precondition, not a schema one.** A′'s gateway sends T1's insert and
+`COMMIT` in one round trip, which is reasoned and tested only under pgJDBC's
+defaults. From A′ on, the gateway refuses to start when its database URL or its
+`spring.datasource.hikari.data-source-properties` set `autosave` to anything but
+`never` or `preferQueryMode` to anything but `extended` (`DriverProtocolSafety`).
+Nothing in this repository sets either; Ops should confirm `TESTINBOX_DB_URL`
+does not. Rolling the artifact back removes the refusal along with the batch it
+protects.

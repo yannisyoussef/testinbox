@@ -8,6 +8,8 @@ import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.ingestion.config.IngestionProperties
 import email.testinbox.ingestion.smtp.SmtpGateway
 import org.slf4j.LoggerFactory
+import org.springframework.boot.context.properties.bind.Bindable
+import org.springframework.boot.context.properties.bind.Binder
 import org.springframework.boot.health.contributor.Health
 import org.springframework.boot.health.contributor.HealthIndicator
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties
@@ -67,6 +69,13 @@ class IngestionDeploymentSafetyCheck(
                         publicSurface = false,
                         createBucket = properties.storage.createBucket,
                         storage = storage,
+                        // The gateway runs T1, whose insert and COMMIT share one round trip (gate D A′):
+                        // the driver properties Hikari passes to pgJDBC, read from the same keys it binds.
+                        databaseDriverProperties =
+                            Binder
+                                .get(springEnvironment)
+                                .bind(HIKARI_DRIVER_PROPERTIES, Bindable.mapOf(String::class.java, String::class.java))
+                                .orElse(emptyMap()),
                     ),
                 )
             check(violations.isEmpty()) { DeploymentSafety.describe(violations) }
@@ -85,6 +94,7 @@ class IngestionDeploymentSafetyCheck(
 
     private companion object {
         val DEPLOYED_PROFILES = setOf("deployed", "staging", "production")
+        const val HIKARI_DRIVER_PROPERTIES = "spring.datasource.hikari.data-source-properties"
         val log = LoggerFactory.getLogger(IngestionDeploymentSafetyCheck::class.java)
     }
 }

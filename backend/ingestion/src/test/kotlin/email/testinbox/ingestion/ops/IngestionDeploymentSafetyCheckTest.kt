@@ -139,6 +139,45 @@ class IngestionDeploymentSafetyCheckTest {
             .run { context -> assertThat(context).hasNotFailed() }
     }
 
+    // --- Gate D A′: T1's insert and COMMIT share one round trip, under pgJDBC's defaults only ------
+
+    @Test
+    fun `a gateway whose database URL turns on pgJDBC autosave or another query mode fails startup`() {
+        for (query in listOf("autosave=always", "AutoSave=Conservative", "preferQueryMode=simple")) {
+            runner
+                .withPropertyValues(*deployed, "spring.datasource.url=jdbc:postgresql://db.staging.internal:5432/testinbox?$query")
+                .run { context ->
+                    assertThat(context).hasFailed()
+                    context.startupFailure!!.stackTraceToString() shouldContain "spring.datasource.url sets"
+                }
+        }
+    }
+
+    @Test
+    fun `a gateway whose Hikari data-source properties turn on autosave or another query mode fails startup`() {
+        // The keys Hikari itself binds, so a property that reaches the driver is a property the guard sees.
+        for ((key, value) in listOf("autosave" to "always", "autosave" to "CONSERVATIVE", "preferQueryMode" to "simple")) {
+            runner
+                .withPropertyValues(*deployed, "spring.datasource.hikari.data-source-properties.$key=$value")
+                .run { context ->
+                    assertThat(context).hasFailed()
+                    context.startupFailure!!.stackTraceToString() shouldContain
+                        "spring.datasource.hikari.data-source-properties.$key sets"
+                }
+        }
+    }
+
+    @Test
+    fun `the gateway's own data-source properties and pgJDBC's stated defaults start`() {
+        runner
+            .withPropertyValues(
+                *deployed,
+                "spring.datasource.url=jdbc:postgresql://db.staging.internal:5432/testinbox?sslmode=require&autosave=never",
+                "spring.datasource.hikari.data-source-properties.ApplicationName=testinbox-ingestion:n:storage-v1",
+                "spring.datasource.hikari.data-source-properties.preferQueryMode=extended",
+            ).run { context -> assertThat(context).hasNotFailed() }
+    }
+
     // --- TI-STORAGE-006: enforcement may exist, safely ---------------------------------------------
 
     @Test

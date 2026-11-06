@@ -90,6 +90,13 @@ data class DeploymentSettings(
      * missed" is false.
      */
     val eventsVisibilityLag: Duration? = null,
+    /**
+     * pgJDBC connection properties given outside the URL (Hikari's
+     * `data-source-properties`), where the deployable runs T1's one-round-trip
+     * commit (the gateway); null where it does not (the API). Non-null turns on
+     * [DriverProtocolSafety] for these AND the URL's own parameters.
+     */
+    val databaseDriverProperties: Map<String, String>? = null,
 )
 
 /**
@@ -195,6 +202,7 @@ object DeploymentSafety {
             addAll(checkLimits(settings))
             addAll(checkProduction(settings))
             addAll(StorageEnforcementSafety.check(settings))
+            addAll(DriverProtocolSafety.check(settings))
         }
 
     private fun checkMailDomain(settings: DeploymentSettings): List<DeploymentViolation> =
