@@ -1,0 +1,12 @@
+t1Probe check over evidence.json (gitSha 80482e663eb8a8eed9a412357d3b67939af6f787): every scenario's t1Probe.readsFootprint must be true
+scenario                           block              readsFootprint footprintRead footprintUnavailable storeClass
+chosen-ws200-c10-r62               scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c10-r62            scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws200-c100-r62              scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws200-c100-r62           scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c10-r62             scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c10-r62          scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+chosen-ws10000-c100-r62            scenarios          True           True         None                 email.testinbox.persistence.JdbcStorageAdmission
+reference-ws10000-c100-r62         scenarios          True           True         None                 email.testinbox.benchmark.NoLockAdmissionStore
+
+RESULT: 8 scenario(s) checked (8 gate + 0 variant); readsFootprint true in 8; false/missing in 0. The run is NOT void on this check.
