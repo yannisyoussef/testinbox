@@ -11,30 +11,68 @@ import tools.jackson.databind.json.JsonMapper
 import java.sql.ResultSet
 import java.util.UUID
 
-/** Global-only internal pool snapshot; kept in the SAME SQL statement as T1/health. */
+/**
+ * Global-only internal pool snapshot; kept in the SAME SQL statement as T1/health.
+ *
+ * `unknown` (gate D step (1)): whether ANY workspace lacks a share, as 0 or 1,
+ * never a population count. Only `== 0` is ever asked of it
+ * ([email.testinbox.application.storage.CohortPoolState.unknownWorkspaces]),
+ * and the anti-join stops at the first workspace without a share, so the
+ * statement visits at most the shared workspaces (≤ 62, the inventory bound
+ * [read] enforces) plus one, whatever the population.
+ *
+ * Gate D, mode a corrections A1 and A3 (owner decision 2026-11-06, #124): the
+ * figures are the same as at 9d06ab2, from the same statement and snapshot
+ * (`AdmissionStatementEquivalenceTest` runs both texts on the same states).
+ * - A1: `cp_delta` and `cp_reserved` aggregate only the SHARED workspaces. They
+ *   are read only by the `shares` join on `cp_shares`, so every other group was
+ *   computed and thrown away; nothing else reads them.
+ * - A3: the unattributed debt rows are summed in `fp_debt`'s one pass over the
+ *   debt table ([FootprintSql.FOOTPRINT_CTES]), and `cp_unattributed` is ONE row
+ *   with bytes and objects together, not a row set aggregated once per figure.
+ * - A′ (owner decision 2026-11-06, #124 6684712608): `cp_reserved` sums V27's stored
+ *   `object_count`, so the shares' reservations are read from the covering
+ *   `ix_storage_reservation_usage` where the visibility map allows; and the pool is
+ *   built as `json`, not `jsonb`. [read] parses its text either way, and nothing
+ *   queries it as a document, so the binary form was only a conversion per share
+ *   (each `jsonb_build_object` parses and sorts its keys) inside the lock: about a
+ *   third of the pool's aggregate with 31 shares (laptop, 0.34 → 0.22 ms). The same
+ *   keys and values; only the text's key order and spacing differ, which [read]
+ *   does not see (`AdmissionStatementEquivalenceTest` compares the parsed pools).
+ */
 internal object CohortSql {
-    const val CTES = """cp_shares AS (
+    /**
+     * The share inventory: participants and legacy shares. Its own CTE, ahead of
+     * `fp_debt`, which reads it ([FootprintSql.FOOTPRINT_CTES]).
+     */
+    const val SHARES = """cp_shares AS (
         SELECT workspace_id,payload_limit_bytes,footprint_limit_bytes,true AS participant FROM participant_workspace
-        UNION ALL SELECT workspace_id,payload_limit_bytes,footprint_limit_bytes,false FROM storage_legacy_share),
-        cp_delta AS (SELECT workspace_id,sum(bytes) AS bytes,sum(objects) AS objects FROM storage_delta GROUP BY workspace_id),
-        cp_reserved AS (SELECT workspace_id,sum(bytes) AS bytes,sum(cardinality(object_keys)) AS objects FROM storage_reservation GROUP BY workspace_id),
+        UNION ALL SELECT workspace_id,payload_limit_bytes,footprint_limit_bytes,false FROM storage_legacy_share)"""
+
+    /**
+     * Per-share usage, and the unattributed pool: what `fp_debt` (already defined,
+     * with its `unattributed_*` figures) left to the charges whose debt row is gone.
+     */
+    const val CTES = """cp_delta AS (SELECT workspace_id,sum(bytes) AS bytes,sum(objects) AS objects FROM storage_delta
+                       WHERE workspace_id IN (SELECT workspace_id FROM cp_shares) GROUP BY workspace_id),
+        cp_reserved AS (SELECT workspace_id,sum(bytes) AS bytes,sum(object_count) AS objects FROM storage_reservation
+                         WHERE workspace_id IN (SELECT workspace_id FROM cp_shares) GROUP BY workspace_id),
         cp_charge AS (SELECT workspace_id,sum(bytes) AS bytes,sum(objects) AS objects FROM workspace_deletion_charge GROUP BY workspace_id),
         cp_unattributed AS (
-            SELECT d.id,d.bytes,d.objects FROM storage_deletion_debt d
-             WHERE (d.workspace_id IS NULL OR NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=d.workspace_id))
-               AND (d.incurred_at='infinity' OR d.seq>=coalesce((SELECT started_seq FROM fp_newest),0))
-            UNION ALL SELECT c.debt_id,c.bytes,c.objects FROM workspace_deletion_charge c
+            SELECT (SELECT unattributed_bytes FROM fp_debt) + coalesce(sum(c.bytes),0) AS bytes,
+                   (SELECT unattributed_objects FROM fp_debt) + coalesce(sum(c.objects),0) AS objects
+              FROM workspace_deletion_charge c
              WHERE NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=c.workspace_id)
                AND NOT EXISTS(SELECT 1 FROM storage_deletion_debt d WHERE d.id=c.debt_id))"""
 
-    const val COLUMN = """jsonb_build_object(
+    const val COLUMN = """json_build_object(
         'participants',EXISTS(SELECT 1 FROM participant_workspace),
         'protected',EXISTS(SELECT 1 FROM storage_cohort_plan),
         'binding',(SELECT binding FROM storage_cohort_plan WHERE approved),
         'fingerprint',(SELECT fingerprint FROM storage_cohort_plan WHERE approved),
         'unattributedAllowance',(SELECT unattributed_allowance FROM storage_cohort_plan),
         'trashAllowance',(SELECT trash_allowance FROM storage_cohort_plan),
-        'unknown',(SELECT count(*) FROM workspace w WHERE NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=w.id)),
+        'unknown',(SELECT count(*) FROM (SELECT 1 FROM workspace w WHERE NOT EXISTS(SELECT 1 FROM cp_shares s WHERE s.workspace_id=w.id) LIMIT 1) u),
         'nodesReady',coalesce((SELECT NOT EXISTS(
             SELECT 1 FROM unnest(p.expected_nodes) expected WHERE NOT EXISTS(
                 SELECT 1 FROM storage_node n WHERE n.node_id=expected AND NOT n.clean_shutdown
@@ -45,17 +83,17 @@ internal object CohortSql {
                  OR n.cohort_binding IS DISTINCT FROM p.binding OR NOT(n.node_id=ANY(p.expected_nodes))))
             AND coalesce((SELECT observed_at>=now()-make_interval(secs=>p.observation_max_age_ms/1000.0) FROM fp_newest),false)
             FROM storage_cohort_plan p WHERE approved),false),
-        'unknownBytes',(SELECT coalesce(sum(bytes),0) FROM cp_unattributed),
-        'unknownObjects',(SELECT coalesce(sum(objects),0) FROM cp_unattributed),
+        'unknownBytes',(SELECT bytes FROM cp_unattributed),
+        'unknownObjects',(SELECT objects FROM cp_unattributed),
         'trash',(SELECT trash_bytes FROM fp_newest),
-        'shares',coalesce((SELECT jsonb_agg(jsonb_build_object(
+        'shares',coalesce((SELECT json_agg(json_build_object(
             'id',s.workspace_id,'participant',s.participant,'payload',s.payload_limit_bytes,'footprint',s.footprint_limit_bytes,
             'committed',coalesce(a.base_bytes,0)+coalesce(d.bytes,0),'reserved',coalesce(r.bytes,0),
             'committedObjects',coalesce(a.base_objects,0)+coalesce(d.objects,0),'reservedObjects',coalesce(r.objects,0),
             'cleanupBytes',coalesce(c.bytes,0),'cleanupObjects',coalesce(c.objects,0)))
             FROM cp_shares s LEFT JOIN workspace_storage_account a ON a.workspace_id=s.workspace_id
              LEFT JOIN cp_delta d ON d.workspace_id=s.workspace_id LEFT JOIN cp_reserved r ON r.workspace_id=s.workspace_id
-             LEFT JOIN cp_charge c ON c.workspace_id=s.workspace_id),'[]'::jsonb)) AS fp_cohort"""
+             LEFT JOIN cp_charge c ON c.workspace_id=s.workspace_id),'[]'::json)) AS fp_cohort"""
 
     private val mapper = JsonMapper.builder().build()
 

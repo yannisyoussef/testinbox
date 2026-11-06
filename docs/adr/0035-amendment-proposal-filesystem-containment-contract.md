@@ -1115,6 +1115,11 @@ host:
 | `avail_bytes < R_ops` | **latch** (`headroom`) — this should be unreachable; reaching it is a model failure |
 | observation write fails | page (the application's age metric rises) |
 
+*Dated pointer (2026-11-05, ADR-035 amendment note "WS-N1 A1", C4):* the monitor also has an **`inode-headroom`**
+latch. It latches when `inodes_total − inodes_used < ⌈avail / B⌉`, i.e. it holds `inodes_total − inodes_used ≥ ⌈avail /
+B⌉` every cycle, mirroring gate F's starting-headroom row. It is gated like the other latches, and E10 injects it. The
+metadata accounting note (ADR-035, 2026-11-05) relies on it for `minio-sys-excl-trash`.
+
 Every latch is the existing `storage_admission_latch` (ADR-035 §9): every node
 answers `451` before T1 and only an operator clears it. The monitor's checks
 are **detection with a bounded delay**; none of the inequalities of §2 depends
@@ -1295,6 +1300,12 @@ re-issued with them after E1–E11 (§10) run on the recreated filesystem.
 | E9 | zero-byte PUT at full and `STORAGE_FULL` trial gating; (C) the same with every answer withheld and the connection reset, so each failure is `AMBIGUOUS` | §8 | breaker stays open without an observation; trials only after `avail ≥ R_ops`; in (C) under an enforcing mode no real upload reaches storage after the trip, and under `OFF` at most one |
 | E10 | monitor and latch: identity, preallocation and model-violation latches fire on injected faults | §6 | each latch fires; `451` on every node; tenant sees nothing |
 | E11 | restart at full, deletes at full, recovery runbook end to end | PR #81 §5 | as PR #81 §7 rows 5, 6, 11 |
+
+*Dated pointers (2026-11-05, ADR-035 amendment note "WS-N1 A1", effective with C1–C6):*
+- **Row E4:** a `production-host` record may pass E4 by geometry proof plus bounded measurement ((i)–(vi) and C1–C6
+  evidenced). Lab and staging records keep the full-scale route above.
+- **Row E10:** its PASS now includes the **inode-headroom latch** as an injected fault. The latch fires, and every
+  node answers `451` (A1 C4).
 
 E1–E4 fix *O_max* (and confirm ε and *i_max*) in the record — and, because
 `F ≥ Σφ`, totals within Σφ discharge the set premise of §2.1; E5–E6 are the

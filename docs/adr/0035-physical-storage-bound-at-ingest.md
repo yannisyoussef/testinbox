@@ -166,6 +166,18 @@ What has changed is measured, not argued:
   inbox, workspace or service ceiling. A `451` never *discloses* tenant state:
   it reports storage, database or load failure for the whole `DATA`, and it is
   never chosen per tenant.
+
+  > **Dated note (2026-11-06):** the owner granted a dated **bounded
+  > timing-disclosure exception** to I9 for the initial beta of at most 30
+  > admitted accounts. It covers exactly two consequences of mode a's
+  > per-workspace write slots (§4 step 5), observable by an authenticated
+  > participant timing co-addressed messages: shared workspace membership
+  > through induced contention, and a known workspace's naturally occurring
+  > congestion (busy or not at the slot cap). I9 stands as written for
+  > everything else. Mitigation is tracked in #139 and the exception is
+  > reassessed before any expansion. See "Owner decision note (2026-11-06):
+  > bounded timing-disclosure exception to I9 for the initial beta (≤ 30
+  > admitted accounts)" below.
 - **I10 (relevant refusals visible).** An authenticated waiter that presents
   its observation cursor can tell whether a storage refusal occurred for its
   inbox after that cursor.
@@ -1064,6 +1076,18 @@ The result is recorded in `production-ops-acceptance.md` row P. If it fails,
 the design **returns to ADR review**. Per-node escrow is the named fallback,
 and it is not pre-built. Nothing outside PostgreSQL is introduced.
 
+> **Dated note (2026-11-05):** gate D FAILED at `c10dd3d` on the staging host
+> class. The correction stays in mode a and is recorded in "Amendment note
+> (2026-11-05, gate D): still mode a, correct within mode a first" below. No
+> criterion above changes.
+
+> **Dated note (2026-11-06):** for the closed beta, the expected rate above is
+> no longer 260 events/s. It is R = r × (30 + L), the highest sustained T1
+> event rate the configured `INGEST` limits admit; with the owner's r = 1 and
+> L = 1, gate D runs at 31 and 62 events/s. Every other parameter, criterion
+> and threshold above is unchanged. See "Owner decision note (2026-11-06):
+> amendment D, the closed-beta workload envelope" below.
+
 ### 12. SMTP and edge behaviour
 
 | Situation | Gateway reply to the edge | Stored | Tenant sees |
@@ -1363,6 +1387,17 @@ restore procedure covers the bucket.
 | Gateway connection cap | **No: follow-up hardening** | No ADR-035 invariant depends on it. The DB pool and the slots already bound concurrency. |
 | Chunked retention deletion | **No: dropped** | The ledger removes the account locks that needed it. A 50k cascade costs 0.25 s. |
 | Monotonic per-event cutoff | **Efficiency only** | None. |
+
+> **Dated note (2026-11-06):** the write-slot row's "(I9: a 451 is never
+> chosen per tenant)" does not hold for the slots' per-workspace fairness. A
+> workspace at its slot cap makes the events that involve it wait, and answer
+> `451` after `W_slot`, while other events do not. The owner accepted the
+> resulting timing disclosure (shared membership through induced contention,
+> and a known workspace's natural congestion) as a dated **bounded
+> timing-disclosure exception** to I9, for the initial beta of at most 30
+> admitted accounts only; mitigation is tracked in #139. See "Owner decision
+> note (2026-11-06): bounded timing-disclosure exception to I9 for the initial
+> beta (≤ 30 admitted accounts)" below.
 
 ### 16. Observability
 
@@ -1831,6 +1866,9 @@ Everything else in ADR-035 is unchanged.
   combination (E1–E3), with *O_max* measured into the qualification record.
 - ε covers the extent-tree metadata (E3), and blocks run out before inodes
   at `-i 4096` (E4).
+  *2026-11-05 (A1):* a `production-host` record may pass E4 by geometry proof
+  plus bounded measurement; see the amendment note "WS-N1 A1" below. Lab and
+  staging records keep the full-scale route.
 - Trash is bounded by D_est plus the measured residue (E5–E6).
 - MinIO metadata stays within *M*, in **bytes and inodes** (E7).
 - The ENOSPC classifier, and the breaker under a real full disk (E8–E10).
@@ -1936,6 +1974,10 @@ The base case's orderings come from database records:
 
 The containment rollback floor must also be declared, and every running
 artifact must contain it (gate E). E1–E11 must be recorded as PASS.
+
+*2026-11-05 (A1):* for a `production-host` record, E4's PASS is the route of
+the amendment note "WS-N1 A1" below ((i)–(vi) and C1–C6 evidenced). E10's PASS
+includes the inode-headroom latch as an injected fault (A1 C4).
 
 ### A2.7 Production and public activation restrictions
 
@@ -2062,6 +2104,625 @@ record satisfies it, so production still cannot start `ALL`.
   added by this change: the Ops-evidenced `production-host` record for
   `adr035-presigned-put-v2` ships in a later pull request
   (`docs/dev/production.md`, "Storage activation").
+
+## Amendment note (2026-11-05, gate D): still mode a, correct within mode a first
+
+**Authority: the storage CODEOWNERS' consolidated Stage B verdict**, #120
+comment 6631813062, §2.3 ("A dated §11 note records the FAIL, the diagnosis
+and 'correct within mode a first'"). This note records a result and the
+correction; it changes no §11 parameter, threshold, matrix entry or pass
+criterion.
+
+- **The FAIL.** Gate D ran at `c10dd3d` on the staging host class
+  (vmi2932906, 8 vCPU KVM, PostgreSQL 16.15 with production defaults except
+  `max_connections`), the documented command, `--workspaces 200,10000`,
+  `adrEvidence: true` (#124 comment 6613516903; raw evidence #129 under
+  `docs/adr/0035-benchmark/staging/2026-11-03-c10dd3d-FAIL/`). CHOSEN
+  sustained 41.6–61.8 events/s at 520 offered (worst ratio 0.080), T1 p99
+  219–325 s, 1 410 slot-queueing misses; retention and integrity passed.
+  The NO_LOCK reference reached 96–198/s.
+- **The diagnosis.** The `(35, 1)` hold was 15–24 ms against a serial budget
+  of 1.92 ms at 520/s: two population-scaled sums over
+  `workspace_storage_account`, sums over bloated churn heaps, ~7 ms of
+  planning of a variable-arity statement, and the `synchronous_commit = on`
+  commit inside the lock (#124 6633013793).
+- **The harness under-measured production.** It built T1 without
+  `readsFootprint`, which production `ALL` sets (the footprint and cohort reads,
+  a second set of global sums and a population-scaled count). The FAIL stands
+  a fortiori. From now on gate D counts only a run whose T1 is assembled as
+  `IngestionWiring` assembles it, with seeded trust, observation and watermark
+  rows, proven per scenario by the harness's T1 probe (recorded as `t1Probe`).
+  No participant exists in that population, so the cohort pool is read but
+  not required at 10 000 workspaces.
+- **The correction is still mode a.** T1 keeps the exclusive `(35, 1)` lock and
+  its one-statement snapshot. V24 keeps Σ workspace bases in one row,
+  `storage_global_base`, written only by database definer triggers in the base
+  writers' own transactions (compactor, repair, recompute); T1 and T2 never
+  write it, so this is not mode b's hot row, and no application code maintains
+  it (OFF rollback stays exact, §A2.8). Reconciliation (I8) checks it against
+  Σ workspace bases, the repair fixes it and revokes trust, and
+  `storage_confirm_footprint_trust()` revokes trust while it disagrees, so
+  `ALL` fails closed (451). T1 binds one `uuid[]` per id list under
+  `plan_cache_mode = force_generic_plan`, scans each in-flight table once, and
+  its cohort "unknown" read stops at the first unshared workspace. V24 sets
+  per-table autovacuum and fillfactor. `synchronous_commit` stays on (§4).
+- **Then gate D reruns unchanged.** If CHOSEN fails while NO_LOCK passes, the
+  design returns to ADR review for the named per-node escrow fallback. If
+  NO_LOCK fails, the per-event cost and the host class for 2 × 260/s are an
+  owner/ADR question.
+- **A measurement, not a mode.** The harness can also run a
+  `PARTITIONED` benchmark variant (a shared `(35, 1)` plus sorted per-workspace
+  locks over a 30-participant + legacy population, W1). It lives only in the
+  benchmark module, is reported apart from the gate and never counts as gate D
+  evidence; whether any such mode exists is an owner decision and a separate
+  ADR amendment.
+
+## Owner decision note (2026-11-05): partitioned locking, implementation and testing only
+
+**Authority: owner decision 2026-11-05**, relayed by Ops on #124 comment
+6665820491, quoted exactly:
+
+> "Partitioned locking: Implementation and testing authorized. Release requires independent correctness review, passing applicable benchmark criteria, and enforced safeguards against cohort growth or overcommit. Benchmark success alone is insufficient. This does not authorize opening admission."
+
+This note records that decision; it changes no text above. In particular the
+gate D note's last bullet ("A measurement, not a mode … lives only in the
+benchmark module … whether any such mode exists is an owner decision and a
+separate ADR amendment") and ADR-037's "preserve … transaction lock ordering"
+stand as written. What follows is **the team's safeguard reading** of the
+decision — how the implementation keeps within it — not the owner's words,
+which are only the quotation above:
+
+- the production-code implementation of the share-partitioned T1 behind a
+  **lab-only** switch, `testinbox.storage.admission-locking`, whose default
+  and only committed value is `GLOBAL` (mode a). `DeploymentSafety` refuses
+  `COHORT_PARTITIONED` in every environment but `lab`; the activation inventory
+  refuses a node that runs it outside the lab; activation gate L blocks while
+  any node runs it or cannot prove it does not;
+- its tests, and its measurement by the §11 harness as a variant reported
+  apart from gate D, which is still computed from mode a's CHOSEN scenarios.
+
+On that reading it authorizes nothing more: not release, enablement, opening
+admission, or any §11 parameter, threshold or criterion change. Whether the mode exists in ADR-035,
+and on which criteria, is the PROPOSED note
+[`0035-amendment-note-partitioned-t1-PROPOSED.md`](0035-amendment-note-partitioned-t1-PROPOSED.md),
+which lists both passages above as text it would amend.
+
+## Amendment note (2026-11-05, WS-N1): one definition of MinIO metadata, in inodes and bytes
+
+Authority: the owner's acceptance of `docs/adr/0035-amendment-note-metadata-inodes-PROPOSED.md`, relayed on #124
+(comments 6665820491 and 6671007334; owner decision of 2026-11-05: double counting removed, conservative coverage of every allocation kept; application, monitor and
+qualification agree; no safety control disabled).
+
+**Inodes.** Wherever this ADR or its annex (Amendment 2) speaks of MinIO metadata inodes, *M*'s inode budget or the
+inodes of MinIO's metadata, the counted set is every inode under the MinIO data directory's `.minio.sys` (scope
+`minio-sys`). This applies to:
+
+- annex §3.5;
+- the §6 monitor row "or their inodes > *M*'s inode budget";
+- the §10 E7 criterion "inodes ≤ budget";
+- the record's `filesystem.metadataInodesMeasured`;
+- the declared `metadataBudgetInodes`;
+- gate F.
+
+Directories under the bucket are per-object inodes charged by `i_max` (annex §3.5).
+
+The same count without the contents of `.minio.sys/tmp/.trash` (scope `minio-sys-excl-trash`) may be used **only
+while** the Ops monitor's scope-independent inode-headroom latch (`inodes_total − inodes_used ≥ ⌈avail / B⌉`) is
+armed. Trashed objects' inodes are covered by that latch once their debt rows are superseded, because each holds a
+block and `I_fs ≥ C_fs / B`. Gate F refuses that scope unless the record carries a `PASS` E10 drill of that latch
+on the fs-monitor build the evidence names. Gate F also refuses evidence and a record that count inodes over
+different scopes.
+
+**Bytes.** Wherever this ADR or its annex speaks of *M*'s bytes, the counted figure is `metadataBytes` (scope
+`minio-sys+unattributed`): the allocated bytes under `.minio.sys` except the contents of `.minio.sys/tmp/.trash`
+(which are *W*; the `.trash` directory's own blocks stay in *M*, as annex §3.6 puts them), plus every allocation
+on the mount outside `.minio.sys` that no object is charged for. The second term is:
+
+- the bucket root;
+- every block beyond the first of a bucket directory that is, is inside, or contains an object directory (a
+  directory holding `xl.meta`);
+- every block of a bucket directory holding no object;
+- every file under the bucket that is not part of an object;
+- every subdirectory of an object directory that its `xl.meta` does not reference;
+- every inode outside `.minio.sys` and the bucket.
+
+This applies to annex §2.2 class (e), the §6 monitor row, the §9 gate F row, E2's drain clause and E7's criterion.
+E7's "probe residue" is inside it.
+
+The first block of each directory leading to an object, and the object's own files, are in *O_max* (annex §3.1–§3.3,
+verified in aggregate by E2's `total delta ≤ Σφ`). They are never also in *M*. The reference implementation is
+`scripts/adr035-metadata-accounting.py`.
+
+**Records and gate F.** The qualification record carries `filesystem.metadataBytesMeasured`, the larger of E2's
+post-drain and E7's peak `metadataBytes`, with `metadataBytesScope`. Gate F requires the evidence's
+`minio.metadataBytesScope` and the record's `filesystem.metadataBytesScope` to be `minio-sys+unattributed`, and the
+declared *M* to be at least the record's measurement.
+
+The walk fails closed: no figure for a missing or foreign `.minio.sys` or data directory. Evidence collected with
+no bucket directory (`bucketPresent: false`) does not pass gate F.
+
+**What does not change.** The inode budget and every other criterion are unchanged. *M* is a declaration: 1 GiB
+for production by the owner's decision of 2026-11-05 (subject to the capacity proof, which passes), and 256 MiB on
+staging. Post-drain residue has no
+declared bound (ext4 keeps each directory's historical peak). *M* bounds it through the monitor's alert, and the
+operator acts on the runbook, never by changing a latch. In-flight upload staging
+under `.minio.sys/tmp` stays in *M* and is also charged in *F_r*/*H_F*: a deliberate, conservative overlap, sized
+in the note's §7.
+
+## Amendment note (2026-11-05, WS-N1 A1): E4 on a `production-host` record by geometry proof plus bounded measurement
+
+**Authority: owner acceptance (P9), 2026-11-05.** This changes the PASS route of annex §10 row E4 for `production-host` records only. Lab and staging records keep the full-scale route. No other criterion changes. Pointers: §A2.2 (E4), §A2.6, annex §10 row E4, production.md "The production qualification record Ops must evidence", filesystem-evidence.md "Before `ALL` can pass", STATUS item 19.
+
+**E4 (production-host) is PASS when (i)–(vi) all hold on the final filesystem, after the reboot, in the qualification window:**
+
+**(i) Geometry.** `dumpe2fs -h` shows inode count ≥ block count at B = 4096 (`f_files ≥ f_blocks`), and no `inline_data` and no `bigalloc`. The full feature list is committed and is byte-identical to the (v) lab filesystem's.
+
+**(ii) Margin after baseline.** Measure e₀ = max(0, (f_files − f_ffree) − (f_blocks − f_bfree)). PASS requires m = f_files − f_blocks − e₀ > 0, with *m* and m / f_blocks recorded.
+
+Why this suffices: without inline data, every new inode owns at least one block counted in `f_blocks`. So at block exhaustion f_ffree ≥ m, whether ENOSPC comes at `f_bavail` = 0 or, with MinIO as root, at `f_bfree` = 0.
+
+**(iii) Bounded measurement.** At least 20,000 objects through a qualification MinIO of the qualified member:
+- including 0 B and 1 B objects, and objects up to 512 B;
+- as single-object messages and as attachments;
+- across fresh inboxes and messages.
+
+The ratio Δ(f_files − f_ffree) / Δ(f_blocks − f_bfree) is recorded and must be ≤ 1.
+
+**(iv) Failure shape (evidence only).** A bounded ENOSPC run under the A2 procedure records `f_ffree > 0` at ENOSPC, whether ENOSPC came at `f_bavail` = 0 or `f_bfree` = 0, the 507/ENOSPC answers and the MinIO uid. The ballast uses no inodes, so (iv) proves nothing about the inode ratio.
+
+**(v) Lab full-scale E4.** A full-scale E4 has PASSED on a lab filesystem with the identical feature list, kernel `6.8.0-147-generic` and member `3f97c565…`. It is committed in this repository and cited by evidence reference.
+
+**(vi) Blockless-inode census.** After (iii), and on the E2/E7 (or A5 P2) population, `find <mount> -xdev` shows **zero** inodes with zero allocated blocks, `.minio.sys` included.
+
+**MinIO at `0d7408fc9969caf07de6a8c3a84f9fbb10a6739e`** (`cmd/xl-storage.go:1219–1230`):
+
+`diskAlmostFilled() ⇔ Free/Used < 0.05 ∨ FreeInodes/UsedInodes < 0.05`
+
+It only switches trash to immediate purge. The inode check in `hasSpaceFor` (`cmd/object-api-utils.go:1276`) is skipped in SD mode, and a single pool bypasses `hasSpaceFor` anyway.
+
+Before block exhaustion, FreeInodes/UsedInodes ≥ m / (f_blocks + e₀). On prod-gra-01, f_files − f_blocks = 866,139 against f_blocks = 11,716,773 (7.39 %), so the inode branch cannot fire early while e₀ ≤ 266,952. The recorded e₀ must satisfy this. Otherwise the record states that it can fire early, and E5 is evaluated with it.
+
+**Monitor.** The inode-headroom latch (`inodes_total − inodes_used ≥ ⌈avail / B⌉`) is active in production, and E10 exercises it.
+
+**Residual risk.** Full-scale exhaustion is not observed on this instance. (v) shows it on an identical-feature filesystem, and (i)–(iii) and (vi) check every premise of the bound on this one.
+
+**Effective 2026-11-05 with C1–C6.** The owner accepted A1 (P9) "subject to app/storage and independent security
+acceptance of the exact amendment" (#124 comment 6665820491). Both acceptances exist for A1 with C1–C6 (#124 comment
+6667671578: the app/storage acceptance and the independent security acceptance). The owner recorded A1 effective with
+C1–C6 (#124 comment 6671007334). The six-hour full-capacity fallback is not authorized. **E4 is PASS only when
+(i)–(vi) and C1–C6 are evidenced.**
+
+**Evidence conditions (C1–C6), verbatim:**
+
+- **C1.** "The (iii) ratio covers only objects ≤ 512 B and is recorded per class (0 B, 1 B, ≤ 512 B), each ≤ 1. The MinIO runs at the record's runtime-config hash."
+- **C2.** "(vi) runs before any deletion or cleanup of the (iii), E2 and E7 objects, and before MinIO's own trash or stale-upload purge. It records the entry counts of `.minio.sys/tmp`, `.minio.sys/tmp/.trash` and `.minio.sys/multipart`. Its raw output `find <mount> -xdev -printf '%i %n %b %s %y %p\n'` is committed. The distinct inodes it lists, plus the inodes below `First inode` (`dumpe2fs -h`), equal `f_files − f_ffree` read straight after. Any gap beyond in-flight uploads fails (vi)."
+- **C3.** "Every step of (i)–(vi) records `uname -r` = `6.8.0-147-generic`, `/proc/sys/kernel/random/boot_id` and `findmnt -no UUID <mount>`. All are equal across steps, and the UUID equals the record's `filesystem.uuid`. 'After the reboot' means that boot id."
+- **C4.** "E10's PASS includes the inode-headroom latch as an injected fault: the latch fires, and every node answers `451`."
+- **C5.** "The SD-mode skip and the single-pool bypass are cited by line range at `0d7408fc…`, the excerpts are committed with the evidence, and that commit equals the record's `minio.commitId`."
+- **C6.** "'A5 P2' means ⟨definition⟩; without a committed definition, (vi) uses the E2/E7 population. The member is `sha256:3f97c5651cb6662b880c787a232b6b34fec8d8922e08d6617b25d241a21164bb`. *i_max* for this record is confirmed by E1/E2."
+
+**C6 as applied:** A5 is not used, so "A5 P2" is void and (vi) runs on the E2/E7 population. The member is the full
+digest quoted in C6. "After the reboot" means the boot id C3 records: running kernel 6.8.0-147-generic, boot id
+unchanged at every step.
+
+## Amendment note (2026-11-05, WS-N1 A2): the N1 ballast and qualification procedure (pointer)
+
+This is a procedure clarification, not a criterion change. The procedure for N1's ballast windows and qualification
+trees (stopped stack, interlock, ballast form, band minimums, lab monitor configuration, isolation, cleanup, E10's
+decoy fault) is the dated note "A2: the N1 ballast and qualification procedure" in `docs/dev/production.md`, from #124
+comment 6649193963 §3 as clarified by comment 6667602147. Gate F is unchanged by it.
+
+## Owner decision note (2026-11-06): bounded timing-disclosure exception to I9 for the initial beta (≤ 30 admitted accounts)
+
+**Authority: two owner decisions of 2026-11-06**, quoted exactly from their
+citable record, #124 comment
+[6675385078](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6675385078)
+("Owner decisions of 2026-11-06, verbatim as given to the app team"). The same
+comment records the owner's naming of the app-team maintainer.
+
+The first chose option (a) of #124 comment 6672608281:
+
+> "1. I choose option (a), scoped to the initial beta of at most 30 admitted accounts.
+>
+> I explicitly accept the reported residual: an authenticated participant may use co-addressed messages, induced workspace saturation and delivery timing to infer that recipient addresses share a workspace.
+>
+> Record this as a dated exception to I9, not as evidence that tenant-dependent behaviour cannot disclose membership. Update the relevant threat-model and privacy statements accurately. My earlier acceptance of coarse global-capacity disclosure must not be cited as acceptance of this separate issue.
+>
+> Track mitigation with a named owner and review it before expanding beyond this cohort. This acceptance does not authorize admission, waive the partitioned-mode timing assessment, or accept any broader disclosure discovered by testing."
+
+The second chose (a′) of #124 comment 6675317338, on the broader consequence
+the documentation pass surfaced (natural congestion read without a flood):
+
+> "I choose (a′): extend the dated I9 exception to coarse workspace-activity inference for the initial beta of at most 30 admitted accounts.
+>
+> The accepted residual includes both:
+> - inferring shared workspace membership through induced contention;
+> - inferring naturally occurring workspace congestion by timing messages to a known address, including repeated observations over time.
+>
+> Record these together as one bounded timing-disclosure exception. This does not accept message-content disclosure, identity disclosure, precise usage disclosure, or the separate partitioned-locking residual.
+>
+> Keep #139 as a tracked mitigation and reassess this exception before expanding the cohort. Assign implementation responsibility to a named app-team maintainer; I remain the risk-acceptance owner.
+>
+> Update the existing ADR addition and privacy/threat-model wording in one consolidated pass. Reuse the existing review and timing evidence where applicable. Do not reopen completed qualification or request a new decision for a restatement of these two accepted consequences.
+>
+> Escalate materially broader disclosure or evidence that the documented limits do not hold.
+>
+> Continue the benchmark analysis and other authorized work in parallel. This decision does not open admission or waive outstanding release gates."
+
+This note records both decisions as **one bounded timing-disclosure
+exception to I9**. It changes no text above: I9 (§1), §4 step 5, §5's write
+slots, §12 and the §15 table stand as written, and no behaviour, parameter,
+threshold or criterion changes.
+
+**The shared mechanism.** Mode a's per-workspace write-slot fairness: §4 step
+5, with the slots of §5 (#124 and #139 cite it as "§5 step 5"). An event
+counts against every workspace it involves. At most
+`max-concurrent-events-per-workspace` (default `slots/4` = 4) events of one
+workspace hold slots on a node. A wait longer than `W_slot` (10 s) answers
+`451` for the whole `DATA`, which the edge retries no sooner than 120 s later
+(`minimal_backoff_time`, `deploy/mail-edge/contract.yaml`). The observer puts
+its own inbox and an address in a workspace W in one `DATA` (one event,
+ADR-026), and times its own copy's delivery through the wait API, or by
+comparing `receivedAt` with the edge's `Received:` header. A delay, or a
+deferral by that `451`, means W was at its slot cap on that node.
+
+**The accepted residual is exactly these two consequences.**
+
+1. **Membership through induced contention.**
+   - *Observer:* an authenticated participant that reads an inbox of its own.
+   - *Mechanism:* it floods addresses it knows in W to hold W at its slot cap,
+     then co-addresses its own inbox with a probe address. A delay or `451`
+     shows that the probe address is in W.
+   - *Preconditions:* at least one known address in W; storage enforcement
+     running the guarded protocol (`ALL`).
+   - *Bound:* the flood and the probe copy are both charged to W's `INGEST`
+     budgets (defaults, configurable: burst 60, refilling 2/s per inbox;
+     burst 300, refilling 10/s per workspace). A probe copy refused there is
+     discarded before any slot, so the signal disappears. The answer is one
+     bit per probe: in W or not.
+2. **Naturally occurring congestion of a known workspace.**
+   - *Observer:* the same authenticated participant.
+   - *Mechanism:* without any flood, it co-addresses its own inbox with an
+     address it knows in W, repeatedly over time. Each delay or `451` shows
+     that W's own traffic held W at its slot cap on that node at that moment.
+   - *Preconditions:* a known address in W; `ALL`; W's own traffic reaching
+     4 concurrent slot-holding events on a node.
+   - *Bound:* coarse. Each observation is one bit for one node and one moment:
+     W at the cap (4 concurrent events) or not, read as a delay of up to
+     `W_slot` (10 s) or a `451`. Repeated observations give a coarse busy/idle
+     time series, no finer. The sampling rate is bounded by the `INGEST`
+     budgets above, which the probe copies spend from W's own budget.
+
+Both consequences need `ALL`. Production is `OFF` today, so neither is live;
+both become live when `ALL` is enabled for the beta. An external SMTP sender
+learns nothing: the edge stores and forwards and sends no DSN (§12). Unknown
+recipients never reach a slot (§4 step 4).
+
+**Excluded, explicitly.** The exception does not accept:
+- message-content disclosure;
+- identity disclosure;
+- precise usage disclosure (counts, sizes, rates, senders, or any figure
+  finer than "at the slot cap or not");
+- the separate partitioned-locking residual (#136; see below);
+- anything materially broader than the two consequences above.
+
+**Escalation.** A materially broader disclosure, or evidence that the
+documented limits do not hold, goes back to the owner. The documented limits
+are the `INGEST` budgets, the slot cap, `W_slot` and the edge's
+store-and-forward with no DSN. A restatement of the two accepted consequences
+needs no new decision.
+
+**Scope and conditions.**
+- The initial beta, at most 30 admitted accounts (ADR-036, ADR-037).
+- #139 tracks the mitigation. The exception is **reassessed before any
+  expansion of the cohort**.
+- **Implementation responsibility (app-team maintainer):** `yannisyoussef`,
+  named by the owner (#124 comment 6675385078).
+- **Risk-acceptance owner:** the owner.
+
+**Evidence reused.** The channel was found by the independent security review
+of #136, round 3 ([#124 comment 6672608281](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6672608281)).
+The review record and its countersignature entry are #124 comment
+[6675196056](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6675196056).
+Neither decision requests a new review, and no completed qualification is
+reopened.
+
+**What the exception is not.**
+- **Not a reinterpretation.** I9 stands as written for everything else.
+  Option (a) as written in #124 read "never chosen per tenant" as "the `451`
+  decision rule never inspects tenant state". That reading is **not**
+  adopted. The slot delay and its `451` do depend on the involved
+  workspaces' load, and this note says so.
+- **Not evidence that tenant-dependent behaviour cannot disclose.** This
+  behaviour discloses both consequences above. The exception may not be
+  cited to argue that any other tenant-dependent behaviour is harmless.
+- **Not the earlier capacity acceptance.** ADR-037 decision A2 (§6, recorded
+  in §13d's amendment and in `abuse-model.md`) accepted a coarse
+  *global-capacity* side channel: cooperating workspaces correlating their own
+  `SERVICE_CAPACITY` outcomes with global stored data across separate events.
+  That is a separate issue. This one is per workspace, driven by load, and
+  observed as the timing of a co-addressed event. A2 must not be cited to
+  justify it, and this exception does not extend A2.
+- **Not the partitioned residual.** The partitioned-mode timing assessment
+  (#136) is not waived. The criterion in
+  [`0035-amendment-note-partitioned-t1-PROPOSED.md`](0035-amendment-note-partitioned-t1-PROPOSED.md)
+  stays PROPOSED. The partitioned residual still needs its own assessment,
+  criterion and decision, whatever its comparison with this baseline shows.
+- **Not admission.** It does not open admission or waive any outstanding
+  release gate.
+- **Not a relaxation of limits.** CLAUDE.md invariant 8, ADR-027 §1 and
+  ADR-025 are unchanged for limits. A write slot is not a rate limit or a
+  quota, and no limit may change an SMTP reply.
+
+**Where it is recorded.** Dated pointers at I9 and at the §15 write-slot row;
+`docs/security/abuse-model.md` (the write-slot entry);
+`docs/security/threat-model.md`; pointers in ADR-025, ADR-027, ADR-037 and
+`docs/dev/cohort-storage.md`; the partitioned correctness document §7.2 and
+the PROPOSED note; CLAUDE.md invariant 8.
+
+## Owner decision note (2026-11-06): amendment D, the closed-beta workload envelope — ACCEPTED
+
+**Authority: owner decision of 2026-11-06 (about 04:10Z)**, relayed by Ops
+and quoted exactly from its citable record, #124 comment
+[6676738358](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6676738358):
+
+> "I approve route D+A for the initial closed beta:
+> - Per-workspace INGEST refill r = 1 recipient copy/s.
+> - Per-workspace burst b = 60 copies.
+> - With 30 participant workspaces plus one legacy workspace, benchmark at R = 31 and 2R = 62 events/s.
+> - Keep every other gate D criterion unchanged.
+> - Do not adopt A4 or change production PostgreSQL settings.
+>
+> Proceed with the proposed A1–A3 optimisations, correctness review and benchmark rerun on the existing host class. Preserve results, transactional semantics and accounting invariants.
+>
+> Enforce the approved workload envelope in configuration and deployment checks. Make the per-inbox settings compatible with the lower workspace allowance. Document that these are incoming recipient-copy limits, not outgoing-mail limits.
+>
+> Correct amendment D before recording acceptance: excess INGEST traffic is currently discarded with an unchanged SMTP response; it is not queued awaiting budget refill. Distinguish that from write-slot waiting and retry behavior. Explain both accurately in the beta limits documentation.
+>
+> I accept the reduced beta limits and the explicitly documented residual that the sustained-load benchmark does not prove burst performance. Do not claim that burst 60 guarantees delivery within W_slot.
+>
+> Continue unrelated authorized release work and E7 in parallel. Reuse valid qualification evidence unless an optimisation changes a relevant dependency. If D+A fails, return the measured cause and the next concrete option; do not silently relax criteria or change host class.
+>
+> This approves the workload amendment and implementation work. It does not authorize admission, production enforcement activation or a broader cohort."
+
+The amendment put to the owner is text D of the gate D decision paper (#124
+comment 6676468704, section 5 "D."). The owner accepted it on condition of
+one correction. The paper said "Bursts (b copies per workspace) are queued by
+the write slots and bounded by `W_slot`". That is wrong: a copy over its
+`INGEST` budget is never queued, it is discarded. The paper also said
+"Raising r, or admitting workspaces beyond the cohort, requires a new passing
+gate D at the new R first". This note does **not** record that sentence as
+accepted: the owner's decision approves r = 1, b = 60 and one legacy workspace
+and "does not authorize … a broader cohort", so it pre-authorizes no change at
+all. The accepted text below contains only what the owner's decision states or
+the paper's text D states without contradicting it. Everything else this note
+says is under "the team's reading", and is not the owner's words. This note
+changes no text above it. §11's table, its pass criterion and the earlier
+dated notes stand as written, read with this amendment for the closed beta.
+
+### Amendment D, as corrected and accepted
+
+> While admission is limited to the closed beta (30 participant workspaces
+> plus one legacy workspace), ADR-035 §11's expected rate is the highest
+> sustained T1 event rate the configured `INGEST` limits admit:
+> **R = r × (30 + L) events/s**, where r is the per-workspace `INGEST` refill
+> (incoming recipient copies per second) and L the legacy workspaces. Every
+> admitted event charges at least one copy.
+>
+> **Approved values:** r = 1 recipient copy/s, b = 60 copies per workspace,
+> L = 1. So **R = 31 events/s and 2R = 62 events/s.**
+>
+> Gate D runs at R and 2R. Every other gate D criterion is unchanged, and it
+> runs on the existing (staging) host class. A4 is not adopted and production
+> PostgreSQL settings do not change.
+>
+> **Excess `INGEST` traffic is discarded with an unchanged SMTP response; it
+> is not queued awaiting budget refill.** That is distinct from write-slot
+> waiting and retry: an admitted event may wait for a write slot, and may be
+> deferred and retried, which is waiting, not discard.
+>
+> **Residual, accepted by the owner:** the sustained-load benchmark does not
+> prove burst performance. Nothing claims that a burst of b = 60 is delivered
+> within `W_slot`.
+>
+> **Enforcement:** the approved workload envelope is enforced in
+> configuration and deployment checks, and the per-inbox settings are
+> compatible with the lower workspace allowance. These are incoming
+> recipient-copy limits, not outgoing-mail limits.
+>
+> **Scope:** this approves the workload amendment and implementation work. It
+> does not authorize admission, production enforcement activation or a
+> broader cohort.
+
+### The team's reading (not the owner's words)
+
+The full Ops-facing account, with the numbers, is
+[`docs/dev/beta-limits.md`](../dev/beta-limits.md).
+
+**Mechanics behind the corrected sentence (facts of the code, not new rules).**
+- `INGEST` is charged per resolved recipient copy, first against the inbox's
+  budget, then against the workspace's. A copy refused by either is discarded
+  in-process: nothing is stored or retried. The SMTP reply stays the uniform
+  `250` (ADR-025, ADR-027 §1). The discard is logged with metadata only
+  (`smtp_discard reason=ingest_rate_limited`) and counted
+  (`testinbox_rate_decision_total{category="INGEST",outcome="rejected"}`).
+- An event with at least one admitted copy waits for a write slot (§4 step 5,
+  the slots of §5) for at most `W_slot` = 10 s. If none frees, the whole
+  `DATA` is answered `451` and nothing commits. The edge keeps the message and
+  retries no sooner than 120 s later (`minimal_backoff_time`), until its 4 h
+  queue lifetime (§12). The budget check comes first, so a discarded copy
+  never waits for a slot. The slot is taken after the copies were charged,
+  so the edge's retry of a slot-wait `451` is charged again and may be
+  discarded if the budget has run out by then. A `451` from an open breaker,
+  the latch or the activation guard is decided before any recipient resolves
+  and charges nothing.
+- Under the burst residual, each workspace may present up to 60 copies at
+  once (31 × 60 = 1 860 across the cohort). Part of a burst may wait the full
+  `W_slot`, be answered `451` and arrive only after the edge's retry, or later.
+- "Every other gate D criterion unchanged" means: concurrency
+  1/10/25/50/100; 1 000 live reservations plus a compaction interval's deltas;
+  ≥ 10 000 workspaces; the multi-recipient mix; 2R sustained at ≥ 0.995 and
+  T1 p99 ≤ 50 ms at concurrency 10/25/50/100; retention p99 ≤ 2× the NO_LOCK
+  reference; zero deadlocks, `lock_timeout` < 0.1 %, no slot-queueing
+  deadline miss, no other error.
+
+**Changing the envelope.** Changing r, b or L, the cohort size, or R is an
+owner decision, followed by a new passing gate D at the new R, and only then
+a code change. The code pins the approved values so that none of this can
+happen by configuration: under `ALL`, `DeploymentSafety`
+(`IngestEnvelopeSafety`) refuses r > 1, b > 60, L > 1, and any R_gated but
+31. Lowering r, b or L is allowed, because it only lowers load and stays
+covered by the R = 31 evidence.
+
+**How the envelope is enforced.**
+- **Configuration.** The shared document of both deployables'
+  `application-deployed.yaml` (staging and production carry the same
+  envelope, ADR-034) sets the per-workspace budget to 60 and 1.0/s and the
+  per-inbox budget to 30 and 0.5/s. One flooded address can then take at most
+  half of its workspace's burst and refill, which keeps ADR-027 §4's
+  anti-starvation purpose under the lower allowance. The library defaults
+  (300 and 10/s, 60 and 2/s) stay the development values.
+- **Startup, under `ALL`.** Besides the pins above, `ALL` is refused while
+  `testinbox.storage.gated-expected-rate` (R_gated) or
+  `testinbox.storage.declared-legacy-workspaces` (L) is missing, or limits are
+  disabled. R_gated must equal 31 exactly. Together the pins imply
+  r × (30 + L) ≤ R_gated. In every mode a per-inbox value above the
+  workspace's is refused.
+- **N, the mail-receiving workspaces, at run time.** N is never counted at
+  startup.
+  - *Before a cohort plan exists*, no pool is required and every workspace in
+    the database receives mail. Each node under `ALL` therefore re-checks,
+    with its activation watch, that the database holds at most 30 + L
+    `workspace` rows (counted only up to that bound). Over it, the node's
+    activation guard answers `451` for every event before any recipient
+    resolves, exactly like a broken node inventory. That is a
+    deployment-wide refusal, never a per-workspace one (I9). It clears on the
+    next pass that finds the population back inside the bound.
+  - *Once a plan exists*, the pool bounds the population: every workspace must
+    hold a share, and a pool with more legacy shares than L is never proven,
+    reserved or approved (admission answers `CAPACITY_UNAVAILABLE`).
+- **Activation.** `check-storage-activation.sh` gate D reads R_gated from
+  every node (`testinbox_storage_gated_expected_rate`), blocks when it is
+  absent or the nodes disagree, and refuses evidence whose
+  `harness.expectedRate` differs. Gate W reads 30 + L from every node
+  (`testinbox_storage_envelope_max_workspaces`) and blocks `ALL` while no plan
+  exists and the database holds more workspaces than that. Ops' production
+  policy check (`check-testinbox-prod`) pins
+  `TESTINBOX_STORAGE_GATED_EXPECTED_RATE` to the evidence value, 31.
+- **The harness** keeps 260 only as the default of `--expected-rate`, and no
+  longer marks another expected rate as non-evidence, because which R counts
+  is a property of the deployment. The closed-beta run is
+  `--expected-rate 31 --rates 31,62`, every other flag as before.
+- **Unchanged.** The admission protocol, transactional semantics, ledger and
+  accounting invariants; the SMTP replies (no limit changes one: ADR-027 §1,
+  CLAUDE.md invariant 8); I9 and its dated exception, whose sampling bound is
+  the same `INGEST` budgets, now lower; the host class; production PostgreSQL
+  settings.
+
+## Amendment note (2026-11-06): global storage faults are answered uniformly before recipient resolution, including recovery
+
+Recorded with the fix, for the owner's merge review (the issue #102 precedent).
+It restates §8 and §12 for ADR-025 and changes no limit, ceiling or reply
+mapping.
+
+- **The property.** A global storage fault gets the same reply for every
+  event, decided before any recipient resolves, for as long as the fault lasts
+  and **while it recovers**. The breaker's half-open trial is the non-tenant
+  proof (the witness, a fresh clock measurement, the Ops evidence), run on the
+  pre-resolution path by whichever event arrives first, never by an event's
+  upload. A failed proof re-trips with the §8 backoff, and every event in the
+  window gets the same `451`. The backoff schedule is unchanged.
+- **The real-event trial is claimed before resolution.** Quota, a full
+  filesystem and an ambiguous upload keep their real-event confirmation (§8,
+  issue #102). It starts only once the non-tenant proof has passed, and it is
+  held by one event at a time, chosen before resolution. Every other event
+  gets the same pre-resolution `451` until that event is over. If it reaches no
+  upload, the next event takes the claim.
+  - **Claimed after parsing.** The claim is taken once the message has been
+    parsed, and before its first recipient resolves. Parsing does not depend
+    on the recipients, so the answer stays uniform. A slow message therefore
+    never holds the gate shut for other events; before parsing, an event meets
+    only a check that never claims.
+  - **A lease.** A claim is held for at most `L_claim`. That is the slot wait,
+    plus T1's lock timeout, plus `E`, plus a margin for resolution and T2:
+    3 min as shipped, and it is derived from those values. A claim held longer
+    is a failed trial: a new trip generation, the doubled backoff and a new
+    proof. The stale claimant's later end changes nothing, and each expiry is
+    counted.
+- **One trial at a time, per trip.** Every trial is bound to the trip it was
+  issued for. A trial that a later trip overtook can no longer end, close or
+  fail a newer one. So two trials, and two real-event uploads to a possibly
+  full store, never run at once.
+- **§8, opening causes.** A `403` refusal of a fenced upload that comes
+  **more than `ε_max` before the copy's write deadline** opens the breaker
+  with its own kind. Storage judges expiry by its own clock, which may be up
+  to `ε_max` off.
+  Credentials and bucket policy say nothing about a recipient. Only the
+  witness reopens it, after the normal backoff, so one spurious `403` costs one
+  backoff and never a latch. A `403` within `ε_max` of the deadline, or after
+  it, may be an expired URL from one slow upload: that event's own `451`, and
+  no trip. The §16 metric
+  keeps `kind=deadline` for both.
+- **§8, quota.** The quota trial is the witness and then the claimed real
+  event. A bucket at or over its hard quota refuses even the zero-byte witness.
+- **Remaining split: the trial event itself** (inherent to #102). While the
+  real-event trial is in flight, its own event's reply depends on whether it
+  reached an upload. A full filesystem needs a newer observation for each such
+  trial. Under `OFF`, an ambiguous upload escalates after one.
+- **Quota precondition.** Under `ALL`, admitted payload and footprint are
+  bounded by the ceilings. So the quota residual (a bucket quota that keeps
+  passing the witness while real uploads fail) is **unreachable while the
+  bucket hard quota is at least *G_F* with margin**. That precondition is
+  **verified at activation**, not assumed. **Under `OFF`, or if the
+  precondition fails**, a persistent split is possible. It is observable only
+  if a delivery notice reaches a sender; closing that path is tracked as EP-8.
+- **Unchanged.** Write-slot, lock-timeout and other after-resolution `451`s.
+  The slot cap is the owner-accepted I9 exception above.
+- **Verification.**
+  - Byte-identical SMTP transcripts for known, unknown and at-ceiling
+    recipients through the open, half-open and real-event phases, and for
+    concurrent events while the real-event trial is claimed.
+  - Qualification criterion: **zero `DENIED` trips at 2R with healthy
+    credentials.**
+  - At activation: bucket hard quota ≥ *G_F* plus margin.
+
+## Amendment note (2026-11-06, owner decision): closed first-cohort MVP envelope
+
+**Authority: owner decision 2026-11-06.** This note adds to amendment D above
+and changes no text before it. It is recorded before the frozen-candidate run.
+
+- **(a) D0, the first cohort.** The closed beta opens with **ten participant
+  accounts plus the existing owner workspace** (N = 10, L = 1). Thirty
+  participant places remain the target; they are not withdrawn, and reaching
+  them needs the amendment D envelope and its own passing gate D.
+- **(b) D1, the criterion for this cohort only.** At **R = 11 events/s and
+  2R = 22 events/s** (R = r × (N + L) = 1 × (10 + 1), with amendment D's
+  r = 1 and b = 60): **T1 p99 ≤ 500 ms**, sustained ≥ 0.995, and the
+  integrity criteria unchanged (zero deadlocks, `lock_timeout` < 0.1 %, no
+  slot-queueing deadline miss, no other error).
+- **(c) The measurement profile.** The required cohort; the ingestion
+  gateway's **production pool size, 8**, and its production pool lifetime;
+  cold start included; concurrency 10, 25, 50 and 100; on the frozen
+  candidate.
+- **(d) Freeze, then run once.** The candidate and these criteria are frozen
+  before the evidence run. A valid failure remains FAIL. Repeated attempts
+  to obtain a favourable result are not allowed, and no threshold changes
+  after the run without a new owner decision. A rerun is permitted only
+  after a documented correction, under the review process.
+- **(e) Nothing else changes.** §11's own criteria and concurrency model are
+  unchanged for anything beyond this cohort, including the thirty-place
+  envelope of amendment D.
+- **(f) Order.** This note is recorded before the frozen-candidate run.
+
+**Enforcement (the team's reading, not the owner's words).** The approved
+envelopes are one list in code, `IngestEnvelopeSafety.APPROVED_ENVELOPES`:
+amendment D's N = 30 (R = 31, no pool size approved) and this cohort's N = 10,
+r = 1, b = 60, L = 1, R = 11, pool 8. Under `ALL` a deployment starts only
+with an N that has an entry, R_gated equal to that entry's R, r, b and L
+within it, and, on the ingestion gateway, a Hikari pool of exactly the
+entry's size. The cap N (`testinbox.beta.max-participants`) is enforced by
+admission under the cohort lock and may only lower the thirty places
+(`docs/dev/beta-limits.md`).
 
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 

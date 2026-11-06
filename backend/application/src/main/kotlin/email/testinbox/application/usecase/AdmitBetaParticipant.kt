@@ -5,6 +5,7 @@ import email.testinbox.application.port.TransactionRunner
 import email.testinbox.domain.ProjectId
 import email.testinbox.domain.WorkspaceId
 import email.testinbox.domain.identity.BetaAdmission
+import email.testinbox.domain.identity.BetaParticipantCap
 import email.testinbox.domain.identity.HumanAccountId
 import email.testinbox.domain.tenant.Project
 import email.testinbox.domain.tenant.Workspace
@@ -15,6 +16,14 @@ import java.util.UUID
  * The only participant workspace provisioner (ADR-036). The HTTP/provider
  * adapter supplies an authenticated account, never a requested workspace.
  * Existing participants may sign in while new admission is paused or full.
+ *
+ * [cap] is the configured participant cap N (`testinbox.beta.max-participants`).
+ * The database's own guard stays at the hard thirty; N is enforced here, in the
+ * same transaction and after the same cohort lock ([BetaAdmissions.lockPolicy])
+ * that already serialises every admission, so the place read by
+ * [BetaAdmissions.nextPlace] cannot be taken concurrently. A place beyond N is
+ * the existing `Full` outcome. Lowering N evicts nobody: an admitted account
+ * still gets its admission back, only NEW admissions stop.
  */
 class AdmitBetaParticipant(
     private val admissions: BetaAdmissions,
@@ -25,6 +34,7 @@ class AdmitBetaParticipant(
             .CohortStorageReadiness {
                 false
             },
+    private val cap: BetaParticipantCap = BetaParticipantCap.HARD_LIMIT,
 ) {
     sealed interface Result {
         data class Admitted(
@@ -51,7 +61,9 @@ class AdmitBetaParticipant(
             admissions.findAdmission(accountId)?.let { return@required Result.Admitted(it, newlyAdmitted = false) }
             if (!policy.admissionsOpen) return@required Result.Closed
             if (!policy.capacityReady || !capacity.ready()) return@required Result.CapacityUnavailable
-            val place = admissions.nextPlace() ?: return@required Result.Full
+            // Under the cohort lock taken above: no other admission can consume a place
+            // between this read and the insert, so N is never exceeded.
+            val place = admissions.nextPlace()?.takeIf(cap::admits) ?: return@required Result.Full
 
             val now = clock.instant()
             val workspace = Workspace(WorkspaceId(UUID.randomUUID()), "My workspace", now)

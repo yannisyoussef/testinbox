@@ -1,9 +1,11 @@
 package email.testinbox.benchmark
 
 import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.Test
+import java.time.Duration
 
 /** §11's constants are not loosenable through flags: every departure is named, and any one of them makes the run non-evidence. */
 class AdrConformanceTest {
@@ -19,7 +21,8 @@ class AdrConformanceTest {
 
     @Test
     fun `each departure is reported on its own`() {
-        only(conforming.copy(expectedRate = 100.0)) shouldContain "expected rate 100.0 is not §11's 260.0"
+        // Amendment D: R is a parameter, so a departure is a matrix that does not offer R and 2R.
+        only(conforming.copy(expectedRate = 100.0)) shouldContain "offered rates [260.0, 520.0] do not include §11's [100.0, 200.0]"
         only(conforming.copy(rates = listOf(260.0))) shouldContain "do not include §11's [260.0, 520.0]"
         only(conforming.copy(rates = listOf(520.0, 1040.0))) shouldContain "do not include"
         only(conforming.copy(concurrency = listOf(1, 10, 25, 50))) shouldContain "does not include §11's [1, 10, 25, 50, 100]"
@@ -30,6 +33,35 @@ class AdrConformanceTest {
         only(conforming.copy(hostClass = "unspecified")) shouldContain "--host-class was not supplied"
         only(conforming.copy(reference = false)) shouldContain "--no-reference"
         only(conforming.copy(referenceMode = ReferenceMode.CEILING_OFF)) shouldContain "CEILING_OFF is not the no-ceiling mode c (NO_LOCK)"
+    }
+
+    @Test
+    fun `the closed-beta rate of amendment D, offered at R and 2R, is ADR evidence`() {
+        // R = r × (30 + L) = 1 × 31 (owner decision 2026-11-06). Whether 31 is the RIGHT R is the
+        // activation gate's question: it refuses evidence whose rate differs from the declared R_gated.
+        AdrConformance.reasons(conforming.copy(expectedRate = 31.0, rates = listOf(31.0, 62.0))).shouldBeEmpty()
+        only(conforming.copy(expectedRate = 31.0, rates = listOf(31.0))) shouldContain "do not include §11's [31.0, 62.0]"
+    }
+
+    @Test
+    fun `a population without the cohort shares, and a focused run, are not gate evidence`() {
+        // Owner decision 2026-11-06 (#124 6684712608): the gate population includes the beta's 31 shares.
+        only(conforming.copy(cohortShares = false)) shouldContain "--no-cohort-shares"
+        AdrConformance.reasons(conforming.copy(focused = true)) shouldContain "--focused: a focused A′ measurement, never gate evidence"
+        AdrConformance
+            .reasons(
+                BenchmarkOptions.parse(listOf("--jdbc-url", "jdbc:postgresql://db/ti_bench", "--host-class", "h", "--focused")),
+            ).any { it.startsWith("--focused") } shouldBe true
+    }
+
+    @Test
+    fun `gate evidence is faithful to production's pool lifecycle - cold, with production's maxLifetime`() {
+        // The default IS production's lifecycle; naming it explicitly changes nothing.
+        AdrConformance.reasons(conforming.copy(coldPool = true, poolMaxLifetime = Duration.ofMinutes(30))).shouldBeEmpty()
+        only(conforming.copy(coldPool = false)) shouldContain "--warm-pool: every connection was warmed past pgJDBC's prepareThreshold"
+        only(conforming.copy(poolMaxLifetime = Duration.ofSeconds(60))) shouldContain "--pool-max-lifetime PT1M is not production's PT30M"
+        only(conforming.copy(poolMaxLifetime = Duration.ofHours(1))) shouldContain "is not production's PT30M"
+        AdrConformance.reasons(conforming.copy(coldPool = false, poolMaxLifetime = Duration.ofSeconds(60))).size shouldBe 2
     }
 
     @Test

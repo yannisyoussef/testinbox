@@ -444,6 +444,9 @@ enum class ReleasePath { COMMITTED, ABSENT, DELETED, RECONCILED }
 interface StorageProtocolMetrics {
     fun admission(outcome: StorageAdmissionOutcome) {}
 
+    /** A share-partitioned T1 (PROPOSED, gate D W1) that mode a decided instead, and why. */
+    fun partitionFallback(reason: email.testinbox.application.storage.PartitionFallbackReason) {}
+
     /** A ceiling was exceeded on a scope whose enforcement is OFF: observed, not refused. */
     fun unenforcedLimit(scope: email.testinbox.domain.storage.StorageScope) {}
 
@@ -488,6 +491,9 @@ interface StorageProtocolMetrics {
     fun incompleteUploads(count: Int) {}
 
     fun witnessFailed() {}
+
+    /** A breaker's real-event claim outlived its lease `L_claim` and was failed (no labels). */
+    fun breakerClaimExpired() {}
 
     // --- TI-STORAGE-006: activation and enablement observability (ADR-035 §14, §16) ---
 

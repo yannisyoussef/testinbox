@@ -1,5 +1,6 @@
 package email.testinbox.application.deployment
 
+import email.testinbox.application.LimitsProperties
 import email.testinbox.application.storage.DeclaredNode
 import email.testinbox.application.storage.FilesystemDeclarations
 import email.testinbox.application.storage.NodeRole
@@ -39,6 +40,9 @@ class StorageEnforcementSafetyTest {
             proxyReadTimeout = Duration.ofSeconds(120),
             edgeRequestCeiling = null,
             limitsEnabled = true,
+            // The closed-beta INGEST envelope of the deployed profile (ADR-035 amendment D).
+            ingest = LimitsProperties.RateProperties(capacity = 60, refillPerSecond = 1.0),
+            ingestPerInbox = LimitsProperties.RateProperties(capacity = 30, refillPerSecond = 0.5),
             activeProfiles = setOf("staging"),
         )
 
@@ -77,6 +81,9 @@ class StorageEnforcementSafetyTest {
             expectedIngestionNodes = setOf("ingest-1", "ingest-2"),
             node = DeclaredNode("ingest-1", NodeRole.INGESTION),
             filesystem = filesystem,
+            // Amendment D: R_gated 31 = r 1 × (30 participant places + L 1).
+            gatedExpectedRate = 31.0,
+            declaredLegacyWorkspaces = 1,
         )
 
     private fun violations(storage: StorageDeclarations) = DeploymentSafety.validate(deployed.copy(storage = storage))
@@ -600,6 +607,9 @@ class StorageEnforcementSafetyTest {
         found shouldContain "testinbox.storage.backend-identity"
         found shouldContain "testinbox.storage.activation.expected-api-nodes"
         found shouldContain "testinbox.storage.activation.expected-ingestion-nodes"
+        // ADR-035 amendment D: the gated INGEST envelope's two declarations.
+        found shouldContain "testinbox.storage.gated-expected-rate"
+        found shouldContain "testinbox.storage.declared-legacy-workspaces"
     }
 
     @Test

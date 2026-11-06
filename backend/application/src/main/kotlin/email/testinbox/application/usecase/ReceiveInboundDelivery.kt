@@ -128,8 +128,14 @@ class ReceiveInboundDelivery(
         // is latched or its breaker is open, EVERY event gets the same 451,
         // whether its recipients exist or not. Checked after resolution, only
         // events with a known recipient would get it, and the 451/250 split
-        // would be a recipient-existence oracle (ADR-025).
-        storage.unavailable()?.let { throw it }
+        // would be a recipient-existence oracle (ADR-025). That includes
+        // recovery: a half-open breaker's trial is the non-tenant witness, run
+        // before resolution, never a tenant event's upload, and a real-event
+        // trial is claimed before resolution, by one event at a time.
+        //
+        // This first check never claims and never proves: the parse below is
+        // sender-controlled and unbounded, and must not hold the gate shut.
+        storage.precheck()?.let { throw it }
         val now = clock.instant()
         val recipients = command.recipients.map { it.trim().lowercase() }.distinct()
         require(recipients.size <= StorageAdmissionRequest.MAX_CANDIDATES) { "an event has at most 50 distinct envelope recipients" }
@@ -146,6 +152,39 @@ class ReceiveInboundDelivery(
         // not storage or database latency. A hostile MIME corpus entry that
         // takes seconds shows up here and nowhere else.
         inboundMetrics.parseCompleted(Duration.ofNanos(System.nanoTime() - parseStartedAt), parseStatus)
+
+        // The full gate, after parsing and before the first recipient resolves:
+        // still independent of the recipients, so still uniform. It runs a due
+        // proof and takes a real-event claim, held only from here on.
+        val admission = storage.admitEvent()
+        admission.refusal?.let { throw it }
+        try {
+            return deliver(command, admission, Parsed(now, recipients, fingerprint, parseResult, parseStatus))
+        } finally {
+            // A real-event trial this event claimed and never used (no copy reached an upload) goes back.
+            storage.release(admission)
+        }
+    }
+
+    /** What the event computed before its gate: its clock, envelope and the one parse. */
+    private class Parsed(
+        val now: java.time.Instant,
+        val recipients: List<String>,
+        val fingerprint: String,
+        val result: MimeParseResult,
+        val status: ParseStatus,
+    )
+
+    private fun deliver(
+        command: Command,
+        admission: email.testinbox.application.storage.EventAdmission,
+        parsed: Parsed,
+    ): Result {
+        val now = parsed.now
+        val recipients = parsed.recipients
+        val fingerprint = parsed.fingerprint
+        val parseResult = parsed.result
+        val parseStatus = parsed.status
 
         var discarded = 0
         var rateLimited = 0
@@ -210,7 +249,7 @@ class ReceiveInboundDelivery(
         val plans = prepared.map { it.plan(command.raw) }
         val byMessage = prepared.associateBy { it.messageId }
         val report =
-            storage.ingest(plans.first().bytes, plans, envelopePositions) { admitted ->
+            storage.ingest(plans.first().bytes, plans, envelopePositions, admission) { admitted ->
                 // Inside T2, after the reservation fence and the inbox locks: all
                 // of this event's rows and notifications commit together (ADR-026).
                 admitted.associate { plan ->

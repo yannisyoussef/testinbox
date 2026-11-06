@@ -33,7 +33,10 @@
   },
   "minio": {
     "bucketDirectoryBytes": 10485760,
-    "metadataInodes": 20000
+    "metadataBytesScope": "minio-sys+unattributed",
+    "bucketPresent": true,
+    "metadataInodes": 20000,
+    "metadataInodesScope": "minio-sys"
   },
   "database": {
     "allConnectionsToPrimary": true

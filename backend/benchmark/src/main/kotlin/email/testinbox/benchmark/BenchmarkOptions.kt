@@ -68,7 +68,8 @@ data class BenchmarkOptions(
     val concurrency: List<Int> = listOf(1, 10, 25, 50, 100),
     val rates: List<Double> = listOf(GateEvaluator.EXPECTED_RATE, 2 * GateEvaluator.EXPECTED_RATE),
     val expectedRate: Double = GateEvaluator.EXPECTED_RATE,
-    val durationSeconds: Int = 30,
+    /** The measured window of each matrix scenario; null derives it ([measuredSeconds]). */
+    val durationSeconds: Int? = null,
     val warmupSeconds: Int = 3,
     val reservationBacklog: Int = 1_000,
     val deltaBacklog: Int = 500,
@@ -85,16 +86,94 @@ data class BenchmarkOptions(
     val seed: Long = 35,
     val reference: Boolean = true,
     val referenceMode: ReferenceMode = ReferenceMode.NO_LOCK,
+    /**
+     * Also run the share-partitioned T1 as it would ship (production's
+     * `JdbcStorageAdmission` with `admission-locking = COHORT_PARTITIONED`) at
+     * every matrix point, over a closed 30-participant + legacy cohort
+     * ([ClosedCohort]). Reported apart; never part of the gate's verdict, and it
+     * changes nothing about whether the run is ADR evidence.
+     */
+    val partitionedVariant: Boolean = false,
+    /** Repetitions of the variant's timing-probe runs (S-C1), at each of its two load points, in both modes. */
+    val probeRepetitions: Int = 4,
+    /** Seconds of each timing-probe run: its own, so the probes never stretch the gate's matrix. */
+    val probeDurationSeconds: Int = 60,
+    /**
+     * The closed beta's 31 cohort shares (30 participant-sized + 1 legacy) seeded beside
+     * each gate population, so T1's cohort read is the one the beta pays for (owner
+     * decision 2026-11-06, #124 6684712608; [Seeder.cohortShares]). On by default: a run
+     * without them departs from the gate population ([AdrConformance]).
+     */
+    val cohortShares: Boolean = true,
+    /**
+     * `--focused`: the A′ focused measurement (#124 6684712608), never gate evidence.
+     * CHOSEN only at 2R = 62/s, concurrency 10 and 100, 10 000 workspaces with the
+     * cohort shares, 60 s; the T1 lock hold is timed per event ([HoldTiming]).
+     */
+    val focused: Boolean = false,
+    /** `--t1-steps`: time T1 step by step in any run ([HoldTiming], `t1Steps` in the evidence); `--focused` implies it. */
+    val t1Steps: Boolean = false,
+    /**
+     * `--focused-cohort`: the focused measurement on the beta's production state instead
+     * of the gate population: the closed cohort of 30 participants + 1 legacy share with
+     * its pool reserved and approved ([ClosedCohort], so the pool is REQUIRED and every
+     * readiness check runs), every event to those 31 workspaces, CHOSEN (mode a). Never
+     * gate evidence.
+     */
+    val focusedCohort: Boolean = false,
+    /**
+     * `--cold-pool` (the default) / `--warm-pool`: whether each measured phase starts on new
+     * physical connections that have executed nothing, as a just-deployed ingestion node does
+     * ([PoolLifecycle]), or on connections warmed past pgJDBC's prepare threshold (the harness's
+     * behaviour before the review of 2026-11-06; never ADR evidence).
+     */
+    val coldPool: Boolean = true,
+    /** `--pool-max-lifetime`: Hikari `maxLifetime` of the scenario pool; null is production's ([PoolLifecycle.PRODUCTION_MAX_LIFETIME]). */
+    val poolMaxLifetime: Duration? = null,
 ) {
+    /** Whether T1's statements are observed for [T1StepsSummary]. */
+    val stepTiming: Boolean get() = t1Steps || focused
+
+    /** The scenario pool's `maxLifetime`: `--pool-max-lifetime`, or production's. */
+    val effectivePoolMaxLifetime: Duration get() = poolMaxLifetime ?: PoolLifecycle.PRODUCTION_MAX_LIFETIME
+
     fun retentionRateFor(offered: Double): Double = retentionRate ?: (offered / RETENTION_RATIO)
+
+    /**
+     * The measured window: `--duration-seconds`, or by default the shortest window
+     * of at least [MIN_MEASURED_SECONDS] in which the 2R scenarios can produce
+     * [GateEvaluator.MIN_RETENTION_SAMPLES] retention samples (owner decision
+     * 2026-11-06: "a measured window of at least 33 seconds"). At R = 260 that is
+     * 30 s, as before (26 sweeps/s); at amendment D's R = 31 it is 33 s
+     * (⌈100 / 3.1⌉ = 33, ⌈3.1 × 33⌉ = 103 sweeps). Without it every R = 31 run was
+     * INCOMPLETE by construction (93 samples at 30 s). A longer window does not
+     * loosen sustained2x: [GateEvaluator] holds its terminal-lag allowance at the
+     * 30 s one.
+     */
+    val measuredSeconds: Int
+        get() =
+            durationSeconds ?: maxOf(
+                MIN_MEASURED_SECONDS,
+                Math.ceil(GateEvaluator.MIN_RETENTION_SAMPLES / retentionRateFor(2 * expectedRate)).toInt(),
+            )
 
     companion object {
         const val RETENTION_RATIO = 20.0
+
+        /** The harness's measured window before amendment D, and still the shortest it derives. */
+        const val MIN_MEASURED_SECONDS = 30
+
+        /** The focused measurement's fixed points (`--focused`). */
+        const val FOCUSED_EXPECTED_RATE = 31.0
+        val FOCUSED_CONCURRENCY = listOf(10, 100)
+        const val FOCUSED_WORKSPACES = 10_000
+        const val FOCUSED_SECONDS = 60
 
         @Suppress("CyclomaticComplexMethod", "LongMethod") // one branch per flag
         fun parse(args: List<String>): BenchmarkOptions {
             var options = BenchmarkOptions()
             var i = 0
+            val poolFlags = mutableSetOf<String>()
 
             fun value(flag: String): String {
                 i++
@@ -216,6 +295,45 @@ data class BenchmarkOptions(
                             options.copy(referenceMode = ReferenceMode.valueOf(value(flag).uppercase().replace('-', '_')))
                     }
 
+                    "--partitioned-variant" -> {
+                        options = options.copy(partitionedVariant = true)
+                    }
+
+                    "--probe-duration-seconds" -> {
+                        options =
+                            options.copy(probeDurationSeconds = value(flag).toIntOrNull() ?: throw UsageException("$flag needs a number"))
+                    }
+
+                    "--probe-repetitions" -> {
+                        options = options.copy(probeRepetitions = value(flag).toIntOrNull() ?: throw UsageException("$flag needs a number"))
+                    }
+
+                    "--t1-steps" -> {
+                        options = options.copy(t1Steps = true)
+                    }
+
+                    "--no-cohort-shares" -> {
+                        options = options.copy(cohortShares = false)
+                    }
+
+                    "--cold-pool", "--warm-pool" -> {
+                        poolFlags += flag
+                        options = options.copy(coldPool = flag == "--cold-pool")
+                    }
+
+                    "--pool-max-lifetime" -> {
+                        options = options.copy(poolMaxLifetime = PoolLifecycle.parseDuration(value(flag)))
+                    }
+
+                    "--focused-cohort" -> {
+                        options = focusedPreset(options).copy(focusedCohort = true)
+                    }
+
+                    // A preset: the flags after it may still override a field, and the evidence records what ran.
+                    "--focused" -> {
+                        options = focusedPreset(options)
+                    }
+
                     "--help", "-h" -> {
                         throw UsageException(USAGE)
                     }
@@ -226,9 +344,22 @@ data class BenchmarkOptions(
                 }
                 i++
             }
+            if (poolFlags.size > 1) throw UsageException("--cold-pool and --warm-pool contradict each other")
             options.validate()
             return options
         }
+
+        private fun focusedPreset(options: BenchmarkOptions): BenchmarkOptions =
+            options.copy(
+                focused = true,
+                workspaces = listOf(FOCUSED_WORKSPACES),
+                expectedRate = FOCUSED_EXPECTED_RATE,
+                rates = listOf(2 * FOCUSED_EXPECTED_RATE),
+                concurrency = FOCUSED_CONCURRENCY,
+                durationSeconds = FOCUSED_SECONDS,
+                reference = false,
+                cohortShares = true,
+            )
 
         private fun int(
             text: String,
@@ -247,8 +378,32 @@ data class BenchmarkOptions(
             if (expectedRate <= 0) throw UsageException("--expected-rate must be positive")
             if (slotsPerWorkspace !in 1..slots) throw UsageException("--slots-per-workspace must be in 1..slots")
             if (inboxesPerWorkspace < 1) throw UsageException("--inboxes-per-workspace must be positive")
+            if (partitionedVariant && inboxesPerWorkspace <= ScenarioRunner.PROBE_HOT_INBOXES) {
+                throw UsageException("the timing probes reserve ${ScenarioRunner.PROBE_HOT_INBOXES} inboxes of the hot workspace")
+            }
+            if (probeRepetitions < 1) throw UsageException("--probe-repetitions must be at least 1")
+            if (probeDurationSeconds < 1) throw UsageException("--probe-duration-seconds must be at least 1")
+            poolMaxLifetime?.let {
+                if (it < PoolLifecycle.HIKARI_MIN_MAX_LIFETIME) {
+                    throw UsageException(
+                        "--pool-max-lifetime must be at least ${PoolLifecycle.HIKARI_MIN_MAX_LIFETIME.seconds} s: below it HikariCP " +
+                            "silently uses its 30 min default instead",
+                    )
+                }
+            }
+            validateFocused()
+            if (partitionedVariant && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
+                throw UsageException("the partitioned cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
+            }
             if (workspaces.any { it * inboxesPerWorkspace < recipientMix.maxRecipients }) {
                 throw UsageException("every population needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
+            }
+        }
+
+        private fun BenchmarkOptions.validateFocused() {
+            if (focused && partitionedVariant) throw UsageException("--focused measures CHOSEN only; it takes no --partitioned-variant")
+            if (focusedCohort && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
+                throw UsageException("the closed cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
             }
         }
 
@@ -268,7 +423,9 @@ data class BenchmarkOptions(
               --inboxes-per-workspace 10
               --concurrency 1,10,25,50,100    worker pool sizes
               --rates 260,520                 offered events/s, open loop
-              --expected-rate 260             the §11 "expected load"; criteria are read at 2x it
+              --expected-rate 260             the §11 "expected load" R; criteria are read at 2R, and --rates
+                                              must include R and 2R. Under amendment D, R is the deployment's
+                                              R_gated (closed beta: --expected-rate 31 --rates 31,62)
               --duration-seconds 30  --warmup-seconds 3
               --reservation-backlog 1000      live reservations, 1 in 5 RELEASING
               --delta-backlog 500             one compaction interval's worth of storage_delta rows
@@ -283,13 +440,53 @@ data class BenchmarkOptions(
               --reference-mode no-lock|ceiling-off
                                               no-lock (default) = §11 mode c, the adapter without its advisory lock;
                                               ceiling-off = same lock, G unlimited: diagnostic only, verdict INCOMPLETE
+              --partitioned-variant           also run production's share-partitioned T1 (admission-locking =
+                                              COHORT_PARTITIONED: shared (35,1) + sorted per-workspace locks) at every
+                                              matrix point, over a closed cohort of 30 participants + 1 legacy share
+                                              (the gate population is wiped first); reported under "variant", never
+                                              part of the verdict
+              --probe-repetitions <n>         timing-probe runs per load point and mode in the variant (default 4)
+              --probe-duration-seconds <n>    seconds of each timing-probe run (default 60)
+              --no-cohort-shares              omit the closed beta's 31 cohort shares from the gate population (run 3's
+                                              population; not ADR evidence since the owner decision of 2026-11-06)
+
+            Measured window: --duration-seconds, by default the shortest window >= 30 s in which the 2R scenarios
+            yield 100 retention samples: 30 s at R = 260, 33 s at R = 31. sustained2x keeps the 30 s terminal-lag
+            allowance whatever the window.
+
+            Focused measurement (A′, never gate evidence):
+              --focused                       CHOSEN only, --expected-rate 31 --rates 62 --concurrency 10,100
+                                              --workspaces 10000 (with the cohort shares) --duration-seconds 60
+                                              --no-reference; times the T1 lock hold per event and reports it with the
+                                              T1 statement time and the T1 p99 (FOCUSED.md beside the evidence)
+              --focused-cohort                as --focused, on the beta's production state: the closed cohort (30
+                                              participants + 1 legacy, pool reserved and approved, so REQUIRED), every
+                                              event to those 31 workspaces, mode a
+              --t1-steps                      time T1 step by step in any run (lock, snapshot, decision, insert, commit;
+                                              `t1Steps` in the evidence), observing T1's statements without changing them,
+                                              and attribute each T1 to a cold (first 5 executions on its physical
+                                              connection) or warm connection (`t1Planning` in the evidence)
+
+            Connection lifecycle (production's by default; docs/dev/storage-benchmark.md):
+              --cold-pool                     the default: after the event warm-up every pool connection is replaced
+                                              by a new physical connection that has executed nothing, as on a
+                                              just-deployed ingestion node, so T1 plans inside the lock on each
+                                              connection's first 5 executions
+              --warm-pool                     the pre-review behaviour: every connection executes T1's snapshot past
+                                              pgJDBC's prepareThreshold before the phase (not ADR evidence)
+              --pool-max-lifetime <duration>  Hikari maxLifetime of the scenario pool (60s, 30m, PT30M; default 30m,
+                                              production's: HikariCP's default, which ingestion does not override).
+                                              At least 30s (HikariCP's minimum; below it Hikari silently uses 30m).
+                                              Anything but 30m is not ADR evidence. Keepalive is production's 2m, or
+                                              off when that is not below the lifetime
 
             Output:
               --host-class <text>             operator-supplied host class, recorded in the evidence
               --out <dir>                     evidence directory (default build/benchmark-evidence)
 
             Any departure from the §11 matrix (rate, concurrency, backlog, population, --local, no --host-class,
-            no NO_LOCK reference) is recorded as adrEvidence=false and makes the verdict INCOMPLETE.
+            no NO_LOCK reference) or from production's connection lifecycle (--warm-pool, a --pool-max-lifetime
+            other than 30m) is recorded as adrEvidence=false and makes the verdict INCOMPLETE.
 
             Exit code: 0 PASS, 1 FAIL, 3 INCOMPLETE, 2 usage or safety refusal.
             """.trimIndent()

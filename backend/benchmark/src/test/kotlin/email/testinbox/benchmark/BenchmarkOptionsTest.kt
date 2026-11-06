@@ -4,6 +4,7 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.Test
+import java.time.Duration
 
 class BenchmarkOptionsTest {
     @Test
@@ -58,6 +59,75 @@ class BenchmarkOptionsTest {
         options.hostClass shouldBe "hetzner-cx32"
         options.referenceMode shouldBe ReferenceMode.CEILING_OFF
         options.arrivals shouldBe Arrivals.UNIFORM
+    }
+
+    @Test
+    fun `the measured window is 30 s at R = 260 and 33 s at R = 31, enough for 100 retention samples at 2R`() {
+        BenchmarkOptions.parse(listOf("--local")).measuredSeconds shouldBe 30
+        val beta = BenchmarkOptions.parse(listOf("--local", "--expected-rate", "31", "--rates", "31,62"))
+        beta.measuredSeconds shouldBe 33
+        // The scenario runner's retention events at 2R: ceil(3.1 × 33) = 103 ≥ 100; 32 s would give exactly 100.
+        Math.ceil(beta.retentionRateFor(62.0) * beta.measuredSeconds).toInt() shouldBe 103
+        (Math.ceil(beta.retentionRateFor(62.0) * 30).toInt() < GateEvaluator.MIN_RETENTION_SAMPLES) shouldBe true
+        // An explicit window wins; a forced retention rate changes the derived one.
+        BenchmarkOptions.parse(listOf("--local", "--expected-rate", "31", "--duration-seconds", "45")).measuredSeconds shouldBe 45
+        BenchmarkOptions.parse(listOf("--local", "--expected-rate", "31", "--retention-rate", "10")).measuredSeconds shouldBe 30
+    }
+
+    @Test
+    fun `the gate population carries the cohort shares unless told otherwise`() {
+        BenchmarkOptions.parse(listOf("--local")).cohortShares shouldBe true
+        BenchmarkOptions.parse(listOf("--local", "--no-cohort-shares")).cohortShares shouldBe false
+    }
+
+    @Test
+    fun `--focused is CHOSEN only at 62 per second, concurrency 10 and 100, 10 000 workspaces with the shares, 60 s`() {
+        val focused = BenchmarkOptions.parse(listOf("--local", "--focused"))
+        focused.focused shouldBe true
+        focused.reference shouldBe false
+        focused.expectedRate shouldBe 31.0
+        focused.rates shouldBe listOf(62.0)
+        focused.concurrency shouldBe listOf(10, 100)
+        focused.workspaces shouldBe listOf(10_000)
+        focused.cohortShares shouldBe true
+        focused.measuredSeconds shouldBe 60
+        // A preset: a later flag still overrides a field.
+        BenchmarkOptions.parse(listOf("--local", "--focused", "--concurrency", "10")).concurrency shouldBe listOf(10)
+        shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--focused", "--partitioned-variant")) }
+            .message shouldContain "CHOSEN only"
+    }
+
+    @Test
+    fun `the pool is cold with production's lifetime unless told otherwise`() {
+        val defaults = BenchmarkOptions.parse(listOf("--local"))
+        defaults.coldPool shouldBe true
+        defaults.poolMaxLifetime shouldBe null
+        defaults.effectivePoolMaxLifetime shouldBe Duration.ofMinutes(30)
+        BenchmarkOptions.parse(listOf("--local", "--cold-pool")).coldPool shouldBe true
+        BenchmarkOptions.parse(listOf("--local", "--warm-pool")).coldPool shouldBe false
+        // --focused keeps the default: a focused run is cold unless it asks for a warm pool.
+        BenchmarkOptions.parse(listOf("--local", "--focused")).coldPool shouldBe true
+        BenchmarkOptions.parse(listOf("--local", "--focused", "--warm-pool")).coldPool shouldBe false
+        shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--cold-pool", "--warm-pool")) }
+            .message shouldContain "contradict"
+    }
+
+    @Test
+    fun `--pool-max-lifetime takes a duration of at least Hikari's 30 s minimum`() {
+        val short = BenchmarkOptions.parse(listOf("--local", "--focused", "--pool-max-lifetime", "60s"))
+        short.poolMaxLifetime shouldBe Duration.ofSeconds(60)
+        short.effectivePoolMaxLifetime shouldBe Duration.ofSeconds(60)
+        BenchmarkOptions.parse(listOf("--local", "--pool-max-lifetime", "30s")).effectivePoolMaxLifetime shouldBe Duration.ofSeconds(30)
+        BenchmarkOptions.parse(listOf("--local", "--pool-max-lifetime", "PT30M")).effectivePoolMaxLifetime shouldBe Duration.ofMinutes(30)
+        // Below 30 s Hikari would silently use 30 min: refused, never passed on. 0 (Hikari's "forever") likewise.
+        listOf("29s", "29999ms", "0").forEach { value ->
+            shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--pool-max-lifetime", value)) }
+                .message shouldContain "at least 30 s"
+        }
+        shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--pool-max-lifetime")) }.message shouldContain
+            "needs a value"
+        shouldThrow<UsageException> { BenchmarkOptions.parse(listOf("--local", "--pool-max-lifetime", "soon")) }
+            .message shouldContain "not a duration"
     }
 
     @Test
