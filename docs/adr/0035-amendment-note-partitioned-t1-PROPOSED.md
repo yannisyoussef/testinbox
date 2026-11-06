@@ -98,15 +98,42 @@ For the owner's decision; nothing here is a criterion until the owner adopts it.
 6. Legacy shares at `MAX_LEGACY_WORKSPACES` (32), not one.
 7. I9 under load: the p99 latency and the 451 rate of a COLD workspace while
    another workspace is saturated, with a bound on both.
-8. Timing channel (security review S-C1; the variant now runs it as
-   `*-probe`, in mode a and partitioned under the same load): at the heaviest
-   matrix point, with production write slots and INGEST limits and heartbeats
-   on, a hot-workspace flood beside three probe classes — `inside` (an address
-   of the hot workspace co-addressed with the observer's own inbox in one
-   event), `cold`, and `unknown` (which never reaches T1). Proposed criterion:
-   the inside-vs-cold difference in latency and 451 distributions under
-   PARTITIONED is no larger than under mode a, and the cold workspace's 451
-   rate is no higher than mode a's.
+8. Timing channel (security review S-C1 and its re-check; the variant runs it
+   as `*-probe`, reported under `variant` only).
+   - **Load points.** (i) The matrix's heaviest point. (ii) The PACED point, the
+     attacker's best case: maximum-size flood events (every flood inbox of the
+     hot workspace) paced at 90 % of what the hot workspace's INGEST refill
+     (10/s) leaves beside the `inside` probe, so the flood keeps its budget.
+     Production write slots, production INGEST limits (per inbox, then per
+     workspace) on flood and probes alike, heartbeats on.
+   - **Classes.** `inside`: one of three reserved hot-workspace inboxes (the
+     target, rotated so each stays under its 2/s per-inbox refill) co-addressed
+     with the observer's own inbox in one event; `cold`: an unrelated
+     workspace's inbox; `unknown`: never reaches T1.
+   - **What counts.** Only events whose TARGET copy passed INGEST and reached
+     the guarded protocol (write slot, then T1): `targetReachedEvents`. An
+     `inside` event whose hot copy was rate-limited measures the observer's
+     workspace, not the hot one, and is excluded from every statistic.
+   - **Runs.** N ≥ 4 repetitions per point and mode, INGEST buckets reset
+     before every run, the order of the two modes alternating between
+     repetitions; figures pooled per point and mode (`probePooled`).
+   - **Sample.** 3 events/s per class for 30 s is 90 per run; four repetitions
+     pool 360. Each pooled class needs **at least 300 target-reached events**,
+     or the point is INCONCLUSIVE (not a pass): at 300 the nearest-rank p99 is
+     the 297th value, so three observations lie above it and one outlier
+     cannot set it.
+   - **Relative bounds (vs mode a under the same load, same point).** With
+     `gap = p99(inside) − p99(cold)` over target-reached events:
+     `gap_partitioned ≤ gap_modeA + max(10 ms, 0.2 × gap_modeA)`;
+     `inside 451 rate_partitioned ≤ inside 451 rate_modeA + 0.5 percentage
+     point`; `cold 451 rate_partitioned ≤ cold 451 rate_modeA + 0.1 point`.
+   - **Absolute bounds (partitioned).** `gap ≤ 500 ms` (a tenth of the 5 s
+     `lock_timeout`: a systematic `(38, k)` timeout and fallback costs at least
+     5 s and cannot hide under it); `inside 451 rate ≤ 1 %` (3 events in 300);
+     `cold 451 rate ≤ 0.1 %` (§11's `lock_timeout` bound; with fewer than 1 000
+     pooled cold events, zero `451`s).
+   - Limit: the harness's uploads are instant, so a write slot is held for T1
+     and T2 only; production upload time would lengthen slot holds.
 
 ## Ops precondition (security review S-C2)
 

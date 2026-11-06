@@ -322,25 +322,43 @@ deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:286`.
 
 1. R1–R4 are application rules over database figures (mode a's code, same
    snapshot), not SQL; the database enforces G1–G4, S1, S2.
-2. **Timing side channel (I9 / ADR-025), accepted with conditions by the
-   security review.** The observer is an **authenticated tenant**, not the
-   sender: it co-addresses its own inbox with a candidate address in one DATA
-   and reads its own inbox's delivery time (or its absence after a `451`). The
-   external sender learns nothing new: the edge stores and forwards, so the
-   sender sees only the edge's reply. What the observer can see: if the candidate
-   belongs to a workspace kept busy (by flooding addresses it knows there), the
-   event waits on that workspace's `(38, k)` up to `lock_timeout` and then falls
-   back to mode a, so the delivery is slower; it is never a partition-specific
-   `451`. The baseline is mode a's **existing** write-slot fairness channel (4
-   slots per workspace per node, `W_slot` 10 s, then a `451` for the whole
-   DATA; `StorageProtocol.kt:42`, `:45`): a stable state of the same kind,
-   recorded as an accepted residual in `docs/security/abuse-model.md`. The
-   lock reorder (§3) removes the cross-tenant convoy, so a busy workspace no
-   longer slows other workspaces through `(35,1)`. Conditions: (a) the benchmark
-   measures the channel against mode a under the same load (`*-probe`
-   scenarios; proposed criterion in the PROPOSED note, not adopted); (b) in any
+2. **Timing side channel (I9 / ADR-025).** The observer is an
+   **authenticated tenant**, not the sender: it co-addresses its own inbox with a
+   candidate address in one DATA and reads its own inbox's delivery time (or its
+   absence after a `451`). The external sender learns nothing new: the edge
+   stores and forwards, so the sender sees only the edge's reply. What the
+   observer can see: if the candidate belongs to a workspace kept busy (by
+   flooding addresses it knows there), the event waits on that workspace's
+   `(38, k)` up to `lock_timeout` and then falls back to mode a, so the delivery
+   is slower; it is never a partition-specific `451`.
+
+   **The baseline, and its status.** Mode a already has a channel of the same
+   kind: the per-workspace fair write slots and the `W_slot` wait that answers
+   `451` as "a load failure" are SPECIFIED by ADR-035 §5 step 5 (Accepted)
+   (4 slots per workspace per node, 10 s; `StorageProtocol.kt:42`, `:45`). Their
+   consequence for a tenant observer (membership of an address in a saturated
+   workspace, from the delay or the `451`) was NOT analysed by any ADR; it is
+   pre-existing, accepted by no ADR, in tension with I9 ("a `451` … is never
+   chosen per tenant", ADR-035 §1) and CLAUDE.md invariant 8, and escalated to
+   the owner (#124) as a possible I9 tension (`docs/security/abuse-model.md`).
+   The partitioned residual is measured against that baseline, pending the
+   owner's decision. The security review found it no worse than the baseline,
+   subject to its conditions; it did not, and cannot, accept it.
+
+   **Conditions.** (a) The benchmark measures the channel against mode a under
+   identical load: the `*-probe` scenarios at the heaviest matrix point and at a
+   paced point (maximum-size flood events just under the hot workspace's INGEST
+   refill, so the flood keeps its budget), `--probe-repetitions` (default 4)
+   runs with INGEST buckets reset before each and the two modes' order
+   alternating; per-class statistics are computed ONLY over events whose target
+   copy reached the guarded protocol (`targetReachedEvents`), and pooled per
+   point and mode with the sample named (`probePooled`, minimum 300). The
+   proposed criterion is in the PROPOSED note, not adopted. (b) In any
    environment running the mode, only the edge or trusted test clients reach
-   ingestion's SMTP port (Ops precondition, PROPOSED note and production.md).
+   ingestion's SMTP port (Ops precondition). (c) The lock reorder (§3) keeps a
+   busy workspace from slowing other workspaces through `(35,1)`.
+   Limit: the harness's uploads are instant, so a write slot is held for T1 and
+   T2 only; production upload time would lengthen slot holds at the paced point.
 3. `storage_delta` has no foreign key: I-G assumes no positive delta exists for
    a workspace without a share (only corruption could create one; I8 reports
    drift).
@@ -376,7 +394,7 @@ deadlock, no share exceeded), `PAT:103` (same workspace serialized), `PRT:286`.
 | N3 API inventory | `ApiStorageWiring` passes the lab flag |
 | N5 heartbeat age | gate L uses `$HEARTBEAT_MAX_AGE` |
 | per-metric reasons | `MetricCardinalityTest` keeps one `reason` set per metric |
-| S-C1 probes | `*-probe` scenarios in mode a and partitioned (`ProbeLoad`) |
+| S-C1 probes | `*-probe` scenarios in mode a and partitioned (`ProbeLoad`); then target-copy accounting, a paced point, repetitions with bucket reset and alternating order, pooled samples (security re-check) |
 | S-C2 Ops precondition | PROPOSED note and production.md |
-| S-C3 §7.2 and abuse model | §7.2 above; abuse-model.md slot-channel baseline and partitioned-timing entry |
+| S-C3 §7.2 and abuse model | §7.2 above; abuse-model.md slot-channel baseline (behaviour specified by ADR-035 §5 step 5; its oracle consequence accepted by no ADR, escalated to the owner) and partitioned-timing entry |
 | S-REC lock order | `(38,·)` before shared `(35,1)` (`JSA:204`), argument in §3, `PRT:137` (failed before) |
