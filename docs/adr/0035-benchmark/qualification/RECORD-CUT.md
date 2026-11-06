@@ -17,7 +17,7 @@ The tools:
 |---|---|
 | `scripts/build-qualification-record.py` | the offline generator: verifies the bundle's `SHA256SUMS` first, then builds the record, `PROVENANCE.md` and the evidence copy; refuses (exit 1, nothing written) on any gap |
 | `docs/adr/0035-benchmark/qualification/production-expected.json` | the **FIXED** values (below). Not a record, never shipped. A bundle that measures anything else is refused |
-| `scripts/build-qualification-record.test.sh` | 79 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
+| `scripts/build-qualification-record.test.sh` | 89 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
 | `backend/storage/src/test/.../GeneratedQualificationRecordTest.kt` | the generator's output on the fake bundle (golden file, byte-compared by the shell test) loads through the real `QualificationRecords.parse`, is eligible and has no production gap |
 
 ## Value status
@@ -76,7 +76,7 @@ An eligible record has no LAB or POST-REBOOT member. The generator cannot emit e
 | `filesystem.metadataBytesMeasured`, `metadataBytesScope` (additive members) | FROM-N1 (E2, E7), CODE | the larger of E2's post-drain and E7's peak `measurements.metadataBytesMeasured`, both stating `metadataBytesScope: "minio-sys+unattributed"` (`scripts/adr035-metadata-accounting.py`). The gate F evidence must state the same scope and declare exactly the production *M*, 1,073,741,824 (`production-expected.json` `declared.metadataBudgetBytes`; owner decision 2026-11-05), which must be ≥ it. Gate F blocks otherwise. This is not an E7 PASS: E7 is judged against that budget | `experiments/E2.json`, `experiments/E7.json`, `gate-f/filesystem-evidence.json` | PROD-QUAL, or CARRIED-AMENDMENT when E7 is carried |
 | `filesystem.inodeHeadroomLatchDrill` (additive member, only when E10 drilled it) | FROM-N1 (E10) | `{result: "PASS", fsMonitorSha256}` from E10's `measurements.inodeHeadroomLatch` and `fsMonitorSha256`; gate F accepts `minio-sys-excl-trash` only when its `fsMonitorSha256` equals the evidence's `monitor.fsMonitorSha256` | `experiments/E10.json`, `gate-f/filesystem-evidence.json` | PROD-QUAL |
 | `filesystem.metadataInodesBasis` (additive member) | DERIVED | `E7 on the final filesystem` or `E7 carried under <amendment>` | `MANIFEST.json` `e7` | DERIVED |
-| `filesystem.inodeCensus` (additive member) | FROM-N1 (A1 (vi), C2, C3) | `{listingSha256, listingBytes, listingCustody: "held by <Ops> off-repo, 0700, retained until <retainedUntil>", verification, takenAt, blocklessInodes: 0, reconciliationGap}` from `census/summary.json`. The raw listing is referenced by sha256 only, never included. `verification` is "listing verified at cut (--census-raw)" or "summary attested by <who> at <when>" | `census/summary.json` (+ the off-repo listing at cut) | PROD-QUAL |
+| `filesystem.inodeCensus` (additive member) | FROM-N1 (A1 (vi), C2, C3) | `{listingSha256, listingBytes, listingCustody: "held by <Ops> off-repo, 0700, retained until <retainedUntil>", verification, takenAt, blocklessInodes: 0, reconciliationGap, c2Status, disclosures}` from `census/summary.json`. The raw listing is referenced by sha256 only, never included. `verification` is "listing verified at cut (--census-raw)" or "summary attested by <who> at <when>" | `census/summary.json` (+ the off-repo listing at cut) | PROD-QUAL |
 | `filesystem.experiments.E1`…`E11` | FROM-N1 | each must be `PASS`, on `venue: final-filesystem`, uuid `c33e14fd…`, kernel 147, member `3f97c565…`, started after the post-reboot baseline and finished before the post-cleanup one | `experiments/E1.json` … `E11.json` + their `rawFiles` | PROD-QUAL (E7 may be CARRIED-AMENDMENT) |
 | `enablementEligible`, `ineligibilityReasons` | DERIVED | `true`, `[]`. The generator writes no record otherwise | — | DERIVED |
 
@@ -195,6 +195,8 @@ identifiers never belong in the repository, and the bundle is committed. So:
    "census": {"distinctInodes": <n>, "blocklessInodes": 0, "entries": {"tmp": <n>, "trash": <n>, "multipart": <n>}},
    "reconciliation": {"inodesUsed": <f_files − f_ffree>, "inodesBelowFirstInode": <First inode − 1>},
    "steps": [{"step": "(i)", "at": "<ISO>", "kernelRelease": "6.8.0-147-generic", "bootId": "<id>", "filesystemUuid": "c33e14fd…"}, …],
+   "censuses": [{"experiment": "E2", "afterDefinedDrain": true, "takenAt": "<ISO>", "entries": {"tmp": <n>, "trash": <n>, "multipart": <n>}},
+                {"experiment": "E7", "afterDefinedDrain": false, "takenAt": "<ISO>", "entries": {…}}],
    "attestation": {"by": "<Ops>", "at": "<ISO>", "listingSha256": "<the same 64 hex>"}}
   ```
 
@@ -213,6 +215,20 @@ identifiers never belong in the repository, and the bundle is committed. So:
     (C2; no other slack);
   - every step on the running kernel 6.8.0-147-generic, one boot id, and the final filesystem's uuid (C3);
   - `takenAt` after E2 completed and the post-reboot baseline, and before the post-cleanup baseline (C2).
+- **C2 as run: disclosed, never assumed** (#124 comments 6675182070, 6675203675). C2 says (vi) runs before any
+  deletion or cleanup of the (iii), E2 and E7 objects. As run, E2's census came after E2's own defined 99 % drain.
+  - `censuses` lists every census with its experiment and `afterDefinedDrain` (`true` or `false`). An entry for E2 is
+    **required**. Without it, or with a non-boolean value, the generator refuses.
+  - For each census with `afterDefinedDrain: true`, the record's `filesystem.inodeCensus.disclosures` (always present,
+    possibly empty) carries exactly this text, with *N* the census's `entries.trash`:
+
+    > (vi) for E2 was taken after its defined drain; no census preceded it. The drain's trash was largely purged
+    > before the census (*N* entries remained under `.trash`), so most of it was never counted.
+
+    Ops' after-E2 census found 48 `.trash` entries (24 d + 24 f; 49 inodes with the directory).
+  - `filesystem.inodeCensus.c2Status` maps each experiment to `literal-deviation-disclosed` (`afterDefinedDrain:
+    true`) or `satisfied` (`false`). The generator derives it. A summary that claims `c2Status: "satisfied"` for a
+    census taken after its drain is refused, so the record can never state C2 as satisfied for E2.
 - **Fail-closed.** (vi) counts only when one of these holds; otherwise it is NOT RUN, and the generator refuses:
   - **verified at cut**: run on Ops' host with `--census-raw <listing>`, a path outside the bundle. The generator
     checks the sha256 and size, and recomputes the distinct, blockless and entry counts, all of which must equal the

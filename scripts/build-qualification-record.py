@@ -138,6 +138,14 @@ def sha256_file(path):
 # without that, the summary must carry an Ops attestation bound to the listing's sha256. Neither -> (vi) NOT RUN.
 CENSUS_SUMMARY = "census/summary.json"
 CENSUS_SCHEMA = "testinbox.n1-census-summary/1"
+# C2 says (vi) runs before any deletion or cleanup of the (iii), E2 and E7 objects. A census taken after an
+# experiment's own defined drain (E2's 99 % teardown) is a LITERAL DEVIATION: the record discloses it in these exact
+# words and never states C2 as satisfied for that experiment (#124 comments 6675182070, 6675203675).
+C2_REQUIRED_CENSUS = ("E2",)
+C2_DEVIATION = "literal-deviation-disclosed"
+C2_SATISFIED = "satisfied"
+DRAIN_DISCLOSURE = ("(vi) for {exp} was taken after its defined drain; no census preceded it. The drain's trash was "
+                    "largely purged before the census ({n} entries remained under `.trash`), so most of it was never counted.")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 RAW_LISTING_PATH = re.compile(r"(^|/)census/(?!summary\.json$)|(^|/)[^/]*census[^/]*(raw|listing|find)[^/]*$", re.I)
 RAW_LISTING_LINE = re.compile(rb"^\d+ \d+ \d+ \d+ [fdlpscbD] /", re.M)
@@ -747,6 +755,34 @@ def build(bundle_dir, expected, repo, census_raw=None):
             e2c = (exps.get("E2") or {}).get("completedAt")
             p.check(not (isinstance(e2c, str) and ISO_RE.match(e2c)) or t >= iso(e2c),
                     "(vi) census was taken before E2 completed (it runs on the E2/E7 population)")
+        # Per-experiment censuses: each states whether it was taken after the experiment's own defined drain.
+        disclosures, c2_status = [], {}
+        per = cs.get("censuses")
+        if p.check(isinstance(per, list), f"{CENSUS_SUMMARY}: censuses must list each census with its experiment and afterDefinedDrain"):
+            by_exp = {}
+            for i, c in enumerate(per):
+                where = f"{CENSUS_SUMMARY} censuses[{i}]"
+                exp = need(p, c, "experiment", "str", where)
+                if exp is None:
+                    continue
+                p.check(exp not in by_exp, f"{where}: experiment {exp} has more than one census entry")
+                by_exp[exp] = c
+                after = c.get("afterDefinedDrain")
+                if not p.check(isinstance(after, bool), f"{where}: afterDefinedDrain for {exp} is {after!r}, not true or false"):
+                    continue
+                derived = C2_DEVIATION if after else C2_SATISFIED
+                p.check(c.get("c2Status") in (None, derived),
+                        f"{where}: c2Status {c.get('c2Status')!r} for {exp}, but afterDefinedDrain is {str(after).lower()}: "
+                        f"C2 is never 'satisfied' for a census taken after its defined drain")
+                c2_status[exp] = derived
+                if after:
+                    n = (c.get("entries") or {}).get("trash")
+                    if p.check(isinstance(n, int) and not isinstance(n, bool) and n >= 0,
+                               f"{where}: entries.trash is missing for {exp}: the disclosure needs the .trash count"):
+                        disclosures.append(DRAIN_DISCLOSURE.format(exp=exp, n=n))
+            for exp in C2_REQUIRED_CENSUS:
+                p.check(exp in by_exp and isinstance(by_exp[exp].get("afterDefinedDrain"), bool),
+                        f"{CENSUS_SUMMARY}: no census entry for {exp} stating afterDefinedDrain (C2 must be disclosed, not assumed)")
         verification = None
         if census_raw:
             if os.path.realpath(census_raw).startswith(os.path.realpath(bundle_dir) + os.sep):
@@ -774,7 +810,8 @@ def build(bundle_dir, expected, repo, census_raw=None):
         if verification:
             census = {"listingSha256": sha, "listingBytes": lst.get("bytes"),
                       "listingCustody": f"held by {cust.get('heldBy')} off-repo, 0700, retained until {cust.get('retainedUntil')}",
-                      "verification": verification, "takenAt": taken, "blocklessInodes": blk, "reconciliationGap": gap}
+                      "verification": verification, "takenAt": taken, "blocklessInodes": blk, "reconciliationGap": gap,
+                      "c2Status": dict(sorted(c2_status.items())), "disclosures": disclosures}
     else:
         p.add(f"(vi) census NOT RUN: {CENSUS_SUMMARY} is missing (A1 (vi); the raw listing itself is never in the bundle)")
 
@@ -1004,6 +1041,9 @@ def build(bundle_dir, expected, repo, census_raw=None):
               f"`{ev}experiments/{n}.json` ({e['startedAt']} → {e['completedAt']}" + (f", artifact {e['artifact']['sourceSha'][:12]}" if n in APP_EXPERIMENTS else "") + ")")
     label("`filesystem.inodeCensus`", f"{census['listingSha256'][:12]}…, {census['verification']}", PQ,
           f"`{ev}{CENSUS_SUMMARY}` (A1 (vi), C2, C3). The raw listing is NOT in the evidence: {census['listingCustody']}")
+    label("`filesystem.inodeCensus.c2Status`, `disclosures`", json.dumps(census["c2Status"]), DV,
+          "per census: `afterDefinedDrain` true gives literal-deviation-disclosed and the exact disclosure, never "
+          "satisfied. " + (" ".join(census["disclosures"]) if census["disclosures"] else "No disclosure."))
     label("`enablementEligible`, `ineligibilityReasons`", "true, []", DV, "every check of scripts/build-qualification-record.py passed")
 
     prov = [f"# Production-host qualification record `{record_id}` — provenance",
