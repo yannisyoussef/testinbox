@@ -103,6 +103,8 @@ data class ScenarioResult(
     val partitionFallbackReasons: Map<String, Long>? = null,
     /** The timing-probe scenario only: each probe class's latency and 451 rate (security review S-C1). */
     val probes: Map<String, ProbeSummary>? = null,
+    /** The timing-probe scenario only: what its background traffic achieved (the system was loaded). */
+    val background: BackgroundSummary? = null,
 ) {
     /** completed / scheduled: separate from the achieved rate, which also carries the terminal lag. */
     val completionRatio: Double get() = if (scheduledEvents == 0) 0.0 else completedEvents.toDouble() / scheduledEvents

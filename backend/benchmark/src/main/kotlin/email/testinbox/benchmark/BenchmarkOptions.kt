@@ -95,6 +95,8 @@ data class BenchmarkOptions(
     val partitionedVariant: Boolean = false,
     /** Repetitions of the variant's timing-probe runs (S-C1), at each of its two load points, in both modes. */
     val probeRepetitions: Int = 4,
+    /** Seconds of each timing-probe run: its own, so the probes never stretch the gate's matrix. */
+    val probeDurationSeconds: Int = 60,
 ) {
     fun retentionRateFor(offered: Double): Double = retentionRate ?: (offered / RETENTION_RATIO)
 
@@ -230,6 +232,11 @@ data class BenchmarkOptions(
                         options = options.copy(partitionedVariant = true)
                     }
 
+                    "--probe-duration-seconds" -> {
+                        options =
+                            options.copy(probeDurationSeconds = value(flag).toIntOrNull() ?: throw UsageException("$flag needs a number"))
+                    }
+
                     "--probe-repetitions" -> {
                         options = options.copy(probeRepetitions = value(flag).toIntOrNull() ?: throw UsageException("$flag needs a number"))
                     }
@@ -269,6 +276,7 @@ data class BenchmarkOptions(
                 throw UsageException("the timing probes reserve ${ScenarioRunner.PROBE_HOT_INBOXES} inboxes of the hot workspace")
             }
             if (probeRepetitions < 1) throw UsageException("--probe-repetitions must be at least 1")
+            if (probeDurationSeconds < 1) throw UsageException("--probe-duration-seconds must be at least 1")
             if (partitionedVariant && (Seeder.PARTICIPANTS + 1) * inboxesPerWorkspace < recipientMix.maxRecipients) {
                 throw UsageException("the partitioned cohort needs at least ${recipientMix.maxRecipients} inboxes for the largest event")
             }
@@ -314,6 +322,7 @@ data class BenchmarkOptions(
                                               (the gate population is wiped first); reported under "variant", never
                                               part of the verdict
               --probe-repetitions <n>         timing-probe runs per load point and mode in the variant (default 4)
+              --probe-duration-seconds <n>    seconds of each timing-probe run (default 60)
 
             Output:
               --host-class <text>             operator-supplied host class, recorded in the evidence

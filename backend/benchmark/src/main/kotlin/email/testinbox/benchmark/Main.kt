@@ -286,7 +286,17 @@ class Harness(
             listOf(false, true).flatMap { paced ->
                 modes.map { mode ->
                     val rate = if (paced) variant.pacedProbeRate() else heaviestRate
-                    variant.run(ScenarioSpec(mode, concurrency, rate, probe = true, paced = paced, repetition = repetition))
+                    variant.run(
+                        ScenarioSpec(
+                            mode,
+                            concurrency,
+                            rate,
+                            probe = true,
+                            paced = paced,
+                            repetition = repetition,
+                            backgroundRate = heaviestRate,
+                        ),
+                    )
                 }
             }
         }

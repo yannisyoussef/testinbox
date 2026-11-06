@@ -55,6 +55,8 @@ data class ScenarioSpec(
     val paced: Boolean = false,
     /** Probe repetitions are numbered so each run stays apart in the evidence. */
     val repetition: Int = 0,
+    /** Probe scenarios: the background traffic's offered rate over the other workspaces (the matrix point's rate). */
+    val backgroundRate: Double? = null,
 ) {
     fun name(workspaces: Int): String =
         "${mode.name.lowercase()}-ws$workspaces-c$concurrency-r${Math.round(offeredRate)}" +
@@ -120,7 +122,9 @@ class ScenarioRunner(
         val name = spec.name(population.workspaceCount)
         log.info("scenario {} starting", name)
         val retentionRate = options.retentionRateFor(spec.offeredRate)
-        val retentionTargets = Math.ceil(retentionRate * (options.durationSeconds + options.warmupSeconds) * RETENTION_HEADROOM).toInt() + 5
+        // Probe scenarios run for their own duration, so they never stretch the gate's matrix.
+        val duration = if (spec.probe) options.probeDurationSeconds else options.durationSeconds
+        val retentionTargets = Math.ceil(retentionRate * (duration + options.warmupSeconds) * RETENTION_HEADROOM).toInt() + 5
         seeder.retentionTargets(
             retentionPopulation,
             retentionTargets,
@@ -128,7 +132,8 @@ class ScenarioRunner(
             raw.size.toLong(),
             attachment.size.toLong(),
         )
-        target.pool(spec.concurrency + POOL_MARGIN).use { pool ->
+        // A probe run drives two event streams (the hot flood and the background), each with the scenario's workers.
+        target.pool((if (spec.probe) 2 else 1) * spec.concurrency + POOL_MARGIN).use { pool ->
             val declarations =
                 HarnessDeclarations.of(
                     HarnessDeclarations.enforcement(spec.mode, options.referenceMode),
@@ -155,7 +160,7 @@ class ScenarioRunner(
                 val deltaSamples = Collections.synchronizedList(ArrayList<Long>())
                 val deltaSampler = startDeltaSampler(deltaSamples)
                 val heartbeats = startHeartbeats(protocol)
-                val retentionEvents = Math.ceil(retentionRate * options.durationSeconds).toInt()
+                val retentionEvents = Math.ceil(retentionRate * duration).toInt()
                 val retentionThread =
                     Thread({
                         val report =
@@ -179,10 +184,11 @@ class ScenarioRunner(
                             }
                         retentionAchieved.set(java.lang.Double.doubleToLongBits(report.achievedPerSecond))
                     }, "bench-retention")
-                val events = (spec.offeredRate * options.durationSeconds).toInt()
+                val events = (spec.offeredRate * duration).toInt()
                 val scheduler = OpenLoopScheduler(spec.offeredRate, options.arrivals, options.seed)
                 retentionThread.start()
-                val probes = if (spec.probe) startProbes(protocol) else null
+                val probes = if (spec.probe) startProbes(protocol, duration) else null
+                val background = if (spec.probe) startBackground(protocol, spec, duration) else null
                 val report =
                     scheduler.run(events, spec.concurrency) { due ->
                         val record = EventRecord(EventTimings(), due.scheduledNanos)
@@ -191,6 +197,7 @@ class ScenarioRunner(
                     }
                 retentionThread.join()
                 probes?.join()
+                background?.join()
                 compactor.shutdownNow()
                 deltaSampler.shutdownNow()
                 heartbeats?.shutdownNow()
@@ -215,6 +222,7 @@ class ScenarioRunner(
                         partitionFallbackReasons =
                             if (spec.mode == AdmissionMode.PARTITIONED) protocol.fallbackReasons.mapValues { it.value.get() } else null,
                         probes = probes?.summaries(),
+                        background = background?.summary(),
                     )
                 log.info(
                     "scenario {} done: offered {} achieved {} T1 p99 {} ms, lock timeouts {}, deadlocks {}",
@@ -384,27 +392,81 @@ class ScenarioRunner(
 
     @Volatile private var pacedMode = false
 
+    /** The probe scenario's roles over the closed cohort; checked once, failing the run on a collision. */
+    private val probeRoles: ProbeRoles by lazy {
+        ProbeRoles(
+            population,
+            checkNotNull(closedCohort) { "the probes run on the closed cohort" }.legacyWorkspace(population),
+            PROBE_HOT_INBOXES,
+        )
+    }
+
     /**
-     * The S-C1 probe classes over the closed cohort: `inside` co-addresses the hot
-     * workspace's reserved inbox with an observer's inbox in another workspace,
-     * `cold` is a third workspace's inbox, `unknown` resolves to nothing.
+     * The S-C1 probe classes: `inside` co-addresses one of the hot workspace's
+     * reserved inboxes with the observer's inbox, `cold` is the cold workspace's
+     * inbox, `unknown` resolves to nothing ([ProbeRoles]).
      */
-    private fun startProbes(protocol: ProtocolAssembly): ProbeLoad {
-        val byWorkspace =
-            population.inboxes
-                .groupBy { it.workspaceId }
-                .values
-                .toList()
-        // `inside` rotates over the hot workspace's reserved inboxes, so each stays under its
-        // per-inbox INGEST refill; the target copy is always the first recipient.
-        val classes =
-            mapOf(
-                "inside" to byWorkspace[0].takeLast(PROBE_HOT_INBOXES).map { listOf(it, byWorkspace[1].first()) },
-                "cold" to listOf(listOf(byWorkspace[2].first())),
-                "unknown" to listOf(emptyList()),
-            )
-        return ProbeLoad(classes, PROBE_RATE, options.durationSeconds, options.seed + PROBE_SEED) { probeIngest(protocol, it) }
-            .also { it.start() }
+    private fun startProbes(
+        protocol: ProtocolAssembly,
+        duration: Int,
+    ): ProbeLoad {
+        val classes = mapOf("inside" to probeRoles.inside, "cold" to probeRoles.coldTarget, "unknown" to listOf(emptyList()))
+        return ProbeLoad(classes, PROBE_RATE, duration, options.seed + PROBE_SEED) { probeIngest(protocol, it) }.also { it.start() }
+    }
+
+    /** S-C1 must-fix 1: ordinary traffic over the background workspaces at the matrix point's rate, through INGEST. */
+    private fun startBackground(
+        protocol: ProtocolAssembly,
+        spec: ScenarioSpec,
+        duration: Int,
+    ): BackgroundLoad {
+        val rate = checkNotNull(spec.backgroundRate) { "a probe scenario names its background rate" }
+        return BackgroundLoad(
+            probeRoles.background,
+            rate,
+            duration,
+            spec.concurrency,
+            options.recipientMix,
+            options.seed + PROBE_SEED + 1,
+        ) {
+            backgroundSend(protocol, it)
+        }.also { it.start() }
+    }
+
+    @Suppress("TooGenericExceptionCaught") // every failure of a DATA is a 451 to its sender
+    private fun backgroundSend(
+        protocol: ProtocolAssembly,
+        inboxes: List<SeededInbox>,
+    ): BackgroundResult {
+        val admitted = admittedByIngest(protocol, inboxes)
+        if (admitted.isEmpty()) return BackgroundResult(0, null, unavailable = false)
+        val timings = EventTimings()
+        EventTimings.current.set(timings)
+        val failed =
+            try {
+                deliver(protocol, admitted)
+                false
+            } catch (_: RuntimeException) {
+                true
+            } finally {
+                EventTimings.current.remove()
+            }
+        return BackgroundResult(admitted.size, timings.t1EndNanos.takeIf { it > 0 }, failed)
+    }
+
+    /** The guarded protocol, then T2 with the real message rows, for already admitted copies. */
+    private fun deliver(
+        protocol: ProtocolAssembly,
+        admitted: List<SeededInbox>,
+    ) {
+        val plans = admitted.map(::plan)
+        val byMessage = admitted.zip(plans).associate { (inbox, plan) -> plan.messageId to inbox }
+        protocol.guarded.ingest(bytesPerCopy, plans) { ok ->
+            ok.associate { plan ->
+                plan.messageId to
+                    (protocol.messages.appendVisible(message(plan, byMessage.getValue(plan.messageId), protocol)) == AppendOutcome.Appended)
+            }
+        }
     }
 
     /** One probe event through production INGEST limits and the guarded protocol. */
@@ -416,18 +478,8 @@ class ScenarioRunner(
         val admitted = admittedByIngest(protocol, inboxes)
         val target = inboxes.first() in admitted
         if (admitted.isEmpty()) return ProbeResult(ProbeOutcome.NO_T1, false)
-        val plans = admitted.map(::plan)
-        val byMessage = admitted.zip(plans).associate { (inbox, plan) -> plan.messageId to inbox }
         return try {
-            protocol.guarded.ingest(bytesPerCopy, plans) { ok ->
-                ok.associate { plan ->
-                    plan.messageId to
-                        (
-                            protocol.messages.appendVisible(message(plan, byMessage.getValue(plan.messageId), protocol)) ==
-                                AppendOutcome.Appended
-                        )
-                }
-            }
+            deliver(protocol, admitted)
             ProbeResult(ProbeOutcome.DELIVERED, target)
         } catch (_: RuntimeException) {
             ProbeResult(ProbeOutcome.UNAVAILABLE, target)
@@ -664,12 +716,14 @@ class ScenarioRunner(
 
         /**
          * Events per second of each probe class: a light observer beside the flood.
-         * 3/s for a 30 s run is 90 events per class per repetition; four
-         * repetitions pool 360, above [ProbePooling.MIN_TARGET_EVENTS].
+         * 4/s for the default 60 s probe run is 240 events per class per
+         * repetition; four repetitions send 960, and even if only half of the
+         * `inside` targets pass the hot workspace's INGEST budget, 480 pool -
+         * above [ProbePooling.MIN_TARGET_EVENTS] with margin.
          */
-        const val PROBE_RATE = 3.0
+        const val PROBE_RATE = 4.0
 
-        /** The hot workspace's inboxes reserved for `inside`: 1/s each, under the 2/s per-inbox INGEST refill. */
+        /** The hot workspace's inboxes reserved for `inside`: 4/3 per second each, under the 2/s per-inbox INGEST refill. */
         const val PROBE_HOT_INBOXES = 3
 
         /** The paced flood's share of the INGEST headroom: just under the refill, never over it. */

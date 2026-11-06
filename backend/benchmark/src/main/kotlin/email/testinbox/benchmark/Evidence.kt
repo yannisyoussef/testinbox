@@ -307,6 +307,18 @@ class Evidence(
                 },
             "partitionFallbacks" to s.partitionFallbacks,
             "partitionFallbackReasons" to s.partitionFallbackReasons,
+            "background" to
+                s.background?.let {
+                    linkedMapOf(
+                        "offeredRate" to it.offeredRate,
+                        "events" to it.events,
+                        "admittedCopies" to it.admittedCopies,
+                        "admittedCopiesPerSecond" to it.admittedCopiesPerSecond,
+                        "eventsReachingT1" to it.eventsReachingT1,
+                        "t1" to latency(it.t1),
+                        "unavailableRate" to it.unavailableRate,
+                    )
+                },
             "probes" to
                 s.probes?.mapValues { (_, p) ->
                     linkedMapOf(
