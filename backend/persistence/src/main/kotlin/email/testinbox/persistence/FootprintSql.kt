@@ -37,13 +37,25 @@ internal object FootprintSql {
                          g_reserved AS (SELECT coalesce(sum(bytes), 0) AS bytes, coalesce(sum(cardinality(object_keys)), 0) AS objects
                                           FROM storage_reservation)"""
 
-    /** The footprint-only CTEs, for a statement that already carries [GLOBAL_CTES] (T1). */
+    /**
+     * The footprint-only CTEs, for a statement that already carries [GLOBAL_CTES] (T1).
+     *
+     * `fp_debt` is the ONE pass over the unsuperseded debt rows (gate D A3): the
+     * total, and with `FILTER` the rows of no shared workspace (no workspace, or
+     * one without a share), which [CohortSql]'s unattributed pool adds to. The
+     * join is to the DISTINCT shared ids, so it never repeats a debt row.
+     */
     val FOOTPRINT_CTES = """fp_newest AS (SELECT observed_at, started_seq, trash_bytes, block_size_bytes, capacity_bytes, written_by
                                        FROM storage_filesystem_observation ORDER BY started_seq DESC, id DESC LIMIT 1),
-                         fp_debt AS (SELECT coalesce(sum(d.bytes), 0) AS bytes, coalesce(sum(d.objects), 0) AS objects
+                         ${CohortSql.SHARES},
+                         fp_debt AS (SELECT coalesce(sum(d.bytes), 0) AS bytes, coalesce(sum(d.objects), 0) AS objects,
+                                            coalesce(sum(d.bytes) FILTER (WHERE s.workspace_id IS NULL), 0) AS unattributed_bytes,
+                                            coalesce(sum(d.objects) FILTER (WHERE s.workspace_id IS NULL), 0) AS unattributed_objects
                                        FROM storage_deletion_debt d
+                                       LEFT JOIN (SELECT DISTINCT workspace_id FROM cp_shares) s ON s.workspace_id = d.workspace_id
                                       WHERE d.incurred_at = 'infinity'::timestamptz
-                                         OR d.seq >= coalesce((SELECT started_seq FROM fp_newest), 0)), ${CohortSql.CTES}"""
+                                         OR d.seq >= coalesce((SELECT started_seq FROM fp_newest), 0)),
+                         ${CohortSql.CTES}"""
 
     /** Every CTE [COLUMNS] needs, for a statement of its own (the footprint gate, rule P). */
     val CTES = "$GLOBAL_CTES,\n                         $FOOTPRINT_CTES"
