@@ -10,8 +10,10 @@
     correctness, security, and architecture. All three returned AGREE WITH
     CHANGES, and every required edit is applied. Where to find each one:
     Appendix A.
-  - Before the prototype (M1), both reviewers must confirm this revision's
-    §5 (the invariants) and §11 (the decisive tests). The gating is in §14.
+  - **Revision 3** applies the re-check of revision 2 (`f8d869c`). **M0′:
+    all three reviewers AGREE subject to these edits, which are applied; M1
+    may start.** Where to find each one: Appendix B.
+  - The gating is in §14.
 - **The ADR change** is the separate, **Proposed** ADR-038
   ([`docs/adr/0038-slot-lane-escrow-admission.md`](../adr/0038-slot-lane-escrow-admission.md)).
   It amends ADR-035, its Amendment 2 annex and ADR-037 by reference only.
@@ -283,7 +285,8 @@ storage_admission_epoch        -- one row, id = 1; seeded by V28 from a sequence
 
 storage_admission_epoch_bumps  -- (cause PK, bumps bigint): the DB-side counter behind the metric (L3)
 
-storage_escrow_policy          -- one row; written only by the operator pool reserve, like storage_partition_bound
+storage_escrow_policy          -- one row; written only through storage_escrow_set_policy (operator role only), in the
+                               -- pool reserve's transaction, under the S1 drain fence (§4.1, "The policy row")
   binding text                   -- hash of every application-supplied refill input (M1b)
   g_payload_cap, g_footprint_cap, c_fs_terms, h_f, p_f, model (B, ε-denominator, O_max),
   q_lane_payload, q_lane_footprint, k_max
@@ -334,7 +337,7 @@ storage_escrow_scope           -- PRIMARY KEY (kind, scope_id); fillfactor 50
 | `storage_escrow_admit(…)` | §4.2 step 5 |
 | `storage_escrow_refill_scope(…)` | §4.3 |
 | `storage_escrow_refill_global()` | §4.4 |
-| `storage_escrow_revoke(cause)` | drain, generation bump, `escrow_enabled = false` when the cause is a mixed version |
+| `storage_escrow_revoke(cause)` | the generation bump (and `escrow_enabled = false` when the cause is a mixed version), and nothing else. It **requires** the drain fence to be held already by its caller's first statement, and refuses otherwise (it checks `pg_locks` for `(35, 1)` and the lanes held by this backend). It is always the caller's **last** write (§4.8) |
 | `storage_escrow_audit()` | §6.3 |
 | `storage_escrow_lane_footprint_total()` | Σ spendable lane footprint grants, for rule (P) (§6.1) |
 | `storage_footprint_bound(p, n, …)` | IMMUTABLE; `FootprintModel.bound` in SQL, pinned to Kotlin by P-F (§11.2) |
@@ -342,6 +345,32 @@ storage_escrow_scope           -- PRIMARY KEY (kind, scope_id); fillfactor 50
 `storage_footprint_bound` is a **second implementation of the footprint
 model**. Today F(·) exists only in Kotlin. ADR-038 names this explicitly
 (architecture H2(d)).
+
+**The policy row, `storage_escrow_policy`** (correctness Q1, security 3,
+architecture 5):
+
+- It carries the same statement trigger as the V25 share tables: every write
+  calls `storage_t1_fence(true)` and is refused under any isolation level but
+  READ COMMITTED.
+- It is written **only** through the definer function
+  `storage_escrow_set_policy(...)`. Only the operator role may execute it, so
+  E9 holds literally: no application role writes it.
+- It is called in the **same transaction as the plan reserve**, under the S1
+  fence. The reserve refuses it unless it is consistent with the approved
+  plan's `assess = Fits`, exactly as `storage_partition_bound` is today.
+- **With no policy row, or a policy/binding mismatch,
+  `storage_escrow_refill_global` grants nothing.** Every event then takes the
+  slow path and is decided as mode a decides it, and an alert fires
+  (`testinbox_storage_escrow_policy_missing`). **A missing row alone never
+  causes a `451`.**
+- Gate S requires each escrow node's configured binding to equal
+  `storage_escrow_policy.binding` (§13.4).
+
+**The bump counter, `storage_admission_epoch_bumps`** (security 4,
+architecture 5): global counts per closed-enum cause, no tenant ids, `-` in
+backup. Ingestion gets `SELECT`; the API gets none. Exactly one deployable,
+ingestion, exports it, as a gauge read from the table, so no series is
+duplicated across deployables. A restore resets it, which is harmless.
 
 ### 4.2 The fast path (one T1 transaction)
 
@@ -573,7 +602,7 @@ each:
 | | T2, compactor | transfers: `U` and `L` unchanged |
 | | retention cascade | `L → D`, or `U → C` for shares: neutral for (C) and E3, decreasing for (G), E1, E2 |
 | | release | `L → D` (neutral) |
-| | reconciliation repair, `storage_account_recompute` | **`storage_escrow_revoke('repair')` in the same transaction** (architecture M1a). It is stricter than relying on V24's trust bump, which covers workspace-scope drift only |
+| | reconciliation repair, `storage_account_recompute` | **`storage_t1_fence(true)` as the first statement, then `storage_escrow_revoke('repair')` as the last write, in the same transaction** (architecture M1a; lock order per §4.8). It is stricter than relying on V24's trust bump, which covers workspace-scope drift only |
 | `D` (debt rows) | retention, release | transfer (above) |
 | | rule (P) pending rows | `epoch` + `scope_epoch` |
 | | debt compaction | superseded by `W` (annex §2.4); the watermark bump covers validity |
@@ -651,25 +680,50 @@ row, from many writers, including A′ and OFF code once V28 is applied. So:
   (`JdbcBetaAdmissions.lockPolicy`), before its `workspace` INSERT;
 - the bootstrap `ensureWorkspace` (`Ops.kt`) takes nothing later;
 - rule (P) holds `(35, 1)` before its pending row;
-- the compactor and `storage_repair_ledger` hold `(35, 2)` before the
-  watermark or trust write;
-- revocation drains under `(35, 1)`;
+- the compactor holds `(35, 2)` before its watermark write, and takes no
+  `(35, 1)` and no lane, so it never needs rank 4 or 5;
+- **repair, recompute and the audit's repair transaction** (correctness and
+  architecture re-check, edit 1, fix (a)). Today V24 repair and V8 recompute
+  take `(35, 2)` first. V24 repair also writes distrust, an epoch bump, before
+  it returns. A revoke after that would give `(35, 2)` → epoch row →
+  `(35, 1)`, while rule (P) holds `(35, 1)` and then bumps the epoch row: a
+  **cycle**. So under V28:
+  - repair, recompute and the audit's repair transaction call
+    `storage_t1_fence(true)` as their **first** statement, before `(35, 2)` and
+    before any epoch-bumping write;
+  - the generation bump of `storage_escrow_revoke` is their **last** write.
+    Revoke is split into the drain (the fence, taken first) and the bump
+    (taken last);
+  - the audit's violation path never revokes inside the read-only audit. It
+    runs its revoke and distrust in a **fresh transaction**, in canonical
+    order: fence → `(35, 2)` → re-check the violation → distrust → revoke;
+- the V21 node fence's mixed-version revoke holds `(35, 1)` (the trigger takes
+  it first) and drains before its bump;
 - the fast path and the keeper's refills read the epoch row without a lock.
 
-**Deadlock freedom.**
+**Deadlock freedom.** Every locker of an escrow lock, of `(35, 1)`, of
+`(35, 2)` or of the epoch row takes them in canonical order: it skips ranks,
+and never takes a lower rank after a higher one.
 
-- Every escrow locker takes its locks in canonical order:
-  - fast path: 5 (one lane), then 6;
-  - slow path and keeper: 4, all of 5, then 6;
-  - scope refills: only rows already held at 6;
-  - fences: 4, then 5.
+| Locker | Ranks taken, in order |
+|---|---|
+| fast path | 5 (one lane), 6 |
+| slow path, keeper | 4, all of 5, 6 |
+| scope refills | only rows already held at 6 |
+| fences (lifecycle, reserve, V25 share fence, beta admission) | 4, 5, then their own writes; any epoch bump last (14) |
+| rule (P) | 4, then 14 |
+| repair, recompute, audit repair | 4, 5, then 13, then 14 (distrust, then the generation bump) |
+| compactor | 13, then 14 |
+| V21 node fence (mixed-version revoke) | 4, 5, then 14 |
 - T2, retention, the compactor and cleanup take no escrow lock.
 - The reservation insert's FK `KEY SHARE` on `workspace` conflicts only with
   deleting the workspace, which erasure does after its fence.
 - **T-C6** proves this across every pair, under both A′ and escrow code,
   including rule (P), the observation insert, `storage_repair_ledger`,
-  workspace provisioning and beta admission. A reversed-order mutant must
-  deadlock.
+  workspace provisioning and beta admission. It also covers rule (P)
+  concurrent with repair + revoke, and with recompute. A reversed-order
+  mutant must deadlock, and so must a mutant that takes `(35, 2)` before the
+  fence.
 
 **Isolation:** READ COMMITTED only, enforced in every escrow function (P2 of
 #136).
@@ -828,14 +882,18 @@ its own `EffectiveStoragePolicy`, the share rows and `storage_escrow_policy`.
 It **never** uses the limits stamped on the row, so the audit is not circular
 (architecture M1b).
 
-**On a violation**, the audit itself, inside the repair transaction:
+**On a violation**, the audit (read-only) ends, and its violation path runs a
+**fresh transaction** in canonical order (§4.8):
 
-1. calls `storage_escrow_revoke('drift')`: drain, generation bump, so no grant
-   is spendable;
-2. stamps a distrust (`storage_footprint_trust`). Under `ALL`, admission then
+1. `storage_t1_fence(true)` (drain), then `(35, 2)`;
+2. re-check the violation under those locks; if it no longer holds, commit
+   nothing and report;
+3. stamp a distrust (`storage_footprint_trust`). Under `ALL`, admission then
    answers **`451` before recipient resolution** (`UNTRUSTED`) until a clean
    reconciliation and an observation begun after the distrust (annex §4.5),
-   exactly as for ledger drift.
+   exactly as for ledger drift;
+4. as the **last** write, `storage_escrow_revoke('drift')`: the generation
+   bump, so no grant is spendable.
 
 Also:
 
@@ -870,7 +928,8 @@ Also:
   did:
   - V25's share fence, which now drains;
   - V21's node fence, which now revokes on NULL capability;
-  - the repair and recompute functions, which now revoke.
+  - the repair and recompute functions, which now take the drain fence first
+    and revoke last (§4.8).
 
 Nothing is dropped, renamed or narrowed, and it takes a 2 s `lock_timeout`
 (V27 precedent).
@@ -881,7 +940,8 @@ Nothing is dropped, renamed or narrowed, and it takes a 2 s `lock_timeout`
 - the V21 node fence now drains, revokes and disables;
 - the V25 share fence now drains;
 - the epoch triggers write one row;
-- the repair revokes.
+- the repair and recompute functions take `storage_t1_fence(true)` first and
+  revoke last.
 
 `docs/dev/rollback.md` gains a "V28" section, like V25–V27: what an older
 artifact meets, and "partial migration is roll forward only". B-1′ tests A′
@@ -956,12 +1016,28 @@ CLAUDE.md.
 | Layer | What lives there |
 |---|---|
 | domain | `EscrowFit`: does a copy fit these grants; the full-envelope prefix. Pure arithmetic beside `FootprintAdmission` |
-| application | `StorageAdmission` **owns the sequence**: fast path → escalation → slow path. One port: `StorageEscrowStore.tryAdmit(scope, slot, decide: (EscrowView) -> EscrowPlan): Decided \| Escalated(reason)`, where `reason` is a closed enum (`lane_short`, `lane_stale`, `lane_missing`, `not_ready`, `scope_wait`, `spend_mismatch`). The slow path stays behind `StorageAdmissionStore`, with the regrant as the last step of its transaction (§4.4). Refill-only regrants go through the use case `RefillStorageEscrow`, called by the keeper |
+| application | `StorageAdmission` **owns the sequence**: fast path → escalation → slow path. One port: `StorageEscrowStore.tryAdmit(scope, slot, decide: (EscrowView) -> EscrowPlan): Decided \| Escalated(reason)`, where `reason` is a closed enum (`lane_short`, `lane_stale`, `lane_missing`, `not_ready`, `scope_wait`, `spend_mismatch`, `binding_mismatch`). The slow path stays behind `StorageAdmissionStore`, with the regrant as the last step of its transaction (§4.4). Refill-only regrants go through the use case `RefillStorageEscrow`, called by the keeper |
 | persistence | `JdbcEscrowAdmission` maps SQLSTATE `TI001` and the `L_w` timeout to `Escalated`, and decides nothing. No SQLSTATE or JDBC type crosses the port. `JdbcStorageAdmission` is constructed by `IngestionWiring` and injected, so `PartitionedT1RuleTest`'s `CONSTRUCTION_SITES` stays intact |
 
-**The global regrant** is one definer function. Its application callers are
-pinned by ArchUnit to two: the slow-path adapter, within T1's own
-invariant-bearing write, and `RefillStorageEscrow`.
+**How the slow path is built** (architecture re-check, items 2 and 3; before
+M1):
+
+- `JdbcStorageAdmission` gains a **constructor-injected escrow strategy**,
+  `null` under `GLOBAL`. Under `ESCROW` it supplies the drain fence in place of
+  `acquireAdmissionLock`, the scope-row locks, and the regrant after the
+  insert. Under `GLOBAL` and `OFF`, with the strategy `null`, nothing changes.
+- **A test records the full SQL sequence of the T1 transaction under `GLOBAL`
+  and `OFF`** through a JDBC proxy: every statement, in order, including the
+  `SET`s, the lock, the snapshot, the insert and the COMMIT. It requires that
+  sequence to be byte-identical to today's, not only the snapshot statement's
+  text (`AdmissionStatementTextTest` pins only the latter).
+- `acquireAdmissionLock`, and every new protected hook the strategy uses, are
+  added to the `PartitionedT1RuleTest`-style rule that forbids a main-code
+  subclass from overriding them.
+- **The global regrant** is one definer function. Its SQL text is a constant in
+  exactly one object (`EscrowSql.REGRANT`). An ArchUnit field-access rule allows
+  only the two named classes to read it: the slow-path strategy, within T1's own
+  invariant-bearing write, and the adapter behind `RefillStorageEscrow`.
 
 **ArchUnit rules,** each with a rogue fixture, as `PartitionedT1RuleTest`:
 
@@ -1001,10 +1077,18 @@ back**. An escalated fast attempt is exactly such an attempt.
 - **The case for departing:** the event is one admission attempt, and a second
   spend after the slot would break I-21's fresh-conformance argument by up to
   the escalation rate × T.
-- **The alternative** is to follow decision 2 literally: two tokens per
-  escalated event, with I-21 restated to include the escalation rate.
-- **The choice is the owner's.** Either way, the escalation rate is bounded by
-  S4 and exported as a metric.
+- **Both options are sound only if stated as follows** (correctness Q3):
+  - **(i) Two tokens per escalated event** (decision 2 literally). This needs a
+    restated I-21, plus an explicit escalation allowance `(1 + e_max)` in σ′
+    and in the fresh rate, with G-D evidence at that attempt rate. A sender of
+    large envelopes can double its own token demand, because envelopes above
+    `Q_lane` always escalate.
+  - **(ii) One token per event** (departs from decision 2). The escalated fast
+    attempt holds no global lock, and the slow path is counted once. But the
+    escalation rate then becomes a **runtime alarm**
+    (`testinbox_storage_escrow_escalation_total` against `e_max`, paging), not
+    only the prototype's S4.
+- **The choice is the owner's.**
 
 **Bursts after an outage.** B = σ′ + B_c = 5 890 attempts at ≤ 16 concurrent
 per node. At 24 KiB × 4.05 copies that consumes ≈ 560 MiB of payload, ≈ 35 MiB
@@ -1165,7 +1249,7 @@ test names the mutant it kills.
 | T-C3 | lifecycle fence ↔ fast path, both orders: the fence sees the reservation; the next event is `Inactive` | fence without drain |
 | T-C4 | rule (P) ↔ fast path, latched between lock and spend: E7 holds | rule (P) without Σ g (must over-admit) |
 | T-C5 | observation INSERT racing a fast path: old-epoch spends commit; new ones escalate; Lemma 1 holds against both | epoch trigger dropped |
-| T-C6 | every pair among fast path, slow path, keeper, scope refill, lifecycle, pool reserve, beta admission, workspace provisioning, node revoke, rule (P), observation insert, `storage_repair_ledger`, T2 and retention, forced into every wait order, under **A′ and escrow code**: 0 deadlocks | reversed lock order (must deadlock); epoch row taken before `(35, 1)` |
+| T-C6 | every pair among fast path, slow path, keeper, scope refill, lifecycle, pool reserve, beta admission, workspace provisioning, node revoke, rule (P), observation insert, `storage_repair_ledger`, recompute, the audit's violation transaction, T2 and retention, forced into every wait order, under **A′ and escrow code**: 0 deadlocks. Includes rule (P) concurrent with repair + revoke, and with recompute | reversed lock order (must deadlock); epoch row taken before `(35, 1)`; **`(35, 2)` taken before the fence in repair or recompute (must deadlock against rule (P))** |
 | T-C7 | a scope wait > `L_w` escalates; a stalled holder makes the slow path time out globally; never a scope-attributed `451` | `451` on scope timeout |
 | T-C8 | `ORDER BY … FOR UPDATE` locks in key order under contention | — (pins PostgreSQL behaviour) |
 | T-C9 | mixed versions: A′ ingestion **and A′ API** registration, an A′ lifecycle fence and A′ rule (P) → drain, revoke, disable; decisions equal mode a's; no over-admission across the transition; a new API (`escrow-v1`) never disables | trigger without drain; NULL from the API ignored |
@@ -1235,7 +1319,9 @@ foreign one (ADR-037 A1).
 | B-4 | §17 tests 1–55 parameterised over GLOBAL and ESCROW |
 | B-5 | `check-storage-enforcement-off.test.sh` refuses a committed `ESCROW` in every spelling: properties, environment variables, `-D` system properties, `SPRING_APPLICATION_JSON` (M4) |
 | B-6 | `DeploymentSafety` refuses `ESCROW` with `admission-locking ≠ GLOBAL`, outside `ALL`, without C-Q, or with `L_w ≥ lock_timeout` |
-| A-1 | the ArchUnit rules of §7, each with a rogue fixture |
+| A-1 | the ArchUnit rules of §7, each with a rogue fixture, including the override rule over `acquireAdmissionLock` and the strategy hooks, and the field-access rule on `EscrowSql.REGRANT` |
+| **B-7** | the full SQL sequence of the T1 transaction under `GLOBAL` and `OFF`, recorded through a JDBC proxy, is byte-identical to today's (§7) |
+| **B-8** | no policy row, or a binding mismatch: no grant is issued, every event is decided on the slow path as mode a, the alert fires, and no `451` results; a policy write under REPEATABLE READ, or by a non-operator role, is refused |
 | **T-C13** | tenant reachability: every writer of an epoch-trigger table reachable by a tenant role is in §4.6's table, and is bounded (security 6) |
 | MC-1 | `MetricCardinalityTest` pins `cause` to the `last_cause` enum, and unknown values map to `other` (security 5, L3) |
 
@@ -1250,7 +1336,9 @@ lab/benchmark-only switch.
 
 **In scope:**
 
-- **V28-proto:**
+- **V28-proto**, applied **by the benchmark harness to a disposable database
+  only; never placed in `db/migration`, never merged** (architecture re-check,
+  item 2):
   - the escrow tables, the policy row and the epoch row with the observation
     trigger;
   - `storage_escrow_lock`, `storage_escrow_admit`,
@@ -1262,10 +1350,12 @@ lab/benchmark-only switch.
 - **The application.** `StorageAdmission` owns the sequence, over
   `StorageEscrowStore.tryAdmit` returning `Decided | Escalated`. Its slow path
   inserts before it regrants (H1). `JdbcStorageAdmission` is injected, never
-  constructed by the escrow adapter (M3).
+  constructed by the escrow adapter (M3), and receives the escrow strategy by
+  constructor; under `GLOBAL` the strategy is `null` and the recorded SQL
+  sequence test passes unchanged (§7).
 - **`EscrowFit`**, with exact-row refusals by mode a's formula (correctness 3).
 - **The keeper**, NOTIFY-driven, with the background scope refill (m1).
-- **A stub `t1_schedule` spend** (correctness 11): one row, its own
+- **A stub `t1_schedule` spend** (correctness 11), **benchmark-only code**: one row, its own
   transaction, at its production position after the slot and before T1, with a
   token rate high enough never to refuse. It measures the second global row's
   cost, not scheduling.
@@ -1425,10 +1515,10 @@ On acceptance, only dated pointers would be added to ADR-035 and ADR-037.
 
 | Role | Grants |
 |---|---|
-| Ingestion | `SELECT` on the lane, scope and epoch tables; `EXECUTE` on `storage_escrow_lock`, `storage_escrow_admit`, `storage_escrow_refill_scope`, `storage_escrow_refill_global`, `storage_t1_fence`, `storage_escrow_lane_footprint_total`. No DML. `INSERT` on `storage_reservation` is kept (E8 note) |
+| Ingestion | `SELECT` on the lane, scope and epoch tables and on `storage_admission_epoch_bumps`; `EXECUTE` on `storage_escrow_lock`, `storage_escrow_admit`, `storage_escrow_refill_scope`, `storage_escrow_refill_global`, `storage_t1_fence`, `storage_escrow_lane_footprint_total`. No DML. `INSERT` on `storage_reservation` is kept (E8 note) |
 | API | **no `SELECT` on any escrow table**; `EXECUTE` on `storage_escrow_audit` (whose violation path revokes by itself) and `storage_escrow_lane_footprint_total` (rule (P)). **No `EXECUTE` on `storage_escrow_revoke`** (security 3.3). The operator lifecycle image uses operator credentials for `storage_t1_fence` |
 | Monitor | nothing new; its INSERT fires the definer trigger |
-| Operator (pool reserve) | writes `storage_escrow_policy`, inside the reserve command |
+| Operator (pool reserve) | `EXECUTE` on `storage_escrow_set_policy` only (no table DML), called inside the reserve transaction under the S1 fence; the API and ingestion roles hold no `EXECUTE` on it |
 
 - Gate F's privilege query adds the five tables to "no
   `INSERT/UPDATE/DELETE/TRUNCATE/TRIGGER` for any application role".
@@ -1472,6 +1562,8 @@ All five are also added to `REQUIRED_DENY` in `scripts/check-backup-scope.sh`
    - every live node row of either role has `admission_accounting =
      'escrow-v1'`;
    - `escrow_enabled = true`;
+   - `storage_escrow_policy` exists, and every escrow node's configured binding
+     equals `storage_escrow_policy.binding`;
    - the inventory refuses an escrow node beside a NULL one.
 
    The name "S" avoids a clash with the existing gate E (H2e).
@@ -1503,7 +1595,9 @@ All five are also added to `REQUIRED_DENY` in `scripts/check-backup-scope.sh`
    - `escrow_enabled = 0` for more than 10 min outside a rollout;
    - escalations > 1 % over 5 min;
    - keeper last success > 2 min;
-   - LISTEN degraded.
+   - LISTEN degraded;
+   - `testinbox_storage_escrow_policy_missing` (no policy row, or a binding
+     mismatch: every event on the slow path).
 
 ---
 
@@ -1514,17 +1608,18 @@ The gating follows the architecture review.
 | # | Milestone | Estimate | Exit |
 |---|---|---|---|
 | M0 | Review of revision 1 | done | AGREE WITH CHANGES × 3 |
-| **M0′** | Re-review of this revision (§4, §5, §9, §11, ADR-038) | 0.5–1 d | both reviewers confirm the invariants and decisive tests. **Before M1: H1, M2 and the prototype-touched M3 rules must be in the design**; they are (Appendix A) |
+| **M0′** | Re-check of revision 2 (`f8d869c`) | **done: all three reviewers AGREE subject to the edits of Appendix B, which are applied; M1 may start** | H1, M2, the prototype-touched M3 rules and the slow-path construction rules (§7) are in the design |
 | M1 | Bounded prototype (§12.1) on this branch (contains `920ba1d` and amendment D); laptop smoke | 2 d | runs the focused workload end to end, cold pool by default, stub `t1_schedule` included |
 | M2 | Focused NON-GATE staging run (Ops window) and analysis | 0.5 + 0.5 d | GO / STOP / INCONCLUSIVE (§12.3) |
 | **Gate before M3** | H2 (ADR-038 complete), H3 (floor, T-C9), M1, M4, M5, M6 settled in the design and agreed | (part of M0′ / M2) | — |
+| **Gate before merging M3** | **The owner's authorization of implementation.** ADR-038 is still Proposed, and V28 runs on every environment the migrator reaches | owner | — |
 | M3 | Full implementation: triggers, fences, rule (P), lifecycle, revocation, audit, `DeploymentSafety`, gate S, metrics, all §11 tests, ArchUnit | 7–10 d | CI green, minima ratcheted |
 | **Gate before M4** | L1–L5 implemented | (part of M3) | — |
 | M4 | Reviews: correctness, architecture, security, including the N1/N2 probe evidence; fixes | 3–5 d | AGREE; evidence for OD-3 |
 | M5 | Gate D rerun (full §11 matrix) | 1 d Ops + 0.5 d | PASS or FAIL as computed |
 | M6 | Owner decisions (§15); ADR-038 accepted or not; release through S1/handoff | owner-paced | — |
 
-**Calendar:** M0′ → M5 is about **3–4 weeks** [estimate], if M2 says GO and
+**Calendar:** M1 → M5 is about **3–4 weeks** [estimate], if M2 says GO and
 M0′ needs no second design round. My estimates on this thread have run
 optimistic twice.
 
@@ -1540,12 +1635,13 @@ optimistic twice.
 | OD-2 | Accept or refuse ADR-038 after M4 |
 | OD-3 | N1 (scope-row wait) and N2 (inline refill): accept for the beta with mitigation (m1) adopted and its measured criterion (G8), or refuse. (m2) and (m3) are rejected, with reasons (§9.3) |
 | OD-4 | If C-Q cannot be met with the beta's declarations, with `K_max` counting stranded lanes: a smaller `Q_lane`, or accept N3's one global bit |
-| OD-5 | Scheduling tokens (only if #143 is accepted): one per event **departs from owner decision 2**, which counts every T1 attempt, including certain rollbacks; or two per escalated event, with I-21 restated |
+| OD-5 | Scheduling tokens (only if #143 is accepted): **(i)** two per escalated event (decision 2 literally), with I-21 restated and an escalation allowance `(1 + e_max)` in σ′ and the fresh rate, plus G-D evidence at that attempt rate; or **(ii)** one per event, which **departs from owner decision 2**, with the escalation rate as a paging runtime alarm (§8) |
 | OD-6 | Only if #143 is accepted and evidence passes at 62/s (and 124/s): raise R_T to 2R, with G-C and G-E at that rate |
 | OD-7 | Whether 124/s scenarios become gate evidence, or stay focused-only |
 | OD-8 | Rollback: mixed versions run mode a semantics at mode a speed, **and a rollback floor is required** (H3): `GLOBAL` everywhere and `escrow_enabled = false` before rolling any deployable or operator image below the V28 artifact |
 | OD-9 | The invariant-8 sentence proposed in ADR-038, for the owner to adopt into CLAUDE.md, or not |
-| OD-10 | The pre-existing ingest-path timing disclosure (§9.2), found by the security review. Out of this design's scope; with the owner |
+| OD-10 | The pre-existing ingest-path disclosure (§9.2), found by the security review. Out of this design's scope; with the owner |
+| OD-11 | Once ADR-038 lands on a shared branch, two owner-held files become inaccurate: CLAUDE.md line 12, "Proposed ADRs (currently 0016, 0017, 0018)", and `.claude/agents/architecture-reviewer.md` line 24. This design edits neither; the `docs/adr/README.md` index row stays |
 
 ### 15.2 Residuals (none accepted here)
 
@@ -1601,7 +1697,7 @@ Where two reviewers overlap, the stricter wording is applied and noted.
 | Correctness 11 (stub `t1_schedule`; G1 with it) | §3.2, §12.1, §12.2, G1, S1 |
 | Correctness 12 (NOTIFY keeper; deletion race test) | §4.5, T-C12 |
 | Security 1 (N1 new; (m1) adopted; (m2), (m3) rejected; C-Q dead lanes) | §9.2, §9.3, §9.4, OD-3, OD-4 |
-| Security 2 (pre-existing upload-timing disclosure) | §9.2 last paragraph, at class level only; OD-10. Revision 1's speculative description of it is removed |
+| Security 2 (pre-existing ingest-path disclosure) | §9.2 last paragraph, at class level only; OD-10. Revision 1's description is removed |
 | Security 3.1 (definer hygiene) | §4.1 |
 | Security 3.2 (E8 detected, not prevented) | E8, M-8 |
 | Security 3.3 (no API `SELECT` on scope rows, no `EXECUTE` on revoke) | §13.2. **Stricter than asked:** no API `SELECT` on any escrow table; §6.3 |
@@ -1624,3 +1720,22 @@ Where two reviewers overlap, the stricter wording is applied and noted.
 | Architecture L4 (operator view) | §6.3: metrics only, no REST |
 | Architecture L5 (`GateEvaluator` text) | §13.4 item 6 |
 | Architecture: gating | §14 |
+
+---
+
+## Appendix B. Disposition of the re-check of revision 2 (`f8d869c`)
+
+All three reviewers AGREE subject to these edits, applied in one commit.
+
+| Item | Applied in |
+|---|---|
+| A. Repair, recompute and audit lock order (fix (a)) | §4.1 (revoke split: requires the fence, bumps last), §4.6 coverage row, §4.8 (the audit behind the rule; the deadlock-freedom table, now true for every locker), §6.3 (violation path in a fresh transaction: fence → `(35, 2)` → re-check → distrust → revoke), §6.5, T-C6 (rule (P) against repair + revoke and recompute; mutant with `(35, 2)` before the fence) |
+| B. Before M1: V28-proto never in `db/migration`; stub benchmark-only; constructor-injected escrow strategy; full T1 SQL sequence test under `GLOBAL`/`OFF`; override rule incl. `acquireAdmissionLock`; regrant SQL constant with a field-access rule | §12.1, §7 ("How the slow path is built"), A-1 |
+| C. `storage_escrow_policy`: share-table trigger (drain, READ COMMITTED); operator-only definer writer in the reserve transaction, consistent with `assess = Fits`; no row or mismatch ⇒ no grants, slow path, alert, never a `451`; gate S binding check; `binding_mismatch` reason | §4.1 ("The policy row"), §7 reason enum, §13.2, §13.4 items 3 and 8 |
+| D. `storage_admission_epoch_bumps`: ingestion `SELECT`, API none; closed causes, no tenant ids, `-`; one exporting deployable, as a gauge; restore resets | §4.1 ("The bump counter"), §13.2, §13.3 |
+| E. ADR-038 gaps: rule (G) at refill time and in the header; §10 Reconciliation (I8); §A2.8 with the honest OFF wording; the `AdrConformance` bullet reworded | ADR-038 header, "ADR-035 §10", "Amendment 2 §A2.1 and §A2.8, and the annex", "ADR-035 §11" |
+| F. Gate before merging M3: the owner's authorization | §14 |
+| G. Public-repo wording | Appendix A row reworded. Both files searched for mechanism wording near the disclosure: none remains. `upload` appears only in §4.6 (rule (P) writers, unrelated) and RS-4 (harness) |
+| H. OD-5 both options, each with its conditions | §8, OD-5 |
+| I. Owner note on CLAUDE.md line 12 and `.claude/agents/architecture-reviewer.md` line 24 | OD-11 (neither file edited; README row kept) |
+| Header and §14: "M0′: all three reviewers AGREE subject to these edits (applied); M1 may start" | header, §14 |

@@ -27,12 +27,12 @@ each passage; no text is edited in place):
   - §6: lock order;
   - §10: placement and the ADR-024 carve-out;
   - §11, §14, §16, §17, §18;
-  - Amendment 2 §A2.1;
+  - Amendment 2 §A2.1 and §A2.8;
   - the gate D amendment note (2026-11-05);
   - the Alternatives section.
 - The Amendment 2 annex,
   [`0035-amendment-proposal-filesystem-containment-contract.md`](0035-amendment-proposal-filesystem-containment-contract.md):
-  rules (C) and (P), and the §2.4 transitions table.
+  rules (G), (C) and (P), and the §2.4 transitions table.
 - [ADR-037](0037-bounded-cohort-storage-and-disclosure.md): "Implementation and
   release gates".
 
@@ -178,7 +178,11 @@ The order gains, after ADR-027's `guardAdmission`:
 4. then `storage_reservation` onward, as today;
 5. `(35, 2)`;
 6. **the epoch row, last.** A transaction that will later take `(35, 1)` or a
-   lane takes `(35, 1)` before its first epoch-bumping write.
+   lane takes `(35, 1)` before its first epoch-bumping write. Repair,
+   recompute and the audit's repair transaction take the drain fence
+   (`(35, 1)`, then every lane) as their **first** statement, before `(35, 2)`
+   and before any epoch-bumping write. Their generation bump is their **last**
+   write (design §4.8).
 
 ### ADR-035 §10: placement and the ADR-024 carve-out (H2(d))
 
@@ -206,6 +210,20 @@ the source rows"*) is extended to:
 **Grants are headroom, not usage.** Committed usage remains `base + Σdelta`,
 maintained as today.
 
+**§10 "Reconciliation (I8)"** gains (architecture re-check, item 4(b)):
+
+- `ReconcileStorageAccounting` also runs `storage_escrow_audit()`: one
+  statement checking `truth + grants ≤ limit` for every spendable grant,
+  against limits the reconciler derives itself, never those stamped on the
+  rows.
+- On a violation, a fresh transaction in canonical order (drain fence →
+  `(35, 2)` → re-check → distrust → revoke as the last write) makes every grant
+  unspendable and stamps distrust. Under `ALL` that is a `451` until a clean
+  pass, as for ledger drift.
+- **Repair and recompute** now take the drain fence first and revoke every
+  grant as their last write, so an upward correction of usage can never leave
+  a spendable over-grant.
+
 ### ADR-035 §11
 
 - **Gate D's CHOSEN** is the T1 that production wires; with `ESCROW`, that is
@@ -213,7 +231,9 @@ maintained as today.
   including R and 2R (amendment D), the staging host class and the loaded
   cohort.
 - **The benchmark's connection lifecycle** (cold pool, production's 30 min
-  max lifetime, `920ba1d`) applies, as `AdrConformance` already requires.
+  max lifetime, `920ba1d`) is a measurement-fidelity rule already enforced by
+  the harness for every CHOSEN run. It is not a §11 criterion, and not
+  introduced by this ADR.
 - (H2(h): the earlier draft's added criterion, "evidence at 2·R_T", is
   **deleted**. R_T belongs to the INGEST deferral design (#143), which is not
   accepted, and R_T is not an ADR-035 term until it is.)
@@ -222,13 +242,13 @@ maintained as today.
 
 | Section | Change |
 |---|---|
-| §14 | V28 is expand-only, with a 2 s `lock_timeout`. It replaces the bodies of V21's node fence (revokes on a NULL capability), V25's share fence (drains), and the repair and recompute functions (revoke). V28 changes behaviour for older artifacts the moment the migrator runs (design §6.5); `docs/dev/rollback.md` gains a V28 section |
-| §14 Phase 3 | **Activation gate S** (slot-lane; the name avoids a clash with the existing gate E): every live node row of either role declares `admission_accounting = 'escrow-v1'`, and `escrow_enabled = true` |
+| §14 | V28 is expand-only, with a 2 s `lock_timeout`. It replaces the bodies of V21's node fence (revokes on a NULL capability), V25's share fence (drains), and the repair and recompute functions (drain fence first, revoke as the last write). V28 changes behaviour for older artifacts the moment the migrator runs (design §6.5); `docs/dev/rollback.md` gains a V28 section |
+| §14 Phase 3 | **Activation gate S** (slot-lane; the name avoids a clash with the existing gate E): every live node row of either role declares `admission_accounting = 'escrow-v1'`; `escrow_enabled = true`; `storage_escrow_policy` exists, written only by the operator-only definer in the reserve transaction, and every escrow node's configured binding equals its binding. With no policy row, or a mismatch, nothing is granted and every event is decided on the slow path as mode a, never a `451` |
 | §16 | The metrics of design §13.4, all closed enums. `cause` is pinned to the `last_cause` CHECK enum |
 | §17 | The decisive tests of design §11 are added. Tests 1–55 run against both GLOBAL and ESCROW |
 | §18 | Gate F's privilege query covers the five new tables (no application DML), and a clean `storage_escrow_audit()` is required within the activation window. A rollback floor at the V28 artifact, with the Ops step "set `admission-accounting = GLOBAL` everywhere and confirm `escrow_enabled = false` before rolling any deployable or operator image below it" (design §6.5) |
 
-### ADR-035 Amendment 2 §A2.1, and the annex (H2(c))
+### ADR-035 Amendment 2 §A2.1 and §A2.8, and the annex (H2(c))
 
 - **"Admission charges the exact increase of F on the aggregate."** Under
   `ESCROW`:
@@ -236,6 +256,11 @@ maintained as today.
     by Lemma 2, not the exact increase;
   - exact-row refusals and the escalation path still use the exact aggregate
     rule.
+- **Rule (G), `F(L + A + c) + H_F ≤ G_F`** (architecture re-check, item
+  4(a)). Under `ESCROW` it moves to refill time, like (C) and (P): it is
+  evaluated by the definer refill (after the event's own insert on the
+  escalation path), and between refills it is enforced through lane grants:
+  E5, **`F(L) + Σ g^F + H_F ≤ G_F`**.
 - **Rule (C), "evaluated in T1's one snapshot on running totals in envelope
   order."** Under `ESCROW` it is evaluated at refill time, by the definer refill
   (after the event's own insert on the escalation path). Between refills it is
@@ -255,6 +280,17 @@ maintained as today.
   | keeper collection of dead lanes and orphaned scope rows | lower |
 
   Every other row stands.
+- **§A2.8, "Under `OFF`, a rollback to an earlier artifact stays supported: the
+  V8–V10 definer functions and triggers keep the ledger exact."** That still
+  holds for **T1 and the ledger**, which stay byte for byte under `OFF` and
+  `TENANT_LIMITS`. What is **not** byte for byte under `OFF` once V28 is
+  applied:
+  - the epoch-input writers also update the epoch row;
+  - the replaced V21 node-fence, V25 share-fence, repair and recompute bodies
+    run under `OFF` and under older artifacts.
+
+  The OFF rollback stays exact for the ledger. A rollback below the V28
+  artifact is covered by the rollback floor of §18.
 
 ### ADR-035 gate D note (2026-11-05) (H2(i))
 
