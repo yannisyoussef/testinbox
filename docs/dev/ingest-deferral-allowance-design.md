@@ -1262,6 +1262,18 @@ verbatim:
 
 This proposal changes no burst size, relay concurrency or edge timestamp.
 
+**Ops' input** (#124 comment
+[6686924864](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6686924864)):
+
+- No relay concurrency or timing change is acceptable without a measured
+  case. Pinning the *current* values is a no-change hardening, and Ops
+  treats every value this proposal relies on as pinned (§9.7).
+- Whether the edge can attest an arrival time is being **measured** on a
+  Postfix 3.8.6 lab mirror, not the live edge. **So every part of this
+  proposal that relies on a trusted arrival time is CONDITIONAL on that lab
+  result for its specific carrier (§9.2).** The fallbacks for a failed
+  measurement are stated there.
+
 ### 9.1 The problem
 
 `INGEST` is charged when a copy reaches ingestion. While the edge holds mail,
@@ -1289,28 +1301,60 @@ allowance.
 edge* exceeds (b, r). The natural criterion is therefore: judge conformance
 at the time the mail reached the edge, not the time it reached ingestion.
 
-### 9.2 A trusted edge-arrival time, already on the reviewed transport
+### 9.2 A trusted edge-arrival time: candidate carriers, all conditional
 
-- **The arrival time is in the queue ID.** A long queue ID begins with the
-  queue file's creation time: 6 characters in base 52 for the seconds, then
-  4 for the microseconds, using the vowel-free alphabet. I decoded four IDs
-  from the 2026-11-06 rehearsal runs, including one taken through
-  `postsuper -r`. Each equals `postqueue -j` `arrival_time` exactly.
-- **It is already carried as the transport identity.** `XFORWARD IDENT` is
+**None of these is assumed.** Each carrier is usable only if Ops' lab
+measurement passes for it.
+
+**C1, primary: the long queue ID's time field, carried in `XFORWARD IDENT`.**
+
+- **Encoding.** A long queue ID begins with the queue file's creation time:
+  6 base-52 characters for the seconds, then 4 for the microseconds, in the
+  vowel-free alphabet.
+- **App-side pre-check.** This is not the measurement. On the rehearsal
+  image, four IDs decoded to `postqueue -j` `arrival_time` exactly,
+  including one taken through `postsuper -r`.
+- **What it would need.** No new transport and no content parsing. IDENT is
   accepted only from single-host edge peers (I-4, I-20), and the edge refuses
-  a sender's `XFORWARD`. So t_a costs no new transport and no content
-  parsing.
-- **Restart behaviour.** IDENT was stable across `451` retries and
-  `postfix stop/start` (§2.1), so t_a is too.
-- **Caveats.**
-  - The encoding is Postfix's internal format (`mail_queue.h`), not a
-    documented interface. It needs the version pin (3.8.6) and a decode test.
-  - The time comes from the edge host's clock, so a skew bound is needed.
-- **Rejected sources.**
-  - A header the edge adds: content-borne, second resolution, local time
-    format.
-  - A time attribute in XFORWARD: none exists.
-  - DSN `ENVID`: set by the sender.
+  a sender's `XFORWARD`.
+- **Conditional on lab items 1, 2 and 4.**
+  - (1) The ID encodes the arrival time stably across defer, reload,
+    restart, hold or release, and `postsuper -r`.
+  - (2) IDENT is sent and is identical on a retry.
+  - (4) `arrival_time` survives restart and requeue, as a cross-check.
+- **Caveats.** The encoding is Postfix's internal format (`mail_queue.h`),
+  so it needs the version pin (3.8.6) and a decode test. The time comes from
+  the edge host's clock, so a skew bound is needed (INV-R9-6).
+
+**C2, fallback if C1 fails: the edge-added `Received:` timestamp.**
+
+- **Conditional on lab item 3:**
+  - the edge stamps the time itself;
+  - the stamp is stable across retries;
+  - it can be told apart from sender-supplied headers. The topmost
+    `Received:` must be the edge's own, recognised by the edge's
+    `myhostname` and the queue ID matching IDENT. Accepted only from edge
+    peers.
+- **Costs.** It parses content-borne metadata (second resolution, local-time
+  format), and that parse needs its own review.
+
+**C3, fallback if C1 and C2 both fail: the first time ingestion saw the
+IDENT.**
+
+- **How.** At the first presentation, ingestion writes a durable row keyed
+  by IDENT. It writes it even when it answers with a pre-resolution `451`.
+  It uses that row's time in place of t_a. This relies only on C1's IDENT
+  stability (lab item 2), not on any edge time.
+- **What it covers.** Pre-resolution `451`s and later deferrals.
+- **What it does not cover.** Mail that never reached ingestion: ingestion
+  unreachable or the destination dead, operator holds, and catch-up
+  coupling. Those stay in RL-9, bounded as in §8(c).
+
+**C4, if IDENT itself is not stable (lab item 2 fails).** No correction is
+possible, and the whole allowance design must be revisited, since it keys on
+IDENT. RL-9 stays as in §8(c) and goes to the owner unchanged.
+
+**Rejected outright:** DSN `ENVID`, which the sender sets.
 
 ### 9.3 Candidates
 
@@ -1369,9 +1413,12 @@ but it can front-load inside it. Reviewer question RQ-1.
 
 ### 9.5 Proposed invariants
 
-1. **INV-R9-1 (trusted time).**
+1. **INV-R9-1 (trusted time, conditional).**
+   - t_a comes only from a carrier whose Ops lab measurement passed (C1,
+     else C2, else C3 under its narrower scope).
    - t_a exists only for a single-host allow-listed edge peer whose IDENT
-     has the long-ID shape. It is decoded from the time field.
+     has the long-ID shape. For C1 it is decoded from the time field.
+   - With no passed carrier there is no credit, and charging is as today.
    - t_a is clamped to [now − (L + δ), now + ε_skew]. Outside that range,
      there is no credit.
    - No header or content is ever used.
@@ -1412,9 +1459,14 @@ but it can front-load inside it. Reviewer question RQ-1.
 
 ### 9.6 Proposed acceptance tests
 
-1. **AT-R9-1 decode (rehearsal and live).** IDENT time = `postqueue -j`
-   `arrival_time` for fresh mail, deferred mail, after `stop/start`, after
-   `postsuper -r`, and after an `edge-stop.sh` hold and flush.
+1. **AT-R9-1 carrier (Ops lab first, then rehearsal and live).** For the
+   carrier in use:
+   - t_a = `postqueue -j` `arrival_time` for fresh mail, deferred mail, after
+     reload, after `stop/start`, after `postsuper -r`, and after an
+     `edge-stop.sh` hold and flush;
+   - IDENT is identical on every retry;
+   - for C2, the edge's `Received:` cannot be confused with a
+     sender-supplied one.
 2. **AT-R9-2 outage.** A workspace sends at r for 10 min while ingestion is
    down.
    - On recovery all 600 copies are stored, none discarded.
@@ -1436,31 +1488,51 @@ but it can front-load inside it. Reviewer question RQ-1.
 9. **AT-R9-9 I9.** An event's class is identical whether W pays with tokens
    or with credit.
 
-### 9.7 Questions for Ops
+### 9.7 Edge values relied on (Ops treats each as pinned) and questions for Ops
 
-The edge is internet-facing.
+**Values relied on.** All are current values; none is a change:
 
-1. **Q-R9-1.** On edge-fr-01, does the long-ID time field equal
-   `postqueue -j` `arrival_time`? Can `enable_long_queue_ids=yes` be set
-   while no tenant mail is deferred (RL-7)?
-2. **Q-R9-2.** Which operations change a message's queue ID or arrival time?
-   Candidates: `postsuper -r` (the rehearsal preserved both), `-h`/`-H`,
-   `edge-stop.sh`, reconcile reload and restart, `postsuper -s`, and spool
-   restore or migration.
-3. **Q-R9-3.** What is the edge clock's NTP source and maximum observed
-   offset? Can Ops write a periodic offset observation that ingestion reads,
-   as the filesystem monitor does? What alerts exist?
-4. **Q-R9-4.** What is the p99 latency from edge arrival to relay under
-   normal operation? This sets ε_late.
-5. **Q-R9-5.** Does anything other than `smtpd` inject into the tenant relay
-   path: pickup, a local re-injection of `postmaster@`, or a re-queue after
-   expiry? Any of these would mint new IDs and times.
-6. **Q-R9-6.** Confirmation that nothing here asks for a change to relay
-   concurrency, backoff, burst size or timestamps. None is assumed.
+- `relay_destination_concurrency_limit` 20;
+- `minimal_backoff_time` 120 s and `maximal_backoff_time` 600 s;
+- `queue_run_delay` 120 s;
+- `maximal_queue_lifetime` 4 h;
+- `bounce_queue_lifetime` 0;
+- `relay_destination_recipient_limit` and `smtpd_recipient_limit` 50;
+- `enable_long_queue_ids` yes (C1; RL-7);
+- `smtp_send_xforward_command` yes;
+- `smtpd_authorized_xforward_hosts` empty.
+
+Nothing here needs a change to relay concurrency, backoff, burst size or
+timestamps.
+
+**Questions.** The edge is internet-facing. Questions 1 to 4 are the
+measurement Ops already has in progress (6686924864); results are labelled
+lab.
+
+1. **Q-R9-1 (lab item 1).** Does the long-ID time field equal the arrival
+   time, stably across defer, reload, restart, hold or release, and
+   `postsuper -r`?
+2. **Q-R9-2 (lab item 2).** Which XFORWARD attributes does 3.8.6 send, and is
+   IDENT identical on a retry?
+3. **Q-R9-3 (lab item 3).** For the edge-added `Received:` timestamp: what is
+   its source, is it stable across retries, and can it be told apart from
+   sender headers?
+4. **Q-R9-4 (lab item 4).** Does `postqueue -j` `arrival_time` survive restart
+   and requeue? The same run also measures the reload effect on retry times.
+5. **Q-R9-5.** What is the edge clock's NTP source and maximum offset? Can
+   Ops write a periodic offset observation that ingestion reads, as the
+   filesystem monitor does? What alerting exists?
+6. **Q-R9-6.** What is the p99 latency from edge arrival to relay under normal
+   operation? It sets ε_late.
+7. **Q-R9-7.** Does anything other than `smtpd` inject into the tenant relay
+   path? Candidates: pickup, a local re-injection of `postmaster@`, a
+   requeue after expiry, or a spool restore or migration. Any of these would
+   mint new IDs or times.
 
 ### 9.8 What it changes in the agreed design
 
-- **§2.1:** IDENT also yields t_a.
+- **§2.1:** IDENT also yields t_a, only for a carrier the Ops lab result
+  qualifies (§9.2).
 - **The `INGEST` limiter** gains an overflow ledger and a credit claim, both
   under the existing row lock. I-1 holds. I-2 gains a term on the refill
   side: credits claimed out of discarded refill.
@@ -1477,5 +1549,6 @@ The edge is internet-facing.
 
 - **RQ-1:** Is envelope-over-interval semantics for late mail acceptable,
   rather than exact arrival-time shape?
-- **RQ-2:** Is relying on Postfix's internal queue-ID time encoding
-  acceptable, under the version pin and AT-R9-1?
+- **RQ-2:** If the lab result qualifies C1, is relying on Postfix's internal
+  queue-ID time encoding acceptable, under the version pin and AT-R9-1? Is
+  C3's narrower scope acceptable as the fallback?
