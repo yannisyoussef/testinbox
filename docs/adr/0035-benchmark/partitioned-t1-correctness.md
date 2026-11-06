@@ -70,9 +70,9 @@ gate L.
    per-inbox CTEs and rows; **no `g_*` global sums** (*L* = 0 and global payload
    0, `PTS:70`); debt, trash, trust, watermark, observation and the WHOLE cohort
    pool read and later decided; and the four guard columns (`PTS:15–34`). Not
-   "no global scan": the cohort pool's per-share usage still aggregates the
-   whole of `storage_delta` and `storage_reservation`, and `fp_debt` the debt
-   table, as in mode a;
+   "no global scan": the cohort pool's per-share usage still reads every
+   shared workspace's deltas and reservations (gate D A1; before it, the
+   whole of both tables), and `fp_debt` the debt table, as in mode a;
 5. a guard condition false ⇒ `setRollbackOnly`, nothing written (`JSA:207`); a
    per-workspace lock timeout (55P03/57014) or deadlock (40P01) ⇒ the
    transaction rolls back (`JSA:202`, `JSA:220`). Either way the SAME call runs

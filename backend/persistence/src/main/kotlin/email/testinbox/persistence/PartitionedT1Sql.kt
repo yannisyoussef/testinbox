@@ -64,8 +64,8 @@ internal object PartitionedT1Sql {
      * The GLOBAL row: no `g_*` global sums (L = 0, global payload 0). Every live
      * and reserved byte belongs to a share the guard proves fits the declarations,
      * so the global ceilings hold by that partition. NOT "no global scan": the
-     * cohort pool's per-share usage ([CohortSql]) still aggregates the whole of
-     * `storage_delta` and `storage_reservation`, and `fp_debt` the debt table.
+     * cohort pool's per-share usage ([CohortSql]) still reads every SHARED
+     * workspace's deltas and reservations (gate D A1), `fp_debt` the debt table.
      */
     fun globalRow(guard: String): String =
         """-- Share-partitioned T1 (PROPOSED amendment, gate D W1): no g_* global sums. Every
