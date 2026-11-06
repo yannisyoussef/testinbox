@@ -67,6 +67,15 @@
     "metadataInodesMeasured": 157,
     "metadataInodesScope": "minio-sys",
     "metadataInodesBasis": "E7 on the final filesystem",
+    "inodeCensus": {
+      "listingSha256": "bc44934e2e32d0640144e310a4d3f84d4f2ede828b3f3066eac0febde4ff8f46",
+      "listingBytes": 875,
+      "listingCustody": "held by FAKE Ops off-repo, 0700, retained until 30 days after the record PR merges",
+      "verification": "summary attested by FAKE Ops at 2000-01-01T22:30:00Z (listing not re-verified here)",
+      "takenAt": "2000-01-01T22:00:00Z",
+      "blocklessInodes": 0,
+      "reconciliationGap": 0
+    },
     "metadataBytesMeasured": 52428800,
     "metadataBytesScope": "minio-sys+unattributed",
     "experiments": {

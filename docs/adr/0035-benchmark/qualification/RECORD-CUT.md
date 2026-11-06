@@ -17,7 +17,7 @@ The tools:
 |---|---|
 | `scripts/build-qualification-record.py` | the offline generator: verifies the bundle's `SHA256SUMS` first, then builds the record, `PROVENANCE.md` and the evidence copy; refuses (exit 1, nothing written) on any gap |
 | `docs/adr/0035-benchmark/qualification/production-expected.json` | the **FIXED** values (below). Not a record, never shipped. A bundle that measures anything else is refused |
-| `scripts/build-qualification-record.test.sh` | 62 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
+| `scripts/build-qualification-record.test.sh` | 79 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
 | `backend/storage/src/test/.../GeneratedQualificationRecordTest.kt` | the generator's output on the fake bundle (golden file, byte-compared by the shell test) loads through the real `QualificationRecords.parse`, is eligible and has no production gap |
 
 ## Value status
@@ -76,6 +76,7 @@ An eligible record has no LAB or POST-REBOOT member. The generator cannot emit e
 | `filesystem.metadataBytesMeasured`, `metadataBytesScope` (additive members) | FROM-N1 (E2, E7), CODE | the larger of E2's post-drain and E7's peak `measurements.metadataBytesMeasured`, both stating `metadataBytesScope: "minio-sys+unattributed"` (`scripts/adr035-metadata-accounting.py`). The gate F evidence must state the same scope and declare exactly the production *M*, 1,073,741,824 (`production-expected.json` `declared.metadataBudgetBytes`; owner decision 2026-11-05), which must be ≥ it. Gate F blocks otherwise. This is not an E7 PASS: E7 is judged against that budget | `experiments/E2.json`, `experiments/E7.json`, `gate-f/filesystem-evidence.json` | PROD-QUAL, or CARRIED-AMENDMENT when E7 is carried |
 | `filesystem.inodeHeadroomLatchDrill` (additive member, only when E10 drilled it) | FROM-N1 (E10) | `{result: "PASS", fsMonitorSha256}` from E10's `measurements.inodeHeadroomLatch` and `fsMonitorSha256`; gate F accepts `minio-sys-excl-trash` only when its `fsMonitorSha256` equals the evidence's `monitor.fsMonitorSha256` | `experiments/E10.json`, `gate-f/filesystem-evidence.json` | PROD-QUAL |
 | `filesystem.metadataInodesBasis` (additive member) | DERIVED | `E7 on the final filesystem` or `E7 carried under <amendment>` | `MANIFEST.json` `e7` | DERIVED |
+| `filesystem.inodeCensus` (additive member) | FROM-N1 (A1 (vi), C2, C3) | `{listingSha256, listingBytes, listingCustody: "held by <Ops> off-repo, 0700, retained until <retainedUntil>", verification, takenAt, blocklessInodes: 0, reconciliationGap}` from `census/summary.json`. The raw listing is referenced by sha256 only, never included. `verification` is "listing verified at cut (--census-raw)" or "summary attested by <who> at <when>" | `census/summary.json` (+ the off-repo listing at cut) | PROD-QUAL |
 | `filesystem.experiments.E1`…`E11` | FROM-N1 | each must be `PASS`, on `venue: final-filesystem`, uuid `c33e14fd…`, kernel 147, member `3f97c565…`, started after the post-reboot baseline and finished before the post-cleanup one | `experiments/E1.json` … `E11.json` + their `rawFiles` | PROD-QUAL (E7 may be CARRIED-AMENDMENT) |
 | `enablementEligible`, `ineligibilityReasons` | DERIVED | `true`, `[]`. The generator writes no record otherwise | — | DERIVED |
 
@@ -121,6 +122,8 @@ qualification-9a/{main,v3,slow}/           run-slow.sh's per-pass output, unchan
                                             uname.txt, mount.txt, minio-binary.sha256, harness-minio-capture.txt (+ any others)
 experiments/E1.json … E11.json             one per experiment (format below)
 experiments/E<n>/…                         the raw run output each Ei.json lists in rawFiles
+census/summary.json                        the A1 (vi) census SUMMARY (below). NEVER the raw listing: nothing under census/
+                                            but summary.json, and no file anywhere with `find -printf` lines, is accepted
 gate-f/filesystem-evidence.json            collect-filesystem-evidence.py --record-id <recordId>, after the N1 cleanup,
                                             with the metadata collector change (minio.metadataInodesScope "minio-sys",
                                             minio.metadataBytesScope "minio-sys+unattributed")
@@ -176,6 +179,48 @@ Experiment file (`testinbox.n1-experiment/1`):
 The `recordId` follows from `qualifiedAt`, so Ops can compute it before running the gate F collector:
 `production-amd64-prod-gra-01-<UTC date of the later of the §9a slow-sweep start and the last experiment's
 completedAt>`. A wrong guess is refused, and the refusal names the derived id.
+
+### The (vi) census: summary in the bundle, listing off-repo (#124 comment 6668986543, item 3)
+
+The raw census listing (`find <mount> -xdev -printf '%i %n %b %s %y %p\n'`) names production object keys. Today those
+are bootstrap and synthetic keys; with participants they would carry tenant workspace and inbox identifiers. Tenant
+identifiers never belong in the repository, and the bundle is committed. So:
+
+- **The committed bundle carries only `census/summary.json`:**
+
+  ```json
+  {"schema": "testinbox.n1-census-summary/1", "takenAt": "<ISO>",
+   "listing": {"sha256": "<64 hex>", "bytes": <n>,
+               "custody": {"heldBy": "<Ops>", "location": "off-repo", "mode": "0700", "retainedUntil": "<when>"}},
+   "census": {"distinctInodes": <n>, "blocklessInodes": 0, "entries": {"tmp": <n>, "trash": <n>, "multipart": <n>}},
+   "reconciliation": {"inodesUsed": <f_files − f_ffree>, "inodesBelowFirstInode": <First inode − 1>},
+   "steps": [{"step": "(i)", "at": "<ISO>", "kernelRelease": "6.8.0-147-generic", "bootId": "<id>", "filesystemUuid": "c33e14fd…"}, …],
+   "attestation": {"by": "<Ops>", "at": "<ISO>", "listingSha256": "<the same 64 hex>"}}
+  ```
+
+  `entries` count the entries *inside* `.minio.sys/tmp` (excluding `.trash` and its contents), inside
+  `.minio.sys/tmp/.trash`, and inside `.minio.sys/multipart`.
+- **The listing stays with Ops**, off-repo, 0700, referenced by its sha256. **Proposed retention:** until 30 days after
+  the record PR merges, then destroyed, with the destruction noted on #124. That leaves the review a window to ask for
+  re-verification, and nothing outlives it.
+- **The generator refuses a bundle that contains a raw listing:** any file under `census/` other than
+  `summary.json`, any file whose name says census plus raw, listing or find, or any file with three or more
+  `find -printf` lines.
+- **(vi) is checked from the summary:**
+  - zero blockless inodes;
+  - `inodesBelowFirstInode` equals `dumpe2fs -h` "First inode" − 1;
+  - `|inodesUsed − (distinctInodes + inodesBelowFirstInode)|` is at most the in-flight `tmp` + `multipart` entries
+    (C2; no other slack);
+  - every step on the running kernel 6.8.0-147-generic, one boot id, and the final filesystem's uuid (C3);
+  - `takenAt` after E2 completed and the post-reboot baseline, and before the post-cleanup baseline (C2).
+- **Fail-closed.** (vi) counts only when one of these holds; otherwise it is NOT RUN, and the generator refuses:
+  - **verified at cut**: run on Ops' host with `--census-raw <listing>`, a path outside the bundle. The generator
+    checks the sha256 and size, and recomputes the distinct, blockless and entry counts, all of which must equal the
+    summary;
+  - **attested**: the summary's `attestation` names who attested, when, and the same `listingSha256`.
+
+  The record's `filesystem.inodeCensus.verification` says which one held. The verified route is preferred:
+  `--check --census-raw` on Ops' host, with its output posted.
 
 ### E7: both outcomes of W3 question A5
 

@@ -6,7 +6,8 @@ year 2000) so nothing here can be mistaken for production evidence. Deterministi
 the same bytes, so the generator's output can be compared with a committed golden record.
 
     make-fake-bundle.py <out-dir> [--e7 final-filesystem|carried] [--venue-9a final-filesystem|own-image]
-writes <out-dir>/bundle/ (with SHA256SUMS), <out-dir>/expected.json and <out-dir>/repo/ (a minimal repository
+writes <out-dir>/bundle/ (with SHA256SUMS), <out-dir>/census-raw.txt (the (vi) raw listing: OUTSIDE the bundle, as Ops
+holds it off-repo), <out-dir>/expected.json and <out-dir>/repo/ (a minimal repository
 root: StorageProtocol.kt and an ADR-035 text that, with --e7 carried, contains the fake amendment note).
 """
 import argparse, hashlib, json, os, shutil
@@ -106,7 +107,8 @@ def main():
     w(root, "identity/fs-baseline-post-cleanup.txt", baseline("post-cleanup", "2000-01-01T23:00:00Z"))
     w(root, "identity/dumpe2fs-h.txt", f"Filesystem UUID:          {UUID}\nFilesystem features:      {FEATURES}\n"
                                        f"Block count:              {GEOM}\nInode count:              {GEOM}\n"
-                                       "Block size:               4096\nInode size:               256\n")
+                                       "Block size:               4096\nInode size:               256\n"
+                                       "First inode:              11\n")
     w(root, "identity/itable-zeroed.txt", "FAKE explanation of the itable_zeroed group count.\n")
     w(root, "identity/minio-process-uid.txt", "1000 fakeuser\n")
     w(root, "identity/upload-impl-identity.txt", f"FAKE candidate {CAND['sourceSha']} StorageProtocol adr035-presigned-put-v2\n")
@@ -153,6 +155,32 @@ def main():
     for n in range(1, 12):
         w(root, f"experiments/E{n}.json", experiment(n, a.e7))
         w(root, f"experiments/E{n}/run.log", f"FAKE run output E{n}\n")
+    # (vi) census: the raw listing goes OUTSIDE the bundle (Ops keeps it off-repo); the bundle gets the summary only.
+    listing = "".join(f"{i} {n} {b} {sz} {t} {pth}\n" for i, n, b, sz, t, pth in [
+        (2, 4, 8, 4096, "d", "/fake/mnt"), (11, 2, 32, 16384, "d", "/fake/mnt/lost+found"),
+        (12, 3, 8, 4096, "d", "/fake/mnt/qual"), (13, 5, 8, 4096, "d", "/fake/mnt/qual/.minio.sys"),
+        (14, 2, 8, 300, "f", "/fake/mnt/qual/.minio.sys/format.json"), (15, 4, 8, 4096, "d", "/fake/mnt/qual/.minio.sys/tmp"),
+        (16, 3, 8, 4096, "d", "/fake/mnt/qual/.minio.sys/tmp/.trash"), (17, 2, 8, 4096, "d", "/fake/mnt/qual/.minio.sys/tmp/.trash/aa00"),
+        (18, 1, 8, 600, "f", "/fake/mnt/qual/.minio.sys/tmp/.trash/aa00/xl.meta"), (19, 2, 8, 4096, "d", "/fake/mnt/qual/.minio.sys/tmp/5d1c-staging"),
+        (20, 2, 8, 4096, "d", "/fake/mnt/qual/.minio.sys/multipart"), (21, 3, 8, 4096, "d", "/fake/mnt/qual/fakebucket"),
+        (22, 3, 8, 4096, "d", "/fake/mnt/qual/fakebucket/fake-ws"), (23, 2, 8, 4096, "d", "/fake/mnt/qual/fakebucket/fake-ws/fake-inbox"),
+        (24, 2, 8, 4096, "d", "/fake/mnt/qual/fakebucket/fake-ws/fake-inbox/fake-msg"),
+        (25, 2, 8, 4096, "d", "/fake/mnt/qual/fakebucket/fake-ws/fake-inbox/fake-msg/raw.eml"),
+        (26, 1, 8, 412, "f", "/fake/mnt/qual/fakebucket/fake-ws/fake-inbox/fake-msg/raw.eml/xl.meta")]).encode()
+    with open(os.path.join(out, "census-raw.txt"), "wb") as f:
+        f.write(listing)
+    lsha = hashlib.sha256(listing).hexdigest()
+    boot = "fa4e0000-0000-4000-8000-00000000b007"
+    w(root, "census/summary.json", {
+        "schema": "testinbox.n1-census-summary/1", "takenAt": "2000-01-01T22:00:00Z",
+        "listing": {"sha256": lsha, "bytes": len(listing),
+                    "custody": {"heldBy": "FAKE Ops", "location": "off-repo", "mode": "0700",
+                                "retainedUntil": "30 days after the record PR merges"}},
+        "census": {"distinctInodes": 17, "blocklessInodes": 0, "entries": {"tmp": 1, "trash": 2, "multipart": 0}},
+        "reconciliation": {"inodesUsed": 27, "inodesBelowFirstInode": 10},
+        "steps": [{"step": st, "at": f"2000-01-01T{h:02d}:00:00Z", "kernelRelease": KERNEL, "bootId": boot, "filesystemUuid": UUID}
+                  for st, h in (("(i)", 0), ("(ii)", 0), ("(iii)", 13), ("(iv)", 14), ("(v)", 15), ("(vi)", 22))],
+        "attestation": {"by": "FAKE Ops", "at": "2000-01-01T22:30:00Z", "listingSha256": lsha}})
     # Gate F evidence: the repository's gate F fixture with the fake filesystem and this record id.
     ev = json.load(open(os.path.join(REAL_REPO, "scripts/testdata/storage-activation/filesystem/evidence-good.json")))
     ev.update(qualificationRecordId=rid, qualificationValid=1, collectedAt="2000-01-01T23:30:00Z")
