@@ -125,7 +125,7 @@ Sample output:
 
 ```
 admission pause: PASS admissions_open true->false; existing participants, sessions, keys, inboxes and waitlist untouched
-admission status: admissions_open=false capacity_ready=true consumed_places=12/30 storage_budget_changes=refused
+admission status: admissions_open=false capacity_ready=true consumed_places=12 (hard limit 30; the deployed cap N is configured per deployable) storage_budget_changes=refused
 ```
 
 Repeating `pause` or `resume` reports `(unchanged)`. On an unknown verb,

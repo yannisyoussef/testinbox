@@ -47,11 +47,19 @@ class MicrometerStorageProtocolMetrics(
      */
     gatedExpectedRate: Double? = null,
     /**
-     * 30 + L, the workspaces the gated envelope covers (ADR-035 amendment D):
+     * N + L, the workspaces the gated envelope covers (ADR-035 amendment D;
+     * N is `testinbox.beta.max-participants`, 30 unless lowered):
      * exported so the activation barrier can hold the pre-plan population to it.
      * No series while L is undeclared.
      */
     envelopeWorkspaces: Int? = null,
+    /**
+     * N, the participant cap (`testinbox.beta.max-participants`, 1..30): exported
+     * so the activation barrier's gate W can tell whether a cohort plan bounds the
+     * population (only at N = 30) and whether the nodes agree on N. No series
+     * where it is not wired, which gate W reads as UNKNOWN and blocks on.
+     */
+    envelopeParticipants: Int? = null,
 ) : StorageProtocolMetrics {
     private val breakerOpen = AtomicLong(0)
     private val breakerEscalated = AtomicLong(0)
@@ -97,6 +105,7 @@ class MicrometerStorageProtocolMetrics(
         Gauge.builder(FINALIZE_BUDGET) { policy.finalizeBudgetBytes.toDouble() }.register(registry)
         gatedExpectedRate?.let { rate -> Gauge.builder(GATED_EXPECTED_RATE) { rate }.register(registry) }
         envelopeWorkspaces?.let { n -> Gauge.builder(ENVELOPE_WORKSPACES) { n }.register(registry) }
+        envelopeParticipants?.let { n -> Gauge.builder(ENVELOPE_PARTICIPANTS) { n }.register(registry) }
         StorageAdmissionOutcome.entries.forEach { registry.counter(ADMISSION, "outcome", it.name.lowercase()) }
         StorageScope.entries.forEach { registry.counter(UNENFORCED, "ceiling", it.name.lowercase()) }
         PhysicalFailureKind.entries.forEach { registry.counter(PHYSICAL_FAILURE, "kind", it.name.lowercase()) }
@@ -242,6 +251,7 @@ class MicrometerStorageProtocolMetrics(
         const val ADMISSION_LOCKING = "testinbox_storage_admission_locking"
         const val GATED_EXPECTED_RATE = "testinbox_storage_gated_expected_rate"
         const val ENVELOPE_WORKSPACES = "testinbox_storage_envelope_max_workspaces"
+        const val ENVELOPE_PARTICIPANTS = "testinbox_storage_envelope_participants"
         const val PARTITION_FALLBACK = "testinbox_storage_admission_partition_fallback_total"
         const val ORPHAN_SWEEP_COMPLETED_AT = "testinbox_storage_orphan_sweep_completed_at_seconds"
         const val ORPHAN_SWEEP = "testinbox_storage_orphan_sweep_total"

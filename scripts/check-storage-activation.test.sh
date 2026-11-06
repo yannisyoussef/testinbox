@@ -88,6 +88,14 @@ with() {
         { print }
         END { if (!seen && value != "") { print flag; print value } }'
 }
+# swap <flag> <value>: a filter form of `with`, so several flags can be replaced in one argument list.
+swap() {
+    awk -v flag="$1" -v value="$2" '
+        skip { skip = 0; next }
+        $0 == flag { skip = 1; seen = 1; if (value != "") { print flag; print value }; next }
+        { print }
+        END { if (!seen && value != "") { print flag; print value } }'
+}
 # run_args <file-with-args> [extra args...] → runs the gate; OUT and STATUS are set.
 OUT=""; STATUS=0
 run_args() {
@@ -500,8 +508,9 @@ only "D: a 30 s schedule measured over more than 30 s without its terminal lag b
 
 # ---------------------------------------------------------------------------
 # Gate W, ADR-035 amendment D: before a cohort plan exists every workspace
-# receives mail, so under ALL the database holds at most 30 + L of them. The
-# bound comes from every node (testinbox_storage_envelope_max_workspaces).
+# receives mail, so under ALL the database holds at most N + L of them (and, with
+# a lowered N, after the plan too). The bound comes from every node
+# (testinbox_storage_envelope_max_workspaces), N too (testinbox_storage_envelope_participants).
 # ---------------------------------------------------------------------------
 with --population-state "$FIX/population/pre-plan-over.json" > "$TMP/w1"
 only "W: no plan and one workspace over 30 + L blocks, with the count" W-workspace-envelope "no cohort plan exists and the database holds more than 31 workspaces \(counted 32\)" "$TMP/w1"
@@ -518,6 +527,27 @@ only "W: a node that declares no envelope blocks (UNKNOWN, never assumed)" W-wor
 sed -E 's/^(testinbox_storage_envelope_max_workspaces\{[^}]*\}) .*/\1 30.0/' "$M/ingestion-healthy.prom" > "$M/ingestion-envelope-30.prom"
 with --ingestion-metrics "$M/ingestion-envelope-30.prom" > "$TMP/w6"
 only "W: nodes that disagree on the envelope block" W-workspace-envelope "declares an envelope of 30(\.0)? workspaces but another node declares 31" "$TMP/w6"
+# M0: a lowered N. The pool's thirty participant shares bound the population only at N = 30,
+# so with N < 30 the count applies after the plan too, exactly as on the nodes (WorkspaceEnvelopeCheck).
+for node in api ingestion; do
+    sed -E -e 's/^(testinbox_storage_envelope_max_workspaces\{[^}]*\}) .*/\1 11.0/' \
+        -e 's/^(testinbox_storage_envelope_participants\{[^}]*\}) .*/\1 10.0/' "$M/$node-healthy.prom" > "$M/$node-n10.prom"
+done
+printf '{"cohortPlanExists": true, "workspaces": 12}\n' > "$TMP/pop-plan-12.json"
+printf '{"cohortPlanExists": true, "workspaces": 11}\n' > "$TMP/pop-plan-11.json"
+good | swap --api-metrics "$M/api-n10.prom" | swap --ingestion-metrics "$M/ingestion-n10.prom" | swap --population-state "$TMP/pop-plan-12.json" > "$TMP/w9"
+only "W: a plan with N = 10 and 12 workspaces blocks (admissions under a larger N; the pool does not bound a lowered N)" W-workspace-envelope \
+    "a cohort plan exists but N = 10 is below 30.*more than 11 workspaces \(counted 12\)" "$TMP/w9"
+good | swap --api-metrics "$M/api-n10.prom" | swap --ingestion-metrics "$M/ingestion-n10.prom" | swap --population-state "$TMP/pop-plan-11.json" > "$TMP/w10"
+case_ "W: a plan with N = 10 and 11 workspaces (N + L) passes" 0 '^W-workspace-envelope[[:space:]]+PASS[[:space:]].*N = 10 is below 30; 11 workspace\(s\), within the envelope.s 11' "$TMP/w10"
+with --population-state "$TMP/pop-plan-12.json" > "$TMP/w11"
+case_ "W: N = 30 with a plan is unchanged - the pool bounds the population" 0 '^W-workspace-envelope[[:space:]]+PASS[[:space:]].*a cohort plan exists; the pool bounds the population' "$TMP/w11"
+sed -E 's/^(testinbox_storage_envelope_participants\{[^}]*\}) .*/\1 10.0/' "$M/ingestion-healthy.prom" > "$M/ingestion-n-disagrees.prom"
+with --ingestion-metrics "$M/ingestion-n-disagrees.prom" > "$TMP/w12"
+only "W: nodes that disagree on N block" W-workspace-envelope "declares a participant cap N of 10(\.0)? but another node declares 30" "$TMP/w12"
+grep -v '^testinbox_storage_envelope_participants' "$M/ingestion-healthy.prom" > "$M/ingestion-no-n.prom"
+with --ingestion-metrics "$M/ingestion-no-n.prom" > "$TMP/w13"
+only "W: a node that exports no N blocks (UNKNOWN, never assumed 30)" W-workspace-envelope "participant cap N is UNKNOWN" "$TMP/w13"
 printf '{"cohortPlanExists": "no", "workspaces": 2}\n' > "$TMP/pop-bad.json"
 with --population-state "$TMP/pop-bad.json" > "$TMP/w7"
 only "W: a malformed population state blocks" W-workspace-envelope "population-state must be" "$TMP/w7"

@@ -27,7 +27,7 @@ class ReserveCohortStorage(
         val runtime = checkNotNull(policy.cohort)
         require(runtime.withinDeclaredLegacy(legacy)) {
             "the pool holds ${legacy.size} legacy shares but testinbox.storage.declared-legacy-workspaces is " +
-                "${declarations.declaredLegacyWorkspaces}; the gated INGEST envelope covers 30 + L workspaces (ADR-035 amendment D)"
+                "${declarations.declaredLegacyWorkspaces}; the gated INGEST envelope covers N + L workspaces (ADR-035 amendment D)"
         }
         require(
             runtime.assess(legacy, unattributed, trash) is CohortStorageBudget.Result.Fits,

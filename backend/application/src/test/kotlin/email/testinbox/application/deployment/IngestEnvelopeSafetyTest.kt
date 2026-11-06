@@ -2,6 +2,7 @@ package email.testinbox.application.deployment
 
 import email.testinbox.application.LimitsProperties
 import email.testinbox.application.storage.StorageDeclarations
+import email.testinbox.domain.identity.BetaParticipantCap
 import email.testinbox.domain.storage.StorageEnforcement
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContain
@@ -206,6 +207,182 @@ class IngestEnvelopeSafetyTest {
         // Well-formed but outside the approved envelope is only ALL's business: OFF accepts it.
         val off = all(legacy = 32, rGated = 62.0).let { it.copy(storage = it.storage.copy(enforcement = StorageEnforcement.OFF)) }
         envelope(off).shouldBeEmpty()
+    }
+
+    // --- M0: the configured participant cap N and the gateway's pool size ------------------------
+
+    private fun capped(
+        n: Int,
+        rGated: Double? = 31.0,
+        legacy: Int? = 1,
+        pool: IngestionPoolSize? = null,
+    ) = all(rGated = rGated, legacy = legacy).let {
+        it.copy(storage = it.storage.copy(participantCap = BetaParticipantCap(n)), ingestionPoolSize = pool)
+    }
+
+    /** What the owner might approve for a first cohort of ten; TEST-ONLY, never in APPROVED_ENVELOPES. */
+    private val tenForTest =
+        ApprovedIngestEnvelope(participants = 10, refill = 1.0, burst = 60, legacy = 1, ingestionPoolSize = 8, approval = "test only")
+
+    /** Amendment D plus the test-only entry: the derivation exercised independently of the shipped first-cohort entry. */
+    private val withTen = IngestEnvelopeSafety.APPROVED_ENVELOPES.filter { it.participants == 30 } + tenForTest
+
+    @Test
+    fun `the approved set is exactly amendment D's entry and the first-cohort entry`() {
+        IngestEnvelopeSafety.APPROVED_ENVELOPES.map { it.participants } shouldBe listOf(30, 10)
+        val first = IngestEnvelopeSafety.APPROVED_ENVELOPES.single { it.participants == 10 }
+        first.refill shouldBe 1.0
+        first.burst shouldBe 60
+        first.legacy shouldBe 1
+        first.gatedRate.compareTo(java.math.BigDecimal("11")) shouldBe 0
+        first.ingestionPoolSize shouldBe 8
+        val only = IngestEnvelopeSafety.APPROVED_ENVELOPES.single { it.participants == 30 }
+        only.participants shouldBe 30
+        only.refill shouldBe IngestEnvelopeSafety.APPROVED_WORKSPACE_REFILL
+        only.burst shouldBe IngestEnvelopeSafety.APPROVED_WORKSPACE_BURST
+        only.legacy shouldBe IngestEnvelopeSafety.APPROVED_LEGACY_WORKSPACES
+        only.gatedRate.compareTo(java.math.BigDecimal(IngestEnvelopeSafety.APPROVED_GATED_RATE.toString())) shouldBe 0
+        // Amendment D names no pool size and no committed gate D evidence ran at the gateway's pool.
+        only.ingestionPoolSize shouldBe null
+    }
+
+    @Test
+    fun `unset N is thirty and the approved envelope starts ALL exactly as before`() {
+        settings.storage.participantCap shouldBe BetaParticipantCap.HARD_LIMIT
+        envelope(capped(30)).shouldBeEmpty()
+        IngestEnvelopeSafety.expectedGatedRate(capped(30).storage)!!.compareTo(java.math.BigDecimal("31")) shouldBe 0
+        IngestEnvelopeSafety.mailReceivingWorkspaces(capped(30).storage) shouldBe 31
+    }
+
+    private val amendmentDOnly = IngestEnvelopeSafety.APPROVED_ENVELOPES.filter { it.participants == 30 }
+
+    private fun onlyAgainst(
+        approved: List<ApprovedIngestEnvelope>,
+        settings: DeploymentSettings,
+        key: String,
+        problem: String,
+    ) {
+        val found = IngestEnvelopeSafety.check(settings, approved)
+        found.map { it.setting } shouldBe listOf(key)
+        found.single().problem shouldContain problem
+    }
+
+    @Test
+    fun `N = 10 is refused under ALL until the owner approves it - fail closed, naming the missing approval`() {
+        // Against amendment D alone, as before the first-cohort entry: R_gated from N = 10, and the old 31, both refused.
+        for (rGated in listOf(11.0, 31.0)) {
+            onlyAgainst(
+                amendmentDOnly,
+                capped(10, rGated = rGated),
+                IngestEnvelopeSafety.PARTICIPANTS,
+                "no owner-approved INGEST envelope covers N = 10",
+            )
+        }
+        val problem = IngestEnvelopeSafety.check(capped(10, rGated = 11.0), amendmentDOnly).single().problem
+        problem shouldContain "is 10 but"
+        problem shouldContain "r × (N + L) = 1.0 × (10 + 1) = 11.0 events/s has no owner approval"
+        problem shouldContain "Approved: N = 30: R = 1.0 × (30 + 1) = 31.0"
+        problem shouldContain "IngestEnvelopeSafety.APPROVED_ENVELOPES"
+        IngestEnvelopeSafety.expectedGatedRate(capped(10).storage, amendmentDOnly) shouldBe null
+        // Every other lowered N, against the shipped set.
+        for (n in (1..29) - 10) envelope(capped(n)).map { it.setting } shouldContain IngestEnvelopeSafety.PARTICIPANTS
+        // Outside ALL a lowered N only lowers admissions; it needs no envelope.
+        for (mode in listOf(StorageEnforcement.OFF, StorageEnforcement.TENANT_LIMITS)) {
+            envelope(capped(10).let { it.copy(storage = it.storage.copy(enforcement = mode)) }).shouldBeEmpty()
+        }
+    }
+
+    @Test
+    fun `with a test-only approved entry the derivation gives R = 11 and holds the deployment to it`() {
+        tenForTest.gatedRate.compareTo(java.math.BigDecimal("11")) shouldBe 0
+        IngestEnvelopeSafety.expectedGatedRate(capped(10).storage, withTen)!!.compareTo(java.math.BigDecimal("11")) shouldBe 0
+        IngestEnvelopeSafety.check(capped(10, rGated = 11.0), withTen).shouldBeEmpty()
+        // The N = 30 evidence rate is not the N = 10 one.
+        val stale = IngestEnvelopeSafety.check(capped(10, rGated = 31.0), withTen)
+        stale.map { it.setting } shouldBe listOf(IngestEnvelopeSafety.GATED_RATE)
+        stale.single().problem shouldContain "owner approved R = 1.0 × (10 + 1) = 11.0"
+        // N = 30 keeps its own entry beside it.
+        IngestEnvelopeSafety.check(capped(30, rGated = 31.0), withTen).shouldBeEmpty()
+        // N = 10 sizes the pre-plan population bound too.
+        IngestEnvelopeSafety.mailReceivingWorkspaces(capped(10).storage) shouldBe 11
+    }
+
+    @Test
+    fun `the gateway's pool must equal the approved entry's - 8 accepted, 10 or unreadable refused`() {
+        IngestEnvelopeSafety.check(capped(10, rGated = 11.0, pool = IngestionPoolSize.Known(8)), withTen).shouldBeEmpty()
+        val ten = IngestEnvelopeSafety.check(capped(10, rGated = 11.0, pool = IngestionPoolSize.Known(10)), withTen)
+        ten.map { it.setting } shouldBe listOf(IngestEnvelopeSafety.POOL_SIZE)
+        ten.single().problem shouldContain "is 10 but the approved envelope's evidence covers an ingestion pool of exactly 8"
+        val unreadable = IngestEnvelopeSafety.check(capped(10, rGated = 11.0, pool = IngestionPoolSize.Unreadable("not Hikari")), withTen)
+        unreadable.map { it.setting } shouldBe listOf(IngestEnvelopeSafety.POOL_SIZE)
+        unreadable.single().problem shouldContain "could not be determined (not Hikari)"
+        // The API runs no SMTP T1 and reports no pool: nothing to compare.
+        IngestEnvelopeSafety.check(capped(10, rGated = 11.0, pool = null), withTen).shouldBeEmpty()
+    }
+
+    @Test
+    fun `today the gateway cannot start ALL - amendment D approved no pool size, so even the default 8 is refused`() {
+        for (pool in listOf(IngestionPoolSize.Known(8), IngestionPoolSize.Known(10), IngestionPoolSize.Unreadable("not Hikari"))) {
+            only(capped(30, pool = pool), IngestEnvelopeSafety.POOL_SIZE, "the owner has approved no ingestion database pool size")
+        }
+        // Outside ALL the pool is not part of any envelope.
+        envelope(
+            capped(30, pool = IngestionPoolSize.Known(10)).let { it.copy(storage = it.storage.copy(enforcement = StorageEnforcement.OFF)) },
+        ).shouldBeEmpty()
+    }
+
+    @Test
+    fun `the first-cohort entry - cap 10 with pool 8 starts ALL, pool 10 or cap 12 is refused`() {
+        // The API (no pool) and the gateway (pool 8) at N = 10, R_gated = 11.
+        envelope(capped(10, rGated = 11.0)).shouldBeEmpty()
+        envelope(capped(10, rGated = 11.0, pool = IngestionPoolSize.Known(8))).shouldBeEmpty()
+        IngestEnvelopeSafety.expectedGatedRate(capped(10).storage)!!.compareTo(java.math.BigDecimal("11")) shouldBe 0
+        only(
+            capped(10, rGated = 11.0, pool = IngestionPoolSize.Known(10)),
+            IngestEnvelopeSafety.POOL_SIZE,
+            "is 10 but the approved envelope's evidence covers an ingestion pool of exactly 8",
+        )
+        only(
+            capped(10, rGated = 11.0, pool = IngestionPoolSize.Unreadable("not Hikari")),
+            IngestEnvelopeSafety.POOL_SIZE,
+            "could not be determined",
+        )
+        only(
+            capped(12, rGated = 13.0, pool = IngestionPoolSize.Known(8)),
+            IngestEnvelopeSafety.PARTICIPANTS,
+            "no owner-approved INGEST envelope covers N = 12",
+        )
+        // N = 10 at amendment D's rate is not the first cohort's evidence.
+        only(capped(10, rGated = 31.0), IngestEnvelopeSafety.GATED_RATE, "owner approved R = 1.0 × (10 + 1) = 11.0")
+        // Not more than the one owner workspace, and nothing above r = 1 or b = 60.
+        only(capped(10, rGated = 11.0, legacy = 2), IngestEnvelopeSafety.LEGACY, "owner approved at most 1")
+        envelope(capped(10, rGated = 11.0).copy(ingest = beta.copy(capacity = 61))).map { it.setting } shouldBe
+            listOf(IngestEnvelopeSafety.WORKSPACE_CAPACITY)
+    }
+
+    @Test
+    fun `two entries for one N are ambiguous and fail closed`() {
+        val twice = withTen + tenForTest.copy(ingestionPoolSize = 16)
+        IngestEnvelopeSafety.check(capped(10, rGated = 11.0), twice).map { it.setting } shouldBe listOf(IngestEnvelopeSafety.PARTICIPANTS)
+        IngestEnvelopeSafety.APPROVED_ENVELOPES
+            .groupBy { it.participants }
+            .values
+            .all { it.size == 1 } shouldBe true
+    }
+
+    @Test
+    fun `an approved entry cannot be malformed`() {
+        for (bad in listOf(
+            { tenForTest.copy(participants = 0) },
+            { tenForTest.copy(participants = 31) },
+            { tenForTest.copy(refill = 0.0) },
+            { tenForTest.copy(burst = 0) },
+            { tenForTest.copy(legacy = -1) },
+            { tenForTest.copy(ingestionPoolSize = 0) },
+        )) {
+            io.kotest.assertions.throwables
+                .shouldThrow<IllegalArgumentException> { bad() }
+        }
     }
 
     @Test

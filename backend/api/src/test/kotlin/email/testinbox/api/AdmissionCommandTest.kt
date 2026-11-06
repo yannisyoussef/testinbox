@@ -42,7 +42,7 @@ class AdmissionCommandTest : ApiIntegrationTestBase() {
     fun `status pause and resume change only the admission switch and report it`() {
         run("status")
         output.last() shouldBe
-            "admission status: admissions_open=false capacity_ready=false consumed_places=0/30 storage_budget_changes=allowed"
+            "admission status: admissions_open=false capacity_ready=false consumed_places=0 (hard limit 30; the deployed cap N is configured per deployable) storage_budget_changes=allowed"
         run("resume", AdmissionCommand.OPEN_BETA)
         open() shouldBe true
         output.contains(
@@ -54,7 +54,7 @@ class AdmissionCommandTest : ApiIntegrationTestBase() {
         run("pause")
         open() shouldBe false
         output.last() shouldBe
-            "admission status: admissions_open=false capacity_ready=false consumed_places=0/30 storage_budget_changes=allowed"
+            "admission status: admissions_open=false capacity_ready=false consumed_places=0 (hard limit 30; the deployed cap N is configured per deployable) storage_budget_changes=allowed"
         jdbc.sql("SELECT capacity_ready FROM beta_cohort").query(Boolean::class.javaObjectType).single() shouldBe false
     }
 

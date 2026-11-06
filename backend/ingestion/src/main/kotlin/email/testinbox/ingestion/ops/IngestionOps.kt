@@ -1,13 +1,16 @@
 package email.testinbox.ingestion.ops
 
+import com.zaxxer.hikari.HikariConfigMXBean
 import email.testinbox.application.deployment.DeploymentSafety
 import email.testinbox.application.deployment.DeploymentSettings
+import email.testinbox.application.deployment.IngestionPoolSize
 import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.port.BlobStore
 import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.ingestion.config.IngestionProperties
 import email.testinbox.ingestion.smtp.SmtpGateway
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.context.properties.bind.Bindable
 import org.springframework.boot.context.properties.bind.Binder
 import org.springframework.boot.health.contributor.Health
@@ -16,6 +19,7 @@ import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties
 import org.springframework.core.env.Environment
 import org.springframework.stereotype.Component
 import java.time.Instant
+import javax.sql.DataSource
 
 /**
  * The gateway's half of the deployed-configuration guard (see the API's
@@ -31,6 +35,8 @@ class IngestionDeploymentSafetyCheck(
     springEnvironment: Environment,
     /** Built by the wiring from the properties and the records shipped in this artifact (ADR-035 §9a). */
     storage: StorageDeclarations,
+    /** The pool T1 runs on; its effective size is checked against the approved INGEST envelope under ALL. */
+    dataSource: ObjectProvider<DataSource>,
 ) {
     init {
         val environment = properties.deployment.environment?.takeIf { it.isNotBlank() }
@@ -78,6 +84,8 @@ class IngestionDeploymentSafetyCheck(
                                 .get(springEnvironment)
                                 .bind(HIKARI_DRIVER_PROPERTIES, Bindable.mapOf(String::class.java, String::class.java))
                                 .orElse(emptyMap()),
+                        // ADR-035 amendment D: T1's latency under ALL is evidence for one pool size only.
+                        ingestionPoolSize = poolSize(runCatching { dataSource.ifAvailable }.getOrNull()),
                     ),
                 )
             check(violations.isEmpty()) { DeploymentSafety.describe(violations) }
@@ -94,10 +102,29 @@ class IngestionDeploymentSafetyCheck(
         }
     }
 
-    private companion object {
-        val DEPLOYED_PROFILES = setOf("deployed", "staging", "production")
-        const val HIKARI_DRIVER_PROPERTIES = "spring.datasource.hikari.data-source-properties"
-        val log = LoggerFactory.getLogger(IngestionDeploymentSafetyCheck::class.java)
+    companion object {
+        /**
+         * The pool's effective `maximumPoolSize`, as Hikari reports it. Never
+         * guessed: a pool that is not Hikari, or a size Hikari would replace with
+         * its own default when it starts, is [IngestionPoolSize.Unreadable].
+         */
+        fun poolSize(dataSource: DataSource?): IngestionPoolSize {
+            if (dataSource == null) return IngestionPoolSize.Unreadable("no DataSource")
+            val hikari =
+                runCatching {
+                    dataSource.takeIf { it.isWrapperFor(HikariConfigMXBean::class.java) }?.unwrap(HikariConfigMXBean::class.java)
+                }.getOrNull() ?: return IngestionPoolSize.Unreadable("the DataSource is not a Hikari pool")
+            val size = hikari.maximumPoolSize
+            return if (size >= 1) {
+                IngestionPoolSize.Known(size)
+            } else {
+                IngestionPoolSize.Unreadable("Hikari maximumPoolSize $size, which Hikari replaces with its own default at start")
+            }
+        }
+
+        private val DEPLOYED_PROFILES = setOf("deployed", "staging", "production")
+        private const val HIKARI_DRIVER_PROPERTIES = "spring.datasource.hikari.data-source-properties"
+        private val log = LoggerFactory.getLogger(IngestionDeploymentSafetyCheck::class.java)
     }
 }
 

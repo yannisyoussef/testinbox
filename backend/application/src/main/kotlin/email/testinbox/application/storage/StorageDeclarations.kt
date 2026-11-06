@@ -1,5 +1,6 @@
 package email.testinbox.application.storage
 
+import email.testinbox.domain.identity.BetaParticipantCap
 import email.testinbox.domain.storage.StorageEnforcement
 
 /**
@@ -179,12 +180,20 @@ data class StorageDeclarations(
     val gatedExpectedRate: Double? = null,
     /**
      * *L* (`testinbox.storage.declared-legacy-workspaces`): the legacy-share
-     * workspaces the cohort pool may hold beside the beta's thirty participant
-     * places, so the mail-receiving population under `ALL` is at most `30 + L`
+     * workspaces the cohort pool may hold beside the beta's participant places,
+     * so the mail-receiving population under `ALL` is at most `N + L`
      * (amendment D). A pool holding more legacy shares than this is never
      * approved ([CohortStorageRuntime.assess]).
      */
     val declaredLegacyWorkspaces: Int? = null,
+    /**
+     * *N* (`testinbox.beta.max-participants`): the participant places new
+     * admissions may consume, 1..30, default 30. Bound by BOTH deployables from
+     * the same key, so the API's admission cap and the INGEST envelope
+     * (`IngestEnvelopeSafety`) reason about the same N. It never sizes the
+     * cohort pool, which stays at the hard thirty shares.
+     */
+    val participantCap: BetaParticipantCap = BetaParticipantCap.HARD_LIMIT,
 ) {
     val enforced: Boolean get() = enforcement != StorageEnforcement.OFF
 

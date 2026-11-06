@@ -410,4 +410,39 @@ class DeploymentSafetyCheckTest {
                 message shouldNotContain "fixture-not-a-real-s3-secret----1"
             }
     }
+
+    // --- M0: the participant cap N (testinbox.beta.max-participants) --------------------------------
+
+    @Test
+    fun `N binds on the API, defaults to thirty, and only a value in 1-30 starts`() {
+        runner.withPropertyValues(*deployed).run { context ->
+            assertThat(context).hasNotFailed()
+            val properties = context.getBean(TestInboxProperties::class.java)
+            properties.beta.maxParticipants shouldBe 30
+            properties.storageDeclarations(emptyList()).participantCap shouldBe
+                email.testinbox.domain.identity.BetaParticipantCap.HARD_LIMIT
+        }
+        for (n in listOf("1", "10", "30")) {
+            runner.withPropertyValues(*deployed, "testinbox.beta.max-participants=$n").run { context ->
+                assertThat(context).hasNotFailed()
+                context
+                    .getBean(TestInboxProperties::class.java)
+                    .storageDeclarations(emptyList())
+                    .participantCap.value shouldBe n.toInt()
+            }
+        }
+        for (bad in listOf("0", "31", "-1", "ten", "10.5", "")) {
+            runner.withPropertyValues(*deployed, "testinbox.beta.max-participants=$bad").run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure!!.stackTraceToString() shouldContain "testinbox.beta.max-participants"
+            }
+        }
+    }
+
+    @Test
+    fun `a lowered N needs no envelope outside ALL - it only lowers admissions`() {
+        runner.withPropertyValues(*deployed, "testinbox.beta.max-participants=10").run { context ->
+            assertThat(context).hasNotFailed()
+        }
+    }
 }

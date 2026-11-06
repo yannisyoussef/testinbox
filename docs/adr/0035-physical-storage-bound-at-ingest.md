@@ -2686,6 +2686,44 @@ mapping.
     credentials.**
   - At activation: bucket hard quota ≥ *G_F* plus margin.
 
+## Amendment note (2026-11-06, owner decision): closed first-cohort MVP envelope
+
+**Authority: owner decision 2026-11-06.** This note adds to amendment D above
+and changes no text before it. It is recorded before the frozen-candidate run.
+
+- **(a) D0, the first cohort.** The closed beta opens with **ten participant
+  accounts plus the existing owner workspace** (N = 10, L = 1). Thirty
+  participant places remain the target; they are not withdrawn, and reaching
+  them needs the amendment D envelope and its own passing gate D.
+- **(b) D1, the criterion for this cohort only.** At **R = 11 events/s and
+  2R = 22 events/s** (R = r × (N + L) = 1 × (10 + 1), with amendment D's
+  r = 1 and b = 60): **T1 p99 ≤ 500 ms**, sustained ≥ 0.995, and the
+  integrity criteria unchanged (zero deadlocks, `lock_timeout` < 0.1 %, no
+  slot-queueing deadline miss, no other error).
+- **(c) The measurement profile.** The required cohort; the ingestion
+  gateway's **production pool size, 8**, and its production pool lifetime;
+  cold start included; concurrency 10, 25, 50 and 100; on the frozen
+  candidate.
+- **(d) Freeze, then run once.** The candidate and these criteria are frozen
+  before the evidence run. A valid failure remains FAIL. Repeated attempts
+  to obtain a favourable result are not allowed, and no threshold changes
+  after the run without a new owner decision. A rerun is permitted only
+  after a documented correction, under the review process.
+- **(e) Nothing else changes.** §11's own criteria and concurrency model are
+  unchanged for anything beyond this cohort, including the thirty-place
+  envelope of amendment D.
+- **(f) Order.** This note is recorded before the frozen-candidate run.
+
+**Enforcement (the team's reading, not the owner's words).** The approved
+envelopes are one list in code, `IngestEnvelopeSafety.APPROVED_ENVELOPES`:
+amendment D's N = 30 (R = 31, no pool size approved) and this cohort's N = 10,
+r = 1, b = 60, L = 1, R = 11, pool 8. Under `ALL` a deployment starts only
+with an N that has an entry, R_gated equal to that entry's R, r, b and L
+within it, and, on the ingestion gateway, a Hikari pool of exactly the
+entry's size. The cap N (`testinbox.beta.max-participants`) is enforced by
+admission under the cohort lock and may only lower the thirty places
+(`docs/dev/beta-limits.md`).
+
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 
 - **ADR-027 §2.** The storage-quota paragraph and the overshoot bound are

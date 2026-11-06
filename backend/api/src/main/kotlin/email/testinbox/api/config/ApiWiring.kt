@@ -141,6 +141,7 @@ class ApiMetricsWiring {
             envelopeWorkspaces =
                 email.testinbox.application.deployment.IngestEnvelopeSafety
                     .mailReceivingWorkspaces(declarations),
+            envelopeParticipants = declarations.participantCap.value,
         )
 
     /** Credential lifecycle audit trail (TI-002 §14) on its own `testinbox.audit` logger. */

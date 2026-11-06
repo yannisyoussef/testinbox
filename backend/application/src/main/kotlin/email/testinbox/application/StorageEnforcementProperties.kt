@@ -167,6 +167,8 @@ object StorageDeclarationsFactory {
         admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
         gatedExpectedRate: Double? = null,
         declaredLegacyWorkspaces: Int? = null,
+        participantCap: email.testinbox.domain.identity.BetaParticipantCap =
+            email.testinbox.domain.identity.BetaParticipantCap.HARD_LIMIT,
     ): StorageDeclarations =
         StorageDeclarations(
             enforcement = enforcement,
@@ -185,5 +187,6 @@ object StorageDeclarationsFactory {
             admissionLocking = admissionLocking,
             gatedExpectedRate = gatedExpectedRate,
             declaredLegacyWorkspaces = declaredLegacyWorkspaces,
+            participantCap = participantCap,
         )
 }

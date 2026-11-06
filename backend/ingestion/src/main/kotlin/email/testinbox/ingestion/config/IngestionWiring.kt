@@ -297,6 +297,7 @@ class IngestionWiring(
             declarations.gatedExpectedRate,
             email.testinbox.application.deployment.IngestEnvelopeSafety
                 .mailReceivingWorkspaces(declarations),
+            envelopeParticipants = declarations.participantCap.value,
         )
 
     /** TI-STORAGE-006 §22: the in-process fail-closed guard a broken activation invariant sets on a non-OFF node. */
@@ -327,7 +328,7 @@ class IngestionWiring(
             partitionedAllowed =
                 properties.deployment.environment ==
                     email.testinbox.application.deployment.StorageEnforcementSafety.LAB_ENVIRONMENT,
-            // ADR-035 amendment D: before a cohort plan exists, at most 30 + L workspaces (451 for all if not).
+            // ADR-035 amendment D: at most N + L workspaces before a cohort plan exists, or while N < 30 (451 for all if not).
             envelope =
                 email.testinbox.application.deployment.IngestEnvelopeSafety
                     .activationEnvelope(declarations, inventory),

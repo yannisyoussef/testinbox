@@ -83,7 +83,7 @@ class CohortStorageRuntime(
         trash: Long,
     ): CohortStorageBudget.Result {
         if (binding == null || legacy.size > MAX_LEGACY_WORKSPACES) return CohortStorageBudget.Result.Unproven
-        // ADR-035 amendment D: the gated INGEST envelope counts 30 + L mail-receiving
+        // ADR-035 amendment D: the gated INGEST envelope counts N + L mail-receiving
         // workspaces. A pool with more legacy shares than the declared L would admit
         // traffic no passing gate D covers, so it is never proven, never approved.
         if (!withinDeclaredLegacy(legacy)) return CohortStorageBudget.Result.Unproven
