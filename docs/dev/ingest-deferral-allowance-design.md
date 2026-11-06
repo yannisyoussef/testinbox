@@ -99,8 +99,16 @@ These properties were verified on `testinbox-mail-edge:rehearsal` (Postfix
 - It is sent before every `MAIL`, including on a reused connection.
 - It is stable across `451` retries and across `postfix stop/start`.
 - Two byte-identical sends get different IDENTs (ADR-019).
-- The edge sends only the attributes ingestion advertises. Ingestion
-  advertises `IDENT` alone, so no client IP or HELO is sent.
+- The edge sends only the attributes ingestion advertises.
+  - **Ingestion advertises `IDENT`, `PROTO` and `SOURCE`**, and none of
+    them is personal data.
+  - `PROTO` and `SOURCE` are used only for credit eligibility and for EP-8
+    (4). They are never stored or logged.
+  - `NAME`, `ADDR`, `HELO` and `PORT` stay unadvertised, so no client IP or
+    HELO ever reaches ingestion.
+  - **Why `SOURCE` is advertised:** in the lab, local origins sent *only*
+    `SOURCE=LOCAL`. Without it, a genuine bounce could arrive with no
+    XFORWARD at all and look like an EP-0 regression.
 - The edge refuses a sender's own `XFORWARD` with
   `550 5.7.0 insufficient authorization`.
 - `enable_long_queue_ids=yes` makes queue IDs non-repeating.
@@ -633,12 +641,34 @@ SMTP and the MX were authorized for the owner-only production beta launch
   - N_step comes from EP-3, or from the `timesyncd` step journal.
   - EP-3 and EP-6 are **required for this reporting** unless Ops provides
     equivalent journal counts. They are not credit gates (§9.9).
-- **For the owner.** At the observed worst-case reload density (N_rr ≤ 3,
-  N_op = N_step = 0 unverified), the hard bound rises from ≈ 6.94 to
-  **≈ 6.98 bits**, with K ≤ 125.
-  - The typical figure is ≈ 4.75 to 4.81 bits at N_rr = 0 to 1.
-  - It reaches ≈ 7.9 bits only at the reconcile maximum of 120 per 4 h,
-    which has not been observed.
+- **For the owner.**
+  - **≈ 6.98 bits (K ≤ 125)** is the figure at the observed worst reload
+    density: 3 in 4 h, during launch config changes, with N_op and N_step
+    still unverified. **No control enforces it.**
+  - The only hard cap is reconcile's 2-minute cycle: 120 reloads per 4 h,
+    **≈ 7.92 bits**.
+  - The typical figure is ≈ 4.75 bits at N_rr = 0, ≈ 4.81 at 1, and ≈ 4.91
+    at 3 (K ≈ 29, log₂ 30).
+  - **Rolling out this design itself adds reloads:** EP-0, EP-1, #147 and
+    EP-8.
+  - **Making 6.98 a bound rather than an observation** would need Ops to
+    batch edge config changes to ≤ 3 reloads per 4 h. Otherwise N_rr is
+    reported per 4 h window, alongside N_op and N_step.
+  - **Ops' position** (#124 [6688849188](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688849188)):
+    - **A batching operating rule,** once the owner adopts the figure: at
+      most 3 edge Postfix reloads or restarts in any rolling 4 h window,
+      counting the weekly rotation reload. Edge config MRs are grouped into
+      one merge per window, and any exception is recorded.
+    - **Not a hard bound.** Security fixes and incident restarts take
+      precedence, and nothing enforces the rule mechanically.
+    - **Reporting:** N_rr per rolling 4 h window, as an edge metric taken
+      from the maillog's `postfix/master … reload|daemon started` lines.
+    - A mechanical cap (reconcile refusing a reload when the window is full)
+      is possible, but Ops does not recommend it, because it would delay
+      security fixes.
+  - **The owner's figure is therefore** ≈ 6.98 bits under policy, with the
+    measured N_rr shown, and ≈ 7.92 bits as the hard worst case (reconcile's
+    2-minute cycle).
   - **This is the owner's call under the I9 exception's escalation
     clause.**
 - This is not a bound on every timing observation.
@@ -809,7 +839,12 @@ an enforced check.
 - `xforward-peers` is empty or contains anything other than single hosts;
 - `trusted-clients` contains anything other than single hosts;
 - the scheduling pins (§2.3) do not hold, i.e. R_T, σ′ or B_c differ from the configuration that the recorded R_T evidence (gate D at R) and G-C evidence covers, plus amendment D's 2R gate unless the owner decides otherwise (§8(d)(ii));
-- the hold inequality does not hold.
+- the hold inequality does not hold;
+- `testinbox_smtp_transactions_total{identity="edge_without_xforward"}` is
+  non-zero over the activation window;
+- EP-0 and EP-1 are not yet verified live.
+
+The activation barrier blocks on the last two as well.
 
 ## 7. Evidence
 
@@ -936,7 +971,14 @@ A2.2). No object, upload, fence, MinIO or filesystem dependency changes.
    - An allowance only turns a limiter discard into a storage attempt. It
      never creates a reply class of its own.
 10. **I-10 Privacy.**
-    - Only IDENT is advertised or parsed.
+    - **What is advertised.** Ingestion advertises `IDENT`, `PROTO` and
+      `SOURCE`, and none of them is personal data. `NAME`, `ADDR`, `HELO`
+      and `PORT` stay unadvertised, so they never reach ingestion.
+    - **What is used.** `PROTO` and `SOURCE` are used only for credit
+      eligibility and EP-8 (4). They are never stored or logged.
+    - **Logging.** IDENT may appear in ingestion logs as metadata only,
+      under the existing retention. It is never logged together with
+      recipient addresses for unknown recipients (ADR-025).
     - ADDR, NAME and HELO are absent from rows, logs and metrics.
     - No API, console or API-role grant reads `ingest_allowance`.
 11. **I-11 Clock.** `consume` writes `updated_at = GREATEST(updated_at, now())`.
@@ -992,6 +1034,15 @@ A2.2). No object, upload, fence, MinIO or filesystem dependency changes.
     - A transaction from an `xforward-peers` edge without XFORWARD is
       counted as `identity="edge_without_xforward"` and raises an alert
       (EP-0).
+      - **`edge_without_xforward`** means no XFORWARD command at all in the
+        transaction.
+      - A transaction carrying only `SOURCE=LOCAL` has XFORWARD present,
+        from a local origin.
+    - **Activation barrier.** `ALL` is refused, and the activation barrier
+      blocks, while either of these holds:
+      - `testinbox_smtp_transactions_total{identity="edge_without_xforward"}`
+        is non-zero over the activation window;
+      - EP-0 and EP-1 are not yet verified live.
 21. **I-21 Fresh envelope untouched.**
     - A catch-up spend never takes the bucket below σ′ =
       (30+L)·b + R·W_slot = 2 170.
@@ -1149,6 +1200,11 @@ They run on Testcontainers Postgres and MinIO, with the real
       connect with `421 4.3.2`, never a 5xx, and an edge that is not on the
       list keeps the message queued. A listed trusted client connects, and
       gets no identity.
+    - `ALL` is refused, and the activation barrier blocks, in two cases:
+      - one `edge_without_xforward` transaction in the activation window;
+      - EP-0 or EP-1 not verified live.
+    - A transaction carrying only `SOURCE=LOCAL` does not count as
+      `edge_without_xforward`.
 
 20. **AT-20 Drain.** A simulation of the edge:
     - It models scans every 120 s, age-based backoff from 120 to 600 s, and a
@@ -1233,10 +1289,11 @@ None of these is accepted. Each needs the owner's explicit acceptance.
    - Row cleanup after the edge has ended delivery is **not** loss.
 4. **RL-4 Transactions without identity.**
    - *Effect:* they are charged as today.
-   - *Under deployed `ALL`:* only the declared single-host `trusted-clients`
-     (I-20) can connect without identity. Every other non-edge peer is
-     refused at connect, and the edge is allow-listed (§6
-     `DeploymentSafety`). So no edge traffic is affected.
+   - *Under deployed `ALL`:* only declared single-host `trusted-clients`
+     (I-20) connect without identity, and the edge is allow-listed (§6).
+   - *Until EP-0 is in force,* however, every edge transaction carries no
+     XFORWARD (`identity="edge_without_xforward"`) and is charged as today.
+     The whole allowance design is therefore inactive for edge traffic.
    - *Outside `ALL`:* the staging synthetic suite and the lab, which run
      `OFF` or in the lab.
    - *Metric:* `testinbox_smtp_transactions_total{identity="none"}`.
@@ -1324,9 +1381,23 @@ here is accepted.
   - at most log₂(123 + N), where N counts reloads and restarts hitting the
     message in flight, plus operator flushes, requeues and clock steps
     (§4);
-  - **the hard bound rises from ≈ 6.94 to ≈ 6.98 bits at the observed
-    worst-case reload density** (N_rr ≤ 3 in a 4 h window, #124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)). The owner
-    decides under the I9 escalation clause.
+  - **≈ 6.98 bits is the figure at the observed worst reload density** (3
+    in 4 h, during launch config changes, #124 [6688743690](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688743690)).
+    - **No control enforces it.** The only hard cap is reconcile's 2-minute
+      cycle, ≈ 7.92 bits.
+    - Rolling out this design (EP-0, EP-1, #147, EP-8) itself adds reloads.
+    - For 6.98 to be a bound, Ops would batch edge config changes to ≤ 3
+      reloads per 4 h. Otherwise N_rr is reported per 4 h window, alongside
+      N_op and N_step, which are still unverified.
+    - **Ops** (#124 [6688849188](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688849188)) commits to that batching as an operating rule once the
+      owner adopts the figure: ≤ 3 reloads or restarts per rolling 4 h,
+      counting the weekly rotation, with config MRs grouped and exceptions
+      recorded. It is not a hard bound, since security fixes and incident
+      restarts take precedence. Ops also reports N_rr per rolling 4 h window
+      from the maillog. It does not recommend a mechanical cap.
+    - **For the owner's decision under the I9 escalation clause:** ≈ 6.98
+      bits under policy, with the measured N_rr shown; ≈ 7.92 bits as the
+      hard worst case.
 - It depends on Ops' live verifications:
   - ETRN refused;
   - no delivery-status notice of any class;
@@ -1351,7 +1422,7 @@ here is accepted.
 Each one is listed with its mechanism, bound or metric, and the
 minimisation done.
 
-## 9. RL-9 correction (PROPOSED: revised after the lab; returned to both reviewers; not agreed, not accepted, not implemented)
+## 9. RL-9 correction (PROPOSED: revised after the lab and Ops' live answers; both reviewers AGREE subject to these edits (applied); not accepted, not implemented; lab item 6 re-run pending)
 
 **Review status (2026-11-06).** Both reviewers agreed the invariants at
 `32539dd`. That agreement covered three carriers. Ops' lab then measured them
@@ -1363,8 +1434,13 @@ time ingestion first saw the identity. That is a material change.
 - Both reviewers re-checked `7202c85` and returned AGREE WITH CHANGES.
   Rejecting C1/C2, adopting C3, the requeue handling and the K model are
   confirmed.
-- This revision applies their changes and is **returned to both reviewers**.
-  It is not agreed yet.
+- Both reviewers then checked `e7a4a46` and returned AGREE WITH CHANGES.
+  Those edits are applied in this commit. They cover the advertised XFORWARD
+  set, the framing of the 6.98-bit figure, the IDENT logging rule, RL-4 and
+  the activation barrier.
+- The lab item 6 re-run with the advertised set {IDENT, PROTO, SOURCE} is
+  pending (#124 6688831352). It is queued after the A′ checkpoint run (#124
+  6688849188).
 - No agreement is owner acceptance of anything, and nothing here activates
   anything.
 
@@ -1502,19 +1578,25 @@ here with their evidence.
 IDENT stable on retries and kept across a requeue (item 2), so C4 does not
 apply.
 
-**Eligible origin (lab item 6, confirmed in the lab, not on the live
-edge).**
+**Eligible origin (lab item 6: measured in the lab; a re-run with the real
+advertised set is pending).**
 
-- **What the lab found:** mail the edge's `smtpd` received always carries
-  `ADDR`, `PORT`, `PROTO`, `HELO` and `IDENT`, with `SOURCE=REMOTE` under the
-  edge's empty `local_header_rewrite_clients`. Every other origin carries
-  **only** `SOURCE=LOCAL`, with no `PROTO`: `pickup`, `sendmail -bs` (which
-  goes through postdrop and pickup), expiry bounces and delay notices.
+- **What the lab found.** The lab sink advertised every attribute.
+  - Mail the edge's `smtpd` received always carried `ADDR`, `PORT`, `PROTO`,
+    `HELO` and `IDENT`, with `SOURCE=REMOTE` under the edge's empty
+    `local_header_rewrite_clients`.
+  - Every other origin carried **only** `SOURCE=LOCAL`, with no `PROTO`:
+    `pickup`, `sendmail -bs` (which goes through postdrop and pickup), expiry
+    bounces and delay notices.
+- **The re-run.** Ingestion advertises exactly {IDENT, PROTO, SOURCE}, so
+  `ADDR` and `HELO` never arrive. A re-run with that advertised set,
+  recording each origin, is requested (#124 [6688831352](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688831352)) and **pending**. The
+  eligibility rule and EP-8 (4) depend on its result.
 - **The rule:** only copies whose `PROTO` is in {SMTP, ESMTP, ESMTPS, ESMTPA,
   ESMTPSA} are eligible for credit. An absent `PROTO` means ineligible.
-  - Ingestion advertises `PROTO` alongside `IDENT`. `PROTO` is not personal
-    data, and it is never stored or logged.
-  - `NAME`, `ADDR`, `HELO` and `PORT` stay unadvertised (I-10).
+  - Ingestion advertises `IDENT`, `PROTO` and `SOURCE` (I-10). `PROTO` and
+    `SOURCE` are never stored or logged.
+  - `NAME`, `ADDR`, `HELO` and `PORT` stay unadvertised.
 - **What `PROTO` cannot do:** it cannot tell a bounce from a delay notice
   from a local injection. Neither this rule nor EP-8 (4) needs it to.
 - **No forgery:** a client's own `XFORWARD` to the edge is refused with
@@ -1738,7 +1820,9 @@ allowances expired + copies discarded by the limiter after a spend.
 - **Item 4:** `arrival_time` is kept through restart and requeue.
 - **Item 5:** nothing marks the end of `DATA`, and a trickled `DATA` stayed
   open 270 s.
-- **Item 6:** confirmed. Non-`smtpd` origins send only `SOURCE=LOCAL`.
+- **Item 6:** measured with the sink advertising every attribute.
+  Non-`smtpd` origins sent only `SOURCE=LOCAL`. A re-run with ingestion's
+  real advertised set {IDENT, PROTO, SOURCE} is **pending** (#124 [6688831352](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688831352)).
 - **Reload and restart:** §4.
 
 **Questions still open:**
@@ -1750,7 +1834,7 @@ allowances expired + copies discarded by the limiter after a spend.
 
 **What changes in the agreed design:**
 
-- **§2.1:** ingestion advertises `PROTO` alongside `IDENT`.
+- **§2.1:** ingestion advertises `IDENT`, `PROTO` and `SOURCE`.
 - **The `INGEST` limiter** gains:
   - the first-sight record;
   - the overflow ledger and credit claims;
@@ -1821,9 +1905,15 @@ belong to §4.
 and EP-1. §4's reporting of K needs EP-3 and EP-6, or Ops'
 equivalent journal counts.
 
-**Missing XFORWARD is alerted (with I-20).** A transaction from an
-`xforward-peers` edge that carries no XFORWARD is counted as
-`identity="edge_without_xforward"` and raises an alert.
+**Missing XFORWARD is alerted (with I-20).**
+
+- **What counts.** A transaction from an `xforward-peers` edge that carries
+  **no XFORWARD command at all** is counted as
+  `identity="edge_without_xforward"` and raises an alert. A transaction
+  carrying only `SOURCE=LOCAL` has XFORWARD present, from a local origin.
+- **The barrier.** `ALL` is refused, and the activation barrier blocks,
+  while that count is non-zero over the activation window, or before EP-0
+  and EP-1 are verified live.
 
 **EP-8 in detail** (#124 comments 6687275537, 6687301964 and 6687332923).
 
@@ -1852,10 +1942,15 @@ practice today". It is **an observation, not a proof**.
     security review.
   - **The rule, stated exactly:**
     - Discard applies only to a transaction from an `xforward-peers` edge
-      with `MAIL FROM:<>` and `PROTO` ∉ {SMTP, ESMTP, ESMTPS, ESMTPA,
-      ESMTPSA}.
+      when all three of these hold:
+      - XFORWARD is present;
+      - `MAIL FROM:<>`;
+      - `PROTO` is absent or not SMTP-family ({SMTP, ESMTP, ESMTPS, ESMTPA,
+        ESMTPSA}).
     - An absent or `[UNAVAILABLE]` `PROTO` from an edge counts as not
       `smtpd`-originated.
+    - The rule depends on the pending lab item 6 re-run with the advertised
+      set {IDENT, PROTO, SOURCE} (#124 [6688831352](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6688831352)).
     - A `trusted-clients` peer (no XFORWARD) is handled normally.
     - **If XFORWARD is missing from an edge** (the alert above), this is
       **proposed, for the owner**: fail closed. Every edge null-sender
