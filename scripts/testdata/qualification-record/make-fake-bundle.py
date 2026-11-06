@@ -180,6 +180,11 @@ def main():
         "reconciliation": {"inodesUsed": 27, "inodesBelowFirstInode": 10},
         "steps": [{"step": st, "at": f"2000-01-01T{h:02d}:00:00Z", "kernelRelease": KERNEL, "bootId": boot, "filesystemUuid": UUID}
                   for st, h in (("(i)", 0), ("(ii)", 0), ("(iii)", 13), ("(iv)", 14), ("(v)", 15), ("(vi)", 22))],
+        "censuses": [
+            {"experiment": "E2", "afterDefinedDrain": True, "takenAt": "2000-01-01T02:45:00Z",
+             "entries": {"tmp": 0, "trash": 48, "multipart": 0}},
+            {"experiment": "E7", "afterDefinedDrain": False, "takenAt": "2000-01-01T22:00:00Z",
+             "entries": {"tmp": 1, "trash": 2, "multipart": 0}}],
         "attestation": {"by": "FAKE Ops", "at": "2000-01-01T22:30:00Z", "listingSha256": lsha}})
     # Gate F evidence: the repository's gate F fixture with the fake filesystem and this record id.
     ev = json.load(open(os.path.join(REAL_REPO, "scripts/testdata/storage-activation/filesystem/evidence-good.json")))

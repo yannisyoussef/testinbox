@@ -309,6 +309,35 @@ refused "a listing custody other than off-repo 0700 with a retention → refuse"
 fresh clate; edit clate census/summary.json 'd["takenAt"] = "2000-01-01T23:30:00Z"'
 refused "a census taken after the cleanup baseline → refuse (C2)" clate "census was taken after the post-cleanup baseline"
 
+# C2 as run: E2's census came after E2's own defined drain. The record discloses it literally and never says satisfied.
+DISC="(vi) for E2 was taken after its defined drain; no census preceded it. The drain's trash was largely purged before the census (48 entries remained under \`.trash\`), so most of it was never counted."
+if [ "$(jq -c '.filesystem.inodeCensus.c2Status' "$REC")" = '{"E2":"literal-deviation-disclosed","E7":"satisfied"}' ] \
+   && [ "$(jq -r '.filesystem.inodeCensus.disclosures | length' "$REC")" = 1 ] \
+   && [ "$(jq -r '.filesystem.inodeCensus.disclosures[0]' "$REC")" = "$DISC" ]; then
+    ok "a census after E2's defined drain gives c2Status literal-deviation-disclosed and the exact disclosure with the .trash count"
+else bad "C2 disclosure in the record" "$(jq -c .filesystem.inodeCensus "$REC")"; fi
+fresh c2sat; edit c2sat census/summary.json 'd["censuses"][0]["c2Status"] = "satisfied"'
+refused "a summary claiming C2 satisfied for a census after its defined drain → refuse" c2sat "c2Status 'satisfied' for E2, but afterDefinedDrain is true: C2 is never 'satisfied'"
+fresh c2abs; edit c2abs census/summary.json 'del(d["censuses"][0]["afterDefinedDrain"])'
+refused "an E2 census without afterDefinedDrain → refuse" c2abs "afterDefinedDrain for E2 is None, not true or false"
+fresh c2str; edit c2str census/summary.json 'd["censuses"][0]["afterDefinedDrain"] = "yes"'
+refused "an afterDefinedDrain that is not a boolean → refuse" c2str "afterDefinedDrain for E2 is 'yes'"
+fresh c2noe2; edit c2noe2 census/summary.json 'd["censuses"] = d["censuses"][1:]'
+refused "no census entry for E2 → refuse (disclosed, never assumed)" c2noe2 "no census entry for E2 stating afterDefinedDrain"
+fresh c2nolist; edit c2nolist census/summary.json 'del(d["censuses"])'
+refused "a summary without the per-experiment censuses → refuse" c2nolist "censuses must list each census"
+fresh c2notrash; edit c2notrash census/summary.json 'del(d["censuses"][0]["entries"]["trash"])'
+refused "a census after its drain without its .trash count → refuse" c2notrash "entries.trash is missing for E2"
+fresh c2dup; edit c2dup census/summary.json 'd["censuses"].append(dict(d["censuses"][0], afterDefinedDrain=False))'
+refused "two census entries for E2 → refuse" c2dup "experiment E2 has more than one census entry"
+fresh c2before; edit c2before census/summary.json 'd["censuses"][0]["afterDefinedDrain"] = False'
+gen c2before
+if [ "$STATUS" = 0 ] && [ "$(jq -c '[.filesystem.inodeCensus.c2Status.E2, .filesystem.inodeCensus.disclosures]' "$TMP/c2before/out/production-2000-01-01/record.json")" = '["satisfied",[]]' ]; then
+    ok "an E2 census taken before any drain is satisfied, with no disclosure"
+else bad "E2 census before drain (exit $STATUS)" "$OUT"; fi
+if grep -qF "$DISC" "$TMP/good/out/production-2000-01-01/PROVENANCE.md"; then ok "PROVENANCE.md carries the disclosure word for word"
+else bad "disclosure missing from PROVENANCE.md"; fi
+
 # ------------------------------------------------------------------- E7 carried (W3 A5): both outcomes
 fresh carry --e7 carried
 gen carry

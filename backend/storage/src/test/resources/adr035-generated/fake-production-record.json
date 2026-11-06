@@ -74,7 +74,14 @@
       "verification": "summary attested by FAKE Ops at 2000-01-01T22:30:00Z (listing not re-verified here)",
       "takenAt": "2000-01-01T22:00:00Z",
       "blocklessInodes": 0,
-      "reconciliationGap": 0
+      "reconciliationGap": 0,
+      "c2Status": {
+        "E2": "literal-deviation-disclosed",
+        "E7": "satisfied"
+      },
+      "disclosures": [
+        "(vi) for E2 was taken after its defined drain; no census preceded it. The drain's trash was largely purged before the census (48 entries remained under `.trash`), so most of it was never counted."
+      ]
     },
     "metadataBytesMeasured": 52428800,
     "metadataBytesScope": "minio-sys+unattributed",
