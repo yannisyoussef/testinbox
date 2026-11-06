@@ -1,4 +1,4 @@
-# INGEST deferral allowance and T1 scheduling budget — final design
+# INGEST deferral allowance and T1 scheduling (fresh envelope + catch-up) — design
 
 **Status: design only, not implemented.**
 
@@ -22,9 +22,10 @@
 | # | Area | Decision |
 |---|---|---|
 | 1 | Privacy | Accept the quantified retry-timing extension of the I9 exception for the initial beta (≤ 30 accounts). It holds under the reviewed edge retry schedule, the enforced concurrency limits and the stated observation model. The bounds apply to that model only, not to every timing observation. No hour-long redemption windows. Escalate if the mechanism goes beyond this scope. The text to record is in §4. |
-| 2 | Load | Fresh traffic plus retry attempts entering T1 must stay within R = 31, with gate evidence at R and 2R. Use a common scheduling budget. A scheduling refusal keeps the delivery allowance. The allowance is separate from throughput control. Every T1 attempt counts toward scheduling, including attempts that certainly roll back. |
+| 2 | Load (refined by 5) | Fresh traffic plus retry attempts entering T1 must stay within R = 31, with gate evidence at R and 2R. Use a common scheduling budget. A scheduling refusal keeps the delivery allowance. The allowance is separate from throughput control. Every T1 attempt counts toward scheduling, including attempts that certainly roll back. |
 | 3 | Rollback | Keep the allowance when T1 is proven rolled back. Consume it atomically with the T1 that commits. An uncertain commit is not a proven rollback. |
 | 4 | Residuals | Minimise them, then present one list. None is accepted now. A duplicate concurrent attempt is deferred, not charged fresh. Expiry cleanup is kept apart from loss. Nothing is called "rare" without a bound. |
+| 5 | Scheduling, privacy (#124 comment 6686171551) | Trade-offs (d)1–(d)3 of the single 31 + 31/s budget are **not accepted**: under full fresh load, deferred mail cannot drain. Preserve the approved fresh envelope and its qualification guarantees, and propose bounded catch-up capacity or another mechanism that allows recovery, with evidence covering continued arrivals, repeated congestion and competing workspaces. Any reliance on 2R needs passing evidence at that load. The privacy extension (d)4 is accepted **conditionally** (§4). |
 
 **The reviews.** Every change requested by both reviews is adopted. Each is
 cited at the invariant (I-) or acceptance test (AT-) that carries it. The
@@ -43,7 +44,14 @@ applied in full:
 - the corrected trade-off (d)3;
 - the `abuse-model.md` text.
 
+The third round brings the recommended scheduling of §2.3: the fresh
+envelope untouched, plus catch-up capacity sized to the edge scan. It also
+brings the drain bound and the conditions under which drain fails (§3), the
+observed edge values (§6) and the evidence plan G-D/G-C/G-E (§7). The edge is
+treated as public throughout.
+
 **Superseded:**
+- the single shared T1 scheduling budget of 31 + 31/s (round 2);
 - the immediate refund (#143);
 - consume in its own transaction before T1;
 - an allowance TTL of edge lifetime plus 1 h;
@@ -216,51 +224,98 @@ A row past `expires_at` belongs to a delivery the edge has already ended:
 Deleting such a row is **cleanup, not loss** (`outcome="expired"`). The
 window past the edge's lifetime is δ = 15 min, never hours.
 
-### 2.3 Scheduling budget (throughput control)
+### 2.3 Scheduling: fresh envelope plus bounded catch-up
 
-**Bucket.** One global token bucket in PostgreSQL, `t1_schedule` (one row):
+This replaces the single 31 + 31/s budget. The owner did not accept its
+trade-offs (d)1–(d)3 (#124 comment 6686171551): when fresh traffic uses the
+whole rate, deferred mail cannot drain.
 
-- database clock, the `TokenBucket` arithmetic, and
-  `GREATEST(updated_at, now())`;
-- shared by every node;
-- R_s = R_gated = **31 events/s**, capacity B_s = **31 events**;
-- active under `ALL`, the mode gate D qualifies.
+**Recommended: option (a), a fixed split.** Fresh traffic keeps exactly its
+approved envelope. Retries get their own catch-up capacity, sized to the
+edge's retry scan. The other options are not recommended:
 
-Under `ALL`, `DeploymentSafety` refuses R_s ≠ R_gated, and B_s > R_s × 1 s.
+- **(b) Shared budget at R with retry priority or a reserved share.** It
+  defers fresh traffic, so it changes the fresh envelope. Done per tenant, it
+  is a new I9 channel.
+- **(c) Per-workspace caps on outstanding allowances.** A refusal "because
+  your workspace's backlog is full" is per tenant, which is a new I9 channel.
+  Forfeiting beyond the cap is loss.
+- **Pacing retries by letting them wait.** A waiting retry holds one of the
+  edge's 20 relay sessions, and the edge serves roughly first in, first out.
+  Fresh mail would queue behind it at the edge (RL-9).
 
-**Spending.**
+**The two buckets.** They are global PostgreSQL rows in `t1_schedule`: the
+database clock, the `TokenBucket` arithmetic, and
+`GREATEST(updated_at, now())`.
 
-- Every event spends one token after it holds its slot and immediately before
-  T1. The spend is its own `REQUIRES_NEW` transaction.
-- Fresh events and retries share the bucket.
-- The spend commits independently, so T1 attempts that roll back are counted.
-- A spend whose commit is uncertain counts as taken. The event does not enter
-  T1: `451 DB_TRANSIENT`, release.
-- A fresh event waits for a token up to its remaining `W_slot`. A pure retry
-  does not wait (I-17).
-- A refusal is `SCHEDULE_WAIT`, which is in T, so the allowance is kept.
-- Each T1 transaction spends exactly one token. Under `COHORT_PARTITIONED`
-  (lab only), a fallback to mode a is a second T1 transaction and spends a
-  second token.
-- A scheduling token is never returned.
+- Every T1 attempt spends exactly one token, from exactly one bucket.
+- The spend runs in its own `REQUIRES_NEW` transaction, after the slot and
+  immediately before T1.
+- A token is never returned. Attempts that roll back are counted.
 
-**Fairness.** Only slot holders contend for tokens, at most 4 per workspace
-per node. Slot fairness (ADR-035 §4) therefore carries over. Fresh events
-wait for a token while they hold their write slot, so a burst can turn
-scheduling waits into `SLOT_WAIT` deferrals for other events (§7 measures
-this, §8(d)1).
+| Class | Events | Rate | Capacity | When empty |
+|---|---|---|---|---|
+| fresh | no allowance taken in the Hold step, including events without identity | R_f = R_gated = 31/s | B_f = (30+L)·b = 1 860 | wait up to the remaining `W_slot`, then `SCHEDULE_WAIT` (allowance kept) |
+| catch-up | at least one allowance taken in the Hold step | R_c = R_gated = 31/s | B_c = R_c·`queue_run_delay` = 3 720 | refused at once with `SCHEDULE_WAIT`, allowance kept. Never waits |
 
-**Why global.** A refusal is a load `451` for the whole `DATA`, never chosen
-per tenant, which is how I9 is written. A per-workspace refusal would add a
-per-tenant channel, so it is not proposed.
+**Fresh is never refused when in envelope.** Fresh first attempts are at
+most the cohort's `INGEST` workspace spends. Each of those buckets holds at
+most b tokens and refills at r. So from any instant, fresh first attempts
+are ≤ (30+L)·b + (30+L)·r·T. A (σ, ρ) token bucket admits every stream that
+conforms to (σ, ρ). This leaves the approved fresh envelope as approved:
+
+- r = 1/s per workspace, b = 60, R = 31 sustained;
+- amendment D's accepted and unproven burst residual included.
+
+The bucket binds only on traffic outside that envelope, such as the
+partitioned fallback's second T1 (lab only) or a misconfiguration. It then
+defers that traffic and keeps the allowance. A fresh event whose T1 rolls
+back keeps its allowance, so its next attempt is a catch-up attempt.
+
+**Catch-up is sized to the edge.**
+
+- The edge presents deferred mail only at its deferred-queue scans
+  (`queue_run_delay` 120 s, observed). So catch-up tokens are spent in bursts
+  at scan instants.
+- With a capacity of one scan interval's refill, no catch-up token is lost
+  between scans, and each scan can admit up to B_c = 3 720 retries.
+- A smaller B_c caps catch-up at B_c / 120 s, whatever R_c is.
+- Neither class borrows the other's tokens, so neither can starve the other.
+
+**Activation.** c = R_c/R_gated = 1 needs passing evidence at sustained 2R
+(gate D) **and** for the catch-up burst (G-C, §7). Gate D has **not** passed
+(run 3 FAILED), and G-C does not exist yet. So nothing in this section is
+qualified today, and no deployment may run it.
+
+Under `ALL`, `DeploymentSafety` refuses:
+
+- R_f ≠ R_gated;
+- B_f ≠ (30+L)·b;
+- R_c > R_gated;
+- B_c ≠ R_c × the contract's `queue_run_delay`;
+- R_c or B_c above what the recorded G-C evidence covers.
+
+Gate D is already an activation gate, and G-C is added to it. No runnable
+configuration has c = 0: without catch-up, retries could never enter T1.
+
+**Fairness without a per-tenant refusal.**
+
+- Both refusals are global and reveal aggregate load only (I9 as written).
+- Every deferred message is presented again at least once per P = 720 s.
+- Catch-up tokens go to retries in the order the edge delivers them.
+- The slot cap of 4 events per workspace per node still limits any one
+  workspace's concurrent T1 work.
+- No workspace can wait longer than the whole-backlog drain bound of §3,
+  because that bound covers every message.
 
 **`abuse-model.md` text, for the implementation round:**
 
-> A T1 scheduling refusal (`SCHEDULE_WAIT`) reveals aggregate T1 load only.
-> It is recorded as a global-load `451` under ADR-035 I9 as written ("it
-> reports storage, database or load failure for the whole `DATA`, and it is
-> never chosen per tenant"). It is **not** recorded under ADR-037 A2, and
-> **not** under the 2026-11-06 timing-disclosure exception or its extension.
+> A T1 scheduling refusal (`SCHEDULE_WAIT`, fresh or catch-up) reveals
+> aggregate T1 load only. It is recorded as a global-load `451` under ADR-035
+> I9 as written ("it reports storage, database or load failure for the whole
+> `DATA`, and it is never chosen per tenant"). It is **not** recorded under
+> ADR-037 A2, and **not** under the 2026-11-06 timing-disclosure exception
+> or its extension.
 
 ### 2.4 Disposition of #143
 
@@ -280,7 +335,7 @@ per-tenant channel, so it is not proposed.
     - `stall`, emitted by the holder on `HOLD_LOST`;
     - `unattributed`, emitted at recovery when no holder reported, i.e.
       process death;
-  - `testinbox_t1_schedule_total{outcome}`;
+  - `testinbox_t1_schedule_total{class,outcome}`, with class `fresh` or `catch_up`;
   - `testinbox_smtp_transactions_total{identity}`;
   - `testinbox_ingest_allowance_oldest_seconds`.
 - **Record dated notes that supersede this branch's refund text,** never
@@ -291,109 +346,227 @@ per-tenant channel, so it is not proposed.
   - `abuse-model.md`;
   - ADR-004 §5: IDENT is a charging key, not a message identity.
 
-## 3. Load argument
+## 3. Load and drain argument
 
-**Scheduling.** Let S(t, T) be the T1 attempts in (t, t+T].
+The edge values used here are the observed ones (§6, which also gives their
+status):
 
-- Each attempt holds a token taken after its slot and before its T1.
-- At most 16 × nodes tokens can be granted before t and used after t.
+- q = `queue_run_delay` = 120 s;
+- backoff from 120 s to 600 s, so a deferred message is presented again
+  within P = 600 + 120 = 720 s, and first within 240 s;
+- L = `maximal_queue_lifetime` = 4 h;
+- margin M = 30 min;
+- one ingestion node.
 
-So:
+**Capacity assumption S.** The edge and ingestion can carry 2R = 62
+events/s:
 
-> S(t, T) ≤ B_s + R_s·T + 16·nodes = 31 + 31·T + 16·nodes
+- relay session time t_s ≤ 20/62 ≈ 0.32 s;
+- 16 slots ÷ event time ≥ 62/s.
 
-This holds for fresh traffic and retries together, whether T1 commits or
-rolls back.
+Evidence G-C and G-E (§7) must show S holds. Every number below assumes it.
 
-- **Sustained:** at most **R = 31 events/s**.
-- **Short windows, one node:** at most 78 attempts in 1 s, and at most **2R**
-  over any window of 1.52 s or more. Those are the two rates gate D
-  qualifies.
-- **Contention:** T1 lock waiters ≤ min(20 × edges, 16 × nodes). That is
-  inside the qualified concurrency range (10–100). With one node,
-  16 × T1 p99 (50 ms) ≈ 0.8 s, which is under the 5 s `lock_timeout`.
+### T1 load
 
-**Delivery.**
+> S(t, T) ≤ B_f + B_c + (R_f + R_c)·T + 16·nodes = 5 580 + 62·T + 16·nodes
 
-- Overflow is refused before T1 with its allowance kept (`SLOT_WAIT` or
-  `SCHEDULE_WAIT`).
-- The edge retries after 120–600 s. A retry spends a scheduling token only
-  when it enters T1.
-- Unique demand stays inside the `INGEST` envelope: events ≤ copies, ≤ 31/s
-  sustained, plus bursts.
-- So the backlog drains whenever aggregate demand is below R (RL-3).
+- **Sustained:** at most 2R = 62 events/s, with fresh alone ≤ R.
+- **Bursts:** fresh bursts are ≤ 1 860, which is amendment D's accepted
+  residual, unproven and unchanged. Catch-up bursts are ≤ 3 720 per scan.
+  They enter at the edge's pace (≤ 20 sessions ÷ t_s) through ≤ 16 slots per
+  node.
+- **Evidence:** the catch-up bursts are new and need G-C. Gate D's 2R
+  scenarios last 30 s, while a drain holds 2R for longer, so G-C must also
+  cover sustained 2R (§7).
 
-**Conservation (I-2).** For every `INGEST` bucket:
+### Fresh overflow
 
-> tokens spent = copies whose T1 committed + allowances outstanding +
-> allowances forfeited + allowances expired + copies discarded by the
-> limiter after a spend
+Fresh overflow means fresh events deferred by `SLOT_WAIT`, which turns them
+into retries.
+
+- Under S, slots serve ≥ 62/s. A cohort-wide burst of 1 860 is therefore
+  served for `W_slot` = 10 s (620 events), and the remaining ≤ 1 240
+  overflow.
+- Workspace buckets need b/r = 60 s to refill a burst.
+- So the adversarial overflow rate is ρ_o ≤ 1 240 / 60 ≈ 20.7 events/s,
+  when all 31 workspaces burst together every 60 s.
+- Overflow presented in any one scan is ≤ ρ_o·q ≈ 2 480.
+
+### Drain bound
+
+**Congestion** is any time in which retries are refused for a T-class reason
+other than an empty catch-up bucket: infrastructure, `SLOT_WAIT` saturation,
+or T1 rollbacks.
+
+- **Backlog.** Let D be the total congestion within the oldest deferred
+  message's 4 h window, so repeated episodes add up. The backlog is then
+  Q_D ≤ (30+L)·b + R·D = 1 860 + 31·D.
+- **Net admission per scan.** When a backlog message is presented, the scan
+  admits at least min(what is presented, B_c − overflow presented in that
+  scan). Under adversarial fresh that is ≥ 3 720 − 2 480 = 1 240.
+- **Synchronized backlog** (it arrived within about one scan, so the edge
+  presents it together once per P):
+  T_drain ≤ 240 + 720·⌈Q_D / net⌉.
+- **Spread backlog** (its arrivals span ≥ P, so it falls into ≥ 5 scan
+  phases): T_drain ≤ 240 + Q_D / (net / q).
+- **Delivery condition.** Mail is delivered within L − M if
+  D + T_drain ≤ 12 600 s:
+
+| Fresh during recovery | Backlog | Net per scan | Largest D still delivered |
+|---|---|---|---|
+| adversarial, ρ_o = 20.7/s | synchronized | 1 240 | ≈ 9 min |
+| adversarial | spread | 1 240 | ≈ 50 min |
+| no overflow | synchronized | 3 720 | ≈ 28 min |
+| no overflow | spread | 3 720 | ≈ 1.7 h |
+
+**With no congestion,** every deferral from steady adversarial fresh is
+admitted at its first presentation, within 240 s. Each scan's overflow
+(≤ 2 480) is below B_c.
+
+**When it cannot drain,** stated exactly:
+
+- **D beyond the table.** Mail is then lost at the edge (RL-3).
+- **B_c below the overflow presented per scan.** If G-C qualifies only a
+  smaller B_c, every row of the table scales with B_c − 2 480. At
+  B_c ≤ 2 480, adversarial fresh never lets the backlog drain.
+- **S does not hold.** If t_s > 0.32 s, or the node is slower, catch-up
+  admits retries the edge or the slots cannot carry. Drain then runs at
+  (capacity − fresh), and stops entirely once capacity ≤ R + ρ_o.
+- **An edge assumption is violated** (§6 table): a destination marked dead,
+  reload or restart effects, or operator holds.
+
+### Conservation (I-2)
+
+For every `INGEST` bucket:
+
+> tokens spent = copies whose T1 committed + allowances outstanding
+> + allowances forfeited + allowances expired
+> + copies discarded by the limiter after a spend
 
 An inbox-only row deleted by a committed T1 counts in the last term.
 
+### Delivery and privacy consequences, together
+
+**Delivery.**
+
+- In-envelope fresh traffic is never refused by scheduling. It waits for
+  slots as before.
+- Deferred mail is delivered at its first presentation (≤ 240 s) in steady
+  state, and within the drain table after congestion. Beyond that it is lost
+  (RL-3, not accepted).
+- **Edge coupling.** Admitted catch-up work holds relay sessions for up to
+  B_c·t_s/20 per scan: about 19 s at t_s = 0.1 s, about 60 s at 0.32 s.
+  Fresh mail queued at the edge waits behind it. It then reaches ingestion
+  bunched, is charged on arrival, and can exceed b (RL-9).
+
+**Privacy.**
+
+- Both refusals are global (I9 as written).
+- A probe's retry ordinal now also reflects global catch-up availability,
+  which is aggregate load.
+- It is still one ordinal per paid probe, so the bound stays log₂(K+1) for
+  the modeled observation (§4).
+
 ## 4. Privacy: the I9 extension and its record
 
-**Observation model.**
+The owner accepted this extension **conditionally** (#124 comment
+6686171551) on four conditions:
 
-- The observer is an authenticated participant.
-- It reaches ingestion only through the edge. That is S-C2 (network: only the
-  edge reaches ingestion SMTP), enforced under deployed `ALL` by I-20.
-  `xforward-peers` only prevents identity forgery.
-- It reads only its own co-addressed copy's eventual delivery time:
-  `receivedAt` against the edge's `Received:` time.
-- The edge retry schedule is pinned (§6). It excludes operator-initiated
-  flushes (`postqueue -f`, `postsuper -r`). No SMTP client can trigger an
-  early retry, because ETRN is refused (§6).
-- Concurrency limits: edge 20; slots 16 per node and 4 per workspace;
-  scheduling 31 + 31/s.
+- the reviewed retry schedule, network isolation and concurrency assumptions
+  are enforced;
+- Ops verifies on the **live** edge that ETRN is refused;
+- log₂(K+1) is described as a bound for the modeled retry-ordinal
+  observation, not as a universal timing bound;
+- the wording is reconciled with the final scheduling design.
 
-**Bounds.**
+The edge is treated as **public**: it listens on `0.0.0.0:25`, has a live MX,
+and Ops observed it (6686107928).
 
-- Every probe event is still paid once from W's `INGEST` budget, so probe
-  events are ≤ b + r·T.
-- A deferred probe is retried at the edge's scan instants, without a new
-  charge. Scans run every `queue_run_delay` (120 s), with backoff from 120 s
-  to 600 s.
-- The probe's delivery time reveals the first attempt at which W was below
-  its slot cap. That is at most log₂(K+1) bits:
-  - K ≈ 26 attempts in 4 h with backoff to 600 s gives about **4.8 bits**;
-  - K ≤ 121 at the 120 s minimum gives at most **6.9 bits**.
-- I-17's immediate deferral changes the `451`'s latency, not the bit.
-- The global scheduling refusal discloses only aggregate load.
+**Observation model.** The bounds hold only under all of these:
+
+- **Who observes.** The observer is an authenticated participant. Internet
+  senders reach only the public edge. They get the uniform `250` and no DSN,
+  and the edge stores and forwards, so they read no delivery timing. They can
+  supply load to addresses they know, and that load is bounded by `INGEST`.
+- **Network.** Only the edge reaches ingestion SMTP (S-C2). Under deployed
+  `ALL` this is enforced by I-20. `xforward-peers` only prevents identity
+  forgery.
+- **What is observed.** The observer reads only the eventual delivery time
+  of its own co-addressed copy: `receivedAt` against the edge's `Received:`
+  time.
+- **Retry schedule.** These are observed values. The contract pins them (§6):
+  - scans every 120 s;
+  - backoff 120 s to 600 s;
+  - lifetime 4 h.
+
+  The schedule excludes operator flushes (`edge-stop.sh`: `postsuper -H ALL;
+  postqueue -f`; `postsuper -r`). Each use adds at most one presentation to
+  every held or deferred message, and Ops logs each use.
+- **No client-triggered retries.** No SMTP client can trigger an early retry
+  once ETRN is refused. ETRN is **open on the live edge today**, so the model
+  does not hold until Ops verifies the refusal.
+- **Reconcile reload.** Reconcile's `systemctl reload postfix` (falling back
+  to restart) runs on a config change at most every 2 min. It is assumed not
+  to advance next-attempt times. This is **unverified**: Ops reports it with
+  the ETRN post-deploy check.
+- **Concurrency limits.**
+  - edge relay concurrency: 20 (the Postfix default; pin proposed in §6);
+  - write slots: 16 per node and 4 per workspace;
+  - T1 scheduling (§2.3): fresh 1 860 + 31/s, catch-up 3 720 per scan +
+    31/s, both global.
+
+**Bounds, for the modeled retry-ordinal observation only.**
+
+- Every probe event is paid once from W's `INGEST` budget, so the number of
+  probe events is ≤ b + r·T.
+- A deferred probe is retried at the edge's scan instants without a new
+  charge. Its delivery ordinal shows the first attempt at which both of
+  these held:
+  - W was below its slot cap;
+  - a global catch-up token was available, which reflects aggregate load
+    only.
+- One ordinal per paid probe gives at most log₂(K+1) bits:
+  - K ≈ 26 attempts in 4 h on the observed schedule gives about **4.8 bits**;
+  - the hard bound K ≤ 121 at the 120 s minimum gives at most **6.9 bits**.
+  - Each operator flush, and each retry caused by a reload if the
+    verification finds any, adds one attempt to K.
+- This is not a bound on every timing observation.
+- I-17's immediate deferral changes the `451`'s latency, not the ordinal.
 
 **Text to add to the ADR-035 I9 note (implementation round):**
 
 > **Dated addition (2026-11-06): retry-timing disclosure under the INGEST
-> deferral allowance.** Authority: owner decision of 2026-11-06, #124 comment
-> 6684756433 (Q-1 option 2), for the initial beta of at most 30 admitted
-> accounts.
+> deferral allowance.** Authority: owner decisions of 2026-11-06, #124
+> comments 6684756433 (Q-1 option 2) and 6686171551 (conditional acceptance),
+> for the initial beta of at most 30 admitted accounts.
 >
 > A probe event deferred before T1, or by a proven T1 rollback, keeps its
-> paid `INGEST` allowance and is retried by the edge without a new charge.
-> Its eventual delivery time therefore tells the observer at which edge
-> retry the probed workspace was first below its slot cap.
+> paid `INGEST` allowance. The edge retries it without a new charge, so its
+> eventual delivery ordinal tells the observer at which edge retry the probed
+> workspace was first below its slot cap. A global catch-up token also had to
+> be available at that retry.
 >
-> This holds under the reviewed edge retry schedule (`minimal_backoff_time`
-> 120 s, `maximal_backoff_time` 600 s, `queue_run_delay` 120 s,
-> `maximal_queue_lifetime` 4 h). That schedule excludes operator-initiated
-> flushes (`postqueue -f`, `postsuper -r`), and no SMTP client can trigger an
-> early retry, because the edge refuses ETRN (`smtpd_etrn_restrictions =
-> reject`, `fast_flush_domains` empty). It also holds under S-C2 (network:
-> only the edge reaches ingestion SMTP; `xforward-peers` only prevents
-> identity forgery), the enforced concurrency limits (edge
-> `relay_destination_concurrency_limit` 20; 16 write slots per node, 4 per
-> workspace; T1 scheduling 31 + 31/s) and the observation model of the
-> deferral-allowance design §4. Under those conditions, one paid probe
-> reveals at most log₂(K+1) bits: about 4.8 (K ≈ 26), at most 6.9
-> (K ≤ 121). Probe events remain bounded by the probed workspace's `INGEST`
-> budget.
+> The edge is public. The figure applies to the modeled retry-ordinal
+> observation only, under:
+> - the observed edge retry schedule (`queue_run_delay` 120 s, backoff
+>   120–600 s, `maximal_queue_lifetime` 4 h, `bounce_queue_lifetime` 0);
+> - ETRN refused, verified on the live edge;
+> - operator flushes counted as extra attempts;
+> - S-C2 enforced;
+> - the enforced concurrency limits (edge relay concurrency 20; 16 write
+>   slots per node, 4 per workspace; global T1 scheduling).
 >
-> These figures bound that model only. They are not a universal bound on
-> every timing observation. No redemption window exceeds the edge's delivery
-> lifetime by more than 15 min. The exclusions of the original exception
-> stand. If review finds the mechanism exceeds this scope, it is escalated
-> to the owner. The exception is reassessed, with #139, before any cohort
-> expansion.
+> Under that model, one paid probe reveals at most log₂(K+1) bits: about 4.8
+> (K ≈ 26), and at most 6.9 (K ≤ 121) plus operator flushes. Probe events stay
+> bounded by the probed workspace's `INGEST` budget. This is not a universal
+> bound on timing information.
+>
+> No redemption window exceeds the edge's delivery lifetime by more than
+> 15 min. The exclusions of the original exception stand. If the mechanism is
+> found to exceed this scope, it goes back to the owner. The exception is
+> reassessed, with #139, before any cohort expansion. The acceptance remains
+> conditional until Ops has verified ETRN refusal and the effect of reloads
+> on the live edge.
 
 ## 5. State bound
 
@@ -408,7 +581,7 @@ An inbox-only row deleted by a committed T1 counts in the last term.
   The gauge reports the oldest row's age.
 - **Removal.** Rows are reaped within `expires_at` + 10 min, and cascade
   with their inbox or workspace.
-- **`t1_schedule`** is one row.
+- **`t1_schedule`** is two rows, fresh and catch-up.
 - **Restore.** A restored database has no allowances (I-16, RL-6).
 
 ## 6. Edge contract and deployment requirements
@@ -460,11 +633,36 @@ per peer, at connect time, through SubEthaSMTP's `SessionHandler`, and is
 independent of any recipient. This turns S-C2 from a network assumption into
 an enforced check.
 
+**Edge values this design assumes** (observed by Ops on edge-fr-01,
+2026-11-06, #124 comment 6686107928):
+
+| Value | Observed | Status | Used for |
+|---|---|---|---|
+| `maximal_queue_lifetime` | 4h | pinned (`production`) | TTL, drain deadline, K |
+| `bounce_queue_lifetime`, `notify_classes` | 0, empty | pinned (`required`) | expiry is cleanup, not loss |
+| `minimal_backoff_time` / `maximal_backoff_time` | 120s / 600s | pinned (`production`) | P = 720 s, K |
+| `queue_run_delay` | 120s | pinned (`production`) | q; B_c = R_c·q |
+| `relay_destination_concurrency_limit` | 20 (default) | **pin proposed** (Ops review) | HELD rows, edge capacity, coupling |
+| `initial_destination_concurrency` | 5 (default) | **pin proposed** (Ops review) | ramp-up after idle; slows the start of a scan's catch-up |
+| `default_destination_concurrency_failed_cohort_limit` | 1 (default) | **pin proposed** (Ops review) | a connect-level failure (ingestion down, or I-20's `421`) marks the destination dead and defers all relay mail, which then arrives in sync |
+| `relay_destination_rate_delay` | 0s (default) | **pin proposed** (`required`, Ops review) | any non-zero value forces concurrency 1 and breaks S |
+| `relay_destination_recipient_limit`, `smtpd_recipient_limit` | 50, 50 | pinned | one DATA, one event |
+| `default_process_limit` | 100 (default) | assumption (≥ 20) | relay concurrency is reachable |
+| `qmgr_message_active_limit` | 20000 (default) | assumption | a scan moves at most 20 000 messages; B_c < 20 000 |
+| `in_flow_delay` | 1s (default) | assumption | throttles inbound arrival only when qmgr lags |
+| `smtpd_client_*` limits | 20 / 60/min / 100/min | pinned (`production`) | per-client limits on a public edge. They do not bound a distributed sender; `INGEST` does |
+| ETRN | **open today** | keys added (§6). **Needs live verification** | no client-triggered retries |
+| Operator flush (`edge-stop.sh`) | after an operator hold only | Ops procedure; each use logged | an extra presentation (K, catch-up burst) |
+| Reconcile reload or restart | on a config change, at most every 2 min | **unverified** effect on next-attempt times | P, K |
+| Relay session time t_s | not measured | **needs evidence** (G-E) | assumption S: t_s ≤ 0.32 s |
+
 **Ops:**
 
-- Close ETRN on the real edge (above).
-- Enable long queue IDs while the edge is still dormant, before any relay
-  (RL-7).
+- Close ETRN on the real edge (above) and **verify on the live edge** that it is refused.
+- Verify whether reconcile's reload or restart changes deferred messages' next-attempt times. Report it with the ETRN check (AT-23 reproduces it on the rehearsal image).
+- Review the proposed pins in the table above.
+- Log every operator flush (`edge-stop.sh`).
+- The edge is live, so switch to long queue IDs only when the deferred queue holds no tenant mail (`postqueue -j`) (RL-7).
 - Add an `ops_activation_prerequisites` entry.
 - Make sure ingestion sees the edge's real address (no userland-proxy SNAT).
 
@@ -472,58 +670,81 @@ an enforced check.
 
 - `xforward-peers` is empty or contains anything other than single hosts;
 - `trusted-clients` contains anything other than single hosts;
-- the scheduling pins (§2.3) do not hold;
+- the scheduling pins (§2.3) do not hold, or the recorded G-D or G-C evidence does not cover R_c and B_c;
 - the hold inequality does not hold.
 
 ## 7. Evidence
 
-**Gate D run 3 is not reusable for T1.** Consume moves inside T1's
-transaction, and a scheduling spend is added before T1. Both are in gate D's
-measured path.
+Nothing here is qualified today. Gate D **failed** (run 3), and any reliance
+on 2R needs a passing run at that load. `ALL` stays refused until G-D and
+G-C pass with the configured R_c and B_c.
 
-**Expected impact:**
-
-- **Consume.** One indexed `DELETE` of at most 50 rows in T1's transaction,
-  before `(35,1)`. The lock hold, the snapshot statement and T2 are
-  unchanged. Expect about +0.5 ms on `t1Transaction`.
-- **Scheduling spend.** A new serialization point on one hot row, while the
-  slot is held. Expect about 1 ms at ≤ 62/s, about 6 % row utilisation.
-
-**Focused remeasurement.**
+**G-D: gate D at R and 2R, with consume in T1** (focused remeasurement).
 
 - **Command.** The documented gate command (`docs/dev/storage-benchmark.md`)
   on the staging host class, at the implementing commit, with
   `--expected-rate 31 --rates 31,62` and every other flag unchanged.
-- **Harness.** `ProtocolAssembly` builds T1 with the consume statement
-  exactly as `IngestionWiring` does, and seeds one held allowance row per
-  copy under the event's attempt UUID.
-- **Scheduling during the run.** The scheduling spend runs at its production
-  position with a non-binding capacity. That measures its cost while 2R
-  still measures headroom, not scheduler refusals. AT-9 proves the bound
-  functionally.
-- **What it isolates.** New per-step timers `consume` and `scheduleSpend`,
-  inside `t1Transaction` and `event`. Compared with run 3 at equal
-  (workspaces, concurrency, rate):
-  - `t1P99` and `lockTimeoutRate` should show only the `consume` delta;
-  - `slotQueueingDeadlineMisses` and the sustained ratio show
+- **Harness.** `ProtocolAssembly` builds T1 with the consume `DELETE`, in
+  the statement order of §2.2 step 6. It seeds one held allowance row per
+  copy. The scheduling spend runs at its production position with a
+  non-binding capacity.
+- **What it isolates.** New timers `consume` and `scheduleSpend`. They are
+  compared with run 3 at equal (workspaces, concurrency, rate) for:
+  - `t1P99` and `lockTimeoutRate`, which should show only the `consume`
+    delta;
+  - `slotQueueingDeadlineMisses` and the sustained ratio, which show
     `scheduleSpend`;
   - deadlocks and other errors.
-- **One additional run at R with the production pins** (R_s = 31, B_s = 31).
-  It reports:
-  - the `SCHEDULE_WAIT` rate;
-  - slot occupancy, because fresh events wait for a token while holding a
-    slot;
-  - `slotQueueingDeadlineMisses`.
+- **Production-pin run at R.** One more run at R with the production pins
+  (fresh 1 860 / 31, catch-up 3 720 / 31). It must show zero fresh
+  `SCHEDULE_WAIT`.
+- **A′.** It may be combined with the A′ rerun if the owner confirms that
+  paper.
+- **Expected impact.** About +0.5 ms on `t1Transaction` for consume, and
+  about 1 ms per event for the spend, on a hot row at ≤ 62/s.
 
-  The non-binding 2R run stays.
-- **A′.** The run may be combined with the A′ rerun if the owner confirms
-  the run 3 paper's points.
+**G-C: catch-up burst and sustained 2R** (new scenario, new harness flags).
 
-**Reused as is.** The filesystem and storage qualification (E1–E11, gate F,
-A2.2): no object, upload, fence, MinIO or filesystem dependency changes.
+- **Setup.** One node, the staging host class, production-faithful T1 with
+  consume, 16 slots, `W_slot` 10 s. Fresh traffic runs throughout:
+  - Poisson at R;
+  - in a second variant, the adversarial pattern of all 31 workspaces
+    bursting 60 every 60 s.
+- **Catch-up load.** Every 120 s, a batch of 3 720 retry events with held
+  allowances, offered by 20 closed-loop clients (the relay concurrency).
+- **Duration.** At least 20 min (10 scans) after warm-up, which also covers
+  sustained 2R beyond gate D's 30 s scenarios.
+- **Pass criteria:**
+  - catch-up admitted per scan ≥ 0.995 × min(offered, B_c);
+  - zero fresh `SCHEDULE_WAIT` under the Poisson variant;
+  - fresh T1 p99 ≤ 50 ms;
+  - `lockTimeoutRate` < 0.1 %;
+  - zero deadlocks, zero other errors, zero post-T1 failures.
+- **Reported.** Slot occupancy, the `SLOT_WAIT` rate, and per-scan drain
+  time.
+- **Proposed flags:** `--catch-up-batch 3720 --catch-up-period-seconds 120
+  --catch-up-clients 20 --fresh-pattern poisson|bursty`.
+- **Fallback.** If it passes only at a smaller B_c, `DeploymentSafety` caps
+  B_c there, and the §3 table is recomputed.
 
-**New CI evidence.** The AT-11 rehearsal proofs. The live edge also needs an
-Ops reconcile of §6.
+**G-E: relay session time** (assumption S).
+
+- **What.** Edge→ingestion session time t_s for the beta message-size mix,
+  with real MinIO uploads (gate D stubs uploads).
+- **Where.** On staging, from ingestion's event timers plus the edge log's
+  `delays=…/d` term.
+- **Requirement.** S needs a p99 of t_s ≤ 0.32 s. Otherwise the §3 table is
+  recomputed with capacity 20/t_s.
+
+**Reused as is:** the filesystem and storage qualification (E1–E11, gate F,
+A2.2). No object, upload, fence, MinIO or filesystem dependency changes.
+
+**New CI and rehearsal evidence:**
+
+- the AT-11 proofs;
+- AT-23 (reload and restart effect on next-attempt times on the rehearsal
+  image);
+- the live edge's Ops reconcile and verification of §6.
 
 ## 8. Final lists
 
@@ -591,16 +812,20 @@ Ops reconcile of §6.
     - A transaction without its own single IDENT has no identity.
 16. **I-16 Restore.** `ingest_allowance` is `-` in `scope.txt` and in
     `REQUIRED_DENY`, so a restored database has no allowances.
-17. **I-17 Edge occupancy.** A pure retry that finds its workspace slot cap,
-    or the scheduling budget, exhausted is deferred without waiting.
+17. **I-17 Edge occupancy.**
+    - A catch-up event is never kept waiting for a token: an empty catch-up
+      bucket means `SCHEDULE_WAIT` at once.
+    - A pure retry whose workspace is at its slot cap is likewise deferred
+      without the `W_slot` wait.
 18. **I-18 Scheduling.**
-    - Every T1 attempt is preceded by one committed or uncertain spend from
-      the global bucket (31 + 31/s), taken after the slot.
-    - So S(t, T) ≤ 31 + 31·T + 16·nodes.
+    - Every T1 attempt is preceded by exactly one committed or uncertain
+      spend, taken after the slot, from exactly one global bucket:
+      - fresh: 1 860 + 31/s;
+      - catch-up: R_c·q + R_c/s, with R_c = 31.
+    - So S(t, T) ≤ 5 580 + 62·T + 16·nodes.
     - A refusal is in T.
-    - There is one scheduling spend per T1 transaction. Under
-      `COHORT_PARTITIONED` (lab only), a fallback to mode a is a second T1
-      transaction and spends a second token.
+    - There is one spend per T1 transaction. The partitioned fallback (lab
+      only) spends a second token.
 19. **I-19 Rollback.**
     - An allowance survives T1 exactly when T1's transaction did not commit.
     - The database decides this, through the consume inside T1 and the
@@ -615,6 +840,11 @@ Ops reconcile of §6.
     - The refusal is the transient greeting `421 4.3.2 Service not
       available`, then close, never a 5xx, so a mis-listed edge defers its
       mail rather than bouncing it.
+21. **I-21 Fresh envelope untouched.** A fresh event conforming to the
+    `INGEST` envelope is never refused by scheduling.
+22. **I-22 Qualified catch-up only.** `ALL` is refused unless passing G-D
+    (R and 2R) and G-C evidence covers the configured R_c and B_c. A failed
+    or pending run is never treated as qualification.
 
 ### (b) Acceptance tests
 
@@ -680,11 +910,11 @@ They run on Testcontainers Postgres and MinIO, with the real
      consume, rollback, expire and refill. I-2 holds, and S(t, T) stays
      within I-18.
    - (b) A storm: 31 workspaces with allowances outstanding, plus fresh
-     traffic at r. The measured T1 arrival rate stays within
-     31 + 31·T + 16·nodes, with no `LOCK_TIMEOUT`. Overflow is deferred
+     traffic at the full envelope. The measured T1 arrival rate stays within
+     5 580 + 62·T + 16·nodes, with no `LOCK_TIMEOUT`. Overflow is deferred
      with its allowance, and every in-budget message is stored once.
    - (c) Attempts that certainly roll back (`HOLD_LOST`, `LOCK_TIMEOUT`)
-     still spend a scheduling token.
+     still spend a token, from the class of the event.
 10. **AT-10 I9.** Under the stated model:
     - slot-wait samples per paid probe are counted and are ≤ K+1;
     - probe events are ≤ W's budget;
@@ -736,6 +966,25 @@ They run on Testcontainers Postgres and MinIO, with the real
       list keeps the message queued. A listed trusted client connects, and
       gets no identity.
 
+20. **AT-20 Drain.** A simulation that models the edge: scans every 120 s,
+    age-based backoff from 120 to 600 s, 20 sessions, a 4 h lifetime.
+    - It feeds the real scheduler arithmetic with continued fresh traffic at
+      the full envelope, the adversarial burst pattern, repeated congestion
+      episodes and 31 competing workspaces.
+    - Every message deferred within the §3 table's D is admitted within
+      4 h − 30 min.
+    - Beyond that D, the simulation reproduces the predicted loss.
+21. **AT-21 Fresh untouched.** A random (b, r)-conformant cohort stream
+    through the fresh bucket is never refused (I-21).
+22. **AT-22 Activation.** `ALL` is refused when:
+    - there is no G-C evidence;
+    - the evidence is for a smaller B_c or R_c;
+    - gate D evidence is failed or pending (I-22).
+23. **AT-23 Edge schedule (rehearsal image).** It measures deferred
+    messages' next-attempt times across `postfix reload` and `restart`, and
+    across an operator flush. It asserts or reports how many extra
+    presentations each causes. The answer feeds K and P.
+
 ### (c) Residuals
 
 None of these is accepted. Each needs the owner's explicit acceptance.
@@ -759,12 +1008,16 @@ None of these is accepted. Each needs the owner's explicit acceptance.
      The release and forfeit `lock_timeout` (I-14) removes the timeout cause
      except under process death. The cap stops a crash-on-input loop from
      keeping a reusable allowance.
-3. **RL-3 Edge expiry.** This is genuine loss, unchanged (ADR-035 §12).
-   - *Mechanism:* a T-class condition that persists for more than 4 h. Or a
-     scheduling backlog that cannot drain, because aggregate demand stays at
-     the full R = 31 events/s for the whole queue lifetime after a burst.
-   - *Metrics:* edge queue age (Ops alerting, already an Ops prerequisite)
-     and `testinbox_ingest_allowance_oldest_seconds`.
+3. **RL-3 Edge expiry.** This is genuine loss (ADR-035 §12).
+   - *Mechanism:* congestion (§3) whose total D, within a message's 4 h,
+     exceeds the drain table:
+     - ≈ 9 min under adversarial fresh with a synchronized backlog;
+     - ≈ 28 min to 1.7 h without fresh overflow;
+     - smaller if G-C caps B_c, or if S fails.
+   - *Also loss:* a T-class condition that persists for more than 4 h.
+   - *Metrics:* edge queue age (Ops alerting, already a prerequisite),
+     `testinbox_ingest_allowance_oldest_seconds`, and the per-class
+     `SCHEDULE_WAIT` rate.
    - Row cleanup after the edge has ended delivery is **not** loss.
 4. **RL-4 Transactions without identity.**
    - *Effect:* they are charged as today.
@@ -786,9 +1039,10 @@ None of these is accepted. Each needs the owner's explicit acceptance.
      edge at that moment are charged fresh.
    - *Bound:* the edge's deferred queue at restore time. This only happens in
      a declared disaster operation.
-7. **RL-7 Short-ID transition.**
-   - *Bound:* zero if Ops enables long IDs while the edge is dormant (it is
-     today). Otherwise, the messages queued at the switch, for at most 4 h.
+7. **RL-7 Short-ID transition.** The edge is live.
+   - *Bound:* the deferred tenant messages present at the switch, for at most
+     4 h. Zero if the switch happens while the deferred queue holds no tenant
+     mail.
    - *Metric:* `identity="none"`.
 8. **RL-8 Redemption after δ.**
    - *Mechanism:* an edge attempt that started before the edge's deadline
@@ -796,32 +1050,52 @@ None of these is accepted. Each needs the owner's explicit acceptance.
      arrival) later.
    - *Metric:* `expired_on_redeem`. Any non-zero value is investigated.
 
+9. **RL-9 Edge-delay bunching.**
+   - *Mechanism:* mail held at the edge arrives at ingestion bunched. It is
+     charged on arrival, so a sender within its envelope can exceed b and
+     lose copies behind a `250`. The mail is held when:
+     - admitted catch-up work occupies the 20 relay sessions, for up to
+       B_c·t_s/20 per scan;
+     - ingestion is unreachable, or the destination is marked dead;
+     - a pre-resolution `451` was given, which charges nothing and creates
+       no allowance;
+     - an operator hold was in place.
+   - *Bound:* per workspace per episode, ≤ r × the edge delay, and only for a
+     workspace at its burst limit.
+   - *Metrics:* edge `delays=` (Ops) and
+     `testinbox_rate_decision_total{category="INGEST",outcome="rejected"}`.
+   - *Minimisation done:* catch-up never waits, so it occupies relay
+     sessions only for real work. This failure is pre-existing for outages
+     and is amplified by catch-up.
+
 **Delays only, never loss:** `HOLD_BUSY` (one deferral per lost edge
 session), and `SCHEDULE_WAIT` and `SLOT_WAIT` deferrals.
 
-### (d) Trade-offs for the owner
+### (d) For the owner
 
-1. **Scheduling burst B_s = 31.**
-   - At most 31 + 16·nodes events enter T1 at once across the cohort.
-   - Above that, events are deferred by at least 120 s, instead of waiting up
-     to `W_slot`. For example, part of one workspace's 60-copy burst is
-     delayed by about 2 min.
-   - A larger B_s defers less, but allows T1 bursts beyond the R/2R
-     evidence.
-   - Fresh events wait for a scheduling token while holding a write slot. A
-     burst can therefore turn scheduling waits into `SLOT_WAIT` deferrals for
-     other events, each of at least 120 s. The production-pin run at R (§7)
-     measures this.
-2. **R_s = R exactly.** At the edge of the envelope the service has no spare
-   throughput to drain a backlog (RL-3). A higher R_s would need the owner's
-   approval beyond R = 31.
-3. **Global scheduling.**
-   - One tenant's paid-allowance backlog can occupy most of the global budget.
-     The backlog is at most b + r·(`maximal_queue_lifetime` + δ) = 15 360
-     events, and it can hold the budget for up to about backlog / R_s
-     seconds: about 8 min at one node.
-   - During that time other tenants are deferred repeatedly. They are not
-     lost unless RL-3 applies.
-   - A per-tenant budget would be fairer, but its refusal would be a new
-     per-tenant I9 channel.
-4. **Privacy record.** Confirm the dated addition text in §4.
+Only privacy, delivery-policy and resource trade-offs are listed here.
+
+1. **Scheduling recommendation: option (a).**
+   - Fresh traffic is unchanged: it is never refused by scheduling.
+   - Catch-up is 31/s, with up to 3 720 per edge scan.
+   - T1 is ≤ 2R sustained, with catch-up bursts of up to 3 720 per scan.
+   - It depends on G-D at 2R, which **failed** (run 3), and on a new G-C.
+     `ALL` stays refused until both pass.
+   - If G-C passes only at a smaller B_c, congestion tolerance shrinks (§3).
+2. **Congestion tolerance.** Delivery is guaranteed only for congestion
+   within the §3 table: about 9 min worst case under adversarial fresh and a
+   synchronized backlog, up to about 1.7 h without fresh overflow. Loss
+   beyond that is RL-3, not accepted.
+3. **Edge coupling (RL-9).** Catch-up work and outages hold fresh mail at
+   the edge, and its bunched arrival can exceed b. The options are:
+   - accept it;
+   - review a higher relay concurrency with Ops;
+   - charge `INGEST` against the edge's arrival time instead. That is a
+     policy change, not proposed here.
+4. **Privacy.** The acceptance is conditional and still open on:
+   - live ETRN refusal (Ops);
+   - the reload effect (AT-23, Ops);
+   - operator flushes counted in K.
+
+   The public MX question is with the owner separately (#124).
+
