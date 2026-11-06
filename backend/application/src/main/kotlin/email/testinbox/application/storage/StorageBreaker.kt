@@ -54,6 +54,12 @@ import java.time.Duration
  * Every trial is bound to its trip generation: ending a trial of an older
  * generation ([abandonTrial], [close], [trip] with the trial) never ends,
  * closes or fails a newer one, so two trials can never run at once.
+ *
+ * A real-event claim is a LEASE ([claimLease], `L_claim`): resolution and rate
+ * limiting have no per-event deadline, so a claimant stuck on a dead socket
+ * could otherwise keep the gate shut for good. A claim older than the lease is
+ * a failed trial: a new generation, the doubled backoff, the proof needed
+ * again, and no new kind. The old claimant's later end is then stale.
  */
 class StorageBreaker(
     private val initialBackoff: Duration = Duration.ofSeconds(15),
@@ -72,6 +78,10 @@ class StorageBreaker(
      * ALL, where a live monitor is an activation prerequisite (gate F).
      */
     private val ambiguityNeedsEvidence: Boolean = false,
+    /** `L_claim`, the real-event claim's lease ([StorageProtocol.CLAIM_LEASE] and how it is derived). */
+    private val claimLease: Duration = StorageProtocol.CLAIM_LEASE,
+    /** Told of each expired claim (a counter: no ids). Called outside the lock. */
+    private val onClaimExpired: () -> Unit = {},
 ) {
     /**
      * What the breaker opened on. `GuardedStorage` trips `UNAVAILABLE` for a
@@ -141,6 +151,21 @@ class StorageBreaker(
      */
     private var proven = false
 
+    /** When the current real-event claim was taken ([nanoTime]); meaningful while [proven] and [trialInFlight]. */
+    private var claimedAt = 0L
+
+    /** A real-event claim is held past its lease. Call under the lock. */
+    private fun claimExpired(): Boolean = proven && trialInFlight && nanoTime() - claimedAt - claimLease.toNanos() >= 0
+
+    /** The held claim is a failed trial: a new generation, doubled backoff, the proof again. Call under the lock. */
+    private fun expireClaim() {
+        backoff = minOf(backoff.multipliedBy(2), maxBackoff)
+        epoch++
+        trialInFlight = false
+        proven = false
+        retryAt = nanoTime() + backoff.toNanos()
+    }
+
     /** Whether the open kinds may reopen only on Ops evidence. Call under the lock. */
     private fun evidenceRequired(): Boolean =
         Kind.STORAGE_FULL in kinds || (Kind.AMBIGUOUS in kinds && (ambiguityNeedsEvidence || escalated))
@@ -153,21 +178,37 @@ class StorageBreaker(
      */
     fun admit(): Admission {
         val evidence = evidenceIfNeeded()
-        synchronized(this) {
-            if (kinds.isEmpty()) return Admission.Closed
-            if (proven) {
-                if (trialInFlight) return Admission.Blocked(kinds.toSet())
-                trialInFlight = true
-                return Admission.Proven(Admission.Trial(kinds.toSet(), epoch))
+        var expired = false
+        try {
+            synchronized(this) {
+                if (claimExpired()) {
+                    expireClaim()
+                    expired = true
+                    return Admission.Blocked(kinds.toSet())
+                }
+                return admitLocked(evidence)
             }
-            if (trialInFlight || nanoTime() - retryAt < 0) return Admission.Blocked(kinds.toSet())
-            // No trial, and no trial consumed, while a full (or possibly full) filesystem has
-            // no evidence of recovery FOR THIS trip generation: evidence read before a later
-            // trip is void.
-            if (evidenceRequired() && !evidence.holdsFor(epoch)) return Admission.Blocked(kinds.toSet())
-            trialInFlight = true
-            return Admission.Trial(kinds.toSet(), epoch)
+        } finally {
+            if (expired) onClaimExpired()
         }
+    }
+
+    /** [admit] once the lease is settled. Call under the lock. */
+    private fun admitLocked(evidence: Evidence?): Admission {
+        if (kinds.isEmpty()) return Admission.Closed
+        if (proven) {
+            if (trialInFlight) return Admission.Blocked(kinds.toSet())
+            trialInFlight = true
+            claimedAt = nanoTime()
+            return Admission.Proven(Admission.Trial(kinds.toSet(), epoch))
+        }
+        if (trialInFlight || nanoTime() - retryAt < 0) return Admission.Blocked(kinds.toSet())
+        // No trial, and no trial consumed, while a full (or possibly full) filesystem has
+        // no evidence of recovery FOR THIS trip generation: evidence read before a later
+        // trip is void.
+        if (evidenceRequired() && !evidence.holdsFor(epoch)) return Admission.Blocked(kinds.toSet())
+        trialInFlight = true
+        return Admission.Trial(kinds.toSet(), epoch)
     }
 
     /**
@@ -179,7 +220,8 @@ class StorageBreaker(
         val evidence = evidenceIfNeeded()
         synchronized(this) {
             if (kinds.isEmpty()) return false
-            if (proven) return trialInFlight
+            // An expired claim is not a block: the next [admit] ends it as a failed trial.
+            if (proven) return trialInFlight && !claimExpired()
             if (trialInFlight || nanoTime() - retryAt < 0) return true
             return evidenceRequired() && !evidence.holdsFor(epoch)
         }
@@ -294,6 +336,7 @@ class StorageBreaker(
             return Admission.Closed
         }
         proven = true // trialInFlight stays set: the prover now holds the real-event claim
+        claimedAt = nanoTime()
         return Admission.Proven(trial)
     }
 

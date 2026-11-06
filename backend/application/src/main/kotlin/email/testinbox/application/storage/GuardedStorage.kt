@@ -210,13 +210,7 @@ class GuardedStorage(
      * must [release] the admission once the event is over.
      */
     fun admitEvent(): EventAdmission {
-        val refusal =
-            latch.latched()?.let { reason ->
-                metrics.latched(true)
-                StorageUnavailableException(StorageUnavailableReason.LATCHED, "storage admission is latched: $reason")
-            } ?: activation.violated()?.let { detail ->
-                StorageUnavailableException(StorageUnavailableReason.ACTIVATION_VIOLATED, "storage activation invariant broken: $detail")
-            }
+        val refusal = unhealthy()
         if (refusal != null) return EventAdmission(refusal, null)
         val gate = breakerGate()
         if (gate.refusal != null) return gate
@@ -236,6 +230,24 @@ class GuardedStorage(
         release(gate)
         return EventAdmission(later, null)
     }
+
+    /**
+     * The cheap, NON-claiming part of [admitEvent], for the top of an event,
+     * before its (sender-controlled, unbounded) parse: latch, activation, and
+     * a breaker that is open or busy with a trial. It never runs a proof and
+     * never takes a claim, so a slow parse cannot hold the gate shut for
+     * everyone. [admitEvent] decides again after parsing, still before any
+     * recipient resolves.
+     */
+    fun precheck(): StorageUnavailableException? = unhealthy() ?: if (breaker.isBlocked()) breakerOpen() else null
+
+    private fun unhealthy(): StorageUnavailableException? =
+        latch.latched()?.let { reason ->
+            metrics.latched(true)
+            StorageUnavailableException(StorageUnavailableReason.LATCHED, "storage admission is latched: $reason")
+        } ?: activation.violated()?.let { detail ->
+            StorageUnavailableException(StorageUnavailableReason.ACTIVATION_VIOLATED, "storage activation invariant broken: $detail")
+        }
 
     /** The event is over: a real-event trial it claimed and never consumed goes back, for its generation only. */
     fun release(admission: EventAdmission) {
@@ -374,14 +386,19 @@ class GuardedStorage(
         }
 
     /**
-     * Whether a `403` came while the copy's write window was still open
-     * (database clock `< t0 + E`, the reservation's `write_deadline_at`).
-     * Inside it, the refusal is about credentials or policy; at or after it,
-     * the URL simply expired. Unknown (the clock cannot be read) counts as
-     * inside: the breaker's uniform `451` is the safe side.
+     * Whether a `403` came clearly inside the copy's write window: database
+     * clock `< t0 + E − ε_max` (`t0 + E` is the reservation's
+     * `write_deadline_at`). Storage judges the URL's expiry by ITS clock,
+     * which may run up to `ε_max` ahead of the database's (§5), so within
+     * `ε_max` of the deadline the refusal may be an expired URL: one slow
+     * upload, never a global trip. Earlier, it is about credentials or policy.
+     * Unknown (the clock cannot be read) counts as inside: the breaker's
+     * uniform `451` is the safe side.
      */
     private fun refusedBeforeDeadline(t0: java.time.Instant): Boolean =
-        runCatching { clock.now().isBefore(t0.plus(StorageProtocol.WRITE_WINDOW)) }.getOrDefault(true)
+        runCatching {
+            clock.now().isBefore(t0.plus(StorageProtocol.WRITE_WINDOW).minus(StorageProtocol.EPSILON_MAX))
+        }.getOrDefault(true)
 
     private fun releaseAbandoned(admitted: List<CopyPlan>) {
         runCatching { reservations.releaseAbandoned(admitted.map { it.messageId }) }

@@ -371,6 +371,7 @@ class MetricCardinalityTest {
             "testinbox_storage_witness_failed_total",
             "testinbox_storage_breaker_open",
             "testinbox_storage_breaker_escalated",
+            "testinbox_storage_breaker_claim_expired_total",
             "testinbox_storage_admission_latched",
             "testinbox_storage_clock_offset_seconds",
             "testinbox_storage_ambiguous_uploads",

@@ -522,4 +522,57 @@ class StorageBreakerTest {
         // The trip itself still counts (a new generation): the newer proof is stale now, and ends as such.
         ambiguous.proven(newer).shouldBeInstanceOf<Admission.Blocked>()
     }
+
+    // --- the claim lease, L_claim (review of c292340) ------------------------------------------------
+
+    @Test
+    fun `L_claim is derived from W_slot, the T1 lock timeout, E and a margin - 3 min as shipped`() {
+        StorageProtocol.CLAIM_LEASE shouldBe Duration.ofMinutes(3)
+        StorageProtocol.claimLease(Duration.ofSeconds(10), Duration.ofSeconds(5)) shouldBe
+            Duration.ofSeconds(10 + 5).plus(StorageProtocol.WRITE_WINDOW).plus(StorageProtocol.CLAIM_MARGIN)
+    }
+
+    @Test
+    fun `a claim held past its lease is a failed trial - the next caller proves after the backoff, and the old end is stale`() {
+        var expiries = 0
+        val leased =
+            StorageBreaker(
+                Duration.ofSeconds(15),
+                Duration.ofMinutes(2),
+                nanoTime = { now },
+                claimLease = Duration.ofMinutes(3),
+                onClaimExpired = { expiries++ },
+            )
+        leased.trip(Kind.QUOTA)
+        advance(Duration.ofSeconds(15))
+        val stuck = (leased.proven(leased.admit() as Admission.Trial) as Admission.Proven).trial // then hangs
+
+        advance(Duration.ofMinutes(3).minusMillis(1))
+        leased.isBlocked() shouldBe true
+        leased.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) // still within the lease
+        expiries shouldBe 0
+
+        advance(Duration.ofMillis(1))
+        leased.isBlocked() shouldBe false // an expired claim blocks nobody: the next admit ends it
+        leased.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA)) // ended as a failed trial: backoff first
+        expiries shouldBe 1
+        leased.currentBackoff shouldBe Duration.ofSeconds(30)
+        leased.awaitsRealEvent shouldBe false
+        leased.openKinds shouldBe setOf(Kind.QUOTA) // no new kind
+
+        // The stuck claimant's late end touches nothing.
+        leased.abandonTrial(stuck)
+        leased.close(stuck)
+        leased.isOpen shouldBe true
+        leased.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA))
+
+        advance(Duration.ofSeconds(30))
+        val proof = leased.admit()
+        proof shouldBe Admission.Trial(setOf(Kind.QUOTA), 2) // a new generation: the proof again
+        leased.abandonTrial(stuck) // still stale: the new proof keeps its slot
+        leased.admit() shouldBe Admission.Blocked(setOf(Kind.QUOTA))
+        leased.trip(Kind.QUOTA, stuck, realEvent = true) // its upload finally fails: not the new trial's failure
+        leased.currentBackoff shouldBe Duration.ofSeconds(30)
+        expiries shouldBe 1
+    }
 }

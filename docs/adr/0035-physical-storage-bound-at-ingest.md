@@ -2638,16 +2638,30 @@ mapping.
   held by one event at a time, chosen before resolution. Every other event
   gets the same pre-resolution `451` until that event is over. If it reaches no
   upload, the next event takes the claim.
+  - **Claimed after parsing.** The claim is taken once the message has been
+    parsed, and before its first recipient resolves. Parsing does not depend
+    on the recipients, so the answer stays uniform. A slow message therefore
+    never holds the gate shut for other events; before parsing, an event meets
+    only a check that never claims.
+  - **A lease.** A claim is held for at most `L_claim`. That is the slot wait,
+    plus T1's lock timeout, plus `E`, plus a margin for resolution and T2:
+    3 min as shipped, and it is derived from those values. A claim held longer
+    is a failed trial: a new trip generation, the doubled backoff and a new
+    proof. The stale claimant's later end changes nothing, and each expiry is
+    counted.
 - **One trial at a time, per trip.** Every trial is bound to the trip it was
   issued for. A trial that a later trip overtook can no longer end, close or
   fail a newer one. So two trials, and two real-event uploads to a possibly
   full store, never run at once.
 - **§8, opening causes.** A `403` refusal of a fenced upload that comes
-  **before the copy's write deadline** opens the breaker with its own kind.
+  **more than `ε_max` before the copy's write deadline** opens the breaker
+  with its own kind. Storage judges expiry by its own clock, which may be up
+  to `ε_max` off.
   Credentials and bucket policy say nothing about a recipient. Only the
   witness reopens it, after the normal backoff, so one spurious `403` costs one
-  backoff and never a latch. A `403` at or after the deadline is an expired
-  URL from one slow upload: that event's own `451`, and no trip. The §16 metric
+  backoff and never a latch. A `403` within `ε_max` of the deadline, or after
+  it, may be an expired URL from one slow upload: that event's own `451`, and
+  no trip. The §16 metric
   keeps `kind=deadline` for both.
 - **§8, quota.** The quota trial is the witness and then the claimed real
   event. A bucket at or over its hard quota refuses even the zero-byte witness.

@@ -58,12 +58,21 @@ class StorageFaultUniformityTest {
     private val messages = InMemoryMessageRepository()
     private val storage = InMemoryStorage(inboxes, messages, clock, breaker)
 
+    /** Raw bytes `SLOW` park in the parser until [parseResumes]: a slow, sender-controlled parse. */
+    private val parsing = CountDownLatch(1)
+    private val parseResumes = CountDownLatch(1)
+
     private val parser =
         object : MimeParser {
-            override fun parse(raw: ByteArray): MimeParseResult =
-                MimeParseResult.Parsed(
+            override fun parse(raw: ByteArray): MimeParseResult {
+                if (raw.contentEquals(SLOW)) {
+                    parsing.countDown()
+                    parseResumes.await(10, TimeUnit.SECONDS) shouldBe true
+                }
+                return MimeParseResult.Parsed(
                     ParsedMime("s@example.com", "s@example.com", null, "hi", "body", null, emptyList(), emptyList(), emptyList()),
                 )
+            }
         }
 
     /** Workspace ceiling 100 bytes; a copy costs 4. The full workspace is already at its ceiling. */
@@ -103,9 +112,10 @@ class StorageFaultUniformityTest {
     private fun reply(
         recipient: String,
         via: ReceiveInboundDelivery = receive,
+        raw: ByteArray = "MIME".toByteArray(),
     ): String =
         try {
-            via.execute(ReceiveInboundDelivery.Command("s@example.com", listOf(recipient), "MIME".toByteArray(), "local-smtp"))
+            via.execute(ReceiveInboundDelivery.Command("s@example.com", listOf(recipient), raw, "local-smtp"))
             "250"
         } catch (e: StorageUnavailableException) {
             "451 ${e.reason}"
@@ -244,16 +254,17 @@ class StorageFaultUniformityTest {
     }
 
     @Test
-    fun `a 403 just inside the write window is credentials or policy - it trips, and everyone gets the same 451`() {
-        deniedAt(StorageProtocol.WRITE_WINDOW.minusMillis(1))
+    fun `a 403 more than eps_max before the deadline is credentials or policy - it trips, and everyone gets the same 451`() {
+        deniedAt(StorageProtocol.WRITE_WINDOW.minus(StorageProtocol.EPSILON_MAX).minusMillis(1))
         reply(known.address) shouldBe "451 UPLOAD_FAILED"
         breaker.openKinds shouldBe setOf(StorageBreaker.Kind.DENIED)
         setOf(reply(unknown), reply(known.address)) shouldBe setOf("451 BREAKER_OPEN")
     }
 
     @Test
-    fun `a 403 at the write deadline is the expired URL of one slow upload - that event's 451, and no global trip`() {
-        deniedAt(StorageProtocol.WRITE_WINDOW)
+    fun `a 403 within eps_max of the deadline may be an expired URL by storage's clock - that event's 451, no global trip`() {
+        // Storage judges the URL by its own clock, up to ε_max ahead of the database's (ADR-035 §5).
+        deniedAt(StorageProtocol.WRITE_WINDOW.minus(StorageProtocol.EPSILON_MAX))
         reply(known.address) shouldBe "451 UPLOAD_FAILED"
         breaker.isOpen shouldBe false
         reply(unknown) shouldBe "250"
@@ -389,7 +400,35 @@ class StorageFaultUniformityTest {
         }
     }
 
+    // --- the claim is taken after parsing (review of c292340) --------------------------------------
+
+    @Test
+    fun `a slow parse never holds the real-event claim - another event takes it meanwhile`() {
+        storage.blobs.nextOutcomes += UploadOutcome.Refused(UploadRefusal.QUOTA)
+        reply(known.address) shouldBe "451 UPLOAD_FAILED"
+        backoffExpires()
+        reply(unknown) shouldBe "250" // the witness passed and the unknown-only event gave the claim back
+        breaker.awaitsRealEvent shouldBe true
+
+        val otherKnown = provision("other@testinbox.local", WorkspaceId(UUID.randomUUID()))
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val slow = pool.submit<String> { reply(known.address, raw = SLOW) }
+            parsing.await(10, TimeUnit.SECONDS) shouldBe true // a hostile message, still being parsed
+            reply(otherKnown.address) shouldBe "250" // took the claim, confirmed recovery
+            breaker.isOpen shouldBe false
+            parseResumes.countDown()
+            slow.get(10, TimeUnit.SECONDS) shouldBe "250"
+        } finally {
+            parseResumes.countDown()
+            pool.shutdownNow()
+        }
+        delivered(known.address) shouldBe 1
+        delivered(otherKnown.address) shouldBe 1
+    }
+
     private companion object {
         const val FAULT_DEPTH = 32
+        val SLOW = "SLOW".toByteArray()
     }
 }

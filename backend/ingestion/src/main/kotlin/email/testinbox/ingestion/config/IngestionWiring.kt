@@ -230,10 +230,18 @@ class IngestionWiring(
     fun storageBreaker(
         jdbc: JdbcClient,
         declarations: StorageDeclarations,
+        storageMetrics: StorageProtocolMetrics,
     ): StorageBreaker =
         StorageBreaker(
             storageFullGate = StorageFullEvidence.forDeclarations(JdbcFilesystemObservations(jdbc), declarations.filesystem),
             ambiguityNeedsEvidence = declarations.enforced,
+            // L_claim from the values this gateway runs with: W_slot and T1's lock timeout as wired.
+            claimLease =
+                email.testinbox.application.storage.StorageProtocol.claimLease(
+                    slotWait = email.testinbox.application.storage.StorageProtocol.SLOT_WAIT,
+                    t1LockTimeout = email.testinbox.persistence.JdbcStorageAdmission.DEFAULT_LOCK_TIMEOUT,
+                ),
+            onClaimExpired = storageMetrics::breakerClaimExpired,
         )
 
     @Bean
