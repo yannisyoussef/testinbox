@@ -1,0 +1,58 @@
+{
+  "mode": "ALL",
+  "evaluatedAt": "2026-11-06T00:56:43Z",
+  "gates": [
+    {
+      "gate": "A-sessions",
+      "verdict": "NOT_RUN",
+      "detail": "no --sessions-file and TESTINBOX_ACTIVATION_DB_URL is unset"
+    },
+    {
+      "gate": "A-inventory",
+      "verdict": "NOT_RUN",
+      "detail": "no --nodes-file and TESTINBOX_ACTIVATION_DB_URL is unset"
+    },
+    {
+      "gate": "B-physical-baseline",
+      "verdict": "NOT_RUN",
+      "detail": "no --api-metrics supplied"
+    },
+    {
+      "gate": "C-clock-offset",
+      "verdict": "NOT_RUN",
+      "detail": "no --api-metrics / --ingestion-metrics supplied"
+    },
+    {
+      "gate": "D-benchmark",
+      "verdict": "BLOCKED",
+      "detail": "benchmark verdict is 'FAIL', not PASS; sustained2x: chosen-ws200-c10-r520 achieved 68.73426652616506 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws200-c25-r520 achieved 68.99588255989023 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws200-c50-r520 achieved 62.07991133340758 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws200-c100-r520 achieved 51.1786828649266 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws10000-c10-r520 achieved 65.02026239115847 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws10000-c25-r520 achieved 62.505365912121015 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws10000-c50-r520 achieved 58.29445058871255 of 520.0/s offered (ratio below 0.995); sustained2x: chosen-ws10000-c100-r520 achieved 56.30977763859668 of 520.0/s offered (ratio below 0.995); t1P99: chosen-ws200-c10-r520 T1 p99 194850.897811 ms > 50 ms; t1P99: chosen-ws200-c25-r520 T1 p99 194026.834397 ms > 50 ms; t1P99: chosen-ws200-c50-r520 T1 p99 219000.269823 ms > 50 ms; t1P99: chosen-ws200-c100-r520 T1 p99 265509.274643 ms > 50 ms; t1P99: chosen-ws10000-c10-r520 T1 p99 207771.373827 ms > 50 ms; t1P99: chosen-ws10000-c25-r520 T1 p99 217305.109656 ms > 50 ms; t1P99: chosen-ws10000-c50-r520 T1 p99 235120.86329 ms > 50 ms; t1P99: chosen-ws10000-c100-r520 T1 p99 240663.029958 ms > 50 ms; slotQueueingDeadlineMisses: 915 across all scenarios; criterion sustained2x reported pass=false (observed 0.09842054397101269, threshold achieved / offered >= 0.995 at 520.0 events/s at concurrency [10, 25, 50, 100] (concurrency 1 is the uncontended baseline, reported only)); criterion t1P99 reported pass=false (observed 265509.274643, threshold T1 p99 <= 50.0 ms (completion - due, schedule lag included) at concurrency [10, 25, 50, 100]; concurrency 1 is reported only); criterion slotQueueingDeadlineMisses reported pass=false (observed 915.0, threshold 0 events refused for W_slot (StorageUnavailableReason.SLOT_WAIT) across every scenario)"
+    },
+    {
+      "gate": "E-floor-staging",
+      "verdict": "NOT_RUN",
+      "detail": "no --api-metrics / --ingestion-metrics supplied (the running git_sha comes from testinbox_build)"
+    },
+    {
+      "gate": "E-floor-production",
+      "verdict": "PASS",
+      "detail": "4 ADR-035 floor(s) on origin/master and listed in master's floors file"
+    },
+    {
+      "gate": "Q-qualification",
+      "verdict": "NOT_RUN",
+      "detail": "no --backend-identity supplied"
+    },
+    {
+      "gate": "F-filesystem",
+      "verdict": "NOT_RUN",
+      "detail": "no --filesystem-evidence supplied"
+    },
+    {
+      "gate": "G-cohort",
+      "verdict": "DEFERRED",
+      "detail": "not yet evidenced: the cohort gate is `storage-budget check <reviewed pool file>` (docs/dev/cohort-storage.md), which can pass only after the switch to ALL and the offline reservation; rerun with --cohort-check-output and --cohort-pool-file: that run, with gate G PASS, is the required evidence before capacity_ready is set"
+    }
+  ],
+  "verdict": "BLOCKED",
+  "cohortGate": "storage-budget check (docs/dev/cohort-storage.md); DEFERRED under ALL until its output and the reviewed pool file are supplied"
+}
