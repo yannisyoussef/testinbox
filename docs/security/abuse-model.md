@@ -174,9 +174,96 @@
   for up to 1 s) and T1's own snapshot; (2) a `STORAGE_FULL` breaker's
   half-open trial fails (or its probe is refused by rule (P)) after resolution;
   (3) an inbox stops receiving — expired by the sweep or deleted by its owner —
-  while an upload into it is in flight, and T2 fences the whole event. None is
-  a stable state an attacker can hold open: each answers "a recipient existed
-  at that instant", which address entropy already makes infeasible to aim.
+  while an upload into it is in flight, and T2 fences the whole event. None of
+  these three races is a stable state an attacker can hold open: each answers
+  "a recipient existed at that instant", which address entropy already makes
+  infeasible to aim. *(Corrected 2026-11-05, review #136 S-C3: the next item is
+  a stable state, and pre-existing.)*
+- **Write-slot timing disclosure (mode a). Accepted by the owner on
+  2026-11-06 as one dated, bounded timing-disclosure exception to ADR-035 I9,
+  for the initial beta of at most 30 admitted accounts only.** Authority:
+  ADR-035, "Owner decision note (2026-11-06): bounded timing-disclosure
+  exception to I9 for the initial beta (≤ 30 admitted accounts)", which quotes
+  both decisions from #124 comment 6675385078. Mitigation is tracked in #139,
+  and the exception is reassessed before any expansion of the cohort.
+  Implementation responsibility (app-team maintainer): `yannisyoussef`.
+  Risk-acceptance owner: the owner.
+  - **Mechanism.** The slot behaviour is specified by ADR-035 §4 step 5, with
+    the slots of §5 (Accepted; cited in #124 and #139 as "§5 step 5"). Write
+    slots are fair per workspace: at most `max-concurrent-events-per-workspace`
+    = 4 per node (`StorageProtocol.MAX_EVENTS_PER_WORKSPACE`, slots / 4), and
+    an event counts against every workspace it involves. The wait is bounded
+    at `W_slot` = 10 s (`StorageProtocol.SLOT_WAIT`). After that the whole
+    `DATA` is answered `451` as "a load failure", and the edge retries no
+    sooner than 120 s later. An observer that puts its own inbox and an
+    address in workspace W in one `DATA` (one event, ADR-026), and times its
+    own copy's delivery (the wait API, or `receivedAt` against the edge's
+    `Received:` header), learns from a delay or a `451` that W was at its slot
+    cap on that node.
+  - **Observer.** An **authenticated participant** that reads an inbox of its
+    own. An external SMTP sender learns nothing: the edge stores and forwards
+    and sends no DSN.
+  - **The two accepted consequences, and only these.**
+    1. *Membership through induced contention.* The participant floods
+       addresses it knows in W to hold W at its slot cap, then co-addresses
+       its own inbox with a probe address. A delay or `451` shows that the
+       probe address is in W. Preconditions: at least one known address in W.
+       Bound: the flood and the probe copy are both charged to W's `INGEST`
+       budgets (defaults, configurable: burst 60, refilling 2/s per inbox;
+       burst 300, refilling 10/s per workspace). A probe copy refused there is
+       discarded before any slot, so the signal disappears. One bit per
+       probe.
+    2. *Naturally occurring congestion of a known workspace.* With no flood,
+       the participant co-addresses its own inbox with an address it knows in
+       W, repeatedly over time. Each delay or `451` shows that W's own traffic
+       held W at its slot cap on that node at that moment. Preconditions: a
+       known address in W, and W's own traffic reaching 4 concurrent
+       slot-holding events on a node. Bound: coarse, one bit per observation
+       (at the cap or not, read as a delay of up to `W_slot` or a `451`);
+       repeated observations give a busy/idle time series, no finer. The
+       sampling rate is bounded by the same `INGEST` budgets, which the probes
+       spend from W's own budget.
+  - **Preconditions common to both.** Storage enforcement running the guarded
+    protocol (`ALL`). Production is `OFF` today, so neither is live; both
+    become live when `ALL` is enabled for the beta.
+  - **Excluded.** Message-content disclosure; identity disclosure; precise
+    usage disclosure (counts, sizes, rates, senders, or anything finer than
+    "at the slot cap or not"); the separate partitioned-locking residual (next
+    entry); anything materially broader. Unknown recipients never reach a
+    slot, so nothing is learned about them.
+  - **Escalation.** A materially broader disclosure, or evidence that the
+    documented limits (the `INGEST` budgets, the slot cap, `W_slot`, the
+    edge's store-and-forward with no DSN) do not hold, goes back to the owner.
+  - **What the acceptance is not.** It is an exception to I9, not a
+    reinterpretation of it, and not evidence that tenant-dependent behaviour
+    cannot disclose: this behaviour discloses both consequences. It is a
+    separate issue from the coarse global-capacity channel the owner accepted
+    in ADR-037 decision A2 (the aggregate-usage entry above), and A2 must not
+    be cited for it. It does not open admission or waive any outstanding
+    release gate. CLAUDE.md invariant 8 is unchanged: a write slot is not a
+    limit, and no limit may change an SMTP reply.
+  - **Evidence.** Found by the independent security review of #136, round 3
+    (#124 comment 6672608281); review record in #124 comment 6675196056. No
+    new review is requested for this restatement.
+- **Share-partitioned T1 timing (PROPOSED, lab only; ADR-035 PROPOSED note,
+  correctness document §7.2). NOT accepted.** The partitioned T1 adds a
+  per-workspace lock `(38, k)`. Its timeout or deadlock falls back to mode a
+  rather than answering `451`, but the wait is still visible as latency to an
+  **authenticated tenant observer** that co-addresses its own inbox with a
+  candidate address and reads its own inbox's delivery time. The external
+  sender learns nothing new: the edge stores and forwards, so the sender sees
+  the edge's reply. The channel is of the same kind as the slot channel above
+  and is measured against it as a baseline by the benchmark's `*-probe`
+  scenarios (mode a vs partitioned under the same load). The security review
+  found the partitioned residual no worse than that baseline, subject to its
+  conditions (the measurement and the Ops precondition below). That comparison
+  is not an acceptance, and no security review can accept it. *(Dated
+  2026-11-06.)* The owner's bounded timing-disclosure exception covers mode
+  a's write slots only, and its decisions exclude this residual by name. The
+  partitioned residual still needs its own assessment, its criterion (still
+  PROPOSED) and its own owner decision, whatever the comparison shows.
+  Precondition: in an environment running the mode, only the edge or trusted
+  test clients reach ingestion's SMTP port.
 - **Envelope-order capacity refusals under `ALL`** (contract §11.6): with
   footprint admission, copies of one event are decided against running totals
   in envelope order, so a tenant parking global headroom at the cliff could
@@ -209,6 +296,14 @@
   > console's usage panel). A participant whose share is full therefore
   > *silently loses mail* from the sender's point of view; that is the price
   > of not building an oracle, and the console must say so.
+
+  > **Dated note (2026-11-06).** This entry is about limits, and it stands:
+  > no limit changes an SMTP reply. It does not mean no membership oracle
+  > exists. Mode a's per-workspace write slots (not a limit) let an
+  > authenticated participant infer shared workspace membership, and a known
+  > workspace's natural congestion, from timing. The owner accepted both as
+  > one bounded timing-disclosure exception to I9 for the initial beta of at
+  > most 30 admitted accounts only; see the write-slot entry above and #139.
 - **Address guessing/enumeration**: generated tokens use enough entropy
   that guessing an active address is infeasible; SMTP-level responses are
   designed not to distinguish "unknown recipient" from "known recipient,
@@ -220,6 +315,15 @@
   (RFC 2142 role addresses are never reservable), and a per-workspace cap
   on concurrent exact reservations — with `GENERATED` remaining the
   recommended default for automation.
+
+  > **Dated note (2026-11-06).** One exception to "designed not to
+  > distinguish": under `ALL`, ingestion's answer to the edge for a known
+  > recipient in a workspace whose write slots are saturated can be a delay or
+  > a `451` that an unknown recipient never gets. The external sender sees
+  > neither (the edge stores and forwards), but an authenticated participant
+  > co-addressing its own inbox can. This is the write-slot entry above: the
+  > owner-accepted bounded timing-disclosure exception to I9 for the initial
+  > beta of at most 30 admitted accounts, with mitigation tracked in #139.
 - **Storage-cost abuse via large attachments**: per-message and per-attachment
   size caps, plus per-workspace storage quotas, bound worst-case cost even
   under a compromised/malicious API key, until revoked.
@@ -394,11 +498,20 @@ refusals are identical.
   workspace sees the refusal (refusal record, opted-in wait, console). This is
   the ADR-025/ADR-027 rule — no limit may change an SMTP reply — carried over
   unchanged; infrastructure failures still answer a uniform `451` before
-  recipient resolution.
+  recipient resolution. *(Dated note, 2026-11-06: one `451` is not uniform and
+  comes after resolution: the write-slot wait, which depends on the load of the
+  workspaces the event involves. See the write-slot entry under "Residual
+  risks": the owner-accepted bounded timing-disclosure exception to I9 for the
+  initial beta of at most 30 admitted accounts, mitigation tracked in #139.)*
 - Unknown and refused envelope positions are priced against the global totals
   (ADR-037 §5) so that, within one event, an unknown recipient is
   indistinguishable from a foreign one. The cross-event capacity side channel
-  described above is accepted, not closed.
+  described above is accepted, not closed. *(Dated note, 2026-11-06: this holds
+  for capacity pricing. It does not hold for write-slot timing, where a foreign
+  recipient in a saturated workspace delays the event and an unknown one does
+  not, and a known workspace's own congestion shows the same way. That is the
+  separate bounded timing-disclosure exception described under "Residual
+  risks", not part of the capacity acceptance.)*
 
 ### Uniform SMTP regardless of account state
 
@@ -411,6 +524,12 @@ becomes inactive between preparation and the T1 snapshot is a distinct
 report). `SmtpAccountLifecycleTest` proves over real SMTP that the transcript
 is byte-identical to an unknown recipient's
 ([lifecycle](../delivery/ti-delivery-002/LIFECYCLE.md)).
+
+*Dated note (2026-11-06):* account, admission, waitlist and quota state still
+never change the reply, but a workspace's write-slot load can, with a delay or
+a `451` to the edge. That is the owner-accepted bounded timing-disclosure
+exception to I9 for the initial beta of at most 30 admitted accounts,
+described under "Residual risks" (mitigation tracked in #139).
 
 ### Disabled is closed, never a fallback
 

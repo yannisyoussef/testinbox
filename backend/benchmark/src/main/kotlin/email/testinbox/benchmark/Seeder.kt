@@ -106,6 +106,32 @@ class Seeder(
     }
 
     /**
+     * The same number of unfolded rows as [deltas], usage-neutral: `+x` and `−x`
+     * on one inbox, so a closed cohort's shares are not filled by bytes no T1
+     * admitted ([ClosedCohort]). The rows T1 scans are what the backlog is for.
+     */
+    fun neutralDeltas(
+        population: SeededPopulation,
+        count: Int,
+    ) {
+        val rows =
+            List((count + 1) / 2) { population.inboxes.random(random) to random.nextLong(1, 100_000) }
+                .flatMap { (inbox, bytes) -> listOf(inbox to bytes, inbox to -bytes) }
+                .take(count)
+        rows.chunked(BATCH).forEach { chunk ->
+            var statement =
+                jdbc.sql(
+                    "INSERT INTO storage_delta (workspace_id, inbox_id, bytes) VALUES " +
+                        chunk.indices.joinToString(",") { "(:w$it, :i$it, :b$it)" },
+                )
+            chunk.forEachIndexed { i, (inbox, bytes) ->
+                statement = statement.param("w$i", inbox.workspaceId).param("i$i", inbox.inboxId).param("b$i", bytes)
+            }
+            statement.update()
+        }
+    }
+
+    /**
      * The live reservation backlog another node's events would have left:
      * `RESERVED` with a deadline ahead, and one in five `RELEASING` with a
      * release time far ahead, so no cleanup could remove them during a run.
@@ -214,13 +240,12 @@ class Seeder(
     }
 
     /**
-     * The W1 cohort at its maximum, for the BENCHMARK-ONLY PARTITIONED variant:
+     * The W1 cohort at its maximum, for the PARTITIONED variant ([ClosedCohort]):
      * [PARTICIPANTS] ACTIVE, verified participants (the ADR-037 fixed 128/256 MiB
      * shares, by V19's defaults) and one legacy share, each with
      * [inboxesPerWorkspace] inboxes, provisioned the way `AdmitBetaParticipant`
-     * leaves them (account, admission, marker). The gate population is left as
-     * it is. Inserting the markers needs the operator authority: the harness is
-     * the owner of its own benchmark database.
+     * leaves them (account, admission, marker). Inserting the markers needs the
+     * operator authority: the harness is the owner of its own benchmark database.
      */
     fun cohort(inboxesPerWorkspace: Int): SeededPopulation {
         val cohort = population(PARTICIPANTS + 1, inboxesPerWorkspace)
@@ -273,8 +298,10 @@ class Seeder(
     companion object {
         /** ADR-037: the cohort's thirty places (`BetaCohortPolicy.MAX_PARTICIPANTS`). */
         const val PARTICIPANTS = 30
-        const val LEGACY_PAYLOAD_BYTES = 1L shl 30
-        const val LEGACY_FOOTPRINT_BYTES = 2L shl 30
+
+        /** Sized for retention's expired inboxes, which the closed cohort puts in the legacy workspace. */
+        const val LEGACY_PAYLOAD_BYTES = 64L shl 30
+        const val LEGACY_FOOTPRINT_BYTES = 128L shl 30
         const val SEED_NODE = "bench-seed"
         private const val BATCH = 200
     }

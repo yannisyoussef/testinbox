@@ -40,13 +40,16 @@ class JdbcActivationInventory(
 
     override fun nodes(): List<StorageNodeRow> =
         jdbc
-            .sql("SELECT node_id, capability, heartbeat_at, clean_shutdown FROM storage_node ORDER BY node_id, heartbeat_at DESC")
-            .query { rs, _ ->
+            .sql(
+                "SELECT node_id, capability, heartbeat_at, clean_shutdown, admission_locking FROM storage_node " +
+                    "ORDER BY node_id, heartbeat_at DESC",
+            ).query { rs, _ ->
                 StorageNodeRow(
                     nodeId = rs.getString(1),
                     capability = rs.getString(2),
                     heartbeatAt = rs.getObject(3, OffsetDateTime::class.java).toInstant(),
                     cleanShutdown = rs.getBoolean(4),
+                    admissionLocking = rs.getString(5),
                 )
             }.list()
 

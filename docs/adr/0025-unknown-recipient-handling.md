@@ -77,3 +77,19 @@ stored at all. It does not, and storing it is a liability:
 > The decision of this ADR is unchanged: the uniform `250`, the in-process
 > discard and the rule that unknown-recipient content is never persisted all
 > stand.
+
+> **Dated note (2026-11-06):** "the substitution channel is closed" holds for
+> capacity pricing only. This ADR's recipient-existence confidentiality has a
+> second, separate scoped exception. Under ADR-035's storage enforcement
+> (`ALL`), mode a's per-workspace write slots let an authenticated participant
+> learn, from the delay or `451` of an event co-addressed to its own inbox,
+> whether a probe address belongs to a workspace it has saturated, and whether
+> a workspace whose address it knows is naturally congested (coarse: at the
+> slot cap or not). The owner accepted both as one bounded timing-disclosure
+> exception to ADR-035 I9, for the initial beta of at most 30 admitted
+> accounts only, with mitigation tracked in #139. It excludes message content,
+> identity and precise usage, and it is not covered by the ADR-037 §6 capacity
+> acceptance above. The external sender
+> still learns nothing (the edge stores and forwards), unknown recipients never
+> reach a slot, and this ADR's decision is unchanged. See ADR-035, "Owner
+> decision note (2026-11-06)".

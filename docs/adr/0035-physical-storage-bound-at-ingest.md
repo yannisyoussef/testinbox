@@ -166,6 +166,18 @@ What has changed is measured, not argued:
   inbox, workspace or service ceiling. A `451` never *discloses* tenant state:
   it reports storage, database or load failure for the whole `DATA`, and it is
   never chosen per tenant.
+
+  > **Dated note (2026-11-06):** the owner granted a dated **bounded
+  > timing-disclosure exception** to I9 for the initial beta of at most 30
+  > admitted accounts. It covers exactly two consequences of mode a's
+  > per-workspace write slots (§4 step 5), observable by an authenticated
+  > participant timing co-addressed messages: shared workspace membership
+  > through induced contention, and a known workspace's naturally occurring
+  > congestion (busy or not at the slot cap). I9 stands as written for
+  > everything else. Mitigation is tracked in #139 and the exception is
+  > reassessed before any expansion. See "Owner decision note (2026-11-06):
+  > bounded timing-disclosure exception to I9 for the initial beta (≤ 30
+  > admitted accounts)" below.
 - **I10 (relevant refusals visible).** An authenticated waiter that presents
   its observation cursor can tell whether a storage refusal occurred for its
   inbox after that cursor.
@@ -1369,6 +1381,17 @@ restore procedure covers the bucket.
 | Chunked retention deletion | **No: dropped** | The ledger removes the account locks that needed it. A 50k cascade costs 0.25 s. |
 | Monotonic per-event cutoff | **Efficiency only** | None. |
 
+> **Dated note (2026-11-06):** the write-slot row's "(I9: a 451 is never
+> chosen per tenant)" does not hold for the slots' per-workspace fairness. A
+> workspace at its slot cap makes the events that involve it wait, and answer
+> `451` after `W_slot`, while other events do not. The owner accepted the
+> resulting timing disclosure (shared membership through induced contention,
+> and a known workspace's natural congestion) as a dated **bounded
+> timing-disclosure exception** to I9, for the initial beta of at most 30
+> admitted accounts only; mitigation is tracked in #139. See "Owner decision
+> note (2026-11-06): bounded timing-disclosure exception to I9 for the initial
+> beta (≤ 30 admitted accounts)" below.
+
 ### 16. Observability
 
 All labels are closed enums.
@@ -2119,6 +2142,184 @@ criterion.
   benchmark module, is reported apart from the gate and never counts as gate D
   evidence; whether any such mode exists is an owner decision and a separate
   ADR amendment.
+
+## Owner decision note (2026-11-05): partitioned locking, implementation and testing only
+
+**Authority: owner decision 2026-11-05**, relayed by Ops on #124 comment
+6665820491, quoted exactly:
+
+> "Partitioned locking: Implementation and testing authorized. Release requires independent correctness review, passing applicable benchmark criteria, and enforced safeguards against cohort growth or overcommit. Benchmark success alone is insufficient. This does not authorize opening admission."
+
+This note records that decision; it changes no text above. In particular the
+gate D note's last bullet ("A measurement, not a mode … lives only in the
+benchmark module … whether any such mode exists is an owner decision and a
+separate ADR amendment") and ADR-037's "preserve … transaction lock ordering"
+stand as written. What follows is **the team's safeguard reading** of the
+decision — how the implementation keeps within it — not the owner's words,
+which are only the quotation above:
+
+- the production-code implementation of the share-partitioned T1 behind a
+  **lab-only** switch, `testinbox.storage.admission-locking`, whose default
+  and only committed value is `GLOBAL` (mode a). `DeploymentSafety` refuses
+  `COHORT_PARTITIONED` in every environment but `lab`; the activation inventory
+  refuses a node that runs it outside the lab; activation gate L blocks while
+  any node runs it or cannot prove it does not;
+- its tests, and its measurement by the §11 harness as a variant reported
+  apart from gate D, which is still computed from mode a's CHOSEN scenarios.
+
+On that reading it authorizes nothing more: not release, enablement, opening
+admission, or any §11 parameter, threshold or criterion change. Whether the mode exists in ADR-035,
+and on which criteria, is the PROPOSED note
+[`0035-amendment-note-partitioned-t1-PROPOSED.md`](0035-amendment-note-partitioned-t1-PROPOSED.md),
+which lists both passages above as text it would amend.
+
+## Owner decision note (2026-11-06): bounded timing-disclosure exception to I9 for the initial beta (≤ 30 admitted accounts)
+
+**Authority: two owner decisions of 2026-11-06**, quoted exactly from their
+citable record, #124 comment
+[6675385078](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6675385078)
+("Owner decisions of 2026-11-06, verbatim as given to the app team"). The same
+comment records the owner's naming of the app-team maintainer.
+
+The first chose option (a) of #124 comment 6672608281:
+
+> "1. I choose option (a), scoped to the initial beta of at most 30 admitted accounts.
+>
+> I explicitly accept the reported residual: an authenticated participant may use co-addressed messages, induced workspace saturation and delivery timing to infer that recipient addresses share a workspace.
+>
+> Record this as a dated exception to I9, not as evidence that tenant-dependent behaviour cannot disclose membership. Update the relevant threat-model and privacy statements accurately. My earlier acceptance of coarse global-capacity disclosure must not be cited as acceptance of this separate issue.
+>
+> Track mitigation with a named owner and review it before expanding beyond this cohort. This acceptance does not authorize admission, waive the partitioned-mode timing assessment, or accept any broader disclosure discovered by testing."
+
+The second chose (a′) of #124 comment 6675317338, on the broader consequence
+the documentation pass surfaced (natural congestion read without a flood):
+
+> "I choose (a′): extend the dated I9 exception to coarse workspace-activity inference for the initial beta of at most 30 admitted accounts.
+>
+> The accepted residual includes both:
+> - inferring shared workspace membership through induced contention;
+> - inferring naturally occurring workspace congestion by timing messages to a known address, including repeated observations over time.
+>
+> Record these together as one bounded timing-disclosure exception. This does not accept message-content disclosure, identity disclosure, precise usage disclosure, or the separate partitioned-locking residual.
+>
+> Keep #139 as a tracked mitigation and reassess this exception before expanding the cohort. Assign implementation responsibility to a named app-team maintainer; I remain the risk-acceptance owner.
+>
+> Update the existing ADR addition and privacy/threat-model wording in one consolidated pass. Reuse the existing review and timing evidence where applicable. Do not reopen completed qualification or request a new decision for a restatement of these two accepted consequences.
+>
+> Escalate materially broader disclosure or evidence that the documented limits do not hold.
+>
+> Continue the benchmark analysis and other authorized work in parallel. This decision does not open admission or waive outstanding release gates."
+
+This note records both decisions as **one bounded timing-disclosure
+exception to I9**. It changes no text above: I9 (§1), §4 step 5, §5's write
+slots, §12 and the §15 table stand as written, and no behaviour, parameter,
+threshold or criterion changes.
+
+**The shared mechanism.** Mode a's per-workspace write-slot fairness: §4 step
+5, with the slots of §5 (#124 and #139 cite it as "§5 step 5"). An event
+counts against every workspace it involves. At most
+`max-concurrent-events-per-workspace` (default `slots/4` = 4) events of one
+workspace hold slots on a node. A wait longer than `W_slot` (10 s) answers
+`451` for the whole `DATA`, which the edge retries no sooner than 120 s later
+(`minimal_backoff_time`, `deploy/mail-edge/contract.yaml`). The observer puts
+its own inbox and an address in a workspace W in one `DATA` (one event,
+ADR-026), and times its own copy's delivery through the wait API, or by
+comparing `receivedAt` with the edge's `Received:` header. A delay, or a
+deferral by that `451`, means W was at its slot cap on that node.
+
+**The accepted residual is exactly these two consequences.**
+
+1. **Membership through induced contention.**
+   - *Observer:* an authenticated participant that reads an inbox of its own.
+   - *Mechanism:* it floods addresses it knows in W to hold W at its slot cap,
+     then co-addresses its own inbox with a probe address. A delay or `451`
+     shows that the probe address is in W.
+   - *Preconditions:* at least one known address in W; storage enforcement
+     running the guarded protocol (`ALL`).
+   - *Bound:* the flood and the probe copy are both charged to W's `INGEST`
+     budgets (defaults, configurable: burst 60, refilling 2/s per inbox;
+     burst 300, refilling 10/s per workspace). A probe copy refused there is
+     discarded before any slot, so the signal disappears. The answer is one
+     bit per probe: in W or not.
+2. **Naturally occurring congestion of a known workspace.**
+   - *Observer:* the same authenticated participant.
+   - *Mechanism:* without any flood, it co-addresses its own inbox with an
+     address it knows in W, repeatedly over time. Each delay or `451` shows
+     that W's own traffic held W at its slot cap on that node at that moment.
+   - *Preconditions:* a known address in W; `ALL`; W's own traffic reaching
+     4 concurrent slot-holding events on a node.
+   - *Bound:* coarse. Each observation is one bit for one node and one moment:
+     W at the cap (4 concurrent events) or not, read as a delay of up to
+     `W_slot` (10 s) or a `451`. Repeated observations give a coarse busy/idle
+     time series, no finer. The sampling rate is bounded by the `INGEST`
+     budgets above, which the probe copies spend from W's own budget.
+
+Both consequences need `ALL`. Production is `OFF` today, so neither is live;
+both become live when `ALL` is enabled for the beta. An external SMTP sender
+learns nothing: the edge stores and forwards and sends no DSN (§12). Unknown
+recipients never reach a slot (§4 step 4).
+
+**Excluded, explicitly.** The exception does not accept:
+- message-content disclosure;
+- identity disclosure;
+- precise usage disclosure (counts, sizes, rates, senders, or any figure
+  finer than "at the slot cap or not");
+- the separate partitioned-locking residual (#136; see below);
+- anything materially broader than the two consequences above.
+
+**Escalation.** A materially broader disclosure, or evidence that the
+documented limits do not hold, goes back to the owner. The documented limits
+are the `INGEST` budgets, the slot cap, `W_slot` and the edge's
+store-and-forward with no DSN. A restatement of the two accepted consequences
+needs no new decision.
+
+**Scope and conditions.**
+- The initial beta, at most 30 admitted accounts (ADR-036, ADR-037).
+- #139 tracks the mitigation. The exception is **reassessed before any
+  expansion of the cohort**.
+- **Implementation responsibility (app-team maintainer):** `yannisyoussef`,
+  named by the owner (#124 comment 6675385078).
+- **Risk-acceptance owner:** the owner.
+
+**Evidence reused.** The channel was found by the independent security review
+of #136, round 3 ([#124 comment 6672608281](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6672608281)).
+The review record and its countersignature entry are #124 comment
+[6675196056](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6675196056).
+Neither decision requests a new review, and no completed qualification is
+reopened.
+
+**What the exception is not.**
+- **Not a reinterpretation.** I9 stands as written for everything else.
+  Option (a) as written in #124 read "never chosen per tenant" as "the `451`
+  decision rule never inspects tenant state". That reading is **not**
+  adopted. The slot delay and its `451` do depend on the involved
+  workspaces' load, and this note says so.
+- **Not evidence that tenant-dependent behaviour cannot disclose.** This
+  behaviour discloses both consequences above. The exception may not be
+  cited to argue that any other tenant-dependent behaviour is harmless.
+- **Not the earlier capacity acceptance.** ADR-037 decision A2 (§6, recorded
+  in §13d's amendment and in `abuse-model.md`) accepted a coarse
+  *global-capacity* side channel: cooperating workspaces correlating their own
+  `SERVICE_CAPACITY` outcomes with global stored data across separate events.
+  That is a separate issue. This one is per workspace, driven by load, and
+  observed as the timing of a co-addressed event. A2 must not be cited to
+  justify it, and this exception does not extend A2.
+- **Not the partitioned residual.** The partitioned-mode timing assessment
+  (#136) is not waived. The criterion in
+  [`0035-amendment-note-partitioned-t1-PROPOSED.md`](0035-amendment-note-partitioned-t1-PROPOSED.md)
+  stays PROPOSED. The partitioned residual still needs its own assessment,
+  criterion and decision, whatever its comparison with this baseline shows.
+- **Not admission.** It does not open admission or waive any outstanding
+  release gate.
+- **Not a relaxation of limits.** CLAUDE.md invariant 8, ADR-027 §1 and
+  ADR-025 are unchanged for limits. A write slot is not a rate limit or a
+  quota, and no limit may change an SMTP reply.
+
+**Where it is recorded.** Dated pointers at I9 and at the §15 write-slot row;
+`docs/security/abuse-model.md` (the write-slot entry);
+`docs/security/threat-model.md`; pointers in ADR-025, ADR-027, ADR-037 and
+`docs/dev/cohort-storage.md`; the partitioned correctness document §7.2 and
+the PROPOSED note; CLAUDE.md invariant 8.
 
 ## Amendments to Accepted ADRs (effective 2026-09-29)
 

@@ -37,6 +37,8 @@ class ReserveCohortStorage(
                 legacy,
                 unattributed,
                 trash,
+                // Fits implies room for every share, so the bound exists.
+                checkNotNull(runtime.partitionCapacity(unattributed, trash)) { "a pool that fits has a partition bound" },
             )
             val observed = gate.observe()
             check(policy.unavailability(observed) == null && runtime.ready(observed?.cohort)) {

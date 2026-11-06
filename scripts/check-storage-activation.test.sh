@@ -127,9 +127,9 @@ only() {
 good > "$TMP/args-good"
 case_ "all gates satisfied → ACTIVATION READY" 0 '^ACTIVATION READY$' "$TMP/args-good" --json "$TMP/evidence.json"
 if [ -f "$TMP/evidence.json" ] && jq -e '.mode == "ALL" and .evaluatedAt == "2026-10-07T00:00:00Z" and .verdict == "READY"
-        and (.gates | length) == 10 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
+        and (.gates | length) == 11 and all(.gates[]; .verdict == "PASS" and (.gate | length) > 0 and (.detail | length) > 0)
         and (.cohortGate | startswith("storage-budget check"))' "$TMP/evidence.json" >/dev/null 2>&1; then
-    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 10 gates"
+    ok "the evidence JSON has {mode, evaluatedAt, gates[{gate, verdict, detail}], verdict, cohortGate} with 11 gates (gate L included)"
 else
     bad "the evidence JSON shape is wrong" "$(cat "$TMP/evidence.json" 2>/dev/null)"
 fi
@@ -204,6 +204,25 @@ only "C: a set admission latch blocks, naming the node" C-clock-offset "\(api\):
 with --ingestion-metrics "$M/ingestion-breaker-open.prom" > "$TMP/c4"
 only "C: an open breaker blocks, naming the node" C-clock-offset "\(ingestion\): storage breaker is OPEN" "$TMP/c4"
 case_ "C: ε_max is configurable (--max-clock-offset-seconds 60 admits -31.5 s)" 0 '^C-clock-offset[[:space:]]+PASS' "$TMP/c1" --max-clock-offset-seconds 60
+
+# ---------------------------------------------------------------------------
+# Gate L: T1's lock protocol. Every node must PROVE GLOBAL; absent = unknown = blocked.
+# ---------------------------------------------------------------------------
+sed 's/mode="global"} 1.0/mode="global"} 0.0/; s/mode="cohort_partitioned"} 0.0/mode="cohort_partitioned"} 1.0/' "$M/ingestion-healthy.prom" > "$M/ingestion-partitioned.prom"
+grep -v 'testinbox_storage_admission_locking' "$M/ingestion-healthy.prom" > "$M/ingestion-no-locking.prom"
+with --ingestion-metrics "$M/ingestion-partitioned.prom" > "$TMP/l1"
+only "L: a node running the share-partitioned T1 blocks, naming it" L-lock-protocol "runs the share-partitioned T1" "$TMP/l1"
+with --ingestion-metrics "$M/ingestion-no-locking.prom" > "$TMP/l2"
+only "L: a node whose lock protocol is not exported is UNKNOWN and blocks, never read as mode a" L-lock-protocol "T1 lock protocol UNKNOWN" "$TMP/l2"
+with --ingestion-metrics "$M/ingestion-partitioned.prom" | sed 's/^ALL$/TENANT_LIMITS/' > "$TMP/l3"
+case_ "L: ...and blocks under TENANT_LIMITS too" 1 '^L-lock-protocol[[:space:]]+BLOCKED[[:space:]].*runs the share-partitioned T1' "$TMP/l3"
+awk -F'\t' 'BEGIN { OFS = "\t" } /^#/ || NF < 4 { print; next } $1 == "ing-1" { print $0, "COHORT_PARTITIONED"; next } { print $0, "GLOBAL" }' \
+    "$FIX/nodes/healthy.tsv" > "$TMP/nodes-partitioned.tsv"
+with --nodes-file "$TMP/nodes-partitioned.tsv" > "$TMP/l4"
+only "L: a live storage_node row recording COHORT_PARTITIONED blocks (the database, not only the metric)" L-lock-protocol "storage_node 'ing-1' records admission_locking COHORT_PARTITIONED" "$TMP/l4"
+awk -F'\t' 'BEGIN { OFS = "\t" } /^#/ || NF < 4 { print; next } { print $0, "GLOBAL" }' "$FIX/nodes/healthy.tsv" > "$TMP/nodes-global.tsv"
+with --nodes-file "$TMP/nodes-global.tsv" > "$TMP/l5"
+case_ "L: GLOBAL metrics and GLOBAL node rows pass, and so does the whole barrier" 0 '^L-lock-protocol[[:space:]]+PASS' "$TMP/l5"
 
 # ---------------------------------------------------------------------------
 # Gate D: the §11 benchmark, required only for ALL.

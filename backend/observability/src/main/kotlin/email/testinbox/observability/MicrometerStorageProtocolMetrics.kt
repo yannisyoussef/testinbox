@@ -4,6 +4,8 @@ import email.testinbox.application.port.PhysicalFailureKind
 import email.testinbox.application.port.ReleasePath
 import email.testinbox.application.port.StorageAdmissionOutcome
 import email.testinbox.application.port.StorageProtocolMetrics
+import email.testinbox.application.storage.AdmissionLocking
+import email.testinbox.application.storage.PartitionFallbackReason
 import email.testinbox.application.storage.activation.ActivationGate
 import email.testinbox.domain.storage.StorageCapacityPolicy
 import email.testinbox.domain.storage.StorageEnforcement
@@ -31,6 +33,12 @@ class MicrometerStorageProtocolMetrics(
     private val registry: MeterRegistry,
     policy: StorageCapacityPolicy,
     enforcement: StorageEnforcement = StorageEnforcement.OFF,
+    /**
+     * T1's lock protocol, exported for the activation barrier
+     * (`scripts/check-storage-activation.sh` gate D): GLOBAL is ADR-035 mode a;
+     * any node reporting COHORT_PARTITIONED blocks the gate.
+     */
+    admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
 ) : StorageProtocolMetrics {
     private val breakerOpen = AtomicLong(0)
     private val breakerEscalated = AtomicLong(0)
@@ -47,6 +55,7 @@ class MicrometerStorageProtocolMetrics(
     /** Only the two gates a node can re-check at run time are exported per node (§14 Phase 4). */
     private val gates = mapOf(ActivationGate.SESSION_ALLOWLIST to AtomicLong(0), ActivationGate.NODE_INVENTORY to AtomicLong(0))
     private val modes = StorageEnforcement.entries.associateWith { AtomicLong(if (it == enforcement) 1 else 0) }
+    private val locking = AdmissionLocking.entries.associateWith { AtomicLong(if (it == admissionLocking) 1 else 0) }
     private val lockWait = Timer.builder(LOCK_WAIT).register(registry)
     private val slotWait = Timer.builder(SLOT_WAIT).register(registry)
 
@@ -64,6 +73,8 @@ class MicrometerStorageProtocolMetrics(
         byState.forEach { (state, value) -> gauge(RESERVATIONS, value, Tags.of("state", state.lowercase())) }
         gates.forEach { (gate, value) -> gauge(ACTIVATION_GATE, value, Tags.of("gate", gate.name.lowercase())) }
         modes.forEach { (mode, value) -> gauge(ENFORCEMENT_MODE, value, Tags.of("mode", mode.name.lowercase())) }
+        locking.forEach { (mode, value) -> gauge(ADMISSION_LOCKING, value, Tags.of("mode", mode.name.lowercase())) }
+        PartitionFallbackReason.entries.forEach { registry.counter(PARTITION_FALLBACK, "reason", it.name.lowercase()) }
         Gauge.builder(GLOBAL_LIMIT) { policy.globalLimitBytes.toDouble() }.register(registry)
         Gauge.builder(FINALIZE_BUDGET) { policy.finalizeBudgetBytes.toDouble() }.register(registry)
         StorageAdmissionOutcome.entries.forEach { registry.counter(ADMISSION, "outcome", it.name.lowercase()) }
@@ -158,6 +169,10 @@ class MicrometerStorageProtocolMetrics(
         gates[gate]?.set(if (ready) 1 else 0)
     }
 
+    override fun partitionFallback(reason: PartitionFallbackReason) {
+        registry.counter(PARTITION_FALLBACK, "reason", reason.name.lowercase()).increment()
+    }
+
     override fun enforcementMode(mode: StorageEnforcement) {
         modes.forEach { (m, value) -> value.set(if (m == mode) 1 else 0) }
     }
@@ -198,6 +213,8 @@ class MicrometerStorageProtocolMetrics(
         const val ACTIVATION_VIOLATION = "testinbox_storage_activation_violation"
         const val ACTIVATION_GATE = "testinbox_storage_activation_gate_ready"
         const val ENFORCEMENT_MODE = "testinbox_storage_enforcement_mode"
+        const val ADMISSION_LOCKING = "testinbox_storage_admission_locking"
+        const val PARTITION_FALLBACK = "testinbox_storage_admission_partition_fallback_total"
         const val ORPHAN_SWEEP_COMPLETED_AT = "testinbox_storage_orphan_sweep_completed_at_seconds"
         const val ORPHAN_SWEEP = "testinbox_storage_orphan_sweep_total"
 

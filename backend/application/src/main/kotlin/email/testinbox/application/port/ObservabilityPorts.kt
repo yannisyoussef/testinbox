@@ -444,6 +444,9 @@ enum class ReleasePath { COMMITTED, ABSENT, DELETED, RECONCILED }
 interface StorageProtocolMetrics {
     fun admission(outcome: StorageAdmissionOutcome) {}
 
+    /** A share-partitioned T1 (PROPOSED, gate D W1) that mode a decided instead, and why. */
+    fun partitionFallback(reason: email.testinbox.application.storage.PartitionFallbackReason) {}
+
     /** A ceiling was exceeded on a scope whose enforcement is OFF: observed, not refused. */
     fun unenforcedLimit(scope: email.testinbox.domain.storage.StorageScope) {}
 

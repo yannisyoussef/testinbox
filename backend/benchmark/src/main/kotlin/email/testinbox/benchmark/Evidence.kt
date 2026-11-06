@@ -65,7 +65,7 @@ class Evidence(
     val gate: GateVerdict,
     /** Why the run's inputs are not ADR-035 §11's; empty means they are. */
     val adrEvidenceReasons: List<String> = emptyList(),
-    /** BENCHMARK-ONLY PARTITIONED variant scenarios: never in [scenarios], never in [gate]. */
+    /** PARTITIONED variant scenarios (production COHORT_PARTITIONED T1, closed cohort): never in [scenarios], never in [gate]. */
     val variantScenarios: List<ScenarioResult> = emptyList(),
     /** The §11 criteria read on the variant against the same references, for information only. */
     val variantGate: GateVerdict? = null,
@@ -131,6 +131,8 @@ class Evidence(
                         "name" to "PARTITIONED",
                         "status" to VARIANT_STATUS,
                         "scenarios" to variantScenarios.map(::scenarioTree),
+                        // The timing probes pooled over their repetitions: figures only, no verdict.
+                        "probePooled" to ProbePooling.pool(variantScenarios).map(::pooledTree),
                         "criteria" to
                             v.criteria.mapValues { (_, c) ->
                                 linkedMapOf("pass" to c.pass, "observed" to c.observed, "threshold" to c.threshold, "detail" to c.detail)
@@ -299,6 +301,33 @@ class Evidence(
                         "snapshotStatementSha256" to it.snapshotStatementSha256,
                         "budgetedWorkspaces" to it.budgetedWorkspaces,
                         "inactiveWorkspaces" to it.inactiveWorkspaces,
+                        "locking" to it.locking.name,
+                        "partitioned" to it.partitioned,
+                    )
+                },
+            "partitionFallbacks" to s.partitionFallbacks,
+            "eventsWithoutT1" to s.eventsWithoutT1,
+            "partitionFallbackReasons" to s.partitionFallbackReasons,
+            "background" to
+                s.background?.let {
+                    linkedMapOf(
+                        "offeredRate" to it.offeredRate,
+                        "events" to it.events,
+                        "admittedCopies" to it.admittedCopies,
+                        "admittedCopiesPerSecond" to it.admittedCopiesPerSecond,
+                        "eventsReachingT1" to it.eventsReachingT1,
+                        "t1" to latency(it.t1),
+                        "unavailableRate" to it.unavailableRate,
+                    )
+                },
+            "probes" to
+                s.probes?.mapValues { (_, p) ->
+                    linkedMapOf(
+                        "events" to p.events,
+                        "targetReachedEvents" to p.targetReachedEvents,
+                        "latency" to latency(p.latency),
+                        "unavailableRate" to p.unavailableRate,
+                        "reachesT1" to p.reachesT1,
                     )
                 },
         )
@@ -322,7 +351,7 @@ class Evidence(
         }
         variantGate?.let { v ->
             appendLine()
-            appendLine("## BENCHMARK-ONLY variant: PARTITIONED")
+            appendLine("## Variant, reported apart: PARTITIONED")
             appendLine()
             appendLine(
                 "**$VARIANT_STATUS** Informational reading of the §11 criteria against the same NO_LOCK references: ${v.verdict}.",
@@ -356,6 +385,18 @@ class Evidence(
                 "exec mean ${"%.3f".format(it.meanExecMs)} / max ${"%.1f".format(it.maxExecMs)} ms"
         }
 
+    @Suppress("UNCHECKED_CAST") // ProbePooling's own shape
+    private fun pooledTree(pooled: Map<String, Any?>): Map<String, Any?> =
+        pooled.mapValues { (key, value) ->
+            if (key != "classes") {
+                value
+            } else {
+                (value as Map<String, Map<String, Any?>>).mapValues { (_, c) ->
+                    c.mapValues { (k, v) -> if (k == "latency") latency(v as LatencySummary?) else v }
+                }
+            }
+        }
+
     private fun latency(l: LatencySummary?): Map<String, Any>? =
         l?.let { linkedMapOf("samples" to it.samples, "p50Ms" to it.p50Ms, "p95Ms" to it.p95Ms, "p99Ms" to it.p99Ms, "maxMs" to it.maxMs) }
 
@@ -368,8 +409,9 @@ class Evidence(
     companion object {
         const val SCHEMA_VERSION = 1
         const val VARIANT_STATUS =
-            "BENCHMARK-ONLY measurement of the W1 share-partitioned T1, never a production mode and never gate D evidence; " +
-                "whether such a mode exists is an owner decision and an ADR amendment."
+            "Measurement of the production share-partitioned T1 (admission-locking = COHORT_PARTITIONED) over a closed " +
+                "30-participant + legacy cohort, reported apart and never gate D evidence; the mode is a PROPOSED ADR-035 " +
+                "amendment, and its release needs an independent correctness review and an owner decision."
         private const val LARGE = 1e9
         val MAPPER: JsonMapper =
             JsonMapper

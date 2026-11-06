@@ -114,7 +114,10 @@ class Harness(
                     null
                 } else {
                     GateEvaluator(expectedRate = options.expectedRate).evaluate(
-                        variantResults.map { it.copy(mode = AdmissionMode.CHOSEN) } + results.filter { it.mode == AdmissionMode.REFERENCE },
+                        variantResults
+                            .filter { it.mode == AdmissionMode.PARTITIONED && !it.name.contains("-hot") && !it.name.contains("-probe") }
+                            .map { it.copy(mode = AdmissionMode.CHOSEN) } +
+                            results.filter { it.mode == AdmissionMode.REFERENCE },
                         nonAdr,
                     )
                 }
@@ -175,7 +178,7 @@ class Harness(
         }
     }
 
-    /** One run's populations, scenario by scenario: the gate's matrix, then (opt-in) the benchmark-only variant. */
+    /** One run's populations, scenario by scenario: the gate's matrix, then (opt-in) the partitioned variant. */
     private inner class Matrix(
         private val target: BenchmarkTarget,
         private val adminPool: javax.sql.DataSource,
@@ -192,6 +195,15 @@ class Harness(
                 adminTemplate,
                 readsFootprint = FootprintWiring.readsFootprint(HarnessDeclarations.of(StorageEnforcement.ALL, monitorRole)),
             ).snapshotStatement
+        private val partitionedStatement =
+            checkNotNull(
+                JdbcStorageAdmission(
+                    admin,
+                    adminTemplate,
+                    readsFootprint = true,
+                    locking = HarnessDeclarations.locking(AdmissionMode.PARTITIONED),
+                ).partitionedStatement,
+            )
         val results = mutableListOf<ScenarioResult>()
         val variantResults = mutableListOf<ScenarioResult>()
         val diagnosticsRecords = mutableListOf<Map<String, Any?>>()
@@ -218,19 +230,28 @@ class Harness(
                 }
             }
             val statements = linkedMapOf("CHOSEN and NO_LOCK (production T1, readsFootprint = true)" to productionStatement)
-            // BENCHMARK-ONLY: after the gate's own scenarios, so no participant exists while they run.
+            if (options.partitionedVariant) statements["PARTITIONED (production COHORT_PARTITIONED T1)"] = partitionedStatement
+            val file = "diagnostics-ws$workspaces.txt"
+            Files.writeString(directory.resolve(file), diagnostics.report(population, statements, commit))
+            // Reported apart: after the gate's own scenarios and their diagnostics, the gate's
+            // population goes and a CLOSED cohort replaces it, the only population the production
+            // partitioned T1 partitions (ClosedCohort). Never gate D evidence.
             if (options.partitionedVariant) {
-                val cohort = seeder.cohort(options.inboxesPerWorkspace)
-                val variant = ScenarioRunner(target, options, population, seeder, admin, monitorRole, cohort, diagnostics)
-                statements["PARTITIONED (benchmark-only variant)"] = PartitionedAdmissionStore(admin, adminTemplate).partitionedStatement
+                wipe(admin)
+                val closed = ClosedCohort(admin, adminTemplate, seeder, monitorRole)
+                val cohort = closed.seed(options)
+                val variant = ScenarioRunner(target, options, cohort, seeder, admin, monitorRole, cohort, diagnostics, closed)
                 for (rate in options.rates) {
                     for (concurrency in options.concurrency) {
                         variantResults += variant.run(ScenarioSpec(AdmissionMode.PARTITIONED, concurrency, rate))
                     }
                 }
+                // At the matrix's heaviest point, reported, never in the criteria: the single-hot-workspace
+                // skew, then the timing-channel probes under the same load in mode a and partitioned (S-C1).
+                val heaviest = options.concurrency.max() to options.rates.max()
+                variantResults += variant.run(ScenarioSpec(AdmissionMode.PARTITIONED, heaviest.first, heaviest.second, hot = true))
+                variantResults += probeRuns(variant, heaviest.first, heaviest.second)
             }
-            val file = "diagnostics-ws$workspaces.txt"
-            Files.writeString(directory.resolve(file), diagnostics.report(population, statements, commit))
             diagnosticsRecords +=
                 linkedMapOf(
                     "workspaces" to workspaces,
@@ -243,10 +264,52 @@ class Harness(
         }
     }
 
+    /**
+     * S-C1: the timing probes, `--probe-repetitions` times at two load points (the
+     * matrix's heaviest, and the paced attacker's best case), in mode a and
+     * partitioned under identical load. Every run starts from reset INGEST buckets,
+     * and the order of the two modes alternates between repetitions, so neither
+     * mode is systematically second. Reported under `variant`, never gate D.
+     */
+    private fun probeRuns(
+        variant: ScenarioRunner,
+        concurrency: Int,
+        heaviestRate: Double,
+    ): List<ScenarioResult> =
+        (1..options.probeRepetitions).flatMap { repetition ->
+            val modes =
+                if (repetition % 2 == 1) {
+                    listOf(AdmissionMode.CHOSEN, AdmissionMode.PARTITIONED)
+                } else {
+                    listOf(AdmissionMode.PARTITIONED, AdmissionMode.CHOSEN)
+                }
+            listOf(false, true).flatMap { paced ->
+                modes.map { mode ->
+                    val rate = if (paced) variant.pacedProbeRate() else heaviestRate
+                    variant.run(
+                        ScenarioSpec(
+                            mode,
+                            concurrency,
+                            rate,
+                            probe = true,
+                            paced = paced,
+                            repetition = repetition,
+                            backgroundRate = heaviestRate,
+                        ),
+                    )
+                }
+            }
+        }
+
     /** Between populations: every tenant and ledger row goes. The database is the harness's own by preflight. */
     private fun wipe(admin: JdbcClient) {
-        // storage_legacy_share has no foreign key: the PARTITIONED variant's legacy share goes explicitly.
+        // storage_legacy_share has no foreign key: the PARTITIONED variant's legacy share goes explicitly,
+        // and so do its approved pool and V25 partition bound, or the next population's CHOSEN scenarios
+        // would run with a REQUIRED cohort they do not have.
         admin.sql("TRUNCATE workspace, storage_ambiguity, storage_legacy_share CASCADE").update()
+        admin.sql("DELETE FROM storage_partition_bound").update()
+        admin.sql("DELETE FROM storage_cohort_plan").update()
+        admin.sql("UPDATE storage_node SET clean_shutdown = true WHERE NOT clean_shutdown").update()
         // V8 refuses TRUNCATE of the append-only ledger; a DELETE is folded by its
         // trigger into bases that no longer exist, which is nothing.
         admin.sql("DELETE FROM storage_delta").update()
