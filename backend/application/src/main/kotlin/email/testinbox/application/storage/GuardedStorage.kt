@@ -583,50 +583,10 @@ class GuardedStorage(
                 if (e is Error) recordError = e
                 true
             }
-        val last = attempts.last().outcome
-        val kind =
-            when {
-                // ENOSPC is ambiguous for the reservation, but its own breaker kind (contract §8).
-                ambiguous.any { it.outcome == UploadOutcome.Ambiguous(AmbiguityKind.STORAGE_FULL) } -> PhysicalFailureKind.STORAGE_FULL
-
-                ambiguous.isNotEmpty() -> PhysicalFailureKind.AMBIGUOUS
-
-                last == UploadOutcome.Refused(UploadRefusal.QUOTA) -> PhysicalFailureKind.QUOTA
-
-                // A 403 refuses the fenced upload itself (credentials, policy, or the deadline): the metric
-                // keeps its ADR-035 §16 label; the breaker trips only inside the write window (below).
-                last == UploadOutcome.Refused(UploadRefusal.DENIED) -> PhysicalFailureKind.DEADLINE
-
-                last == UploadOutcome.NotStarted -> PhysicalFailureKind.UNAVAILABLE
-
-                else -> PhysicalFailureKind.UNAVAILABLE
-            }
+        val kind = failureKind(ambiguous, attempts.last().outcome)
         metrics.physicalFailure(kind)
         val escalatedBefore = breaker.isEscalated
-
-        // Only the trial's own real event, of the current generation, may fail the trial or escalate
-        // an ambiguity (issue #102); a stale trial's trip is any concurrent event's.
-        fun trip(breakerKind: StorageBreaker.Kind) =
-            if (trial != null) breaker.trip(breakerKind, trial, realEvent = true) else breaker.trip(breakerKind)
-        when (kind) {
-            PhysicalFailureKind.AMBIGUOUS -> trip(StorageBreaker.Kind.AMBIGUOUS)
-
-            PhysicalFailureKind.STORAGE_FULL -> trip(StorageBreaker.Kind.STORAGE_FULL)
-
-            PhysicalFailureKind.QUOTA -> trip(StorageBreaker.Kind.QUOTA)
-
-            PhysicalFailureKind.UNAVAILABLE -> trip(StorageBreaker.Kind.UNAVAILABLE)
-
-            // A 403 inside the write window: revoked or rotated credentials, a bucket policy. Nothing
-            // about the recipient. Untripped, only events that reach an upload (known, under-ceiling
-            // recipients) would get this 451, for as long as it lasts (ADR-025). Tripped, it is the
-            // pre-resolution 451 for everyone until the witness proves storage writable again, with the
-            // normal backoff, so one spurious 403 costs one backoff, never a latch. At or after the
-            // deadline the URL merely expired (one slow upload): that event's own 451, no trip.
-            PhysicalFailureKind.DEADLINE -> if (deniedInWindow) trip(StorageBreaker.Kind.DENIED)
-
-            else -> Unit
-        }
+        tripFor(kind, trial, deniedInWindow)
         if (breaker.isOpen) metrics.breakerOpen(true)
         noteEscalation(escalatedBefore)
         // Every upload that started ended definitively: nothing can still
@@ -635,6 +595,63 @@ class GuardedStorage(
         // The slot is already poisoned; a fatal Error is not swallowed.
         recordError?.let { throw it }
         return poisoned
+    }
+
+    /** The physical-failure kind of an abandoned event: what it is metered as, and what its breaker trip is. */
+    private fun failureKind(
+        ambiguous: List<Attempt>,
+        last: UploadOutcome,
+    ): PhysicalFailureKind =
+        when {
+            // ENOSPC is ambiguous for the reservation, but its own breaker kind (contract §8).
+            ambiguous.any { it.outcome == UploadOutcome.Ambiguous(AmbiguityKind.STORAGE_FULL) } -> PhysicalFailureKind.STORAGE_FULL
+
+            ambiguous.isNotEmpty() -> PhysicalFailureKind.AMBIGUOUS
+
+            last == UploadOutcome.Refused(UploadRefusal.QUOTA) -> PhysicalFailureKind.QUOTA
+
+            // A 403 refuses the fenced upload itself (credentials, policy, or the deadline): the metric
+            // keeps its ADR-035 §16 label; the breaker trips only inside the write window ([tripFor]).
+            last == UploadOutcome.Refused(UploadRefusal.DENIED) -> PhysicalFailureKind.DEADLINE
+
+            last == UploadOutcome.NotStarted -> PhysicalFailureKind.UNAVAILABLE
+
+            else -> PhysicalFailureKind.UNAVAILABLE
+        }
+
+    /**
+     * Trips the breaker for an abandoned event's [kind]. Only the trial's own
+     * real event, of the current generation, may fail the trial or escalate an
+     * ambiguity (issue #102); a stale trial's trip is any concurrent event's.
+     */
+    private fun tripFor(
+        kind: PhysicalFailureKind,
+        trial: StorageBreaker.Admission.Trial?,
+        /** The last outcome is a `403` met before the write deadline. */
+        deniedInWindow: Boolean,
+    ) {
+        val breakerKind =
+            when (kind) {
+                PhysicalFailureKind.AMBIGUOUS -> StorageBreaker.Kind.AMBIGUOUS
+
+                PhysicalFailureKind.STORAGE_FULL -> StorageBreaker.Kind.STORAGE_FULL
+
+                PhysicalFailureKind.QUOTA -> StorageBreaker.Kind.QUOTA
+
+                PhysicalFailureKind.UNAVAILABLE -> StorageBreaker.Kind.UNAVAILABLE
+
+                // A 403 inside the write window: revoked or rotated credentials, a bucket policy. Nothing
+                // about the recipient. Untripped, only events that reach an upload (known, under-ceiling
+                // recipients) would get this 451, for as long as it lasts (ADR-025). Tripped, it is the
+                // pre-resolution 451 for everyone until the witness proves storage writable again, with the
+                // normal backoff, so one spurious 403 costs one backoff, never a latch. Within eps_max of the
+                // deadline, or after it, the URL may merely have expired (one slow upload): that event's own
+                // 451, no trip.
+                PhysicalFailureKind.DEADLINE -> if (deniedInWindow) StorageBreaker.Kind.DENIED else null
+
+                else -> null
+            } ?: return
+        if (trial != null) breaker.trip(breakerKind, trial, realEvent = true) else breaker.trip(breakerKind)
     }
 
     /** Issue #102: an escalation is a stable `451` that only evidence or a restart clears, so it is said once, loudly. */
