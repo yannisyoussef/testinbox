@@ -612,3 +612,21 @@ and ingestion refuse readiness (the schema does not match their bundle). A
 rolled-back artifact (V23 or earlier) runs on the V24-only schema as "schema
 ahead", which is healthy: V24 is expand-only and its triggers run inside the
 base writers' own transactions.
+
+## T1 delta indexes (gate D mode a correction A2, schema V26)
+
+V26 is expand-only: two indexes on `storage_delta`
+(`ix_storage_delta_workspace (workspace_id) INCLUDE (bytes, objects)` and
+`ix_storage_delta_inbox (inbox_id) INCLUDE (bytes, objects)`), no table,
+column, function, trigger or grant. An older artifact runs on it unchanged:
+its statements read the same rows and the planner may use the indexes. The
+T1 statement text of the same change (A1, A3) is in the artifact, not the
+schema, so rolling the artifact back restores the 9d06ab2 statement, which
+returns the same figures (`AdmissionStatementEquivalenceTest`).
+
+The build holds `SHARE` on `storage_delta` for its duration, which queues the
+ledger triggers' inserts (T2, retention, cleanup) behind it; the table holds
+one compaction interval of rows, so that is short. No new floor in
+`deploy/rollback-floors.txt`, no change to `roles.reference.sql` or
+`deploy/backup/scope.txt`. A failed V26 leaves V25 applied and is roll
+forward only, like V25 above.

@@ -4,6 +4,7 @@ import email.testinbox.application.storage.AdmissionLocking
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
 import org.junit.jupiter.api.Test
@@ -15,9 +16,14 @@ import java.security.MessageDigest
 /**
  * Switch off = mode a, byte for byte. The share-partitioned T1 (PROPOSED,
  * gate D W1) shares the statement's per-workspace and per-inbox parts with mode
- * a, so mode a's text is now ASSEMBLED; these SHA-256 values are the texts the
- * adapter sent at 9d06ab2, before any partitioned code existed. A change here is
- * a change to the accepted T1, and needs its own review.
+ * a, so mode a's text is now ASSEMBLED. A change here is a change to the
+ * accepted T1, and needs its own review.
+ *
+ * - Without the footprint reads: the text the adapter sent at 9d06ab2.
+ * - With them: the 9d06ab2 text with gate D's mode a corrections A1 and A3
+ *   (owner decision 2026-11-06, #124), reviewed as one change. The 9d06ab2 text
+ *   (`199482a1…`) is kept as the OLD fixture of `AdmissionStatementEquivalenceTest`,
+ *   which proves the two return the same rows on the same states.
  */
 class AdmissionStatementTextTest {
     private val jdbc = JdbcClient.create(SimpleDriverDataSource())
@@ -31,16 +37,26 @@ class AdmissionStatementTextTest {
     ) = JdbcStorageAdmission(jdbc, TransactionTemplate(), readsFootprint = readsFootprint, locking = locking)
 
     @Test
-    fun `mode a's statement is unchanged from 9d06ab2, with and without the footprint reads`() {
+    fun `mode a's statement is 9d06ab2's without the footprint reads, and 9d06ab2's with A1-A3 with them`() {
         sha256(store(readsFootprint = false).snapshotStatement) shouldBe "6cc082aab4d6b1ea044fe0d56f8b4bf938c1b8b3c96950053ade3c8039d3d594"
-        sha256(store(readsFootprint = true).snapshotStatement) shouldBe "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0"
+        sha256(store(readsFootprint = true).snapshotStatement) shouldBe A1_A3
+    }
+
+    @Test
+    fun `the equivalence fixture is 9d06ab2's text, the one A1-A3 replaced`() {
+        val fixture =
+            checkNotNull(
+                javaClass.getResourceAsStream("/admission-equivalence/t1-mode-a-9d06ab2.sql"),
+            ).use { it.readAllBytes().decodeToString() }
+        sha256(fixture) shouldBe "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0"
+        sha256(store(readsFootprint = true).snapshotStatement) shouldNotBe sha256(fixture)
     }
 
     @Test
     fun `mode a builds no partitioned statement, and the partitioned store keeps mode a's for its fallback`() {
         store(readsFootprint = true).partitionedStatement.shouldBeNull()
         val partitioned = store(readsFootprint = true, locking = AdmissionLocking.COHORT_PARTITIONED)
-        sha256(partitioned.snapshotStatement) shouldBe "199482a15a80d0fdcf0f786fca3dfb268a7b982dd54b86733761fff9c326eaa0"
+        sha256(partitioned.snapshotStatement) shouldBe A1_A3
     }
 
     @Test
@@ -74,5 +90,10 @@ class AdmissionStatementTextTest {
         JdbcStorageAdmission.workspaceLockKeys(listOf(b, a, b)) shouldBe listOf(a.hashCode(), b.hashCode()).sorted()
         // UUID.hashCode is specified: (hi >> 32) ^ hi ^ (lo >> 32) ^ lo, folded to an int.
         a.hashCode() shouldBe 3
+    }
+
+    private companion object {
+        /** Mode a with the footprint reads after gate D A1 and A3 (the 9d06ab2 text plus those two rewrites). */
+        const val A1_A3 = "0135227453cb5afa256e598593e7d421f36a1c90174d816b7c98b92e59fd6b2a"
     }
 }
