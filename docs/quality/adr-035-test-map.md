@@ -135,3 +135,16 @@ Amendment D, the closed-beta workload envelope (owner decision 2026-11-06):
 | R_gated is exported as one unlabelled gauge, absent while undeclared | observability `MetricCardinalityTest` |
 | Gate D judges the evidence at the R_gated every node declares, refuses any other expected rate, keeps every other criterion at 2R | `scripts/check-storage-activation.test.sh` (16 cases); harness `AdrConformanceTest` |
 | Gate W blocks `ALL` while no plan exists and the population exceeds the nodes' 30 + L; absent or disagreeing bounds block; a plan defers to gate G | `scripts/check-storage-activation.test.sh` (9 cases) |
+
+The pre-T1 `INGEST` refund (owner decision 2026-11-06, #124 comment 6678047827; ADR-027 §4 as amended):
+
+| Property | Where |
+|---|---|
+| Owner test 1: a within-budget message deferred before T1 (no write slot) is stored exactly once on the edge's retry; its inbox and workspace tokens come back, and the retry is charged once | I `IngestRefundIntegrationTest`; A `IngestRefundTest` |
+| Owner test 2: repeated deferrals and concurrent refunds never put a bucket above capacity at any instant (a CHECK constraint) and admit no more than C + r × elapsed | I `IngestRefundIntegrationTest`; P `RateRefundTest` |
+| Owner test 3: T1 lock timeout, any other T1 failure, after-T1 failure, missed write deadline, ambiguous upload, T2 failure before and inside the commit keep their charges; the guarded path never classifies them as refused before T1 | I `IngestRefundIntegrationTest`; A `IngestRefundTest` |
+| Owner test 4: a five-recipient, two-workspace event refunds exactly the five tokens taken (inbox + workspace, inbox only after a workspace refusal), nothing for an inbox-refused or unknown copy | I `IngestRefundIntegrationTest`; A `IngestRefundTest` |
+| A refund is claimed at most once per attempt, even by racing threads; a kept attempt can never be refunded; a failed refund is not retried, keeps the charges and leaves the `451`'s cause unchanged | A `IngestRefundTest` |
+| A refund refills on the spend's clock, clamps at capacity, never recreates a deleted bucket, is all-or-nothing across buckets; spend-then-refund equals an untouched bucket | domain `TokenBucketTest`; P `RateRefundTest` |
+| Only `ReceiveInboundDelivery.refundBeforeT1` calls `RateLimiter.refund`; only `GuardedStorage.attempt` constructs `RefusedBeforeT1` | AR `IngestRefundRuleTest` |
+| `testinbox_rate_refund_total{category,outcome}` is closed-label and counted in tokens | observability `MicrometerLimitMetricsTest`, `MetricCardinalityTest` |

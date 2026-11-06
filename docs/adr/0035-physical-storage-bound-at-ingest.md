@@ -2419,14 +2419,36 @@ The full Ops-facing account, with the numbers, is
   `DATA` is answered `451` and nothing commits. The edge keeps the message and
   retries no sooner than 120 s later (`minimal_backoff_time`), until its 4 h
   queue lifetime (§12). The budget check comes first, so a discarded copy
-  never waits for a slot. The slot is taken after the copies were charged,
-  so the edge's retry of a slot-wait `451` is charged again and may be
-  discarded if the budget has run out by then. A `451` from an open breaker,
-  the latch or the activation guard is decided before any recipient resolves
-  and charges nothing.
+  never waits for a slot. The slot is taken after the copies were charged.
+  Since the owner decision of 2026-11-06 (#124 comment
+  [6678047827](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6678047827),
+  recorded in ADR-027 §4), an event refused **before T1 starts** (no slot
+  within `W_slot`, the breaker, the latch or the activation guard raced in
+  after the pre-resolution check) has the `INGEST` tokens it took given back,
+  at most once and never above capacity, so its retry is charged once and a
+  within-budget message is not discarded because of its own deferral. A `451`
+  from T1 on (lock timeout, missed write deadline, failed or ambiguous upload,
+  fenced or failed T2) keeps its charges, as before. A `451` from an open
+  breaker, the latch or the activation guard decided before any recipient
+  resolves charges nothing. Every `451` path is classified in
+  `docs/dev/beta-limits.md` ("Which `451`s are refunded").
+- **The admitted T1 rate stays within the envelope with refunds.** For one
+  bucket (capacity C, refill r), tokens plus outstanding charges rises only by
+  refill (≤ r per second); a spend moves a token to outstanding, keeping a
+  charge removes one, and a refund returns at most the one it took, clamped at
+  C. So from any instant with no outstanding charge, the charges kept over T
+  seconds are at most C + r·T, and in general the bound gains only the charges
+  in flight at its start, the term the limiter had before refunds. A copy
+  reaches T1 only with its charges kept (a refunded event never reached T1),
+  so each workspace brings at most b + r·T copies to T1, and the sustained T1
+  event rate is still at most r × (30 + L) = R = 31 events/s. A refund
+  returns budget a refused event borrowed; it adds none, and changes neither
+  R nor b nor anything gate D measures.
 - Under the burst residual, each workspace may present up to 60 copies at
   once (31 × 60 = 1 860 across the cohort). Part of a burst may wait the full
   `W_slot`, be answered `451` and arrive only after the edge's retry, or later.
+  That is a delay, not a loss: the deferred attempt's charges are refunded, so
+  deferred-then-discarded mail is not part of the residual.
 - "Every other gate D criterion unchanged" means: concurrency
   1/10/25/50/100; 1 000 live reservations plus a compaction interval's deltas;
   ≥ 10 000 workspaces; the multi-recipient mix; 2R sustained at ≥ 0.995 and
@@ -2465,7 +2487,11 @@ covered by the R = 31 evidence.
     activation guard answers `451` for every event before any recipient
     resolves, exactly like a broken node inventory. That is a
     deployment-wide refusal, never a per-workspace one (I9). It clears on the
-    next pass that finds the population back inside the bound.
+    next pass that finds the population back inside the bound. The bound is
+    checked at startup and on every 10 s heartbeat pass, so a workspace
+    created between two passes can receive mail for up to 10 s before the
+    global `451`. Beta admission, which creates the workspaces, holds the
+    global admission lock `(35, 1)` while it does.
   - *Once a plan exists*, the pool bounds the population: every workspace must
     hold a share, and a pool with more legacy shares than L is never proven,
     reserved or approved (admission answers `CAPACITY_UNAVAILABLE`).

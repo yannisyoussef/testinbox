@@ -57,6 +57,7 @@ have queried a series that does not exist. `MetricCardinalityTest` asserts the
 | `testinbox_wait_listen_degraded_polling` | gauge | — | **1 while notifications are not being delivered** |
 | `testinbox_object_storage_operation_duration_seconds` | timer | `operation`, `outcome` | Every blob operation |
 | `testinbox_rate_decision_total` | counter | `category`, `outcome` | ADR-027 rate decision |
+| `testinbox_rate_refund_total` | counter | `category`, `outcome` (`refunded`/`failed`) | `INGEST` tokens given back for an event refused before T1, or kept because the refund failed (owner decision 2026-11-06; counted in tokens) |
 | `testinbox_quota_rejected_total` | counter | `quota` | ADR-027 quota refusal |
 | `testinbox_wait_slot_rejected_total` | counter | — | Concurrent-wait admission refusal |
 | `testinbox_wait_slots_active` | gauge | — | Held wait slots |
