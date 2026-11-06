@@ -1,6 +1,7 @@
 # TI-DELIVERY-002 / 002b — controlled-beta readiness checkpoint
 
-Updated: 2026-10-30 (TI-DELIVERY-002b).
+Updated: 2026-10-30 (TI-DELIVERY-002b); staged acceptance, the Ops list (gate D)
+and the rollback floor corrected 2026-11-04 for the admission release.
 
 ## Goal
 
@@ -40,7 +41,9 @@ permission) must perform: `gh pr ready 117 && gh pr merge 117 --merge
    (`test:accounts` with `TESTINBOX_ACCOUNTS_EXPECTED=disabled`).
 4. Retarget #120 to develop; re-run CI on its resulting head; merge with the
    same conditions; re-verify staging (V23, `account_deletion` = 0).
-5. Staged acceptance (below) with Ops, using staging-only enablement.
+5. Staged acceptance (below) with Ops, using staging-only enablement. Staging
+   admission needs the full storage path first (enforcement `ALL`, a reserved
+   pool, gate G PASS, `capacity_ready`); storage `OFF` never admits.
 
 ## Baseline (verified 2026-10-30)
 
@@ -145,7 +148,9 @@ Before the first lifecycle or admission command:
     `human_account(state)`, `beta_admission`, ALL on `account_deletion`;
     revoke `TEMPORARY`. *App side for the V22 tables carried in
     `roles.reference.sql` since develop (`UPDATE (id)` only on
-    `human_account`); the `TEMPORARY` revocation is Ops-owned
+    `human_account`), and `ALL ON account_deletion` since the admission
+    release (reference sha256 `88b1348b…bdf40`, to be pinned by Ops with
+    that release); the `TEMPORARY` revocation is Ops-owned
     (`roles.sql.inc`).*
 
 Before registration:
@@ -170,9 +175,17 @@ Before production ALL:
     the record's).
 22. Gate Q and gate F (`--environment production`) against the new record.
 23. `synthetic.sh` exports `TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED`.
-24. Activation: activation script (gate G DEFERRED) → record the floor → ALL on
-    API then ingestion → `storage-budget reserve` → `check` → activation script
-    with gate G PASS bound to the pool file → `capacity_ready`.
+24. Gate D: the ADR-035 §11 global-admission benchmark PASS on the staging
+    host class, with the production-faithful harness (T1 assembled with
+    `readsFootprint = true`), on the final candidate's T1 and ledger code
+    ([storage-benchmark.md](../../dev/storage-benchmark.md)). Without its
+    evidence `check-storage-activation.sh --mode ALL` reports gate D NOT_RUN
+    or BLOCKED and can never reach DEFERRED or READY.
+25. Activation: activation script (gate G DEFERRED) → the rollback floor
+    (recorded by the admission release: `a00c16e`) → ALL on API then ingestion
+    → `storage-budget reserve` → `check` → activation script with gate G PASS
+    bound to the pool file → `capacity_ready` (the schema-owner statement in
+    [production.md](../../dev/production.md#setting-capacity_ready-schema-owner-sql)).
 
 ## Configuration, migration, backup and semantic rollback
 
@@ -189,8 +202,9 @@ Before production ALL:
 - Rollback: d17044d runs on V22/V23 (never writes account state); once any
   account/participant exists, hold-first only. Operator commands only from an
   image at or above the #120 floor. Once ALL is set, pre-002b artifacts refuse
-  to start. Record the floor commit in `deploy/rollback-floors.txt` before the
-  first admission.
+  to start. The lifecycle semantic floor `a00c16e` is recorded in
+  `deploy/rollback-floors.txt` by the admission release, before the first
+  admission (rollback.md, "Account lifecycle semantic floor").
 
 ## Remaining genuine blockers
 
@@ -208,27 +222,49 @@ Before production ALL:
 
 ## Staged acceptance (staging, with Ops)
 
+**Admission needs the storage path on every environment, staging included.**
+`AdmitBetaParticipant` admits only when `capacity_ready` is true **and** the
+live readiness collaborator agrees, and that collaborator's `cohort.ready`
+(`CohortStorage.kt`) returns false unless storage enforcement is `ALL` and an
+approved, reserved, matching cohort pool exists (ADR-037 §2/§7). This is
+intended and is not relaxed for staging or a lab: with storage `OFF` every
+admission answers `CAPACITY_UNAVAILABLE`, whatever the flags. Sign-in, the
+waitlist and the lifecycle commands do not need it; admission does.
+
 1. Readiness UP; synthetics green incl. the API-host `/account` edge check;
    `test:accounts` matching the declared state.
-2. Staging-only enablement (accounts on, admissions via
+2. Storage path on staging, in this order, before any admission:
+   1. `ALL` on staging (API first, then ingestion) with staging's eligible
+      qualification record and complete declarations; readiness, no
+      admission latch, synthetics with `TESTINBOX_STORAGE_ENFORCEMENT_EXPECTED=ALL`;
+   2. `storage-budget reserve` with the reviewed pool file (`admissions_open`
+      and `capacity_ready` both false), then `storage-budget check`;
+   3. the activation script with `--cohort-check-output` and
+      `--cohort-pool-file`: gate G PASS (`ACTIVATION READY`);
+   4. `capacity_ready` set by the schema owner
+      ([production.md](../../dev/production.md#setting-capacity_ready-schema-owner-sql)).
+3. Staging-only enablement (accounts on, admissions via
    `admission resume --open-beta`), then: one sign-in per method with the real
    integrations; distinct visitor budgets through Cloudflare → Traefik → site
    → API (`outcome="trusted"`), forged `X-Forwarded-For` / `X-TestInbox-*`
    ignored; concurrent admissions never exceed the cap; `admission pause` →
    CLOSED for newcomers, existing users unaffected.
-3. `account-lifecycle suspend` → session and key refused, address answers like
+4. `account-lifecycle suspend` → session and key refused, address answers like
    an unknown recipient, `status` SETTLED; `resume` → old key still refused;
    `delete` → `process-deletions` reaches ERASED; seat stays spent.
-4. Restore drill on a staging copy: quarantine, all managed keys refused,
+5. Restore drill on a staging copy: quarantine, all managed keys refused,
    `restore-reconcile`, re-key, synthetics.
-5. Close again: accounts off, `admission pause`.
+6. Close again: accounts off, `admission pause`, then `capacity_ready` back
+   to false if the pool is to change (see production.md).
 
 ## Plan to open the 30-account beta and pause new admissions
 
 Open (only after the final consolidated authorization):
-1. Blockers above cleared; candidate promoted; Ops items 1–24 done.
-2. Record the semantic rollback floor.
-3. Storage: ALL (API first) → reserve pool → gate G PASS → `capacity_ready`.
+1. Blockers above cleared; candidate promoted; Ops items 1–25 done.
+2. The semantic rollback floor (`a00c16e`) is in `deploy/rollback-floors.txt`
+   (admission release).
+3. Storage: ALL (API first) → reserve pool → gate G PASS → `capacity_ready`
+   (schema-owner SQL, production.md).
 4. Client-address secret on API and site; enable accounts on both; verify
    `test:accounts` (enabled); then `admission resume --open-beta`.
 5. Watch admissions, client-address outcomes, budget refusals, footprint
