@@ -479,8 +479,11 @@ The owner accepted this extension **conditionally** (#124 comment
   observation, not as a universal timing bound;
 - the wording is reconciled with the final scheduling design.
 
-The edge is treated as **public**: it listens on `0.0.0.0:25`, has a live MX,
-and Ops observed it (6686107928).
+The edge is **internet-facing**: it listens on `0.0.0.0:25`, has a live MX,
+and Ops observed it (6686107928). The owner confirmed that public inbound
+SMTP and the MX were authorized for the owner-only production beta launch
+(#124 comment 6686330363). Ops records the listener going live at
+2026-10-28 18:07:03Z and the MX at 18:12:03Z (6686375458).
 
 **Observation model.** The bounds hold only under all of these:
 
@@ -1096,6 +1099,4 @@ Only privacy, delivery-policy and resource trade-offs are listed here.
    - live ETRN refusal (Ops);
    - the reload effect (AT-23, Ops);
    - operator flushes counted in K.
-
-   The public MX question is with the owner separately (#124).
 
