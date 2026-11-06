@@ -27,7 +27,21 @@
 | 4 | Residuals | Minimise them, then present one list. None is accepted now. A duplicate concurrent attempt is deferred, not charged fresh. Expiry cleanup is kept apart from loss. Nothing is called "rare" without a bound. |
 
 **The reviews.** Every change requested by both reviews is adopted. Each is
-cited at the invariant (I-) or acceptance test (AT-) that carries it.
+cited at the invariant (I-) or acceptance test (AT-) that carries it. The
+second round on `94242c5`, AGREE WITH CHANGES from both reviewers, is
+applied in full:
+
+- T1's statement order;
+- the scheduling-token scope of I-1, and I-2 scoped to `INGEST` buckets;
+- the partitioned fallback (I-18);
+- the release and forfeit `lock_timeout` (I-14);
+- the `INSERT … ON CONFLICT` escrow;
+- the orphaning causes (RL-2);
+- the production-pin run (§7);
+- ETRN closed at the edge (§6);
+- the S-C2 wording, and I-20;
+- the corrected trade-off (d)3;
+- the `abuse-model.md` text.
 
 **Superseded:**
 - the immediate refund (#143);
@@ -148,18 +162,24 @@ T. Every known infrastructure path is typed.
    copy, in one transaction:
    - if the copy has a held row, **redeem** it, spending only a missing
      workspace token (narrow-first);
-   - otherwise **charge and escrow**: insert the held row, lock the buckets,
-     spend inbox then workspace, and record what was taken. An insert
-     conflict is `HOLD_BUSY`.
+   - otherwise **charge and escrow**. The copy's transaction first runs
+     `INSERT … ON CONFLICT DO NOTHING` of its held row.
+     - Zero rows inserted means `HOLD_BUSY`. That transaction spends nothing,
+       and the attempt releases the rows it has already escrowed.
+     - Otherwise the transaction locks the buckets, spends the inbox token
+       and then the workspace token, and records what was taken.
 
    Held rows whose recipient no longer resolves are forfeited at the end.
 4. **Slot.** A *pure retry* (every copy redeemed) whose workspace is at its
    per-node cap is answered `451` at once, without the `W_slot` wait (I-17).
 5. **Schedule.** One scheduling token, in its own transaction (§2.3).
-6. **T1.** One transaction:
-   - `SET LOCAL lock_timeout`;
-   - `DELETE FROM ingest_allowance WHERE held_by = :attempt AND hold_until > now()`,
-     which must delete exactly the expected count. Otherwise T1 rolls back
+6. **T1.** One transaction, in this order:
+   - `configureTransaction()` first. `SET TRANSACTION ISOLATION LEVEL READ
+     COMMITTED` must be its first statement;
+   - then its `SET LOCAL`s;
+   - then the consume
+     `DELETE FROM ingest_allowance WHERE held_by = :attempt AND hold_until > now()`.
+     It must delete exactly the expected count. Otherwise T1 rolls back
      without writing: `HOLD_LOST`;
    - then `pg_advisory_xact_lock(35,1)`, the one-statement snapshot and the
      reservation inserts, all unchanged;
@@ -179,8 +199,10 @@ T. Every known infrastructure path is typed.
 - **Any other ending, and a `250` without storage.** **Forfeit:**
   `DELETE … WHERE held_by = :attempt`. It resolves itself the same way, and
   the charges stand as today.
-- **Release or forfeit timing out.** Both use a bounded `lock_timeout`. On
-  timeout, the hold expires (I-14).
+- **Release and forfeit timing.** Both use a `lock_timeout` of at least T1's
+  `lock_timeout` plus a statement margin. The database therefore settles the
+  T1 outcome in every case except process death. A release or forfeit that
+  still times out leaves the hold to expire (I-14, RL-2).
 
 **Cleanup.** A reaper deletes expired rows every 5 min. Every row is gone
 within `expires_at` + 10 min.
@@ -217,13 +239,28 @@ Under `ALL`, `DeploymentSafety` refuses R_s ≠ R_gated, and B_s > R_s × 1 s.
 - A fresh event waits for a token up to its remaining `W_slot`. A pure retry
   does not wait (I-17).
 - A refusal is `SCHEDULE_WAIT`, which is in T, so the allowance is kept.
+- Each T1 transaction spends exactly one token. Under `COHORT_PARTITIONED`
+  (lab only), a fallback to mode a is a second T1 transaction and spends a
+  second token.
+- A scheduling token is never returned.
 
 **Fairness.** Only slot holders contend for tokens, at most 4 per workspace
-per node. Slot fairness (ADR-035 §4) therefore carries over.
+per node. Slot fairness (ADR-035 §4) therefore carries over. Fresh events
+wait for a token while they hold their write slot, so a burst can turn
+scheduling waits into `SLOT_WAIT` deferrals for other events (§7 measures
+this, §8(d)1).
 
 **Why global.** A refusal is a load `451` for the whole `DATA`, never chosen
 per tenant, which is how I9 is written. A per-workspace refusal would add a
 per-tenant channel, so it is not proposed.
+
+**`abuse-model.md` text, for the implementation round:**
+
+> A T1 scheduling refusal (`SCHEDULE_WAIT`) reveals aggregate T1 load only.
+> It is recorded as a global-load `451` under ADR-035 I9 as written ("it
+> reports storage, database or load failure for the whole `DATA`, and it is
+> never chosen per tenant"). It is **not** recorded under ADR-037 A2, and
+> **not** under the 2026-11-06 timing-disclosure exception or its extension.
 
 ### 2.4 Disposition of #143
 
@@ -236,6 +273,13 @@ per-tenant channel, so it is not proposed.
     `created`, `redeemed`, `released`, `consumed`, `consumed_then_deferred`,
     `forfeited`, `orphaned`, `orphan_forfeited`, `hold_busy`, `hold_lost`,
     `expired`, `expired_on_redeem`;
+  - `testinbox_ingest_allowance_orphaned_total{cause}`, where `cause` is one
+    of:
+    - `release_timeout`, emitted by the holder when its release or forfeit
+      times out;
+    - `stall`, emitted by the holder on `HOLD_LOST`;
+    - `unattributed`, emitted at recovery when no holder reported, i.e.
+      process death;
   - `testinbox_t1_schedule_total{outcome}`;
   - `testinbox_smtp_transactions_total{identity}`;
   - `testinbox_ingest_allowance_oldest_seconds`.
@@ -279,7 +323,7 @@ rolls back.
   sustained, plus bursts.
 - So the backlog drains whenever aggregate demand is below R (RL-3).
 
-**Conservation (I-2).** For every bucket:
+**Conservation (I-2).** For every `INGEST` bucket:
 
 > tokens spent = copies whose T1 committed + allowances outstanding +
 > allowances forfeited + allowances expired + copies discarded by the
@@ -292,11 +336,14 @@ An inbox-only row deleted by a committed T1 counts in the last term.
 **Observation model.**
 
 - The observer is an authenticated participant.
-- It reaches ingestion only through the edge. That is S-C2, enforced by the
-  single-host `xforward-peers`.
+- It reaches ingestion only through the edge. That is S-C2 (network: only the
+  edge reaches ingestion SMTP), enforced under deployed `ALL` by I-20.
+  `xforward-peers` only prevents identity forgery.
 - It reads only its own co-addressed copy's eventual delivery time:
   `receivedAt` against the edge's `Received:` time.
-- The edge retry schedule is pinned (§6).
+- The edge retry schedule is pinned (§6). It excludes operator-initiated
+  flushes (`postqueue -f`, `postsuper -r`). No SMTP client can trigger an
+  early retry, because ETRN is refused (§6).
 - Concurrency limits: edge 20; slots 16 per node and 4 per workspace;
   scheduling 31 + 31/s.
 
@@ -328,7 +375,12 @@ An inbox-only row deleted by a committed T1 counts in the last term.
 >
 > This holds under the reviewed edge retry schedule (`minimal_backoff_time`
 > 120 s, `maximal_backoff_time` 600 s, `queue_run_delay` 120 s,
-> `maximal_queue_lifetime` 4 h), the enforced concurrency limits (edge
+> `maximal_queue_lifetime` 4 h). That schedule excludes operator-initiated
+> flushes (`postqueue -f`, `postsuper -r`), and no SMTP client can trigger an
+> early retry, because the edge refuses ETRN (`smtpd_etrn_restrictions =
+> reject`, `fast_flush_domains` empty). It also holds under S-C2 (network:
+> only the edge reaches ingestion SMTP; `xforward-peers` only prevents
+> identity forgery), the enforced concurrency limits (edge
 > `relay_destination_concurrency_limit` 20; 16 write slots per node, 4 per
 > workspace; T1 scheduling 31 + 31/s) and the observation model of the
 > deferral-allowance design §4. Under those conditions, one paid probe
@@ -369,6 +421,24 @@ An inbox-only row deleted by a committed T1 counts in the last term.
 - `smtpd_authorized_xclient_hosts: ""`;
 - `relay_destination_concurrency_limit: "20"`. Today it is inherited from
   `default_destination_concurrency_limit` and not pinned.
+- `smtpd_etrn_restrictions: reject`;
+- `fast_flush_domains: ""`.
+
+**ETRN, observed 2026-11-06** on `testinbox-mail-edge:rehearsal` (Postfix
+3.8.6) with the contract's acceptance settings. The template sets neither
+key, so the Postfix defaults apply: `smtpd_etrn_restrictions` is empty and
+`fast_flush_domains = $relay_domains`.
+
+- Today's edge advertises `ETRN` in EHLO.
+- From a non-`mynetworks` client, `ETRN inbox.testinbox.email` gets
+  **`250 Queuing started`**.
+- With the two keys above, it gets
+  `554 5.7.1 <inbox.testinbox.email>: Etrn command rejected: Access denied`.
+
+So any SMTP client of a host rendered from today's contract can force an
+early flush of deferred tenant mail. **This exposure exists today,
+independent of this design. Ops must close it** on the real edge (verify
+the host, then reconcile), not only in this repository's contract.
 
 **Already pinned, now load-bearing:**
 
@@ -383,8 +453,16 @@ An inbox-only row deleted by a committed T1 counts in the last term.
 - δ ≤ 15 min, and `expires_at` = `maximal_queue_lifetime` + δ;
 - H ≥ W_slot + probe timeout + resolution deadline + 30 s.
 
+**Ingestion peer gate (I-20).** Under deployed `ALL`, ingestion refuses a
+connection from any peer that is in neither `xforward-peers` nor the
+explicit `testinbox.ingestion.smtp.trusted-clients` list. The decision is
+per peer, at connect time, through SubEthaSMTP's `SessionHandler`, and is
+independent of any recipient. This turns S-C2 from a network assumption into
+an enforced check.
+
 **Ops:**
 
+- Close ETRN on the real edge (above).
 - Enable long queue IDs while the edge is still dormant, before any relay
   (RL-7).
 - Add an `ops_activation_prerequisites` entry.
@@ -393,6 +471,7 @@ An inbox-only row deleted by a committed T1 counts in the last term.
 **`DeploymentSafety` refuses `ALL` when:**
 
 - `xforward-peers` is empty or contains anything other than single hosts;
+- `trusted-clients` contains anything other than single hosts;
 - the scheduling pins (§2.3) do not hold;
 - the hold inequality does not hold.
 
@@ -429,6 +508,14 @@ measured path.
   - `slotQueueingDeadlineMisses` and the sustained ratio show
     `scheduleSpend`;
   - deadlocks and other errors.
+- **One additional run at R with the production pins** (R_s = 31, B_s = 31).
+  It reports:
+  - the `SCHEDULE_WAIT` rate;
+  - slot occupancy, because fresh events wait for a token while holding a
+    slot;
+  - `slotQueueingDeadlineMisses`.
+
+  The non-binding 2R run stays.
 - **A′.** The run may be combined with the A′ rerun if the owner confirms
   the run 3 paper's points.
 
@@ -442,9 +529,11 @@ Ops reconcile of §6.
 
 ### (a) Invariants
 
-1. **I-1 No credit.** A bucket's `tokens` rises only by refill.
+1. **I-1 No credit.**
+   - A bucket's `tokens` rises only by refill.
+   - This also holds for `t1_schedule`: a scheduling token is never returned.
 2. **I-2 Conservation.**
-   - For every bucket: tokens spent = copies whose T1 committed +
+   - For every `INGEST` bucket: tokens spent = copies whose T1 committed +
      allowances outstanding + allowances forfeited + allowances expired +
      copies discarded by the limiter after a spend.
    - Each allowance is consumed at most once, and only in the transaction
@@ -493,6 +582,9 @@ Ops reconcile of §6.
     - `hold_until − now()` ≥ W_slot + the longest pre-T1 path + 30 s.
     - Release and forfeit act only `WHERE held_by = :attempt`, so a stolen
       hold makes them a no-op.
+    - Release and forfeit use a `lock_timeout` of at least T1's
+      `lock_timeout` plus a statement margin. The database therefore settles
+      the T1 outcome in every case except process death.
 15. **I-15 XFORWARD per transaction.**
     - IDENT is cleared on `RSET`, `HELO`/`EHLO` and the end of `DATA`.
     - `XFORWARD` after `MAIL` gets `503`; from a non-peer it gets `550`.
@@ -506,11 +598,20 @@ Ops reconcile of §6.
       the global bucket (31 + 31/s), taken after the slot.
     - So S(t, T) ≤ 31 + 31·T + 16·nodes.
     - A refusal is in T.
+    - There is one scheduling spend per T1 transaction. Under
+      `COHORT_PARTITIONED` (lab only), a fallback to mode a is a second T1
+      transaction and spends a second token.
 19. **I-19 Rollback.**
     - An allowance survives T1 exactly when T1's transaction did not commit.
     - The database decides this, through the consume inside T1 and the
       row-locked release or forfeit. The client's view of the commit never
       decides it.
+20. **I-20 Peer gate.**
+    - Under deployed `ALL`, ingestion refuses a connection from any peer that
+      is in neither `xforward-peers` nor `trusted-clients` (single hosts
+      only).
+    - The decision is made at connect time and depends only on the peer
+      address.
 
 ### (b) Acceptance tests
 
@@ -531,6 +632,8 @@ They run on Testcontainers Postgres and MinIO, with the real
    - Two same-IDENT attempts behind a barrier: the second gets `HOLD_BUSY`
      and spends nothing.
    - After the first defers, the retry redeems.
+   - Two concurrent FIRST deliveries of one IDENT (no rows yet): at most one
+     escrows each copy, no token is spent twice, and I-2 holds.
 4. **AT-4 Expiry and cleanup.**
    - A row past `expires_at` is not redeemed. It counts as
      `expired_on_redeem`.
@@ -588,9 +691,11 @@ They run on Testcontainers Postgres and MinIO, with the real
     - IDENT is present, stable across `451` and an edge restart, and
       distinct for identical sends.
     - The edge refuses a sender's `XFORWARD`.
+    - The edge refuses ETRN (`554 5.7.1`).
     - Only IDENT reaches ingestion.
     - Ingestion observes the edge's address.
-    - Removing any §6 key fails the mutation suite.
+    - Removing any §6 key fails the mutation suite, including
+      `smtpd_etrn_restrictions` and `fast_flush_domains`.
 12. **AT-12 Reply class.**
     - Replies with allowances are always ones a fresh in-budget event could
       receive (I-9).
@@ -620,9 +725,11 @@ They run on Testcontainers Postgres and MinIO, with the real
 19. **AT-19 Restore, grants, deployment.**
     - `check-backup-scope` refuses a dump with `ingest_allowance` rows.
     - No API or console role can read the table.
-    - `DeploymentSafety` refuses `ALL` with an empty or non-single-host
-      `xforward-peers`, with broken scheduling pins, or with a broken hold
-      inequality.
+    - `DeploymentSafety` refuses `ALL` with any of: an empty or
+      non-single-host `xforward-peers`, a non-single-host `trusted-clients`,
+      broken scheduling pins, or a broken hold inequality.
+    - I-20: under deployed `ALL`, a peer in neither list is refused at
+      connect. A listed trusted client connects, and gets no identity.
 
 ### (c) Residuals
 
@@ -637,12 +744,16 @@ None of these is accepted. Each needs the owner's explicit acceptance.
      `testinbox_storage_physical_failure_total{kind}`.
    - *Minimisation done:* consume-in-T1 closed the earlier crash-before-T1
      window. The remaining window opens only after T1 has committed.
-2. **RL-2 Second process death.**
-   - *Mechanism:* two ingestion process deaths, each within the H = 120 s
-     hold of an attempt of the same queue file.
-   - *Metric:* `orphan_forfeited`.
-   - *Minimisation done:* one recovery covers any single restart. The cap
-     stops a crash-on-input loop from keeping a reusable allowance.
+2. **RL-2 Second orphaning.**
+   - *Mechanism:* an attempt outlives its hold H. That happens on process
+     death, a stall, or a release or forfeit that timed out. It uses up the
+     single orphan recovery, so a second orphaning of the same queue file's
+     allowance forfeits it.
+   - *Metrics:* `orphaned{cause}` and `orphan_forfeited`.
+   - *Minimisation done:* one recovery covers any single restart or stall.
+     The release and forfeit `lock_timeout` (I-14) removes the timeout cause
+     except under process death. The cap stops a crash-on-input loop from
+     keeping a reusable allowance.
 3. **RL-3 Edge expiry.** This is genuine loss, unchanged (ADR-035 §12).
    - *Mechanism:* a T-class condition that persists for more than 4 h. Or a
      scheduling backlog that cannot drain, because aggregate demand stays at
@@ -651,10 +762,13 @@ None of these is accepted. Each needs the owner's explicit acceptance.
      and `testinbox_ingest_allowance_oldest_seconds`.
    - Row cleanup after the edge has ended delivery is **not** loss.
 4. **RL-4 Transactions without identity.**
-   - *Who:* peers not on the allow-list, such as the staging synthetic
-     suite, the lab, and trusted test clients. They are charged as today.
-   - *Bound:* under deployed `ALL`, the edge is allow-listed (§6
-     `DeploymentSafety`), so no edge traffic is affected.
+   - *Effect:* they are charged as today.
+   - *Under deployed `ALL`:* only the declared single-host `trusted-clients`
+     (I-20) can connect without identity. Every other non-edge peer is
+     refused at connect, and the edge is allow-listed (§6
+     `DeploymentSafety`). So no edge traffic is affected.
+   - *Outside `ALL`:* the staging synthetic suite and the lab, which run
+     `OFF` or in the lab.
    - *Metric:* `testinbox_smtp_transactions_total{identity="none"}`.
 5. **RL-5 Forfeit by design.**
    - *Cases:* an untyped pre-T1 exception, or a planning or validation
@@ -689,10 +803,20 @@ session), and `SCHEDULE_WAIT` and `SLOT_WAIT` deferrals.
      delayed by about 2 min.
    - A larger B_s defers less, but allows T1 bursts beyond the R/2R
      evidence.
+   - Fresh events wait for a scheduling token while holding a write slot. A
+     burst can therefore turn scheduling waits into `SLOT_WAIT` deferrals for
+     other events, each of at least 120 s. The production-pin run at R (§7)
+     measures this.
 2. **R_s = R exactly.** At the edge of the envelope the service has no spare
    throughput to drain a backlog (RL-3). A higher R_s would need the owner's
    approval beyond R = 31.
-3. **Global scheduling.** One tenant's burst can defer another tenant's mail
-   by one edge retry (≥ 120 s). A per-tenant budget would be fairer, but its
-   refusal would be a new per-tenant I9 channel.
+3. **Global scheduling.**
+   - One tenant's paid-allowance backlog can occupy most of the global budget.
+     The backlog is at most b + r·(`maximal_queue_lifetime` + δ) = 15 360
+     events, and it can hold the budget for up to about backlog / R_s
+     seconds: about 8 min at one node.
+   - During that time other tenants are deferred repeatedly. They are not
+     lost unless RL-3 applies.
+   - A per-tenant budget would be fairer, but its refusal would be a new
+     per-tenant I9 channel.
 4. **Privacy record.** Confirm the dated addition text in §4.
