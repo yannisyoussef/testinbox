@@ -98,6 +98,75 @@ mix two renders.
 | `relay_destination_recipient_limit` ≥ recipients under test | at 1, Postfix splits one transaction into several downstream deliveries and the ADR-026 atomicity proof passes while testing nothing. It must be `relay_*`: Postfix derives per-transport overrides from the master.cf **service name**, and tenant mail is routed `relay:`, so `smtp_*` governs a transport this path never uses |
 | the smtpd **listener** | `render.sh` defaults to the dormant loopback form so a forgotten flag cannot produce a world-listening MTA; the gate refuses a public listener in a production render |
 | the **compiled** postmaster alias | a rendered aliases file that was never compiled looks identical on disk to one that was — layer C asserts `postalias -q`, not the file |
+| `smtpd_etrn_restrictions = reject`, `fast_flush_domains` **empty** | no client may force a queue run — see [Client-triggered flushes and DSN](#client-triggered-flushes-and-dsn) |
+| `smtpd_discard_ehlo_keywords = silent-discard, dsn, etrn` | no client may request a success notice — same section |
+
+### Client-triggered flushes and DSN
+
+**The edge is internet-facing.** Public inbound SMTP and the MX
+(`mx1.testinbox.email` for `inbox.testinbox.email`) are owner-authorized as part
+of the owner-only production beta and stay operational (#124, the owner answer on
+the public edge). The "dormant" wording elsewhere in this document predates that;
+a dated correction follows in a separate docs PR once Ops supplies the launch
+date. Both findings below were reported by Ops against the live edge, which runs
+Postfix 3.8.6 (#124).
+
+**ETRN.** The template used to set neither ETRN key, so Postfix's defaults
+applied: `smtpd_etrn_restrictions` empty and `fast_flush_domains =
+$relay_domains`. EHLO advertised `ETRN`, and from a client outside `mynetworks`
+`ETRN inbox.testinbox.email` was answered `250 Queuing started`: anyone on the
+Internet could force a flush of the tenant domain's deferred queue. The contract
+now requires:
+
+| key | effect, observed on 3.8.6 from an outside client |
+|---|---|
+| `smtpd_etrn_restrictions = reject` | **the control**: `554 5.7.1 <arg>: Etrn command rejected: Access denied` for every argument (`domain`, `@domain`, `#queue`), after EHLO or HELO |
+| `fast_flush_domains =` (empty) | defence in depth: without the restriction, `459 <domain>: service unavailable` |
+
+Discarding the `ETRN` EHLO keyword **does not disable the command**: with only
+the discard in place, `ETRN inbox.testinbox.email` was still answered `250
+Queuing started`. That is why the restriction is required, and why the keyword
+discard is only cosmetic for ETRN.
+
+**DSN.** `notify_classes` empty and `bounce_queue_lifetime = 0` control
+postmaster notices and bounce retention. They do **not** control the
+sender-requested success notices of RFC 3461. Tested on the rehearsal image
+before this change, from an outside client, relaying to a sink that answers
+`250` and does not advertise DSN (as ingestion does not):
+
+- `MAIL FROM:<sender@example.org> RET=FULL` + `RCPT TO:<x@inbox…> NOTIFY=SUCCESS`:
+  the message relayed, then `bounce` logged *sender delivery status
+  notification* and the notice went to `discard` (sender domain not in
+  `transport_maps`). It was generated and dropped.
+- The same with an envelope sender **in the tenant domain**: the notice
+  (`Successful Mail Delivery Report`, `Action: relayed`, `Remote-MTA` naming the
+  ingestion hop, `Diagnostic-Code` carrying ingestion's reply text, original
+  headers attached) was **relayed into ingestion** as a second message.
+- `RCPT TO:<postmaster@inbox…> NOTIFY=SUCCESS` produced a notice reading
+  `delivery via local: alias expanded`, also relayed into ingestion: the
+  post-acceptance divert became visible to whoever reads the sender's inbox.
+
+So "the edge never emits a DSN" did not hold. A sender with a tenant inbox could
+read the internal relay address and ingestion's replies, and could tell
+`postmaster@` apart from a tenant recipient. The contract now requires
+`smtpd_discard_ehlo_keywords = silent-discard, dsn, etrn`. EHLO then offers
+neither `DSN` nor `ETRN`, and smtpd answers any `RET=`/`ENVID=` on `MAIL` and
+any `NOTIFY=`/`ORCPT=` on `RCPT` with `501 5.7.1 DSN support is disabled`. That
+reply is identical for tenant, `postmaster@` and foreign recipients, so it is no
+recipient oracle (ADR-025). After the change the same transactions generated no
+notice. The control transaction without DSN parameters relayed normally, with
+no notice. `silent-discard` keeps the per-session "discarding EHLO keywords"
+line out of the log.
+
+All three keys are under `required:`, never `ci_overridable`. They are asserted
+statically by the gate, at runtime by the entrypoint (layer C now derives its
+assertions from `required:` instead of a hand-kept list), and behaviourally by
+`check-mail-edge-contract.test.sh`. That suite probes a running edge from a
+non-`mynetworks` address and requires the same assertion to fail with the keys
+removed. Ops is changing the host in lockstep on `infinity-core`
+`ops/mail-edge-etrn-off`. That branch carries the two ETRN keys. The
+`smtpd_discard_ehlo_keywords` value above must be added there as well before the
+host matches this contract.
 
 ### The size contract
 
@@ -246,6 +315,7 @@ matter before public SMTP.
 | **No VRFY/EXPN probe.** `disable_vrfy_command = yes` is asserted statically with no behavioural check. | VRFY is the canonical recipient-existence oracle. |
 | **Relay-bypass address shapes are untested.** The open-relay probe uses `user@foreign`; percent-hack, source-route and bang-path forms are not probed, and `allow_percent_hack`/`swap_bangpath` are unpinned. | Refused today by `reject_unauth_destination` operating on the resolved address — an inference about version-sensitive behaviour, which is the kind this document avoids relying on elsewhere. |
 | **`postmaster@`'s Maildir is unbounded.** `mailbox_size_limit = 0`, no rotation, no expiry, fed by unauthenticated senders at up to 15 MiB. | An attacker who knows the domain accepts mail could fill the edge's disk. Ops owns the host, but no invariant states the expectation. |
+| **Failure bounces to a tenant-domain envelope sender still reach ingestion.** Discarding `dsn` stops *requested* notices, but a non-delivery bounce is Postfix's default and needs no DSN parameters. Observed on 3.8.6: with `MAIL FROM:<victim@inbox.testinbox.email>` and a downstream `550`, the edge relayed an `Undelivered Mail Returned to Sender` report into ingestion. That happens both with and without the ETRN/DSN keys. The structural no-DSN argument (bounce → sender's domain → `default_transport = discard`) fails exactly when the sender's domain *is* the relay domain. | Reachable only when ingestion refuses permanently. Its only `5xx` replies are `553` for a non-tenant domain (which the edge never relays) and `552` over the ceiling (excluded by the size contract), and an expiry bounce gets a single attempt (`bounce_queue_lifetime = 0`) while ingestion is typically still down. So this is latent, not live. It still needs a decision before the size contract or ingestion's replies change. |
 | **The provenance record is not machine-checked.** The `infinity-core` ref, blob id and sha256 are constants no script compares against anything. | Drift is detectable by hand, not automatically. |
 | **The generation stamp is written but never read.** `render.sh` emits it; nothing verifies the rendered files match it. | The coherent-generation property rests on the atomicity of the move, not on a check. |
 | **The base image and package source are not reproducibly pinned.** `FROM ubuntu:24.04` is a moving tag, not a digest, and `apt-get install postfix` takes whatever the archive serves that day; no snapshot or repository pin exists. | A rebuild is not bit-reproducible, and the version the edge ends up running is decided by the archive rather than by this repository. The *runtime* version is not an open question — the entrypoint asserts `postconf -h mail_version` equals `provenance.postfix_version` and refuses to start on a mismatch, mutation-tested by `check-mail-edge-contract.test.sh`. So a drifted archive fails the build loudly instead of silently proving version-sensitive behaviours against a different MTA; what remains missing is the ability to *reproduce* a given build, not the ability to detect a wrong one. |
