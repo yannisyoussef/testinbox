@@ -35,7 +35,14 @@
 -- the migrator starts, the migration fails instead of queueing every later writer
 -- behind it past their write deadlines, and is simply re-run (roll forward with the
 -- same candidate). statement_timeout bounds the rewrite and the build.
-SET LOCAL lock_timeout = '10s';
+--
+-- 2 s, not V26's 10 s: while it WAITS for ACCESS EXCLUSIVE, every later lock request on
+-- the table queues behind it, T1's ACCESS SHARE reads included (V26 waits for SHARE,
+-- which T1's reads do not conflict with). One attempt can therefore hold T1 for up to
+-- lock_timeout even when it then fails, and T1 answers 451 once its own 5 s bound is
+-- exceeded. 2 s keeps an attempt under that bound. (Edited before it was applied
+-- anywhere but disposable benchmark databases: V27 is unmerged and unreleased.)
+SET LOCAL lock_timeout = '2s';
 SET LOCAL statement_timeout = '60s';
 ALTER TABLE storage_reservation ADD COLUMN object_count integer GENERATED ALWAYS AS (cardinality(object_keys)) STORED;
 CREATE INDEX ix_storage_reservation_usage ON storage_reservation (workspace_id) INCLUDE (bytes, object_count);

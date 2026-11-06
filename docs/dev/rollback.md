@@ -641,9 +641,25 @@ refuses readiness on a V26 schema, as every artifact does on an older schema.
 Adding a STORED generated column rewrites the table under `ACCESS EXCLUSIVE`,
 which holds every T1, T2, cleanup and fence write of `storage_reservation` for
 that time; the table holds the in-flight reservations only, so that is short.
-`lock_timeout` 10 s and `statement_timeout` 60 s, as V26: a writer holding the
-table makes the migration fail instead of queueing every later writer behind
-it; re-run it with the same candidate. No new floor in
+`lock_timeout` 2 s and `statement_timeout` 60 s: a writer holding the table
+makes the migration fail instead of queueing every later writer behind it;
+re-run it with the same candidate.
+
+**The transient window.** While V27 *waits* for `ACCESS EXCLUSIVE`, every later
+lock request on `storage_reservation` queues behind it, T1's reads included, so
+an attempt may hold T1 reads for up to `lock_timeout`, answered 451 and retried
+by the edge. That holds whether the attempt then succeeds or fails. The bound is
+2 s, below T1's own 5 s lock timeout, rather than V26's 10 s: V26's build waits
+for `SHARE` on `storage_delta`, which T1's reads do not conflict with, so V26
+delays the ledger-trigger writers (T2, retention, cleanup) but not T1.
+
+**A failed attempt is clean.** The lock timeout aborts V27's transaction
+(`55P03`) and Flyway rolls it back whole: no `object_count`, no index and no
+row for V27 in `flyway_schema_history` (`SchemaUpgradeTest`). The migrator does
+not retry: the Flyway failure fails its startup, it exits non-zero, and
+`deploy.sh` aborts before any service is touched (see
+[If the migration itself fails](#if-the-migration-itself-fails)). Re-running
+the same candidate's migrator is safe. No new floor in
 `deploy/rollback-floors.txt`, no change to `roles.reference.sql` (the table's
 grants are table-level) or `deploy/backup/scope.txt` (`storage_reservation` is
 already classified, never backed up). A failed V27 leaves V26 applied and is
