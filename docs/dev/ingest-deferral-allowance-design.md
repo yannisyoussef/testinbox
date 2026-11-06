@@ -1340,20 +1340,70 @@ measurement passes for it (§9.7, lab items 1–6).
 - **Costs.** The time is second resolution, it is carried in content bytes,
   and the parse needs its own review.
 
-**Start of transaction or end of DATA (lab item 5).** A trickled `DATA` can
-make a carrier's time mark the *start* of the transaction rather than the
-end. If the lab shows that:
+**D_max: the proposed bound** (Ops facts, #124 comment
+[6687098958](https://github.com/yannisyoussef/testinbox/pull/124#issuecomment-6687098958)).
 
-- claims draw only from slots after slot(t_a + D_max);
-- a copy counts as late only if λ − D_max > ε_late;
-- D_max is the edge's enforced maximum transaction time, from
-  `smtpd_per_request_deadline`, `smtpd_min_data_rate` and `smtpd_timeout`,
-  as reviewed by Ops.
+A trickled `DATA` can make a carrier's time mark an earlier point than the
+end of the message. If it does, a copy's true arrival lies up to D_max after
+t_a, so two rules apply:
 
-Under today's settings `smtpd_per_request_deadline` is off, so a trickle is
-bounded only by per-read timeouts, D_max is effectively unbounded, and C1 and
-C2 give **no** credit. Bounding D_max is an edge change and needs Ops' own
-measured, reviewed case. This proposal does not assume it.
+- claims draw only from slots ≥ t_a + D_max + ε_skew;
+- a copy is late only if λ − D_max > ε_late.
+
+**Today D_max is unbounded.** The live edge has
+`smtpd_per_request_deadline = no`, `smtpd_timeout = 120s` per read, and
+`smtpd_min_data_rate = 500`, which applies only with the deadline on. A
+client sending a byte every < 120 s keeps `DATA` open indefinitely. Ops is
+measuring this (lab item 5). Turning the deadline on at 500 B/s bounds a
+15 MiB `DATA` to 120 + 15 728 640/500 ≈ 31 577 s ≈ 8.8 h, which is useless.
+
+**While D_max is unbounded, C1 and C2 give no credit: they fail closed.**
+This rule stays until EP-4 (§9.9) is in force on the live edge and lab item 5
+confirms it.
+
+**Proposed values for the edge** (Ops assesses them against real senders;
+nothing is assumed):
+
+- `smtpd_per_request_deadline = yes`;
+- `smtpd_min_data_rate = 65536` (64 KiB/s);
+- `smtpd_timeout = 120s`, unchanged.
+
+The per-request deadline is `smtpd_timeout` plus N/`smtpd_min_data_rate`
+for a `DATA` of N bytes. The time each carrier marks (lab items 3 and 5)
+sets which phases D_max must cover:
+
+| Carrier | What its time marks (hypothesis, lab item 5) | Phases left after t_a | D_max at 64 KiB/s |
+|---|---|---|---|
+| C2, the edge's `Received:` | the `DATA` command (Postfix writes the header at `DATA`) | the `DATA` transfer | 120 + 15 728 640/65 536 = **360 s** |
+| C1, the queue ID | the queue file opening at the first valid `RCPT` (`smtpd_delay_open_until_valid_rcpt = yes`) | ≤ 49 `RCPT` + `DATA` + transfer, each request ≤ 120 s | 51 × 120 + 360 = **6 480 s (1.8 h)**. C1 credit is then useful only for holds over about 1.8 h |
+| either, if lab item 5 shows end-of-`DATA` | the end of `DATA` | none | 0, and EP-4 is unnecessary |
+
+**Why 64 KiB/s.** Credit cannot cover the first D_max + ε_late of a hold,
+because of the rule above. So the RL-9 residual per episode is
+≤ r·(D_max + ε_late):
+
+- 64 KiB/s: about 390 copies per workspace per episode (C2);
+- 32 KiB/s: D_max 600 s, about 630 copies. That is closer to RFC 5321's
+  10-minute recommendation for the `DATA` termination.
+
+64 KiB/s is the smallest change that makes C2 useful for holds of tens of
+minutes.
+
+**Slow-sender impact, for Ops to assess from edge logs.** Under the deadline,
+a `DATA` of N bytes must complete within 120 + N/65 536 s. The minimum
+sustained client rate is:
+
+| Message size | Minimum rate |
+|---|---|
+| 100 kB | ≈ 0.8 kB/s |
+| 1 MiB | ≈ 7.7 kB/s |
+| 15 MiB | ≈ 43.7 kB/s |
+
+A slower client is cut off with a temporary failure and its MTA retries. A
+persistently slow sender of large mail never succeeds, and its own MTA
+eventually bounces the message: real loss for that sender. The setting is
+stricter than RFC 5321 §4.5.3.2's recommended per-block and termination
+timeouts. Ops pins it only after that assessment.
 
 **C3, the narrower fallback: the first time ingestion saw the IDENT.**
 
@@ -1539,18 +1589,22 @@ Where the two reviews overlap, the stricter wording is adopted, and noted.
    - Fresh events never use credit, so I-21 is unchanged.
 6. **INV-R9-6 (skew).** Credit and the late class are on only while both of
    these hold.
-   - **(i) An independent measurement is recent.** It does not rely on the
-     edge's own view: a canary submitted to the edge every 5 min to a
-     reserved, denylisted local-part. Ingestion compares the decoded t_a
-     with its own clock, discounting first-attempt latency. The latest
-     canary must be ≤ 15 min old with |offset| ≤ ε_skew.
+   - **(i) An independent measurement is recent (a gate for C1 and C2).**
+     The edge's minutely metrics timer stamps its clock. Ingestion reads
+     the stamp over WireGuard and compares it with its own clock, round-trip
+     corrected (EP-3). This is not the edge's own view.
+     - The latest canary must be **≤ 5 min old** (at most 4 missed
+       samples).
+     - **|offset| ≤ ε_skew = 1 s.**
+     - C3 uses only ingestion's clock and does not need the canary.
    - **(ii) No anomaly.** Not most new identities are arriving late while no
      hold is known.
    - Ops' exported `timesyncd` offset gauge is **recommended, not
      sufficient**. It is the edge's own view. If used, its sample must be
      ≤ 10 min old and within ε_skew.
-   - Recommend authenticated NTP (NTS) on the edge to Ops. It runs
-     `timesyncd` today, against an unauthenticated server.
+   - **NTS is recommended, not a gate** (EP-7). `timesyncd` cannot do NTS;
+     it needs chrony 4.5 plus an egress rule. The canary already bounds the
+     offset that matters to ingestion, whatever the edge's time source.
 7. **INV-R9-7 (restart).**
    - Overflow, claims and markers are durable in PostgreSQL.
    - t_a survives edge restarts and retries (lab).
@@ -1564,8 +1618,20 @@ Where the two reviews overlap, the stricter wording is adopted, and noted.
    - The contract records the `master.cf` service list: today only
      `0.0.0.0:25 smtpd`, with no `qmqpd` and no submission listener.
    - `pickup` and notice origins are ineligible for credit.
-   - `postsuper -r` and spool restores are logged operator actions. Their
-     t_a is clamped like any other.
+   - **Correction:** requeues, spool restores and hold releases are
+     **not** logged today; `postsuper` writes only a journal line. For C1
+     and C2 credit, Ops' append-only operator-action wrapper (EP-6) is a
+     precondition. Under it, every requeue, restore and hold or release is
+     recorded with time, operator, action and affected queue IDs.
+   - **Why the wrapper and not ineligibility.** If lab item 1 shows these
+     actions keep the queue ID and time, ingestion cannot tell such a file
+     from any other held message. Ineligibility is then not implementable
+     without a trusted per-file signal. Such mail was held by our own
+     process, so credit is the intended outcome. What is missing is
+     accountability, which the wrapper provides. If lab item 1 shows they
+     mint a new ID and time, those files cannot pre-date anything. The
+     wrapper is still needed for spool restores.
+   - The t_a of every such file is clamped like any other.
 
 **I-2, restated** (correctness change 4). For every `INGEST` bucket:
 
@@ -1582,7 +1648,7 @@ Where the two reviews overlap, the stricter wording is adopted, and noted.
   small, so 30 s is a margin, not a measurement.
 - **ε_skew = 1 s.** The live offset was +126 µs, one sample.
 - **Slot = 60 s.**
-- **D_max** is per lab item 5, from Ops' review.
+- **D_max:** C2 360 s and C1 6 480 s at 64 KiB/s (EP-4). Unbounded today, so C1 and C2 give no credit.
 
 ### 9.6 Proposed acceptance tests
 
@@ -1616,7 +1682,7 @@ Where the two reviews overlap, the stricter wording is adopted, and noted.
    fresh is never refused, and I-18 holds.
 8. **AT-R9-8 skew.**
    - A canary offset beyond ε_skew disables credit.
-   - So does a stale canary (> 15 min).
+   - So does a stale canary (> 5 min).
    - So does the late-majority anomaly.
 9. **AT-R9-9 I9.** An event's class is identical whether W pays with tokens
    or with credit.
@@ -1631,6 +1697,13 @@ Where the two reviews overlap, the stricter wording is adopted, and noted.
     - The contract test asserts `master.cf`'s service list: only port-25
       `smtpd`, no `qmqpd` and no submission listener.
     - `pickup` and bounce copies are ineligible.
+    - With EP-6, every `postsuper -r`, restore and hold release produces an
+      append-only record.
+14. **AT-R9-14 D_max fail-closed.**
+    - With `smtpd_per_request_deadline = no`, or with no lab item 5 result,
+      C1 and C2 claim nothing.
+    - With EP-4 in force, a trickle client is cut off within D_max, and its
+      copy's claims start only at ≥ t_a + D_max + ε_skew.
 
 ### 9.7 Edge values relied on, the Ops lab, and questions
 
@@ -1651,12 +1724,8 @@ Where the two reviews overlap, the stricter wording is adopted, and noted.
 - **Changes needed:**
   - `enable_long_queue_ids = yes` (C1; RL-7);
   - advertising `PROTO` from ingestion (an app change).
-- **Edge changes this proposal needs but does not assume** (each needs Ops'
-  measured, reviewed case):
-  - a bounded D_max (`smtpd_per_request_deadline`, `smtpd_min_data_rate`),
-    only if lab item 5 shows a start-of-transaction time;
-  - restricting `authorized_submit_users`, only if lab item 6 fails.
-- **NTS** is recommended to Ops.
+- **Every edge change §9 depends on** is listed in §9.9, as one reviewed
+  change set for Ops.
 
 **Ops lab items** (Postfix 3.8.6 mirror; results labelled lab):
 
@@ -1678,8 +1747,8 @@ Where the two reviews overlap, the stricter wording is adopted, and noted.
 
 - **Q-R9-5, clock.** `systemd-timesyncd` against `ntp.ubuntu.com`, stratum 2,
   offset +126 µs, one sample.
-  - **What the design needs:** the independent canary (INV-R9-6(i)), at most
-    15 min old.
+  - **What the design needs:** the independent canary (INV-R9-6(i), EP-3),
+    at most 5 min old, with |offset| ≤ 1 s.
   - **Ops' gauge** is welcome as an early warning, at most 10 min old, but is
     not sufficient on its own.
   - **NTS** is recommended.
@@ -1723,7 +1792,41 @@ Where the two reviews overlap, the stricter wording is adopted, and noted.
    the allowance table.
 3. **Under C3**, or while D_max is unbounded, edge-side holds before first
    sight stay in RL-9.
-4. **Edge changes that would widen the correction.** Each needs Ops' measured
-   case: bounding D_max, and restricting `authorized_submit_users`.
+4. **Edge changes that would widen the correction** (§9.9; each needs Ops'
+   measured case).
+   - Most consequential: EP-4, the deadline plus 64 KiB/s, which cuts off
+     persistently slow senders of large mail.
+   - Also EP-3 (canary), EP-5 (`authorized_submit_users`, conditional) and
+     EP-6 (operator-action wrapper).
+   - **Without EP-4, only C3 credit exists.**
 5. **RQ-2.** C1's reliance on Postfix's internal queue-ID encoding, under the
    conditions in §9.2.
+
+### 9.9 Edge preconditions: one change set for Ops to review
+
+These are every edge change §9 depends on, each with what it unlocks.
+
+- **Required:** a gate for the credit classes named.
+- **Conditional:** needed only if a lab result fails.
+- **Recommended:** not a gate.
+
+None is assumed, and each needs Ops' review. The ETRN and DSN keys of PR
+#147 belong to the privacy model (§4), not to §9.
+
+| # | Edge change | Status | Unlocks |
+|---|---|---|---|
+| EP-1 | `enable_long_queue_ids = yes`, switched while no tenant mail is deferred | **required** | all credit (C1, C2, C3) and the allowance design itself (RL-7) |
+| EP-2 | Pin the current values as a no-change hardening: relay concurrency 20, backoff 120/600 s, `queue_run_delay` 120 s, lifetime 4 h, `bounce_queue_lifetime` 0, recipient limits 50/50, `smtpd_delay_open_until_valid_rcpt = yes`, `smtp_send_xforward_command = yes`, empty `smtpd_authorized_xforward_hosts`, and the `master.cf` service list (only `0.0.0.0:25 smtpd`, no `qmqpd`, no submission) | **required** | all credit |
+| EP-3 | Clock canary: the minutely metrics timer exposes a timestamp that ingestion reads over WireGuard (≤ 5 min stale, \|offset\| ≤ 1 s) | **required** | C1 and C2 (not C3) |
+| EP-4 | `smtpd_per_request_deadline = yes`, `smtpd_min_data_rate = 65536`, `smtpd_timeout` 120 s unchanged. This affects slow senders (§9.2) | **required** unless lab item 5 shows an end-of-`DATA` time | C2 with D_max 360 s; C1 with D_max 6 480 s |
+| EP-5 | Restrict `authorized_submit_users` to the Ops accounts that need local submission. Ingestion advertising `PROTO` is the app-side alternative, conditional on lab item 6 | **conditional**: required if lab item 6 shows `PROTO` cannot tell `smtpd` mail from `pickup` or notices | all credit (origin eligibility) |
+| EP-6 | Append-only operator-action wrapper for `edge-stop.sh` and recovery: requeue, restore, hold and release, recording time, operator, action and queue IDs | **required** | C1 and C2 (INV-R9-9) |
+| EP-7 | NTS: chrony 4.5 replacing `timesyncd`, plus an egress rule for NTS-KE (TCP 4460) and NTP (UDP 123) to the chosen servers. Two reviewed changes | **recommended** | none directly; it hardens the edge clock behind EP-3 |
+
+**What each credit class needs, in total:**
+
+- **C3:** EP-1, EP-2 and EP-5 (if required).
+- **C2:** those, plus EP-3, EP-4 and EP-6, and lab items 3 and 5.
+- **C1:** the same as C2, plus lab items 1, 2 and 4. With D_max 1.8 h it is
+  of little use unless lab item 5 shows an end-of-`DATA` time.
+
