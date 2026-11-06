@@ -47,8 +47,12 @@ waits, messages, raw MIME, attachment metadata, API keys and storage figures
 an inspection tool with a sandboxed HTML preview (ADR-011), not a dashboard.
 
 **Deployment status.** Deployed dark on staging behind Cloudflare → Traefik
-with the full post-deployment synthetic suite as the gate; a first production
-deployment is dark too: no public MX, no public SMTP. Storage *accounting* is
+with the full post-deployment synthetic suite as the gate. Production runs an
+owner-only beta: since 2026-10-28 it receives Internet mail through a public MX
+(`mx1.testinbox.email`) and public SMTP, while inbox creation and message access
+stay authenticated and self-service sign-in and admission stay closed
+(*corrected 2026-11-06*; an earlier version said production was dark — see
+[the correction](docs/architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing)). Storage *accounting* is
 live everywhere; storage *enforcement* is `OFF` by owner decision until the
 ADR-035 filesystem qualification completes — the physical storage bound of
 ADR-035 is therefore **not** enforced in this release.

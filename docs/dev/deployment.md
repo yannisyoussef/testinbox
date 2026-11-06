@@ -18,7 +18,7 @@ Four systems, and confusing them is how a green tick comes to mean nothing:
 | **Artifact registry** | GHCR | Holds immutable images, addressed by digest. |
 | **CD / infrastructure** | GitLab `infinity/infinity-core` | Deploys. Reconciles the host. **Owns the deployment verdict.** |
 | **Staging** | Contabo US, shared Infinity estate | Runs `develop`. Live at `staging.testinbox.email`. |
-| **Production** | OVH dedicated host, France, Infinity estate | **Decided** (ADR-034). Dark-deployable through a manual handoff; **not live**, no MX, no public SMTP. |
+| **Production** | OVH dedicated host, France, Infinity estate | **Decided** (ADR-034), reached through a manual handoff. **Owner-only beta since 2026-10-28**: public MX and public SMTP through the edge; inbox creation and message access authenticated; sign-in, admission and storage enforcement closed. *(Corrected 2026-11-06; previously "not live, no MX, no public SMTP" — see [the correction](../architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing).)* |
 
 GitHub does **not** deploy and holds no credential for the staging host. It
 hands an immutable digest set to Ops and stops. The consequence is stated

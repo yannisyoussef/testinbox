@@ -134,3 +134,9 @@ they are not resolvable by further internal analysis alone.
    EU host (item 3 / ADR-004). Production is dark-deployable and **not live**:
    no MX, no public SMTP, no tenant traffic, pending TI-007 and the human
    gates ADR-004 records.
+
+   > **Correction, 2026-11-06.** Superseded on 2026-10-28: the owner-only beta
+   > launch enabled a public MX and public SMTP for `inbox.testinbox.email`.
+   > Inbox creation and message access stay authenticated; self-service
+   > sign-in, admission and storage enforcement stay closed. See
+   > [the correction](docs/architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing).

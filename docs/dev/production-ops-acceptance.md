@@ -37,6 +37,14 @@ isolation — are rows A, B and C.
 | **V** | Public-edge queue alerting (§12) | Before any public MX: alerting on edge queue age and deferred mail early enough to act well before the 4 h expiry (e.g. oldest deferred message older than 30 min), because a `451` condition that outlives the queue is silent loss | the alert rule and one deliberate trigger | Ops | **PENDING** — does not block a dark production |
 | **M** | Dark-deployment verification | All of A–L, and: no MX record, no public TCP/25, no edge→ingestion relay configured, no tenant traffic, `testinbox_smtp_accept_total` moves only for the synthetic sender | DNS query showing no MX for `inbox.testinbox.email`; external port scan of the edge and origin; the edge's transport still `discard:`; counters | Ops · Owner declares "dark" only with this evidence | any of those is live, or evidence is asserted rather than shown |
 
+> **2026-11-06.** Row **M** describes the dark state that held until the
+> owner-only beta launch of 2026-10-28, when public tcp/25 and the public MX
+> were enabled ([correction](../architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing)).
+> It is no longer the production state. Row **V** reads PENDING above, and this
+> repository holds no record of whether edge queue-age alerting existed before
+> the MX was published; this note does not mark it discharged. Ops' launch
+> records are where that is answered.
+
 ## What this does not cover
 
 - **Public SMTP / MX / edge relay** — TI-007, with its own contract in

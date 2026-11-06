@@ -13,6 +13,13 @@ decision itself — `inbox.testinbox.email`, no MX, no public SMTP, no
 edge-to-production relay — stands, and [ADR-025](0025-unknown-recipient-handling.md)
 is untouched.
 
+> **Pointer, 2026-11-06 (not an amendment).** The "no MX, no public SMTP, no
+> edge-to-production relay" state and the "dormant" edge of §1 and §8 were
+> superseded on 2026-10-28, when the owner-only beta launch enabled public
+> tcp/25 on the edge, the public MX and the private relay to production
+> ingestion on a separate owner authorization. This ADR's text is unchanged;
+> see [`mail-edge-contract.md` § Correction](../architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing).
+
 ## Context
 
 TI-005 closed on both sides: the application-owned Postfix edge contract is

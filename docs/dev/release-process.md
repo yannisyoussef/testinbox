@@ -191,6 +191,9 @@ Also add `Synthetic unit tests (edge invariant classifier)` — it runs inside t
 - **The production inbound-mail provider** — ADR-004 is **Accepted**: a
   dedicated, dormant Postfix edge, reconciled to the application-owned
   contract (TI-005). There is still no public MX; activation is TI-007.
+  *(Corrected 2026-11-06: the public MX and public SMTP exist since the
+  owner-only beta launch of 2026-10-28 — see
+  [the correction](../architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing).)*
 - **Production hosting and its promotion path** — ADR-034: the OVH dedicated
   host in France, reached through `Production handoff`. Not live.
 - **Propagating the Ops deployment verdict back to GitHub** — deliberately

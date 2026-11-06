@@ -48,10 +48,13 @@ For every change you review, check:
    instance genuinely needs — and equally, flag fragile checks that would
    cascade a shared-dependency blip into a total outage.
 
-6. **Network boundaries.** Actuator, database, object-storage admin and SMTP
-   are not public. There is no public MX record for `testinbox.email` and this
-   increment must not create one. Verify port publishing and bind addresses,
-   not just comments.
+6. **Network boundaries.** Actuator, database, object-storage admin and the
+   ingestion SMTP listener are not public. *(Corrected 2026-11-06.)* The production Postfix edge is
+   the one public SMTP surface: since 2026-10-28 `inbox.testinbox.email` has a
+   public MX (`mx1.testinbox.email`), owner-authorized
+   (`docs/architecture/mail-edge-contract.md` § Correction). No change may add
+   another public SMTP surface or MX, or withdraw that one, without an owner
+   decision. Verify port publishing and bind addresses, not just comments.
 
 7. **Deployment failure behaviour.** Build, push, migration, readiness and the
    post-deployment synthetic test must each be able to fail the deployment. No

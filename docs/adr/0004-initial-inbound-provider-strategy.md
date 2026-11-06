@@ -16,6 +16,15 @@ and its stated conditions are what the decision was finally made against.
 > does **not** authorise production deployment or a public MX — see
 > [Gates](#gates-that-remain-closed).
 
+> **Pointer, 2026-11-06 (not an amendment).** A public MX and public tcp/25 on
+> the edge were enabled on 2026-10-28 for the owner-only beta, on a separate
+> owner authorization, not by this ADR. This ADR's text is unchanged. The
+> "dormant" edge it describes is superseded; dates, the owner statement and
+> Ops' records are in
+> [`mail-edge-contract.md` § Correction](../architecture/mail-edge-contract.md#correction-2026-11-06-the-edge-is-internet-facing).
+> This repository holds no record of how the gates below were dispositioned for
+> that launch, and the pointer marks none of them discharged.
+
 ## Context
 
 The MVP had to run entirely locally, so this ADR originally chose "build the
