@@ -176,8 +176,9 @@ def refuse_raw_listings(bundle):
         raise Refusal("\n".join(f"  ✗ {x}" for x in bad))
 
 
-def census_from_listing(path):
-    """(sha256, bytes, distinct inodes, blockless inodes, {tmp, trash, multipart}) recomputed from the raw listing."""
+def census_from_listing(path, first_inode):
+    """(sha256, bytes, distinct inodes, blockless inodes, {tmp, trash, multipart}, listed inodes numbered below
+    `first_inode`) recomputed from the raw listing."""
     inodes, blockless, entries = set(), set(), {"tmp": 0, "trash": 0, "multipart": 0}
     with open(path, "rb") as f:
         data = f.read()
@@ -195,7 +196,8 @@ def census_from_listing(path):
             entries["tmp"] += 1  # entries inside tmp, neither .trash itself nor anything under it
         elif "/.minio.sys/multipart/" in p:
             entries["multipart"] += 1
-    return hashlib.sha256(data).hexdigest(), len(data), len(inodes), len(blockless), entries
+    listed_below = sum(1 for i in inodes if int(i) < first_inode)  # normally 1: the root, inode 2
+    return hashlib.sha256(data).hexdigest(), len(data), len(inodes), len(blockless), entries, listed_below
 
 
 def verify_sums(bundle):
@@ -452,6 +454,20 @@ A1III_ROLE_WITH_RAW = "raw.eml+attachments"                            # attachm
 A1III_ROLE_DEFERRING = "attachments (raw.eml deferred)"                # attachment message, 0B / 1B only
 A1III_ROLE_DEFERRED = "deferred raw.eml (0 B / 1 B attachment messages)"  # their raw.eml, 2-512B only
 A1III_STATVFS = ("files", "ffree", "blocks", "bfree", "frsize")
+# The harness's record fields, exactly as Ops gave them (#124 6700351383 item 4); a later field is additive only.
+A1III_FIELDS = {
+    "segment": ("record", "phase", "size", "layout", "role", "objects", "messages", "inboxes", "attachmentsPerMessage",
+                "putFailures", "failureSample", "before", "after", "dInodes", "dBlocks", "ratio"),
+    "phase": ("record", "phase", "description", "objects", "before", "after", "dInodes", "dBlocks", "ratio"),
+    "summary": ("record", "experiment", "lab", "startedAt", "completedAt", "kernel", "bootId", "workspace", "population",
+                "before", "after", "perPhase", "perPhaseLayout", "perLayout", "perSize", "overall", "putFailures",
+                "problems", "PASS"),
+}
+# Every phase record's description states the deferred raw.eml reading the app accepted (#124 6699827210 (1)), verbatim.
+A1III_DESCRIPTION = ("for attachment-layout messages in the 0 B and 1 B phases, the message's own raw.eml is written "
+                     "and accounted in the 2–512 B phase")
+# The A1 (vi) census taken straight after A1 (iii): its own censuses entry, 0-15 min after A1iii completed (C2).
+A1III_CENSUS_MAX_LAG_S = 15 * 60
 # The app team's YES to Ops' reading of amendment (b) (#124 6699827210), quoted by the record.
 A1III_DEFERRED_RULE = ("deferred raw.eml: the raw.eml of each 0 B / 1 B attachment-layout message is written and "
                        "accounted in the 2-512 B phase, so every object stays inside its phase's class")
@@ -492,12 +508,20 @@ def judge_a1iii(recs, geometry):
     summ = summ[0]
     why = []
     # Structure first: nothing below is judged on a missing or mistyped field.
+    for kind, rs in (("summary", [summ]), ("phase", phases), ("segment", segs)):
+        for i, r in enumerate(rs):
+            missing = [k for k in A1III_FIELDS[kind] if k not in r]
+            if missing:
+                why.append(f"{kind} record {i}: missing {missing} (the harness writes {list(A1III_FIELDS[kind])})")
     names = [ph.get("phase") for ph in phases]
     if names != list(A1III_PHASES):
         why.append(f"phases {names}, expected {list(A1III_PHASES)} (one per C1 class, in order)")
     for i, ph in enumerate(phases):
         if not (is_int(ph.get("objects")) and ph["objects"] >= 0):
             why.append(f"phase record {i}: objects {ph.get('objects')!r} is not a count")
+        if not (isinstance(ph.get("description"), str) and A1III_DESCRIPTION in ph["description"]):
+            why.append(f"phase record {i} ({ph.get('phase')}): its description does not state, verbatim, "
+                       f"\"{A1III_DESCRIPTION}\"")
     for i, s in enumerate(segs):
         apm = s.get("attachmentsPerMessage")
         if not (s.get("phase") in A1III_CLASS and s.get("layout") in A1III_LAYOUTS and isinstance(s.get("role"), str)
@@ -911,8 +935,10 @@ def build(bundle_dir, expected, repo, census_raw=None):
                         f"{a1iii_raw}: the harness itself reports PASS {res['harnessPass']!r}, problems {res['harnessProblems']!r}")
                 p.check(res["kernel"] == X["kernelRelease"], f"{a1iii_raw}: the harness ran on kernel {res['kernel']!r}, not {X['kernelRelease']}")
                 p.check(isinstance(res["bootId"], str) and res["bootId"] != "", f"{a1iii_raw}: the summary has no bootId")
-                p.check("bootId" not in a1 or a1["bootId"] == res["bootId"],
-                        f"{A1III_REL}: bootId {a1.get('bootId')!r} is not the harness's {res['bootId']!r}")
+                # A1iii.json carries no top-level bootId: the harness's is measurements.harnessBootId (#124 6700351383 item 8).
+                hb = (a1.get("measurements") or {}).get("harnessBootId") if isinstance(a1.get("measurements"), dict) else None
+                p.check(hb == res["bootId"],
+                        f"{A1III_REL}: measurements.harnessBootId {hb!r} is not the harness summary's bootId {res['bootId']!r}")
                 for k in ("startedAt", "completedAt"):
                     p.check(a1.get(k) == res[k], f"{A1III_REL}: {k} {a1.get(k)!r} is not the harness summary's {res[k]!r}")
                 if all(isinstance(a1.get(k), str) and ISO_RE.match(a1[k]) for k in ("startedAt", "completedAt")):
@@ -920,13 +946,13 @@ def build(bundle_dir, expected, repo, census_raw=None):
                     p.check(not outside, f"{a1iii_raw}: statvfs samples at {outside[:3]} lie outside startedAt..completedAt")
                 # The file's own figures must be the ones recomputed here (a disagreement means another raw file).
                 m = a1.get("measurements") if isinstance(a1.get("measurements"), dict) else {}
-                pair = lambda d: [d.get("dInodes"), d.get("dBlocks")] if isinstance(d, dict) else d
-                claims = (("objects", m.get("objects"), res["objects"]),
-                          ("objectsPerPhase", m.get("objectsPerPhase"), res["objectsPerPhase"]),
-                          ("ratioOverall", pair(m.get("ratioOverall")), pair(res["ratioOverall"])),
-                          ("ratioPerPhase", {k: pair(v) for k, v in m["ratioPerPhase"].items()}
-                           if isinstance(m.get("ratioPerPhase"), dict) else m.get("ratioPerPhase"),
-                           {k: pair(v) for k, v in res["ratioPerPhase"].items()}))
+                def fig(v):  # a ratio figure is exactly {dInodes, dBlocks, ratio}; maps of them compare member by member
+                    if isinstance(v, dict) and "dInodes" in v:
+                        return {k: v.get(k) for k in ("dInodes", "dBlocks", "ratio")}
+                    return {k: fig(x) for k, x in v.items()} if isinstance(v, dict) else v
+                claims = [("objects", m.get("objects"), res["objects"]),
+                          ("objectsPerPhase", m.get("objectsPerPhase"), res["objectsPerPhase"])]
+                claims += [(k, fig(m.get(k)), fig(res[k])) for k in ("ratioOverall", "ratioPerPhase", "ratioPerPhaseLayout", "ratioPerLayout")]
                 for k, claimed, mine in claims:
                     p.check(claimed == mine, f"{A1III_REL}: measurements.{k} {claimed!r} is not the re-judged {mine!r} (from {a1iii_raw})")
                 if not why:
@@ -940,6 +966,9 @@ def build(bundle_dir, expected, repo, census_raw=None):
     # --- A1 (vi) inode census (C2, C3), summary committed, listing off-repo
     cs = b.json(CENSUS_SUMMARY) or {}
     census = None
+    # A1iii's own census, as experiments/A1iii.json names it (measurements.census, #124 6700351383).
+    a1m = (a1 or {}).get("measurements") if isinstance((a1 or {}).get("measurements"), dict) else {}
+    a1c = a1m.get("census") if isinstance(a1m.get("census"), dict) else None
     if cs:
         p.check(cs.get("schema") == CENSUS_SCHEMA, f"{CENSUS_SUMMARY}: schema is not {CENSUS_SCHEMA}")
         lst, cnt, rec_ = cs.get("listing") or {}, cs.get("census") or {}, cs.get("reconciliation") or {}
@@ -958,17 +987,22 @@ def build(bundle_dir, expected, repo, census_raw=None):
             need(p, ent, k, "int", f"{CENSUS_SUMMARY} census.entries")
         used = need(p, rec_, "inodesUsed", "pos", f"{CENSUS_SUMMARY} reconciliation")
         below = need(p, rec_, "inodesBelowFirstInode", "int", f"{CENSUS_SUMMARY} reconciliation")
+        # The reserved inodes 1..First−1 include the root (inode 2), which the listing ALSO lists: count it once
+        # (#124 6700446089). listedBelowFirstInode = listed distinct inodes numbered below First inode (normally 1).
+        listed_below = need(p, cnt, "listedBelowFirstInode", "int", f"{CENSUS_SUMMARY} census")
         p.check(blk == 0, f"(vi) census: {blk} blockless inodes, not 0 (A1 (vi))")
         first = dumpe2fs_field(d2 or "", "First inode")
         p.check(first is not None and first.isdigit() and below == int(first) - 1,
                 f"{CENSUS_SUMMARY}: inodesBelowFirstInode {below} is not dumpe2fs First inode − 1 ({first})")
+        p.check(listed_below is None or below is None or 0 <= listed_below <= below,
+                f"{CENSUS_SUMMARY}: census.listedBelowFirstInode {listed_below} is not between 0 and inodesBelowFirstInode {below}")
         gap = None
-        if None not in (distinct, used, below) and all(isinstance(ent.get(k), int) for k in ("tmp", "multipart")):
-            gap = used - (distinct + below)
+        if None not in (distinct, used, below, listed_below) and all(isinstance(ent.get(k), int) for k in ("tmp", "multipart")):
+            gap = used - (distinct + below - listed_below)
             allowance = ent["tmp"] + ent["multipart"]
             p.check(abs(gap) <= allowance,
-                    f"(vi) census: f_files − f_ffree {used} differs from the listed {distinct} + {below} reserved by {gap}, "
-                    f"beyond the {allowance} in-flight tmp/multipart entries (C2)")
+                    f"(vi) census: f_files − f_ffree {used} differs from the listed {distinct} + {below} reserved − "
+                    f"{listed_below} listed reserved by {gap}, beyond the {allowance} in-flight tmp/multipart entries (C2)")
         steps = cs.get("steps")
         if p.check(isinstance(steps, list) and steps, f"{CENSUS_SUMMARY}: steps must list (i)–(vi) with kernel, boot id, uuid (C3)"):
             boots = {st.get("bootId") for st in steps if isinstance(st, dict)}
@@ -980,6 +1014,9 @@ def build(bundle_dir, expected, repo, census_raw=None):
                     f"{CENSUS_SUMMARY}: the steps' boot ids {sorted(map(str, boots))} are not one (C3: boot id unchanged)")
             p.check(a1iii is None or a1iii["bootId"] in boots,
                     f"{a1iii_raw}: the A1iii harness ran on boot {(a1iii or {}).get('bootId')!r}, not the census steps' "
+                    f"{sorted(map(str, boots))} (C3: boot id unchanged)")
+            p.check(a1 is None or (a1c or {}).get("bootId") in boots,
+                    f"{A1III_REL}: measurements.census.bootId {(a1c or {}).get('bootId')!r} is not the census steps' "
                     f"{sorted(map(str, boots))} (C3: boot id unchanged)")
         if taken and ISO_RE.match(taken):
             t = iso(taken)
@@ -1008,6 +1045,11 @@ def build(bundle_dir, expected, repo, census_raw=None):
                         f"{where}: c2Status {c.get('c2Status')!r} for {exp}, but afterDefinedDrain is {str(after).lower()}: "
                         f"C2 is never 'satisfied' for a census taken after its defined drain")
                 c2_status[exp] = derived
+                lb, eb = c.get("listedBelowFirstInode"), c.get("inodesBelowFirstInode")
+                p.check(isinstance(lb, int) and not isinstance(lb, bool) and isinstance(eb, int) and 0 <= lb <= eb,
+                        f"{where}: listedBelowFirstInode {lb!r} for {exp} is missing or not between 0 and inodesBelowFirstInode {eb!r}")
+                p.check("blocklessInodes" not in c or c["blocklessInodes"] == 0,
+                        f"{where}: the {exp} census found {c.get('blocklessInodes')!r} blockless inodes, not 0 (A1 (vi))")
                 if after:
                     n = (c.get("entries") or {}).get("trash")
                     if p.check(isinstance(n, int) and not isinstance(n, bool) and n >= 0,
@@ -1016,6 +1058,54 @@ def build(bundle_dir, expected, repo, census_raw=None):
             for exp in C2_REQUIRED_CENSUS:
                 p.check(exp in by_exp and isinstance(by_exp[exp].get("afterDefinedDrain"), bool),
                         f"{CENSUS_SUMMARY}: no census entry for {exp} stating afterDefinedDrain (C2 must be disclosed, not assumed)")
+            # The top level is DEFINED as the latest census in `censuses` (#124 6700351383), never as any particular
+            # experiment's: it must be that entry, member by member. The order of A1 (iii) is judged on its own entry.
+            dated = [c for c in per if isinstance(c, dict) and isinstance(c.get("takenAt"), str) and ISO_RE.match(c["takenAt"])]
+            if p.check(per and len(dated) == len(per), f"{CENSUS_SUMMARY}: every censuses entry needs an ISO-8601 UTC takenAt"):
+                latest = max(dated, key=lambda c: iso(c["takenAt"]))
+                ll, le = latest.get("listing") or {}, latest.get("entries") or {}
+                keys3 = ("tmp", "trash", "multipart")
+                for k, top, entry in (("takenAt", taken, latest.get("takenAt")),
+                                      ("listing.sha256", sha, ll.get("sha256")),
+                                      ("listing.bytes", lst.get("bytes"), ll.get("bytes")),
+                                      ("census.distinctInodes", distinct, latest.get("distinctInodes")),
+                                      ("census.blocklessInodes", blk, latest.get("blocklessInodes")),
+                                      ("census.entries", {k3: ent.get(k3) for k3 in keys3}, {k3: le.get(k3) for k3 in keys3}),
+                                      ("reconciliation.inodesUsed", used, latest.get("inodesUsed")),
+                                      ("reconciliation.inodesBelowFirstInode", below, latest.get("inodesBelowFirstInode")),
+                                      ("census.listedBelowFirstInode", listed_below, latest.get("listedBelowFirstInode"))):
+                    p.check(top == entry, f"{CENSUS_SUMMARY}: top-level {k} {top!r} is not the latest census's "
+                                          f"({latest.get('experiment')}: {entry!r}); the top level is defined as the latest census")
+                p.check("topLevelCensusOf" not in cs or cs["topLevelCensusOf"] == latest.get("experiment"),
+                        f"{CENSUS_SUMMARY}: topLevelCensusOf {cs.get('topLevelCensusOf')!r} is not the latest census "
+                        f"{latest.get('experiment')!r}")
+            # A1 (vi) straight after A1 (iii): its own entry, 0-15 min after A1iii completed, bound to A1iii.json.
+            ac = by_exp.get(A1III)
+            if p.check(isinstance(ac, dict), f"{CENSUS_SUMMARY}: no census entry for {A1III}: the (vi) census must be taken "
+                                             "straight after A1 (iii), before any cleanup (C2)") and a1 is not None:
+                where, at, done = f"{CENSUS_SUMMARY} censuses[{A1III}]", ac.get("takenAt"), a1.get("completedAt")
+                if (p.check(isinstance(at, str) and bool(ISO_RE.match(at)), f"{where}: takenAt {at!r} is not ISO-8601 UTC")
+                        and isinstance(done, str) and ISO_RE.match(done)):
+                    lag = (iso(at) - iso(done)).total_seconds()
+                    p.check(0 <= lag <= A1III_CENSUS_MAX_LAG_S,
+                            f"{where}: taken at {at}, {lag:+.0f} s from A1iii's completedAt {done}: it must be taken 0-15 min "
+                            "after A1 (iii) completed (C2)")
+                p.check(ac.get("experimentCompletedAt") == done,
+                        f"{where}: experimentCompletedAt {ac.get('experimentCompletedAt')!r} is not A1iii's completedAt {done!r}")
+                p.check(isinstance(ac.get("blocklessInodes"), int) and not isinstance(ac["blocklessInodes"], bool)
+                        and ac["blocklessInodes"] == 0, f"{where}: blocklessInodes {ac.get('blocklessInodes')!r}, not 0 (A1 (vi))")
+                p.check(ac.get("kernelRelease") == X["kernelRelease"] and ac.get("filesystemUuid") == xf["uuid"],
+                        f"{where}: kernel {ac.get('kernelRelease')!r} / filesystem {ac.get('filesystemUuid')!r} is not "
+                        f"{X['kernelRelease']} / {xf['uuid']} (C3)")
+                if p.check(a1c is not None, f"{A1III_REL}: measurements.census (A1iii's own census) is missing"):
+                    acs = (ac.get("listing") or {}).get("sha256")
+                    p.check(at == a1c.get("takenAt"),
+                            f"{where}: takenAt {at!r} is not {A1III_REL} measurements.census.takenAt {a1c.get('takenAt')!r}")
+                    p.check(isinstance(acs, str) and bool(HEX64.match(acs)) and acs == a1c.get("listingSha256"),
+                            f"{where}: listing.sha256 {acs!r} is not {A1III_REL} measurements.census.listingSha256 "
+                            f"{a1c.get('listingSha256')!r}")
+                    p.check(ac.get("bootId") == a1c.get("bootId"),
+                            f"{where}: bootId {ac.get('bootId')!r} is not {A1III_REL} measurements.census.bootId {a1c.get('bootId')!r}")
         verification = None
         if census_raw:
             if os.path.realpath(census_raw).startswith(os.path.realpath(bundle_dir) + os.sep):
@@ -1024,12 +1114,15 @@ def build(bundle_dir, expected, repo, census_raw=None):
                 p.add(f"--census-raw {census_raw} is not a file")
             else:
                 try:
-                    rsha, rbytes, rdistinct, rblk, rent = census_from_listing(census_raw)
+                    if not (first is not None and first.isdigit()):
+                        raise Refusal("  ✗ --census-raw: dumpe2fs First inode is unreadable, listedBelowFirstInode cannot be recomputed")
+                    rsha, rbytes, rdistinct, rblk, rent, rbelow = census_from_listing(census_raw, int(first))
                     p.check(rsha == sha and rbytes == lst.get("bytes"),
                             f"--census-raw sha256/size {rsha}/{rbytes} is not the summary's {sha}/{lst.get('bytes')}")
-                    p.check((rdistinct, rblk, rent) == (distinct, blk, {k: ent.get(k) for k in ("tmp", "trash", "multipart")}),
-                            f"(vi) census recomputed from --census-raw (distinct {rdistinct}, blockless {rblk}, entries {rent}) "
-                            f"differs from the summary (distinct {distinct}, blockless {blk}, entries {ent})")
+                    p.check((rdistinct, rblk, rent, rbelow) == (distinct, blk, {k: ent.get(k) for k in ("tmp", "trash", "multipart")}, listed_below),
+                            f"(vi) census recomputed from --census-raw (distinct {rdistinct}, blockless {rblk}, entries {rent}, "
+                            f"listedBelowFirstInode {rbelow}) differs from the summary (distinct {distinct}, blockless {blk}, "
+                            f"entries {ent}, listedBelowFirstInode {listed_below})")
                     verification = "listing verified at cut (--census-raw)"
                 except Refusal as e:
                     p.add(str(e).strip().lstrip("✗ "))
@@ -1235,7 +1328,7 @@ def build(bundle_dir, expected, repo, census_raw=None):
                 "basis": ("A1 (iii) on the final filesystem, re-judged from the harness's raw statvfs pairs: "
                           "Δ(f_files − f_ffree) <= Δ(f_blocks − f_bfree), in blocks of f_frsize, in every phase (one per C1 "
                           "class), every layout within each phase, every layout over the run and overall; "
-                          f"{A1III_DEFERRED_RULE}"),
+                          f"deferred raw.eml, as every phase record states: \"{A1III_DESCRIPTION}\""),
             },
             "metadataBytesMeasured": metadata_bytes_max,
             "metadataBytesScope": METADATA_BYTES_SCOPE,

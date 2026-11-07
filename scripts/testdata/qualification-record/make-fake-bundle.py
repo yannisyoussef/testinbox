@@ -76,7 +76,7 @@ def experiment(n, e7_mode):
          "completedAt": f"2000-01-01T{n:02d}:30:00Z", "venue": "carried" if carried else "final-filesystem",
          "filesystemUuid": "fake-staging-uuid" if carried else UUID, "kernelRelease": "fake-staging-kernel" if carried else KERNEL,
          "minioPlatformMemberDigest": MEMBER, "artifact": dict(CAND) if n in (5, 6, 8, 9, 10, 11) else None,
-         "measurements": {}, "rawFiles": [f"experiments/E{n}/run.log"]}
+         "measurements": {}, "rawFiles": [f"experiments/E{n}/run.log"] + ([f"experiments/E{n}/a1vi-census.txt"] if n in (2, 7) else [])}
     if n in (1, 2, 3):
         e["measurements"] = {"oMaxBytes": 24576, "worstObjectOverheadBytes": 20000 + n}
     if n == 2:
@@ -104,14 +104,19 @@ def att_counts(n, with_raw):
     return out
 
 
-def a1iii(boot):
+DESCRIPTION = ("FAKE phase description; for attachment-layout messages in the 0 B and 1 B phases, the message's own "
+               "raw.eml is written and accounted in the 2–512 B phase")
+
+
+def a1iii(boot, census):
     """A1 (iii) as Ops' harness writes it (`e1e3e4.py <lab> a1iii`: segment, phase and summary records with the raw
     statvfs pairs) and as n1-bundle.py wraps it (experiments/A1iii.json). 20 446 objects: per phase 1 000 single-object
     raw.eml + 1 000 attachment-layout objects per size; the 0 B / 1 B attachment messages' raw.eml (446) are written in
-    the 2-512 B phase. The statvfs figures are FAKE and chosen so every ratio is < 1."""
+    the 2-512 B phase. The statvfs figures are FAKE and chosen so every ratio is < 1. It runs last (12:00-12:06), as
+    window N1-A2 does, and `census` is its own (vi) census as the bundle names it (measurements.census)."""
     st = {"files": int(GEOM), "ffree": int(GEOM) - 40, "blocks": int(GEOM), "bfree": int(GEOM) - 5000,
           "bavail": int(GEOM) - 5000, "frsize": 4096}
-    clock = [7 * 3600 + 40 * 60]  # 07:40:00, one sample every 5 s
+    clock = [12 * 3600]  # 12:00:00, one sample every 5 s
 
     def sample(d_inodes=0, d_blocks=0):
         st["ffree"] -= d_inodes
@@ -153,25 +158,42 @@ def a1iii(boot):
                          "attachmentsPerMessage": sg["apm"], "putFailures": 0, "failureSample": [], "before": b, "after": a,
                          **delta(b, a)})
         pa = sample(2, 4)  # settle()
-        r = {"record": "phase", "phase": phase, "objects": sum(sg["objects"] for sg in segs), "before": pb, "after": pa, **delta(pb, pa)}
+        r = {"record": "phase", "phase": phase, "description": f"{phase}: {DESCRIPTION}", "objects": sum(sg["objects"] for sg in segs),
+             "before": pb, "after": pa, **delta(pb, pa)}
         recs.append(r)
         phases.append(r)
-    started, completed = "2000-01-01T07:40:00Z", "2000-01-01T07:50:00Z"
+    started, completed = "2000-01-01T12:00:00Z", "2000-01-01T12:06:00Z"
     overall = delta(phases[0]["before"], phases[-1]["after"])
     per_phase = {r["phase"]: {k: r[k] for k in ("dInodes", "dBlocks", "ratio")} for r in phases}
     objects = {r["phase"]: r["objects"] for r in phases}
+    segs = [r for r in recs if r["record"] == "segment"]
+
+    def total(rs):
+        di, db = sum(r["dInodes"] for r in rs), sum(r["dBlocks"] for r in rs)
+        return {"dInodes": di, "dBlocks": db, "ratio": round(di / db, 6)}
+    per_phase_layout = {ph: {lay: total([r for r in segs if r["phase"] == ph and r["layout"] == lay]) for lay in ("attachments", "single")}
+                        for ph in objects}
+    per_layout = {lay: total([r for r in segs if r["layout"] == lay]) for lay in ("attachments", "single")}
+    per_size = {str(z): total([r for r in segs if r["size"] == z]) for z in sorted({r["size"] for r in segs})}
+    population = {"total": sum(objects.values()), "phases": {ph: {"objects": n} for ph, n in objects.items()},
+                  "multiAttachmentMessages": sum(1 for r in segs for k in r["attachmentsPerMessage"] if k >= 2),
+                  "messages": sum(r["messages"] for r in segs), "inboxes": sum(r["inboxes"] for r in segs)}
     recs.append({"record": "summary", "experiment": "A1iii", "lab": "fake", "startedAt": started, "completedAt": completed,
-                 "kernel": KERNEL, "bootId": boot, "workspace": "fa4e0000-0000-4000-8000-0000000a1111",
-                 "before": phases[0]["before"], "after": phases[-1]["after"], "perPhase": per_phase, "overall": overall,
+                 "kernel": KERNEL, "bootId": boot, "workspace": "fa4e0000-0000-4000-8000-0000000a1111", "population": population,
+                 "before": phases[0]["before"], "after": phases[-1]["after"], "perPhase": per_phase,
+                 "perPhaseLayout": per_phase_layout, "perLayout": per_layout, "perSize": per_size, "overall": overall,
                  "putFailures": 0, "problems": [], "PASS": True})
     exp = {"schema": "testinbox.n1-experiment/1", "experiment": "A1iii", "verdict": "PASS",
            "criterion": "FAKE criterion text for A1 (iii)", "startedAt": started, "completedAt": completed,
-           "venue": "final-filesystem", "filesystemUuid": UUID, "kernelRelease": KERNEL, "minioPlatformMemberDigest": MEMBER,
-           "artifact": None,
-           "measurements": {"ratioOverall": overall, "ratioPerPhase": per_phase, "objects": sum(objects.values()),
-                            "objectsPerPhase": objects, "harnessPass": True, "harnessBootId": boot,
+           "venue": "final-filesystem", "venueDetail": "FAKE qualification MinIO data on the final filesystem",
+           "filesystemUuid": UUID, "kernelRelease": KERNEL, "minioPlatformMemberDigest": MEMBER, "artifact": None,
+           "measurements": {"ratioOverall": overall, "ratioPerPhase": per_phase, "ratioPerPhaseLayout": per_phase_layout,
+                            "ratioPerLayout": per_layout, "ratioPerSize": per_size, "objects": sum(objects.values()),
+                            "objectsPerPhase": objects, "harnessPass": True, "harnessKernel": KERNEL, "harnessBootId": boot,
+                            "census": census,
                             "rawRatioDeferralNote": "FAKE: 0 B / 1 B attachment messages get their raw.eml in the 2-512 B phase"},
-           "problems": [], "rawFiles": ["experiments/A1iii/a1iii-fake.json"]}
+           "run": "fake-run", "problems": [],
+           "rawFiles": ["experiments/A1iii/a1iii-fake.json", "experiments/A1iii/a1vi-census.txt"]}
     return exp, recs
 
 
@@ -237,14 +259,8 @@ def main():
                                                          "Block count:              786432\nInode count:              786432\n"
                                                          "Block size:               4096\nInode size:               256\n")
     w(root, "qualification-9a/venue.json", venue)
-    for n in range(1, 12):
-        w(root, f"experiments/E{n}.json", experiment(n, a.e7))
-        w(root, f"experiments/E{n}/run.log", f"FAKE run output E{n}\n")
-    boot = "fa4e0000-0000-4000-8000-00000000b007"
-    a1, a1_raw = a1iii(boot)
-    w(root, "experiments/A1iii.json", a1)
-    w(root, "experiments/A1iii/a1iii-fake.json", json.dumps(a1_raw, indent=1) + "\n")
     # (vi) census: the raw listing goes OUTSIDE the bundle (Ops keeps it off-repo); the bundle gets the summary only.
+    # This listing is the post-A1iii census, the latest one, so it is the summary's top level.
     listing = "".join(f"{i} {n} {b} {sz} {t} {pth}\n" for i, n, b, sz, t, pth in [
         (2, 4, 8, 4096, "d", "/fake/mnt"), (11, 2, 32, 16384, "d", "/fake/mnt/lost+found"),
         (12, 3, 8, 4096, "d", "/fake/mnt/qual"), (13, 5, 8, 4096, "d", "/fake/mnt/qual/.minio.sys"),
@@ -259,20 +275,46 @@ def main():
     with open(os.path.join(out, "census-raw.txt"), "wb") as f:
         f.write(listing)
     lsha = hashlib.sha256(listing).hexdigest()
+    boot = "fa4e0000-0000-4000-8000-00000000b007"
+
+    def census_entry(exp, after_drain, taken, completed, sha, nbytes, lines, distinct, used, entries):
+        """One `censuses` entry as n1-bundle.py census-summary writes it (#124 6700351383)."""
+        return {"experiment": exp, "afterDefinedDrain": after_drain, "takenAt": taken, "experimentCompletedAt": completed,
+                "run": "fake-run", "bootId": boot, "kernelRelease": KERNEL, "filesystemUuid": UUID,
+                "distinctInodes": distinct, "blocklessInodes": 0, "listedBelowFirstInode": 1,
+                "reconcileGap": used - (distinct + 10 - 1), "inodesUsed": used,
+                "inodesBelowFirstInode": 10, "inflightTolerance": entries["tmp"] + entries["multipart"],
+                "entries": entries, "entriesAsPrinted": dict(entries),
+                "listing": {"sha256": sha, "bytes": nbytes, "lines": lines}, "source": f"experiments/{exp}/a1vi-census.txt"}
+    censuses = [
+        census_entry("E2", True, "2000-01-01T02:45:00Z", "2000-01-01T02:30:00Z", "e2" * 32, 4096, 120, 117, 126,
+                     {"tmp": 0, "trash": 48, "multipart": 0}),
+        census_entry("E7", False, "2000-01-01T07:35:00Z", "2000-01-01T07:30:00Z", "e7" * 32, 2048, 60, 57, 66,
+                     {"tmp": 1, "trash": 2, "multipart": 0}),
+        census_entry("A1iii", False, "2000-01-01T12:10:00Z", "2000-01-01T12:06:00Z", lsha, len(listing), 17, 17, 26,
+                     {"tmp": 1, "trash": 2, "multipart": 0})]
+    latest = censuses[-1]
+    for n in range(1, 12):
+        w(root, f"experiments/E{n}.json", experiment(n, a.e7))
+        w(root, f"experiments/E{n}/run.log", f"FAKE run output E{n}\n")
+    a1, a1_raw = a1iii(boot, {"takenAt": latest["takenAt"], "run": "fake-run", "kernelRelease": KERNEL, "bootId": boot,
+                              "filesystemUuid": UUID, "distinctInodes": 17, "blocklessInodes": 0, "entries": latest["entries"],
+                              "listingSha256": lsha, "maxLagSeconds": 900})
+    w(root, "experiments/A1iii.json", a1)
+    w(root, "experiments/A1iii/a1iii-fake.json", json.dumps(a1_raw, indent=1) + "\n")
+    for c in censuses:
+        w(root, c["source"], f"FAKE n1-a2-check.sh census output for {c['experiment']}: PASS\n")
     w(root, "census/summary.json", {
-        "schema": "testinbox.n1-census-summary/1", "takenAt": "2000-01-01T22:00:00Z",
-        "listing": {"sha256": lsha, "bytes": len(listing),
+        "schema": "testinbox.n1-census-summary/1", "takenAt": latest["takenAt"],
+        "takenAtDefinition": "FAKE: the latest census in censuses", "topLevelCensusOf": latest["experiment"],
+        "listing": {"sha256": lsha, "bytes": len(listing), "lines": 17,
                     "custody": {"heldBy": "FAKE Ops", "location": "off-repo", "mode": "0700",
                                 "retainedUntil": "30 days after the record PR merges"}},
-        "census": {"distinctInodes": 17, "blocklessInodes": 0, "entries": {"tmp": 1, "trash": 2, "multipart": 0}},
-        "reconciliation": {"inodesUsed": 27, "inodesBelowFirstInode": 10},
-        "steps": [{"step": st, "at": f"2000-01-01T{h:02d}:00:00Z", "kernelRelease": KERNEL, "bootId": boot, "filesystemUuid": UUID}
-                  for st, h in (("(i)", 0), ("(ii)", 0), ("(iii)", 13), ("(iv)", 14), ("(v)", 15), ("(vi)", 22))],
-        "censuses": [
-            {"experiment": "E2", "afterDefinedDrain": True, "takenAt": "2000-01-01T02:45:00Z",
-             "entries": {"tmp": 0, "trash": 48, "multipart": 0}},
-            {"experiment": "E7", "afterDefinedDrain": False, "takenAt": "2000-01-01T22:00:00Z",
-             "entries": {"tmp": 1, "trash": 2, "multipart": 0}}],
+        "census": {"distinctInodes": 17, "blocklessInodes": 0, "listedBelowFirstInode": 1, "entries": dict(latest["entries"])},
+        "reconciliation": {"inodesUsed": 26, "inodesBelowFirstInode": 10},
+        "steps": [{"step": f"(vi) after {c['experiment']}", "at": c["takenAt"], "kernelRelease": KERNEL, "bootId": boot,
+                   "filesystemUuid": UUID} for c in censuses],
+        "censuses": censuses,
         "attestation": {"by": "FAKE Ops", "at": "2000-01-01T22:30:00Z", "listingSha256": lsha}})
     # Gate F evidence: the repository's gate F fixture with the fake filesystem and this record id.
     ev = json.load(open(os.path.join(REAL_REPO, "scripts/testdata/storage-activation/filesystem/evidence-good.json")))

@@ -280,7 +280,7 @@ if [ "$STATUS" = 0 ] && [ "$(jq -r .filesystem.inodeCensus.verification "$TMP/cr
 else bad "census verified at cut (exit $STATUS)" "$OUT"; fi
 fresh crawsha; printf '1 1 8 4096 d /x\n' >> "$TMP/crawsha/census-raw.txt"
 refused "a --census-raw listing whose sha256 is not the summary's → refuse" crawsha "--census-raw sha256/size .* is not the summary's" --census-raw "$TMP/crawsha/census-raw.txt"
-fresh crawcnt; edit crawcnt census/summary.json 'd["census"]["distinctInodes"] = 16; d["reconciliation"]["inodesUsed"] = 26'
+fresh crawcnt; edit crawcnt census/summary.json 'd["census"]["distinctInodes"] = 16; d["reconciliation"]["inodesUsed"] = 25'
 refused "a summary whose counts differ from the listing recomputed at cut → refuse" crawcnt "recomputed from --census-raw .* differs from the summary" --census-raw "$TMP/crawcnt/census-raw.txt"
 fresh cinb; cp "$TMP/cinb/census-raw.txt" "$TMP/cinb/bundle/census-raw.txt"; resum "$TMP/cinb/bundle"
 refused "a raw census listing committed in the bundle (by name) → refuse" cinb "census-raw.txt is a raw census listing path"
@@ -297,12 +297,12 @@ refused "no census summary → (vi) NOT RUN → refuse" cmiss "\(vi\) census NOT
 fresh cblk; edit cblk census/summary.json 'd["census"]["blocklessInodes"] = 1'
 refused "a census with a blockless inode → refuse" cblk "\(vi\) census: 1 blockless inodes, not 0"
 fresh cgap; edit cgap census/summary.json 'd["reconciliation"]["inodesUsed"] = 40'
-refused "a reconciliation gap beyond the in-flight tmp/multipart entries → refuse (C2)" cgap "differs from the listed 17 \+ 10 reserved by 13, beyond the 1 in-flight"
+refused "a reconciliation gap beyond the in-flight tmp/multipart entries → refuse (C2)" cgap "differs from the listed 17 \+ 10 reserved − 1 listed reserved by 14, beyond the 1 in-flight"
 fresh cfirst; edit cfirst census/summary.json 'd["reconciliation"]["inodesBelowFirstInode"] = 11'
 refused "reserved inodes that are not dumpe2fs First inode − 1 → refuse" cfirst "inodesBelowFirstInode 11 is not dumpe2fs First inode − 1"
-fresh cboot; edit cboot census/summary.json 'd["steps"][3]["bootId"] = "other-boot"'
+fresh cboot; edit cboot census/summary.json 'd["steps"][1]["bootId"] = "other-boot"'
 refused "census steps on two boot ids → refuse (C3)" cboot "boot ids .* are not one \(C3"
-fresh cuuid; edit cuuid census/summary.json 'd["steps"][5]["filesystemUuid"] = "11111111-0000-4000-8000-000000000000"'
+fresh cuuid; edit cuuid census/summary.json 'd["steps"][2]["filesystemUuid"] = "11111111-0000-4000-8000-000000000000"'
 refused "a census step on another filesystem → refuse (C3)" cuuid "a step's filesystemUuid is not"
 fresh ccust; edit ccust census/summary.json 'd["listing"]["custody"]["mode"] = "0755"'
 refused "a listing custody other than off-repo 0700 with a retention → refuse" ccust "listing.custody must be heldBy"
@@ -311,7 +311,7 @@ refused "a census taken after the cleanup baseline → refuse (C2)" clate "censu
 
 # C2 as run: E2's census came after E2's own defined drain. The record discloses it literally and never says satisfied.
 DISC="(vi) for E2 was taken after its defined drain; no census preceded it. The drain's trash was largely purged before the census (48 entries remained under \`.trash\`), so most of it was never counted."
-if [ "$(jq -c '.filesystem.inodeCensus.c2Status' "$REC")" = '{"E2":"literal-deviation-disclosed","E7":"satisfied"}' ] \
+if [ "$(jq -c '.filesystem.inodeCensus.c2Status' "$REC")" = '{"A1iii":"satisfied","E2":"literal-deviation-disclosed","E7":"satisfied"}' ] \
    && [ "$(jq -r '.filesystem.inodeCensus.disclosures | length' "$REC")" = 1 ] \
    && [ "$(jq -r '.filesystem.inodeCensus.disclosures[0]' "$REC")" = "$DISC" ]; then
     ok "a census after E2's defined drain gives c2Status literal-deviation-disclosed and the exact disclosure with the .trash count"
@@ -347,9 +347,11 @@ A1H='seg = lambda ph, sz, lay: [r for r in d if r.get("record") == "segment" and
 phase = lambda ph: [r for r in d if r.get("record") == "phase" and r["phase"] == ph][0]
 summ = [r for r in d if r.get("record") == "summary"][0]
 '
+A1C='c = [x for x in d["censuses"] if x["experiment"] == "A1iii"][0]
+'
 if [ "$(jq -c '.filesystem.inodeBoundedMeasurement | [.experiment, .completedAt, .objects, .objectsPerPhase, (.ratioPerPhase | map_values(.ratio)), .ratioOverall]' "$REC")" = \
-     '["A1iii","2000-01-01T07:50:00Z",20446,{"0B":2000,"1B":2000,"2-512B":16446},{"0B":0.982968,"1B":0.982968,"2-512B":0.983221},{"dInodes":61344,"dBlocks":62394,"ratio":0.983171}]' ] \
-   && jq -e '.filesystem.inodeBoundedMeasurement.basis | test("raw statvfs pairs") and test("deferred raw.eml: the raw.eml of each 0 B / 1 B attachment-layout message is written and accounted in the 2-512 B phase")' "$REC" >/dev/null; then
+     '["A1iii","2000-01-01T12:06:00Z",20446,{"0B":2000,"1B":2000,"2-512B":16446},{"0B":0.982968,"1B":0.982968,"2-512B":0.983221},{"dInodes":61344,"dBlocks":62394,"ratio":0.983171}]' ] \
+   && jq -e '.filesystem.inodeBoundedMeasurement.basis | test("raw statvfs pairs") and contains("deferred raw.eml, as every phase record states: \"for attachment-layout messages in the 0 B and 1 B phases, the message'"'"'s own raw.eml is written and accounted in the 2–512 B phase\"")' "$REC" >/dev/null; then
     ok "the record carries filesystem.inodeBoundedMeasurement: re-judged per-phase and overall ratios, counts, completedAt, the deferred raw.eml basis"
 else bad "inodeBoundedMeasurement in the record" "$(jq -c .filesystem.inodeBoundedMeasurement "$REC")"; fi
 if grep -qE '^\| `filesystem\.inodeBoundedMeasurement` \| `20446 objects \(0B 2000, 1B 2000, 2-512B 16446\); ratio overall 0\.983171.*\| PROD-QUAL \| .*experiments/A1iii\.json.*a1iii-fake\.json' "$D/PROVENANCE.md"; then
@@ -387,7 +389,7 @@ fresh a1late; edit a1late "$A1" 'd["completedAt"] = "2000-01-01T23:30:00Z"'; edi
 refused "A1iii completedAt after the post-cleanup baseline → refuse" a1late "an experiment completed 2000-01-01T23:30:00Z, after the post-cleanup baseline"
 fresh a1put; edit a1put "$A1R" "$A1H"'seg("1B", 1, "single")["putFailures"] = 3'
 refused "failed PUTs (an incomplete population) → refuse" a1put "3 PUTs failed"
-fresh a1boot; edit a1boot "$A1R" "$A1H"'summ["bootId"] = "other-boot"'
+fresh a1boot; edit a1boot "$A1R" "$A1H"'summ["bootId"] = "other-boot"'; edit a1boot "$A1" 'd["measurements"]["harnessBootId"] = "other-boot"'
 refused "the A1iii harness on another boot than the census steps → refuse (C3)" a1boot "the A1iii harness ran on boot 'other-boot', not the census steps'"
 fresh a1self; edit a1self "$A1R" "$A1H"'summ["PASS"] = False; summ["problems"] = ["phase 0B: ..."]'
 refused "a harness that reports its own FAIL → refuse" a1self "the harness itself reports PASS False"
@@ -397,6 +399,71 @@ fresh a1noraw; edit a1noraw "$A1" 'd["rawFiles"] = ["experiments/E1/run.log"]'
 refused "A1iii without its harness output in rawFiles → refuse" a1noraw "rawFiles must hold exactly one e1e3e4.py a1iii output"
 fresh a1art; edit a1art "$A1" 'd["artifact"] = {"sourceSha": "0" * 40}'
 refused "A1iii naming an artifact that is not the MANIFEST candidate → refuse" a1art "experiments/A1iii.json: artifact .* is neither null"
+# The harness's phase records state the deferred raw.eml reading verbatim (#124 6700351383 item 4).
+fresh a1nodesc; edit a1nodesc "$A1R" "$A1H"'del phase("1B")["description"]'
+refused "a phase record without its description → refuse" a1nodesc "phase record 1 \(1B\): its description does not state, verbatim"
+fresh a1desc; edit a1desc "$A1R" "$A1H"'phase("0B")["description"] = phase("0B")["description"].replace("2–512 B", "2-512 B")'
+refused "a description that does not carry the agreed text verbatim → refuse" a1desc "phase record 0 \(0B\): its description does not state, verbatim"
+fresh a1field; edit a1field "$A1R" "$A1H"'del seg("1B", 1, "single")["failureSample"]'
+refused "a segment record missing a field of the harness's exact list → refuse" a1field "segment record .*: missing \['failureSample'\]"
+# Δblocks > 0 is judged per phase, per layout (in each phase and over the run) and overall, never per segment.
+fresh a1seg0
+edit a1seg0 "$A1R" "$A1H"'s = seg("2-512B", 2, "single"); s["after"].update({k: s["before"][k] for k in ("files", "ffree", "blocks", "bfree", "bavail")})'
+edit a1seg0 "$A1" 'm = d["measurements"]; m["ratioPerPhaseLayout"]["2-512B"]["single"] = {"dInodes": 21000, "dBlocks": 21357, "ratio": round(21000 / 21357, 6)}; m["ratioPerLayout"]["single"] = {"dInodes": 27000, "dBlocks": 27459, "ratio": round(27000 / 27459, 6)}'
+gen a1seg0
+if [ "$STATUS" = 0 ] && cmp -s "$TMP/a1seg0/out/production-2000-01-01/record.json" "$GOLDEN"; then
+    ok "a segment with Δblocks 0 inside a phase and layouts whose Δblocks > 0 passes (no per-segment rule)"
+else bad "per-segment Δblocks 0 (exit $STATUS)" "$OUT"; fi
+# Whole-second UTC instants compare inclusively: a segment on its phase's boundary second, the last sample at completedAt.
+fresh a1edge
+edit a1edge "$A1R" "$A1H"'seg("0B", 0, "single")["before"]["at"] = phase("0B")["before"]["at"]; phase("2-512B")["after"]["at"] = summ["completedAt"]; summ["after"]["at"] = summ["completedAt"]'
+gen a1edge
+if [ "$STATUS" = 0 ] && cmp -s "$TMP/a1edge/out/production-2000-01-01/record.json" "$GOLDEN"; then
+    ok "boundary-second samples (a segment at its phase's edge, the last sample at completedAt) pass: inclusive comparison"
+else bad "inclusive boundary samples (exit $STATUS)" "$OUT"; fi
+# The boot ids are at measurements.harnessBootId and measurements.census.bootId (no top-level bootId in A1iii.json).
+fresh a1hboot; edit a1hboot "$A1" 'd["measurements"]["harnessBootId"] = "other-boot"'
+refused "measurements.harnessBootId that is not the harness summary's boot → refuse" a1hboot "measurements.harnessBootId 'other-boot' is not the harness summary's bootId"
+fresh a1cboot; edit a1cboot "$A1" 'd["measurements"]["census"]["bootId"] = "other-boot"'
+refused "measurements.census.bootId that is not the census steps' boot → refuse (C3)" a1cboot "measurements.census.bootId 'other-boot' is not the census steps'"
+# A1 (vi) straight after A1 (iii): its own censuses entry, 0-15 min after completedAt, bound to A1iii.json. The order is
+# never keyed on the top-level takenAt (the latest census, by definition).
+fresh a1cmiss; edit a1cmiss census/summary.json 'd["censuses"] = [c for c in d["censuses"] if c["experiment"] != "A1iii"]'
+refused "no census entry for A1iii → refuse" a1cmiss "no census entry for A1iii: the \(vi\) census must be taken straight after A1 \(iii\)"
+a1ctime() {  # a1ctime <name> <takenAt>: move the A1iii census (entry, top level, A1iii.json) to <takenAt>
+    fresh "$1"
+    edit "$1" census/summary.json "$A1C"'c["takenAt"] = "'"$2"'"; d["takenAt"] = "'"$2"'"'
+    edit "$1" "$A1" 'd["measurements"]["census"]["takenAt"] = "'"$2"'"'
+}
+a1ctime a1cearly 2000-01-01T12:05:59Z
+refused "an A1iii census taken before A1iii completed → refuse (C2)" a1cearly "censuses\[A1iii\]: taken at 2000-01-01T12:05:59Z, -1 s from A1iii's completedAt"
+a1ctime a1clate 2000-01-01T12:21:01Z
+refused "an A1iii census taken more than 15 min after A1iii completed → refuse (C2)" a1clate "censuses\[A1iii\]: taken at 2000-01-01T12:21:01Z, \+901 s from A1iii's completedAt"
+a1ctime a1c15 2000-01-01T12:21:00Z
+gen a1c15
+if [ "$STATUS" = 0 ]; then ok "an A1iii census exactly 15 min after A1iii completed passes (inclusive)"; else bad "A1iii census at +15 min (exit $STATUS)" "$OUT"; fi
+fresh a1csha; edit a1csha "$A1" 'd["measurements"]["census"]["listingSha256"] = "0" * 64'
+refused "an A1iii census whose listing sha256 is not the one A1iii.json names → refuse" a1csha "censuses\[A1iii\]: listing.sha256 .* is not experiments/A1iii.json measurements.census.listingSha256 '0000"
+fresh a1cblk; edit a1cblk census/summary.json "$A1C"'c["blocklessInodes"] = 1'
+refused "an A1iii census with a blockless inode → refuse" a1cblk "censuses\[A1iii\]: blocklessInodes 1, not 0"
+fresh ctop; edit ctop census/summary.json 'd["takenAt"] = "2000-01-01T07:35:00Z"; d["topLevelCensusOf"] = "E7"'
+refused "a top level that is not the latest census → refuse" ctop "top-level takenAt '2000-01-01T07:35:00Z' is not the latest census's \(A1iii"
+# The reconciliation counts the root once: reserved inodes 1..First−1, minus the listed ones among them (#124 6700446089).
+if [ "$(jq -c '[.census.listedBelowFirstInode, .reconciliation.inodesUsed]' "$TMP/good/bundle/census/summary.json")" = '[1,26]' ] \
+   && [ "$(jq .filesystem.inodeCensus.reconciliationGap "$REC")" = 0 ]; then
+    ok "listedBelowFirstInode 1 (the root) on a consistent census gives a reconciliation gap of exactly 0"
+else bad "root-inode reconciliation" "$(jq -c .filesystem.inodeCensus "$REC")"; fi
+fresh clbmiss; edit clbmiss census/summary.json 'del(d["census"]["listedBelowFirstInode"])'
+refused "a census summary without listedBelowFirstInode → refuse" clbmiss "census/summary.json census: 'listedBelowFirstInode' is missing"
+fresh clbent; edit clbent census/summary.json 'del(d["censuses"][0]["listedBelowFirstInode"])'
+refused "a censuses entry without listedBelowFirstInode → refuse" clbent "listedBelowFirstInode None for E2 is missing"
+fresh clbrange; edit clbrange census/summary.json "$A1C"'c["listedBelowFirstInode"] = 11; d["census"]["listedBelowFirstInode"] = 11'
+refused "listedBelowFirstInode above inodesBelowFirstInode → refuse" clbrange "census.listedBelowFirstInode 11 is not between 0 and inodesBelowFirstInode 10"
+fresh clbraw; edit clbraw census/summary.json "$A1C"'c["listedBelowFirstInode"] = 0; d["census"]["listedBelowFirstInode"] = 0; c["inodesUsed"] = 27; d["reconciliation"]["inodesUsed"] = 27'
+refused "a listedBelowFirstInode the listing does not bear out (recomputed at cut) → refuse" clbraw "listedBelowFirstInode 1\) differs from the summary .*listedBelowFirstInode 0\)" --census-raw "$TMP/clbraw/census-raw.txt"
+# entries.tmp is RECORD-CUT's: inside tmp, excluding .trash AND the .trash directory entry itself. No tolerance.
+fresh ctmp; edit ctmp census/summary.json "$A1C"'c["entries"]["tmp"] = 2; d["census"]["entries"]["tmp"] = 2'
+refused "a tmp count that includes the .trash directory entry → refuse at cut (no ±2 tolerance)" ctmp "recomputed from --census-raw .*'tmp': 1.* differs from the summary .*'tmp': 2" --census-raw "$TMP/ctmp/census-raw.txt"
 # A1iii's completedAt counts toward qualifiedAt: when it is the latest event, it moves qualifiedAt and the recordId date.
 a1latest() {  # a1latest <name>: A1iii completes after midnight, the latest event, inside a later cleanup baseline
     fresh "$1"
@@ -404,6 +471,9 @@ a1latest() {  # a1latest <name>: A1iii completes after midnight, the latest even
     rm "$TMP/$1/bundle/identity/fs-baseline-post-cleanup.txt.bak"
     edit "$1" "$A1" 'd["completedAt"] = "2000-01-02T00:30:00Z"'
     edit "$1" "$A1R" "$A1H"'summ["completedAt"] = "2000-01-02T00:30:00Z"'
+    # its (vi) census follows it, and is then the latest census (the top level)
+    edit "$1" census/summary.json "$A1C"'c.update(takenAt="2000-01-02T00:35:00Z", experimentCompletedAt="2000-01-02T00:30:00Z"); d["takenAt"] = "2000-01-02T00:35:00Z"'
+    edit "$1" "$A1" 'd["measurements"]["census"]["takenAt"] = "2000-01-02T00:35:00Z"'
 }
 a1latest a1stale
 refused "A1iii completing last moves the recordId: a MANIFEST naming the earlier date → refuse, naming the derived id" a1stale \

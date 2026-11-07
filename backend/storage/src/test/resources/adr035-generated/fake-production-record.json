@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "recordId": "production-amd64-fake-host-0-2000-01-01",
-  "qualifiedAt": "2000-01-01T11:30:00Z",
+  "qualifiedAt": "2000-01-01T12:06:00Z",
   "minio": {
     "imageIndexDigest": "sha256:0dcbcf848c93556c7a4d432a4cf45ce5e3fc8238f9f05d9558d9f6ad47a3fba9",
     "platformMemberDigest": "sha256:fa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4e",
@@ -72,10 +72,11 @@
       "listingBytes": 875,
       "listingCustody": "held by FAKE Ops off-repo, 0700, retained until 30 days after the record PR merges",
       "verification": "summary attested by FAKE Ops at 2000-01-01T22:30:00Z (listing not re-verified here)",
-      "takenAt": "2000-01-01T22:00:00Z",
+      "takenAt": "2000-01-01T12:10:00Z",
       "blocklessInodes": 0,
       "reconciliationGap": 0,
       "c2Status": {
+        "A1iii": "satisfied",
         "E2": "literal-deviation-disclosed",
         "E7": "satisfied"
       },
@@ -85,7 +86,7 @@
     },
     "inodeBoundedMeasurement": {
       "experiment": "A1iii",
-      "completedAt": "2000-01-01T07:50:00Z",
+      "completedAt": "2000-01-01T12:06:00Z",
       "objects": 20446,
       "objectsPerPhase": {
         "0B": 2000,
@@ -114,7 +115,7 @@
         "dBlocks": 62394,
         "ratio": 0.983171
       },
-      "basis": "A1 (iii) on the final filesystem, re-judged from the harness's raw statvfs pairs: Δ(f_files − f_ffree) <= Δ(f_blocks − f_bfree), in blocks of f_frsize, in every phase (one per C1 class), every layout within each phase, every layout over the run and overall; deferred raw.eml: the raw.eml of each 0 B / 1 B attachment-layout message is written and accounted in the 2-512 B phase, so every object stays inside its phase's class"
+      "basis": "A1 (iii) on the final filesystem, re-judged from the harness's raw statvfs pairs: Δ(f_files − f_ffree) <= Δ(f_blocks − f_bfree), in blocks of f_frsize, in every phase (one per C1 class), every layout within each phase, every layout over the run and overall; deferred raw.eml, as every phase record states: \"for attachment-layout messages in the 0 B and 1 B phases, the message's own raw.eml is written and accounted in the 2–512 B phase\""
     },
     "metadataBytesMeasured": 52428800,
     "metadataBytesScope": "minio-sys+unattributed",
