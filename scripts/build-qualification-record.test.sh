@@ -338,6 +338,86 @@ else bad "E2 census before drain (exit $STATUS)" "$OUT"; fi
 if grep -qF "$DISC" "$TMP/good/out/production-2000-01-01/PROVENANCE.md"; then ok "PROVENANCE.md carries the disclosure word for word"
 else bad "disclosure missing from PROVENANCE.md"; fi
 
+# ------------------------------------- A1 (iii) bounded measurement: required, re-judged from the raw statvfs pairs
+# experiments/A1iii.json is Ops' n1-bundle.py wrapper; experiments/A1iii/a1iii-fake.json is the harness output (a list
+# of segment, phase and summary records). The generator never uses the JSON's verdict or figures: it recomputes them.
+A1="experiments/A1iii.json"
+A1R="experiments/A1iii/a1iii-fake.json"
+A1H='seg = lambda ph, sz, lay: [r for r in d if r.get("record") == "segment" and r["phase"] == ph and r["size"] == sz and r["layout"] == lay][0]
+phase = lambda ph: [r for r in d if r.get("record") == "phase" and r["phase"] == ph][0]
+summ = [r for r in d if r.get("record") == "summary"][0]
+'
+if [ "$(jq -c '.filesystem.inodeBoundedMeasurement | [.experiment, .completedAt, .objects, .objectsPerPhase, (.ratioPerPhase | map_values(.ratio)), .ratioOverall]' "$REC")" = \
+     '["A1iii","2000-01-01T07:50:00Z",20446,{"0B":2000,"1B":2000,"2-512B":16446},{"0B":0.982968,"1B":0.982968,"2-512B":0.983221},{"dInodes":61344,"dBlocks":62394,"ratio":0.983171}]' ] \
+   && jq -e '.filesystem.inodeBoundedMeasurement.basis | test("raw statvfs pairs") and test("deferred raw.eml: the raw.eml of each 0 B / 1 B attachment-layout message is written and accounted in the 2-512 B phase")' "$REC" >/dev/null; then
+    ok "the record carries filesystem.inodeBoundedMeasurement: re-judged per-phase and overall ratios, counts, completedAt, the deferred raw.eml basis"
+else bad "inodeBoundedMeasurement in the record" "$(jq -c .filesystem.inodeBoundedMeasurement "$REC")"; fi
+if grep -qE '^\| `filesystem\.inodeBoundedMeasurement` \| `20446 objects \(0B 2000, 1B 2000, 2-512B 16446\); ratio overall 0\.983171.*\| PROD-QUAL \| .*experiments/A1iii\.json.*a1iii-fake\.json' "$D/PROVENANCE.md"; then
+    ok "PROVENANCE.md labels inodeBoundedMeasurement PROD-QUAL from experiments/A1iii.json and its raw harness output"
+else bad "PROVENANCE.md inodeBoundedMeasurement row" "$(grep inodeBounded "$D/PROVENANCE.md")"; fi
+fresh a1miss; rm "$TMP/a1miss/bundle/$A1"; resum "$TMP/a1miss/bundle"
+refused "A1iii missing → refuse" a1miss "required file experiments/A1iii.json is missing"
+fresh a1fail; edit a1fail "$A1" 'd["verdict"] = "FAIL"'
+refused "A1iii not PASS → refuse" a1fail "A1iii is not PASS \(verdict 'FAIL'\)"
+# The JSON says PASS and even carries the tampered figures; the raw pairs give a 1B phase ratio > 1.
+fresh a1phase; edit a1phase "$A1R" "$A1H"'phase("1B")["after"]["ffree"] -= 200'
+edit a1phase "$A1" 'd["measurements"]["ratioPerPhase"]["1B"] = {"dInodes": 6202, "dBlocks": 6106, "ratio": 1.015722}'
+refused "a phase ratio > 1 in the raw statvfs data despite PASS in the JSON → refuse" a1phase "re-judged from experiments/A1iii/a1iii-fake.json: phase 1B: Δinodes 6202 > Δblocks 6106"
+# One 2-512B single-object segment: the phase (49 840 / 50 182) and the single layout over the run (30 500 / 30 510)
+# stay <= 1, but the single layout within 2-512B does not.
+fresh a1layout; edit a1layout "$A1R" "$A1H"'seg("2-512B", 2, "single")["after"]["ffree"] -= 500'
+refused "a layout ratio > 1 within a phase whose own ratio is <= 1 → refuse" a1layout "phase 2-512B layout single: Δinodes 24500 > Δblocks 24408"
+fresh a1few; edit a1few "$A1R" "$A1H"'s = seg("2-512B", 2, "single"); s["objects"] = s["messages"] = s["inboxes"] = 500; phase("2-512B")["objects"] -= 500'
+edit a1few "$A1" 'd["measurements"]["objects"] = 19946; d["measurements"]["objectsPerPhase"]["2-512B"] = 15946'
+refused "fewer than 20 000 objects → refuse" a1few "19946 objects < 20000"
+fresh a1small; edit a1small "$A1R" "$A1H"'s = seg("0B", 0, "single"); s["objects"] = s["messages"] = s["inboxes"] = 999; phase("0B")["objects"] -= 1'
+edit a1small "$A1" 'd["measurements"]["objects"] = 20445; d["measurements"]["objectsPerPhase"]["0B"] = 1999'
+refused "fewer than 2 000 objects in the 0B phase → refuse" a1small "phase 0B: 1999 objects < 2000"
+fresh a1class; edit a1class "$A1R" "$A1H"'seg("1B", 1, "attachments")["size"] = 2'
+refused "an out-of-class object in the 1B phase → refuse" a1class "segment 1B/2 B/attachments: 1000 objects of 2 B, outside the phase's class 1..1 B"
+fresh a1defer; edit a1defer "$A1R" "$A1H"'seg("0B", 0, "attachments")["role"] = "raw.eml+attachments"'
+refused "a 0B attachment message whose raw.eml stays in the 0B phase (not deferred) → refuse" a1defer "role 'raw.eml\+attachments' is not allowed in phase 0B"
+fresh a1venue; edit a1venue "$A1" 'd["venue"] = "carried"'
+refused "A1iii on another venue (it can never be carried) → refuse" a1venue "experiments/A1iii.json: venue is 'carried', not final-filesystem"
+fresh a1uuid; edit a1uuid "$A1" 'd["filesystemUuid"] = "11111111-0000-4000-8000-000000000000"'
+refused "A1iii on another filesystem uuid → refuse" a1uuid "experiments/A1iii.json: filesystemUuid '11111111-"
+fresh a1geom; edit a1geom "$A1R" "$A1H"'phase("0B")["before"]["files"] = 786432'
+refused "a raw statvfs sample of another filesystem's geometry → refuse" a1geom "phase 0B before: f_files 786432 is not the final filesystem's 16777216"
+fresh a1late; edit a1late "$A1" 'd["completedAt"] = "2000-01-01T23:30:00Z"'; edit a1late "$A1R" "$A1H"'summ["completedAt"] = "2000-01-01T23:30:00Z"'
+refused "A1iii completedAt after the post-cleanup baseline → refuse" a1late "an experiment completed 2000-01-01T23:30:00Z, after the post-cleanup baseline"
+fresh a1put; edit a1put "$A1R" "$A1H"'seg("1B", 1, "single")["putFailures"] = 3'
+refused "failed PUTs (an incomplete population) → refuse" a1put "3 PUTs failed"
+fresh a1boot; edit a1boot "$A1R" "$A1H"'summ["bootId"] = "other-boot"'
+refused "the A1iii harness on another boot than the census steps → refuse (C3)" a1boot "the A1iii harness ran on boot 'other-boot', not the census steps'"
+fresh a1self; edit a1self "$A1R" "$A1H"'summ["PASS"] = False; summ["problems"] = ["phase 0B: ..."]'
+refused "a harness that reports its own FAIL → refuse" a1self "the harness itself reports PASS False"
+fresh a1claim; edit a1claim "$A1" 'd["measurements"]["objects"] = 30000'
+refused "JSON figures that are not the ones re-judged from the raw output → refuse" a1claim "measurements.objects 30000 is not the re-judged 20446"
+fresh a1noraw; edit a1noraw "$A1" 'd["rawFiles"] = ["experiments/E1/run.log"]'
+refused "A1iii without its harness output in rawFiles → refuse" a1noraw "rawFiles must hold exactly one e1e3e4.py a1iii output"
+fresh a1art; edit a1art "$A1" 'd["artifact"] = {"sourceSha": "0" * 40}'
+refused "A1iii naming an artifact that is not the MANIFEST candidate → refuse" a1art "experiments/A1iii.json: artifact .* is neither null"
+# A1iii's completedAt counts toward qualifiedAt: when it is the latest event, it moves qualifiedAt and the recordId date.
+a1latest() {  # a1latest <name>: A1iii completes after midnight, the latest event, inside a later cleanup baseline
+    fresh "$1"
+    sed -i.bak 's/phase=post-cleanup at=2000-01-01T23:00:00Z/phase=post-cleanup at=2000-01-02T06:00:00Z/' "$TMP/$1/bundle/identity/fs-baseline-post-cleanup.txt"
+    rm "$TMP/$1/bundle/identity/fs-baseline-post-cleanup.txt.bak"
+    edit "$1" "$A1" 'd["completedAt"] = "2000-01-02T00:30:00Z"'
+    edit "$1" "$A1R" "$A1H"'summ["completedAt"] = "2000-01-02T00:30:00Z"'
+}
+a1latest a1stale
+refused "A1iii completing last moves the recordId: a MANIFEST naming the earlier date → refuse, naming the derived id" a1stale \
+    "MANIFEST.json recordId 'production-amd64-fake-host-0-2000-01-01' is not the derived 'production-amd64-fake-host-0-2000-01-02'"
+a1latest a1next
+edit a1next MANIFEST.json 'd["recordId"] = "production-amd64-fake-host-0-2000-01-02"'
+edit a1next gate-f/filesystem-evidence.json 'd["qualificationRecordId"] = "production-amd64-fake-host-0-2000-01-02"; d["collectedAt"] = "2000-01-02T07:00:00Z"'
+gen a1next
+NREC="$TMP/a1next/out/production-2000-01-02/record.json"
+if [ "$STATUS" = 0 ] && [ "$(jq -c '[.recordId, .qualifiedAt, .filesystem.inodeBoundedMeasurement.completedAt]' "$NREC")" = \
+     '["production-amd64-fake-host-0-2000-01-02","2000-01-02T00:30:00Z","2000-01-02T00:30:00Z"]' ]; then
+    ok "A1iii completing last sets qualifiedAt and the recordId date (production-amd64-fake-host-0-2000-01-02)"
+else bad "A1iii latest → recordId (exit $STATUS)" "$OUT"; fi
+
 # ------------------------------------------------------------------- E7 carried (W3 A5): both outcomes
 fresh carry --e7 carried
 gen carry

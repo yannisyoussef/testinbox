@@ -6,6 +6,7 @@ import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.Test
+import tools.jackson.databind.json.JsonMapper
 
 /**
  * The record `scripts/build-qualification-record.py` writes from the Ops N1 evidence bundle (W4, R2) must load
@@ -33,6 +34,30 @@ class GeneratedQualificationRecordTest {
         fs.objectOverheadMaxBytes shouldBe 24576
         fs.metadataInodesMeasured shouldBe 157
         fs.experiments shouldBe QualificationRecord.REQUIRED_EXPERIMENTS.associateWith { "PASS" }
+    }
+
+    /**
+     * A1 (iii) is an additive member, like `inodeCensus`: the parser reads members by name, so the record above
+     * parses although it carries it. This pins that the parsed file really does carry it.
+     */
+    @Test
+    fun `the generated record carries the additive A1 (iii) bounded measurement the parser ignores`() {
+        val a1 =
+            checkNotNull(
+                JsonMapper
+                    .builder()
+                    .build()
+                    .readTree(json)
+                    .get("filesystem")
+                    ?.get("inodeBoundedMeasurement"),
+            ) {
+                "the golden generated record has no filesystem.inodeBoundedMeasurement"
+            }
+        a1.get("experiment").asString() shouldBe "A1iii"
+        a1.get("objects").asLong() shouldBe 20446
+        listOf("0B", "1B", "2-512B").map { a1.get("objectsPerPhase").get(it).asLong() } shouldBe listOf(2000L, 2000L, 16446L)
+        a1.get("basis").asString() shouldContain "deferred raw.eml"
+        QualificationRecords.parse(json).recordId shouldBe "production-amd64-fake-host-0-2000-01-01"
     }
 
     @Test

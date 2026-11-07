@@ -83,6 +83,39 @@
         "(vi) for E2 was taken after its defined drain; no census preceded it. The drain's trash was largely purged before the census (48 entries remained under `.trash`), so most of it was never counted."
       ]
     },
+    "inodeBoundedMeasurement": {
+      "experiment": "A1iii",
+      "completedAt": "2000-01-01T07:50:00Z",
+      "objects": 20446,
+      "objectsPerPhase": {
+        "0B": 2000,
+        "1B": 2000,
+        "2-512B": 16446
+      },
+      "ratioPerPhase": {
+        "0B": {
+          "dInodes": 6002,
+          "dBlocks": 6106,
+          "ratio": 0.982968
+        },
+        "1B": {
+          "dInodes": 6002,
+          "dBlocks": 6106,
+          "ratio": 0.982968
+        },
+        "2-512B": {
+          "dInodes": 49340,
+          "dBlocks": 50182,
+          "ratio": 0.983221
+        }
+      },
+      "ratioOverall": {
+        "dInodes": 61344,
+        "dBlocks": 62394,
+        "ratio": 0.983171
+      },
+      "basis": "A1 (iii) on the final filesystem, re-judged from the harness's raw statvfs pairs: Δ(f_files − f_ffree) <= Δ(f_blocks − f_bfree), in blocks of f_frsize, in every phase (one per C1 class), every layout within each phase, every layout over the run and overall; deferred raw.eml: the raw.eml of each 0 B / 1 B attachment-layout message is written and accounted in the 2-512 B phase, so every object stays inside its phase's class"
+    },
     "metadataBytesMeasured": 52428800,
     "metadataBytesScope": "minio-sys+unattributed",
     "experiments": {

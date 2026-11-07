@@ -17,7 +17,7 @@ The tools:
 |---|---|
 | `scripts/build-qualification-record.py` | the offline generator: verifies the bundle's `SHA256SUMS` first, then builds the record, `PROVENANCE.md` and the evidence copy; refuses (exit 1, nothing written) on any gap |
 | `docs/adr/0035-benchmark/qualification/production-expected.json` | the **FIXED** values (below). Not a record, never shipped. A bundle that measures anything else is refused |
-| `scripts/build-qualification-record.test.sh` | 89 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
+| `scripts/build-qualification-record.test.sh` | 111 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
 | `backend/storage/src/test/.../GeneratedQualificationRecordTest.kt` | the generator's output on the fake bundle (golden file, byte-compared by the shell test) loads through the real `QualificationRecords.parse`, is eligible and has no production gap |
 
 ## Value status
@@ -44,7 +44,7 @@ An eligible record has no LAB or POST-REBOOT member. The generator cannot emit e
 |---|---|---|---|---|
 | `schemaVersion` | CODE | `1` | `QualificationRecords.SCHEMA_VERSION` | CODE |
 | `recordId` | DERIVED | `production-amd64-<host>-<UTC date of qualifiedAt>`, e.g. `production-amd64-prod-gra-01-2026-11-07` | must equal `MANIFEST.json` `recordId` **and** `gate-f/filesystem-evidence.json` `qualificationRecordId` (verdict 2.1 (d)) | DERIVED |
-| `qualifiedAt` (required by the parser) | DERIVED | latest of the §9a slow sweep start (`qualification-9a/orchestrator.log`) and every on-filesystem experiment's `completedAt` | `qualification-9a/orchestrator.log`, `experiments/E*.json` | DERIVED |
+| `qualifiedAt` (required by the parser) | DERIVED | latest of the §9a slow sweep start (`qualification-9a/orchestrator.log`) and every on-filesystem experiment's `completedAt`: E1–E11 (E7 only when run on the final filesystem) **and A1 (iii)** (#124 comment 6699827210, item 2) | `qualification-9a/orchestrator.log`, `experiments/E*.json`, `experiments/A1iii.json` | DERIVED |
 | `minio.imageIndexDigest` | FIXED `sha256:bbac6789…e00d`, DERIVED | sha256 of the raw index bytes; the index must list exactly one linux/amd64 member, and that member must be the one running (verdict 2.1 (a)) | `identity/minio-imagetools-raw.json` (`docker buildx imagetools inspect --raw <mirror>@sha256:bbac…`) + `identity/minio-image-inspect.json` RepoDigests | DERIVED |
 | `minio.platformMemberDigest` | FIXED `sha256:3f97c565…64bb` | image RepoDigests = qualification-check `observed` | `identity/minio-image-inspect.json`, `identity/minio-container-inspect.json` (`.Image` = image `Id`), `identity/qualification-check-observed.json` | PROD-NOW |
 | `minio.platform` | FIXED `linux/amd64` | the index entry's platform | `identity/minio-imagetools-raw.json` | PROD-NOW |
@@ -55,7 +55,7 @@ An eligible record has no LAB or POST-REBOOT member. The generator cannot emit e
 | `minio.timeoutEnvironment`, `timeoutCliFlags` | FIXED `{}`, `[]` | container `Env` filtered `^MINIO_.*(TIMEOUT\|DEADLINE\|KEEP_?ALIVE)`, `Args` filtered `timeout\|deadline\|keep-?alive` (qualification-check's rules) | `identity/minio-container-inspect.json` = qualification-check | PROD-NOW |
 | `minio.runtimeConfig.normalized`, `.hash` | FIXED `ti-qc-runtime-config-v1`, `sha256:b0821e88…c558` | the generator re-verifies sha256(`runtimeConfigNormalized`) = hash; the qualification MinIO's capture, re-normalized by a port of the same normalizer, must hash the same | `identity/qualification-check-observed.json`, `qualification-9a/*/harness-minio-capture.txt` | PROD-NOW |
 | `minio.storageClassInlineDefaults` (+ `…Basis`) | FIXED `release-defaults` | no `MINIO_STORAGE_CLASS_*`/inline variables in the container's env | `identity/minio-container-inspect.json` = qualification-check | PROD-NOW |
-| `host.kernelRelease` | FIXED `6.8.0-147-generic` (after the O2 reboot) | baseline = qualification-check = every experiment = the §9a `uname.txt` | `identity/fs-baseline-post-reboot.txt` (`kernel=`), `identity/qualification-check-observed.json`, `experiments/E*.json`, `qualification-9a/*/uname.txt` | PROD-NOW |
+| `host.kernelRelease` | FIXED `6.8.0-147-generic` (after the O2 reboot) | baseline = qualification-check = every experiment = the §9a `uname.txt` | `identity/fs-baseline-post-reboot.txt` (`kernel=`), `identity/qualification-check-observed.json`, `experiments/E*.json`, `experiments/A1iii.json` (and its harness summary), `qualification-9a/*/uname.txt` | PROD-NOW |
 | `host.architecture` | FIXED `x86_64` | baseline `arch=` | `identity/fs-baseline-post-reboot.txt` | PROD-NOW |
 | `host.filesystemType`, `mountOptions` | FIXED `ext4`, `rw,relatime` | baseline = qualification-check = gate F evidence | `identity/fs-baseline-post-*.txt`, `identity/qualification-check-observed.json` | PROD-NOW |
 | `host.device` | DERIVED text | from the baseline geometry: `-b 4096`, 12,582,912 blocks = 12,582,912 inodes, inode size 256, features, loop, image, 0 FIEMAP hole blocks, `discard_max_bytes` 0 | `identity/fs-baseline-post-reboot.txt`, `identity/dumpe2fs-h.txt` | PROD-NOW |
@@ -77,6 +77,7 @@ An eligible record has no LAB or POST-REBOOT member. The generator cannot emit e
 | `filesystem.inodeHeadroomLatchDrill` (additive member, only when E10 drilled it) | FROM-N1 (E10) | `{result: "PASS", fsMonitorSha256}` from E10's `measurements.inodeHeadroomLatch` and `fsMonitorSha256`; gate F accepts `minio-sys-excl-trash` only when its `fsMonitorSha256` equals the evidence's `monitor.fsMonitorSha256` | `experiments/E10.json`, `gate-f/filesystem-evidence.json` | PROD-QUAL |
 | `filesystem.metadataInodesBasis` (additive member) | DERIVED | `E7 on the final filesystem` or `E7 carried under <amendment>` | `MANIFEST.json` `e7` | DERIVED |
 | `filesystem.inodeCensus` (additive member) | FROM-N1 (A1 (vi), C2, C3) | `{listingSha256, listingBytes, listingCustody: "held by <Ops> off-repo, 0700, retained until <retainedUntil>", verification, takenAt, blocklessInodes: 0, reconciliationGap, c2Status, disclosures}` from `census/summary.json`. The raw listing is referenced by sha256 only, never included. `verification` is "listing verified at cut (--census-raw)" or "summary attested by <who> at <when>" | `census/summary.json` (+ the off-repo listing at cut) | PROD-QUAL |
+| `filesystem.inodeBoundedMeasurement` (additive member) | FROM-N1 (A1 (iii), C1) | `{experiment: "A1iii", completedAt, objects, objectsPerPhase: {0B, 1B, 2-512B}, ratioPerPhase: {<phase>: {dInodes, dBlocks, ratio}}, ratioOverall: {dInodes, dBlocks, ratio}, basis}`, **re-judged from the harness's raw statvfs pairs**, never from the JSON's verdict or figures (which must equal the recomputation). Refused unless Δ(f_files − f_ffree) ≤ Δ(f_blocks − f_bfree) (blocks of f_frsize, Δblocks > 0) in every phase, every layout within each phase, every layout over the run and overall; ≥ 20,000 objects, ≥ 2,000 in each of 0B and 1B; every object in its phase's class (0B = {0}, 1B = {1}, 2-512B = [2, 512]) with the 0 B / 1 B attachment messages' `raw.eml` deferred to the 2-512B phase; no failed PUT. The file passes every check an `E*.json` does, and is never carried. See [A1 (iii)](#a1-iii-the-bounded-measurement) | `experiments/A1iii.json` + the harness output in its `rawFiles` | PROD-QUAL |
 | `filesystem.experiments.E1`…`E11` | FROM-N1 | each must be `PASS`, on `venue: final-filesystem`, uuid `c33e14fd…`, kernel 147, member `3f97c565…`, started after the post-reboot baseline and finished before the post-cleanup one | `experiments/E1.json` … `E11.json` + their `rawFiles` | PROD-QUAL (E7 may be CARRIED-AMENDMENT) |
 | `enablementEligible`, `ineligibilityReasons` | DERIVED | `true`, `[]`. The generator writes no record otherwise | — | DERIVED |
 
@@ -122,6 +123,9 @@ qualification-9a/{main,v3,slow}/           run-slow.sh's per-pass output, unchan
                                             uname.txt, mount.txt, minio-binary.sha256, harness-minio-capture.txt (+ any others)
 experiments/E1.json … E11.json             one per experiment (format below)
 experiments/E<n>/…                         the raw run output each Ei.json lists in rawFiles
+experiments/A1iii.json                     A1 (iii), the bounded measurement (n1-bundle.py experiment A1iii; same format;
+                                            REQUIRED, see "A1 (iii)" below)
+experiments/A1iii/…                        its rawFiles, including the harness output a1iii-<lab>.json (e1e3e4.py a1iii)
 census/summary.json                        the A1 (vi) census SUMMARY (below). NEVER the raw listing: nothing under census/
                                             but summary.json, and no file anywhere with `find -printf` lines, is accepted
 gate-f/filesystem-evidence.json            collect-filesystem-evidence.py --record-id <recordId>, after the N1 cleanup,
@@ -178,7 +182,46 @@ Experiment file (`testinbox.n1-experiment/1`):
 
 The `recordId` follows from `qualifiedAt`, so Ops can compute it before running the gate F collector:
 `production-amd64-prod-gra-01-<UTC date of the later of the §9a slow-sweep start and the last experiment's
-completedAt>`. A wrong guess is refused, and the refusal names the derived id.
+completedAt>`, where the experiments are E1–E11 **and A1 (iii)**. A wrong guess is refused, and the refusal names the
+derived id.
+
+### A1 (iii): the bounded measurement
+
+Ops' RESULT is #124 comment 6698831482; the app's answers are 6699827210. A1 (iii) as amended (#124 6675394064) runs on the qualification MinIO after E7, before the (vi) census and before any
+cleanup: one phase per C1 class (0B, 1B, 2-512B), each `settle()`d with statvfs before and after, single-object
+messages and attachment messages in every phase, fresh inboxes and messages. Ops' harness (`e1e3e4.py <lab> a1iii`)
+writes a JSON list of `segment`, `phase` and `summary` records carrying the raw `f_files`, `f_ffree`, `f_blocks`,
+`f_bfree`, `f_bavail` and `f_frsize`; `n1-bundle.py experiment A1iii` wraps it as `experiments/A1iii.json`.
+
+**Deferred raw.eml (app YES, #124 6699827210).** The `raw.eml` of each 0 B / 1 B attachment-layout message is written
+and accounted in the 2-512 B phase, so every object stays inside its phase's class. The record quotes this rule in
+`filesystem.inodeBoundedMeasurement.basis`.
+
+The generator requires `experiments/A1iii.json` and refuses (exit 1, nothing written) unless:
+
+- it passes every check an `E*.json` does: schema, `experiment: "A1iii"`, `verdict: PASS` with no `problems`, one boot
+  id, `venue: final-filesystem` (never `carried`), the final filesystem's uuid, kernel and MinIO member, and
+  `startedAt`/`completedAt` between the post-reboot and post-cleanup baselines. `artifact` is `null` (harness only) or
+  `MANIFEST.candidate`;
+- exactly one of its `rawFiles` is the harness output (a JSON list holding the `A1iii` summary record);
+- that output, judged by the generator itself, passes:
+  - the phases are exactly 0B, 1B, 2-512B, in order; every statvfs sample is of the final filesystem (`f_files`,
+    `f_blocks`, `f_frsize` = the FIXED geometry) and lies between `startedAt` and `completedAt`; each segment's pair
+    lies inside its phase's settled pair; the summary pair is the first phase's before and the last phase's after;
+  - Δ(f_files − f_ffree) ≤ Δ(f_blocks − f_bfree), on the integers, with Δblocks > 0: per phase (its settled pair), per
+    layout within each phase and per layout over the run (sums of the segments' pairs), and overall (the summary pair);
+  - ≥ 20,000 objects, ≥ 2,000 in each of 0B and 1B; each phase's object count is its segments' sum;
+  - every segment's size is in its phase's class; the segment roles place every `raw.eml` as the deferred rule says
+    (`raw.eml` single-object messages in every phase; `attachments (raw.eml deferred)` only in 0B/1B, holding exactly
+    their attachments; `raw.eml+attachments` and `deferred raw.eml (0 B / 1 B attachment messages)` only in 2-512B),
+    and the deferred `raw.eml` count equals the number of 0 B / 1 B attachment messages;
+  - every message has 1–8 attachments and at least one has several; no PUT failed; both layouts in every phase;
+  - the harness summary reports its own PASS with no problems, ran on the FIXED kernel, and on the census steps' boot
+    id (C3); its `startedAt`/`completedAt` are the JSON's;
+- the JSON's `measurements.objects`, `objectsPerPhase`, and the `dInodes`/`dBlocks` of `ratioOverall` and
+  `ratioPerPhase` equal the recomputation (a difference means the JSON was judged on another output).
+
+A1 (iii) is not added to `filesystem.experiments`: that map is the parser's E1–E11 set.
 
 ### The (vi) census: summary in the bundle, listing off-repo (#124 comment 6668986543, item 3)
 
@@ -306,6 +349,9 @@ fs-monitor use one metadata definition (`scripts/adr035-metadata-accounting.py`)
 - No budget or criterion is lowered, and no gate F row is removed.
 - Ops' collector and fs-monitor need the change written in that note (§9). Until then, gate F reports NOT RUN.
 
+- `filesystem.inodeBoundedMeasurement` (A1 (iii)) is additive in the same way as `filesystem.inodeCensus`:
+  `QualificationRecords.parse`, gate Q and gate F read members by name and ignore it (`GeneratedQualificationRecordTest`
+  parses a record that carries it).
 - Five members are additive: `qualification.experimentArtifact`, `filesystem.metadataInodesBasis`,
   `filesystem.metadataInodesScope`, `filesystem.metadataBytesMeasured` and `filesystem.metadataBytesScope` (the last
   three are read by gate F, below).

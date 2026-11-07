@@ -17,6 +17,10 @@ It REFUSES (exit 1, nothing written) when
   - SHA256SUMS is missing, malformed, does not list every file, lists a file that is absent, or a digest differs;
   - a required file or value is missing or has the wrong type;
   - an experiment (E1-E11) or the §9a sweep is not PASS, recomputed from the raw harness output where it can be;
+  - experiments/A1iii.json (A1 (iii), the bounded measurement) is missing, or is not PASS once re-judged from the
+    harness's raw statvfs pairs: Δ(f_files − f_ffree) <= Δ(f_blocks − f_bfree) per phase (0B, 1B, 2-512B), per layout
+    within each phase, per layout over the run and overall; >= 20 000 objects, >= 2 000 in each of 0B and 1B; every
+    object in its phase's class (the 0 B / 1 B attachment messages' raw.eml deferred to the 2-512 B phase);
   - two sources of one identity element disagree with each other or with the FIXED values (--expected);
   - the recordId derived from the evidence differs from MANIFEST.json or from the gate F evidence's
     qualificationRecordId;
@@ -431,6 +435,175 @@ def evaluate_9a(q):
     return stats, reasons, combo, completed
 
 
+# ------------------------------------------------------------ A1 (iii) bounded measurement, re-judged from raw statvfs
+# #124 6675379211 as amended by 6675394064 (binding), built by Ops as the `a1iii` mode of the N1 harness (#124 6698831482
+# §1-§2) and bundled as experiments/A1iii.json with the harness output in its rawFiles. The JSON's verdict and figures
+# are never used: every ratio is recomputed here from the raw statvfs pairs, every count from the segment records.
+A1III = "A1iii"
+A1III_REL = f"experiments/{A1III}.json"
+A1III_PHASES = ("0B", "1B", "2-512B")  # one phase per C1 class, in this order
+A1III_CLASS = {"0B": (0, 0), "1B": (1, 1), "2-512B": (2, 512)}
+A1III_MIN_TOTAL, A1III_MIN_SMALL = 20000, 2000  # >= 20 000 objects, >= 2 000 in each of 0B and 1B
+A1III_MAX_ATTACHMENTS = 8
+A1III_LAYOUTS = ("attachments", "single")
+# The harness's segment roles (e1e3e4.py a1iii_plan). Anything else is refused: a role says where a raw.eml went.
+A1III_ROLE_SINGLE = "raw.eml"                                          # single-object message, every phase
+A1III_ROLE_WITH_RAW = "raw.eml+attachments"                            # attachment message, 2-512B only
+A1III_ROLE_DEFERRING = "attachments (raw.eml deferred)"                # attachment message, 0B / 1B only
+A1III_ROLE_DEFERRED = "deferred raw.eml (0 B / 1 B attachment messages)"  # their raw.eml, 2-512B only
+A1III_STATVFS = ("files", "ffree", "blocks", "bfree", "frsize")
+# The app team's YES to Ops' reading of amendment (b) (#124 6699827210), quoted by the record.
+A1III_DEFERRED_RULE = ("deferred raw.eml: the raw.eml of each 0 B / 1 B attachment-layout message is written and "
+                       "accounted in the 2-512 B phase, so every object stays inside its phase's class")
+
+
+def a1iii_delta(b, a):
+    """Δ(f_files − f_ffree) and Δ(f_blocks − f_bfree) (blocks of f_frsize) between two raw statvfs samples."""
+    di = (a["files"] - a["ffree"]) - (b["files"] - b["ffree"])
+    db = (a["blocks"] - a["bfree"]) - (b["blocks"] - b["bfree"])
+    return {"dInodes": di, "dBlocks": db, "ratio": round(di / db, 6) if db > 0 else None}
+
+
+def a1iii_sum(ds):
+    di, db = sum(d["dInodes"] for d in ds), sum(d["dBlocks"] for d in ds)
+    return {"dInodes": di, "dBlocks": db, "ratio": round(di / db, 6) if db > 0 else None}
+
+
+def a1iii_ok(d):
+    """Ratio <= 1, judged on the integers. Δblocks <= 0 proves nothing and fails."""
+    return d["dBlocks"] > 0 and d["dInodes"] <= d["dBlocks"]
+
+
+def judge_a1iii(recs, geometry):
+    """Re-judge the e1e3e4.py `a1iii` output (a JSON list of segment, phase and summary records) from its raw statvfs
+    pairs. `geometry` is the final filesystem's {files, blocks, frsize}: every sample must be of that filesystem.
+    Returns (result, reasons); result is None when the output cannot be judged at all."""
+    def is_int(v):
+        return isinstance(v, int) and not isinstance(v, bool)
+
+    if not isinstance(recs, list) or not all(isinstance(r, dict) for r in recs):
+        return None, ["the A1iii harness output is not a list of records"]
+    summ = [r for r in recs if r.get("record") == "summary"]
+    phases = [r for r in recs if r.get("record") == "phase"]
+    segs = [r for r in recs if r.get("record") == "segment"]
+    if len(summ) != 1 or not phases or not segs:
+        return None, [f"the A1iii harness output has {len(summ)} summary, {len(phases)} phase and {len(segs)} segment "
+                      "records: one summary and both kinds of measurement are required (run incomplete)"]
+    summ = summ[0]
+    why = []
+    # Structure first: nothing below is judged on a missing or mistyped field.
+    names = [ph.get("phase") for ph in phases]
+    if names != list(A1III_PHASES):
+        why.append(f"phases {names}, expected {list(A1III_PHASES)} (one per C1 class, in order)")
+    for i, ph in enumerate(phases):
+        if not (is_int(ph.get("objects")) and ph["objects"] >= 0):
+            why.append(f"phase record {i}: objects {ph.get('objects')!r} is not a count")
+    for i, s in enumerate(segs):
+        apm = s.get("attachmentsPerMessage")
+        if not (s.get("phase") in A1III_CLASS and s.get("layout") in A1III_LAYOUTS and isinstance(s.get("role"), str)
+                and is_int(s.get("size")) and is_int(s.get("objects")) and s["objects"] > 0
+                and is_int(s.get("messages")) and s["messages"] >= 0 and is_int(s.get("putFailures"))
+                and isinstance(apm, list) and all(is_int(k) for k in apm)):
+            why.append(f"segment record {i}: needs phase (one of {list(A1III_CLASS)}), layout (one of {list(A1III_LAYOUTS)}), "
+                       "role, size, objects > 0, messages, putFailures and attachmentsPerMessage")
+    samples = [(f"phase {ph.get('phase')} {k}", ph.get(k)) for ph in phases for k in ("before", "after")]
+    samples += [(f"segment {s.get('phase')}/{s.get('size')} B/{s.get('layout')} {k}", s.get(k)) for s in segs for k in ("before", "after")]
+    samples += [(f"summary {k}", summ.get(k)) for k in ("before", "after")]
+    for where, sv in samples:
+        if not (isinstance(sv, dict) and all(is_int(sv.get(k)) for k in A1III_STATVFS)
+                and isinstance(sv.get("at"), str) and ISO_RE.match(sv["at"])):
+            why.append(f"{where}: not a raw statvfs sample (integer {', '.join(A1III_STATVFS)} and an ISO-8601 UTC 'at')")
+    if why:
+        return None, why
+    # Every sample is of the final filesystem (statvfs geometry), so no ratio can come from another one.
+    for where, sv in samples:
+        for k, want in geometry.items():
+            if sv[k] != want:
+                why.append(f"{where}: f_{k} {sv[k]} is not the final filesystem's {want}")
+
+    # The population: every object in its phase's class; the deferred raw.eml rule; the counts.
+    deferring_messages, deferred_objects, multi = 0, 0, 0
+    for s in segs:
+        ph, where = s["phase"], f"segment {s['phase']}/{s['size']} B/{s['layout']}"
+        lo, hi = A1III_CLASS[ph]
+        if not lo <= s["size"] <= hi:
+            why.append(f"{where}: {s['objects']} objects of {s['size']} B, outside the phase's class {lo}..{hi} B")
+        apm, n, m = s["attachmentsPerMessage"], s["objects"], s["messages"]
+        if any(not 1 <= k <= A1III_MAX_ATTACHMENTS for k in apm):
+            why.append(f"{where}: a message outside 1..{A1III_MAX_ATTACHMENTS} attachments")
+        multi += sum(1 for k in apm if k >= 2)
+        small = ph != "2-512B"
+        if s["layout"] == "single":
+            if not (s["role"] == A1III_ROLE_SINGLE and apm == [] and n == m):
+                why.append(f"{where}: role {s['role']!r}, {m} messages for {n} objects: a single-object message is one raw.eml")
+        elif s["role"] == A1III_ROLE_DEFERRING and small:
+            deferring_messages += m
+            if not (len(apm) == m and sum(apm) == n):
+                why.append(f"{where}: {n} objects are not exactly the {sum(apm)} attachments of its {m} messages "
+                           f"({A1III_DEFERRED_RULE})")
+        elif s["role"] == A1III_ROLE_WITH_RAW and not small:
+            if not (len(apm) == m and m + sum(apm) == n):
+                why.append(f"{where}: {n} objects are not the {m} raw.eml + {sum(apm)} attachments of its messages")
+        elif s["role"] == A1III_ROLE_DEFERRED and not small:
+            deferred_objects += n
+            if not (m == 0 and apm == []):
+                why.append(f"{where}: a deferred raw.eml segment carries messages or attachments")
+        else:
+            why.append(f"{where}: role {s['role']!r} is not allowed in phase {ph} ({A1III_DEFERRED_RULE})")
+    if deferred_objects != deferring_messages:
+        why.append(f"{deferred_objects} deferred raw.eml written in the 2-512B phase for {deferring_messages} 0 B / 1 B "
+                   f"attachment messages ({A1III_DEFERRED_RULE})")
+    if multi < 1:
+        why.append("no message with several attachments")
+    failures = sum(s["putFailures"] for s in segs)
+    if failures:
+        why.append(f"{failures} PUTs failed: the population is incomplete")
+    objects = {n: sum(s["objects"] for s in segs if s["phase"] == n) for n in A1III_PHASES}
+    for ph in phases:
+        if ph["phase"] in objects and ph["objects"] != objects[ph["phase"]]:
+            why.append(f"phase {ph['phase']}: its object count {ph['objects']} differs from its segments' {objects[ph['phase']]}")
+    total = sum(objects.values())
+    if total < A1III_MIN_TOTAL:
+        why.append(f"{total} objects < {A1III_MIN_TOTAL}")
+    for n in ("0B", "1B"):
+        if objects[n] < A1III_MIN_SMALL:
+            why.append(f"phase {n}: {objects[n]} objects < {A1III_MIN_SMALL}")
+    layouts = {n: sorted({s["layout"] for s in segs if s["phase"] == n}) for n in A1III_PHASES}
+    for n, ls in layouts.items():
+        if ls != sorted(A1III_LAYOUTS):
+            why.append(f"phase {n}: layouts {ls}, not single-object messages + attachments")
+
+    # The measurement windows: each segment inside its phase's settled pair; the summary pair is the run's.
+    window = {ph["phase"]: (iso(ph["before"]["at"]), iso(ph["after"]["at"])) for ph in phases}
+    for s in segs:
+        b, a = iso(s["before"]["at"]), iso(s["after"]["at"])
+        lo, hi = window.get(s["phase"], (None, None))
+        if lo is None or not (lo <= b <= a <= hi):
+            why.append(f"segment {s['phase']}/{s['size']} B/{s['layout']}: its statvfs pair is not inside its phase's")
+    if summ["before"] != phases[0]["before"] or summ["after"] != phases[-1]["after"]:
+        why.append("the summary's statvfs pair is not the first phase's before / the last phase's after")
+
+    # The ratios, from the raw pairs: every phase, every layout in each phase, every layout over the run, overall.
+    per_phase = {ph["phase"]: a1iii_delta(ph["before"], ph["after"]) for ph in phases}
+    sd = [dict(s, **a1iii_delta(s["before"], s["after"])) for s in segs]
+    per_phase_layout = {n: {l: a1iii_sum([s for s in sd if s["phase"] == n and s["layout"] == l]) for l in ls}
+                        for n, ls in layouts.items()}
+    per_layout = {l: a1iii_sum([s for s in sd if s["layout"] == l]) for l in sorted({s["layout"] for s in sd})}
+    overall = a1iii_delta(summ["before"], summ["after"])
+    judged = ([(f"phase {n}", d) for n, d in per_phase.items()]
+              + [(f"phase {n} layout {l}", d) for n, ls in per_phase_layout.items() for l, d in ls.items()]
+              + [(f"layout {l} over the run", d) for l, d in per_layout.items()] + [("overall", overall)])
+    for where, d in judged:
+        if not a1iii_ok(d):
+            why.append(f"{where}: Δinodes {d['dInodes']} > Δblocks {d['dBlocks']} (or Δblocks <= 0): ratio > 1, "
+                       "recomputed from the raw statvfs pairs")
+    return {"startedAt": summ.get("startedAt"), "completedAt": summ.get("completedAt"), "kernel": summ.get("kernel"),
+            "bootId": summ.get("bootId"), "harnessPass": summ.get("PASS"), "harnessProblems": summ.get("problems"),
+            "experiment": summ.get("experiment"), "objects": total, "objectsPerPhase": objects,
+            "ratioPerPhase": per_phase, "ratioPerPhaseLayout": per_phase_layout, "ratioPerLayout": per_layout,
+            "ratioOverall": overall, "sampleTimes": sorted({sv["at"] for _, sv in samples})}, why
+
+
 # ---------------------------------------------------------------------------------------------------- the build
 def build(bundle_dir, expected, repo, census_raw=None):
     p = Problems()
@@ -651,14 +824,10 @@ def build(bundle_dir, expected, repo, census_raw=None):
         p.check(venue.get(key) == want, f"qualification-9a/venue.json {key} is {venue.get(key)!r}, expected {want!r}")
     mech = need(p, venue, "slowWMechanism", "str", "qualification-9a/venue.json")
 
-    # --- E1-E11
+    # --- E1-E11, then A1 (iii): the same checks for every on-filesystem experiment file
     exps, ran_after, completions = {}, [], []
-    for name in EXPERIMENTS:
-        rel = f"experiments/{name}.json"
-        e = b.json(rel)
-        if e is None:
-            continue
-        exps[name] = e
+
+    def experiment_file(name, rel, e, carried):
         p.check(e.get("schema") == EXPERIMENT_SCHEMA, f"{rel}: schema is not {EXPERIMENT_SCHEMA}")
         p.check(e.get("experiment") == name, f"{rel}: experiment is {e.get('experiment')!r}, not {name}")
         p.check(e.get("verdict") == "PASS", f"{name} is not PASS (verdict {e.get('verdict')!r})")
@@ -679,7 +848,6 @@ def build(bundle_dir, expected, repo, census_raw=None):
                 f"{rel}: bootId holds different values {boots!r}: the boot id must be unchanged within one file")
         s, c = need(p, e, "startedAt", "iso", rel), need(p, e, "completedAt", "iso", rel)
         need(p, e, "criterion", "str", rel)
-        carried = name == "E7" and e7_mode == "carried"
         if carried:
             p.check(e.get("venue") == "carried", f"{rel}: MANIFEST says E7 is carried, the experiment says venue {e.get('venue')!r}")
             need(p, e, "sourceEvidence", "str", rel)
@@ -701,6 +869,68 @@ def build(bundle_dir, expected, repo, census_raw=None):
         if p.check(isinstance(raws, list) and raws, f"{rel}: rawFiles must list the run output"):
             for r in raws:
                 p.check(isinstance(r, str) and os.path.isfile(b.path(r)), f"{rel}: raw file {r!r} is not in the bundle")
+
+    for name in EXPERIMENTS:
+        rel = f"experiments/{name}.json"
+        e = b.json(rel)
+        if e is None:
+            continue
+        exps[name] = e
+        experiment_file(name, rel, e, carried=name == "E7" and e7_mode == "carried")
+
+    # A1 (iii) bounded measurement: required, never carried, harness-only (MinIO, no application), and re-judged here
+    # from the harness's raw statvfs pairs; the file's own verdict and figures are checked, never used.
+    a1 = b.json(A1III_REL)
+    a1iii, a1iii_raw = None, None
+    if a1 is not None:
+        experiment_file(A1III, A1III_REL, a1, carried=False)
+        art = a1.get("artifact")
+        p.check(art is None or art == cand,
+                f"{A1III_REL}: artifact {art!r} is neither null (harness-only) nor the MANIFEST candidate {cand!r}")
+        # The harness output is the one rawFile that is a JSON list holding the a1iii summary record.
+        found = []
+        for r in a1.get("rawFiles") if isinstance(a1.get("rawFiles"), list) else []:
+            if not (isinstance(r, str) and r.endswith(".json") and os.path.isfile(b.path(r))):
+                continue
+            try:
+                doc = json.load(open(b.path(r), encoding="utf-8"))
+            except ValueError:
+                continue
+            if isinstance(doc, list) and any(isinstance(x, dict) and x.get("record") == "summary"
+                                             and x.get("experiment") == A1III for x in doc):
+                found.append((r, doc))
+        if p.check(len(found) == 1, f"{A1III_REL}: rawFiles must hold exactly one e1e3e4.py a1iii output (a JSON list with "
+                                    f"the A1iii summary record), found {[r for r, _ in found]}"):
+            a1iii_raw, recs = found[0]
+            res, why = judge_a1iii(recs, {"files": xf["inodeCount"], "blocks": xf["statvfsBlocks"], "frsize": xf["blockSize"]})
+            for w in why:
+                p.add(f"A1iii re-judged from {a1iii_raw}: {w}")
+            if res is not None:
+                p.check(res["experiment"] == A1III, f"{a1iii_raw}: summary experiment is {res['experiment']!r}, not {A1III}")
+                p.check(res["harnessPass"] is True and res["harnessProblems"] in ([], None),
+                        f"{a1iii_raw}: the harness itself reports PASS {res['harnessPass']!r}, problems {res['harnessProblems']!r}")
+                p.check(res["kernel"] == X["kernelRelease"], f"{a1iii_raw}: the harness ran on kernel {res['kernel']!r}, not {X['kernelRelease']}")
+                p.check(isinstance(res["bootId"], str) and res["bootId"] != "", f"{a1iii_raw}: the summary has no bootId")
+                p.check("bootId" not in a1 or a1["bootId"] == res["bootId"],
+                        f"{A1III_REL}: bootId {a1.get('bootId')!r} is not the harness's {res['bootId']!r}")
+                for k in ("startedAt", "completedAt"):
+                    p.check(a1.get(k) == res[k], f"{A1III_REL}: {k} {a1.get(k)!r} is not the harness summary's {res[k]!r}")
+                if all(isinstance(a1.get(k), str) and ISO_RE.match(a1[k]) for k in ("startedAt", "completedAt")):
+                    outside = [t for t in res["sampleTimes"] if not iso(a1["startedAt"]) <= iso(t) <= iso(a1["completedAt"])]
+                    p.check(not outside, f"{a1iii_raw}: statvfs samples at {outside[:3]} lie outside startedAt..completedAt")
+                # The file's own figures must be the ones recomputed here (a disagreement means another raw file).
+                m = a1.get("measurements") if isinstance(a1.get("measurements"), dict) else {}
+                pair = lambda d: [d.get("dInodes"), d.get("dBlocks")] if isinstance(d, dict) else d
+                claims = (("objects", m.get("objects"), res["objects"]),
+                          ("objectsPerPhase", m.get("objectsPerPhase"), res["objectsPerPhase"]),
+                          ("ratioOverall", pair(m.get("ratioOverall")), pair(res["ratioOverall"])),
+                          ("ratioPerPhase", {k: pair(v) for k, v in m["ratioPerPhase"].items()}
+                           if isinstance(m.get("ratioPerPhase"), dict) else m.get("ratioPerPhase"),
+                           {k: pair(v) for k, v in res["ratioPerPhase"].items()}))
+                for k, claimed, mine in claims:
+                    p.check(claimed == mine, f"{A1III_REL}: measurements.{k} {claimed!r} is not the re-judged {mine!r} (from {a1iii_raw})")
+                if not why:
+                    a1iii = res
     for name, started in ran_after:
         p.check(reboot_at is None or started >= reboot_at, f"{name} started {fmt(started)}, before the post-reboot baseline")
         p.check(cleanup_at is None or cleanup_at >= started, f"{name} started after the post-cleanup baseline")
@@ -748,6 +978,9 @@ def build(bundle_dir, expected, repo, census_raw=None):
                     f"{CENSUS_SUMMARY}: a step's filesystemUuid is not {xf['uuid']} (C3)")
             p.check(len(boots) == 1 and None not in boots and "" not in boots,
                     f"{CENSUS_SUMMARY}: the steps' boot ids {sorted(map(str, boots))} are not one (C3: boot id unchanged)")
+            p.check(a1iii is None or a1iii["bootId"] in boots,
+                    f"{a1iii_raw}: the A1iii harness ran on boot {(a1iii or {}).get('bootId')!r}, not the census steps' "
+                    f"{sorted(map(str, boots))} (C3: boot id unchanged)")
         if taken and ISO_RE.match(taken):
             t = iso(taken)
             p.check(reboot_at is None or t >= reboot_at, "(vi) census was taken before the post-reboot baseline")
@@ -918,6 +1151,8 @@ def build(bundle_dir, expected, repo, census_raw=None):
     if fe.get("collectedAt") and ISO_RE.match(str(fe.get("collectedAt"))) and qualified_at:
         p.check(iso(fe["collectedAt"]) >= qualified_at, "gate F evidence was collected before the qualification completed")
 
+    if a1iii is None and not p.items:
+        p.add(f"{A1III_REL}: A1 (iii) was not judged")  # unreachable: every path to None records a problem
     p.raise_if_any()
 
     # ------------------------------------------------------------------------------------------- the record
@@ -990,6 +1225,18 @@ def build(bundle_dir, expected, repo, census_raw=None):
                                     else f"E7 carried under {e7['amendment']}"),
             **({"inodeHeadroomLatchDrill": drill} if drill else {}),
             "inodeCensus": census,
+            "inodeBoundedMeasurement": {
+                "experiment": A1III,
+                "completedAt": a1iii["completedAt"],
+                "objects": a1iii["objects"],
+                "objectsPerPhase": a1iii["objectsPerPhase"],
+                "ratioPerPhase": a1iii["ratioPerPhase"],
+                "ratioOverall": a1iii["ratioOverall"],
+                "basis": ("A1 (iii) on the final filesystem, re-judged from the harness's raw statvfs pairs: "
+                          "Δ(f_files − f_ffree) <= Δ(f_blocks − f_bfree), in blocks of f_frsize, in every phase (one per C1 "
+                          "class), every layout within each phase, every layout over the run and overall; "
+                          f"{A1III_DEFERRED_RULE}"),
+            },
             "metadataBytesMeasured": metadata_bytes_max,
             "metadataBytesScope": METADATA_BYTES_SCOPE,
             "experiments": {n: exps[n]["verdict"] for n in EXPERIMENTS},
@@ -1002,7 +1249,7 @@ def build(bundle_dir, expected, repo, census_raw=None):
     PQ, PN, DV, CD = "PROD-QUAL", "PROD-NOW", "DERIVED", "CODE"
     ev = "evidence/"
     label("`recordId`", record_id, DV, f"`production-amd64-<host>-<date of qualifiedAt>`; equals `{ev}MANIFEST.json` and `{ev}gate-f/filesystem-evidence.json` qualificationRecordId")
-    label("`qualifiedAt`", fmt(qualified_at), DV, f"latest of the §9a slow sweep start (`{ev}qualification-9a/orchestrator.log`) and every on-filesystem experiment's completedAt")
+    label("`qualifiedAt`", fmt(qualified_at), DV, f"latest of the §9a slow sweep start (`{ev}qualification-9a/orchestrator.log`) and every on-filesystem experiment's completedAt (`{ev}experiments/E*.json` and `{ev}{A1III_REL}`)")
     label("`minio.imageIndexDigest`", index_digest, DV, f"sha256 of `{ev}identity/minio-imagetools-raw.json` (`docker buildx imagetools inspect --raw`), which lists linux/amd64 → the running member")
     label("`minio.platformMemberDigest`, `platform`", f"{member}, {platform}", PN, f"`{ev}identity/minio-image-inspect.json` RepoDigests = `{ev}identity/qualification-check-observed.json`")
     label("`minio.release`, `commitId`", f"{xm['release']}, {xm['commitId']}", PN, f"`{ev}identity/minio-binary.txt` = `{ev}identity/minio-admin-info.json` = qualification-check")
@@ -1041,6 +1288,15 @@ def build(bundle_dir, expected, repo, census_raw=None):
               f"`{ev}experiments/{n}.json` ({e['startedAt']} → {e['completedAt']}" + (f", artifact {e['artifact']['sourceSha'][:12]}" if n in APP_EXPERIMENTS else "") + ")")
     label("`filesystem.inodeCensus`", f"{census['listingSha256'][:12]}…, {census['verification']}", PQ,
           f"`{ev}{CENSUS_SUMMARY}` (A1 (vi), C2, C3). The raw listing is NOT in the evidence: {census['listingCustody']}")
+    pr = a1iii["ratioPerPhase"]
+    label("`filesystem.inodeBoundedMeasurement`",
+          f"{a1iii['objects']} objects (" + ", ".join(f"{n} {a1iii['objectsPerPhase'][n]}" for n in A1III_PHASES)
+          + f"); ratio overall {a1iii['ratioOverall']['ratio']}, per phase "
+          + ", ".join(f"{n} {pr[n]['ratio']}" for n in A1III_PHASES) + f"; completed {a1iii['completedAt']}", PQ,
+          f"`{ev}{A1III_REL}` ({a1['startedAt']} → {a1['completedAt']}), re-judged from the raw statvfs pairs of "
+          f"`{ev}{a1iii_raw}` (its own verdict and figures are checked, never used): every phase, every layout within "
+          f"each phase, every layout over the run and overall ≤ 1; ≥ {A1III_MIN_TOTAL} objects, ≥ {A1III_MIN_SMALL} in each "
+          f"of 0B and 1B; every object in its phase's class; {A1III_DEFERRED_RULE}")
     label("`filesystem.inodeCensus.c2Status`, `disclosures`", json.dumps(census["c2Status"]), DV,
           "per census: `afterDefinedDrain` true gives literal-deviation-disclosed and the exact disclosure, never "
           "satisfied. " + (" ".join(census["disclosures"]) if census["disclosures"] else "No disclosure."))

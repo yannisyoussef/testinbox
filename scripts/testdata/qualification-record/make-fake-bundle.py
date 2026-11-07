@@ -90,6 +90,91 @@ def experiment(n, e7_mode):
     return e
 
 
+def att_counts(n, with_raw):
+    """The harness's split of n objects into attachment-layout messages (e1e3e4.py a1iii_att_counts, #124 6698831482):
+    message m carries 1 + (m % 8) attachments (+ its raw.eml when with_raw); the last is shortened, never to a lone raw.eml."""
+    out, left, m, lone = [], n, 0, 2 if with_raw else 1
+    while left > 0:
+        take = min(1 + (m % 8) + (1 if with_raw else 0), left)
+        if 0 < left - take < lone:
+            take = take - 1 if take - 1 >= lone else take + 1
+        out.append(take - (1 if with_raw else 0))
+        left -= take
+        m += 1
+    return out
+
+
+def a1iii(boot):
+    """A1 (iii) as Ops' harness writes it (`e1e3e4.py <lab> a1iii`: segment, phase and summary records with the raw
+    statvfs pairs) and as n1-bundle.py wraps it (experiments/A1iii.json). 20 446 objects: per phase 1 000 single-object
+    raw.eml + 1 000 attachment-layout objects per size; the 0 B / 1 B attachment messages' raw.eml (446) are written in
+    the 2-512 B phase. The statvfs figures are FAKE and chosen so every ratio is < 1."""
+    st = {"files": int(GEOM), "ffree": int(GEOM) - 40, "blocks": int(GEOM), "bfree": int(GEOM) - 5000,
+          "bavail": int(GEOM) - 5000, "frsize": 4096}
+    clock = [7 * 3600 + 40 * 60]  # 07:40:00, one sample every 5 s
+
+    def sample(d_inodes=0, d_blocks=0):
+        st["ffree"] -= d_inodes
+        st["bfree"] -= d_blocks
+        st["bavail"] -= d_blocks
+        clock[0] += 5
+        h, m, sec = clock[0] // 3600, clock[0] // 60 % 60, clock[0] % 60
+        return dict(st, at=f"2000-01-01T{h:02d}:{m:02d}:{sec:02d}Z")
+
+    def delta(b, a):
+        di = (a["files"] - a["ffree"]) - (b["files"] - b["ffree"])
+        db = (a["blocks"] - a["bfree"]) - (b["blocks"] - b["bfree"])
+        return {"dInodes": di, "dBlocks": db, "ratio": round(di / db, 6)}
+
+    plan, deferred = [], 0
+    for phase, sizes in (("0B", (0,)), ("1B", (1,)), ("2-512B", (2, 16, 64, 128, 255, 256, 511, 512))):
+        with_raw, segs = phase == "2-512B", []
+        for size in sizes:
+            segs.append(dict(size=size, layout="single", role="raw.eml", objects=1000, messages=1000, inboxes=1000, apm=[]))
+            counts = att_counts(1000, with_raw)
+            segs.append(dict(size=size, layout="attachments", role="raw.eml+attachments" if with_raw else "attachments (raw.eml deferred)",
+                             objects=1000, messages=len(counts), inboxes=-(-len(counts) // 10), apm=counts))
+            if not with_raw:
+                deferred += len(counts)
+        if with_raw:
+            for i, size in enumerate(sizes):
+                n = len(range(i, deferred, len(sizes)))
+                segs.append(dict(size=size, layout="attachments", role="deferred raw.eml (0 B / 1 B attachment messages)",
+                                 objects=n, messages=0, inboxes=0, apm=[]))
+        plan.append((phase, segs))
+    recs, phases = [], []
+    for phase, segs in plan:
+        pb = sample()
+        for sg in segs:
+            b = sample()
+            a = sample(3 * sg["objects"], 3 * sg["objects"] + sg["objects"] // 20 + 1)
+            recs.append({"record": "segment", "phase": phase, "size": sg["size"], "layout": sg["layout"], "role": sg["role"],
+                         "objects": sg["objects"], "messages": sg["messages"], "inboxes": sg["inboxes"],
+                         "attachmentsPerMessage": sg["apm"], "putFailures": 0, "failureSample": [], "before": b, "after": a,
+                         **delta(b, a)})
+        pa = sample(2, 4)  # settle()
+        r = {"record": "phase", "phase": phase, "objects": sum(sg["objects"] for sg in segs), "before": pb, "after": pa, **delta(pb, pa)}
+        recs.append(r)
+        phases.append(r)
+    started, completed = "2000-01-01T07:40:00Z", "2000-01-01T07:50:00Z"
+    overall = delta(phases[0]["before"], phases[-1]["after"])
+    per_phase = {r["phase"]: {k: r[k] for k in ("dInodes", "dBlocks", "ratio")} for r in phases}
+    objects = {r["phase"]: r["objects"] for r in phases}
+    recs.append({"record": "summary", "experiment": "A1iii", "lab": "fake", "startedAt": started, "completedAt": completed,
+                 "kernel": KERNEL, "bootId": boot, "workspace": "fa4e0000-0000-4000-8000-0000000a1111",
+                 "before": phases[0]["before"], "after": phases[-1]["after"], "perPhase": per_phase, "overall": overall,
+                 "putFailures": 0, "problems": [], "PASS": True})
+    exp = {"schema": "testinbox.n1-experiment/1", "experiment": "A1iii", "verdict": "PASS",
+           "criterion": "FAKE criterion text for A1 (iii)", "startedAt": started, "completedAt": completed,
+           "venue": "final-filesystem", "filesystemUuid": UUID, "kernelRelease": KERNEL, "minioPlatformMemberDigest": MEMBER,
+           "artifact": None,
+           "measurements": {"ratioOverall": overall, "ratioPerPhase": per_phase, "objects": sum(objects.values()),
+                            "objectsPerPhase": objects, "harnessPass": True, "harnessBootId": boot,
+                            "rawRatioDeferralNote": "FAKE: 0 B / 1 B attachment messages get their raw.eml in the 2-512 B phase"},
+           "problems": [], "rawFiles": ["experiments/A1iii/a1iii-fake.json"]}
+    return exp, recs
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
@@ -155,6 +240,10 @@ def main():
     for n in range(1, 12):
         w(root, f"experiments/E{n}.json", experiment(n, a.e7))
         w(root, f"experiments/E{n}/run.log", f"FAKE run output E{n}\n")
+    boot = "fa4e0000-0000-4000-8000-00000000b007"
+    a1, a1_raw = a1iii(boot)
+    w(root, "experiments/A1iii.json", a1)
+    w(root, "experiments/A1iii/a1iii-fake.json", json.dumps(a1_raw, indent=1) + "\n")
     # (vi) census: the raw listing goes OUTSIDE the bundle (Ops keeps it off-repo); the bundle gets the summary only.
     listing = "".join(f"{i} {n} {b} {sz} {t} {pth}\n" for i, n, b, sz, t, pth in [
         (2, 4, 8, 4096, "d", "/fake/mnt"), (11, 2, 32, 16384, "d", "/fake/mnt/lost+found"),
@@ -170,7 +259,6 @@ def main():
     with open(os.path.join(out, "census-raw.txt"), "wb") as f:
         f.write(listing)
     lsha = hashlib.sha256(listing).hexdigest()
-    boot = "fa4e0000-0000-4000-8000-00000000b007"
     w(root, "census/summary.json", {
         "schema": "testinbox.n1-census-summary/1", "takenAt": "2000-01-01T22:00:00Z",
         "listing": {"sha256": lsha, "bytes": len(listing),
