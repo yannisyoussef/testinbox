@@ -31,7 +31,7 @@ It REFUSES (exit 1, nothing written) when
   - a raw (vi) census listing is anywhere in the bundle (by path, or by `find -printf` content): it names object keys
     and stays with Ops off-repo; the bundle carries census/summary.json only, and (vi) is NOT RUN unless the listing
     is verified at cut (--census-raw, sha256 and recomputed counts) or the summary carries an Ops attestation bound to
-    its sha256;
+    its sha256 and dated no earlier than the census it attests (attestation.at >= the top-level takenAt);
   - the §9a venue is neither the final filesystem nor Ops' own loop image on / under dm-delay, labelled
     "loop-image-on-root + dm-delay(slow-W)" and equal to the final filesystem in type, features, block and inode size
     (verdict R3).
@@ -139,7 +139,9 @@ def sha256_file(path):
 # participants it would carry tenant workspace/inbox identifiers. It NEVER enters the bundle, so it never enters the
 # repository: the committed bundle carries census/summary.json only (counts, the reconciliation, the C3 steps, and the
 # listing's sha256 and size). The listing stays with Ops off-repo (0700) and is verified at cut time with --census-raw;
-# without that, the summary must carry an Ops attestation bound to the listing's sha256. Neither -> (vi) NOT RUN.
+# without that, the summary must carry an Ops attestation bound to the listing's sha256, and the attestation may not
+# predate the census it attests (attestation.at >= the top-level takenAt; equal is accepted; agreed with Ops, #12 1653).
+# Neither -> (vi) NOT RUN.
 CENSUS_SUMMARY = "census/summary.json"
 CENSUS_SCHEMA = "testinbox.n1-census-summary/1"
 # C2 says (vi) runs before any deletion or cleanup of the (iii), E2 and E7 objects. A census taken after an
@@ -1131,7 +1133,10 @@ def build(bundle_dir, expected, repo, census_raw=None):
             if p.check(isinstance(att.get("by"), str) and att.get("by") and isinstance(att.get("at"), str) and ISO_RE.match(att.get("at") or "")
                        and att.get("listingSha256") == sha,
                        "(vi) census NOT RUN: no --census-raw to verify the listing, and no Ops attestation bound to its sha256 "
-                       f"({CENSUS_SUMMARY} attestation.by, .at, .listingSha256)"):
+                       f"({CENSUS_SUMMARY} attestation.by, .at, .listingSha256)") \
+                    and p.check(not (isinstance(taken, str) and ISO_RE.match(taken)) or iso(att["at"]) >= iso(taken),
+                                f"(vi) census attestation.at {att['at']} predates the attested census takenAt {taken} "
+                                f"({CENSUS_SUMMARY}: an attestation may not predate the census it attests)"):
                 verification = f"summary attested by {att['by']} at {att['at']} (listing not re-verified here)"
         if verification:
             census = {"listingSha256": sha, "listingBytes": lst.get("bytes"),

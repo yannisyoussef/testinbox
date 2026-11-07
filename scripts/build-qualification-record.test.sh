@@ -292,6 +292,21 @@ fresh cnorun; edit cnorun census/summary.json 'del(d["attestation"])'
 refused "no --census-raw and no Ops attestation: (vi) is NOT RUN → refuse" cnorun "\(vi\) census NOT RUN: no --census-raw"
 fresh catt; edit catt census/summary.json 'd["attestation"]["listingSha256"] = "0" * 64'
 refused "an Ops attestation bound to another sha256 → (vi) NOT RUN → refuse" catt "\(vi\) census NOT RUN"
+# The attestation may not predate the census it attests (attestation.at >= the top-level takenAt; agreed with Ops, #12 1653).
+fresh catearly; edit catearly census/summary.json 'd["attestation"]["at"] = "2000-01-01T12:09:59Z"'
+refused "an Ops attestation 1 s before the census it attests → refuse" catearly \
+    "\(vi\) census attestation.at 2000-01-01T12:09:59Z predates the attested census takenAt 2000-01-01T12:10:00Z"
+fresh cateq; edit cateq census/summary.json 'd["attestation"]["at"] = d["takenAt"]'
+gen cateq
+if [ "$STATUS" = 0 ] && [ "$(jq -r .filesystem.inodeCensus.verification "$TMP/cateq/out/production-2000-01-01/record.json")" = \
+     "summary attested by FAKE Ops at 2000-01-01T12:10:00Z (listing not re-verified here)" ]; then
+    ok "an Ops attestation at exactly the census's takenAt passes (inclusive)"
+else bad "attestation at takenAt (exit $STATUS)" "$OUT"; fi
+fresh crawearly; edit crawearly census/summary.json 'd["attestation"]["at"] = "2000-01-01T00:00:00Z"'
+gen crawearly --census-raw "$TMP/crawearly/census-raw.txt"
+if [ "$STATUS" = 0 ] && [ "$(jq -r .filesystem.inodeCensus.verification "$TMP/crawearly/out/production-2000-01-01/record.json")" = "listing verified at cut (--census-raw)" ]; then
+    ok "with --census-raw the listing itself is verified, so an early attestation.at does not refuse"
+else bad "--census-raw with an early attestation (exit $STATUS)" "$OUT"; fi
 fresh cmiss; rm "$TMP/cmiss/bundle/census/summary.json"; resum "$TMP/cmiss/bundle"
 refused "no census summary → (vi) NOT RUN → refuse" cmiss "\(vi\) census NOT RUN: census/summary.json is missing"
 fresh cblk; edit cblk census/summary.json 'd["census"]["blocklessInodes"] = 1'
@@ -471,8 +486,8 @@ a1latest() {  # a1latest <name>: A1iii completes after midnight, the latest even
     rm "$TMP/$1/bundle/identity/fs-baseline-post-cleanup.txt.bak"
     edit "$1" "$A1" 'd["completedAt"] = "2000-01-02T00:30:00Z"'
     edit "$1" "$A1R" "$A1H"'summ["completedAt"] = "2000-01-02T00:30:00Z"'
-    # its (vi) census follows it, and is then the latest census (the top level)
-    edit "$1" census/summary.json "$A1C"'c.update(takenAt="2000-01-02T00:35:00Z", experimentCompletedAt="2000-01-02T00:30:00Z"); d["takenAt"] = "2000-01-02T00:35:00Z"'
+    # its (vi) census follows it, and is then the latest census (the top level); Ops attests the summary after it
+    edit "$1" census/summary.json "$A1C"'c.update(takenAt="2000-01-02T00:35:00Z", experimentCompletedAt="2000-01-02T00:30:00Z"); d["takenAt"] = "2000-01-02T00:35:00Z"; d["attestation"]["at"] = "2000-01-02T00:40:00Z"'
     edit "$1" "$A1" 'd["measurements"]["census"]["takenAt"] = "2000-01-02T00:35:00Z"'
 }
 a1latest a1stale
