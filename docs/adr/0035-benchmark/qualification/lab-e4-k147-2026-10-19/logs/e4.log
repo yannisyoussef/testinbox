@@ -1,0 +1,1 @@
+{"objects_written": 77173, "at_failure": {"used": 953585664, "bavail": 0, "bfree": 4098, "inodes": 231614, "ffree": 30530}, "failure_kinds": {"(507, 'XMinioStorageFull')": 827}, "sample": [507, "XMinioStorageFull", "Storage backend has reached its minimum free drive threshold. Please delete a few objects to proceed."], "PASS_inodes_remain_when_blocks_exhausted": true}

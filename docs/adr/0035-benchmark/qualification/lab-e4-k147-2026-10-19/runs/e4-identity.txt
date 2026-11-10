@@ -1,0 +1,11 @@
+lab=e4 created=2026-10-19T02:30:00Z kernel=6.8.0-147-generic
+image=/var/lib/ti-lab/e4.img apparent=1073741824 allocated=1073745920
+/dev/loop3 ext4   rw,relatime
+Filesystem features:      has_journal ext_attr resize_inode dir_index filetype needs_recovery extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum
+Inode count:              262144
+Block count:              262144
+Reserved block count:     13107
+Block size:               4096
+Inode size:	          256
+statvfs frsize=4096 blocks=236907 files=262144
+minio image=registry.yvnn.is/infinity/mirror/minio/minio@sha256:3f97c5651cb6662b880c787a232b6b34fec8d8922e08d6617b25d241a21164bb mem=1610612736 cmd=["server","/data","--console-address",":9001"]
