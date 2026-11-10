@@ -31,6 +31,8 @@ data class LatencySummary(
         fun ofNanos(nanos: Collection<Long>): LatencySummary? {
             if (nanos.isEmpty()) return null
             val sorted = nanos.toLongArray().also { it.sort() }
+            // A latency is a difference of two monotonic readings, both taken: never negative.
+            require(sorted.first() >= 0) { "a negative latency (${sorted.first()} ns): two clocks, or an unset timestamp" }
 
             fun pct(p: Double) = Percentiles.nearestRank(sorted, p) / NANOS_PER_MILLI
             return LatencySummary(sorted.size, pct(50.0), pct(95.0), pct(99.0), sorted.last() / NANOS_PER_MILLI)

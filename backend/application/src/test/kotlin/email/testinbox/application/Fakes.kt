@@ -317,7 +317,11 @@ open class InMemoryBlobStore : BlobStore {
         putOrder += key
     }
 
+    /** Runs as each fenced upload starts, before its outcome (e.g. to let the clock pass a deadline). */
+    var onPut: (ReservedUpload) -> Unit = {}
+
     override fun putReserved(upload: ReservedUpload): UploadOutcome {
+        onPut(upload)
         val scripted = nextOutcomes.removeFirstOrNull()
         if (scripted != null) {
             if (scripted is UploadOutcome.Ambiguous && ambiguousStores) put(upload.key, upload.bytes, "application/octet-stream")

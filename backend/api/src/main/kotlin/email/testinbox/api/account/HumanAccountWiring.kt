@@ -112,11 +112,17 @@ class HumanAccountWiring {
         }
     }
 
+    /**
+     * N comes from the same declarations `DeploymentSafety` and the INGEST
+     * envelope read (`testinbox.beta.max-participants`), so the cap this node
+     * admits to is the one its envelope check approved.
+     */
     @Bean
     fun admitBetaParticipant(
         admissions: BetaAdmissions,
         tx: TransactionRunner,
         clock: Clock,
         capacity: email.testinbox.application.storage.CohortStorageReadiness,
-    ): AdmitBetaParticipant = AdmitBetaParticipant(admissions, tx, clock, capacity)
+        declarations: email.testinbox.application.storage.StorageDeclarations,
+    ): AdmitBetaParticipant = AdmitBetaParticipant(admissions, tx, clock, capacity, declarations.participantCap)
 }

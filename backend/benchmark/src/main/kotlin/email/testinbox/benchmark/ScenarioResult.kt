@@ -6,8 +6,14 @@ package email.testinbox.benchmark
  * - [CHOSEN]: the implemented design, ADR-035 §11 mode `a`, all ceilings enforced.
  * - [REFERENCE]: the §11 "no global ceiling" baseline the retention criterion
  *   compares against. See [ReferenceMode] for exactly what differs.
+ * - [PARTITIONED]: the share-partitioned T1 as it would ship — production's
+ *   `JdbcStorageAdmission` with `admission-locking = COHORT_PARTITIONED` — run
+ *   only with `--partitioned-variant`, over a closed 30-participant + legacy
+ *   cohort ([ClosedCohort]). Never gate D evidence: its scenarios are kept out
+ *   of `scenarios` and the gate's criteria, and reported under `variant` (see
+ *   `Main`); the mode is a PROPOSED ADR-035 amendment.
  */
-enum class AdmissionMode { CHOSEN, REFERENCE }
+enum class AdmissionMode { CHOSEN, REFERENCE, PARTITIONED }
 
 /**
  * How the reference is produced. The implemented protocol has no lock-free
@@ -83,6 +89,35 @@ data class ScenarioResult(
     val otherErrors: Int,
     val errorSamples: List<String>,
     val physicalFailures: Map<String, Int>,
+    /** The production-faithfulness probe run before the scenario (see `ScenarioRunner`). */
+    val t1Probe: T1Probe? = null,
+    /** `pg_stat_statements` for the T1 snapshot statement over the measured phase, when the server preloads it. */
+    val t1Statement: StatementStats? = null,
+    /**
+     * PARTITIONED only: T1s whose partition guard did not hold and that mode a
+     * decided instead (warm-up included). Anything but 0 means the scenario did
+     * not measure the partitioned path alone.
+     */
+    val partitionFallbacks: Long? = null,
+    /** PARTITIONED only: those fallbacks by reason (C-3: the hot workspace's timeout cascade shows here). */
+    val partitionFallbackReasons: Map<String, Long>? = null,
+    /** The timing-probe scenario only: each probe class's latency and 451 rate (security review S-C1). */
+    val probes: Map<String, ProbeSummary>? = null,
+    /** The timing-probe scenario only: what its background traffic achieved (the system was loaded). */
+    val background: BackgroundSummary? = null,
+    /**
+     * Completed events that never reached T1 (every copy discarded by INGEST before it:
+     * probe floods only) and so enter no latency figure; 0 everywhere else.
+     */
+    val eventsWithoutT1: Int = 0,
+    /** `--t1-steps` / `--focused` only: T1 step by step, lock hold included ([HoldTiming]); null otherwise. */
+    val t1Steps: T1StepsSummary? = null,
+    /** `--focused` only: the T1 statement's generic plan from the statistics at the end of the measured phase ([Diagnostics.planNow]). */
+    val planAtEnd: String? = null,
+    /** The scenario pool's lifecycle and the physical connections it opened around the measured phase ([PoolLifecycle]). */
+    val pool: PoolPhase? = null,
+    /** In-lock planning of T1's snapshot over the measured phase ([T1Planning]); null with neither step timing nor pg_stat_statements. */
+    val t1Planning: T1Planning? = null,
 ) {
     /** completed / scheduled: separate from the achieved rate, which also carries the terminal lag. */
     val completionRatio: Double get() = if (scheduledEvents == 0) 0.0 else completedEvents.toDouble() / scheduledEvents

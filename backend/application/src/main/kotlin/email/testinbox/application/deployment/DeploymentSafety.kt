@@ -1,6 +1,9 @@
 package email.testinbox.application.deployment
 
+import email.testinbox.application.LimitsProperties
+import email.testinbox.application.storage.AdmissionLocking
 import email.testinbox.application.storage.EffectiveStoragePolicy
+import email.testinbox.application.storage.FootprintWiring
 import email.testinbox.application.storage.LAB_PLATFORM_CLASS
 import email.testinbox.application.storage.NodeRole
 import email.testinbox.application.storage.QualificationMatch
@@ -11,6 +14,7 @@ import email.testinbox.domain.storage.CohortStorageBudget
 import email.testinbox.domain.storage.FilesystemContainment
 import email.testinbox.domain.storage.FootprintModel
 import email.testinbox.domain.storage.InboxShare
+import email.testinbox.domain.storage.StorageEnforcement
 import email.testinbox.domain.tenant.ApiKeyFormat
 import java.time.Duration
 
@@ -87,7 +91,43 @@ data class DeploymentSettings(
      * missed" is false.
      */
     val eventsVisibilityLag: Duration? = null,
+    /**
+     * The per-workspace `INGEST` budget this process is configured with
+     * (`testinbox.limits.ingest`): burst `b` and refill `r`, in incoming recipient
+     * copies. Under `ALL` it must fit the gated workload envelope
+     * ([IngestEnvelopeSafety]).
+     */
+    val ingest: LimitsProperties.RateProperties = LimitsProperties().ingest,
+    /** The per-inbox share of it (`testinbox.limits.ingest-per-inbox`); never above [ingest]. */
+    val ingestPerInbox: LimitsProperties.RateProperties = LimitsProperties().ingestPerInbox,
+    /**
+     * pgJDBC connection properties given outside the URL (Hikari's
+     * `data-source-properties`), where the deployable runs T1's one-round-trip
+     * commit (the gateway); null where it does not (the API). Non-null turns on
+     * [DriverProtocolSafety] for these AND the URL's own parameters.
+     */
+    val databaseDriverProperties: Map<String, String>? = null,
+    /**
+     * The effective Hikari `maximumPoolSize` of the deployable that runs T1 for
+     * SMTP mail (the gateway), or [IngestionPoolSize.Unreadable]; null where it
+     * does not (the API). Under `ALL` it must equal the pool size the approved
+     * INGEST envelope's evidence covers ([IngestEnvelopeSafety]).
+     */
+    val ingestionPoolSize: IngestionPoolSize? = null,
 )
+
+/** What the ingestion gateway could establish about its own database pool's size. */
+sealed interface IngestionPoolSize {
+    /** Hikari's `maximumPoolSize`, as the running pool reports it. */
+    data class Known(
+        val size: Int,
+    ) : IngestionPoolSize
+
+    /** Not a Hikari pool, or a size Hikari would replace at start: never guessed, so `ALL` fails closed. */
+    data class Unreadable(
+        val reason: String,
+    ) : IngestionPoolSize
+}
 
 /**
  * The facts about production that are decided, not configured (ADR-034).
@@ -192,6 +232,8 @@ object DeploymentSafety {
             addAll(checkLimits(settings))
             addAll(checkProduction(settings))
             addAll(StorageEnforcementSafety.check(settings))
+            addAll(IngestEnvelopeSafety.check(settings))
+            addAll(DriverProtocolSafety.check(settings))
         }
 
     private fun checkMailDomain(settings: DeploymentSettings): List<DeploymentViolation> =
@@ -603,8 +645,54 @@ object StorageEnforcementSafety {
 
     fun check(settings: DeploymentSettings): List<DeploymentViolation> {
         val storage = settings.storage
-        return labRecord(settings, storage) + if (storage.enforced) enforced(settings, storage) else sanity(storage)
+        return labRecord(settings, storage) + admissionLocking(settings, storage) +
+            if (storage.enforced) enforced(settings, storage) else sanity(storage)
     }
+
+    private const val LOCKING = "testinbox.storage.admission-locking"
+
+    /**
+     * The share-partitioned T1 (PROPOSED ADR-035 amendment note, gate D W1).
+     * The owner authorized implementation and testing on 2026-11-05, not
+     * release ("This does not authorize opening admission"), so, like a lab-only
+     * qualification record (issue #102):
+     * - it is refused in EVERY environment but `lab`, production included,
+     *   whatever else is declared; the activation inventory refuses a node that
+     *   runs it anyway ([email.testinbox.application.storage.activation.NodeInventoryCheck]);
+     * - in the lab it needs `ALL` with a declared filesystem, the only deployment
+     *   whose T1 reads the cohort pool the partition guard relies on
+     *   (`FootprintWiring.readsFootprint`). Elsewhere every T1 would fall back to
+     *   mode a, so a declared partitioned mode would only ever be a false label.
+     * GLOBAL, mode a, is the default and is never refused here.
+     */
+    private fun admissionLocking(
+        settings: DeploymentSettings,
+        storage: StorageDeclarations,
+    ): List<DeploymentViolation> =
+        buildList {
+            if (storage.admissionLocking == AdmissionLocking.GLOBAL) return@buildList
+            if (settings.environment != LAB_ENVIRONMENT) {
+                add(
+                    DeploymentViolation(
+                        LOCKING,
+                        "is ${storage.admissionLocking} in environment '${settings.environment}'; the share-partitioned T1 is a " +
+                            "PROPOSED ADR-035 amendment (docs/adr/0035-amendment-note-partitioned-t1-PROPOSED.md), authorized " +
+                            "for implementation and testing in environment '$LAB_ENVIRONMENT' only; its release needs an " +
+                            "independent correctness review and an owner decision; every other environment runs GLOBAL (mode a)",
+                    ),
+                )
+            }
+            if (storage.enforcement != StorageEnforcement.ALL || !FootprintWiring.readsFootprint(storage)) {
+                add(
+                    DeploymentViolation(
+                        LOCKING,
+                        "is ${storage.admissionLocking} but enforcement is ${storage.enforcement}" +
+                            (if (FootprintWiring.readsFootprint(storage)) "" else " without a declared filesystem") +
+                            "; the partition guard reads the cohort pool, which only ALL with a declared filesystem has",
+                    ),
+                )
+            }
+        }
 
     /** The environment a lab-only qualification record is accepted in, and the only one (issue #102). */
     const val LAB_ENVIRONMENT = "lab"

@@ -16,10 +16,12 @@ object AdrConformance {
 
     fun reasons(options: BenchmarkOptions): List<String> {
         val reasons = mutableListOf<String>()
-        if (options.expectedRate != GateEvaluator.EXPECTED_RATE) {
-            reasons += "expected rate ${options.expectedRate} is not §11's ${GateEvaluator.EXPECTED_RATE} events/s"
-        }
-        val requiredRates = setOf(GateEvaluator.EXPECTED_RATE, 2 * GateEvaluator.EXPECTED_RATE)
+        // ADR-035 amendment D (2026-11-06): §11's expected rate R is the one the
+        // deployment's INGEST envelope admits, r × (30 + L), not a constant. 260 stays
+        // the default only. Which R counts is decided where the deployment is known:
+        // the activation gate refuses evidence whose expected rate is not the
+        // R_gated every node declares (scripts/check-storage-activation.sh gate D).
+        val requiredRates = setOf(options.expectedRate, 2 * options.expectedRate)
         if (!options.rates.toSet().containsAll(requiredRates)) {
             reasons += "offered rates ${options.rates} do not include §11's ${requiredRates.sorted()}"
         }
@@ -46,6 +48,36 @@ object AdrConformance {
         } else if (options.referenceMode != ReferenceMode.NO_LOCK) {
             reasons += "reference mode ${options.referenceMode} is not the no-ceiling mode c (NO_LOCK)"
         }
+        // Owner decision 2026-11-06 (#124 6684712608): the gate population includes the beta's cohort shares.
+        if (!options.cohortShares) {
+            reasons += "--no-cohort-shares: the gate population includes the closed beta's 31 cohort shares"
+        }
+        if (options.focused) {
+            reasons += "--focused: a focused A′ measurement, never gate evidence"
+        }
+        reasons += poolLifecycle(options)
         return reasons
     }
+
+    /**
+     * The review condition of 2026-11-06: gate evidence is faithful to production's pool
+     * lifecycle, so T1's in-lock planning on new connections is inside the measurement
+     * ([PoolLifecycle]). A warmed pool removes it; another lifetime recycles at a rate
+     * production does not (shorter: more cold connections; longer: fewer).
+     */
+    private fun poolLifecycle(options: BenchmarkOptions): List<String> =
+        buildList {
+            if (!options.coldPool) {
+                add(
+                    "--warm-pool: every connection was warmed past pgJDBC's prepareThreshold before the phase, which removes " +
+                        "the in-lock planning production's new connections do (cold after each deploy and each maxLifetime)",
+                )
+            }
+            if (options.effectivePoolMaxLifetime != PoolLifecycle.PRODUCTION_MAX_LIFETIME) {
+                add(
+                    "--pool-max-lifetime ${options.effectivePoolMaxLifetime} is not production's " +
+                        "${PoolLifecycle.PRODUCTION_MAX_LIFETIME} (HikariCP's default, which ingestion does not override)",
+                )
+            }
+        }
 }

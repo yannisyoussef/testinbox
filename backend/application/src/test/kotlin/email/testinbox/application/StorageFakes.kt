@@ -45,12 +45,13 @@ class InMemoryStorage(
     private val inboxes: InMemoryInboxRepository,
     private val messages: InMemoryMessageRepository,
     private val clock: Clock,
+    /** Injectable so a test can drive the backoff on a manual clock. */
+    val breaker: StorageBreaker = StorageBreaker(),
 ) {
     val blobs = InMemoryBlobStore()
     val ambiguity = InMemoryStorageAmbiguity(clock)
     val reservations = InMemoryStorageReservations(messages, ambiguity, clock)
     val inspection = InMemoryStorageInspection(blobs, clock)
-    val breaker = StorageBreaker()
     val databaseClock = DatabaseClock { clock.instant() }
     val node = StorageNode("test-node", UUID.fromString("00000000-0000-0000-0000-000000000003"))
 
@@ -395,7 +396,13 @@ class InMemoryStorageInspection(
         incomplete.remove(upload)
     }
 
-    override fun witness(probeKey: String) = witnessSucceeds
+    /** Witness probes issued, and the keys they wrote under. */
+    val witnessKeys = mutableListOf<String>()
+
+    override fun witness(probeKey: String): Boolean {
+        witnessKeys += probeKey
+        return witnessSucceeds
+    }
 
     override fun serverTime() = ServerTime(clock.instant().plus(offset), Duration.ZERO)
 

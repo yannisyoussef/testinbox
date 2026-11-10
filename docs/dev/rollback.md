@@ -499,7 +499,14 @@ artifact older than this change.
 
 **Before the first admission**, the integrator records the integrated commit
 in `deploy/rollback-floors.txt`. It cannot be recorded earlier: the floor must
-name a SHA that every production candidate contains. Never run an older API
+name a SHA that every production candidate contains. **Recorded by the
+admission release:** `a00c16e` (the merge of PR 117, which brought V22 and
+the lifecycle-aware API, ingestion and operator command to `develop`; it is on
+`master` and in production since R1). It is the floor, not the V23 release
+`bcd30fc`: V23 adds no state an older artifact could corrupt (below), and
+`a00c16e` already enforces the restore quarantine for every managed key. Every
+candidate below it — `d17044d` and the ADR-035 floors included — is now
+refused by `check-rollback-floors.sh` unless the hazard is acknowledged. Never run an older API
 against a quarantined database. Reconcile first (`account-lifecycle
 restore-reconcile`,
 [LIFECYCLE.md](../delivery/ti-delivery-002/LIFECYCLE.md#restore-procedure)).
@@ -555,7 +562,121 @@ erasure already made is permanent.
   `lifecycle_restore_clearance` is empty, and `a00c16e` already has it.
 
 No new floor in `deploy/rollback-floors.txt` is needed beyond the V22
-lifecycle floor above. This change adds no state that an older artifact
+lifecycle floor above (`a00c16e`). This change adds no state that an older artifact
 could corrupt. The restore-window protections (every managed key refused
 while quarantined, every managed key revoked by `restore-reconcile`) already
 ship in `a00c16e`; only artifacts older than it lack them.
+
+## Share-partitioned T1 guard (PROPOSED, gate D W1, schema V25)
+
+V25 is expand-only: one table (`storage_partition_bound`, never backed up),
+one column (`storage_node.admission_locking`, `NOT NULL DEFAULT 'GLOBAL'`),
+one invoker function and two definer trigger functions with their triggers
+on `storage_legacy_share`, `participant_workspace`, `storage_cohort_plan` and
+`storage_partition_bound`. An older artifact starts cleanly against it and
+never reads the table or the column. The switch it serves
+(`testinbox.storage.admission-locking = COHORT_PARTITIONED`) is refused
+outside the lab, so in staging and production every artifact, older or not,
+runs mode a.
+
+What an older artifact (any digest before V25) meets:
+
+| Older artifact | What happens | Consequence |
+|---|---|---|
+| ingestion / API (runtime) | registers and heartbeats `storage_node` without the column | the row reads `GLOBAL`, which is what it runs |
+| beta admission (API) | its `participant_workspace` insert passes the V25 fence trigger, re-entrantly: it already holds `(35, 1)` | unchanged |
+| pool reserve (`storage-budget reserve` of an older digest) | writes the shares and the plan, never the bound; a bound recorded earlier by a newer digest now carries a different fingerprint (or binding) than the plan | that stale bound neither binds (the deferred check applies only while the bound matches the APPROVED plan) nor partitions (G1 fails, every T1 runs mode a) |
+| any share/plan writer not in READ COMMITTED | refused by the fence (READ COMMITTED only: a REPEATABLE READ or SERIALIZABLE snapshot predates the fence) | every application writer runs READ COMMITTED (the reserve command asserts it); a server whose `default_transaction_isolation` was changed refuses share writes, fail closed |
+
+**Recovery from a stale bound.** None is needed for correctness: a bound that
+does not match the approved plan is inert. To remove it, `DELETE FROM
+storage_partition_bound` as the owner (it takes `(35, 1)`), or re-reserve
+from a digest at or after V25, which records the matching bound.
+
+**Activation gate L blocks while any pre-switch artifact runs.** An artifact
+older than V25 exports no `testinbox_storage_admission_locking` series; gate L
+reads an absent series as UNKNOWN, never as mode a, and reports `L-lock-protocol
+BLOCKED … T1 lock protocol UNKNOWN`. After rolling back below V25, expect the
+activation barrier to stay BLOCKED until every node runs an artifact that
+exports the series. (The node rows themselves read `GLOBAL` by the column
+default, so the inventory check is not affected.)
+
+No new floor in `deploy/rollback-floors.txt`: nothing an older artifact does
+can make a T1 partition, and the partitioned mode is lab-only.
+
+**A partial migration (V24 applied, V25 not) is roll forward only.** The
+migrator runs Flyway's defaults, so each migration commits in its own
+transaction and a failed V25 leaves V24 applied. Complete V25 with the same
+candidate's migrator once the cause is fixed. Until then that candidate's api
+and ingestion refuse readiness (the schema does not match their bundle). A
+rolled-back artifact (V23 or earlier) runs on the V24-only schema as "schema
+ahead", which is healthy: V24 is expand-only and its triggers run inside the
+base writers' own transactions.
+
+## T1 delta indexes (gate D mode a correction A2, schema V26)
+
+V26 is expand-only: two indexes on `storage_delta`
+(`ix_storage_delta_workspace (workspace_id) INCLUDE (bytes, objects)` and
+`ix_storage_delta_inbox (inbox_id) INCLUDE (bytes, objects)`), no table,
+column, function, trigger or grant. An older artifact runs on it unchanged:
+its statements read the same rows and the planner may use the indexes. The
+T1 statement text of the same change (A1, A3) is in the artifact, not the
+schema, so rolling the artifact back restores the 9d06ab2 statement, which
+returns the same figures (`AdmissionStatementEquivalenceTest`).
+
+The build holds `SHARE` on `storage_delta` for its duration, which queues the
+ledger triggers' inserts (T2, retention, cleanup) behind it; the table holds
+one compaction interval of rows, so that is short. No new floor in
+`deploy/rollback-floors.txt`, no change to `roles.reference.sql` or
+`deploy/backup/scope.txt`. A failed V26 leaves V25 applied and is roll
+forward only, like V25 above.
+
+## T1 reservation usage index (gate D mode a correction A′, schema V27)
+
+V27 is expand-only: one STORED generated column,
+`storage_reservation.object_count = cardinality(object_keys)`, and one index,
+`ix_storage_reservation_usage (workspace_id) INCLUDE (bytes, object_count)`. No
+table, function, trigger, constraint, type or grant change. Every writer of
+`storage_reservation` names its columns, so an older artifact's insert, which
+does not mention `object_count`, still works and PostgreSQL computes the value;
+its statements read the same rows (`SchemaUpgradeTest`). The A′ T1 text, which
+reads `object_count`, is in the artifact: rolling the artifact back restores the
+A1–A3 statement, which returns the same figures
+(`AdmissionStatementEquivalenceTest`). An artifact at or after A′ needs V27 and
+refuses readiness on a V26 schema, as every artifact does on an older schema.
+
+Adding a STORED generated column rewrites the table under `ACCESS EXCLUSIVE`,
+which holds every T1, T2, cleanup and fence write of `storage_reservation` for
+that time; the table holds the in-flight reservations only, so that is short.
+`lock_timeout` 2 s and `statement_timeout` 60 s: a writer holding the table
+makes the migration fail instead of queueing every later writer behind it;
+re-run it with the same candidate.
+
+**The transient window.** While V27 *waits* for `ACCESS EXCLUSIVE`, every later
+lock request on `storage_reservation` queues behind it, T1's reads included, so
+an attempt may hold T1 reads for up to `lock_timeout`, answered 451 and retried
+by the edge. That holds whether the attempt then succeeds or fails. The bound is
+2 s, below T1's own 5 s lock timeout, rather than V26's 10 s: V26's build waits
+for `SHARE` on `storage_delta`, which T1's reads do not conflict with, so V26
+delays the ledger-trigger writers (T2, retention, cleanup) but not T1.
+
+**A failed attempt is clean.** The lock timeout aborts V27's transaction
+(`55P03`) and Flyway rolls it back whole: no `object_count`, no index and no
+row for V27 in `flyway_schema_history` (`SchemaUpgradeTest`). The migrator does
+not retry: the Flyway failure fails its startup, it exits non-zero, and
+`deploy.sh` aborts before any service is touched (see
+[If the migration itself fails](#if-the-migration-itself-fails)). Re-running
+the same candidate's migrator is safe. No new floor in
+`deploy/rollback-floors.txt`, no change to `roles.reference.sql` (the table's
+grants are table-level) or `deploy/backup/scope.txt` (`storage_reservation` is
+already classified, never backed up). A failed V27 leaves V26 applied and is
+roll forward only, like V26 above.
+
+**A driver precondition, not a schema one.** A′'s gateway sends T1's insert and
+`COMMIT` in one round trip, which is reasoned and tested only under pgJDBC's
+defaults. From A′ on, the gateway refuses to start when its database URL or its
+`spring.datasource.hikari.data-source-properties` set `autosave` to anything but
+`never` or `preferQueryMode` to anything but `extended` (`DriverProtocolSafety`).
+Nothing in this repository sets either; Ops should confirm `TESTINBOX_DB_URL`
+does not. Rolling the artifact back removes the refusal along with the batch it
+protects.

@@ -241,7 +241,11 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
         val ingestion = role("ti_ingest")
         db.createRole(ingestion)
         db.preV8Grants(ingestion)
-        db.grant(ingestion, "GRANT SELECT ON workspace_storage_account, inbox_storage, storage_delta, storage_reservation")
+        // V24: T1 reads Σ workspace bases from the global base row in every mode (roles.reference.sql grants it).
+        db.grant(
+            ingestion,
+            "GRANT SELECT ON workspace_storage_account, storage_global_base, inbox_storage, storage_delta, storage_reservation",
+        )
         // V22: T1's one snapshot also reads account-lifecycle eligibility (roles.reference.sql grants it).
         db.grant(ingestion, "GRANT SELECT ON workspace_lifecycle_eligibility")
         val ws = db.workspace()
@@ -281,7 +285,7 @@ class StorageV8GrantsTest : PersistenceIntegrationTest() {
         db.grant(
             ingestion,
             "GRANT SELECT ON storage_deletion_debt, storage_filesystem_observation, storage_debt_watermark, storage_footprint_trust",
-            "GRANT SELECT ON workspace_storage_account, storage_delta, storage_reservation, participant_workspace, storage_legacy_share, workspace_deletion_charge, storage_cohort_plan, workspace, storage_node",
+            "GRANT SELECT ON workspace_storage_account, storage_global_base, storage_delta, storage_reservation, participant_workspace, storage_legacy_share, workspace_deletion_charge, storage_cohort_plan, workspace, storage_node",
             "GRANT EXECUTE ON FUNCTION storage_record_probe_debt(text), storage_resolve_probe_debt(text)",
         )
         val asIngestion = db.connectAs(ingestion)

@@ -74,6 +74,56 @@ object CohortStorageBudget {
         data object Unproven : Result
     }
 
+    /**
+     * The partition bound of the share-partitioned T1 (ADR-035 amendment note,
+     * PROPOSED): the largest total of reserved shares — all thirty participant
+     * places plus every legacy share, payload and footprint separately — for
+     * which [assess] is [Result.Fits] under these declarations. By construction
+     *
+     * ```
+     * assess(d) is Fits  ⇔  30·P + Σ legacy payload   ≤ payloadBytes
+     *                     ∧  30·F + Σ legacy footprint ≤ footprintBytes
+     * ```
+     *
+     * (`PartitionCapacityTest` proves the equivalence by property), so the
+     * database can re-check non-overcommitment from the share rows alone, in
+     * T1's own snapshot, without the declarations. [Declarations.legacy] is
+     * ignored: the bound is what the declarations leave for shares.
+     */
+    data class PartitionCapacity(
+        val payloadBytes: Long,
+        val footprintBytes: Long,
+    ) {
+        init {
+            require(payloadBytes > 0 && footprintBytes > 0) { "a partition bound is positive, was $payloadBytes / $footprintBytes" }
+        }
+    }
+
+    /** [PartitionCapacity] for [declarations], or null when it overflows or leaves no room for any share. */
+    fun partitionCapacity(declarations: Declarations): PartitionCapacity? =
+        try {
+            val d = declarations
+            val event = d.model.bound(d.worstEnvelope.bytes, d.worstEnvelope.objects)
+            val payload =
+                Math.subtractExact(Math.subtractExact(d.globalPayloadLimitBytes, d.worstEnvelope.bytes), d.payloadFinalizeBudgetBytes)
+            val policy =
+                Math.subtractExact(Math.subtractExact(d.filesystem.globalFootprintLimitBytes, event), d.filesystem.finalizeBudgetBytes)
+            val filesystem =
+                listOf(
+                    event,
+                    d.filesystem.finalizeBudgetBytes,
+                    d.unattributedDebtFootprintBytes,
+                    d.trashAllowanceBytes,
+                    d.filesystem.probeBudgetBytes,
+                    d.filesystem.metadataBudgetBytes,
+                    d.filesystem.operationalReserveBytes,
+                ).fold(d.filesystem.capacityBytes, Math::subtractExact)
+            val footprint = minOf(policy, filesystem)
+            if (payload <= 0 || footprint <= 0) null else PartitionCapacity(payload, footprint)
+        } catch (_: ArithmeticException) {
+            null
+        }
+
     fun assess(declarations: Declarations?): Result {
         if (declarations == null) return Result.Unproven
         return try {

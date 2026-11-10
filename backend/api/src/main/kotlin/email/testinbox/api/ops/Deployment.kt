@@ -66,6 +66,8 @@ class DeploymentSafetyCheck(
                         proxyReadTimeout = properties.deployment.proxyReadTimeout,
                         edgeRequestCeiling = properties.deployment.edgeRequestCeiling,
                         limitsEnabled = properties.limits.enabled,
+                        ingest = properties.limits.ingest,
+                        ingestPerInbox = properties.limits.ingestPerInbox,
                         activeProfiles = springEnvironment.activeProfiles.toSet(),
                         publicSurface = true,
                         createBucket = properties.storage.createBucket,

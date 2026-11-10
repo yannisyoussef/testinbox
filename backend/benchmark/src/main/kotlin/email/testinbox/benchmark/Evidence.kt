@@ -42,6 +42,14 @@ data class HarnessDescription(
     val targetKind: String,
     val targetDatabaseName: String,
     val lockWaitDefinition: String,
+    /** Cohort shares seeded beside each gate population (31, or 0 with --no-cohort-shares). */
+    val cohortShares: Int = 0,
+    /** sustained2x's terminal-lag allowance is the one of a window this long ([GateEvaluator.sustainedRatio]). */
+    val sustainedReferenceWindowSeconds: Int = GateEvaluator.SUSTAINED_REFERENCE_WINDOW_SECONDS,
+    /** A `--focused` A′ measurement: never gate evidence. */
+    val focused: Boolean = false,
+    /** The scenario pools' connection lifecycle ([PoolLifecycle]); the defaults are production's. */
+    val pool: PoolLifecycle = PoolLifecycle(true, PoolLifecycle.PRODUCTION_MAX_LIFETIME, PoolLifecycle.PRODUCTION_KEEPALIVE),
 )
 
 data class SafetyRecord(
@@ -65,6 +73,12 @@ class Evidence(
     val gate: GateVerdict,
     /** Why the run's inputs are not ADR-035 §11's; empty means they are. */
     val adrEvidenceReasons: List<String> = emptyList(),
+    /** PARTITIONED variant scenarios (production COHORT_PARTITIONED T1, closed cohort): never in [scenarios], never in [gate]. */
+    val variantScenarios: List<ScenarioResult> = emptyList(),
+    /** The §11 criteria read on the variant against the same references, for information only. */
+    val variantGate: GateVerdict? = null,
+    /** Per population: the diagnostics file, the commit cost, the statement hashes. */
+    val diagnostics: List<Map<String, Any?>> = emptyList(),
 ) {
     fun toJsonTree(): Map<String, Any?> =
         linkedMapOf(
@@ -100,6 +114,15 @@ class Evidence(
                     "deltaBacklog" to harness.deltaBacklog,
                     "target" to linkedMapOf("kind" to harness.targetKind, "databaseName" to harness.targetDatabaseName),
                     "lockWaitDefinition" to harness.lockWaitDefinition,
+                    "cohortShares" to harness.cohortShares,
+                    "sustainedReferenceWindowSeconds" to harness.sustainedReferenceWindowSeconds,
+                    "focused" to harness.focused,
+                    "coldPool" to harness.pool.coldPool,
+                    "poolMaxLifetime" to harness.pool.maxLifetime.toString(),
+                    "poolMaxLifetimeMs" to harness.pool.maxLifetime.toMillis(),
+                    "poolKeepaliveMs" to harness.pool.keepalive.toMillis(),
+                    "poolLifecycleSource" to PoolLifecycle.PRODUCTION_SOURCE,
+                    "prepareThreshold" to PoolLifecycle.PREPARE_THRESHOLD,
                 ),
             "safety" to
                 linkedMapOf(
@@ -117,6 +140,23 @@ class Evidence(
             "adrEvidenceReasons" to adrEvidenceReasons,
             "incompleteReasons" to gate.incompleteReasons,
             "verdict" to gate.verdict.name,
+            "diagnostics" to diagnostics,
+            // Never read by gate D (check-storage-activation.sh reads `scenarios`, `criteria` and `verdict`).
+            "variant" to
+                variantGate?.let { v ->
+                    linkedMapOf(
+                        "name" to "PARTITIONED",
+                        "status" to VARIANT_STATUS,
+                        "scenarios" to variantScenarios.map(::scenarioTree),
+                        // The timing probes pooled over their repetitions: figures only, no verdict.
+                        "probePooled" to ProbePooling.pool(variantScenarios).map(::pooledTree),
+                        "criteria" to
+                            v.criteria.mapValues { (_, c) ->
+                                linkedMapOf("pass" to c.pass, "observed" to c.observed, "threshold" to c.threshold, "detail" to c.detail)
+                            },
+                        "informationalVerdict" to v.verdict.name,
+                    )
+                },
         )
 
     fun toJson(): String = MAPPER.writeValueAsString(toJsonTree())
@@ -149,6 +189,8 @@ class Evidence(
             appendLine("tenant rows at start: ${safety.tenantRowCountsAtStart.entries.joinToString { "${it.key}=${it.value}" }}.")
             appendLine()
             appendLine("**What was measured.** ${harness.measures} ${harness.lockWaitDefinition}")
+            appendLine()
+            appendLine(poolSentence(harness.pool))
             appendLine()
             appendLine(
                 "Target: ${harness.targetKind} `${harness.targetDatabaseName}`; seed ${harness.seed}; rates ${harness.rates}; " +
@@ -187,7 +229,23 @@ class Evidence(
             scenarios.forEach { s -> appendLine(scenarioRow(s)) }
             appendLine()
             appendLine("Latencies in ms. T1, event and retention are `completion − due` (open-loop schedule lag included).")
-            val samples = scenarios.flatMap { s -> s.errorSamples.map { "${s.name}: $it" } }
+            val statements = scenarios.filter { it.t1Statement != null }
+            if (statements.isNotEmpty()) {
+                appendLine()
+                appendLine("T1 snapshot statement (pg_stat_statements, measured phase): " + statements.joinToString("; ") { stmtCell(it) })
+            }
+            val pools = scenarios.filter { it.pool != null }
+            if (pools.isNotEmpty()) {
+                appendLine()
+                appendLine(
+                    "Physical connections opened (Hikari) before / during the measured phase: " +
+                        pools.joinToString(
+                            "; ",
+                        ) { "${it.name}: ${it.pool!!.connectionsOpenedBeforePhase} / ${it.pool.connectionsOpenedInPhase}" },
+                )
+            }
+            appendDiagnosticsAndVariant()
+            val samples = (scenarios + variantScenarios).flatMap { s -> s.errorSamples.map { "${s.name}: $it" } }
             if (samples.isNotEmpty()) {
                 appendLine("\n## Error samples\n")
                 samples.forEach { appendLine("- $it") }
@@ -249,6 +307,75 @@ class Evidence(
             "lockTimeoutRate" to s.lockTimeoutRate,
             "deadlocks" to s.deadlocks,
             "deadlineMissesFromSlotQueueing" to s.deadlineMissesFromSlotQueueing,
+            "t1Statement" to
+                s.t1Statement?.let {
+                    linkedMapOf(
+                        "calls" to it.calls,
+                        "plans" to it.plans,
+                        "meanPlanMs" to it.meanPlanMs,
+                        "meanExecMs" to it.meanExecMs,
+                        "maxExecMs" to it.maxExecMs,
+                        "rowsPerCall" to it.rowsPerCall,
+                    )
+                },
+            "t1Probe" to
+                s.t1Probe?.let {
+                    linkedMapOf(
+                        "storeClass" to it.storeClass,
+                        "enforcement" to it.enforcement.name,
+                        "readsFootprint" to it.readsFootprint,
+                        "footprintRead" to it.footprintRead,
+                        "footprintUnavailable" to it.footprintUnavailable,
+                        "cohortRequired" to it.cohortRequired,
+                        "snapshotStatementSha256" to it.snapshotStatementSha256,
+                        "budgetedWorkspaces" to it.budgetedWorkspaces,
+                        "inactiveWorkspaces" to it.inactiveWorkspaces,
+                        "locking" to it.locking.name,
+                        "partitioned" to it.partitioned,
+                    )
+                },
+            "partitionFallbacks" to s.partitionFallbacks,
+            "eventsWithoutT1" to s.eventsWithoutT1,
+            "t1Steps" to
+                s.t1Steps?.let { t ->
+                    linkedMapOf<String, Any?>("definition" to STEPS_DEFINITION) +
+                        t.steps.mapValues { (_, v) -> linkedMapOf("meanMs" to v.meanMs) + (latency(v.latency) ?: emptyMap()) }
+                },
+            "partitionFallbackReasons" to s.partitionFallbackReasons,
+            "pool" to
+                s.pool?.let {
+                    linkedMapOf(
+                        "coldPool" to it.coldPool,
+                        "maxLifetimeMs" to it.maxLifetimeMs,
+                        "keepaliveMs" to it.keepaliveMs,
+                        "poolSize" to it.poolSize,
+                        "connectionsOpenedBeforePhase" to it.connectionsOpenedBeforePhase,
+                        "connectionsOpenedInPhase" to it.connectionsOpenedInPhase,
+                    )
+                },
+            "t1Planning" to s.t1Planning?.let(::planningTree),
+            "background" to
+                s.background?.let {
+                    linkedMapOf(
+                        "offeredRate" to it.offeredRate,
+                        "events" to it.events,
+                        "admittedCopies" to it.admittedCopies,
+                        "admittedCopiesPerSecond" to it.admittedCopiesPerSecond,
+                        "eventsReachingT1" to it.eventsReachingT1,
+                        "t1" to latency(it.t1),
+                        "unavailableRate" to it.unavailableRate,
+                    )
+                },
+            "probes" to
+                s.probes?.mapValues { (_, p) ->
+                    linkedMapOf(
+                        "events" to p.events,
+                        "targetReachedEvents" to p.targetReachedEvents,
+                        "latency" to latency(p.latency),
+                        "unavailableRate" to p.unavailableRate,
+                        "reachesT1" to p.reachesT1,
+                    )
+                },
         )
 
     private fun scenarioRow(s: ScenarioResult): String =
@@ -261,6 +388,97 @@ class Evidence(
             "${s.lockTimeouts} (${"%.4f".format(s.lockTimeoutRate)}) | ${s.deadlocks} | " +
             "${s.deadlineMissesFromSlotQueueing} | ${s.otherErrors} |"
 
+    private fun StringBuilder.appendDiagnosticsAndVariant() {
+        diagnostics.forEach { d ->
+            appendLine()
+            appendLine(
+                "Diagnostics ${d["workspaces"]} workspaces: `${d["file"]}`; commit ms ${d["commitMs"]}; pg_stat_statements ${d["pgStatStatements"]}",
+            )
+        }
+        variantGate?.let { v ->
+            appendLine()
+            appendLine("## Variant, reported apart: PARTITIONED")
+            appendLine()
+            appendLine(
+                "**$VARIANT_STATUS** Informational reading of the §11 criteria against the same NO_LOCK references: ${v.verdict}.",
+            )
+            appendLine()
+            appendLine("| Criterion | Pass | Observed | Detail |")
+            appendLine("|---|---|---:|---|")
+            v.criteria.values.forEach {
+                appendLine("| ${it.name} | ${if (it.pass) "yes" else "NO"} | ${it.observed?.let(::num) ?: "n/a"} | ${it.detail} |")
+            }
+            appendLine()
+            appendLine(
+                "| Scenario | Mode | Workspaces | Conc. | Offered/s | Achieved/s | Completed/scheduled | Terminal lag ms | " +
+                    "T1 p50/p95/p99 | T1 tx p99 | T2 p50/p95/p99 | Event p99 | Retention p50/p95/p99 (n) | Starved | " +
+                    "Lock wait p50/p99 | Slot wait p50/p99 | Deltas mean/max | lock_timeout (rate) | Deadlocks | Slot misses | Other errors |",
+            )
+            appendLine("|---|---|---:|---:|---:|---:|---:|---:|---|---:|---|---:|---|---:|---|---|---|---|---:|---:|---:|")
+            variantScenarios.forEach { appendLine(scenarioRow(it)) }
+            if (variantScenarios.any { it.t1Statement != null }) {
+                appendLine()
+                appendLine(
+                    "Variant T1 statement: " + variantScenarios.filter { it.t1Statement != null }.joinToString("; ") { stmtCell(it) },
+                )
+            }
+        }
+    }
+
+    private fun planningTree(p: T1Planning): Map<String, Any?> =
+        linkedMapOf(
+            "definition" to PLANNING_DEFINITION,
+            "prepareThreshold" to p.prepareThreshold,
+            "client" to
+                p.client?.let {
+                    linkedMapOf(
+                        "snapshotExecutions" to it.snapshotExecutions,
+                        "coldSnapshotExecutions" to it.coldSnapshotExecutions,
+                        "physicalConnections" to it.physicalConnections,
+                        "firstUsedInPhase" to it.firstUsedInPhase,
+                        "coldT1" to latency(it.coldT1),
+                        "warmT1" to latency(it.warmT1),
+                        "coldSnapshotMeanMs" to it.coldSnapshotMeanMs,
+                        "warmSnapshotMeanMs" to it.warmSnapshotMeanMs,
+                    )
+                },
+            "server" to
+                p.server?.let { linkedMapOf("plans" to it.plans, "totalPlanMs" to it.totalPlanMs, "meanPlanMs" to it.meanPlanMs) },
+            "derived" to linkedMapOf("invalidationReplans" to p.invalidationReplans, "coldPlanCostMs" to p.coldPlanCostMs),
+        )
+
+    private fun poolSentence(pool: PoolLifecycle): String =
+        "**Connection lifecycle.** " +
+            (
+                if (pool.coldPool) {
+                    "Cold pool: after the warm-up every scenario connection was replaced by a new physical connection that had " +
+                        "executed nothing (a just-deployed ingestion node), so T1 plans inside the lock on each connection's " +
+                        "first ${PoolLifecycle.PREPARE_THRESHOLD} executions"
+                } else {
+                    "WARM pool (--warm-pool): every connection executed T1 past pgJDBC's prepareThreshold before the phase, " +
+                        "which removes the in-lock planning of production's new connections"
+                }
+            ) + "; Hikari maxLifetime ${pool.maxLifetime}, keepalive ${pool.keepalive} (production: " +
+            "${PoolLifecycle.PRODUCTION_MAX_LIFETIME}, ${PoolLifecycle.PRODUCTION_KEEPALIVE})."
+
+    private fun stmtCell(s: ScenarioResult): String =
+        s.t1Statement!!.let {
+            "${s.name}: ${it.calls} calls, ${it.plans} plans, plan ${"%.3f".format(it.meanPlanMs)} ms, " +
+                "exec mean ${"%.3f".format(it.meanExecMs)} / max ${"%.1f".format(it.maxExecMs)} ms"
+        }
+
+    @Suppress("UNCHECKED_CAST") // ProbePooling's own shape
+    private fun pooledTree(pooled: Map<String, Any?>): Map<String, Any?> =
+        pooled.mapValues { (key, value) ->
+            if (key != "classes") {
+                value
+            } else {
+                (value as Map<String, Map<String, Any?>>).mapValues { (_, c) ->
+                    c.mapValues { (k, v) -> if (k == "latency") latency(v as LatencySummary?) else v }
+                }
+            }
+        }
+
     private fun latency(l: LatencySummary?): Map<String, Any>? =
         l?.let { linkedMapOf("samples" to it.samples, "p50Ms" to it.p50Ms, "p95Ms" to it.p95Ms, "p99Ms" to it.p99Ms, "maxMs" to it.maxMs) }
 
@@ -272,6 +490,23 @@ class Evidence(
 
     companion object {
         const val SCHEMA_VERSION = 1
+        const val STEPS_DEFINITION =
+            "--t1-steps/--focused only, client side, per T1, ms: preLock (call start to lock sent), lockWait (lock sent to " +
+                "returned), hold (lock returned to commit returned: the server's hold to about one round trip), and inside " +
+                "it toSnapshot, snapshot (its round trip), decide (snapshot returned to write sent: row mapping, cohort JSON, " +
+                "decision, insert text), insert (its round trip; it carries the COMMIT since A′), toCommit, commit; then " +
+                "afterCommit. Observed by a JDBC proxy that changes no statement. Never a §11 criterion."
+        const val PLANNING_DEFINITION =
+            "In-lock planning of T1's snapshot over the measured phase, never a §11 criterion. client (--t1-steps/--focused " +
+                "only): snapshot executions per physical connection; one that is among its connection's first prepareThreshold " +
+                "executions plans once inside the lock (coldSnapshotExecutions), and a completed T1 whose snapshot was one is " +
+                "a coldT1 (T1 completion - due), the rest warmT1. server: pg_stat_statements plans and plan time of the " +
+                "snapshot statement (both kinds together; 0 without track_planning). derived: invalidationReplans = server " +
+                "plans - client cold plans; coldPlanCostMs = mean cold snapshot - mean warm snapshot round trip."
+        const val VARIANT_STATUS =
+            "Measurement of the production share-partitioned T1 (admission-locking = COHORT_PARTITIONED) over a closed " +
+                "30-participant + legacy cohort, reported apart and never gate D evidence; the mode is a PROPOSED ADR-035 " +
+                "amendment, and its release needs an independent correctness review and an owner decision."
         private const val LARGE = 1e9
         val MAPPER: JsonMapper =
             JsonMapper

@@ -1,0 +1,41 @@
+{
+  "schema": "testinbox.production-expected/1",
+  "_comment": "FIXED values the production-host record must carry, known before N1. NOT a qualification record and never shipped: scripts/build-qualification-record.py refuses a bundle whose measured values differ from any of these. Changing a value here is a reviewed decision (a different host, image, filesystem or kernel is a different record). Sources per value in RECORD-CUT.md.",
+  "host": "prod-gra-01",
+  "architecture": "x86_64",
+  "kernelRelease": "6.8.0-147-generic",
+  "minio": {
+    "imageIndexDigest": "sha256:bbac678936882e4033b6068efd0a19d103b219002d979087f7c5bd330172e00d",
+    "platformMemberDigest": "sha256:3f97c5651cb6662b880c787a232b6b34fec8d8922e08d6617b25d241a21164bb",
+    "release": "RELEASE.2025-04-22T22-12-26Z",
+    "commitId": "0d7408fc9969caf07de6a8c3a84f9fbb10a6739e",
+    "binarySha256": "53e2a2cb16c5366ea6fbbc479c19ddb4c6a0948273e752f740fb1fbf27bb817c",
+    "mode": "single-node-single-drive",
+    "driveCount": 1,
+    "timeoutEnvironment": {},
+    "timeoutCliFlags": [],
+    "runtimeConfigHash": "sha256:b0821e88cbdb913fb2837554c715d3c32da21efe7f9bcaed7b6b62cae443c558",
+    "storageClassInlineDefaults": "release-defaults"
+  },
+  "filesystem": {
+    "uuid": "c33e14fd-6b6f-4f05-881e-dbc4db22c964",
+    "type": "ext4",
+    "mountOptions": "rw,relatime",
+    "mountSource": "/var/lib/testinbox-minio/ext4.img",
+    "blockSize": 4096,
+    "blockCount": 12582912,
+    "inodeCount": 12582912,
+    "inodeSize": 256,
+    "statvfsBlocks": 11716773,
+    "features": "has_journal ext_attr resize_inode dir_index filetype needs_recovery extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum"
+  },
+  "network": {
+    "directPath": true,
+    "proxy": "none",
+    "tls": false
+  },
+  "declared": {
+    "_comment": "Production declarations the record's gate F evidence must state exactly. M = 1 GiB: owner decision 2026-11-05 (#124 comment 6671007334), subject to Ops' capacity proof, which passes (infinity-core !189 @ cc1cab9). Not an E7 PASS: E7 is evaluated against this budget when it completes. The staging example stays at 256 MiB.",
+    "metadataBudgetBytes": 1073741824
+  }
+}

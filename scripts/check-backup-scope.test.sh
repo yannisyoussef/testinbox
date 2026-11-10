@@ -471,7 +471,7 @@ done
 # classification check; marking one '+' is refused outright, in either mode,
 # because backing it up would carry derived or transient state (ADR-035 §14).
 for t in workspace_storage_account inbox_storage storage_delta storage_reservation \
-         storage_ambiguity storage_node storage_admission_latch storage_cohort_plan workspace_deletion_charge storage_clock_episode human_session email_login_challenge human_auth_gate provider_login_state beta_waitlist human_request_global human_request_budget lifecycle_restore_clearance; do
+         storage_ambiguity storage_node storage_admission_latch storage_cohort_plan storage_partition_bound workspace_deletion_charge storage_clock_episode human_session email_login_challenge human_auth_gate provider_login_state beta_waitlist human_request_global human_request_budget lifecycle_restore_clearance; do
   grep -qx -- "- $t" "$SCOPE_FILE" || { echo "FAIL — $t is not classified '-' in the real scope"; fail=$((fail + 1)); continue; }
   grep -vx -- "- $t" "$SCOPE_FILE" > "$WORK/omit-$t.txt"
   out=$(BACKUP_SCOPE="$WORK/omit-$t.txt" "$GATE" --classification "$MIGRATIONS" 2>&1); st=$?

@@ -202,6 +202,35 @@ class ActivationBarrierTest {
     }
 
     @Test
+    fun `a node running the share-partitioned T1 stops admission outside the lab, and only there is it allowed`() {
+        val partitioned = listOf(node("api-1"), node("ingest-1").copy(admissionLocking = "COHORT_PARTITIONED"))
+        val refused = NodeInventoryCheck.evaluate(expected, partitioned, now)
+        refused.verdict shouldBe GateVerdict.BLOCKED
+        refused.detail shouldContain "node 'ingest-1' runs T1 with admission-locking COHORT_PARTITIONED"
+        NodeInventoryCheck.problems(expected, partitioned, now).single().stopsAdmission shouldBe true
+        NodeInventoryCheck.evaluate(expected, partitioned, now, partitionedAllowed = true).verdict shouldBe GateVerdict.PASS
+        // A cleanly shut down or stale generation is not running anything.
+        val gone = listOf(node("api-1"), node("ingest-1"), node("ingest-1", clean = true).copy(admissionLocking = "COHORT_PARTITIONED"))
+        NodeInventoryCheck.evaluate(expected, gone, now).verdict shouldBe GateVerdict.PASS
+
+        val guard = ActivationGuard()
+        val inventory = Inventory(healthySessions, partitioned, now)
+        ActivationWatch(inventory, expected, StorageEnforcement.ALL, guard, RecordingMetrics()).run().holds shouldBe false
+        checkNotNull(guard.violated()) shouldContain "COHORT_PARTITIONED"
+        val lab = ActivationGuard()
+        ActivationWatch(
+            inventory,
+            expected,
+            StorageEnforcement.ALL,
+            lab,
+            RecordingMetrics(),
+            partitionedAllowed = true,
+        ).run().holds shouldBe
+            true
+        lab.violated() shouldBe null
+    }
+
+    @Test
     fun `a missing API node raises the violation but does not turn mail away - an API deploy is not an old ingress instance`() {
         val guard = ActivationGuard()
         val metrics = RecordingMetrics()

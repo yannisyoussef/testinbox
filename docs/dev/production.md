@@ -79,6 +79,7 @@ relaxed-binding override of the underlying property is refused).
 | `TESTINBOX_BOOTSTRAP_API_KEY` | ≥ 43 chars of real entropy | break-glass only |
 | `TESTINBOX_GIT_SHA`, `TESTINBOX_IMAGE_DIGEST` | the handed-off candidate and each image's own digest | identity on `/actuator/info` |
 | `TESTINBOX_MANAGEMENT_PORT`, `TESTINBOX_SMTP_PORT`, `TESTINBOX_SHUTDOWN_GRACE`, `TESTINBOX_DB_POOL_SIZE` | as staging | private management port; SMTP never public |
+| `TESTINBOX_LIMITS_INGEST_CAPACITY`, `_REFILL_PER_SECOND`; `TESTINBOX_LIMITS_INGEST_PER_INBOX_CAPACITY`, `_REFILL_PER_SECOND` | `60`, `1.0`; `30`, `0.5` | the closed-beta **incoming** recipient-copy envelope (ADR-035 amendment D); the deployed profile's defaults, pin them in the policy; [beta-limits.md](beta-limits.md) |
 
 ## Readiness, and one setting the application checks live
 
@@ -142,6 +143,27 @@ by the database.**
   `inbox_storage`'s base columns.
 - The API role holds `SELECT` on the three tables and `EXECUTE` on the two
   functions.
+- From V24 (gate D step (1)), `storage_global_base` (Σ workspace bases, the
+  row T1 reads) is written only by definer triggers on
+  `workspace_storage_account`. Both deployables need `SELECT` on it (T1, the
+  footprint gate, rule P, reconciliation) and nothing else; no role may hold
+  `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` or `TRIGGER` on it (gate F).
+- From V25 (share-partitioned T1, a PROPOSED ADR-035 amendment that every
+  environment but `lab` refuses), `storage_partition_bound` is written only by
+  the operator's pool reserve, which records it whatever the switch says. The
+  ingestion role holds `SELECT` on it and `EXECUTE` on the invoker function
+  `storage_partition_within_bound()`; no application role may hold `INSERT`,
+  `UPDATE`, `DELETE` or `TRUNCATE` on it (gate F). Its two definer trigger
+  functions are executable by nobody (`REVOKE ... FROM PUBLIC`). Also under
+  mode a: every write to the share tables, the plan or the bound takes the
+  `(35, 1)` admission lock and runs only under READ COMMITTED, and nodes
+  record `storage_node.admission_locking` (activation gate L).
+- **Ops precondition for `COHORT_PARTITIONED` (lab only today):** only the
+  mail edge or trusted test clients may reach ingestion's SMTP port;
+  `TESTINBOX_SMTP_BIND` stays loopback or internal. The application cannot check
+  networking: Ops verifies it from the rendered compose and on the host
+  (`ss -ltnp`) and records it with that environment's evidence (PROPOSED note,
+  "Ops precondition").
 - Both deployables keep a column grant for the refusal record:
   - `INSERT (inbox_id, workspace_id, refusal_count, last_refusal_at, last_refusal_reason)`
     and `UPDATE (refusal_count, last_refusal_at, last_refusal_reason)` on
@@ -289,7 +311,9 @@ The defaults are the ADR-035 values, and nothing needs to set them.
   a rolling deploy that overlaps two gateways declares 2, so H doubles),
   `TESTINBOX_STORAGE_INBOX_SHARE`, the dedicated filesystem's declarations
   (`TESTINBOX_STORAGE_FS_*`: block size *B*, *O_max* from the qualification
-  record, *G_F*, *D_budget*, *M*, *R_ops*, *C_fs*, *I_fs*, *A_obs*; they must
+  record, *G_F*, *D_budget*, *M* (production: `TESTINBOX_STORAGE_FS_METADATA_BUDGET_BYTES=1073741824`, 1 GiB, by the
+  owner's decision of 2026-11-05 subject to Ops' capacity proof, which passes; the staging example stays at 256 MiB),
+  *R_ops*, *C_fs*, *I_fs*, *A_obs*; they must
   satisfy `G_F + D_budget + P_F + M + R_ops ≤ C_fs` (with *P_F* the probe budget, and the monitor role and *A_obs* declared too), `R_ops ≥ max(5 % of C_fs, 2 GiB)`,
   one inode per block, and `H_F < G_F`; filesystem-containment contract,
   ADR-035 Amendment 2), and the declared backend identity
@@ -453,7 +477,7 @@ rehearsal keep automatic creation because the store there is theirs.
 | `TESTINBOX_ACCOUNTS_ENABLED` (API) | API environment | every `/account/*` route, including the human product aliases, answers `503` (`accounts-unavailable`) with no cookie and no side effect. `/v1`, ingestion and the synthetics are unaffected. This is the kill switch: the console stops working for every participant until it is turned back on. It revokes nothing — stored sessions resume when it returns, and participants' SDK keys keep working throughout |
 | `TESTINBOX_ACCOUNTS_ENABLED` (site) | site environment | the site's proxy answers `503` "Sign-in is unavailable" without calling the API, and the sign-in pages show the invitation-only copy. It must agree with the API's flag |
 | `beta_cohort.admissions_open` | database row `beta-30` | sign-in still works; existing participants keep their workspaces; a new admission answers `CLOSED` and the console offers the waitlist. This is the **admission pause** |
-| `beta_cohort.capacity_ready` | database row `beta-30` | a new admission answers `CAPACITY_UNAVAILABLE` |
+| `beta_cohort.capacity_ready` | database row `beta-30`, set only by the schema owner ([the statement](#setting-capacity_ready-schema-owner-sql)) | a new admission answers `CAPACITY_UNAVAILABLE` |
 | the approved storage pool | `storage_cohort_plan` (V21) + every node's effective declarations | a new admission answers `CAPACITY_UNAVAILABLE` even with both flags true: `capacity_ready` is necessary, never sufficient. The live check requires an approved, matching, non-overcommitted pool reserving all thirty shares, enforced by `ALL`-mode nodes — see [STORAGE-READINESS](../delivery/ti-delivery-002/STORAGE-READINESS.md) for why that is not yet reachable in production |
 
 The thirty-place cap is a database constraint (`beta_admission.place BETWEEN 1
@@ -547,7 +571,10 @@ The controls:
   erased automatically in one transaction, once the content gate passes.
   The spent place, the participant marker, pending-cleanup charges and the
   revoked keys' technical rows are kept. Keep every
-  `event=…` line it prints in a lifecycle log outside the database. After a
+  `event=…` line it prints in the lifecycle log outside the database
+  (`/var/lib/testinbox-lifecycle-log/` on the host, written by Ops'
+  `ti-lifecycle` wrapper; infinity-core `infra/testinbox/PRODUCTION.md` is
+  authoritative for the path). After a
   restore, `restore-reconcile` does NOT read that log: it suspends every
   restored participant, revokes **every** restored managed key (the owner's
   `ops-admin` and the synthetic key included), and the operator then replays the log
@@ -645,8 +672,10 @@ there either: the owner IS the operator authority.
 
 A **partial migration** (V22 applied, V23 not) is **roll forward only**:
 complete V23 with the same candidate. The deletion timer is installed only
-after T5 passes. Post-MD1 grant hardening adds
-`REVOKE ALL ON account_deletion FROM <api role>` to the V22 revoke list.
+after T5 passes. The admission release's `roles.reference.sql` adds
+`REVOKE ALL ON account_deletion FROM <api role>` to the V22 revoke list (the
+runtime API never reads or writes the table;
+`AccountDeletionReferenceGrantsTest` proves it under psql); it changes the reference's SHA-256, which Ops pins with that release.
 
 ### The API environment contract (`TESTINBOX_ACCOUNTS_*`)
 
@@ -783,6 +812,15 @@ not set `capacity_ready` as a substitute for it; the use case ignores it
 without the live pool. Nothing here authorizes activation; every step needs
 the consolidated TI-DELIVERY-002 release decision.
 
+**This holds on every environment, staging and labs included.** The live
+check (`CohortStorage.ready`) returns false unless enforcement is `ALL` and an
+approved, reserved, matching pool exists (ADR-037 §2/§7); nothing relaxes it
+outside production. With storage `OFF`, admission answers
+`CAPACITY_UNAVAILABLE` everywhere. Staged acceptance therefore runs the same
+order on staging as production does: `ALL` with that environment's eligible
+record → `storage-budget reserve` → activation gate G PASS → `capacity_ready`
+→ admit (TI-DELIVERY-002 STATUS, "Staged acceptance").
+
 **When production may start `ALL` (TI-DELIVERY-002b; ADR-035 amendment note
 2026-10-30).** `TESTINBOX_STORAGE_ENFORCEMENT=TENANT_LIMITS` is refused in
 production, always. `ALL` is refused unless, on top of every non-`OFF`
@@ -813,7 +851,41 @@ readiness collaborator sees all of them, `storage-budget check` proves the
 pool, and gate F proves the rest. **Today no shipped record satisfies
 condition 1**, so production cannot start `ALL` with this artifact.
 
+**The gated workload envelope (ADR-035 amendment D, owner decision
+2026-11-06).** In every environment, `ALL` also refuses to start unless:
+- `TESTINBOX_STORAGE_GATED_EXPECTED_RATE` (R_gated) is exactly `31`, the
+  expected rate of the passing gate D evidence;
+- `TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES` (L) is set and at most `1`;
+- the per-workspace INGEST refill is at most 1 copy/s and the burst at most 60;
+- limits are enabled.
+
+These are the owner-approved values, pinned in code. Changing any of them is
+an owner decision plus a new passing gate D, never configuration. Every mode
+refuses a per-inbox INGEST value above the per-workspace one.
+
+**Before a cohort plan exists**, every workspace in the database receives
+mail. So each `ALL` node also holds the database to at most 30 + L
+`workspace` rows. Above that it answers `451` for every event (its activation
+guard, never a per-tenant refusal) until the count is back inside the bound.
+Gate W of `check-storage-activation.sh` blocks `ALL` on the same condition.
+Gate D reads R_gated from every node (`testinbox_storage_gated_expected_rate`)
+and refuses evidence run at another rate.
+
+Pin `TESTINBOX_STORAGE_GATED_EXPECTED_RATE=31` and
+`TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES=1` in `check-testinbox-prod`, so
+the record of what gate D proved cannot drift after activation.
+
+What the limits are, that they govern **incoming** mail only, and how a
+discarded over-budget copy differs from a `451` slot deferral:
+[beta-limits.md](beta-limits.md).
+
 #### The production qualification record Ops must evidence (`adr035-presigned-put-v2`)
+
+*2026-11-05 (ADR-035 amendment note "WS-N1 A1", effective with C1–C6).* For this `production-host` record, E4 passes
+by geometry proof plus bounded measurement: (i)–(vi) of that note, and C1–C6, evidenced on the final filesystem with
+running kernel 6.8.0-147-generic and the boot id unchanged at every step. The census (vi) runs on the E2/E7
+population, because A5 is not used. E10's PASS includes the inode-headroom latch (C4). The ballast windows follow the
+A2 procedure note below.
 
 No record is created, relabelled or promoted by engineering. The existing
 records stay as they are (the laptop record ineligible, the staging record
@@ -836,7 +908,8 @@ on the production host and its recreated dedicated data filesystem:
 | `qualification.scenarios`, `trials`, `lateCommits`, `slowWExecuted`, `slowWMechanism`, `slowWMaxCommitLagAfterCompletedWitnessS`, `cMaxSeconds`, `procedure`, `evidenceReference` | the §9a sweep on the production combination, **including `slow-W`** (dm-delay or cgroup `io.max`), `lateCommits` 0, with the raw evidence committed under `docs/adr/0035-benchmark/qualification/production-<date>/` |
 | `filesystem.uuid`, `type`, `mountOptions`, `mountSource` | the recreated dedicated filesystem (preallocated, `mkfs -i 4096`, isolated; filesystem-evidence.md, "Before `ALL` can pass") |
 | `filesystem.objectOverheadMaxBytes` | the measured *O_max* from E1–E3 |
-| `filesystem.metadataInodesMeasured` | the E7 metadata inode measurement |
+| `filesystem.metadataInodesMeasured`, `metadataInodesScope` | the E7 metadata inode measurement, counted over `.minio.sys` only (scope `minio-sys`; bucket directories are per-object inodes charged by *i_max*, see `docs/dev/filesystem-evidence.md`) |
+| `filesystem.metadataBytesMeasured`, `metadataBytesScope` | the larger of E2's post-drain and E7's peak `metadataBytes`, scope `minio-sys+unattributed` (`.minio.sys` without `.trash`, plus allocations no object is charged for; `scripts/adr035-metadata-accounting.py`). Gate F requires the declared *M* to be at least it. For production *M* is 1 GiB (owner decision 2026-11-05); the generator refuses evidence declaring another value |
 | `filesystem.experiments` | `E1`…`E11` (annex §10: amplification, directory growth, fragmentation, inode ratio, trash accounting, debt release, `.minio.sys` growth, ENOSPC corpus, zero-byte PUT/`STORAGE_FULL` trial incl. case C, monitor latches, restart/deletes/recovery at full), each `"PASS"` with its run output in the evidence directory |
 | `enablementEligible`, `ineligibilityReasons` | `true` and `[]` only when every row above is complete |
 
@@ -853,6 +926,88 @@ record (issue #102), which may not name the production domain or a
 production-named host; how those experiments are run against the production
 combination is an Ops procedure to state in the evidence, not something this
 repository decides.
+
+#### A2: the N1 ballast and qualification procedure (procedure note, 2026-11-05)
+
+*Dated 2026-11-05. Source: #124 comment 6649193963 §3, as clarified by the app answers in #124 comment 6667602147.
+Pointer from ADR-035: amendment note "WS-N1 A2". This is a procedure clarification: it lowers no criterion and
+changes no gate. The N1 condition throughout is running kernel 6.8.0-147-generic, boot id unchanged, checked at
+every step.*
+
+"Stack stopped" applies to ballast windows. E2/E7 run with the stack up and the production monitor observe-only.
+The interlock is Ops code.
+
+1. **Stopped stack per ballast window.** Production MinIO, ingestion, API and workers are stopped. Each window ends
+   inside the 4 h edge-queue lifetime, with an abort deadline. At its end: ballast removed, FIEMAP checked under the
+   #125 rule, gate F re-evaluated, stack restarted, synthetics green.
+2. **Interlock in code.** `testinbox-minio-fs check` and the deploy preflight apply a three-way rule:
+   - **Ballast: always FAIL.** This covers the ballast path, and any fallocated file outside `…/data` and the
+     declared qualification tree. The tool refuses to create ballast while the stack runs.
+   - **The declared E2/E7 qualification tree: WARN only** while all of these hold:
+     - the N1 tooling wrote a declaration at start naming exactly one path `…/n1-qual/qual-<run>`, the run id, the
+       declared `uname -r` and boot id, and an expiry ≤ start + 32 h;
+     - that path is the only foreign entry;
+     - the production monitor is observe-only;
+     - the running kernel and boot id equal the declared ones.
+
+     Past the expiry, or with the declaration missing or mismatched, it is FAIL. The WARN is exported (a textfile
+     metric and a log line), never silent.
+   - **Everything else: FAIL.**
+
+   **Gate F is unchanged.** Its dedicated-mount row (`otherEntriesOnMount: []`) keeps blocking `ALL` while the tree
+   exists, and enforcement stays `OFF` throughout N1. The declaration is removed with the tree (item 8).
+3. **Ballast form.** Plain `fallocate -l` (no punch, no keep-size), one file at a fixed path outside both data
+   directories.
+   - Prerequisites: `discard_max_bytes` = 0, and 0 FIEMAP holes before and after.
+   - Record statvfs and FIEMAP before creation, after creation and after removal.
+   - The evidence names the ballast size per run.
+4. **Recovery by the runbook, not by removing the ballast.**
+   - **Fill-and-recovery runs** (E3, E9, E11, and E5/E6 if they use ballast): the object band is ≥ *R_ops* +
+     *H_F* + a 1 GiB margin = 4,294,967,296 + 506,200,576 + 1,073,741,824 = **5,874,909,696 B**. The margin
+     exceeds `2·M` of the 256 MiB staging *M*, so the metadata latch is never what fires there. E3's band holds a
+     90 % fill, deletes and a refill, five times.
+   - **E4(iv) and E8 are exempt from that minimum.** They are failure-shape measurements driven to ENOSPC through
+     the qualification MinIO, with no TestInbox recovery inside the band. Their band is ≥ the run's declared size
+     (E4(iv) 1 GiB, E8 2 GiB). Items 1 and 3 still apply to them in full, and neither run ever targets production
+     `…/data`.
+5. **Lab monitor and latch configuration per run.** Every app-lab run uses the **production declarations**:
+   `operational_reserve_bytes` 4 GiB and `procs` 2. The lab monitor's configuration hash is recorded per run.
+   E9(C) must be attributable to the breaker with the latch clear before the run. "Reproduce the staging E9 v2
+   configuration" means its procedure and latch shape (the same latch conditions and observation interval), not
+   staging's declared values.
+6. **The production monitor is observe-only** while the E2/E7 population sits on the filesystem.
+7. **Isolation:**
+   - the qualification MinIO has its own credentials and network, with a sibling `…/qual-<run>` data directory,
+     never `…/data`;
+   - the enforcing lab instance has its MinIO data on `c33e14fd`, and its monitor observes that mount and the real
+     image;
+   - the lab database and all other state are **off** the final filesystem;
+   - no production hostnames or credentials;
+   - no registration in the production database;
+   - its record is `platformClass: lab` with the production identity.
+8. **Afterwards:**
+   - scratch trees and the qualification-tree declaration deleted;
+   - `otherEntriesOnMount: []`;
+   - gate F's dedicated-mount, identity and preallocation rows re-evaluated;
+   - production `…/data` unchanged.
+9. **E10's fault goes only into the lab monitor's input** (a decoy image). The production image is never punched,
+   truncated or detached. Verify the production monitor's configuration hash afterwards.
+
+*2026-11-06 (procedure change; #124 comment 6672561295, Q3): a second declared tree for the app lab.* With the stack up,
+the app-lab tree `…/n1-qual/lab-<run>` (lab MinIO data, stall and filler) may be a **second** declared tree. This
+extends item 2's "exactly one path" condition.
+
+- **Its declaration** has the E2/E7 form: one path, the run id, the running kernel and boot id, an expiry within the
+  window cap, and a **byte cap**.
+- **WARN (exported) only while all of these hold:**
+  - the tree stays within its cap;
+  - `f_bavail ≥ 5,874,909,696 B` throughout, so the stack-up filesystem never enters a fill band;
+  - the production monitor is observe-only;
+  - the running kernel and boot id match the declaration;
+  - the two declared trees (E2/E7's and this one) are the only foreign entries.
+- **Fallocated files** inside it use the ballast form. Any fallocated file outside a declared tree is ballast, and
+  always FAILs.
+- **Gate F is unchanged.**
 
 **Adding the record (a later pull request, once the evidence exists):** add
 the JSON file and its line in `adr035-qualification/index.txt`; commit the
@@ -879,6 +1034,58 @@ check's printed `reviewed-file sha256=` equals that file's digest. The run with
 gate G PASS is required evidence before `capacity_ready`. Pass
 `--environment production` on production: gate F then also requires the
 matched record's `platformClass` to be `production-host`.
+
+### Setting `capacity_ready` (schema-owner SQL)
+
+There is no subcommand for `capacity_ready` (TI-DELIVERY-002b D4): the
+`admission` command changes `admissions_open` only, and the runtime API role
+holds nothing on `beta_cohort` but `UPDATE (id)`, which it needs for its row
+lock. The switch is one statement, run with `psql` **as the schema owner** (the
+owner of `beta_cohort`, or a member of it: the `TI_BUDGET_*` credentials), on
+the environment being opened.
+
+**Set it true only after activation gate G PASS** on that environment: the
+activation script run with `--cohort-check-output` and `--cohort-pool-file`
+reported `ACTIVATION READY`, bound to the reviewed pool file's SHA-256, after
+`storage-budget reserve` and `check`. On production it also needs the release
+decision. Then:
+
+```sql
+UPDATE beta_cohort SET capacity_ready = true WHERE id = 'beta-30';
+-- UPDATE 1; then `admission status` prints capacity_ready=true
+```
+
+It is necessary, never sufficient: the live pool check still decides every
+admission. Admissions stay closed until `admission resume --open-beta`.
+Keep the statement's output, its time and the gate G evidence together in the
+activation evidence.
+
+**`storage-budget reserve` and `revoke` require `admissions_open = false`
+and `capacity_ready = false`.** Both take the cohort row lock and refuse
+otherwise ("close admissions and capacity before changing a pool",
+`JdbcCohortBudgets.lockClosed`), with nothing written. `admission pause`
+alone does not permit them. `storage-budget check` is read-only and needs
+neither.
+
+**Set it back to false** — `admission pause` first, then:
+
+```sql
+UPDATE beta_cohort SET capacity_ready = false WHERE id = 'beta-30';
+```
+
+- before any `storage-budget reserve` or `revoke`: a changed legacy share,
+  node inventory, declarations or capacity, or a re-reservation;
+- before leaving `ALL`, and before any rollback that applies the hold-first
+  procedure ([cohort storage](cohort-storage.md#upgrade-restore-and-rollback-boundaries));
+- whenever activation stops passing on that environment (gate G, or any gate
+  of the activation script), until it passes again;
+- when the beta closes.
+
+Existing participants are not affected by either value: it gates new
+admissions only. After a restore, `account-lifecycle restore-reconcile`
+closes both switches itself, and the pool must be reserved again before
+either is reopened. Reopen in the forward order: `reserve` → `check` → gate G
+PASS → `capacity_ready = true` → `admission resume --open-beta`.
 
 ## Promotion and handoff
 
@@ -998,7 +1205,7 @@ leaving the restored database unquarantined.
 
 | backed up | never |
 |---|---|
-| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch`, `storage_clock_episode` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
+| `workspace`, `project`, `api_key`, `exact_address_reservation`, `flyway_schema_history` | `inbox`, `message`, `attachment`, `idempotency_record`, `rate_bucket`, `wait_lease`; the ADR-035 tables `workspace_storage_account`, `storage_global_base` (V24), `inbox_storage`, `storage_delta`, `storage_reservation`, `storage_ambiguity`, `storage_node`, `storage_admission_latch`, `storage_clock_episode` (derived or transient: after a restore `message` is empty, so empty accounting is correct); **all object storage** |
 
 > **Amended by TI-DELIVERY-001 (ADR-036/ADR-037), recorded 2026-10-30.** The
 > table above is the TI-006 set. `deploy/backup/scope.txt` is authoritative and
@@ -1118,12 +1325,34 @@ Boot's standard binders, whose presence the rehearsal asserts:
 | **storage admission latched** (ADR-035) | `testinbox_storage_admission_latched`; `testinbox_storage_late_object_total` | **page**: any late object, or the latch set. Every node refuses mail until an operator clears it (runbook above) |
 | **filesystem observation stale** (TI-STORAGE-006E, observational while `OFF`) | `testinbox_storage_filesystem_observation_age_seconds`; `testinbox_storage_footprint_bytes{kind}` | **alert**: age `< 0` (never observed) or above the declared maximum (proposed 15 min), since only an observation ever lowers the deletion-debt estimate; `kind="deletion_debt"` growing without the age falling means the purge is not being verified |
 | **retention backlog** (TI-STORAGE-006E PR D, paced under `ALL` only) | `testinbox_storage_retention_backlog_seconds` | **alert** above one inbox TTL: physical teardown lags logical expiry (which never waits). Escalate per runbook: raise `D_budget` within I-C, or investigate the purge. Past `testinbox.storage.filesystem.retention-pacing-max-delay` (*T_max*, default 24 h) teardown proceeds anyway and logs `storage_retention_t_max_exceeded` |
+| **MinIO metadata residue** (ADR-035 metadata note, Ops fs-monitor; metadata walk every 5 min, a failed or overrun walk writes no observation) | the monitor's `metadataBytes` = `minio_sys_bytes` + `unattributedBytes`, with its `unattributed.{occupiedGrowth, unoccupiedDirectories, unreferencedDataDirs, strayFiles}` breakdown (`scripts/adr035-metadata-accounting.py`) | **alert** above *M*, and on sustained growth of `occupiedGrowth` + `unoccupiedDirectories` while the object count is flat: ext4 keeps each directory's historical peak, so residue has no declared bound and this alert is its control. Act per **MinIO metadata residue** below; the latch at `2·M` is unchanged |
+| **MinIO bucket missing** (ADR-035 metadata note, Ops fs-monitor) | the metadata walk's `bucketPresent` | **alert** at once on `false`: production pre-provisions the bucket (`create-bucket=false`), so the walk read the wrong path or the bucket is gone. Its metadata figure is not trusted; gate F refuses such evidence. Check the data directory and bucket configuration before anything else |
 | **storage full** (TI-STORAGE-006E) | `testinbox_storage_physical_failure_total{kind="storage_full"}`; `testinbox_storage_breaker_open` | **page**: MinIO answered `507 XMinioStorageFull` or a `500` naming ENOSPC. The node answers `451` to every `DATA` and does NOT recover on a timer or a zero-byte probe (a full filesystem accepts both): it trials one real event only once a filesystem observation that BEGAN AFTER the trip is younger than *A_obs* and shows `avail ≥ R_ops` and at least `R_ops / B` free inodes; each failed trial needs a newer observation. Without a monitor writing observations, only a restart clears it. Runbook: free space (purge `.minio.sys/tmp/.trash`, retention), then let the monitor record an observation |
 | old ambiguity / old RELEASING (ADR-035) | `testinbox_storage_ambiguous_uploads`; `testinbox_storage_reservations{state="releasing"}` | ambiguity older than `T_verify` + 5 min, or `RELEASING` rows older than 1 h: verification or cleanup is stuck (for example, the witness is failing: `testinbox_storage_witness_failed_total`) |
 | physical over-coverage (ADR-035) | `testinbox_storage_physical_listed_bytes` against committed + reserved | `physical_listed > covered + H`: objects exist that nothing accounts for |
 | incomplete multipart (ADR-035) | `testinbox_storage_incomplete_uploads` | `> 0`: TestInbox never starts one; the orphan sweep aborts it and it is a defect to explain |
 | storage clock offset (ADR-035) | `testinbox_storage_clock_offset_seconds` | `abs(offset) > 15 s` (`ε_max / 2`): releases suspend at 30 s |
 | storage ledger backlog (ADR-035) | `testinbox_storage_ledger_unfolded_rows` (every API replica reports the same global figure, so take `max`, never `sum`); `testinbox_storage_ledger_compaction_total{outcome="failed"}` | backlog > 1 000 sustained, or failed compactions with no `ok` in 5 min: compaction is not keeping up, or is failing. T1 reads the backlog on every event, so its cost grows with it. |
+
+**MinIO metadata residue (runbook).** This entry answers the residue alert above. ext4 never shrinks a directory,
+so a `{ws}/` or `{inbox}/` that once held many entries keeps their blocks after the entries are deleted. *M* bounds
+this residue only through the alert: no declared constant does.
+
+1. **Name the class.** Read the monitor's `unattributed` breakdown. Find the largest directories with `find
+   <data>/<bucket> -maxdepth 2 -type d -size +1M -printf '%s %p\n' | sort -n | tail`. A workspace or an inbox
+   directory is residue. `unreferencedDataDirs` or `strayFiles` are crash leftovers to explain, never residue.
+2. **Inbox directories need no action beyond waiting.** MinIO removes an inbox's directory once its last object is
+   deleted, so the residue ends with the inbox's retention.
+3. **Long-lived workspace directories, or residue that keeps *M* above its alert:** compact them in a maintenance
+   window.
+   - Stop MinIO with the admission latch set; that is the documented maintenance state, not a threshold change.
+   - Run `e2fsck -fD` on the unmounted filesystem, which rebuilds and compacts every directory.
+   - Remount, start MinIO, and confirm `metadataBytes` fell.
+   - Recreating a directory under a running MinIO is not an alternative: it races its renames.
+4. **If the residue is structural** (many long-lived workspaces): raising *M* is a reviewed declaration change, under
+   the I-C and cohort checks.
+
+Never raise the `2·M` latch multiplier, disarm the latch, or switch it to alert-only to absorb residue.
 
 The **edge queue-age and deferred-mail alerting** of ADR-035 §12 is an Ops
 prerequisite owned by the mail edge's operators. It is not in this

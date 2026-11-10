@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "recordId": "production-amd64-fake-host-0-2000-01-01",
+  "qualifiedAt": "2000-01-01T11:30:00Z",
+  "minio": {
+    "imageIndexDigest": "sha256:0dcbcf848c93556c7a4d432a4cf45ce5e3fc8238f9f05d9558d9f6ad47a3fba9",
+    "platformMemberDigest": "sha256:fa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4e",
+    "platform": "linux/amd64",
+    "release": "RELEASE.2000-01-01T00-00-00Z",
+    "commitId": "fa4efa4efa4efa4efa4efa4efa4efa4efa4efa4e",
+    "binarySha256": "fa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4e",
+    "mode": "single-node-single-drive",
+    "driveCount": 1,
+    "timeoutEnvironment": {},
+    "timeoutCliFlags": [],
+    "runtimeConfig": {
+      "normalized": "ti-qc-runtime-config-v1",
+      "hash": "sha256:4e738ef5ba8be21480b7d876d8ad0867f47972f723bc35871b650d81ba6a5929"
+    },
+    "storageClassInlineDefaults": "release-defaults",
+    "storageClassInlineDefaultsBasis": "no MINIO_STORAGE_CLASS_* / inline variables in the container environment; single-drive MinIO exposes no storage_class admin subsystem (captured as <unknown-subsystem> in the hashed configuration)"
+  },
+  "host": {
+    "kernelRelease": "0.0.0-fake",
+    "architecture": "x86_64",
+    "filesystemType": "ext4",
+    "mountOptions": "rw,relatime",
+    "device": "ext4 (block size 4096, 16777216 blocks = 16777216 inodes, inode size 256, features: has_journal ext_attr resize_inode dir_index filetype needs_recovery extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum) on /dev/loop9 backed by the preallocated image /var/lib/fake/fake.img (0 FIEMAP hole blocks, discard_max_bytes 0), mounted rw,relatime"
+  },
+  "network": {
+    "directPath": true,
+    "proxy": "none",
+    "tls": false
+  },
+  "uploadImplementationVersion": "adr035-presigned-put-v2",
+  "uploadImplementationNote": "E5, E6, E8-E11 ran the application candidate fa4efa4efa4efa4efa4efa4efa4efa4efa4efa4e (api sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, ingestion sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), whose FencedUploader declares adr035-presigned-put-v2; the §9a sweep and E1-E4/E7 ran the repository harness against MinIO",
+  "qualification": {
+    "platformClass": "production-host",
+    "platform": "fake-host-0 itself (x86_64, kernel 0.0.0-fake); qualification MinIO of member sha256:fa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4e with its data on the final filesystem 00000000-0000-4000-8000-0000000fa4e0",
+    "evidenceReference": "docs/adr/0035-benchmark/qualification/production-2000-01-01/",
+    "procedure": "docs/adr/0035-benchmark/minio-probes/QUALIFICATION.md; qualification/run-slow.sh --mode dm with plan.json, plan3.json and plan-slow.json, each swept after >= 17 min; E1-E11 per ADR-035 Amendment 2 annex §10 and the WS-N1 amendment notes; bundle layout docs/adr/0035-benchmark/qualification/RECORD-CUT.md",
+    "scenarios": [
+      "base-W",
+      "freeze45-W",
+      "slow-dm2000ms-before-W",
+      "slow-dm500ms-W",
+      "v3-freeze45-W"
+    ],
+    "trials": 26,
+    "lateCommits": 0,
+    "slowWExecuted": true,
+    "slowWMechanism": "FAKE dm-delay, write delay 500 ms / 2000 ms",
+    "slowWMaxCommitLagAfterCompletedWitnessS": 2.7,
+    "cMaxSeconds": 900,
+    "experimentArtifact": {
+      "sourceSha": "fa4efa4efa4efa4efa4efa4efa4efa4efa4efa4e",
+      "apiDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ingestionDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "filesystem": {
+    "uuid": "00000000-0000-4000-8000-0000000fa4e0",
+    "type": "ext4",
+    "mountOptions": "rw,relatime",
+    "mountSource": "/var/lib/fake/fake.img",
+    "objectOverheadMaxBytes": 24576,
+    "metadataInodesMeasured": 157,
+    "metadataInodesScope": "minio-sys",
+    "metadataInodesBasis": "E7 on the final filesystem",
+    "inodeCensus": {
+      "listingSha256": "bc44934e2e32d0640144e310a4d3f84d4f2ede828b3f3066eac0febde4ff8f46",
+      "listingBytes": 875,
+      "listingCustody": "held by FAKE Ops off-repo, 0700, retained until 30 days after the record PR merges",
+      "verification": "summary attested by FAKE Ops at 2000-01-01T22:30:00Z (listing not re-verified here)",
+      "takenAt": "2000-01-01T22:00:00Z",
+      "blocklessInodes": 0,
+      "reconciliationGap": 0,
+      "c2Status": {
+        "E2": "literal-deviation-disclosed",
+        "E7": "satisfied"
+      },
+      "disclosures": [
+        "(vi) for E2 was taken after its defined drain; no census preceded it. The drain's trash was largely purged before the census (48 entries remained under `.trash`), so most of it was never counted."
+      ]
+    },
+    "metadataBytesMeasured": 52428800,
+    "metadataBytesScope": "minio-sys+unattributed",
+    "experiments": {
+      "E1": "PASS",
+      "E2": "PASS",
+      "E3": "PASS",
+      "E4": "PASS",
+      "E5": "PASS",
+      "E6": "PASS",
+      "E7": "PASS",
+      "E8": "PASS",
+      "E9": "PASS",
+      "E10": "PASS",
+      "E11": "PASS"
+    }
+  },
+  "enablementEligible": true,
+  "ineligibilityReasons": []
+}
