@@ -105,12 +105,16 @@ jq '{minio: (.minio | {imageIndexDigest, platformMemberDigest, release, commitId
       timeoutCliFlags, runtimeConfig: {hash: .runtimeConfig.hash}, storageClassInlineDefaults}),
      host: (.host | {kernelRelease, filesystemType, mountOptions}), network: (.network | {directPath, proxy}),
      uploadImplementationVersion}' "$REC" > "$TMP/identity.json"
-# The gate run's clock is the fixture state's; only collectedAt moves into its A_obs window.
+# The gate run's clock is the fixture state's; only collectedAt moves into its A_obs window. The fake filesystem has
+# f_files 17,825,792 > f_blocks 16,777,216 (A1 (ii): an inode margin, as on prod), so the observation's inode total is
+# the fake bundle's f_files; every other state member is the shared fixture's.
+STATE="$TMP/state-good.json"
+jq '.observation.inodesTotal = 17825792' "$SCRIPT_DIR/testdata/storage-activation/filesystem/state-good.json" > "$STATE"
 jq '.collectedAt = "2026-10-07T00:00:00Z"' "$TMP/good/bundle/gate-f/filesystem-evidence.json" > "$TMP/evidence.json"
 GOUT="$("$GATE" --mode ALL --environment production --repo "$REPO" --qualification-dir "$Q" \
     --backend-identity "$TMP/identity.json" --qualification-valid-metric 1 \
     --filesystem-evidence "$TMP/evidence.json" \
-    --footprint-state "$SCRIPT_DIR/testdata/storage-activation/filesystem/state-good.json" 2>&1)"
+    --footprint-state "$STATE" 2>&1)"
 if printf '%s\n' "$GOUT" | grep -qE "^Q-qualification[[:space:]]+PASS[[:space:]]+identity equals record $RID.json \(eligible\)"; then
     ok "gate Q matches the generated record and re-derives it eligible"
 else bad "gate Q on the generated record" "$(printf '%s\n' "$GOUT" | grep -E '^(Q|F)-')"; fi
@@ -220,7 +224,7 @@ cp "$XREC" "$QX/$XRID.json"; printf '%s.json\n' "$XRID" > "$QX/index.txt"
 jq '.collectedAt = "2026-10-07T00:00:00Z"' "$TMP/exclok/bundle/gate-f/filesystem-evidence.json" > "$TMP/evx.json"
 XOUT="$("$GATE" --mode ALL --environment production --repo "$REPO" --qualification-dir "$QX" \
     --backend-identity "$TMP/identity.json" --qualification-valid-metric 1 --filesystem-evidence "$TMP/evx.json" \
-    --footprint-state "$SCRIPT_DIR/testdata/storage-activation/filesystem/state-good.json" 2>&1)"
+    --footprint-state "$STATE" 2>&1)"
 if printf '%s\n' "$XOUT" | grep -qE '^F-filesystem[[:space:]]+PASS'; then ok "gate F passes the proven minio-sys-excl-trash record and evidence"
 else bad "gate F on the excl-trash record" "$(printf '%s\n' "$XOUT" | grep -E '^F-')"; fi
 exclbundle xnodrill; edit xnodrill experiments/E10.json 'd["measurements"] = {}'
@@ -399,7 +403,7 @@ refused "A1iii on another venue (it can never be carried) → refuse" a1venue "e
 fresh a1uuid; edit a1uuid "$A1" 'd["filesystemUuid"] = "11111111-0000-4000-8000-000000000000"'
 refused "A1iii on another filesystem uuid → refuse" a1uuid "experiments/A1iii.json: filesystemUuid '11111111-"
 fresh a1geom; edit a1geom "$A1R" "$A1H"'phase("0B")["before"]["files"] = 786432'
-refused "a raw statvfs sample of another filesystem's geometry → refuse" a1geom "phase 0B before: f_files 786432 is not the final filesystem's 16777216"
+refused "a raw statvfs sample of another filesystem's geometry → refuse" a1geom "phase 0B before: f_files 786432 is not the final filesystem's 17825792"
 fresh a1late; edit a1late "$A1" 'd["completedAt"] = "2000-01-01T23:30:00Z"'; edit a1late "$A1R" "$A1H"'summ["completedAt"] = "2000-01-01T23:30:00Z"'
 refused "A1iii completedAt after the post-cleanup baseline → refuse" a1late "an experiment completed 2000-01-01T23:30:00Z, after the post-cleanup baseline"
 fresh a1put; edit a1put "$A1R" "$A1H"'seg("1B", 1, "single")["putFailures"] = 3'
@@ -479,8 +483,9 @@ refused "a listedBelowFirstInode the listing does not bear out (recomputed at cu
 # entries.tmp is RECORD-CUT's: inside tmp, excluding .trash AND the .trash directory entry itself. No tolerance.
 fresh ctmp; edit ctmp census/summary.json "$A1C"'c["entries"]["tmp"] = 2; d["census"]["entries"]["tmp"] = 2'
 refused "a tmp count that includes the .trash directory entry → refuse at cut (no ±2 tolerance)" ctmp "recomputed from --census-raw .*'tmp': 1.* differs from the summary .*'tmp': 2" --census-raw "$TMP/ctmp/census-raw.txt"
-# A1iii's completedAt counts toward qualifiedAt: when it is the latest event, it moves qualifiedAt and the recordId date.
-a1latest() {  # a1latest <name>: A1iii completes after midnight, the latest event, inside a later cleanup baseline
+# The A2a window's completion counts toward qualifiedAt: when it is the latest event, it moves qualifiedAt and the
+# recordId date. E4 holds A1 (iii), its (vi) census and then (iv), so E4 completes last, after A1iii (#12 1701 Q1).
+a1latest() {  # a1latest <name>: A1iii, its census, (iv) and E4 complete after midnight, inside a later cleanup baseline
     fresh "$1"
     sed -i.bak 's/phase=post-cleanup at=2000-01-01T23:00:00Z/phase=post-cleanup at=2000-01-02T06:00:00Z/' "$TMP/$1/bundle/identity/fs-baseline-post-cleanup.txt"
     rm "$TMP/$1/bundle/identity/fs-baseline-post-cleanup.txt.bak"
@@ -489,6 +494,9 @@ a1latest() {  # a1latest <name>: A1iii completes after midnight, the latest even
     # its (vi) census follows it, and is then the latest census (the top level); Ops attests the summary after it
     edit "$1" census/summary.json "$A1C"'c.update(takenAt="2000-01-02T00:35:00Z", experimentCompletedAt="2000-01-02T00:30:00Z"); d["takenAt"] = "2000-01-02T00:35:00Z"; d["attestation"]["at"] = "2000-01-02T00:40:00Z"'
     edit "$1" "$A1" 'd["measurements"]["census"]["takenAt"] = "2000-01-02T00:35:00Z"'
+    # (iv) follows the census, inside E4, which completes last
+    edit "$1" census/summary.json 'next(s for s in d["steps"] if s["step"].startswith("(iv)"))["at"] = "2000-01-02T00:45:00Z"'
+    edit "$1" experiments/E4.json 'd["completedAt"] = "2000-01-02T00:50:00Z"'
 }
 a1latest a1stale
 refused "A1iii completing last moves the recordId: a MANIFEST naming the earlier date → refuse, naming the derived id" a1stale \
@@ -499,9 +507,93 @@ edit a1next gate-f/filesystem-evidence.json 'd["qualificationRecordId"] = "produ
 gen a1next
 NREC="$TMP/a1next/out/production-2000-01-02/record.json"
 if [ "$STATUS" = 0 ] && [ "$(jq -c '[.recordId, .qualifiedAt, .filesystem.inodeBoundedMeasurement.completedAt]' "$NREC")" = \
-     '["production-amd64-fake-host-0-2000-01-02","2000-01-02T00:30:00Z","2000-01-02T00:30:00Z"]' ]; then
-    ok "A1iii completing last sets qualifiedAt and the recordId date (production-amd64-fake-host-0-2000-01-02)"
+     '["production-amd64-fake-host-0-2000-01-02","2000-01-02T00:50:00Z","2000-01-02T00:30:00Z"]' ]; then
+    ok "the A2a window (E4 after A1iii) completing last sets qualifiedAt and the recordId date (production-amd64-fake-host-0-2000-01-02)"
 else bad "A1iii latest → recordId (exit $STATUS)" "$OUT"; fi
+
+# ------------------------------------------- E4 production-host: A1 (ii), (iv), (v) are checked, never taken from the verdict
+# Members agreed with Ops (#12 1701 Q2, 1710). Fake geometry: f_files 17,825,792, f_blocks 16,777,216, e0 30.
+E4=experiments/E4.json
+if [ "$(jq -c '.filesystem.e4ProductionHost | [.e0, .marginInodes, .inodeBranchCanFireEarly, .enospc.at, .labFullScaleEvidence.path]' "$REC")" \
+     = '[30,1048546,false,"2000-01-01T12:25:00Z","docs/adr/0035-benchmark/qualification/lab-e4-fake-2000-01-01/runs/e4-e4.json"]' ]; then
+    ok "the record carries E4's checked (ii)/(iv)/(v) facts: e0, m, the (iv) step time and the committed lab evidence"
+else bad "E4 facts in the record" "$(jq -c .filesystem.e4ProductionHost "$REC")"; fi
+fresh e4bare; edit e4bare "$E4" 'd["measurements"] = {}'
+refused "an E4 that is PASS by its verdict alone, with no (ii)/(iv)/(v) measurements → refuse" e4bare "experiments/E4.json measurements: 'e0' is missing"
+# (ii) margin after baseline
+fresh e4m; edit e4m "$E4" 'd["measurements"]["marginInodes"] += 1'
+refused "an E4 margin that is not f_files − f_blocks − e0 of the qualified geometry → refuse (A1 (ii))" e4m \
+    "marginInodes 1048547 is not f_files − f_blocks − e0 = 17825792 − 16777216 − 30 = 1048546"
+fresh e4zero; edit e4zero "$E4" 'd["measurements"].update(e0=1048576, marginInodes=0, marginRatio=0.0)'
+refused "m = 0 → refuse (A1 (ii): m > 0)" e4zero "A1 \(ii\): m = f_files − f_blocks − e0 = 0, not > 0"
+fresh e4neg0; edit e4neg0 "$E4" 'd["measurements"].update(e0=-1, marginInodes=1048577, marginRatio=round(1048577 / 16777216, 6))'
+refused "a negative e0 → refuse" e4neg0 "e0 -1 is negative"
+fresh e4ratio; edit e4ratio "$E4" 'd["measurements"]["marginRatio"] = 0.07'
+refused "a marginRatio that is not m / f_blocks → refuse" e4ratio "marginRatio 0.07 is not m / f_blocks = 1048546/16777216"
+if PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import importlib.util, json, sys
+s = importlib.util.spec_from_file_location("gen", sys.argv[1]); g = importlib.util.module_from_spec(s); s.loader.exec_module(g)
+x = json.load(open(sys.argv[2]))["filesystem"]
+sys.exit(0 if g.e0_bound(12582912, 11716773) == 266952 == g.e0_bound(x["inodeCount"], x["statvfsBlocks"]) else 1)' \
+    "$GEN" "$REPO/docs/adr/0035-benchmark/qualification/production-expected.json"; then
+    ok "the e0 bound on the committed production geometry is the ADR's 266,952"
+else bad "e0 bound on the production geometry is not 266,952"; fi
+fresh e4bound; edit e4bound "$E4" 'd["measurements"].update(e0=199728, marginInodes=1048576 - 199728, marginRatio=round((1048576 - 199728) / 16777216, 6))'
+gen e4bound
+if [ "$STATUS" = 0 ] && [ "$(jq .filesystem.e4ProductionHost.inodeBranchCanFireEarly "$TMP/e4bound/out/production-2000-01-01/record.json")" = false ]; then
+    ok "e0 at the bound (199,728 on the fake geometry) passes: the inode branch cannot fire early (inclusive)"
+else bad "e0 at the bound (exit $STATUS)" "$OUT"; fi
+fresh e4early; edit e4early "$E4" 'd["measurements"].update(e0=199729, marginInodes=1048576 - 199729, marginRatio=round((1048576 - 199729) / 16777216, 6))'
+refused "e0 above the bound without E5 evaluated with the early inode branch → refuse (A1)" e4early \
+    "e0 199729 exceeds 199728, .*experiments/E5.json measurements.inodeBranchCanFireEarly is None, not true"
+fresh e4early5; edit e4early5 "$E4" 'd["measurements"].update(e0=199729, marginInodes=1048576 - 199729, marginRatio=round((1048576 - 199729) / 16777216, 6))'
+edit e4early5 experiments/E5.json 'd["measurements"]["inodeBranchCanFireEarly"] = True'
+gen e4early5
+if [ "$STATUS" = 0 ] && [ "$(jq .filesystem.e4ProductionHost.inodeBranchCanFireEarly "$TMP/e4early5/out/production-2000-01-01/record.json")" = true ] \
+   && jq -r .filesystem.e4ProductionHost.inodeBranchStatement "$TMP/e4early5/out/production-2000-01-01/record.json" | grep -q "can fire before block exhaustion"; then
+    ok "e0 above the bound with E5 evaluated with it passes, and the record states the inode branch can fire early"
+else bad "e0 above the bound, disclosed (exit $STATUS)" "$OUT"; fi
+# (iv) failure shape
+fresh e4ffree; edit e4ffree "$E4" 'd["measurements"]["enospc"]["ffreeAtEnospc"] = 0'
+refused "f_ffree 0 at ENOSPC → refuse (A1 (iv))" e4ffree "A1 \(iv\): f_ffree 0 at ENOSPC, not > 0"
+fresh e4band; edit e4band "$E4" 'd["measurements"]["enospc"]["bandBytes"] = 1073741823'
+refused "an ENOSPC band below 1 GiB → refuse (A2 item 4)" e4band "the ENOSPC band is 1073741823 bytes, below the declared 1 GiB"
+fresh e4ans; edit e4ans "$E4" 'd["measurements"]["enospc"]["answers"] = {"507": 0, "ENOSPC": 0}'
+refused "no 507/ENOSPC answer recorded → refuse" e4ans "at least one 507/ENOSPC answer"
+fresh e4exh; edit e4exh "$E4" 'd["measurements"]["enospc"]["exhaustedAt"] = "f_blocks"'
+refused "exhaustedAt outside f_bavail/f_bfree → refuse" e4exh "exhaustedAt 'f_blocks' is not one of"
+fresh e4root; edit e4root "$E4" 'd["measurements"]["enospc"]["minioUid"] = 0'
+refused "MinIO as root reporting ENOSPC at f_bavail → refuse" e4root "MinIO ran as uid 0, so ENOSPC comes at f_bfree = 0"
+fresh e4rootok; edit e4rootok "$E4" 'd["measurements"]["enospc"].update(minioUid=0, exhaustedAt="f_bfree")'
+gen e4rootok
+if [ "$STATUS" = 0 ]; then ok "MinIO as root with ENOSPC at f_bfree passes"; else bad "root at f_bfree (exit $STATUS)" "$OUT"; fi
+fresh e4nostep; edit e4nostep census/summary.json 'd["steps"] = [s for s in d["steps"] if not s["step"].startswith("(iv)")]'
+refused "no (iv) step in the census summary → refuse (C3)" e4nostep "steps must hold exactly one '\(iv\) …' step"
+fresh e4stepboot; edit e4stepboot census/summary.json 'next(s for s in d["steps"] if s["step"].startswith("(iv)"))["bootId"] = "other-boot"'
+refused "a (iv) step on another boot → refuse (C3)" e4stepboot "the steps' boot ids .* are not one"
+fresh e4before; edit e4before census/summary.json 'next(s for s in d["steps"] if s["step"].startswith("(iv)"))["at"] = "2000-01-01T12:09:00Z"'
+refused "(iv) before the A1iii (vi) census → refuse (C2: ENOSPC purges the trash)" e4before \
+    "A1 \(iv\) ran at 2000-01-01T12:09:00Z, not after the A1iii \(vi\) census \('2000-01-01T12:10:00Z'\)"
+fresh e4win; edit e4win "$E4" 'd["completedAt"] = "2000-01-01T12:20:00Z"'
+refused "(iv) outside E4's own window → refuse" e4win "the \(iv\) step at 2000-01-01T12:25:00Z is not inside experiments/E4.json startedAt..completedAt"
+fresh e4later; edit e4later census/summary.json 'c = dict(next(x for x in d["censuses"] if x["experiment"] == "E7")); c.update(experiment="E9", takenAt="2000-01-01T12:30:00Z"); d["censuses"].append(c)'
+refused "a census after (iv) → refuse" e4later "census \['E9'\] taken after the \(iv\) step at 2000-01-01T12:25:00Z"
+# (v) the lab full-scale E4, committed in this repository
+LAB=docs/adr/0035-benchmark/qualification/lab-e4-fake-2000-01-01/runs
+fresh e4labmiss; edit e4labmiss "$E4" 'del(d["measurements"]["labFullScaleEvidence"])'
+refused "no lab full-scale E4 citation → refuse (A1 (v))" e4labmiss "measurements: 'labFullScaleEvidence' is missing"
+fresh e4labsha; edit e4labsha "$E4" 'd["measurements"]["labFullScaleEvidence"]["sha256"] = "0" * 64'
+refused "a cited sha256 that is not the committed file's → refuse" e4labsha "A1 \(v\): $LAB/e4-e4.json as committed has sha256 [0-9a-f]{64}, not the cited 0{64}"
+fresh e4labpath; edit e4labpath "$E4" 'd["measurements"]["labFullScaleEvidence"]["path"] = "docs/elsewhere/e4-e4.json"'
+refused "a lab citation outside qualification/lab-e4-* → refuse" e4labpath "path 'docs/elsewhere/e4-e4.json' is not a repository path under docs/adr/0035-benchmark/qualification/lab-e4-"
+fresh e4labdot; edit e4labdot "$E4" 'd["measurements"]["labFullScaleEvidence"]["path"] = "docs/adr/0035-benchmark/qualification/lab-e4-x/../../../../../etc/passwd"'
+refused "a lab citation that escapes the evidence directory → refuse" e4labdot "is not a repository path under"
+fresh e4labwt
+cp "$TMP/e4labwt/repo/$LAB/e4-e4.json" "$TMP/e4labwt/repo/$LAB/e4-uncommitted.json"
+edit e4labwt "$E4" 'd["measurements"]["labFullScaleEvidence"]["path"] = d["measurements"]["labFullScaleEvidence"]["path"].replace("e4-e4.json", "e4-uncommitted.json")'
+refused "a lab file in the working tree but not committed → refuse (A1 (v): committed)" e4labwt "A1 \(v\): $LAB/e4-uncommitted.json is not committed at the HEAD"
+fresh e4nogit; rm -rf "$TMP/e4nogit/repo/.git"
+refused "a repository that is not a git work tree cannot prove the lab evidence committed → refuse" e4nogit "A1 \(v\): $LAB/e4-e4.json is not committed at the HEAD"
 
 # ------------------------------------------------------------------- E7 carried (W3 A5): both outcomes
 fresh carry --e7 carried

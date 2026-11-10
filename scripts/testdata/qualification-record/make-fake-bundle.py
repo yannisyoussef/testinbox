@@ -10,7 +10,7 @@ writes <out-dir>/bundle/ (with SHA256SUMS), <out-dir>/census-raw.txt (the (vi) r
 holds it off-repo), <out-dir>/expected.json and <out-dir>/repo/ (a minimal repository
 root: StorageProtocol.kt and an ADR-035 text that, with --e7 carried, contains the fake amendment note).
 """
-import argparse, hashlib, json, os, shutil
+import argparse, hashlib, json, os, shutil, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REAL_REPO = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
@@ -24,7 +24,13 @@ COMMIT = "fa4e" * 10
 VERSION = "2000-01-01T00:00:00Z"
 RELEASE = "RELEASE.2000-01-01T00-00-00Z"
 IMAGE = "/var/lib/fake/fake.img"
-GEOM = "16777216"  # = the gate F fixture's statvfs, so the real gate F can evaluate the fake record
+GEOM = "16777216"  # statvfs f_blocks = the gate F fixture's, so the real gate F can evaluate the fake record
+# The image's block count = inode count (mkfs -i 4096, as on prod); f_blocks is below it by the ext4 overhead, so
+# f_files − f_blocks is the A1 (ii) margin before baseline (prod: 866,139). FAKE: 1,048,576.
+INODES = "17825792"
+E4_E0 = 30  # FAKE baseline e0 on a fresh filesystem
+LAB_E4_REL = "docs/adr/0035-benchmark/qualification/lab-e4-fake-2000-01-01/runs/e4-e4.json"
+LAB_E4_BYTES = b'{"FAKE": "lab full-scale E4 run output", "PASS_inodes_remain_when_blocks_exhausted": true}\n'
 FEATURES = "has_journal ext_attr resize_inode dir_index filetype needs_recovery extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum"
 CAND = {"sourceSha": "fa4e" * 10, "apiDigest": "sha256:" + "a" * 64, "ingestionDigest": "sha256:" + "b" * 64}
 AMENDMENT = "Amendment note (2000-01-01, FAKE-E7-CARRY)"
@@ -42,8 +48,8 @@ def w(root, rel, content):
 def baseline(phase, at):
     kv = [("kernel", KERNEL), ("arch", "x86_64"), ("mount.source", "/dev/loop9"), ("mount.fstype", "ext4"),
           ("mount.options", "rw,relatime"), ("loop.backing", IMAGE), ("loop.discard_max_bytes", "0"), ("fs.uuid", UUID),
-          ("fs.block_count", GEOM), ("fs.inode_count", GEOM), ("fs.block_size", "4096"), ("fs.inode_size", "256"),
-          ("fs.features", FEATURES), ("statvfs.frsize", "4096"), ("statvfs.blocks", GEOM), ("statvfs.files", GEOM),
+          ("fs.block_count", INODES), ("fs.inode_count", INODES), ("fs.block_size", "4096"), ("fs.inode_size", "256"),
+          ("fs.features", FEATURES), ("statvfs.frsize", "4096"), ("statvfs.blocks", GEOM), ("statvfs.files", INODES),
           ("image.hole_blocks", "0"), ("mount.other_entries", "none")]
     return (f"# n1-fs-baseline phase={phase} at={at} host={HOST}\n"
             + "".join(f"     {k}={v}\nOK   {k}: fake\n" for k, v in kv) + "# verdict OK\n")
@@ -79,6 +85,16 @@ def experiment(n, e7_mode):
          "measurements": {}, "rawFiles": [f"experiments/E{n}/run.log"] + ([f"experiments/E{n}/a1vi-census.txt"] if n in (2, 7) else [])}
     if n in (1, 2, 3):
         e["measurements"] = {"oMaxBytes": 24576, "worstObjectOverheadBytes": 20000 + n}
+    if n == 4:
+        # E4 production-host (ADR-035 A1): (i)/(ii) read-only before A1 (iii), the (vi) census at 12:10, the (iv) ENOSPC
+        # run at 12:25 (a census summary step; after a census at the +15 min limit, 12:21); the members agreed with Ops (#12 1701, 1710).
+        e["startedAt"], e["completedAt"] = "2000-01-01T11:50:00Z", "2000-01-01T12:40:00Z"
+        m = int(INODES) - int(GEOM) - E4_E0
+        e["measurements"] = {
+            "e0": E4_E0, "marginInodes": m, "marginRatio": round(m / int(GEOM), 6),
+            "enospc": {"ffreeAtEnospc": 30530, "exhaustedAt": "f_bavail", "answers": {"507": 827, "ENOSPC": 0},
+                       "minioUid": 1000, "ballastBytes": 68719476736 - 1073741824, "bandBytes": 1073741824},
+            "labFullScaleEvidence": {"path": LAB_E4_REL, "sha256": hashlib.sha256(LAB_E4_BYTES).hexdigest()}}
     if n == 2:
         e["measurements"].update(metadataBytesMeasured=41943040, metadataBytesScope="minio-sys+unattributed")
     if n == 7:
@@ -114,7 +130,7 @@ def a1iii(boot, census):
     raw.eml + 1 000 attachment-layout objects per size; the 0 B / 1 B attachment messages' raw.eml (446) are written in
     the 2-512 B phase. The statvfs figures are FAKE and chosen so every ratio is < 1. It runs last (12:00-12:06), as
     window N1-A2 does, and `census` is its own (vi) census as the bundle names it (measurements.census)."""
-    st = {"files": int(GEOM), "ffree": int(GEOM) - 40, "blocks": int(GEOM), "bfree": int(GEOM) - 5000,
+    st = {"files": int(INODES), "ffree": int(INODES) - 40, "blocks": int(GEOM), "bfree": int(GEOM) - 5000,
           "bavail": int(GEOM) - 5000, "frsize": 4096}
     clock = [12 * 3600]  # 12:00:00, one sample every 5 s
 
@@ -213,7 +229,7 @@ def main():
     w(root, "identity/fs-baseline-post-reboot.txt", baseline("post-reboot", "2000-01-01T00:00:00Z"))
     w(root, "identity/fs-baseline-post-cleanup.txt", baseline("post-cleanup", "2000-01-01T23:00:00Z"))
     w(root, "identity/dumpe2fs-h.txt", f"Filesystem UUID:          {UUID}\nFilesystem features:      {FEATURES}\n"
-                                       f"Block count:              {GEOM}\nInode count:              {GEOM}\n"
+                                       f"Block count:              {INODES}\nInode count:              {INODES}\n"
                                        "Block size:               4096\nInode size:               256\n"
                                        "First inode:              11\n")
     w(root, "identity/itable-zeroed.txt", "FAKE explanation of the itable_zeroed group count.\n")
@@ -313,7 +329,9 @@ def main():
         "census": {"distinctInodes": 17, "blocklessInodes": 0, "listedBelowFirstInode": 1, "entries": dict(latest["entries"])},
         "reconciliation": {"inodesUsed": 26, "inodesBelowFirstInode": 10},
         "steps": [{"step": f"(vi) after {c['experiment']}", "at": c["takenAt"], "kernelRelease": KERNEL, "bootId": boot,
-                   "filesystemUuid": UUID} for c in censuses],
+                   "filesystemUuid": UUID} for c in censuses]
+                 + [{"step": "(iv) ENOSPC run in the 1 GiB ballast band", "at": "2000-01-01T12:25:00Z", "kernelRelease": KERNEL,
+                     "bootId": boot, "filesystemUuid": UUID}],
         "censuses": censuses,
         "attestation": {"by": "FAKE Ops", "at": "2000-01-01T22:30:00Z", "listingSha256": lsha}})
     # Gate F evidence: the repository's gate F fixture with the fake filesystem and this record id.
@@ -322,6 +340,7 @@ def main():
     ev["filesystem"] = {"uuid": UUID, "type": "ext4", "mountOptions": "rw,relatime", "mountSource": IMAGE}
     ev["preallocation"]["holeBytes"] = 0
     ev["otherEntriesOnMount"] = []
+    ev["statvfs"]["files"] = int(INODES)
     ev["declared"]["metadataBudgetBytes"] = 1073741824  # the production M (owner decision 2026-11-05)
     w(root, "gate-f/filesystem-evidence.json", ev)
     with open(os.path.join(root, "SHA256SUMS"), "w") as f:
@@ -338,13 +357,23 @@ def main():
                   "driveCount": 1, "timeoutEnvironment": {}, "timeoutCliFlags": [], "runtimeConfigHash": CFG_HASH,
                   "storageClassInlineDefaults": "release-defaults"},
         "filesystem": {"uuid": UUID, "type": "ext4", "mountOptions": "rw,relatime", "mountSource": IMAGE, "blockSize": 4096,
-                       "blockCount": int(GEOM), "inodeCount": int(GEOM), "inodeSize": 256, "statvfsBlocks": int(GEOM), "features": FEATURES},
+                       "blockCount": int(INODES), "inodeCount": int(INODES), "inodeSize": 256, "statvfsBlocks": int(GEOM), "features": FEATURES},
         "network": {"directPath": True, "proxy": "none", "tls": False},
         "declared": {"metadataBudgetBytes": 1073741824}})
     rel_proto = "backend/application/src/main/kotlin/email/testinbox/application/storage/StorageProtocol.kt"
     rel_adr = "docs/adr/0035-physical-storage-bound-at-ingest.md"
     w(os.path.join(out, "repo"), rel_proto, open(os.path.join(REAL_REPO, rel_proto)).read())
     w(os.path.join(out, "repo"), rel_adr, "# FAKE ADR-035 text\n" + (f"\n## {AMENDMENT}\n" if a.e7 == "carried" else ""))
+    # A1 (v): the lab full-scale E4, COMMITTED in the (fake) repository, as the real one is under lab-e4-*/.
+    lab = os.path.join(out, "repo", LAB_E4_REL)
+    os.makedirs(os.path.dirname(lab), exist_ok=True)
+    with open(lab, "wb") as f:
+        f.write(LAB_E4_BYTES)
+    git = ["git", "-C", os.path.join(out, "repo"), "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+           "-c", "user.name=FAKE", "-c", "user.email=fake@example.invalid"]
+    env = dict(os.environ, GIT_AUTHOR_DATE="2000-01-01T00:00:00Z", GIT_COMMITTER_DATE="2000-01-01T00:00:00Z")
+    for cmd in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "FAKE repository"]):
+        subprocess.run(git + cmd, check=True, env=env, stdout=subprocess.DEVNULL)
 
 
 if __name__ == "__main__":

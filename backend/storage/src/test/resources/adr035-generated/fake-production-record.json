@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "recordId": "production-amd64-fake-host-0-2000-01-01",
-  "qualifiedAt": "2000-01-01T12:06:00Z",
+  "qualifiedAt": "2000-01-01T12:40:00Z",
   "minio": {
     "imageIndexDigest": "sha256:0dcbcf848c93556c7a4d432a4cf45ce5e3fc8238f9f05d9558d9f6ad47a3fba9",
     "platformMemberDigest": "sha256:fa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4efa4e",
@@ -25,7 +25,7 @@
     "architecture": "x86_64",
     "filesystemType": "ext4",
     "mountOptions": "rw,relatime",
-    "device": "ext4 (block size 4096, 16777216 blocks = 16777216 inodes, inode size 256, features: has_journal ext_attr resize_inode dir_index filetype needs_recovery extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum) on /dev/loop9 backed by the preallocated image /var/lib/fake/fake.img (0 FIEMAP hole blocks, discard_max_bytes 0), mounted rw,relatime"
+    "device": "ext4 (block size 4096, 17825792 blocks = 17825792 inodes, inode size 256, features: has_journal ext_attr resize_inode dir_index filetype needs_recovery extent 64bit flex_bg sparse_super large_file huge_file dir_nlink extra_isize metadata_csum) on /dev/loop9 backed by the preallocated image /var/lib/fake/fake.img (0 FIEMAP hole blocks, discard_max_bytes 0), mounted rw,relatime"
   },
   "network": {
     "directPath": true,
@@ -116,6 +116,30 @@
         "ratio": 0.983171
       },
       "basis": "A1 (iii) on the final filesystem, re-judged from the harness's raw statvfs pairs: Δ(f_files − f_ffree) <= Δ(f_blocks − f_bfree), in blocks of f_frsize, in every phase (one per C1 class), every layout within each phase, every layout over the run and overall; deferred raw.eml, as every phase record states: \"for attachment-layout messages in the 0 B and 1 B phases, the message's own raw.eml is written and accounted in the 2–512 B phase\""
+    },
+    "e4ProductionHost": {
+      "e0": 30,
+      "marginInodes": 1048546,
+      "marginRatio": 0.062498,
+      "inodeBranchCanFireEarly": false,
+      "inodeBranchStatement": "e0 30 <= 199728: FreeInodes/UsedInodes >= m / (f_blocks + e0) >= 0.05 before block exhaustion, so MinIO's diskAlmostFilled() inode branch cannot fire early (ADR-035 A1)",
+      "enospc": {
+        "ffreeAtEnospc": 30530,
+        "exhaustedAt": "f_bavail",
+        "answers": {
+          "507": 827,
+          "ENOSPC": 0
+        },
+        "minioUid": 1000,
+        "ballastBytes": 67645734912,
+        "bandBytes": 1073741824,
+        "at": "2000-01-01T12:25:00Z"
+      },
+      "labFullScaleEvidence": {
+        "path": "docs/adr/0035-benchmark/qualification/lab-e4-fake-2000-01-01/runs/e4-e4.json",
+        "sha256": "d4330b2dc8528b90b23ca02b4bf71ba7265f92ab1bc6c99de812fd9a38510590"
+      },
+      "basis": "ADR-035 A1 on the final filesystem: (ii) m = f_files − f_blocks − e0 on the qualified geometry; (iv) the bounded ENOSPC run after the A1iii (vi) census, f_ffree > 0 at ENOSPC; (v) the lab full-scale E4 committed in this repository, sha256-bound"
     },
     "metadataBytesMeasured": 52428800,
     "metadataBytesScope": "minio-sys+unattributed",

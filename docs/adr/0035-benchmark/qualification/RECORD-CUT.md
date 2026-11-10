@@ -17,7 +17,7 @@ The tools:
 |---|---|
 | `scripts/build-qualification-record.py` | the offline generator: verifies the bundle's `SHA256SUMS` first, then builds the record, `PROVENANCE.md` and the evidence copy; refuses (exit 1, nothing written) on any gap |
 | `docs/adr/0035-benchmark/qualification/production-expected.json` | the **FIXED** values (below). Not a record, never shipped. A bundle that measures anything else is refused |
-| `scripts/build-qualification-record.test.sh` | 131 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
+| `scripts/build-qualification-record.test.sh` | 161 cases on a plainly fake bundle (`scripts/testdata/qualification-record/make-fake-bundle.py`), including the real gate Q and gate F with `--environment production`, and the §9a evaluator reproducing the shipped staging record from its raw corpus |
 | `backend/storage/src/test/.../GeneratedQualificationRecordTest.kt` | the generator's output on the fake bundle (golden file, byte-compared by the shell test) loads through the real `QualificationRecords.parse`, is eligible and has no production gap |
 
 ## Value status
@@ -164,6 +164,34 @@ Experiment file (`testinbox.n1-experiment/1`):
   drain) and E7 (peak over every sample) each carry `metadataBytesMeasured`, the `metadataBytes` of
   `scripts/adr035-metadata-accounting.py`, and `metadataBytesScope: "minio-sys+unattributed"`.
   Ops may add any other figure.
+- **E4 (production-host, ADR-035 A1)** carries the (ii), (iv) and (v) measurements below; its `verdict` alone proves
+  none of them (#12 notes 1701 Q2, 1710). (iii) is `experiments/A1iii.json` and (vi) the census, both re-judged.
+
+  ```json
+  "measurements": {
+    "e0": 30, "marginInodes": 866109, "marginRatio": 0.07392,
+    "enospc": {"ffreeAtEnospc": 30530, "exhaustedAt": "f_bavail", "answers": {"507": 827, "ENOSPC": 0},
+               "minioUid": 1000, "ballastBytes": 0, "bandBytes": 1073741824},
+    "labFullScaleEvidence": {"path": "docs/adr/0035-benchmark/qualification/lab-e4-k147-2026-10-19/runs/e4-e4.json",
+                             "sha256": "<64 hex of that committed file>"}
+  }
+  ```
+
+  - (ii) `marginInodes` must equal f_files − f_blocks − `e0` of the qualified geometry (`production-expected.json`
+    `inodeCount`, `statvfsBlocks`; 866,139 − e0 on prod-gra-01), be > 0, and `marginRatio` = m / f_blocks (±1e-6).
+    `e0` above 266,952 (the largest e0 for which m / (f_blocks + e0) ≥ 0.05) means MinIO's `diskAlmostFilled()`
+    inode branch can fire early: the record then says so, and **E5** must carry
+    `measurements.inodeBranchCanFireEarly: true` (E5 evaluated with it), or the build is refused.
+  - (iv) `ffreeAtEnospc` > 0; `exhaustedAt` is `f_bavail`, or `f_bfree` exactly when `minioUid` is 0 (root uses the
+    reserved blocks); `bandBytes` ≥ 1 GiB; at least one 507/ENOSPC answer. `census/summary.json` `steps` holds
+    exactly one step whose `step` starts with `(iv)`, with the C3 kernel, boot id and uuid, inside E4's
+    `startedAt`..`completedAt`, **after** the A1iii (vi) census, and no census is taken after it (ENOSPC switches
+    MinIO's trash to immediate purge, C2). E4 therefore completes after A1iii.
+  - (v) `labFullScaleEvidence.path` is a file **committed at the repository's HEAD** under
+    `docs/adr/0035-benchmark/qualification/lab-e4-*/`, and `sha256` is that committed file's. The lab full-scale E4
+    (006C k147 phase A, 2026-10-19) is committed at `docs/adr/0035-benchmark/qualification/lab-e4-k147-2026-10-19/`
+    (`runs/e4-e4.json`, `runs/e4-identity.txt`, `logs/e4.log`, their `SHA256SUMS` lines, a README), as the 006C
+    staging corpus is at `staging-2026-10-08/`.
 - **Optional members** (#124 comment 6672561295, Q9):
   - `problems`: a list of what went wrong. A file whose `verdict` is `PASS` while `problems` is present and
     non-empty is **refused**.

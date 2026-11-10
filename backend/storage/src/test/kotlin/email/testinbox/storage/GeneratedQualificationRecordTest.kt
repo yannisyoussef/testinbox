@@ -26,8 +26,9 @@ class GeneratedQualificationRecordTest {
         val record = QualificationRecords.parse(json, "fake-production-record.json")
         record.platformClass shouldBe QualificationRecord.PRODUCTION_PLATFORM_CLASS
         record.uploadImplementationVersion shouldBe StorageProtocol.UPLOAD_IMPLEMENTATION_VERSION
-        // A1 (iii) completes last in the fake bundle (as window N1-A2 does), so its completedAt is qualifiedAt.
-        record.qualifiedAt shouldBe "2000-01-01T12:06:00Z"
+        // E4 completes last in the fake bundle (as window N1-A2a does: A1 (iii), its (vi) census, then the (iv) ENOSPC
+        // run), so its completedAt is qualifiedAt.
+        record.qualifiedAt shouldBe "2000-01-01T12:40:00Z"
         record.eligibility().reasons.shouldBeEmpty()
         record.eligibility().eligible shouldBe true
         record.productionGaps().shouldBeEmpty()

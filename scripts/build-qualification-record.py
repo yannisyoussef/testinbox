@@ -32,6 +32,13 @@ It REFUSES (exit 1, nothing written) when
     and stays with Ops off-repo; the bundle carries census/summary.json only, and (vi) is NOT RUN unless the listing
     is verified at cut (--census-raw, sha256 and recomputed counts) or the summary carries an Ops attestation bound to
     its sha256 and dated no earlier than the census it attests (attestation.at >= the top-level takenAt);
+  - E4 (production-host, ADR-035 A1) is taken from its verdict for any of (ii), (iv), (v): experiments/E4.json must
+    carry the agreed measurements (#12 notes 1701/1710) and they are checked here. (ii) m = f_files − f_blocks − e0
+    of the qualified geometry, > 0, with m / f_blocks; e0 above the bound at which MinIO's diskAlmostFilled() inode
+    branch cannot fire early (266,952 on prod-gra-01) is accepted only with E5 evaluated with it. (iv) f_ffree > 0 at
+    ENOSPC, at f_bavail (or f_bfree with MinIO as root), a band >= 1 GiB, >= 1 507/ENOSPC answer, one "(iv)" C3 step
+    inside E4's window AFTER the A1iii (vi) census and no census after it. (v) the lab full-scale E4 is a file
+    committed at the repository's HEAD under docs/adr/0035-benchmark/qualification/lab-e4-*, with the cited sha256;
   - the §9a venue is neither the final filesystem nor Ops' own loop image on / under dm-delay, labelled
     "loop-image-on-root + dm-delay(slow-W)" and equal to the final filesystem in type, features, block and inode size
     (verdict R3).
@@ -473,6 +480,39 @@ A1III_CENSUS_MAX_LAG_S = 15 * 60
 # The app team's YES to Ops' reading of amendment (b) (#124 6699827210), quoted by the record.
 A1III_DEFERRED_RULE = ("deferred raw.eml: the raw.eml of each 0 B / 1 B attachment-layout message is written and "
                        "accounted in the 2-512 B phase, so every object stays inside its phase's class")
+
+
+# ------------------------------------------------- E4 production-host: A1 (ii), (iv), (v) checked, never taken from the verdict
+# ADR-035 "WS-N1 A1" (docs/adr/0035-physical-storage-bound-at-ingest.md): E4 is PASS only when (i)-(vi) and C1-C6
+# are evidenced. (iii) and (vi) are re-judged above; (i) is the dumpe2fs check; (ii), (iv) and (v) are judged here
+# from the members agreed with Ops (#12 notes 1701, 1710).
+E4_REL = "experiments/E4.json"
+E4_MIN_BAND_BYTES = 1 << 30           # A2 item 4: the ENOSPC band is at least the declared 1 GiB
+E4_EXHAUSTED = ("f_bavail", "f_bfree")
+E4_IV_STEP = "(iv)"                   # the census summary's C3 step for the failure-shape run starts with this
+E4_LAB_PREFIX = f"{QUAL_REL}/lab-e4-"  # A1 (v): the lab full-scale E4, committed like the 006C staging corpus
+E5_EARLY_MEMBER = "inodeBranchCanFireEarly"
+E4_EARLY_DISCLOSURE = ("e0 {e0} exceeds {bound}: MinIO's diskAlmostFilled() inode branch (FreeInodes/UsedInodes < 0.05) "
+                       "can fire before block exhaustion on this filesystem, and E5 was evaluated with it (ADR-035 A1)")
+E4_NOT_EARLY = ("e0 {e0} <= {bound}: FreeInodes/UsedInodes >= m / (f_blocks + e0) >= 0.05 before block exhaustion, so "
+                "MinIO's diskAlmostFilled() inode branch cannot fire early (ADR-035 A1)")
+
+
+def e0_bound(f_files, f_blocks):
+    """The largest e0 for which diskAlmostFilled()'s inode branch cannot fire before block exhaustion: ADR-035 A1 needs
+    m / (f_blocks + e0) >= 0.05 with m = f_files - f_blocks - e0, i.e. 21 * e0 <= 20 * f_files - 21 * f_blocks.
+    On prod-gra-01 (f_files 12,582,912, f_blocks 11,716,773) this is the ADR's 266,952."""
+    return (20 * f_files - 21 * f_blocks) // 21
+
+
+def committed_blob(repo, rel):
+    """<rel>'s bytes as committed at <repo>'s HEAD, or None: not a git work tree, or the path is not committed."""
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", repo, "show", f"HEAD:./{rel}"], capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
 
 
 def a1iii_delta(b, a):
@@ -1249,6 +1289,113 @@ def build(bundle_dir, expected, repo, census_raw=None):
     if fe.get("collectedAt") and ISO_RE.match(str(fe.get("collectedAt"))) and qualified_at:
         p.check(iso(fe["collectedAt"]) >= qualified_at, "gate F evidence was collected before the qualification completed")
 
+    # --- E4 production-host: A1 (ii), (iv), (v). The file's own verdict proves none of them (#12 1701 Q2).
+    e4fact = None
+    e4 = exps.get("E4")
+    if e4 is not None:
+        before = len(p.items)
+        w4 = f"{E4_REL} measurements"
+        m4 = e4.get("measurements") if isinstance(e4.get("measurements"), dict) else {}
+        f_files, f_blocks = xf["inodeCount"], xf["statvfsBlocks"]
+        # (ii) Margin after baseline, against the qualified geometry (f_files, f_blocks), never E4.json's own figures.
+        e0 = need(p, m4, "e0", "int", w4)
+        margin = need(p, m4, "marginInodes", "int", w4)
+        ratio = m4.get("marginRatio")
+        ratio_ok = p.check(isinstance(ratio, (int, float)) and not isinstance(ratio, bool),
+                           f"{w4}: 'marginRatio' is missing or not a number (got {ratio!r})")
+        early, bound = None, e0_bound(f_files, f_blocks)
+        if e0 is not None and p.check(e0 >= 0, f"{w4}: e0 {e0} is negative (e0 = max(0, (f_files − f_ffree) − (f_blocks − f_bfree)))"):
+            m_want = f_files - f_blocks - e0
+            p.check(margin is None or margin == m_want,
+                    f"{w4}: marginInodes {margin} is not f_files − f_blocks − e0 = {f_files} − {f_blocks} − {e0} = {m_want} "
+                    "(A1 (ii), on the qualified geometry)")
+            p.check(m_want > 0, f"A1 (ii): m = f_files − f_blocks − e0 = {m_want}, not > 0: at block exhaustion no free inode "
+                                "is guaranteed")
+            p.check(not ratio_ok or abs(ratio - m_want / f_blocks) <= 1e-6,
+                    f"{w4}: marginRatio {ratio} is not m / f_blocks = {m_want}/{f_blocks} = {m_want / f_blocks:.6f}")
+            early = e0 > bound
+            if early:
+                e5m = (exps.get("E5") or {}).get("measurements") or {}
+                p.check(isinstance(e5m, dict) and e5m.get(E5_EARLY_MEMBER) is True,
+                        f"A1 (ii): e0 {e0} exceeds {bound}, so MinIO's diskAlmostFilled() inode branch can fire before block "
+                        f"exhaustion: the record states it and E5 must be evaluated with it, but experiments/E5.json "
+                        f"measurements.{E5_EARLY_MEMBER} is {(e5m or {}).get(E5_EARLY_MEMBER) if isinstance(e5m, dict) else None!r}, not true")
+        # (iv) Failure shape: the bounded ENOSPC run, its answers and MinIO's uid.
+        we = f"{w4}.enospc"
+        en = need(p, m4, "enospc", "dict", w4) or {}
+        ffree = need(p, en, "ffreeAtEnospc", "int", we)
+        p.check(ffree is None or ffree > 0, f"A1 (iv): f_ffree {ffree} at ENOSPC, not > 0: the inodes ran out with the blocks")
+        exh = en.get("exhaustedAt")
+        p.check(exh in E4_EXHAUSTED, f"{we}: exhaustedAt {exh!r} is not one of {list(E4_EXHAUSTED)}")
+        uid = need(p, en, "minioUid", "int", we)
+        if uid is not None and p.check(uid >= 0, f"{we}: minioUid {uid} is negative") and exh in E4_EXHAUSTED:
+            at_uid = "f_bfree" if uid == 0 else "f_bavail"
+            p.check(exh == at_uid, f"A1 (iv): MinIO ran as uid {uid}, so ENOSPC comes at {at_uid} = 0 "
+                                   f"({'root uses the reserved blocks' if uid == 0 else 'only root may use the reserved blocks'}), "
+                                   f"not at {exh} = 0")
+        ballast = need(p, en, "ballastBytes", "int", we)
+        p.check(ballast is None or ballast >= 0, f"{we}: ballastBytes {ballast} is negative")
+        band = need(p, en, "bandBytes", "int", we)
+        p.check(band is None or band >= E4_MIN_BAND_BYTES,
+                f"A1 (iv): the ENOSPC band is {band} bytes, below the declared 1 GiB ({E4_MIN_BAND_BYTES}) the A2 procedure "
+                "requires")
+        ans = need(p, en, "answers", "dict", we) or {}
+        n507, nenospc = ans.get("507"), ans.get("ENOSPC")
+        counts = all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in (n507, nenospc))
+        p.check(counts and n507 + nenospc >= 1,
+                f"A1 (iv): answers {ans!r}: '507' and 'ENOSPC' must both be counts, and at least one 507/ENOSPC answer "
+                "must be recorded (the failure shape itself)")
+        # (iv) is a C3 step, inside E4's window, AFTER the A1iii (vi) census: reaching ENOSPC switches MinIO's trash to
+        # immediate purge (diskAlmostFilled), so a (iv) before the census voids (vi) (C2). No census may follow it.
+        steps = cs.get("steps") if isinstance(cs.get("steps"), list) else []
+        iv = [st for st in steps if isinstance(st, dict) and isinstance(st.get("step"), str) and st["step"].startswith(E4_IV_STEP)]
+        if p.check(len(iv) == 1, f"{CENSUS_SUMMARY}: steps must hold exactly one '{E4_IV_STEP} …' step, the ENOSPC run with "
+                                 f"its kernel, boot id and uuid (C3); found {len(iv)}"):
+            at = iv[0].get("at")
+            if p.check(isinstance(at, str) and bool(ISO_RE.match(at)), f"{CENSUS_SUMMARY}: the (iv) step's at {at!r} is not ISO-8601 UTC"):
+                t = iso(at)
+                a1ct = (a1c or {}).get("takenAt")
+                p.check(isinstance(a1ct, str) and bool(ISO_RE.match(a1ct)) and t > iso(a1ct),
+                        f"A1 (iv) ran at {at}, not after the A1iii (vi) census ({a1ct!r}): ENOSPC makes MinIO purge its "
+                        "trash at once, so the census must come first (C2)")
+                s4, c4 = e4.get("startedAt"), e4.get("completedAt")
+                p.check(isinstance(s4, str) and isinstance(c4, str) and bool(ISO_RE.match(s4)) and bool(ISO_RE.match(c4))
+                        and iso(s4) <= t <= iso(c4),
+                        f"{CENSUS_SUMMARY}: the (iv) step at {at} is not inside {E4_REL} startedAt..completedAt ({s4} → {c4})")
+                per_c = cs.get("censuses") if isinstance(cs.get("censuses"), list) else []
+                later = [c.get("experiment") for c in per_c if isinstance(c, dict) and isinstance(c.get("takenAt"), str)
+                         and ISO_RE.match(c["takenAt"]) and iso(c["takenAt"]) > t]
+                p.check(not later, f"{CENSUS_SUMMARY}: census {later} taken after the (iv) step at {at}: no census may follow "
+                                   "the ENOSPC run, which purges MinIO's trash (C2)")
+        # (v) The lab full-scale E4: committed in this repository, cited by path and sha256.
+        wl = f"{w4}.labFullScaleEvidence"
+        lab = need(p, m4, "labFullScaleEvidence", "dict", w4) or {}
+        lp, lsha = lab.get("path"), lab.get("sha256")
+        path_ok = p.check(isinstance(lp, str) and not os.path.isabs(lp) and os.path.normpath(lp) == lp
+                          and ".." not in lp.split("/") and lp.startswith(E4_LAB_PREFIX),
+                          f"{wl}: path {lp!r} is not a repository path under {E4_LAB_PREFIX}… (A1 (v): committed in this "
+                          "repository and cited by evidence reference)")
+        sha_ok = p.check(isinstance(lsha, str) and bool(HEX64.match(lsha)), f"{wl}: sha256 {lsha!r} is not 64 hex")
+        if path_ok and sha_ok:
+            blob = committed_blob(repo, lp)
+            if p.check(blob is not None, f"A1 (v): {lp} is not committed at the HEAD of the repository {repo}: the lab "
+                                         "full-scale E4 must be committed in this repository"):
+                got = hashlib.sha256(blob).hexdigest()
+                p.check(got == lsha, f"A1 (v): {lp} as committed has sha256 {got}, not the cited {lsha}")
+        if len(p.items) == before:
+            e4fact = {
+                "e0": e0, "marginInodes": margin, "marginRatio": ratio, "inodeBranchCanFireEarly": early,
+                "inodeBranchStatement": (E4_EARLY_DISCLOSURE if early else E4_NOT_EARLY).format(e0=e0, bound=bound),
+                "enospc": {"ffreeAtEnospc": ffree, "exhaustedAt": exh, "answers": {"507": n507, "ENOSPC": nenospc},
+                           "minioUid": uid, "ballastBytes": ballast, "bandBytes": band, "at": iv[0]["at"]},
+                "labFullScaleEvidence": {"path": lp, "sha256": lsha},
+                "basis": ("ADR-035 A1 on the final filesystem: (ii) m = f_files − f_blocks − e0 on the qualified geometry; "
+                          "(iv) the bounded ENOSPC run after the A1iii (vi) census, f_ffree > 0 at ENOSPC; (v) the lab "
+                          "full-scale E4 committed in this repository, sha256-bound"),
+            }
+    if e4 is not None and e4fact is None and not p.items:
+        p.add(f"{E4_REL}: A1 (ii)/(iv)/(v) were not judged")  # unreachable: every path to None records a problem
+
     if a1iii is None and not p.items:
         p.add(f"{A1III_REL}: A1 (iii) was not judged")  # unreachable: every path to None records a problem
     p.raise_if_any()
@@ -1335,6 +1482,7 @@ def build(bundle_dir, expected, repo, census_raw=None):
                           "class), every layout within each phase, every layout over the run and overall; "
                           f"deferred raw.eml, as every phase record states: \"{A1III_DESCRIPTION}\""),
             },
+            "e4ProductionHost": e4fact,
             "metadataBytesMeasured": metadata_bytes_max,
             "metadataBytesScope": METADATA_BYTES_SCOPE,
             "experiments": {n: exps[n]["verdict"] for n in EXPERIMENTS},
@@ -1395,6 +1543,14 @@ def build(bundle_dir, expected, repo, census_raw=None):
           f"`{ev}{a1iii_raw}` (its own verdict and figures are checked, never used): every phase, every layout within "
           f"each phase, every layout over the run and overall ≤ 1; ≥ {A1III_MIN_TOTAL} objects, ≥ {A1III_MIN_SMALL} in each "
           f"of 0B and 1B; every object in its phase's class; {A1III_DEFERRED_RULE}")
+    label("`filesystem.e4ProductionHost`",
+          f"e0 {e4fact['e0']}, m {e4fact['marginInodes']} ({e4fact['marginRatio']} of f_blocks); ENOSPC at "
+          f"{e4fact['enospc']['exhaustedAt']} = 0 with f_ffree {e4fact['enospc']['ffreeAtEnospc']}, answers "
+          f"{json.dumps(e4fact['enospc']['answers'])}, MinIO uid {e4fact['enospc']['minioUid']}, band "
+          f"{e4fact['enospc']['bandBytes']} B; lab {e4fact['labFullScaleEvidence']['path']}", PQ,
+          f"`{ev}{E4_REL}` measurements, checked (never its verdict): m against f_files − f_blocks of the qualified "
+          f"geometry; the (iv) step of `{ev}{CENSUS_SUMMARY}` after the A1iii census; the lab evidence as committed at "
+          f"HEAD, sha256 {e4fact['labFullScaleEvidence']['sha256'][:12]}…. {e4fact['inodeBranchStatement']}")
     label("`filesystem.inodeCensus.c2Status`, `disclosures`", json.dumps(census["c2Status"]), DV,
           "per census: `afterDefinedDrain` true gives literal-deviation-disclosed and the exact disclosure, never "
           "satisfied. " + (" ".join(census["disclosures"]) if census["disclosures"] else "No disclosure."))
