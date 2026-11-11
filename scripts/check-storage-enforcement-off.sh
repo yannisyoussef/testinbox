@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ADR-035 §14 phase 2 / §18 gate 6: every committed deployed environment ships
-# with storage enforcement OFF, and so does the code's own default.
+# with storage enforcement OFF, and so does the code's own default. Likewise T1's
+# lock protocol ships GLOBAL (mode a), in every consumer and in the default.
 #
 # WHY THIS EXISTS: `testinbox.storage.enforcement` is configuration on the same
 # digests. Nothing in the build, the image digest or the handoff can tell a
@@ -15,7 +16,13 @@
 # What is scanned: only files a deployed environment actually CONSUMES (Spring
 # application YAML, compose files, the env example, the rehearsal, the
 # workflows) and the two property classes. Prose and ADRs are exempt: they must
-# be free to discuss `enforcement=ALL`.
+# be free to discuss `enforcement=ALL`. Both settings are found however Spring
+# would bind them: any key spelling (case, '-', '_', '.'), a `-D` system
+# property (JAVA_TOOL_OPTIONS, a compose `command:`), a program argument, and a
+# JSON pair as SPRING_APPLICATION_JSON carries it (flat or nested, escaped
+# quotes included). Not covered: a value assembled at run time (a shell variable
+# expanded into JAVA_TOOL_OPTIONS from elsewhere, a mounted file): the startup
+# DeploymentSafety refusal and activation gate L are the defences there.
 #
 # Usage: scripts/check-storage-enforcement-off.sh
 # Fixtures: SCAN_ROOT=<dir> to check a tree other than this repository.
@@ -65,6 +72,38 @@ canonical_enum() {
     printf '%s' "$1" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]'
 }
 
+# setting_hits <file> <key stem regex> <canonical keys, space-separated>
+#   → "lineno<TAB>value" for every assignment to that setting, however spelled.
+# The KEY is matched the way Spring binds it: case ignored and '-', '_' and '.'
+# dropped (relaxed binding), after an optional leading `-D` or `--` (a system
+# property in JAVA_TOOL_OPTIONS or a compose `command:`, a program argument), so
+# `testinbox.storage.admission-locking`, `-Dtestinbox.storage.admission-locking`,
+# `TESTINBOX_STORAGE_ADMISSIONLOCKING` and `admission_locking` are one key.
+# Two forms are read: `key: value` / `key=value`, and a JSON pair `"key": "value"`
+# (escaped quotes included), which is how SPRING_APPLICATION_JSON carries it.
+setting_hits() {
+    local file="$1" stem="$2" keys=" $3 "
+    strip_comments < "$file" | grep -niE "$stem" 2>/dev/null | while IFS= read -r hit; do
+        lineno="${hit%%:*}"
+        line="${hit#*:}"
+        {
+            # Anchored on the key itself, so a key inside a quoted argument is found too.
+            printf '%s\n' "$line" | grep -oiE "[A-Za-z0-9_.-]*${stem}[[:space:]]*[:=][[:space:]]*$VALUE_RE" |
+                sed -E 's/^([^:=]*)[[:space:]]*[:=][[:space:]]*/\1\t/'
+            printf '%s\n' "$line" |
+                grep -oiE "\\\\?\"[A-Za-z0-9_.-]*${stem}\\\\?\"[[:space:]]*:[[:space:]]*\\\\?\"[^\"\\\\]*\\\\?\"" |
+                tr -d '"\\\\' | sed -E 's/[[:space:]]*:[[:space:]]*/\t/'
+        } | while IFS="$(printf '\t')" read -r key value; do
+            key="$(printf '%s' "$key" | sed -E 's/^-+//; s/^D([A-Za-z])/\1/')"
+            # `(pattern)` form: bash 3.2 cannot parse a bare `pattern)` inside $( ).
+            case "$keys" in
+                (*" $(canonical_enum "$key") "*) printf '%s\t%s\n' "$lineno" "$value" ;;
+                (*) ;;
+            esac
+        done
+    done
+}
+
 enforcing_value() {
     local v="$1" literal
     v="$(printf '%s' "$v" | sed -e "s/^[[:space:]]*//" -e "s/^[\"']//" -e "s/[\"'][[:space:],]*$//")"
@@ -86,12 +125,8 @@ findings="$(
     consumers | while IFS= read -r file; do
         [ -n "$file" ] || continue
         rel="${file#"$SCAN_ROOT"/}"
-        strip_comments < "$file" |
-            grep -nE "$KEY_RE" 2>/dev/null |
-            while IFS= read -r hit; do
-                lineno="${hit%%:*}"
-                token="$(printf '%s' "${hit#*:}" | grep -oE "$KEY_RE[[:space:]]*$VALUE_RE" | head -1)"
-                value="$(printf '%s' "$token" | sed -E 's/^[^:=]*[:=][[:space:]]*//')"
+        setting_hits "$file" 'enforcement' "enforcement storageenforcement testinboxstorageenforcement" |
+            while IFS="$(printf '\t')" read -r lineno value; do
                 enforcing_value "$value" &&
                     printf '%s:%s: storage enforcement is set to %s. Enforcement is turned on by Ops after the ADR-035 §14 barrier is proven, never by a committed environment.\n' "$rel" "$lineno" "$value"
             done
@@ -164,7 +199,41 @@ done <<EOF
 $PROPERTY_FILES
 EOF
 
+# T1's lock protocol (testinbox.storage.admission-locking): the share-partitioned
+# T1 is a PROPOSED ADR-035 amendment, authorized for the lab only (owner,
+# 2026-11-05), so no committed consumer may set anything but GLOBAL — in any
+# spelling Spring's lenient enum binding accepts (`cohort-partitioned`,
+# `CohortPartitioned`, `cohort.partitioned`...), and in any `${VAR:-default}` —
+# and the ingestion property default is pinned to GLOBAL.
+# The KEY, too, is matched the way Spring binds it (setting_hits): case, '-', '_',
+# '.', a leading `-D` and JSON (SPRING_APPLICATION_JSON) do not hide it.
+locking_findings="$(
+    consumers | while IFS= read -r file; do
+        [ -n "$file" ] || continue
+        rel="${file#"$SCAN_ROOT"/}"
+        setting_hits "$file" 'admission[-_.]?locking' "admissionlocking storageadmissionlocking testinboxstorageadmissionlocking" |
+            while IFS="$(printf '\t')" read -r lineno value; do
+            literal="$(canonical_enum "$(placeholder_literal "$value")")"
+            case "$literal" in
+                ("" | global) ;;
+                (*) printf '%s:%s: T1 admission locking is set to %s. Only GLOBAL (ADR-035 mode a) may be committed; the share-partitioned T1 is a PROPOSED amendment for the lab only.\n' "$rel" "$lineno" "$value" ;;
+            esac
+        done
+    done
+)"
+[ -z "$locking_findings" ] || { printf '%s\n' "$locking_findings" >&2; status=1; }
+
+LOCKING_PROPERTY="backend/ingestion/src/main/kotlin/email/testinbox/ingestion/config/IngestionProperties.kt"
+if [ -f "$SCAN_ROOT/$LOCKING_PROPERTY" ]; then
+    decl="$(strip_comments < "$SCAN_ROOT/$LOCKING_PROPERTY" | grep -E 'admissionLocking:[[:space:]]*AdmissionLocking[[:space:]]*=' | head -1)"
+    if [ -z "$decl" ]; then
+        finding "$LOCKING_PROPERTY: declares no 'admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL' default"
+    elif ! printf '%s' "$decl" | grep -qE '=[[:space:]]*AdmissionLocking\.GLOBAL([^A-Za-z0-9_]|$)'; then
+        finding "$LOCKING_PROPERTY: the admission-locking default is not GLOBAL:$(printf '%s' "$decl" | sed 's/^[[:space:]]*/ /')"
+    fi
+fi
+
 if [ "$status" -eq 0 ]; then
-    echo "Storage enforcement: $scanned consumer file(s) scanned, no TENANT_LIMITS/ALL assignment; both property defaults are OFF"
+    echo "Storage enforcement: $scanned consumer file(s) scanned, no TENANT_LIMITS/ALL assignment; both property defaults are OFF; admission locking GLOBAL everywhere"
 fi
 exit "$status"

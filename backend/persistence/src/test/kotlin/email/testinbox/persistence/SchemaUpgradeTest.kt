@@ -4,14 +4,21 @@ import email.testinbox.application.deployment.SchemaCompatibility
 import email.testinbox.application.deployment.SchemaVersion
 import email.testinbox.domain.InboxId
 import email.testinbox.domain.WorkspaceId
+import io.kotest.assertions.throwables.shouldThrow
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldContainAll
+import io.kotest.matchers.comparables.shouldBeLessThan
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.flywaydb.core.Flyway
+import org.flywaydb.core.api.FlywayException
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.jdbc.core.simple.JdbcClient
 import org.springframework.jdbc.datasource.SimpleDriverDataSource
+import java.sql.SQLException
+import java.time.Duration
 import java.util.UUID
 import javax.sql.DataSource
 
@@ -219,6 +226,151 @@ class SchemaUpgradeTest : PersistenceIntegrationTest() {
                 "21",
                 "22",
                 "23",
+                "24",
+                "25",
+                "26",
+                "27",
+            )
+    }
+
+    @Test
+    fun `V27 gives the reservations a V26 schema already holds their stored object count and the covering index, and changes no row`() {
+        // Gate D A′: expand-only. The reservations written before it keep every column; object_count is
+        // computed by PostgreSQL from object_keys for them and for every later insert, including an older
+        // artifact's, which does not name the column.
+        val dataSource = freshDatabase()
+        val jdbc = JdbcClient.create(dataSource)
+        flyway(dataSource, target = "26").migrate()
+        val (workspace, inbox, _) = seedV1Data(jdbc)
+
+        fun reserve(keys: String) =
+            jdbc
+                .sql(
+                    """
+                    INSERT INTO storage_reservation (message_id, workspace_id, inbox_id, object_keys, bytes, state, created_at,
+                                                     write_deadline_at, node_id, generation)
+                    VALUES (gen_random_uuid(), ?, ?, string_to_array(?, ','), 10, 'RESERVED', now(), now() + interval '2 minutes', 'n',
+                            gen_random_uuid())
+                    """.trimIndent(),
+                ).params(workspace, inbox, keys)
+                .update()
+        reserve("a")
+        reserve("a,b,c")
+        // object_keys as text: a driver array compares by identity.
+        val columns =
+            "message_id, workspace_id, inbox_id, object_keys::text, bytes, state, created_at, write_deadline_at, node_id, generation"
+        val before = jdbc.sql("SELECT $columns FROM storage_reservation ORDER BY message_id").query().listOfRows()
+
+        flyway(dataSource).migrate()
+
+        jdbc.sql("SELECT $columns FROM storage_reservation ORDER BY message_id").query().listOfRows() shouldBe before
+        reserve("x,y") // the V26-era insert, unchanged
+        jdbc
+            .sql("SELECT count(*) FROM storage_reservation WHERE object_count IS DISTINCT FROM cardinality(object_keys)")
+            .query(Long::class.java)
+            .single() shouldBe 0
+        jdbc
+            .sql("SELECT array_agg(object_count ORDER BY object_count) FROM storage_reservation")
+            .query(String::class.java)
+            .single() shouldBe "{1,2,3}"
+        // Generated: no writer can set it to anything else.
+        runCatching {
+            jdbc.sql("UPDATE storage_reservation SET object_count = 7").update()
+        }.exceptionOrNull().shouldNotBeNull()
+        jdbc
+            .sql(
+                "SELECT is_generated || ':' || generation_expression FROM information_schema.columns WHERE table_name = 'storage_reservation' AND column_name = 'object_count'",
+            ).query(String::class.java)
+            .single() shouldBe "ALWAYS:cardinality(object_keys)"
+        jdbc
+            .sql("SELECT indexdef FROM pg_indexes WHERE tablename = 'storage_reservation' AND indexname = 'ix_storage_reservation_usage'")
+            .query(String::class.java)
+            .single() shouldBe
+            "CREATE INDEX ix_storage_reservation_usage ON public.storage_reservation USING btree (workspace_id) INCLUDE (bytes, object_count)"
+    }
+
+    @Test
+    fun `a V27 attempt blocked by a reader gives up within T1's own lock timeout, leaves V26 intact, and re-runs cleanly`() {
+        // While V27 waits for ACCESS EXCLUSIVE, every later lock request on storage_reservation, T1's
+        // reads included, queues behind it. Its lock_timeout is therefore the longest one attempt can hold
+        // T1, and it must stay under T1's own bound. A failed attempt must roll back whole, with no failed
+        // history row, so the migrator can simply be re-run with the same candidate.
+        val dataSource = freshDatabase()
+        val jdbc = JdbcClient.create(dataSource)
+        flyway(dataSource, target = "26").migrate()
+
+        val failure: Throwable
+        val elapsed: Duration
+        dataSource.connection.use { holder ->
+            holder.autoCommit = false
+            // The weakest lock T1's reads take; it conflicts only with ACCESS EXCLUSIVE.
+            holder.createStatement().use { it.execute("LOCK TABLE storage_reservation IN ACCESS SHARE MODE") }
+            val started = System.nanoTime()
+            failure = shouldThrow<FlywayException> { flyway(dataSource, target = "27").migrate() }
+            elapsed = Duration.ofNanos(System.nanoTime() - started)
+            holder.rollback()
+        }
+
+        generateSequence(failure) { it.cause }
+            .filterIsInstance<SQLException>()
+            .map { it.sqlState }
+            .toList() shouldContain "55P03"
+        elapsed shouldBeLessThan JdbcStorageAdmission.DEFAULT_LOCK_TIMEOUT
+        jdbc
+            .sql("SELECT count(*) FROM flyway_schema_history WHERE version = '27'")
+            .query(Long::class.java)
+            .single() shouldBe 0
+        jdbc
+            .sql(
+                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'storage_reservation' AND column_name = 'object_count'",
+            ).query(Long::class.java)
+            .single() shouldBe 0
+        jdbc
+            .sql("SELECT to_regclass('public.ix_storage_reservation_usage') IS NULL")
+            .query(Boolean::class.java)
+            .single() shouldBe true
+
+        flyway(dataSource, target = "27").migrate()
+
+        jdbc
+            .sql("SELECT success FROM flyway_schema_history WHERE version = '27'")
+            .query(Boolean::class.java)
+            .single() shouldBe true
+        jdbc
+            .sql("SELECT to_regclass('public.ix_storage_reservation_usage') IS NOT NULL")
+            .query(Boolean::class.java)
+            .single() shouldBe true
+    }
+
+    @Test
+    fun `V26 indexes the deltas a V25 schema already holds, by workspace and by inbox, and changes no row`() {
+        // Gate D A2: expand-only. The deltas written before it stay exactly as they were.
+        val dataSource = freshDatabase()
+        val jdbc = JdbcClient.create(dataSource)
+        flyway(dataSource, target = "25").migrate()
+        val (workspace, inbox, _) = seedV1Data(jdbc)
+        jdbc
+            .sql("INSERT INTO storage_delta (workspace_id, inbox_id, bytes, objects) VALUES (?, ?, 7, 1), (?, NULL, -3, 0)")
+            .params(workspace, inbox, workspace)
+            .update()
+        val before =
+            jdbc
+                .sql("SELECT id, workspace_id, inbox_id, bytes, objects FROM storage_delta ORDER BY id")
+                .query()
+                .listOfRows()
+        flyway(dataSource).migrate()
+        jdbc
+            .sql("SELECT id, workspace_id, inbox_id, bytes, objects FROM storage_delta ORDER BY id")
+            .query()
+            .listOfRows() shouldBe before
+        jdbc
+            .sql(
+                "SELECT indexdef FROM pg_indexes WHERE tablename = 'storage_delta' AND indexname LIKE 'ix_storage_delta_%' ORDER BY indexname",
+            ).query(String::class.java)
+            .list() shouldBe
+            listOf(
+                "CREATE INDEX ix_storage_delta_inbox ON public.storage_delta USING btree (inbox_id) INCLUDE (bytes, objects)",
+                "CREATE INDEX ix_storage_delta_workspace ON public.storage_delta USING btree (workspace_id) INCLUDE (bytes, objects)",
             )
     }
 

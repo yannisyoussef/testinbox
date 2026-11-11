@@ -88,6 +88,14 @@ class GuardedIngestHarness(
     private val afterUpload: (ReservedUpload) -> Unit = {},
     /** Runs before the guarded path persists an ambiguity: a throw here is a failed persist. */
     private val beforeAmbiguityRecord: () -> Unit = {},
+    /**
+     * An outcome to answer INSTEAD of uploading, or null to upload. A
+     * reversible "storage unreachable" (`NotStarted`: no connection, no byte
+     * sent), which the one-way `proxy.close()` cannot give.
+     */
+    private val uploadFault: () -> UploadOutcome? = { null },
+    /** Wraps the inbound path's inbox lookups (e.g. to hold an event while it resolves its recipients). */
+    inboxWrapper: (email.testinbox.application.port.InboxRepository) -> email.testinbox.application.port.InboxRepository = { it },
     /** TI-STORAGE-006 §22: the activation guard the guarded path consults before the slot and T1. */
     val activation: email.testinbox.application.storage.activation.ActivationGuard =
         email.testinbox.application.storage.activation
@@ -151,6 +159,7 @@ class GuardedIngestHarness(
     val blobs: BlobStore =
         object : BlobStore by store {
             override fun putReserved(upload: ReservedUpload): UploadOutcome {
+                uploadFault()?.let { return it }
                 fencedWrites += upload.key
                 return store.putReserved(upload).also { afterUpload(upload) }
             }
@@ -221,7 +230,7 @@ class GuardedIngestHarness(
     val messages = JdbcMessageRepository(jdbc)
     val receive =
         ReceiveInboundDelivery(
-            JdbcInboxRepository(jdbc),
+            inboxWrapper(JdbcInboxRepository(jdbc)),
             messages,
             guarded,
             JakartaMimeParser(),

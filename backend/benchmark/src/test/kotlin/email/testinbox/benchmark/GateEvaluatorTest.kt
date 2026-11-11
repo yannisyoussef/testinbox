@@ -1,8 +1,11 @@
 package email.testinbox.benchmark
 
+import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotBeEmpty
+import io.kotest.matchers.doubles.plusOrMinus
+import io.kotest.matchers.doubles.shouldBeLessThanOrEqual
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import org.junit.jupiter.api.Test
@@ -307,6 +310,27 @@ class GateEvaluatorTest {
     }
 
     @Test
+    fun `a gate run on a warmed pool or another maxLifetime is refused as ADR evidence, however well it measured`() {
+        // The review condition of 2026-11-06: gate evidence follows production's pool lifecycle (cold, 30 min maxLifetime).
+        val gateRun = listOf("--jdbc-url", "jdbc:postgresql://db/ti_bench", "--host-class", "staging-vm")
+        evaluator.evaluate(passingMatrix(), AdrConformance.reasons(BenchmarkOptions.parse(gateRun))).verdict shouldBe Verdict.PASS
+
+        val warm = evaluator.evaluate(passingMatrix(), AdrConformance.reasons(BenchmarkOptions.parse(gateRun + "--warm-pool")))
+        warm.verdict shouldBe Verdict.INCOMPLETE
+        warm.incompleteReasons.single() shouldContain "not ADR evidence: --warm-pool"
+        // The criteria and their thresholds are untouched: every one of them still passes on the same numbers.
+        warm.criteria.values.all { it.pass } shouldBe true
+
+        val short =
+            evaluator.evaluate(
+                passingMatrix(),
+                AdrConformance.reasons(BenchmarkOptions.parse(gateRun + listOf("--pool-max-lifetime", "60s"))),
+            )
+        short.verdict shouldBe Verdict.INCOMPLETE
+        short.incompleteReasons.single() shouldContain "not ADR evidence: --pool-max-lifetime PT1M is not production's PT30M"
+    }
+
+    @Test
     fun `an incomplete matrix still reports which criteria it would have failed`() {
         val smoke = listOf(scenario(AdmissionMode.CHOSEN, 1, 50.0, workspaces = 50, deadlocks = 1))
         val verdict = evaluator.evaluate(smoke)
@@ -336,6 +360,180 @@ class GateEvaluatorTest {
         evaluator.evaluate(matrix.mutate(10, rate = 200.0) { it.copy(t1 = latency(51.0)) }).verdict shouldBe Verdict.FAIL
     }
 
+    // --- the measured window (owner decision 2026-11-06, #124 6684712608) -------------------------------
+
+    /**
+     * A CHOSEN scenario over a window of [seconds] at [rate], [failed] events lost and the last
+     * completion [lagMs] after the last due time, with the achieved rate the open-loop scheduler
+     * reports for it: `completed / (span + lag)`, `span = (N − 1) / rate`.
+     */
+    private fun windowed(
+        rate: Double,
+        seconds: Int,
+        lagMs: Double,
+        failed: Int = 0,
+        concurrency: Int = 10,
+    ): ScenarioResult {
+        val n = (rate * seconds).toInt()
+        val completed = n - failed
+        val elapsed = (n - 1) / rate + lagMs / 1_000
+        return scenario(AdmissionMode.CHOSEN, concurrency, rate, achieved = completed / elapsed, scheduled = n)
+            .copy(completedEvents = completed, terminalLagMs = lagMs, durationSeconds = elapsed)
+    }
+
+    /** The largest terminal lag (0.01 ms steps) at which [seconds]' sustained2x reading still passes. */
+    private fun allowanceMs(
+        rate: Double,
+        seconds: Int,
+        failed: Int = 0,
+    ): Double =
+        (0..100_000).map { it / 100.0 }.last {
+            GateEvaluator.sustainedRatio(windowed(rate, seconds, it, failed)) >=
+                GateEvaluator.SUSTAINED_TOLERANCE
+        }
+
+    @Test
+    fun `at a 30 s window the sustained2x reading is today's achieved over offered, to the bit, whatever the lag`() {
+        for (rate in listOf(62.0, 520.0)) {
+            for (failed in listOf(0, 1, 5, 20)) {
+                for (lag in (0..500).map { it.toDouble() }) {
+                    val s = windowed(rate, 30, lag, failed)
+                    GateEvaluator.sustainedRatio(s) shouldBe s.achievedRate / s.offeredRate
+                }
+            }
+        }
+        // Run 3 at 30 s (2R = 62/s), unchanged: 158 ms of terminal lag passes at 0.9953, 204.8 ms fails at 0.9938.
+        GateEvaluator.sustainedRatio(windowed(62.0, 30, 158.0)) shouldBe (1_860 / (1_859 / 62.0 + 0.158)) / 62.0
+        (GateEvaluator.sustainedRatio(windowed(62.0, 30, 158.0)) >= GateEvaluator.SUSTAINED_TOLERANCE) shouldBe true
+        (GateEvaluator.sustainedRatio(windowed(62.0, 30, 204.8)) >= GateEvaluator.SUSTAINED_TOLERANCE) shouldBe false
+    }
+
+    @Test
+    fun `a longer window keeps the 30 s terminal-lag allowance - it does not loosen at 33 s or 60 s`() {
+        for (rate in listOf(62.0, 520.0)) {
+            val thirty = allowanceMs(rate, 30)
+            // Today's 30 s allowance: 30 s × (1/0.995 − 1) + one mean gap, 166.9 ms at 62/s with every event in.
+            if (rate == 62.0) (thirty in 166.8..166.9) shouldBe true
+            for (seconds in listOf(33, 60)) {
+                withClue("rate $rate, $seconds s") {
+                    // Read alone, today's ratio would allow more over the longer window...
+                    val loose = windowed(rate, seconds, thirty + 10.0)
+                    (loose.achievedRate / loose.offeredRate >= GateEvaluator.SUSTAINED_TOLERANCE) shouldBe true
+                    // ...the reading does not: the allowance is the 30 s one, within the 0.01 ms grid.
+                    (GateEvaluator.sustainedRatio(loose) >= GateEvaluator.SUSTAINED_TOLERANCE) shouldBe false
+                    Math.abs(allowanceMs(rate, seconds) - thirty) shouldBeLessThanOrEqual 0.01
+                }
+            }
+            // Lost events are read as a fraction, as today's ratio reads them: the same loss rate over
+            // twice the window leaves the same allowance.
+            Math.abs(allowanceMs(rate, 60, failed = 6) - allowanceMs(rate, 30, failed = 3)) shouldBeLessThanOrEqual 0.01
+        }
+    }
+
+    @Test
+    fun `the reading is never above today's ratio, at any window, lag or loss`() {
+        for (seconds in listOf(10, 30, 31, 33, 45, 60, 120)) {
+            for (lag in listOf(0.0, 5.0, 16.0, 50.0, 150.0, 166.9, 170.0, 300.0, 2_000.0)) {
+                for (failed in listOf(0, 1, 10)) {
+                    val s = windowed(62.0, seconds, lag, failed)
+                    (GateEvaluator.sustainedRatio(s) <= s.achievedRate / s.offeredRate) shouldBe true
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `at R = 31 over 33 s a terminal lag past the 30 s allowance fails sustained2x alone, and inside it passes`() {
+        val evaluator = GateEvaluator(expectedRate = 31.0)
+
+        fun matrix(lagMs: Double) =
+            listOf(31.0, 62.0).flatMap { rate ->
+                GateEvaluator.REQUIRED_CONCURRENCY.flatMap { c ->
+                    listOf(
+                        windowed(rate, 33, if (rate == 62.0 && c == 100) lagMs else 12.0, concurrency = c),
+                        scenario(AdmissionMode.REFERENCE, c, rate, scheduled = (rate * 33).toInt()),
+                    )
+                }
+            }
+        evaluator.evaluate(matrix(160.0)).verdict shouldBe Verdict.PASS
+        val late = evaluator.evaluate(matrix(175.0))
+        late.failsOnly(GateEvaluator.SUSTAINED)
+        // 175 ms over 33 s is 0.99529 read alone, which today's rule would have passed.
+        val alone = windowed(62.0, 33, 175.0, concurrency = 100)
+        (alone.achievedRate / alone.offeredRate >= GateEvaluator.SUSTAINED_TOLERANCE) shouldBe true
+        late.criteria.getValue(GateEvaluator.SUSTAINED).threshold shouldContain "30 s window"
+    }
+
+    /**
+     * The closed beta's matrix (R = 31, 2R = 62) over a window of [seconds], every
+     * scenario completing every event with an 8 ms terminal lag, except the 2R c100
+     * CHOSEN scenario, whose terminal lag is [lagMs] and which completes all but
+     * [missing] events. The achieved rate is the one the open loop reports:
+     * completed / ((N - 1) / rate + lag).
+     */
+    private fun betaWindow(
+        seconds: Int,
+        lagMs: Double,
+        missing: Int = 0,
+    ): List<ScenarioResult> =
+        listOf(31.0, 62.0).flatMap { rate ->
+            GateEvaluator.REQUIRED_CONCURRENCY.flatMap { c ->
+                listOf(AdmissionMode.CHOSEN, AdmissionMode.REFERENCE).map { mode ->
+                    val events = Math.floor(rate * seconds).toInt()
+                    val target = mode == AdmissionMode.CHOSEN && c == 100 && rate == 62.0
+                    val lag = if (target) lagMs else 8.0
+                    val completed = events - if (target) missing else 0
+                    scenario(mode, c, rate, scheduled = events).copy(
+                        completedEvents = completed,
+                        terminalLagMs = lag,
+                        achievedRate = completed / ((events - 1) / rate + lag / 1_000),
+                    )
+                }
+            }
+        }
+
+    private fun sustainedAt(
+        seconds: Int,
+        lagMs: Double,
+        missing: Int = 0,
+    ): Boolean =
+        GateEvaluator(expectedRate = 31.0)
+            .evaluate(betaWindow(seconds, lagMs, missing))
+            .criteria
+            .getValue(GateEvaluator.SUSTAINED)
+            .pass
+
+    /** lag_max(62/s) = (1 + N30 x (1/0.995 - 1)) / 62, N30 = 1860 (storage-benchmark.md, "Terminal-completion allowance"). */
+    private val lagMax62Ms = (1 + 1_860 * (1 / GateEvaluator.SUSTAINED_TOLERANCE - 1)) / 62.0 * 1_000
+
+    @Test
+    fun `the 30 s terminal-completion allowance at 62 per second is 166_88 ms, decided at the microsecond`() {
+        lagMax62Ms shouldBe (166.8828 plusOrMinus 0.0001)
+        sustainedAt(30, lagMax62Ms - 0.001) shouldBe true
+        sustainedAt(30, lagMax62Ms + 0.001) shouldBe false
+        // One missing event costs (1/0.995) / rate = 16.21 ms at 62/s.
+        sustainedAt(30, lagMax62Ms - 16.20, missing = 1) shouldBe false
+        sustainedAt(30, lagMax62Ms - 16.22, missing = 1) shouldBe true
+    }
+
+    @Test
+    fun `a window longer than 30 s does not narrow the allowance - lag_max minus 1 us passes`() {
+        for (seconds in listOf(33, 60, 120)) {
+            withClue("$seconds s window, terminal lag lag_max - 1 us") { sustainedAt(seconds, lagMax62Ms - 0.001) shouldBe true }
+        }
+    }
+
+    @Test
+    fun `a window longer than 30 s does not widen the allowance - lag_max plus 1 us fails`() {
+        for (seconds in listOf(33, 60, 120)) {
+            val loose =
+                betaWindow(seconds, lagMax62Ms + 0.001)
+                    .single { it.mode == AdmissionMode.CHOSEN && it.concurrency == 100 && it.offeredRate == 62.0 }
+            (loose.achievedRate / loose.offeredRate >= GateEvaluator.SUSTAINED_TOLERANCE) shouldBe true
+            withClue("$seconds s window, terminal lag lag_max + 1 us") { sustainedAt(seconds, lagMax62Ms + 0.001) shouldBe false }
+        }
+    }
+
     @Test
     fun `the thresholds are the ADR's, verbatim`() {
         GateEvaluator.T1_P99_MS shouldBe 50.0
@@ -348,6 +546,7 @@ class GateEvaluatorTest {
         GateEvaluator.SUSTAINED_TOLERANCE shouldBe 0.995
         GateEvaluator.MIN_T1_SAMPLES shouldBe 1_000
         GateEvaluator.MIN_RETENTION_SAMPLES shouldBe 100
+        GateEvaluator.SUSTAINED_REFERENCE_WINDOW_SECONDS shouldBe 30
         GateVerdict.ADR_REVIEW_REQUIRED shouldBe "ADR REVIEW REQUIRED (per-node escrow is the named fallback, not implemented)"
     }
 }

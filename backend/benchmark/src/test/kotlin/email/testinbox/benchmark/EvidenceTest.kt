@@ -10,46 +10,53 @@ import java.time.Instant
 
 /** The evidence JSON is a contract another script reads: its documented keys must be there, with the documented types. */
 class EvidenceTest {
-    private val scenario =
-        ScenarioResult(
-            name = "chosen-ws10000-c10-r520",
-            mode = AdmissionMode.CHOSEN,
-            referenceMode = null,
-            workspaceCount = 10_000,
-            inboxCount = 100_000,
-            reservationBacklog = 1_000,
-            deltaBacklog = 500,
-            deltaBacklogObserved = DeltaBacklogObserved(120, 2_400.5, 9_800),
-            concurrency = 10,
-            offeredRate = 520.0,
-            achievedRate = 518.2,
-            durationSeconds = 30.1,
-            scheduledEvents = 15_600,
-            completedEvents = 15_599,
-            terminalLagMs = 14.5,
-            copiesCommitted = 62_000,
-            t1 = LatencySummary(15_599, 4.0, 9.0, 12.5, 40.0),
-            t1Transaction = LatencySummary(15_599, 2.0, 4.0, 6.0, 20.0),
-            t2 = LatencySummary(15_599, 3.0, 6.0, 8.0, 30.0),
-            event = LatencySummary(15_599, 8.0, 14.0, 20.0, 60.0),
-            retention = null,
-            retentionOfferedRate = 26.0,
-            retentionAchievedRate = 0.0,
-            retentionStarvedTicks = 780,
-            lockWait = LatencySummary(15_599, 2.0, 4.0, 6.0, 20.0),
-            slotWait = LatencySummary(15_599, 0.01, 0.02, 0.05, 1.0),
-            lockTimeouts = 1,
-            lockTimeoutRate = 1.0 / 15_600,
-            deadlocks = 0,
-            deadlineMissesFromSlotQueueing = 0,
-            otherErrors = 0,
-            errorSamples = listOf("LOCK_TIMEOUT: T1 could not take the admission lock"),
-            physicalFailures = mapOf("LOCK_TIMEOUT" to 1),
-        )
+    private val scenario = sample()
+
+    companion object {
+        /** One CHOSEN 2× scenario, as a staging run would record it (also used by [T1PlanningTest]). */
+        fun sample() =
+            ScenarioResult(
+                name = "chosen-ws10000-c10-r520",
+                mode = AdmissionMode.CHOSEN,
+                referenceMode = null,
+                workspaceCount = 10_000,
+                inboxCount = 100_000,
+                reservationBacklog = 1_000,
+                deltaBacklog = 500,
+                deltaBacklogObserved = DeltaBacklogObserved(120, 2_400.5, 9_800),
+                concurrency = 10,
+                offeredRate = 520.0,
+                achievedRate = 518.2,
+                durationSeconds = 30.1,
+                scheduledEvents = 15_600,
+                completedEvents = 15_599,
+                terminalLagMs = 14.5,
+                copiesCommitted = 62_000,
+                t1 = LatencySummary(15_599, 4.0, 9.0, 12.5, 40.0),
+                t1Transaction = LatencySummary(15_599, 2.0, 4.0, 6.0, 20.0),
+                t2 = LatencySummary(15_599, 3.0, 6.0, 8.0, 30.0),
+                event = LatencySummary(15_599, 8.0, 14.0, 20.0, 60.0),
+                retention = null,
+                retentionOfferedRate = 26.0,
+                retentionAchievedRate = 0.0,
+                retentionStarvedTicks = 780,
+                lockWait = LatencySummary(15_599, 2.0, 4.0, 6.0, 20.0),
+                slotWait = LatencySummary(15_599, 0.01, 0.02, 0.05, 1.0),
+                lockTimeouts = 1,
+                lockTimeoutRate = 1.0 / 15_600,
+                deadlocks = 0,
+                deadlineMissesFromSlotQueueing = 0,
+                otherErrors = 0,
+                errorSamples = listOf("LOCK_TIMEOUT: T1 could not take the admission lock"),
+                physicalFailures = mapOf("LOCK_TIMEOUT" to 1),
+            )
+    }
 
     private fun evidence(
         verdict: GateVerdict,
         adrReasons: List<String> = emptyList(),
+        pool: PoolLifecycle = PoolLifecycle.of(BenchmarkOptions(local = true)),
+        scenarios: List<ScenarioResult> = listOf(scenario),
     ) = Evidence(
         environment =
             Environment(
@@ -86,6 +93,7 @@ class EvidenceTest {
                 targetKind = "remote",
                 targetDatabaseName = "testinbox_bench",
                 lockWaitDefinition = "the whole admission call",
+                pool = pool,
             ),
         safety =
             SafetyRecord(
@@ -94,7 +102,7 @@ class EvidenceTest {
                 mapOf("workspace" to 0L, "inbox" to 0L, "message" to 0L),
                 SafetyPreflight.ACK_VARIABLE,
             ),
-        scenarios = listOf(scenario),
+        scenarios = scenarios,
         gate = verdict,
         adrEvidenceReasons = adrReasons,
     )
@@ -193,6 +201,51 @@ class EvidenceTest {
         tree["adrEvidenceReasons"][0].asString() shouldContain "--local"
         tree["incompleteReasons"][0].asString() shouldContain "not ADR evidence: --local"
         e.toMarkdown() shouldContain "Not ADR evidence"
+    }
+
+    @Test
+    fun `the pool lifecycle is recorded for the run and each scenario's connection openings and planning`() {
+        val planned =
+            scenario.copy(
+                pool = PoolPhase(true, 1_800_000, 120_000, 16, connectionsOpenedBeforePhase = 32, connectionsOpenedInPhase = 0),
+                t1Planning =
+                    T1Planning(
+                        PoolLifecycle.PREPARE_THRESHOLD,
+                        T1Planning.Client(15_599, 80, 16, 0, LatencySummary(80, 20.0, 30.0, 35.0, 40.0), null, 14.0, 1.0),
+                        T1Planning.Server(95, 1_330.0, 14.0),
+                    ),
+            )
+        val gate = GateEvaluator().evaluate(listOf(planned))
+        val tree = Evidence.MAPPER.readTree(evidence(gate, scenarios = listOf(planned)).toJson())
+        val harness = tree["harness"]
+        harness["coldPool"].asBoolean() shouldBe true
+        harness["poolMaxLifetime"].asString() shouldBe "PT30M"
+        harness["poolMaxLifetimeMs"].asLong() shouldBe 1_800_000
+        harness["poolKeepaliveMs"].asLong() shouldBe 120_000
+        harness["prepareThreshold"].asInt() shouldBe 5
+        harness["poolLifecycleSource"].asString() shouldContain "HikariCP 7.0.2 defaults"
+        val s = tree["scenarios"][0]
+        s["pool"]["coldPool"].asBoolean() shouldBe true
+        s["pool"]["connectionsOpenedBeforePhase"].asLong() shouldBe 32
+        s["pool"]["connectionsOpenedInPhase"].asLong() shouldBe 0
+        val planning = s["t1Planning"]
+        planning["client"]["coldSnapshotExecutions"].asLong() shouldBe 80
+        planning["client"]["coldT1"]["p99Ms"].asDouble() shouldBe 35.0
+        planning["client"]["warmT1"].isNull shouldBe true
+        planning["server"]["plans"].asLong() shouldBe 95
+        planning["derived"]["invalidationReplans"].asLong() shouldBe 15
+        planning["derived"]["coldPlanCostMs"].asDouble() shouldBe 13.0
+        // A scenario without them (an older evidence shape) carries explicit nulls, never zeros.
+        Evidence.MAPPER.readTree(evidence(gate).toJson())["scenarios"][0]["pool"].isNull shouldBe true
+    }
+
+    @Test
+    fun `the summary names the connection lifecycle, and a warm pool says what it removed`() {
+        val gate = GateEvaluator().evaluate(listOf(scenario))
+        evidence(gate).toMarkdown() shouldContain "Cold pool: after the warm-up every scenario connection was replaced"
+        val warm = PoolLifecycle.of(BenchmarkOptions(local = true, coldPool = false))
+        evidence(gate, pool = warm).toMarkdown() shouldContain "WARM pool (--warm-pool)"
+        Evidence.MAPPER.readTree(evidence(gate, pool = warm).toJson())["harness"]["coldPool"].asBoolean() shouldBe false
     }
 
     @Test

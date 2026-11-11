@@ -127,6 +127,50 @@ class JdbcActivationInventoryTest : PersistenceIntegrationTest() {
         reservations.reservedBytes() shouldBe 1_024L
     }
 
+    @Test
+    fun `the pre-plan workspace population is counted up to the cap, and a plan is seen - under the ingestion role's own column grant`() {
+        // ADR-035 amendment D: the activation watch's envelope read. Only workspace(id) and
+        // storage_cohort_plan, the privileges the ingestion role already holds for T1.
+        val db = LedgerTestDatabase.create(postgres, jdbc)
+        repeat(3) { db.workspace() }
+        val role =
+            "pop_" +
+                UUID
+                    .randomUUID()
+                    .toString()
+                    .replace("-", "")
+                    .take(12)
+        db.jdbc.sql("CREATE ROLE $role LOGIN PASSWORD 'fixture-not-a-real-role-password'").update()
+        db.jdbc.sql("GRANT CONNECT ON DATABASE \"${db.name}\" TO $role").update()
+        db.jdbc.sql("GRANT SELECT (id) ON workspace TO $role").update()
+        db.jdbc.sql("GRANT SELECT ON storage_cohort_plan TO $role").update()
+        val restricted =
+            com.zaxxer.hikari.HikariDataSource().apply {
+                jdbcUrl = postgres.jdbcUrl.substringBeforeLast('/') + "/" + db.name
+                username = role
+                password = "fixture-not-a-real-role-password"
+                maximumPoolSize = 1
+            }
+        val reader = JdbcActivationInventory(JdbcClient.create(restricted))
+
+        reader.read(10) shouldBe
+            email.testinbox.application.port
+                .WorkspacePopulation(cohortPlanExists = false, workspaces = 3)
+        // Capped: enough to decide "over the bound", never a scan of the population.
+        reader.read(2).workspaces shouldBe 2L
+
+        db.jdbc
+            .sql(
+                """
+                INSERT INTO storage_cohort_plan (binding, fingerprint, unattributed_allowance, trash_allowance, monitor_role,
+                                                 block_size_bytes, capacity_bytes, observation_max_age_ms, expected_nodes)
+                VALUES (repeat('a', 64), repeat('b', 64), 0, 0, 'm', 4096, 1, 1000, ARRAY['api', 'smtp'])
+                """.trimIndent(),
+            ).update()
+        reader.read(10).cohortPlanExists shouldBe true
+        restricted.close()
+    }
+
     private fun namedDataSource(
         db: LedgerTestDatabase,
         applicationName: String,

@@ -44,6 +44,28 @@ object StorageProtocol {
     /** `W_slot`: the bounded wait for a write slot (§4). */
     val SLOT_WAIT: Duration = Duration.ofSeconds(10)
 
+    /**
+     * `L_claim` (2026-11-06): how long one event may hold the breaker's
+     * real-event claim. The claim is taken after parsing, so parsing is not in
+     * it. It covers what the claimant does from the gate to the end of T2:
+     * `W_slot` + the T1 lock timeout + `E` (the upload window, which already
+     * bounds every upload) + a margin for resolution, rate limiting and T2.
+     */
+    fun claimLease(
+        slotWait: Duration = SLOT_WAIT,
+        t1LockTimeout: Duration = T1_LOCK_TIMEOUT,
+        margin: Duration = CLAIM_MARGIN,
+    ): Duration = slotWait.plus(t1LockTimeout).plus(WRITE_WINDOW).plus(margin)
+
+    /** T1's `lock_timeout` as shipped (the JDBC admission's default, which the gateway does not override). */
+    val T1_LOCK_TIMEOUT: Duration = Duration.ofSeconds(5)
+
+    /** Resolution, rate limiting and T2, in `L_claim`. */
+    val CLAIM_MARGIN: Duration = Duration.ofSeconds(45)
+
+    /** `L_claim` from the shipped values: 10 s + 5 s + 120 s + 45 s = 3 min. */
+    val CLAIM_LEASE: Duration = claimLease()
+
     /** The capability a node publishes in `storage_node` and its `application_name` (§14). */
     const val CAPABILITY = "storage-v1"
 

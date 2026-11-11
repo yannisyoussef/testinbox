@@ -73,9 +73,14 @@ object AdmissionCommand {
         }
     }
 
+    /**
+     * The command runs before Spring and reads no deployable's configuration, so
+     * it cannot know the configured cap N (`testinbox.beta.max-participants`) and
+     * never guesses it: it states the hard limit only.
+     */
     fun describe(status: ControlBetaAdmissions.Status): String =
         "admission status: admissions_open=${status.admissionsOpen} capacity_ready=${status.capacityReady} " +
-            "consumed_places=${status.consumedPlaces}/${status.maxPlaces} " +
+            "consumed_places=${status.consumedPlaces} (hard limit ${status.maxPlaces}; the deployed cap N is configured per deployable) " +
             "storage_budget_changes=${if (status.poolChangesAllowed) "allowed" else "refused"}"
 
     private fun required(

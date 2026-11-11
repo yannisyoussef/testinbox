@@ -2,6 +2,7 @@ package email.testinbox.api.config
 
 import email.testinbox.application.ActivationProperties
 import email.testinbox.application.BackendIdentityProperties
+import email.testinbox.application.BetaProperties
 import email.testinbox.application.LimitsProperties
 import email.testinbox.application.StorageDeclarationsFactory
 import email.testinbox.application.TestInboxConfig
@@ -30,6 +31,8 @@ data class TestInboxProperties(
     val storage: Storage = Storage(),
     val bootstrap: Bootstrap = Bootstrap(),
     val deployment: Deployment = Deployment(),
+    /** `testinbox.beta.*`: N, the participant cap (shared with the ingestion gateway; see [BetaProperties]). */
+    val beta: BetaProperties = BetaProperties(),
 ) {
     data class Storage(
         val endpoint: String = "http://localhost:9000",
@@ -71,6 +74,15 @@ data class TestInboxProperties(
         val filesystem: email.testinbox.application.FilesystemProperties = email.testinbox.application.FilesystemProperties(),
         /** The lab-only qualification record (issue #102); refused at startup anywhere but environment `lab`. */
         val qualification: email.testinbox.application.QualificationProperties = email.testinbox.application.QualificationProperties(),
+        /**
+         * *R_gated*, events/s (`TESTINBOX_STORAGE_GATED_EXPECTED_RATE`): the §11
+         * expected rate of the passing gate D evidence (ADR-035 amendment D).
+         * `ALL` is refused while it is absent or below the configured INGEST
+         * envelope (`IngestEnvelopeSafety`).
+         */
+        val gatedExpectedRate: Double? = null,
+        /** *L* (`TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES`): legacy-share workspaces beside the N participant places. */
+        val declaredLegacyWorkspaces: Int? = null,
     )
 
     /** The framework-free declarations `DeploymentSafety` and `EffectiveStoragePolicy` read (ADR-035 §18). */
@@ -89,6 +101,9 @@ data class TestInboxProperties(
             nodeId = storage.nodeId,
             nodeRole = email.testinbox.application.storage.NodeRole.API,
             filesystem = storage.filesystem,
+            gatedExpectedRate = storage.gatedExpectedRate,
+            declaredLegacyWorkspaces = storage.declaredLegacyWorkspaces,
+            participantCap = beta.cap,
         )
 
     /**

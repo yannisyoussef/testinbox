@@ -50,5 +50,11 @@
     "coveredBytes": 1073741824
   },
   "lowerSeq": 110,
-  "uncleanLowerNodes": []
+  "uncleanLowerNodes": [],
+  "globalBase": {
+    "rowBytes": 1073741824,
+    "rowObjects": 10000,
+    "sumBytes": 1073741824,
+    "sumObjects": 10000
+  }
 }

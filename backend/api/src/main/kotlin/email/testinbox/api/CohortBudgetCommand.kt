@@ -83,7 +83,12 @@ object CohortBudgetCommand {
                 connectionProperties = Properties().apply { setProperty("ApplicationName", APPLICATION_NAME) }
             }
         val jdbc = JdbcClient.create(dataSource)
-        val template = TransactionTemplate(DataSourceTransactionManager(dataSource))
+        // Asserted, not inherited: V25's share fence refuses any other isolation level (a stale
+        // REPEATABLE READ or SERIALIZABLE snapshot could overcommit past the partition bound).
+        val template =
+            TransactionTemplate(DataSourceTransactionManager(dataSource)).apply {
+                isolationLevel = org.springframework.transaction.TransactionDefinition.ISOLATION_READ_COMMITTED
+            }
         val tx =
             object : TransactionRunner {
                 override fun <T> required(block: () -> T): T = checkNotNull(template.execute { block() })

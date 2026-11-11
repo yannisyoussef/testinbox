@@ -229,8 +229,9 @@ components:
         projectId: { type: string, format: uuid }
       description: >
         Login does not spend a participant place. Admission creates exactly
-        one private workspace and project only when open, within thirty
-        participant places and with the separate capacity gate satisfied.
+        one private workspace and project only when open, within a capped
+        number of participant places (at most thirty) and with the separate
+        capacity gate satisfied.
         Existing participants receive their original membership on retry.
     Problem:
       type: object
@@ -1573,7 +1574,7 @@ paths:
     post:
       operationId: admitBetaParticipant
       security: [{ humanSession: [] }]
-      summary: Request one of the fixed thirty beta participant places.
+      summary: Request one of a capped number of beta participant places (at most thirty).
       description: >
         Requires the exact configured public Origin and a matching X-CSRF-Token.
         Takes no account, workspace, project, limit or scope request field.

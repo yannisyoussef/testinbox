@@ -563,7 +563,7 @@ Exit codes:
 | Code | Meaning |
 |---|---|
 | `0` | done. For `process-deletions` and `status` without an account: nothing is overdue or anomalous (deletions still within the threshold are normal) |
-| `1` | refused, unknown account, or missing authority; nothing changed |
+| `1` | refused, unknown account, or missing authority; nothing changed. Exception: `delete` prints `to=DELETION_PENDING` (committed) before its first workflow step; if a concurrent change refuses that step, it exits `1` after the commit |
 | `2` | usage (including the removed `erase-identity`). The usage text starts with the preflight marker line |
 | `3` | applied, but draining or content pending; the timer (or a re-run) continues it |
 | `4` | failed for another reason (a lock or statement timeout, a lost connection, a deadlock abort). Whether it committed is unknown, so run `status` first. The message names only the exception type. For `process-deletions`: at least one deletion's step failed (`outcome=FAILED`); the others were still advanced |
@@ -650,28 +650,27 @@ Triage:
 
 The command is safe to run concurrently with itself and with the running
 deployables. Every step is a bounded operator transaction (5 s lock wait,
-10 s per statement) under the documented lock order. Example systemd units
-(Ops owns the real ones):
+10 s per statement) under the documented lock order.
 
-```
-# /etc/systemd/system/testinbox-deletions.service
-[Service]
-Type=oneshot
-# A run is seconds; bound it so a hung run cannot hold the next one off.
-TimeoutStartSec=10min
-ExecStart=/bin/sh -c 'docker run --rm --network <data network> --env-file /root/testinbox-ops/lifecycle.env \
-  <registry>/testinbox-api@sha256:<operator digest> account-lifecycle process-deletions >> /var/log/testinbox/lifecycle.log 2>&1'
+**The real units are Ops'.** The timer, its service and the operator wrapper
+are defined in infinity-core `infra/testinbox/PRODUCTION.md`, which is
+authoritative for paths and permissions; this document does not repeat a
+literal unit. Every lifecycle command, the timer's included, runs through the
+wrapper `/usr/local/sbin/ti-lifecycle`, which pins the operator image,
+applies the allow-listed env file and appends the output to the lifecycle log
+under `/var/lib/testinbox-lifecycle-log/` (append-only, hash-chained, `ts=`
+prefixed; not under `/var/log`, which Ubuntu owns `root:syslog 0775`, so the
+installer's ancestor check refuses it). What the application requires of those units:
 
-# /etc/systemd/system/testinbox-deletions.timer
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=15min
-[Install]
-WantedBy=timers.target
-```
+- `Type=oneshot`, with a start timeout (a run is seconds; a hung run must not
+  hold the next one off);
+- every 15 minutes, starting a few minutes after boot;
+- `account-lifecycle process-deletions` from the pinned operator digest, with
+  stdout and stderr appended to the lifecycle log, never only to the journal;
+- the exit code and the summary line exported for the alert rule above.
 
-The `<operator digest>` is the independently pinned operator image, preflighted
-as above. If the API's `TESTINBOX_EXACT_COOLDOWN` or
+The digest the wrapper runs is the independently pinned operator image,
+preflighted as above. If the API's `TESTINBOX_EXACT_COOLDOWN` or
 `TESTINBOX_STORAGE_FS_RETENTION_PACING_MAX_DELAY` is overridden, put the same
 values in `lifecycle.env`, so both the cooldown applied to deleted addresses
 and the overdue threshold follow the deployment.
@@ -746,6 +745,19 @@ and only then the `ops-admin` key, which closes it.
    - Then run `account-lifecycle process-deletions` once. Exit `5` or `6`
      with a `REFUSED` or `ACCOUNT_ROW_ABSENT` line means a restored record
      disagrees with its account: investigate before going on.
+
+   What "the log shows ACTIVE" means: per account, the **last** logged
+   decision wins. Replay all deletes, then all suspends, then the resumes,
+   then the one `process-deletions` pass. Resume a participant whose last
+   logged decision is `resume`, or one with no decision in the log that was
+   ACTIVE at backup time (reconciliation suspended it); never one whose last
+   decision is `suspend` or `delete`. An entry whose outcome is uncertain
+   (exit `4`, or the container's `125` or above `128`, with no committed
+   `event=account.lifecycle` line) resolves restrictively: an uncertain
+   `suspend` or `delete` is replayed as applied, an uncertain `resume` never
+   is, so that account stays suspended. A `delete` that exited `1` after
+   printing its committed `to=DELETION_PENDING` line counts as applied (exit
+   codes, above).
 6. **Shred the stale synthetic key file**
    (`~deploy/.local/state/infinity-deploy/testinbox-synthetic.key`, or
    `TESTINBOX_SYNTHETIC_API_KEY_FILE`): its key was revoked in step 4, and
@@ -820,7 +832,7 @@ always passes, and the V22 authority functions and triggers add nothing,
 because the owner is the operator authority. Only production's separate roles
 get the protection.
 
-**Grant-level hardening (STATUS "Required Ops changes" item 12, V22 part now in `roles.reference.sql`).**
+**Grant-level hardening (STATUS "Required Ops changes" item 12, now in `roles.reference.sql`).**
 On top of the V22 triggers, the reference revokes these from the API role:
 
 - `INSERT, UPDATE, DELETE ON lifecycle_restore_clearance` (it keeps `SELECT`
@@ -830,12 +842,11 @@ On top of the V22 triggers, the reference revokes these from the API role:
   issuance and authentication), and a row lock needs `UPDATE` on at least one
   column. Every foreign key to `human_account(id)` is `ON UPDATE NO ACTION`,
   so a referenced account cannot be re-keyed;
-- `UPDATE, DELETE ON beta_admission`.
-
-`ALL ON account_deletion` (V23, TI-DELIVERY-002b: the runtime never reads or
-writes it; the operator authority is the schema owner) is not in the
-reference yet; it stays STATUS "Required Ops changes" item 12 until the app
-adds it, and V23's triggers refuse every non-operator write meanwhile.
+- `UPDATE, DELETE ON beta_admission`;
+- `ALL ON account_deletion` (V23; added by the admission release). The
+  runtime never reads or writes it; only the operator command does, as the
+  schema owner. V23's triggers refuse every non-operator write as well, and
+  the revoke also removes the read (account UUIDs and stage timestamps).
 
 The API never updates an account column or a membership, and never writes
 the clearance, so nothing it runs is refused. `StorageRoleModelTest` proves it

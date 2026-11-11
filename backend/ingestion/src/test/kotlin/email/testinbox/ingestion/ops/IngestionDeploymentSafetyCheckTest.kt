@@ -3,6 +3,7 @@ package email.testinbox.ingestion.ops
 import email.testinbox.ingestion.config.IngestionProperties
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.types.shouldBeInstanceOf
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.boot.context.properties.EnableConfigurationProperties
@@ -32,6 +33,7 @@ class IngestionDeploymentSafetyCheckTest {
             properties: IngestionProperties,
             dataSourceProperties: DataSourceProperties,
             environment: Environment,
+            dataSource: org.springframework.beans.factory.ObjectProvider<javax.sql.DataSource>,
         ) = IngestionDeploymentSafetyCheck(
             properties,
             dataSourceProperties,
@@ -40,7 +42,20 @@ class IngestionDeploymentSafetyCheckTest {
                 email.testinbox.storage.QualificationRecords
                     .load(),
             ),
+            dataSource,
         )
+    }
+
+    /** A Hikari pool that is configured, never started: the check reads its size without a connection. */
+    @Configuration
+    class HikariPool {
+        @Bean(destroyMethod = "")
+        fun dataSource(
+            @org.springframework.beans.factory.annotation.Value("\${spring.datasource.hikari.maximum-pool-size:8}") size: Int,
+        ): javax.sql.DataSource =
+            com.zaxxer.hikari
+                .HikariDataSource()
+                .apply { maximumPoolSize = size }
     }
 
     private val runner = ApplicationContextRunner().withUserConfiguration(UnderTest::class.java)
@@ -139,6 +154,45 @@ class IngestionDeploymentSafetyCheckTest {
             .run { context -> assertThat(context).hasNotFailed() }
     }
 
+    // --- Gate D A′: T1's insert and COMMIT share one round trip, under pgJDBC's defaults only ------
+
+    @Test
+    fun `a gateway whose database URL turns on pgJDBC autosave or another query mode fails startup`() {
+        for (query in listOf("autosave=always", "AutoSave=Conservative", "preferQueryMode=simple")) {
+            runner
+                .withPropertyValues(*deployed, "spring.datasource.url=jdbc:postgresql://db.staging.internal:5432/testinbox?$query")
+                .run { context ->
+                    assertThat(context).hasFailed()
+                    context.startupFailure!!.stackTraceToString() shouldContain "spring.datasource.url sets"
+                }
+        }
+    }
+
+    @Test
+    fun `a gateway whose Hikari data-source properties turn on autosave or another query mode fails startup`() {
+        // The keys Hikari itself binds, so a property that reaches the driver is a property the guard sees.
+        for ((key, value) in listOf("autosave" to "always", "autosave" to "CONSERVATIVE", "preferQueryMode" to "simple")) {
+            runner
+                .withPropertyValues(*deployed, "spring.datasource.hikari.data-source-properties.$key=$value")
+                .run { context ->
+                    assertThat(context).hasFailed()
+                    context.startupFailure!!.stackTraceToString() shouldContain
+                        "spring.datasource.hikari.data-source-properties.$key sets"
+                }
+        }
+    }
+
+    @Test
+    fun `the gateway's own data-source properties and pgJDBC's stated defaults start`() {
+        runner
+            .withPropertyValues(
+                *deployed,
+                "spring.datasource.url=jdbc:postgresql://db.staging.internal:5432/testinbox?sslmode=require&autosave=never",
+                "spring.datasource.hikari.data-source-properties.ApplicationName=testinbox-ingestion:n:storage-v1",
+                "spring.datasource.hikari.data-source-properties.preferQueryMode=extended",
+            ).run { context -> assertThat(context).hasNotFailed() }
+    }
+
     // --- TI-STORAGE-006: enforcement may exist, safely ---------------------------------------------
 
     @Test
@@ -231,5 +285,163 @@ class IngestionDeploymentSafetyCheckTest {
             context.getBean(IngestionProperties::class.java).storage.enforcement shouldBe
                 email.testinbox.domain.storage.StorageEnforcement.OFF
         }
+    }
+
+    // --- ADR-035 amendment D: the gated INGEST envelope ---------------------------------------------
+
+    @Test
+    fun `the envelope declarations bind on the gateway - this pins their property names`() {
+        runner
+            .withPropertyValues(
+                *deployed,
+                "testinbox.storage.gated-expected-rate=31",
+                "testinbox.storage.declared-legacy-workspaces=1",
+                "testinbox.limits.ingest.capacity=60",
+                "testinbox.limits.ingest.refill-per-second=1.0",
+                "testinbox.limits.ingest-per-inbox.capacity=30",
+                "testinbox.limits.ingest-per-inbox.refill-per-second=0.5",
+            ).run { context ->
+                assertThat(context).hasNotFailed()
+                val properties = context.getBean(IngestionProperties::class.java)
+                val declarations = properties.storageDeclarations(emptyList())
+                declarations.gatedExpectedRate shouldBe 31.0
+                declarations.declaredLegacyWorkspaces shouldBe 1
+                properties.limits.ingest shouldBe
+                    email.testinbox.application.LimitsProperties
+                        .RateProperties(60, 1.0)
+                properties.limits.ingestPerInbox shouldBe
+                    email.testinbox.application.LimitsProperties
+                        .RateProperties(30, 0.5)
+            }
+    }
+
+    @Test
+    fun `ALL on a gateway without R_gated and L is refused, naming both, beside every other gap`() {
+        runner.withPropertyValues(*deployed, "testinbox.storage.enforcement=ALL").run { context ->
+            assertThat(context).hasFailed()
+            val message = context.startupFailure!!.stackTraceToString()
+            message shouldContain "testinbox.storage.gated-expected-rate is not declared"
+            message shouldContain "testinbox.storage.declared-legacy-workspaces is not declared"
+            // The library default burst (300) is above the approved b = 60.
+            message shouldContain "testinbox.limits.ingest.capacity is 300"
+        }
+    }
+
+    // --- The participant cap N and the gateway's pool size (M0) ------------------------------------
+
+    @Test
+    fun `N binds on the gateway too, defaults to thirty, and only a value in 1-30 starts`() {
+        runner.withPropertyValues(*deployed).run { context ->
+            assertThat(context).hasNotFailed()
+            context
+                .getBean(IngestionProperties::class.java)
+                .storageDeclarations(emptyList())
+                .participantCap.value shouldBe 30
+        }
+        runner.withPropertyValues(*deployed, "testinbox.beta.max-participants=10").run { context ->
+            assertThat(context).hasNotFailed()
+            context
+                .getBean(IngestionProperties::class.java)
+                .storageDeclarations(emptyList())
+                .participantCap.value shouldBe 10
+        }
+        for (bad in listOf("0", "31", "-1", "ten", "10.5")) {
+            runner.withPropertyValues(*deployed, "testinbox.beta.max-participants=$bad").run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure!!.stackTraceToString() shouldContain "testinbox.beta.max-participants"
+            }
+        }
+    }
+
+    @Test
+    fun `the gateway reads its effective Hikari pool size, and fails closed where it cannot`() {
+        IngestionDeploymentSafetyCheck.poolSize(
+            com.zaxxer.hikari
+                .HikariDataSource()
+                .apply { maximumPoolSize = 8 },
+        ) shouldBe
+            email.testinbox.application.deployment.IngestionPoolSize
+                .Known(8)
+        // Unset: Hikari's own default (10) is what the pool runs with, so that is the size reported, never 8.
+        IngestionDeploymentSafetyCheck.poolSize(com.zaxxer.hikari.HikariDataSource()) shouldBe
+            email.testinbox.application.deployment.IngestionPoolSize
+                .Known(10)
+        IngestionDeploymentSafetyCheck
+            .poolSize(null)
+            .shouldBeInstanceOf<email.testinbox.application.deployment.IngestionPoolSize.Unreadable>()
+        IngestionDeploymentSafetyCheck
+            .poolSize(
+                org.springframework.jdbc.datasource
+                    .DriverManagerDataSource(),
+            ).shouldBeInstanceOf<email.testinbox.application.deployment.IngestionPoolSize.Unreadable>()
+    }
+
+    @Test
+    fun `ALL on the gateway names the pool size - unapproved today, and unreadable without a Hikari pool`() {
+        // Every other declaration is missing too; only the pool line matters here.
+        runner
+            .withUserConfiguration(HikariPool::class.java)
+            .withPropertyValues(*deployed, "testinbox.storage.enforcement=ALL")
+            .run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure!!.stackTraceToString() shouldContain
+                    "spring.datasource.hikari.maximum-pool-size is 8 but the owner has approved no ingestion database pool size"
+            }
+        runner.withPropertyValues(*deployed, "testinbox.storage.enforcement=ALL").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain
+                "spring.datasource.hikari.maximum-pool-size is undetermined (no DataSource)"
+        }
+    }
+
+    @Test
+    fun `an unapproved N under ALL is refused on the gateway, naming the missing owner approval`() {
+        runner.withPropertyValues(*deployed, "testinbox.storage.enforcement=ALL", "testinbox.beta.max-participants=12").run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure!!.stackTraceToString() shouldContain
+                "testinbox.beta.max-participants is 12 but no owner-approved INGEST envelope covers N = 12"
+        }
+    }
+
+    @Test
+    fun `the first cohort under ALL reaches the pool check - a pool of 10 is named, a pool of 8 is not`() {
+        val firstCohort =
+            arrayOf(
+                *deployed,
+                "testinbox.storage.enforcement=ALL",
+                "testinbox.beta.max-participants=10",
+                "testinbox.storage.gated-expected-rate=11",
+                "testinbox.storage.declared-legacy-workspaces=1",
+            )
+        runner
+            .withUserConfiguration(HikariPool::class.java)
+            .withPropertyValues(*firstCohort, "spring.datasource.hikari.maximum-pool-size=10")
+            .run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure!!.stackTraceToString() shouldContain
+                    "spring.datasource.hikari.maximum-pool-size is 10 but the approved envelope's evidence covers an ingestion pool of exactly 8"
+            }
+        runner
+            .withUserConfiguration(HikariPool::class.java)
+            .withPropertyValues(*firstCohort, "spring.datasource.hikari.maximum-pool-size=8")
+            .run { context ->
+                // Still refused for the other ALL declarations this fixture omits, but never for N, R_gated, L or the pool.
+                assertThat(context).hasFailed()
+                val message = context.startupFailure!!.stackTraceToString()
+                message.contains("spring.datasource.hikari.maximum-pool-size") shouldBe false
+                message.contains("testinbox.beta.max-participants") shouldBe false
+                message.contains("testinbox.storage.gated-expected-rate") shouldBe false
+            }
+    }
+
+    @Test
+    fun `a per-inbox INGEST budget above the workspace's fails startup even under OFF`() {
+        runner
+            .withPropertyValues(*deployed, "testinbox.limits.ingest.capacity=60", "testinbox.limits.ingest.refill-per-second=1.0")
+            .run { context ->
+                // The library per-inbox default (60, 2/s) refills faster than this workspace budget.
+                assertThat(context).hasFailed()
+                context.startupFailure!!.stackTraceToString() shouldContain "testinbox.limits.ingest-per-inbox.refill-per-second"
+            }
     }
 }

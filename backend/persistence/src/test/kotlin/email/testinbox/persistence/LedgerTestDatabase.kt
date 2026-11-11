@@ -309,6 +309,33 @@ class LedgerTestDatabase private constructor(
         withClue("ADR-035 invariant $context: inbox (id, derived, accounted, derivedObjects, accountedObjects) mismatches") {
             inboxMismatches shouldBe emptyList()
         }
+        assertGlobalBase(context)
+    }
+
+    /**
+     * V24 (gate D step (1)): the global base row T1 reads equals Σ workspace
+     * bases after every base writer, whichever one ran. Checked wherever V24
+     * exists, so every ledger test proves it too.
+     */
+    fun assertGlobalBase(context: String = "") {
+        val exists =
+            jdbc
+                .sql("SELECT to_regclass('public.storage_global_base') IS NOT NULL")
+                .query(Boolean::class.java)
+                .single()
+        if (!exists) return
+        val (row, sum) =
+            jdbc
+                .sql(
+                    """
+                    SELECT (SELECT base_bytes || '/' || base_objects FROM storage_global_base WHERE id = 1),
+                           (SELECT coalesce(sum(base_bytes), 0) || '/' || coalesce(sum(base_objects), 0) FROM workspace_storage_account)
+                    """.trimIndent(),
+                ).query { rs, _ -> rs.getString(1) to rs.getString(2) }
+                .single()
+        withClue("V24 invariant $context: storage_global_base (bytes/objects) = Σ workspace bases") {
+            row shouldBe sum
+        }
     }
 
     /** Whether V8 has run here: the V6 migration tests exercise the pre-V8 schema, where only bytes exist. */

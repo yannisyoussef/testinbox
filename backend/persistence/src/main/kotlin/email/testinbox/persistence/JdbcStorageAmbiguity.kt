@@ -27,6 +27,13 @@ class JdbcStorageAmbiguity(
     private val transactions: TransactionTemplate,
     private val cohortMode: email.testinbox.domain.storage.StorageEnforcement = email.testinbox.domain.storage.StorageEnforcement.OFF,
     private val cohortBinding: String? = null,
+    /**
+     * V25: written by the registration insert and the heartbeat upsert themselves,
+     * in the same statement, so a row never reads as another protocol than the one
+     * the node runs, and each heartbeat is one write (one V21 node-fence drain).
+     */
+    private val admissionLocking: email.testinbox.application.storage.AdmissionLocking =
+        email.testinbox.application.storage.AdmissionLocking.GLOBAL,
 ) : StorageAmbiguity,
     StorageLatch {
     /**
@@ -184,13 +191,15 @@ class JdbcStorageAmbiguity(
         jdbc
             .sql(
                 "INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown, containment, " +
-                    "cohort_capability, cohort_mode, cohort_binding) " +
-                    "VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT, 'cohort-storage-v1', :cohortMode, :cohortBinding)",
+                    "cohort_capability, cohort_mode, cohort_binding, admission_locking) " +
+                    "VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT, 'cohort-storage-v1', :cohortMode, " +
+                    ":cohortBinding, :locking)",
             ).param("node", nodeId)
             .param("generation", generation)
             .param("capability", capability)
             .param("cohortMode", cohortMode.name)
             .param("cohortBinding", cohortBinding)
+            .param("locking", admissionLocking.name)
             .update()
     }
 
@@ -205,10 +214,11 @@ class JdbcStorageAmbiguity(
         jdbc
             .sql(
                 """
-                INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown, containment, cohort_capability, cohort_mode, cohort_binding)
-                VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT, 'cohort-storage-v1', :cohortMode, :cohortBinding)
+                INSERT INTO storage_node (node_id, generation, capability, heartbeat_at, clean_shutdown, containment, cohort_capability, cohort_mode, cohort_binding,
+                                          admission_locking)
+                VALUES (:node, :generation, :capability, now(), false, $CONTAINMENT, 'cohort-storage-v1', :cohortMode, :cohortBinding, :locking)
                 ON CONFLICT (node_id, generation) DO UPDATE SET heartbeat_at = now(), cohort_capability=EXCLUDED.cohort_capability,
-                    cohort_mode=EXCLUDED.cohort_mode,cohort_binding=EXCLUDED.cohort_binding
+                    cohort_mode=EXCLUDED.cohort_mode,cohort_binding=EXCLUDED.cohort_binding,admission_locking=EXCLUDED.admission_locking
                 RETURNING xmax <> 0
                 """.trimIndent(),
             ).param("node", nodeId)
@@ -216,6 +226,7 @@ class JdbcStorageAmbiguity(
             .param("capability", capability)
             .param("cohortMode", cohortMode.name)
             .param("cohortBinding", cohortBinding)
+            .param("locking", admissionLocking.name)
             .query(Boolean::class.java)
             .single()
 

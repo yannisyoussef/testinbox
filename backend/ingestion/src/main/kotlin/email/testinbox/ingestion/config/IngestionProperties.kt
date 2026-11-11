@@ -2,9 +2,11 @@ package email.testinbox.ingestion.config
 
 import email.testinbox.application.ActivationProperties
 import email.testinbox.application.BackendIdentityProperties
+import email.testinbox.application.BetaProperties
 import email.testinbox.application.LimitsProperties
 import email.testinbox.application.StorageDeclarationsFactory
 import email.testinbox.application.TestInboxConfig
+import email.testinbox.application.storage.AdmissionLocking
 import email.testinbox.application.storage.QualificationRecord
 import email.testinbox.application.storage.StorageDeclarations
 import email.testinbox.domain.storage.StorageEnforcement
@@ -24,6 +26,8 @@ data class IngestionProperties(
     val smtp: Smtp = Smtp(),
     val storage: Storage = Storage(),
     val deployment: Deployment = Deployment(),
+    /** `testinbox.beta.*`: N, the participant cap (shared with the API; see [BetaProperties]). */
+    val beta: BetaProperties = BetaProperties(),
 ) {
     data class Smtp(
         val port: Int = 2525,
@@ -69,6 +73,23 @@ data class IngestionProperties(
         val filesystem: email.testinbox.application.FilesystemProperties = email.testinbox.application.FilesystemProperties(),
         /** The lab-only qualification record (issue #102); refused at startup anywhere but environment `lab`. */
         val qualification: email.testinbox.application.QualificationProperties = email.testinbox.application.QualificationProperties(),
+        /**
+         * T1's lock protocol (`testinbox.storage.admission-locking`): GLOBAL, ADR-035
+         * mode a, is the default and the accepted design. COHORT_PARTITIONED is the
+         * PROPOSED share-partitioned T1; `DeploymentSafety` refuses it in production
+         * and outside `ALL` with a declared filesystem, and every node exports the
+         * value as `testinbox_storage_admission_locking` for the activation barrier.
+         */
+        val admissionLocking: AdmissionLocking = AdmissionLocking.GLOBAL,
+        /**
+         * *R_gated*, events/s (`TESTINBOX_STORAGE_GATED_EXPECTED_RATE`): the §11
+         * expected rate of the passing gate D evidence (ADR-035 amendment D).
+         * `ALL` is refused while it is absent or below the configured INGEST
+         * envelope (`IngestEnvelopeSafety`).
+         */
+        val gatedExpectedRate: Double? = null,
+        /** *L* (`TESTINBOX_STORAGE_DECLARED_LEGACY_WORKSPACES`): legacy-share workspaces beside the N participant places. */
+        val declaredLegacyWorkspaces: Int? = null,
     )
 
     /** The framework-free declarations `DeploymentSafety` and `EffectiveStoragePolicy` read (ADR-035 §18). */
@@ -87,6 +108,10 @@ data class IngestionProperties(
             nodeId = storage.nodeId,
             nodeRole = email.testinbox.application.storage.NodeRole.INGESTION,
             filesystem = storage.filesystem,
+            gatedExpectedRate = storage.gatedExpectedRate,
+            declaredLegacyWorkspaces = storage.declaredLegacyWorkspaces,
+            participantCap = beta.cap,
+            admissionLocking = storage.admissionLocking,
         )
 
     /**

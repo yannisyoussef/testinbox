@@ -298,8 +298,9 @@ class StorageVisibilityTest : PersistenceIntegrationTest() {
                 .query(String::class.java)
                 .list()
                 .joinToString("\n")
+        // V27's covering ix_storage_reservation_usage is keyed by workspace too, and the planner may prefer it.
         withClue(plan) {
-            plan shouldContain "ix_storage_reservation_workspace"
+            (plan.contains("ix_storage_reservation_workspace") || plan.contains("ix_storage_reservation_usage")) shouldBe true
         }
         val inboxPlan =
             db.jdbc
@@ -311,7 +312,8 @@ class StorageVisibilityTest : PersistenceIntegrationTest() {
                 .list()
                 .joinToString("\n")
         withClue(inboxPlan) {
-            (inboxPlan.contains("ix_storage_reservation_inbox") || inboxPlan.contains("ix_storage_reservation_workspace")) shouldBe true
+            listOf("ix_storage_reservation_inbox", "ix_storage_reservation_workspace", "ix_storage_reservation_usage")
+                .any { it in inboxPlan } shouldBe true
         }
         // The read itself is correct against the backlog.
         read(ws, inbox).inbox(InboxId(inbox)).usage shouldBe StorageUsage(0, 5)

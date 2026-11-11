@@ -91,7 +91,18 @@ real "D: the TI-STORAGE-003 safety floor is refused once TI-STORAGE-006 is a flo
 # is now below it, refused naming it, and the containment floor itself is allowed.
 CONTAINMENT_FLOOR=edabf29db600cf13cf84371153a6d9908d95760a # TI-STORAGE-006E containment (floor 4)
 real "D2: the TI-STORAGE-006 floor is refused once TI-STORAGE-006E is a floor: it lacks containment" 1 "$ENFORCEMENT_FLOOR" "$CONTAINMENT_FLOOR"
-real "D3: the TI-STORAGE-006E containment floor itself is allowed" 0 "$CONTAINMENT_FLOOR"
+# TI-DELIVERY-002 added a fifth, recorded before the first admission (the V22
+# account lifecycle semantic floor, docs/dev/rollback.md): the containment floor
+# and the TI-DELIVERY-001 release (d17044d) are now below it, refused naming it;
+# the lifecycle floor itself and the V23 release that production runs are allowed.
+LIFECYCLE_FLOOR=a00c16ec2ea522a7f435c78174c6df98d0705d7d   # TI-DELIVERY-002 V22 lifecycle (floor 5)
+grep -q "^$LIFECYCLE_FLOOR " "$REAL_FLOORS" && { echo "ok   — floor $LIFECYCLE_FLOOR is in deploy/rollback-floors.txt"; pass=$((pass + 1)); } \
+  || { echo "FAIL — floor $LIFECYCLE_FLOOR is missing from deploy/rollback-floors.txt (a floor is never removed)"; fail=$((fail + 1)); }
+real "D3: the TI-STORAGE-006E containment floor is refused once the lifecycle floor is recorded" 1 "$CONTAINMENT_FLOOR" "$LIFECYCLE_FLOOR"
+real "D4: the TI-DELIVERY-001 release d17044d is refused: it ignores the account lifecycle" 1 \
+  d17044dc28a2f9aefd1e2e3834dcc8d4930c5c81 "$LIFECYCLE_FLOOR"
+real "D5: the lifecycle floor itself is allowed" 0 "$LIFECYCLE_FLOOR"
+real "D6: the V23 release production runs (bcd30fc) is allowed" 0 bcd30fce2e6a982efc9618829f99774d6a92ceb7
 real "E: this checkout's head is allowed" 0 "$(git -C "$REPO" rev-parse HEAD)"
 
 echo "----"
