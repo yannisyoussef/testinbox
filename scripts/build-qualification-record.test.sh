@@ -562,11 +562,54 @@ fresh e4ans; edit e4ans "$E4" 'd["measurements"]["enospc"]["answers"] = {"507": 
 refused "no 507/ENOSPC answer recorded → refuse" e4ans "at least one 507/ENOSPC answer"
 fresh e4exh; edit e4exh "$E4" 'd["measurements"]["enospc"]["exhaustedAt"] = "f_blocks"'
 refused "exhaustedAt outside f_bavail/f_bfree → refuse" e4exh "exhaustedAt 'f_blocks' is not one of"
+# exhaustedAt records the measured counter for any uid (A1 (iv): "whether … f_bavail = 0 or f_bfree = 0"; #12 1973 Q1).
+# As root on ext4, f_bfree never reaches 0 (s_resv_clusters), so root's ENOSPC reads f_bavail = 0 (lab k147).
 fresh e4root; edit e4root "$E4" 'd["measurements"]["enospc"]["minioUid"] = 0'
-refused "MinIO as root reporting ENOSPC at f_bavail → refuse" e4root "MinIO ran as uid 0, so ENOSPC comes at f_bfree = 0"
+gen e4root
+if [ "$STATUS" = 0 ] && [ "$(jq -c '.filesystem.e4ProductionHost.enospc | [.minioUid, .exhaustedAt]' "$TMP/e4root/out/production-2000-01-01/record.json")" = '[0,"f_bavail"]' ]; then
+    ok "MinIO as root with ENOSPC at f_bavail = 0 passes (the lab k147 shape), and the record carries uid 0"
+else bad "root at f_bavail (exit $STATUS)" "$OUT"; fi
 fresh e4rootok; edit e4rootok "$E4" 'd["measurements"]["enospc"].update(minioUid=0, exhaustedAt="f_bfree")'
 gen e4rootok
 if [ "$STATUS" = 0 ]; then ok "MinIO as root with ENOSPC at f_bfree passes"; else bad "root at f_bfree (exit $STATUS)" "$OUT"; fi
+fresh e4uidneg; edit e4uidneg "$E4" 'd["measurements"]["enospc"]["minioUid"] = -1'
+refused "a negative minioUid → refuse" e4uidneg "minioUid -1 is negative"
+fresh e4nouid; edit e4nouid "$E4" 'del(d["measurements"]["enospc"]["minioUid"])'
+refused "no minioUid → refuse (A1 (iv) records the MinIO uid)" e4nouid "enospc: 'minioUid' is missing"
+# Optional statvfsAtEnospc: the named counter must be 0 in it, f_ffree must agree, and its f_bfree goes on the record.
+SAT='d["measurements"]["enospc"].update(minioUid=0, statvfsAtEnospc={"f_bfree": 4098, "f_bavail": 0, "f_ffree": 30530, "f_frsize": 4096})'
+fresh e4sat; edit e4sat "$E4" "$SAT"
+gen e4sat
+if [ "$STATUS" = 0 ] && [ "$(jq -c '.filesystem.e4ProductionHost.enospc.fBfreeAtEnospc' "$TMP/e4sat/out/production-2000-01-01/record.json")" = 4098 ]; then
+    ok "a consistent statvfsAtEnospc passes and the record carries f_bfree at ENOSPC (the reserve-use observation)"
+else bad "statvfsAtEnospc consistent (exit $STATUS)" "$OUT"; fi
+fresh e4satexh; edit e4satexh "$E4" "$SAT"'; d["measurements"]["enospc"]["exhaustedAt"] = "f_bfree"'
+refused "exhaustedAt f_bfree while the 507 sample shows f_bfree 4098 → refuse" e4satexh "exhaustedAt is f_bfree, but the 507 sample shows f_bfree = 4098"
+fresh e4satbav; edit e4satbav "$E4" "$SAT"'; d["measurements"]["enospc"]["statvfsAtEnospc"]["f_bavail"] = 1'
+refused "exhaustedAt f_bavail while the 507 sample shows f_bavail 1 → refuse" e4satbav "exhaustedAt is f_bavail, but the 507 sample shows f_bavail = 1"
+fresh e4satff; edit e4satff "$E4" "$SAT"'; d["measurements"]["enospc"]["statvfsAtEnospc"]["f_ffree"] = 30529'
+refused "a sample f_ffree that is not ffreeAtEnospc → refuse" e4satff "f_ffree 30529 is not ffreeAtEnospc 30530"
+fresh e4satfr; edit e4satfr "$E4" "$SAT"'; d["measurements"]["enospc"]["statvfsAtEnospc"]["f_frsize"] = 1024'
+refused "a sample of another block size → refuse" e4satfr "f_frsize 1024 is not the qualified block size 4096"
+fresh e4satmiss; edit e4satmiss "$E4" "$SAT"'; del(d["measurements"]["enospc"]["statvfsAtEnospc"]["f_bfree"])'
+refused "a statvfsAtEnospc without f_bfree → refuse" e4satmiss "statvfsAtEnospc: 'f_bfree' is missing"
+# Optional baselineStatvfs: e0 recomputed from it, on the qualified geometry (#12 1720 item 3, 1973 Q4). Fake e0 30.
+BASE='d["measurements"]["baselineStatvfs"] = {"f_files": 17825792, "f_ffree": 17825792 - 1030, "f_blocks": 16777216, "f_bfree": 16777216 - 1000, "f_frsize": 4096}'
+fresh e4base; edit e4base "$E4" "$BASE"
+gen e4base
+if [ "$STATUS" = 0 ] && [ "$(jq -c '.filesystem.e4ProductionHost.e0RecomputedFromBaseline' "$TMP/e4base/out/production-2000-01-01/record.json")" = true ]; then
+    ok "a baselineStatvfs that gives e0 = 30 passes and the record says e0 was recomputed from it"
+else bad "baselineStatvfs consistent (exit $STATUS)" "$OUT"; fi
+fresh e4basee0; edit e4basee0 "$E4" "$BASE"'; d["measurements"]["baselineStatvfs"]["f_ffree"] -= 1'
+refused "an e0 that is not the baseline's → refuse (A1 (ii))" e4basee0 "A1 \(ii\): e0 30 is not max\(0, \(f_files − f_ffree\) − \(f_blocks − f_bfree\)\) = 31"
+fresh e4baseneg; edit e4baseneg "$E4" "$BASE"'; d["measurements"]["baselineStatvfs"]["f_bfree"] = 16777216 - 2000; d["measurements"].update(e0=0, marginInodes=1048576, marginRatio=round(1048576 / 16777216, 6))'
+gen e4baseneg
+if [ "$STATUS" = 0 ]; then ok "a baseline with more blocks than inodes used gives e0 = max(0, …) = 0, and e0 0 passes"
+else bad "baseline e0 clamped at 0 (exit $STATUS)" "$OUT"; fi
+fresh e4basegeo; edit e4basegeo "$E4" "$BASE"'; d["measurements"]["baselineStatvfs"]["f_blocks"] += 1; d["measurements"]["baselineStatvfs"]["f_bfree"] += 1'
+refused "a baseline of another geometry → refuse" e4basegeo "baselineStatvfs: f_files/f_blocks 17825792/16777217 are not the qualified geometry's 17825792/16777216"
+fresh e4baseuuid; edit e4baseuuid "$E4" "$BASE"'; d["measurements"]["baselineStatvfs"]["fsUuid"] = "11111111-0000-4000-8000-000000000000"'
+refused "a baseline of another filesystem uuid → refuse" e4baseuuid "baselineStatvfs: fsUuid '11111111-0000-4000-8000-000000000000' is not the final filesystem's"
 fresh e4nostep; edit e4nostep census/summary.json 'd["steps"] = [s for s in d["steps"] if not s["step"].startswith("(iv)")]'
 refused "no (iv) step in the census summary → refuse (C3)" e4nostep "steps must hold exactly one '\(iv\) …' step"
 fresh e4stepboot; edit e4stepboot census/summary.json 'next(s for s in d["steps"] if s["step"].startswith("(iv)"))["bootId"] = "other-boot"'

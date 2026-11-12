@@ -171,7 +171,9 @@ Experiment file (`testinbox.n1-experiment/1`):
   "measurements": {
     "e0": 30, "marginInodes": 866109, "marginRatio": 0.07392,
     "enospc": {"ffreeAtEnospc": 30530, "exhaustedAt": "f_bavail", "answers": {"507": 827, "ENOSPC": 0},
-               "minioUid": 1000, "ballastBytes": 0, "bandBytes": 1073741824},
+               "minioUid": 0, "ballastBytes": 0, "bandBytes": 1073741824,
+               "statvfsAtEnospc": {"f_bfree": 4098, "f_bavail": 0, "f_ffree": 30530, "f_frsize": 4096}},
+    "baselineStatvfs": {"f_files": 12582912, "f_ffree": 12582000, "f_blocks": 11716773, "f_bfree": 11715891, "f_frsize": 4096},
     "labFullScaleEvidence": {"path": "docs/adr/0035-benchmark/qualification/lab-e4-k147-2026-10-19/runs/e4-e4.json",
                              "sha256": "<64 hex of that committed file>"}
   }
@@ -182,8 +184,21 @@ Experiment file (`testinbox.n1-experiment/1`):
     `e0` above 266,952 (the largest e0 for which m / (f_blocks + e0) ≥ 0.05) means MinIO's `diskAlmostFilled()`
     inode branch can fire early: the record then says so, and **E5** must carry
     `measurements.inodeBranchCanFireEarly: true` (E5 evaluated with it), or the build is refused.
-  - (iv) `ffreeAtEnospc` > 0; `exhaustedAt` is `f_bavail`, or `f_bfree` exactly when `minioUid` is 0 (root uses the
-    reserved blocks); `bandBytes` ≥ 1 GiB; at least one 507/ENOSPC answer. `census/summary.json` `steps` holds
+    **Optional** `baselineStatvfs` (#12 1720 item 3, 1973 Q4): when present, `e0` must equal
+    max(0, (f_files − f_ffree) − (f_blocks − f_bfree)) recomputed from it, its `f_files`/`f_blocks` must be the
+    qualified geometry's, and an `fsUuid` member, if any, the final filesystem's. The record then says
+    `e0RecomputedFromBaseline: true`.
+  - (iv) `ffreeAtEnospc` > 0; `exhaustedAt` is the counter the 507 sample showed at 0, `f_bavail` or `f_bfree`, **for
+    any uid** (A1 (iv): "whether ENOSPC came at `f_bavail` = 0 or `f_bfree` = 0"); `minioUid` ≥ 0 is recorded, never
+    matched. As root, `f_bfree` = 0 is unreachable on ext4: `s_resv_clusters` (min(2 %, 4096 clusters)) stays counted
+    in `f_bfree`, so root's ENOSPC reads `f_bavail` = 0 with `f_bfree` ≈ 4096 blocks, after the root reserve is used
+    (lab k147: `bfree` 4098 against 13,107 reserved blocks). The earlier rule "`f_bfree` exactly when the uid is 0" was
+    stricter than A1 (iv) and is withdrawn (#12 1973 Q1, 1986). `bandBytes` is the `f_bavail × f_frsize` band the
+    ballast leaves (post-creation statvfs, A2 item 3), never the bytes written, and is ≥ 1 GiB; at least one
+    507/ENOSPC answer; other failure kinds go in `enospc.otherAnswers` (information, not `problems`). **Optional**
+    `statvfsAtEnospc` `{f_bfree, f_bavail, f_ffree, f_frsize}` from the 507 sample: when present, the counter named by
+    `exhaustedAt` must be 0 in it, `f_ffree` must equal `ffreeAtEnospc`, `f_frsize` the qualified block size, and the
+    record carries its `f_bfree` as `enospc.fBfreeAtEnospc` (the root-reserve observation, annex §1). `census/summary.json` `steps` holds
     exactly one step whose `step` starts with `(iv)`, with the C3 kernel, boot id and uuid, inside E4's
     `startedAt`..`completedAt`, **after** the A1iii (vi) census, and no census is taken after it (ENOSPC switches
     MinIO's trash to immediate purge, C2). E4 therefore completes after A1iii.

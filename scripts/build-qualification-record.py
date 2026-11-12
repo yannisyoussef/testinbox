@@ -1304,6 +1304,24 @@ def build(bundle_dir, expected, repo, census_raw=None):
         ratio_ok = p.check(isinstance(ratio, (int, float)) and not isinstance(ratio, bool),
                            f"{w4}: 'marginRatio' is missing or not a number (got {ratio!r})")
         early, bound = None, e0_bound(f_files, f_blocks)
+        # Optional: the baseline statvfs. Present, e0 is recomputed from it (#12 1720 item 3, 1973 Q4), and it must be
+        # of the qualified geometry and the final filesystem: a baseline of another filesystem is refused.
+        e0_recomputed = False
+        bs = m4.get("baselineStatvfs")
+        if bs is not None:
+            wb = f"{w4}.baselineStatvfs"
+            if p.check(isinstance(bs, dict), f"{wb} is not an object (got {bs!r})"):
+                bv = {k: need(p, bs, k, "int", wb) for k in ("f_files", "f_ffree", "f_blocks", "f_bfree")}
+                if "fsUuid" in bs:
+                    p.check(bs["fsUuid"] == xf["uuid"], f"{wb}: fsUuid {bs['fsUuid']!r} is not the final filesystem's {xf['uuid']}")
+                if all(v is not None for v in bv.values()):
+                    p.check((bv["f_files"], bv["f_blocks"]) == (f_files, f_blocks),
+                            f"{wb}: f_files/f_blocks {bv['f_files']}/{bv['f_blocks']} are not the qualified geometry's "
+                            f"{f_files}/{f_blocks}")
+                    e0_raw = max(0, (bv["f_files"] - bv["f_ffree"]) - (bv["f_blocks"] - bv["f_bfree"]))
+                    e0_recomputed = p.check(e0 is None or e0 == e0_raw,
+                                            f"A1 (ii): e0 {e0} is not max(0, (f_files − f_ffree) − (f_blocks − f_bfree)) = "
+                                            f"{e0_raw}, recomputed from {wb}")
         if e0 is not None and p.check(e0 >= 0, f"{w4}: e0 {e0} is negative (e0 = max(0, (f_files − f_ffree) − (f_blocks − f_bfree)))"):
             m_want = f_files - f_blocks - e0
             p.check(margin is None or margin == m_want,
@@ -1327,12 +1345,30 @@ def build(bundle_dir, expected, repo, census_raw=None):
         p.check(ffree is None or ffree > 0, f"A1 (iv): f_ffree {ffree} at ENOSPC, not > 0: the inodes ran out with the blocks")
         exh = en.get("exhaustedAt")
         p.check(exh in E4_EXHAUSTED, f"{we}: exhaustedAt {exh!r} is not one of {list(E4_EXHAUSTED)}")
+        # exhaustedAt is the counter the 507 sample showed at 0, for ANY uid: A1 (iv) reads "whether ENOSPC came at
+        # f_bavail = 0 or f_bfree = 0". As root, f_bfree = 0 is unreachable on ext4: s_resv_clusters (min(2 %, 4096
+        # clusters)) stays counted in f_bfree, so root's ENOSPC reads f_bavail = 0 with f_bfree ≈ 4096 blocks (lab
+        # k147: bfree 4098 against 13,107 reserved blocks). The uid is recorded, never matched (#12 1973 Q1, 1986).
         uid = need(p, en, "minioUid", "int", we)
-        if uid is not None and p.check(uid >= 0, f"{we}: minioUid {uid} is negative") and exh in E4_EXHAUSTED:
-            at_uid = "f_bfree" if uid == 0 else "f_bavail"
-            p.check(exh == at_uid, f"A1 (iv): MinIO ran as uid {uid}, so ENOSPC comes at {at_uid} = 0 "
-                                   f"({'root uses the reserved blocks' if uid == 0 else 'only root may use the reserved blocks'}), "
-                                   f"not at {exh} = 0")
+        p.check(uid is None or uid >= 0, f"{we}: minioUid {uid} is negative")
+        # Optional: the raw statvfs of the 507 sample. Present, it must show the named counter at 0 and agree with
+        # ffreeAtEnospc; its f_bfree goes on the record (the reserve-use observation, annex §1).
+        bfree_at = None
+        sat = en.get("statvfsAtEnospc")
+        if sat is not None:
+            ws = f"{we}.statvfsAtEnospc"
+            if p.check(isinstance(sat, dict), f"{ws} is not an object (got {sat!r})"):
+                sv = {k: need(p, sat, k, "int", ws) for k in ("f_bfree", "f_bavail", "f_ffree", "f_frsize")}
+                if all(v is not None for v in sv.values()) and p.check(all(v >= 0 for v in sv.values()),
+                                                                       f"{ws}: a negative counter in {sv}"):
+                    p.check(sv["f_bavail"] <= sv["f_bfree"], f"{ws}: f_bavail {sv['f_bavail']} exceeds f_bfree {sv['f_bfree']}")
+                    p.check(sv["f_frsize"] == xf["blockSize"],
+                            f"{ws}: f_frsize {sv['f_frsize']} is not the qualified block size {xf['blockSize']}")
+                    p.check(exh not in E4_EXHAUSTED or sv[exh] == 0,
+                            f"A1 (iv): exhaustedAt is {exh}, but the 507 sample shows {exh} = {sv.get(exh)}")
+                    p.check(ffree is None or sv["f_ffree"] == ffree,
+                            f"{ws}: f_ffree {sv['f_ffree']} is not ffreeAtEnospc {ffree}")
+                    bfree_at = sv["f_bfree"]
         ballast = need(p, en, "ballastBytes", "int", we)
         p.check(ballast is None or ballast >= 0, f"{we}: ballastBytes {ballast} is negative")
         band = need(p, en, "bandBytes", "int", we)
@@ -1393,6 +1429,11 @@ def build(bundle_dir, expected, repo, census_raw=None):
                           "(iv) the bounded ENOSPC run after the A1iii (vi) census, f_ffree > 0 at ENOSPC; (v) the lab "
                           "full-scale E4 committed in this repository, sha256-bound"),
             }
+            # Optional members appear only when E4.json carried them, so a record without them is unchanged.
+            if e0_recomputed:
+                e4fact["e0RecomputedFromBaseline"] = True
+            if bfree_at is not None:
+                e4fact["enospc"]["fBfreeAtEnospc"] = bfree_at
     if e4 is not None and e4fact is None and not p.items:
         p.add(f"{E4_REL}: A1 (ii)/(iv)/(v) were not judged")  # unreachable: every path to None records a problem
 
@@ -1545,11 +1586,15 @@ def build(bundle_dir, expected, repo, census_raw=None):
           f"of 0B and 1B; every object in its phase's class; {A1III_DEFERRED_RULE}")
     label("`filesystem.e4ProductionHost`",
           f"e0 {e4fact['e0']}, m {e4fact['marginInodes']} ({e4fact['marginRatio']} of f_blocks); ENOSPC at "
-          f"{e4fact['enospc']['exhaustedAt']} = 0 with f_ffree {e4fact['enospc']['ffreeAtEnospc']}, answers "
+          f"{e4fact['enospc']['exhaustedAt']} = 0 with f_ffree {e4fact['enospc']['ffreeAtEnospc']}"
+          + (f" and f_bfree {e4fact['enospc']['fBfreeAtEnospc']}" if "fBfreeAtEnospc" in e4fact["enospc"] else "")
+          + f", answers "
           f"{json.dumps(e4fact['enospc']['answers'])}, MinIO uid {e4fact['enospc']['minioUid']}, band "
           f"{e4fact['enospc']['bandBytes']} B; lab {e4fact['labFullScaleEvidence']['path']}", PQ,
           f"`{ev}{E4_REL}` measurements, checked (never its verdict): m against f_files − f_blocks of the qualified "
-          f"geometry; the (iv) step of `{ev}{CENSUS_SUMMARY}` after the A1iii census; the lab evidence as committed at "
+          f"geometry"
+          + ("; e0 recomputed from the baseline statvfs" if e4fact.get("e0RecomputedFromBaseline") else "")
+          + f"; the (iv) step of `{ev}{CENSUS_SUMMARY}` after the A1iii census; the lab evidence as committed at "
           f"HEAD, sha256 {e4fact['labFullScaleEvidence']['sha256'][:12]}…. {e4fact['inodeBranchStatement']}")
     label("`filesystem.inodeCensus.c2Status`, `disclosures`", json.dumps(census["c2Status"]), DV,
           "per census: `afterDefinedDrain` true gives literal-deviation-disclosed and the exact disclosure, never "
