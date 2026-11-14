@@ -1,4 +1,4 @@
--- ADR-037 §3 (PENDING OWNER ACCEPTANCE, infinity-core #12 2121): a workspace
+-- ADR-037 §3 (owner decision 2026-11-14, infinity-core #12 2121/2123): a workspace
 -- cleanup charge is released by a valid observation, ordered after it, whose
 -- MinIO trash is AT OR BELOW the approved pool's trash allowance, no longer only
 -- by an observation reading exactly zero.
