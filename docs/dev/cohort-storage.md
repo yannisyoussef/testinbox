@@ -48,9 +48,11 @@ Deleting rows does not immediately free the physical share. V20 attributes
 message/attachment cascades, releasing reservations and canonical orphan keys
 to a transient workspace cleanup mirror. The mirror survives global debt
 compaction into nonempty MinIO trash. Finite charges are released only by a
-later, fresh, correctly ordered zero-trash observation from the approved
-monitor, with matching filesystem identity, a valid watermark and trusted
-counts. Pending, late, unknown or failed evidence never frees a share. An
+later, fresh, correctly ordered observation from the approved monitor whose
+trash is at or below the approved plan's trash allowance (V28, ADR-037 §3
+owner decision 2026-11-14; before V28 it had to read exactly zero, which the
+pinned MinIO never does), with matching filesystem identity, a valid watermark
+and trusted counts. Pending, late, unknown or failed evidence never frees a share. An
 already-mounted filesystem is not unmounted by this application.
 
 Historical unidentifiable debt is charged to an explicitly reserved global

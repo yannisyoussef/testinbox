@@ -177,7 +177,7 @@ class CohortStorageRuntimeTest : PersistenceIntegrationTest() {
         ready() shouldBe false
     }
 
-    @Test fun `cleanup charge survives global debt compaction into nonempty trash`() {
+    @Test fun `cleanup charge survives global debt compaction into trash above the allowance`() {
         reserve()
         db.message(ws, inbox, 100, listOf(0, 1, 7))
         db.hardDeleteInbox(inbox)
@@ -185,7 +185,8 @@ class CohortStorageRuntimeTest : PersistenceIntegrationTest() {
         val before = JdbcStorageVisibility(db.jdbc).read(WorkspaceId(ws), emptySet())
         before.budget!!.cleanup.objects shouldBe 4
         before.workspace.usedBytes shouldBe 0
-        observation(12345)
+        // V28: the reserved trash allowance is 1 GiB; one byte above it keeps every charge
+        observation(gib + 1)
         db.ledger.compactDeletionDebt()
         db.jdbc
             .sql("SELECT count(*) FROM storage_deletion_debt")
@@ -203,6 +204,25 @@ class CohortStorageRuntimeTest : PersistenceIntegrationTest() {
         display.footprint!!.pendingCleanupBytes shouldBe display.footprint!!.usedBytes
         display.footprint!!.enforced shouldBe true
         observation(0)
+        db.ledger.compactDeletionDebt()
+        charges() shouldBe 0
+    }
+
+    @Test fun `MinIO scanner churn within the trash allowance releases the charge, exactly at it too`() {
+        // V28 (ADR-037 §3, owner text #12 2121): the pinned MinIO keeps a few hundred KiB of its own scanner state in
+        // .trash at all times (prod 2026-11-14: 8 KiB to 284 KiB, never 0), so V21's zero-trash condition never released
+        reserve()
+        db.message(ws, inbox, 100)
+        db.hardDeleteInbox(inbox)
+        charges() shouldBe 100
+        observation(284L * 1024)
+        db.ledger.compactDeletionDebt()
+        charges() shouldBe 0
+        val second = db.inbox(ws)
+        db.message(ws, second, 77)
+        db.hardDeleteInbox(second)
+        charges() shouldBe 77
+        observation(gib)
         db.ledger.compactDeletionDebt()
         charges() shouldBe 0
     }

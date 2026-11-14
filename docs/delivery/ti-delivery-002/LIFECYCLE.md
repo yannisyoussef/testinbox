@@ -257,8 +257,8 @@ deadlock-free).
   never releases a seat; the next admission gets the next place;
 - the `participant_workspace` marker and its fixed share, so the workspace
   stays an **inactive participant**, never legacy;
-- every `workspace_deletion_charge`. A charge is freed only by the existing
-  proven zero-trash observation;
+- every `workspace_deletion_charge`. A charge is freed only by a proven
+  observation with trash within the plan's allowance (V28, ADR-037 §3);
 - the keys' technical rows: id, public id, verifier, scopes, timestamps,
   `last_used_at`, revocation and creating key. ADR-032 §5 audit history and the
   20 usable / 1000 retained inventory still count them;

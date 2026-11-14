@@ -32,6 +32,17 @@ are complete. Existing D3 physical qualification is reused, not reopened.
    historical/orphan/probe debt remains in a separately bounded global pool;
    never assign it zero cost. Existing global containment inequalities,
    finalization, probe, metadata and operational reserves still apply.
+
+   *Owner decision 2026-11-14 (infinity-core #12 2121, accepted as recorded
+   in 2123; implemented by V28):* "Proven deleted" is shown by a valid
+   filesystem observation, ordered after the charge, whose MinIO trash is at
+   or below the approved pool's trash allowance. The pinned MinIO keeps a few
+   hundred KiB of its own scanner state in `.trash` at all times (measured on
+   prod, 2026-11-14), so a zero-trash observation is not reachable in
+   operation. Trash within the allowance is already charged to the separately
+   bounded global pool, which refuses above it, so the workspace charge is no
+   longer needed for containment. A trash reading above the allowance
+   releases nothing.
 4. **Uniform SMTP:** no quota/rate/account-state failure changes the valid
    recipient acceptance behavior. Unknown content is never persisted.
    Workspace refusals are recorded privately using the existing refusal
