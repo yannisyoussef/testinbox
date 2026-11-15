@@ -680,3 +680,22 @@ defaults. From A′ on, the gateway refuses to start when its database URL or it
 Nothing in this repository sets either; Ops should confirm `TESTINBOX_DB_URL`
 does not. Rolling the artifact back removes the refusal along with the batch it
 protects.
+
+## Cleanup-charge release within the trash allowance (schema V28)
+
+V28 is expand-only: it replaces one function, `storage_release_workspace_charges()`,
+with the same name, signature and grants. No table, column, index, trigger,
+constraint, type or grant change, so no change to `deploy/rollback-floors.txt`,
+`roles.reference.sql` or `deploy/backup/scope.txt`.
+
+The only behaviour change is the release condition. A workspace cleanup charge is
+released by a valid observation whose `trash_bytes` is at or below the approved
+plan's `trash_allowance`; before V28 it had to be exactly 0, which the pinned
+MinIO never reports (#12 2120). Every other condition is unchanged.
+
+**Rollback.** An older artifact calls the same function, so rolling the artifact
+back over V28 is safe: charges then follow V28's rule, which is the intended one.
+Restoring the zero-trash rule needs a new forward migration; never edit or
+remove V28. Without a reserved cohort plan the function returns 0 at its first
+check, so V28 changes nothing in an environment with no plan, including
+production while enforcement is OFF.
