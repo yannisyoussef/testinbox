@@ -931,6 +931,24 @@ the objects are in trash **and** still in *F_c*, so Φ counts them, and the
 theorem is unaffected). Probe objects are admitted by (P) into *D* like
 any other row-free deletion.
 
+*Owner decision 2026-11-18 (infinity-core #12 2165, accepted as recorded in
+2201): the first two sentences of this lemma are replaced by the text below;
+the rest of the lemma is unchanged. The sentences above are kept as history.*
+
+> **Lemma (monotone trash).** Trash grows by TestInbox deletions and by the
+> pinned MinIO's own scanner state, and shrinks only by MinIO's purge. The
+> scanner's contribution *S_scan* is bounded and cycles with the purge
+> (measured on the pinned image: ≤ 236 KiB in the lab, ≤ 284 KiB on prod,
+> 2026-11-13/14). So `trash(t) ≤ trash(t_du) + added(t_du, t) + S_scan`. Its
+> exact form is `trash(t) ≤ F(D) + W + R(t) + S_scan`, …
+>
+> *S_scan* is not a TestInbox deletion: it has no debt row and is not admitted
+> by (P). It is covered by *R_ops* (declared ≥ max(5 % of *C_fs*, 2 GiB), never
+> planned for use), so the containment theorem is unaffected. A MinIO image
+> change re-measures *S_scan* before activation.
+
+E5's criterion `trash ≤ D_est + R` (§10) reads with *R* = R(t) + *S_scan*.
+
 **Lemma (ordering).** Ordering uses one database **sequence**,
 `storage_debt_order_seq`, never a wall clock (a failover or an NTP step can
 move a clock backwards; a sequence never does). Every resolved debt row's
