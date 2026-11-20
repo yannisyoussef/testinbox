@@ -207,8 +207,11 @@ class AccountDeletionCommandTest : ApiIntegrationTestBase() {
             count("SELECT count(*) FROM account_deletion WHERE account_id = ? AND stage = 'CONTENT_DELETING'", gone) shouldBe 1
         } finally {
             // The operator's documented resolution, so later suites see a clean worklist.
+            // requested_at came from the command's JVM clock, now() from the container's:
+            // clamp as JdbcAccountLifecycle.advanceDeletion does, or a lagging Docker VM
+            // clock violates CHECK (stage_changed_at >= requested_at).
             jdbc
-                .sql("UPDATE account_deletion SET stage = 'ERASED', stage_changed_at = now(), erased_at = now() WHERE account_id = ?")
+                .sql(ERASE)
                 .param(gone)
                 .update()
         }
@@ -230,9 +233,16 @@ class AccountDeletionCommandTest : ApiIntegrationTestBase() {
             }
         } finally {
             jdbc
-                .sql("UPDATE account_deletion SET stage = 'ERASED', stage_changed_at = now(), erased_at = now() WHERE account_id = ?")
+                .sql(ERASE)
                 .param(active)
                 .update()
         }
+    }
+
+    private companion object {
+        /** Moves a record to ERASED with the clamp production uses, independent of any clock skew. */
+        const val ERASE =
+            "UPDATE account_deletion SET stage = 'ERASED', stage_changed_at = greatest(now(), requested_at), " +
+                "erased_at = greatest(now(), requested_at) WHERE account_id = ?"
     }
 }
