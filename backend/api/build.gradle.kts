@@ -40,7 +40,7 @@ dependencies {
     testImplementation(libs.testcontainers.minio)
     testImplementation(libs.testcontainers.junit)
     testImplementation(libs.awaitility)
-    testImplementation("io.swagger.parser.v3:swagger-parser:2.1.48")
+    testImplementation("io.swagger.parser.v3:swagger-parser:2.1.49")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
     // The Boot BOM manages Tomcat 11.0.24 (CVE-2026-65182, CRITICAL, fixed in
